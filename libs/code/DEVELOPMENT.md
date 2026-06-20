@@ -1,5 +1,7 @@
 # Deep Agents Code Development Guide
 
+New to the package? Start with [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a high-level map of how the TUI, the `langgraph dev` server subprocess, and the agent graph fit together.
+
 ## Live CSS development with Textual devtools
 
 Textual's devtools console enables CSS hot-reload and live `self.log()` output during development.

@@ -96,17 +96,17 @@ class FilesystemPermission:
     mode: Literal["allow", "deny", "interrupt"] = "allow"
     """Effect when a tool call matches this rule:
 
-    - ``"allow"`` (default): the call proceeds.
-    - ``"deny"``: the tool returns a permission-denied error.
-    - ``"interrupt"``: the call is paused for human approval via
-      [`HumanInTheLoopMiddleware`][langchain.agents.middleware.HumanInTheLoopMiddleware].
+    - `"allow"` (default): the call proceeds.
+    - `"deny"`: the tool returns a permission-denied error.
+    - `"interrupt"`: the call is paused for human approval via
+        [`HumanInTheLoopMiddleware`][langchain.agents.middleware.HumanInTheLoopMiddleware].
 
-      Best paired with patterns that have a literal leading anchor (e.g.,
-      ``/secrets/**``, ``/projects/*/secrets/**``). Bulk tools
-      (``ls``/``glob``/``grep``) fire the interrupt based on whether their
-      search subtree could overlap the rule's anchored prefix, so a fully
-      unanchored pattern (``/**/secrets``) collapses to ``/`` and
-      conservatively over-fires for any bulk call.
+        Best paired with patterns that have a literal leading anchor (e.g.,
+        `/secrets/**`, `/projects/*/secrets/**`). Bulk tools
+        (`ls`/`glob`/`grep`) fire the interrupt based on whether their
+        search subtree could overlap the rule's anchored prefix, so a fully
+        unanchored pattern (`/**/secrets`) collapses to `/` and
+        conservatively over-fires for any bulk call.
     """
 
     def __post_init__(self) -> None:
@@ -286,7 +286,7 @@ def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileDa
 
     Returns:
         Merged dictionary where right overwrites left for matching keys,
-        and `None` values in right trigger deletions.
+            and `None` values in right trigger deletions.
 
     Example:
         ```python
@@ -314,8 +314,10 @@ def _file_data_delta_reducer(
 ) -> dict[str, FileData]:
     """Batch reducer for use with DeltaChannel.
 
-    DeltaChannel calls reducer(base, list(values)) where values is a list of
-    all writes in the current step. Single dict copy + one pass over all writes.
+    `DeltaChannel` calls `reducer(base, list(values))` where values is a list of
+    all writes in the current step.
+
+    Single dict copy + one pass over all writes.
     """
     result: dict[str, FileData] = dict(left) if left else {}
     for writes in values:
@@ -344,10 +346,12 @@ class ReadFileSchema(BaseModel):
     """Input schema for the `read_file` tool."""
 
     file_path: str = Field(description="Absolute path to the file to read. Must be absolute, not relative.")
+
     offset: int = Field(
         default=DEFAULT_READ_OFFSET,
         description="Line number to start reading from (0-indexed). Use for pagination of large files.",
     )
+
     limit: int = Field(
         default=DEFAULT_READ_LIMIT,
         description="Maximum number of lines to read. Use for pagination of large files.",
@@ -358,6 +362,7 @@ class WriteFileSchema(BaseModel):
     """Input schema for the `write_file` tool."""
 
     file_path: str = Field(description="Absolute path where the file should be created. Must be absolute, not relative.")
+
     content: str = Field(description="The text content to write to the file. This parameter is required.")
 
 
@@ -365,8 +370,11 @@ class EditFileSchema(BaseModel):
     """Input schema for the `edit_file` tool."""
 
     file_path: str = Field(description="Absolute path to the file to edit. Must be absolute, not relative.")
+
     old_string: str = Field(description="The exact text to find and replace. Must be unique in the file unless replace_all is True.")
+
     new_string: str = Field(description="The text to replace old_string with. Must be different from old_string.")
+
     replace_all: bool = Field(
         default=False,
         description="If True, replace all occurrences of old_string. If False (default), old_string must be unique.",
@@ -377,6 +385,7 @@ class GlobSchema(BaseModel):
     """Input schema for the `glob` tool."""
 
     pattern: str = Field(description="Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md').")
+
     path: str | None = Field(default=None, description="Base directory to search from. Defaults to the backend's default root.")
 
 
@@ -384,8 +393,11 @@ class GrepSchema(BaseModel):
     """Input schema for the `grep` tool."""
 
     pattern: str = Field(description="Text pattern to search for (literal string, not regex).")
+
     path: str | None = Field(default=None, description="Directory to search in. Defaults to current working directory.")
+
     glob: str | None = Field(default=None, description="Glob pattern to filter which files to search (e.g., '*.py').")
+
     output_mode: Literal["files_with_matches", "content", "count"] = Field(
         default="files_with_matches",
         description="Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
@@ -396,6 +408,7 @@ class ExecuteSchema(BaseModel):
     """Input schema for the `execute` tool."""
 
     command: str = Field(description="Shell command to execute in the sandbox environment.")
+
     timeout: int | None = Field(
         default=None,
         description="Optional timeout in seconds for this command. Overrides the default timeout. Use 0 for no-timeout execution on backends that support it.",
@@ -560,10 +573,10 @@ def _route_host_path_prompt(backend: BackendProtocol) -> str:
     `FilesystemBackend` route maps to a host path based on its mode:
 
     - virtual mode: the prefix maps to the backend's host root, `route.cwd`
-      (e.g. `/common/` -> `/data/`, so `/common/x` is `/data/x` on the host).
+        (e.g. `/common/` -> `/data/`, so `/common/x` is `/data/x` on the host).
     - non-virtual mode: the prefix is stripped and the remaining absolute path is
-      used as-is (`root_dir` is ignored), i.e. the prefix maps to the filesystem
-      root `/` (e.g. `/legacy/x` is `/x`).
+        used as-is (`root_dir` is ignored), i.e. the prefix maps to the filesystem
+        root `/` (e.g. `/legacy/x` is `/x`).
 
     A remote/sandbox default runs its shell in a separate filesystem, so a local
     `FilesystemBackend` route is not reachable from it. Those routes, along with
@@ -1859,11 +1872,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         handles large HumanMessage eviction:
 
         1. Any message already tagged with `lc_evicted_to` in
-           `additional_kwargs` is replaced with a truncated preview for the
-           model request (content in state is unchanged).
+            `additional_kwargs` is replaced with a truncated preview for the
+            model request (content in state is unchanged).
         2. If the most recent message is an untagged HumanMessage exceeding the
-           eviction threshold, its content is written to the backend and the
-           message is tagged in state via `ExtendedModelResponse`.
+            eviction threshold, its content is written to the backend and the
+            message is tagged in state via `ExtendedModelResponse`.
 
         Args:
             request: The model request being processed.
@@ -1871,7 +1884,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         Returns:
             The model response, or an `ExtendedModelResponse` with a state
-            update tagging a newly evicted message.
+                update tagging a newly evicted message.
         """
         # Check if execute tool is present and if backend supports it
         has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
@@ -1939,7 +1952,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         Returns:
             The model response from the handler, or an `ExtendedModelResponse`
-            with a state update tagging newly evicted messages.
+                with a state update tagging newly evicted messages.
         """
         # Check if execute tool is present and if backend supports it
         has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
@@ -2003,14 +2016,18 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             resolved_backend: The filesystem backend to write the content to.
 
         Returns:
-            A tuple of (processed_message, evicted):
-            - processed_message: New ToolMessage with truncated content and file reference
-            - evicted: Whether the content was evicted to the filesystem
+            A tuple of `(processed_message, evicted)`:
 
-        Note:
-            Text is extracted from all text content blocks, joined, and used for both the
-            size check and eviction. Non-text blocks (images, audio, etc.) are preserved in
-            the replacement message so multimodal context is not lost. The model can recover
+                - processed_message: New `ToolMessage` with truncated content
+                    and file reference
+                - evicted: Whether the content was evicted to the filesystem
+
+        !!! note
+
+            Text is extracted from all text content blocks, joined, and used for
+            both the size check and eviction. Non-text blocks
+            (images, audio, etc.) are preserved in the replacement message
+            so multimodal context is not lost. The model can recover
             the full text by reading the offloaded file from the backend.
         """
         # Early exit if eviction not configured
@@ -2041,7 +2058,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """Async version of _process_large_message.
 
         Uses async backend methods to avoid sync calls in async context.
-        See _process_large_message for full documentation.
+
+        See `_process_large_message` for full documentation.
         """
         # Early exit if eviction not configured
         if not self._tool_token_limit_before_evict:
@@ -2103,7 +2121,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             messages: The message list to inspect.
 
         Returns:
-            Tuple of (has_tagged, new_eviction_needed).
+            Tuple of `(has_tagged, new_eviction_needed)`.
         """
         if not self._human_message_token_limit_before_evict:
             return False, False
@@ -2140,7 +2158,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             file_path: Path the content was written to.
 
         Returns:
-            Tuple of (processed_messages, state_command).
+            Tuple of `(processed_messages, state_command)`.
         """
         state_command: Command | None = None
 
@@ -2171,7 +2189,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self,
         request: ModelRequest[ContextT],
     ) -> tuple[list[AnyMessage], Command | None] | None:
-        """Evict a new oversized HumanMessage and truncate all tagged messages.
+        """Evict a new oversized `HumanMessage` and truncate all tagged messages.
 
         Returns `None` if no messages needed processing (fast path). Otherwise
         returns `(processed_messages, command)` where `command` is a state
@@ -2182,7 +2200,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             request: The model request being processed.
 
         Returns:
-            Tuple of (messages, command) if any processing occurred, else `None`.
+            Tuple of `(messages, command)` if any processing occurred, else `None`.
         """
         messages = list(request.messages)
         has_tagged, new_eviction_needed = self._check_eviction_needed(messages)
@@ -2208,7 +2226,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             request: The model request being processed.
 
         Returns:
-            Tuple of (messages, command) if any processing occurred, else `None`.
+            Tuple of `(messages, command)` if any processing occurred, else `None`.
         """
         messages = list(request.messages)
         has_tagged, new_eviction_needed = self._check_eviction_needed(messages)
@@ -2253,17 +2271,18 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """Intercept and process large tool results before they're added to state.
 
         Args:
-            tool_result: The tool result to potentially evict (ToolMessage or Command).
+            tool_result: The tool result to potentially evict (`ToolMessage` or `Command`).
             runtime: The tool runtime providing access to the filesystem backend.
 
         Returns:
             Either the original result (if small enough) or a processed result with
-            evicted content written to filesystem and truncated message.
+                evicted content written to filesystem and truncated message.
 
-        Note:
-            Handles both single ToolMessage results and Command objects containing
-            multiple messages. Large content is automatically offloaded to filesystem
-            to prevent context window overflow.
+        !!! note
+
+            Handles both single `ToolMessage` results and `Command` objects
+            containing multiple messages. Large content is automatically
+            offloaded to filesystem to prevent context window overflow.
         """
         if isinstance(tool_result, ToolMessage):
             resolved_backend = self._get_backend(runtime)
@@ -2303,7 +2322,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """Async version of _intercept_large_tool_result.
 
         Uses async backend methods to avoid sync calls in async context.
-        See _intercept_large_tool_result for full documentation.
+
+        See `_intercept_large_tool_result` for full documentation.
         """
         if isinstance(tool_result, ToolMessage):
             resolved_backend = self._get_backend(runtime)
@@ -2351,9 +2371,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             handler: The handler function to call with the modified request.
 
         Returns:
-            The raw ToolMessage, or a pseudo tool message with the ToolResult in state.
+            The raw `ToolMessage`, or a pseudo tool message with the `ToolResult` in state.
 
-        Note:
+        !!! note
+
             Tool-execution exceptions (including `ToolException`) propagate
             through this wrapper unhandled by design.
         """
@@ -2369,18 +2390,18 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
     ) -> ToolMessage | Command:
-        """(async)Check the size of the tool call result and evict to filesystem if too large.
+        """(async) Check the size of the tool call result and evict to filesystem if too large.
 
         Args:
             request: The tool call request being processed.
             handler: The handler function to call with the modified request.
 
         Returns:
-            The raw ToolMessage, or a pseudo tool message with the ToolResult in state.
+            The raw `ToolMessage`, or a pseudo tool message with the `ToolResult` in state.
 
         Note:
             Tool-execution exceptions (including `ToolException`) propagate
-            through this wrapper unhandled by design.
+                through this wrapper unhandled by design.
         """
         tool_result = await handler(request)
 

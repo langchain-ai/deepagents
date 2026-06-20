@@ -1,8 +1,8 @@
 """`LocalShellBackend`: Filesystem backend with unrestricted local shell execution.
 
-This backend extends FilesystemBackend to add shell command execution on the local
-host system. It provides NO sandboxing or isolation - all operations run directly
-on the host machine with full system access.
+This backend extends `FilesystemBackend` to add shell command execution on
+the local host system. It provides NO sandboxing or isolation - all operations
+run directly on the host machine with full system access.
 """
 
 from __future__ import annotations
@@ -33,15 +33,16 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
     !!! warning "Security Warning"
 
-        This backend grants agents BOTH direct filesystem access AND unrestricted
-        shell execution on your local machine. Use with extreme caution and only in
-        appropriate environments.
+        This backend grants agents BOTH direct filesystem access AND
+        unrestricted shell execution on your local machine. Use with extreme
+        caution and only in appropriate environments.
 
         **Appropriate use cases:**
 
         - Local development CLIs (coding assistants, development tools)
         - Personal development environments where you trust the agent's code
-        - CI/CD pipelines with proper secret management (see security considerations)
+        - CI/CD pipelines with proper secret management (see
+            security considerations)
 
         **Inappropriate use cases:**
 
@@ -52,7 +53,8 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
         **Security risks:**
 
-        - Agents can execute **arbitrary shell commands** with your user's permissions
+        - Agents can execute **arbitrary shell commands** with your
+            user's permissions
         - Agents can read **any accessible file**, including secrets (API keys,
             credentials, `.env` files, SSH keys, etc.)
         - Combined with network tools, secrets may be exfiltrated via SSRF attacks
@@ -63,22 +65,24 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
         **Recommended safeguards:**
 
-        Since shell access is unrestricted and can bypass filesystem restrictions:
+        Since shell access is unrestricted and can bypass
+        filesystem restrictions:
 
-        1. **Enable Human-in-the-Loop (HITL) middleware** to review and approve ALL
-            operations before execution. This is STRONGLY RECOMMENDED as your primary
-            safeguard when using this backend.
+        1. **Enable Human-in-the-Loop (HITL) middleware** to review and
+            approve ALL operations before execution. This is
+            STRONGLY RECOMMENDED as your primary safeguard when using this backend.
         2. Run in dedicated development environments only - never on shared or
             production systems
         3. Never expose to untrusted users or allow execution of untrusted code
         4. For production environments requiring code execution, extend `BaseSandbox`
-            to create a properly isolated backend (Docker containers, VMs, or other
-            sandboxed execution environments)
+            to create a properly isolated backend (Docker containers, VMs, or
+            other sandboxed execution environments)
 
         !!! note
 
             `virtual_mode=True` and path-based restrictions provide NO security
-            with shell access enabled, since commands can access any path on the system
+            with shell access enabled, since commands can access any path on
+            the system
 
     Examples:
         ```python
@@ -118,27 +122,32 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
                 - If not provided, defaults to the current working directory.
                 - Shell commands execute with this as their working directory.
-                - When `virtual_mode=False` (default): Paths are used as-is. Agents can
-                    access any file using absolute paths or `..` sequences.
+                - When `virtual_mode=False` (default): Paths are used as-is.
+
+                    Agents can access any file using absolute paths or `..` sequences.
                 - When `virtual_mode=True`: Acts as a virtual root for filesystem operations.
-                    Useful with `CompositeBackend` to support routing file operations across
-                    different backend implementations. **Note:** This does NOT restrict shell
-                    commands.
+
+                    Useful with `CompositeBackend` to support routing file
+                    operations across different backend implementations.
+
+                    **Note:** This does NOT restrict shell commands.
 
             virtual_mode: Enable virtual path mode for filesystem operations.
 
-                When `True`, treats `root_dir` as a virtual root filesystem. All paths
-                are interpreted relative to `root_dir` (e.g., `/file.txt` maps to
-                `{root_dir}/file.txt`). Path traversal (`..`, `~`) is blocked.
+                When `True`, treats `root_dir` as a virtual root filesystem.
+                All paths are interpreted relative to `root_dir`
+                (e.g., `/file.txt` maps to `{root_dir}/file.txt`).
+                Path traversal (`..`, `~`) is blocked.
 
-                **Primary use case:** Working with `CompositeBackend`, which routes
-                different path prefixes to different backends. Virtual mode allows the
-                CompositeBackend to strip route prefixes and pass normalized paths to
-                each backend, enabling file operations to work correctly across multiple
-                backend implementations.
+                **Primary use case:** Working with `CompositeBackend`, which
+                routes different path prefixes to different backends. Virtual
+                mode allows the `CompositeBackend` to strip route prefixes and
+                pass normalized paths to each backend, enabling file operations
+                to work correctly across multiple backend implementations.
 
-                **Important:** This only affects filesystem operations. Shell commands
-                executed via `execute()` are NOT restricted and can access any path.
+                **Important:** This only affects filesystem operations.
+                Shell commands executed via `execute()` are NOT restricted
+                and can access any path.
 
             timeout: Default maximum time in seconds to wait for shell command execution.
 
@@ -146,17 +155,25 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
                 Commands exceeding this timeout will be terminated.
 
-                Can be overridden per-command via the `timeout` parameter on `execute()`.
+                Can be overridden per-command via the `timeout` parameter
+                on `execute()`.
 
             max_output_bytes: Maximum number of bytes to capture from command output.
-                Output exceeding this limit will be truncated. Defaults to 100,000 bytes.
+                Output exceeding this limit will be truncated.
 
-            env: Environment variables for shell commands. If None, starts with an empty
-                environment (unless `inherit_env=True`).
+                Defaults to 100,000 bytes.
+
+            env: Environment variables for shell commands.
+
+                If `None`, starts with an empty environment
+                (unless `inherit_env=True`).
 
             inherit_env: Whether to inherit the parent process's environment variables.
-                When False (default), only variables in `env` dict are available.
-                When True, inherits all `os.environ` variables and applies `env` overrides.
+
+                When `False` (default), only variables in `env` dict are available.
+
+                When `True`, inherits all `os.environ` variables
+                and applies `env` overrides.
 
         Raises:
             ValueError: If timeout is not positive.
@@ -228,9 +245,10 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
         !!! danger "Unrestricted Execution"
 
-            Commands are executed directly on your host system using `subprocess.run()`
-            with `shell=True`. There is **no sandboxing, isolation, or security
-            restrictions**. The command runs with your user's full permissions and can:
+            Commands are executed directly on your host system
+            using `subprocess.run()` with `shell=True`. There is **no sandboxing,
+            isolation, or security restrictions**. The command runs with
+            your user's full permissions and can:
 
             - Access any file on the filesystem (regardless of `virtual_mode`)
             - Execute any program or script
@@ -241,28 +259,29 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
             **Always use Human-in-the-Loop (HITL) middleware when using this method.**
 
-        The command is executed using the system shell (`/bin/sh` or equivalent) with
-        the working directory set to the backend's `root_dir`. Stdout and stderr are
-        combined into a single output stream.
+        The command is executed using the system shell (`/bin/sh` or equivalent)
+        with the working directory set to the backend's `root_dir`.
+        Stdout and stderr are combined into a single output stream.
 
         Args:
             command: Shell command string to execute.
-                Examples: "python script.py", "ls -la", "grep pattern file.txt"
 
-                **Security:** This string is passed directly to the shell. Agents can
-                execute arbitrary commands including pipes, redirects, command
-                substitution, etc.
+                Examples: `"python script.py"`, `"ls -la"`, `"grep pattern file.txt"`
+
+                **Security:** This string is passed directly to the shell.
+                Agents can execute arbitrary commands including pipes,
+                redirects, command substitution, etc.
             timeout: Maximum time in seconds to wait for this command.
 
                 Overrides the default timeout set at init.
 
-                If None, uses the default.
+                If `None`, uses the default.
 
         Returns:
-            ExecuteResponse containing:
-                - output: Combined stdout and stderr (stderr lines prefixed with [stderr])
-                - exit_code: Process exit code (0 for success, non-zero for failure)
-                - truncated: True if output was truncated due to size limits
+            `ExecuteResponse` containing:
+                - `output`: Combined stdout and stderr (stderr lines prefixed with `[stderr]`)
+                - `exit_code`: Process exit code (0 for success, non-zero for failure)
+                - `truncated`: `True` if output was truncated due to size limits
 
         Raises:
             ValueError: If per-command timeout is not positive.

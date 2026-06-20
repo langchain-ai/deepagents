@@ -260,10 +260,10 @@ def render_repl_system_prompt(
     mode: Literal["thread", "turn", "call"],
     ptc_attached: bool = False,
 ) -> str:
-    """Render the base REPL system prompt text for ``CodeInterpreterMiddleware``.
+    """Render the base REPL system prompt text for `CodeInterpreterMiddleware`.
 
-    ``ptc_attached`` controls the "external side effects" bullet: when host
-    tools are exposed as the ``tools.*`` namespace it points the model at the
+    `ptc_attached` controls the "external side effects" bullet: when host
+    tools are exposed as the `tools.*` namespace it points the model at the
     API reference; otherwise it states the REPL is pure computation.
     """
     if ptc_attached:
@@ -362,7 +362,7 @@ def render_eval_tool_description(*, mode: Literal["thread", "turn", "call"]) -> 
 
 
 def to_camel_case(name: str) -> str:
-    """Convert ``snake_case`` / ``kebab-case`` → ``camelCase``."""
+    """Convert `snake_case` / `kebab-case` → `camelCase`."""
     return _CAMEL_SEP.sub(lambda m: m.group(1).upper(), name)
 
 
@@ -475,16 +475,16 @@ def _render_signature(
 
 
 # Return types come from the tool's underlying function annotation. We feed
-# the annotation through ``pydantic.TypeAdapter`` to get a JSON Schema and
-# render it through the same ``_json_schema_to_ts`` we use for input args.
-# Compound shapes (TypedDict, BaseModel, recursive types) end up as ``$ref``
-# in the schema and currently render as ``unknown`` — same behaviour as
-# nested-model input args. Until that path resolves ``$ref`` / ``$defs``,
+# the annotation through `pydantic.TypeAdapter` to get a JSON Schema and
+# render it through the same `_json_schema_to_ts` we use for input args.
+# Compound shapes (TypedDict, BaseModel, recursive types) end up as `$ref`
+# in the schema and currently render as `unknown` — same behaviour as
+# nested-model input args. Until that path resolves `$ref` / `$defs`,
 # the simpler unified renderer is the right trade-off here.
 
 
 def _render_return_type(tool: BaseTool) -> str:
-    """Render the return annotation as a TS type, defaulting to ``unknown``."""
+    """Render the return annotation as a TS type, defaulting to `unknown`."""
     target = getattr(tool, "func", None) or getattr(tool, "coroutine", None)
     if target is None:
         return "unknown"

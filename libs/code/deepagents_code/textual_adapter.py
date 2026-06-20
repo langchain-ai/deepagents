@@ -519,10 +519,16 @@ async def execute_task_textual(
     user_msg: dict[str, Any] = {"role": "user", "content": message_content}
     if message_kwargs:
         user_msg.update(message_kwargs)
-    stream_input: dict | Command = {
-        "messages": [user_msg],
-        "_auto_approve": bool(session_state.auto_approve),
-    }
+    stream_input: dict | Command
+    if session_state.auto_approve:
+        stream_input = Command(
+            update={
+                "messages": [user_msg],
+                "_auto_approve": True,
+            }
+        )
+    else:
+        stream_input = {"messages": [user_msg]}
 
     # Track summarization lifecycle so spinner status and notification stay in sync.
     summarization_in_progress = False

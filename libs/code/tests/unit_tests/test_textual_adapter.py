@@ -785,6 +785,34 @@ class _SequencedAgent:
             yield chunk
 
 
+class TestExecuteTaskTextualAutoApproveInput:
+    """Tests for seeding auto-approve state before the first graph run."""
+
+    async def test_pre_enabled_auto_approve_uses_command_update(self) -> None:
+        """Private auto-approve state must be written through `Command.update`."""
+        agent = _SequencedAgent([[]])
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        stream_input = agent.stream_inputs[0]
+        assert isinstance(stream_input, Command)
+        assert stream_input.update == {
+            "messages": [{"role": "user", "content": "hi"}],
+            "_auto_approve": True,
+        }
+
+
 def _ask_user_interrupt_chunk(payload: dict[str, Any]) -> tuple[Any, ...]:
     """Build an updates-stream chunk containing one ask_user interrupt."""
     interrupt = SimpleNamespace(id="interrupt-1", value=payload)

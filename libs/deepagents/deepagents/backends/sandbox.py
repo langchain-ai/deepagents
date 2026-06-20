@@ -669,27 +669,31 @@ def _build_capture_execute_cmd(command: str, capture_path: str, *, inline_budget
     )
 
 
-def _parse_capture_execute_output(output: str, *, backend_truncated: bool = False) -> ExecuteResponse:
-    """Parse capture-wrapper stdout into an `ExecuteResponse`.
+def _parse_capture_execute_output(output: str, *, backend_truncated: bool = False) -> tuple[bool, ExecuteResponse]:
+    """Parse capture-wrapper stdout into `(offloaded, ExecuteResponse)`.
 
-    Returns the raw output verbatim (no exit code, not offloaded) when the meta
-    line is absent — e.g. if the backend truncated transport. The caller must
-    not re-run the command on this fallback. `truncated` is set when the captured
-    output hit the size cap (the saved file is incomplete) or `backend_truncated`
-    is passed through from the underlying `execute`.
+    `offloaded` is kept separate from `ExecuteResponse` because it describes the
+    capture mechanism, not the command result (an ordinary `execute` never sets
+    it). Falls back to `(False, raw output)` when the meta line is absent — e.g.
+    if the backend truncated transport; the caller must not re-run the command in
+    that case. `ExecuteResponse.truncated` is set when the captured output hit the
+    size cap (the saved file is incomplete) or `backend_truncated` is passed
+    through from the underlying `execute`.
     """
     first, _, body = output.partition("\n")
     parts = first.split(" ")
     if len(parts) != 4 or parts[0] != _EXECUTE_CAPTURE_SENTINEL:  # noqa: PLR2004
-        return ExecuteResponse(output=output, truncated=backend_truncated)
+        offloaded = False
+        return offloaded, ExecuteResponse(output=output, truncated=backend_truncated)
     try:
         exit_code = int(parts[1])
     except ValueError:
-        return ExecuteResponse(output=output, truncated=backend_truncated)
-    return ExecuteResponse(
+        offloaded = False
+        return offloaded, ExecuteResponse(output=output, truncated=backend_truncated)
+    offloaded = parts[2] == "1"
+    return offloaded, ExecuteResponse(
         output=body,
         exit_code=exit_code,
-        offloaded=parts[2] == "1",
         truncated=parts[3] == "1" or backend_truncated,
     )
 

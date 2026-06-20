@@ -1720,9 +1720,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             parts.append("\n[Output was truncated due to size limits]")
         return "".join(parts)
 
-    def _interpret_capture_output(self, result: ExecuteResponse, capture_path: str, tool_call_id: str) -> str:
+    def _interpret_capture_output(self, *, offloaded: bool, result: ExecuteResponse, capture_path: str, tool_call_id: str) -> str:
         """Build `ToolMessage` content from a capture-at-source `execute` result."""
-        if not result.offloaded:
+        if not offloaded:
             return self._format_execute_output(result.output, result.exit_code, truncated=result.truncated)
         cmd_status = "succeeded" if result.exit_code == 0 else "failed"
         status_line = f"[Command {cmd_status} with exit code {result.exit_code}]"
@@ -1819,8 +1819,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
 
             if capture_path is not None:
-                parsed = _parse_capture_execute_output(result.output, backend_truncated=result.truncated)
-                content = self._interpret_capture_output(parsed, capture_path, cast("str", runtime.tool_call_id))
+                offloaded, parsed = _parse_capture_execute_output(result.output, backend_truncated=result.truncated)
+                content = self._interpret_capture_output(
+                    offloaded=offloaded, result=parsed, capture_path=capture_path, tool_call_id=cast("str", runtime.tool_call_id)
+                )
             else:
                 content = self._format_execute_output(result.output, result.exit_code, truncated=result.truncated)
 
@@ -1912,8 +1914,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
 
             if capture_path is not None:
-                parsed = _parse_capture_execute_output(result.output, backend_truncated=result.truncated)
-                content = self._interpret_capture_output(parsed, capture_path, cast("str", runtime.tool_call_id))
+                offloaded, parsed = _parse_capture_execute_output(result.output, backend_truncated=result.truncated)
+                content = self._interpret_capture_output(
+                    offloaded=offloaded, result=parsed, capture_path=capture_path, tool_call_id=cast("str", runtime.tool_call_id)
+                )
             else:
                 content = self._format_execute_output(result.output, result.exit_code, truncated=result.truncated)
 

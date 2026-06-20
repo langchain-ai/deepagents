@@ -48,7 +48,7 @@ WORKDIR /opt/deepagents-src
 COPY libs/deepagents ./libs/deepagents
 COPY libs/code ./libs/code
 COPY libs/talon ./libs/talon
-COPY examples/talon-docker/AGENTS.md /opt/deepagents-talon/AGENTS.md
+COPY examples/talon-whatsapp/AGENTS.md /opt/deepagents-talon/AGENTS.md
 
 RUN mkdir -p /opt/whatsapp-bridge && \
     cp libs/talon/deepagents_talon/channels/whatsapp_bridge/package.json \
@@ -60,4 +60,4 @@ RUN cd libs/talon && uv sync --frozen --extra speech
 
 WORKDIR /workspace
 
-CMD ["/opt/deepagents-talon-venv/bin/deepagents-talon"]
+CMD ["/opt/deepagents-talon-venv/bin/deepagents-talon", "--whatsapp"]

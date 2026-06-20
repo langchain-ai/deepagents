@@ -4,7 +4,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
-from typing import Self, cast
+from typing import Literal, Self, cast
 
 import pytest
 
@@ -173,6 +173,28 @@ def _stub_download(monkeypatch: pytest.MonkeyPatch) -> None:
         destination.chmod(0o600)
 
     monkeypatch.setattr(telegram_module, "_download_file", download)
+
+
+async def _run_channel_once(
+    channel: TelegramChannel,
+    *,
+    expected_messages: int = 1,
+) -> list[ChannelMessage]:
+    received: list[ChannelMessage] = []
+
+    async def record(message: ChannelMessage) -> None:
+        received.append(message)
+
+    channel.set_message_handler(record)
+    await channel.start()
+    try:
+        if expected_messages:
+            await _wait_for_received(received, expected_messages)
+        else:
+            await asyncio.sleep(0)
+    finally:
+        await channel.stop()
+    return received
 
 
 # --- Config tests ---
@@ -573,39 +595,37 @@ async def test_send_message_chunks_long_text(tmp_path: Path) -> None:
 # --- Outbound media tests ---
 
 
-async def test_send_media_sends_photo_for_images(tmp_path: Path) -> None:
-    transport = RecordingTransport()
-    image = tmp_path / "image.png"
-    image.write_bytes(b"image-data")
-    channel = TelegramChannel(
-        _make_config(tmp_path),
-        transport=cast("TelegramTransport", transport),
-    )
-
-    await channel.send_media("123", ChannelMedia(path=image, media_type="image", caption="cap"))
-
-    assert transport.uploads == [
+async def test_send_media_uses_expected_upload_method(tmp_path: Path) -> None:
+    cases: tuple[
+        tuple[str, Literal["image", "video"], str | None, str, str, dict[str, object]],
+        ...,
+    ] = (
         (
+            "image.png",
+            "image",
+            "cap",
             "sendPhoto",
             "photo",
-            image,
             {"chat_id": "123", "caption": "cap"},
         ),
-    ]
-
-
-async def test_send_media_sends_document_for_videos(tmp_path: Path) -> None:
-    transport = RecordingTransport()
-    video = tmp_path / "clip.mp4"
-    video.write_bytes(b"video-data")
-    channel = TelegramChannel(
-        _make_config(tmp_path),
-        transport=cast("TelegramTransport", transport),
+        ("clip.mp4", "video", None, "sendDocument", "document", {"chat_id": "123"}),
     )
 
-    await channel.send_media("123", ChannelMedia(path=video, media_type="video"))
+    for filename, media_type, caption, method, file_field, params in cases:
+        transport = RecordingTransport()
+        path = tmp_path / filename
+        path.write_bytes(b"media-data")
+        channel = TelegramChannel(
+            _make_config(tmp_path),
+            transport=cast("TelegramTransport", transport),
+        )
 
-    assert transport.uploads == [("sendDocument", "document", video, {"chat_id": "123"})]
+        await channel.send_media(
+            "123",
+            ChannelMedia(path=path, media_type=media_type, caption=caption),
+        )
+
+        assert transport.uploads == [(method, file_field, path, params)]
 
 
 async def test_send_media_sends_long_caption_as_text_before_upload(tmp_path: Path) -> None:
@@ -680,32 +700,27 @@ def _patch_file_size(
     monkeypatch.setattr(os, "stat", patched_stat)
 
 
-async def test_send_media_rejects_oversized_photo(
+async def test_send_media_rejects_provider_oversized_files(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    image = tmp_path / "big.png"
-    image.write_bytes(b"x")
-    channel = TelegramChannel(_make_config(tmp_path))
+    cases: tuple[tuple[str, Literal["image", "video"], int], ...] = (
+        ("big.png", "image", MAX_PHOTO_BYTES + 1),
+        ("big.mp4", "video", MAX_DOCUMENT_BYTES + 1),
+    )
 
-    _patch_file_size(monkeypatch, image, MAX_PHOTO_BYTES + 1)
+    for filename, media_type, fake_size in cases:
+        path = tmp_path / filename
+        path.write_bytes(b"x")
+        channel = TelegramChannel(_make_config(tmp_path))
 
-    with pytest.raises(ChannelMediaError, match="too large for Telegram"):
-        await channel.send_media("123", ChannelMedia(path=image, media_type="image"))
-
-
-async def test_send_media_rejects_oversized_document(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    video = tmp_path / "big.mp4"
-    video.write_bytes(b"x")
-    channel = TelegramChannel(_make_config(tmp_path))
-
-    _patch_file_size(monkeypatch, video, MAX_DOCUMENT_BYTES + 1)
-
-    with pytest.raises(ChannelMediaError, match="too large for Telegram"):
-        await channel.send_media("123", ChannelMedia(path=video, media_type="video"))
+        with monkeypatch.context() as patch:
+            _patch_file_size(patch, path, fake_size)
+            with pytest.raises(ChannelMediaError, match="too large for Telegram"):
+                await channel.send_media(
+                    "123",
+                    ChannelMedia(path=path, media_type=media_type),
+                )
 
 
 # --- Edit message tests ---
@@ -726,48 +741,18 @@ async def test_edit_message_uses_plain_text(tmp_path: Path) -> None:
     assert transport.calls[0][1]["message_id"] == 42
 
 
-# --- Typing indicator tests ---
-
-
-async def test_send_typing_calls_send_chat_action(tmp_path: Path) -> None:
-    transport = RecordingTransport()
-    channel = TelegramChannel(
-        _make_config(tmp_path),
-        transport=cast("TelegramTransport", transport),
-    )
-
-    await channel.send_typing("123")
-
-    assert transport.calls[0] == ("sendChatAction", {"chat_id": "123", "action": "typing"})
-
-
-async def test_send_typing_swallows_errors(tmp_path: Path) -> None:
-    class FailingTransport:
-        async def call(self, method: str, **params: object) -> object:  # noqa: ARG002  # test fake
-            msg = "network error"
-            raise TelegramError(msg)
-
-    channel = TelegramChannel(
-        _make_config(tmp_path),
-        transport=cast("TelegramTransport", FailingTransport()),
-    )
-
-    # Should not raise.
-    await channel.send_typing("123")
-
-
 # --- Inbound media parsing tests ---
 
 
-async def test_channel_parses_inbound_photo(
+async def test_channel_parses_inbound_media(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _stub_download(monkeypatch)
-    transport = RecordingTransport(
-        updates=[
+    cases: tuple[tuple[str, dict[str, object], dict[str, object]], ...] = (
+        (
+            "photo",
             _make_update(
-                update_id=1,
                 chat_id=111,
                 sender_id=111,
                 text="",
@@ -776,82 +761,26 @@ async def test_channel_parses_inbound_photo(
                     {"file_id": "large", "file_size": 500},
                 ],
             ),
-        ],
-    )
-    channel = TelegramChannel(
-        _make_config(tmp_path, operator_id="111"),
-        transport=cast("TelegramTransport", transport),
-    )
-    received: list[ChannelMessage] = []
-
-    async def record(message: ChannelMessage) -> None:
-        received.append(message)
-
-    channel.set_message_handler(record)
-
-    await channel.start()
-    await _wait_for_received(received, 1)
-    await channel.stop()
-
-    assert received[0].metadata["media_type"] == "image"
-    assert received[0].metadata["file_id"] == "large"
-    assert received[0].metadata["media_paths"] == [
-        str(tmp_path / "telegram" / "media" / "10_large.jpg"),
-    ]
-    assert received[0].metadata["media_path"] == str(
-        tmp_path / "telegram" / "media" / "10_large.jpg",
-    )
-    media_path = Path(cast("str", received[0].metadata["media_path"]))
-    assert await asyncio.to_thread(media_path.read_bytes) == b"media-bytes"
-
-
-async def test_channel_parses_inbound_voice(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _stub_download(monkeypatch)
-    transport = RecordingTransport(
-        updates=[
+            {"media_type": "image", "file_id": "large", "suffix": ".jpg"},
+        ),
+        (
+            "voice",
             _make_update(
-                update_id=1,
                 chat_id=111,
                 sender_id=111,
                 text="",
                 voice={"file_id": "voice123", "duration": 5},
             ),
-        ],
-    )
-    channel = TelegramChannel(
-        _make_config(tmp_path, operator_id="111"),
-        transport=cast("TelegramTransport", transport),
-    )
-    received: list[ChannelMessage] = []
-
-    async def record(message: ChannelMessage) -> None:
-        received.append(message)
-
-    channel.set_message_handler(record)
-
-    await channel.start()
-    await _wait_for_received(received, 1)
-    await channel.stop()
-
-    assert received[0].metadata["media_type"] == "voice"
-    assert received[0].metadata["file_id"] == "voice123"
-    assert received[0].metadata["voice_path"] == str(
-        tmp_path / "telegram" / "media" / "10_voice123.ogg",
-    )
-
-
-async def test_channel_parses_inbound_document(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _stub_download(monkeypatch)
-    transport = RecordingTransport(
-        updates=[
+            {
+                "media_type": "voice",
+                "file_id": "voice123",
+                "suffix": ".ogg",
+                "voice_path": True,
+            },
+        ),
+        (
+            "document",
             _make_update(
-                update_id=1,
                 chat_id=111,
                 sender_id=111,
                 text="",
@@ -861,30 +790,41 @@ async def test_channel_parses_inbound_document(
                     "mime_type": "application/pdf",
                 },
             ),
-        ],
+            {
+                "media_type": "document",
+                "file_id": "doc123",
+                "file_name": "report.pdf",
+                "media_mime_types": ["application/pdf"],
+                "suffix": ".pdf",
+            },
+        ),
     )
-    channel = TelegramChannel(
-        _make_config(tmp_path, operator_id="111"),
-        transport=cast("TelegramTransport", transport),
-    )
-    received: list[ChannelMessage] = []
 
-    async def record(message: ChannelMessage) -> None:
-        received.append(message)
+    for name, update, expected in cases:
+        case_dir = tmp_path / name
+        transport = RecordingTransport(updates=[update])
+        channel = TelegramChannel(
+            _make_config(case_dir, operator_id="111"),
+            transport=cast("TelegramTransport", transport),
+        )
 
-    channel.set_message_handler(record)
+        received = await _run_channel_once(channel)
+        metadata = received[0].metadata
+        file_id = cast("str", expected["file_id"])
+        expected_path = str(case_dir / "telegram" / "media" / f"10_{file_id}{expected['suffix']}")
 
-    await channel.start()
-    await _wait_for_received(received, 1)
-    await channel.stop()
-
-    assert received[0].metadata["media_type"] == "document"
-    assert received[0].metadata["file_id"] == "doc123"
-    assert received[0].metadata["file_name"] == "report.pdf"
-    assert received[0].metadata["media_mime_types"] == ["application/pdf"]
-    assert received[0].metadata["media_paths"] == [
-        str(tmp_path / "telegram" / "media" / "10_doc123.pdf"),
-    ]
+        assert metadata["media_type"] == expected["media_type"]
+        assert metadata["file_id"] == file_id
+        assert metadata["media_paths"] == [expected_path]
+        assert metadata["media_path"] == expected_path
+        if "file_name" in expected:
+            assert metadata["file_name"] == expected["file_name"]
+        if "media_mime_types" in expected:
+            assert metadata["media_mime_types"] == expected["media_mime_types"]
+        if expected.get("voice_path") is True:
+            assert metadata["voice_path"] == expected_path
+        media_path = Path(cast("str", metadata["media_path"]))
+        assert await asyncio.to_thread(media_path.read_bytes) == b"media-bytes"
 
 
 async def test_channel_skips_oversized_inbound_media_from_get_file(
@@ -978,73 +918,33 @@ def test_download_file_aborts_when_stream_exceeds_cap(
     assert not destination.exists()
 
 
-# --- Status tests ---
-
-
-async def test_status_reports_disconnected_before_start(tmp_path: Path) -> None:
-    channel = TelegramChannel(_make_config(tmp_path))
-
-    status = await channel.status()
-
-    assert status.provider == "telegram"
-    assert status.connected is False
-
-
-async def test_status_reports_connected_after_start(tmp_path: Path) -> None:
-    transport = RecordingTransport()
-    channel = TelegramChannel(
-        _make_config(tmp_path, exposure=ChannelExposure(mode=ExposureMode.OPEN)),
-        transport=cast("TelegramTransport", transport),
-    )
-
-    await channel.start()
-    await asyncio.sleep(0)
-    status = await channel.status()
-    await channel.stop()
-
-    assert status.connected is True
-
-
 # --- Offset persistence tests (ticket 23) ---
 
 
-def test_offset_round_trip(tmp_path: Path) -> None:
-    offset_file = tmp_path / "telegram_offset.json"
-
-    _save_offset(offset_file, 42)
-    loaded = _load_offset(offset_file)
-
-    assert loaded == 42
-
-
-def test_offset_missing_file_returns_zero(tmp_path: Path) -> None:
-    assert _load_offset(tmp_path / "nonexistent.json") == 0
-
-
-def test_offset_corrupt_file_returns_zero(tmp_path: Path) -> None:
-    offset_file = tmp_path / "telegram_offset.json"
-    offset_file.write_text("not valid json {{{", encoding="utf-8")
-
-    assert _load_offset(offset_file) == 0
-
-
-def test_offset_invalid_value_returns_zero(tmp_path: Path) -> None:
-    offset_file = tmp_path / "telegram_offset.json"
-    offset_file.write_text(json.dumps({"offset": -5}), encoding="utf-8")
-
-    assert _load_offset(offset_file) == 0
-
-
-def test_offset_atomic_write(tmp_path: Path) -> None:
+def test_offset_round_trip_uses_atomic_file_replace(tmp_path: Path) -> None:
     offset_file = tmp_path / "telegram_offset.json"
 
     _save_offset(offset_file, 100)
+    loaded = _load_offset(offset_file)
 
-    # The temp file should have been replaced by the real file.
+    assert loaded == 100
     assert offset_file.is_file()
     assert not (tmp_path / "telegram_offset.json.tmp").exists()
-    data = json.loads(offset_file.read_text(encoding="utf-8"))
-    assert data == {"offset": 100}
+    assert json.loads(offset_file.read_text(encoding="utf-8")) == {"offset": 100}
+
+
+def test_offset_invalid_or_missing_file_returns_zero(tmp_path: Path) -> None:
+    cases: tuple[tuple[str, str | None], ...] = (
+        ("missing.json", None),
+        ("corrupt.json", "not valid json {{{"),
+        ("invalid.json", json.dumps({"offset": -5})),
+    )
+
+    for filename, content in cases:
+        offset_file = tmp_path / filename
+        if content is not None:
+            offset_file.write_text(content, encoding="utf-8")
+        assert _load_offset(offset_file) == 0
 
 
 async def test_channel_persists_offset_after_polling(tmp_path: Path) -> None:

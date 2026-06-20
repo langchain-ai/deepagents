@@ -62,7 +62,7 @@ cd ../../..
 
 DEEPAGENTS_TALON_WHATSAPP_ENABLED=true \
 DEEPAGENTS_TALON_WHATSAPP_START_BRIDGE=true \
-AGENT_ASSISTANT_ID=talon-docker-local \
+AGENT_ASSISTANT_ID=whatsapp-local \
 AGENT_MODEL=<provider>:<model-id> \
 uv run deepagents-talon --whatsapp
 ```
@@ -84,7 +84,7 @@ DEEPAGENTS_TALON_WHATSAPP_EXPOSURE=open
 DEEPAGENTS_TALON_WHATSAPP_OPEN_ACK=allow-arbitrary-senders
 ```
 
-See `../../examples/talon-docker/` for a runnable Docker Compose topology and `.env` reference.
+See `../../examples/talon-whatsapp/` for a runnable Docker Compose topology and `.env` reference.
 
 ## Telegram
 

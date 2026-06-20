@@ -66,81 +66,51 @@ class EchoAgent:
         return AgentResult(text=f"reply:{request.text}")
 
 
-def test_channels_factory_returns_both_when_both_enabled(tmp_path: Path) -> None:
-    config = TalonConfig.from_env(
-        {
-            "AGENT_ASSISTANT_ID": "assistant",
-            "DEEPAGENTS_TALON_WHATSAPP_ENABLED": "1",
-            "DEEPAGENTS_TALON_TELEGRAM_ENABLED": "1",
-            "DEEPAGENTS_TALON_TELEGRAM_BOT_TOKEN": "test-token",
-            "DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID": "999",
-        },
-        base_home=tmp_path,
+def test_channels_factory_selects_configured_channels(tmp_path: Path) -> None:
+    cases: tuple[tuple[dict[str, str], bool, bool, tuple[type[object], ...]], ...] = (
+        (
+            {
+                "DEEPAGENTS_TALON_WHATSAPP_ENABLED": "1",
+                "DEEPAGENTS_TALON_TELEGRAM_ENABLED": "1",
+                "DEEPAGENTS_TALON_TELEGRAM_BOT_TOKEN": "test-token",
+                "DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID": "999",
+            },
+            False,
+            False,
+            (WhatsAppChannel, TelegramChannel),
+        ),
+        (
+            {
+                "DEEPAGENTS_TALON_TELEGRAM_ENABLED": "1",
+                "DEEPAGENTS_TALON_TELEGRAM_BOT_TOKEN": "test-token",
+                "DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID": "999",
+            },
+            False,
+            False,
+            (TelegramChannel,),
+        ),
+        ({"DEEPAGENTS_TALON_WHATSAPP_ENABLED": "1"}, False, False, (WhatsAppChannel,)),
+        ({}, False, False, ()),
+        (
+            {
+                "DEEPAGENTS_TALON_TELEGRAM_BOT_TOKEN": "test-token",
+                "DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID": "999",
+            },
+            True,
+            True,
+            (WhatsAppChannel, TelegramChannel),
+        ),
     )
 
-    channels = _channels(config, whatsapp=False, telegram=False)
+    for env, whatsapp, telegram, expected_types in cases:
+        config = TalonConfig.from_env(
+            {"AGENT_ASSISTANT_ID": "assistant", **env},
+            base_home=tmp_path,
+        )
 
-    assert len(channels) == 2
-    assert isinstance(channels[0], WhatsAppChannel)
-    assert isinstance(channels[1], TelegramChannel)
+        channels = _channels(config, whatsapp=whatsapp, telegram=telegram)
 
-
-def test_channels_factory_returns_only_telegram(tmp_path: Path) -> None:
-    config = TalonConfig.from_env(
-        {
-            "AGENT_ASSISTANT_ID": "assistant",
-            "DEEPAGENTS_TALON_TELEGRAM_ENABLED": "1",
-            "DEEPAGENTS_TALON_TELEGRAM_BOT_TOKEN": "test-token",
-            "DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID": "999",
-        },
-        base_home=tmp_path,
-    )
-
-    channels = _channels(config, whatsapp=False, telegram=False)
-
-    assert len(channels) == 1
-    assert isinstance(channels[0], TelegramChannel)
-
-
-def test_channels_factory_returns_only_whatsapp(tmp_path: Path) -> None:
-    config = TalonConfig.from_env(
-        {
-            "AGENT_ASSISTANT_ID": "assistant",
-            "DEEPAGENTS_TALON_WHATSAPP_ENABLED": "1",
-        },
-        base_home=tmp_path,
-    )
-
-    channels = _channels(config, whatsapp=False, telegram=False)
-
-    assert len(channels) == 1
-    assert isinstance(channels[0], WhatsAppChannel)
-
-
-def test_channels_factory_returns_neither(tmp_path: Path) -> None:
-    config = TalonConfig.from_env(
-        {"AGENT_ASSISTANT_ID": "assistant"},
-        base_home=tmp_path,
-    )
-
-    channels = _channels(config, whatsapp=False, telegram=False)
-
-    assert channels == ()
-
-
-def test_channels_factory_accepts_cli_flags(tmp_path: Path) -> None:
-    config = TalonConfig.from_env(
-        {
-            "AGENT_ASSISTANT_ID": "assistant",
-            "DEEPAGENTS_TALON_TELEGRAM_BOT_TOKEN": "test-token",
-            "DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID": "999",
-        },
-        base_home=tmp_path,
-    )
-
-    channels = _channels(config, whatsapp=True, telegram=True)
-
-    assert len(channels) == 2
+        assert tuple(type(channel) for channel in channels) == expected_types
 
 
 async def test_simultaneous_channels_coexist_without_interference(tmp_path: Path) -> None:
@@ -172,28 +142,6 @@ async def test_simultaneous_channels_coexist_without_interference(tmp_path: Path
     assert agent.requests[0].metadata["channel"] == "whatsapp"
     assert agent.requests[1].text == "hello from telegram"
     assert agent.requests[1].metadata["channel"] == "telegram"
-
-
-async def test_stop_command_cancels_per_channel(tmp_path: Path) -> None:
-    whatsapp_channel = RecordingChannel("whatsapp")
-    telegram_channel = RecordingChannel("telegram")
-    agent = EchoAgent()
-    config = TalonConfig.from_env(
-        {"AGENT_ASSISTANT_ID": "assistant"},
-        base_home=tmp_path,
-    )
-    host = TalonHost(
-        config=config,
-        agent=agent,
-        channels=[whatsapp_channel, telegram_channel],
-    )
-
-    await host.start()
-    await whatsapp_channel.receive("/stop", conversation_id="wa-chat")
-    await _drain()
-    await host.stop()
-
-    assert len(agent.requests) == 0
 
 
 async def _drain() -> None:

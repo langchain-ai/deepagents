@@ -1,6 +1,6 @@
 # Architecture
 
-This document is a map of how a Deep Agent is assembled and how a single request flows through the stack. It is aimed at contributors who need to trace behavior or find the right place to make a change. For setup and day-to-day commands, see [`DEVELOPMENT.md`](./DEVELOPMENT.md).
+This document maps how a Deep Agent is put together and what happens when it runs, so that when you see the agent do something you can find the code responsible for it. It is written for people working on the `deepagents` package itself — extending the middleware stack, backends, or subagent machinery — rather than for people building agents *with* it. For setup and day-to-day commands, see [`DEVELOPMENT.md`](./DEVELOPMENT.md).
 
 ## The three layers
 

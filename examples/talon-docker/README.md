@@ -111,10 +111,10 @@ set -a
 set +a
 
 cd ../../libs/talon/deepagents_talon/channels/whatsapp_bridge
-sfw npm install
+npm install
 
 cd ../../../..
-sfw uv sync --directory libs/talon --extra speech
+uv sync --directory libs/talon --extra speech
 cp examples/talon-docker/AGENTS.md ~/.deepagents/talon-docker-local/agent/AGENTS.md
 export DEEPAGENTS_TALON_WORKSPACE=~/agent-workspace
 uv run --directory libs/talon deepagents-talon

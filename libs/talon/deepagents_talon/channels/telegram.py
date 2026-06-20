@@ -463,9 +463,6 @@ class TelegramChannel:
                     allowed_updates=_ALLOWED_UPDATES,
                 )
                 updates = _extract_updates(payload)
-                if updates:
-                    self._offset = cast("int", updates[-1]["update_id"]) + 1
-                    _save_offset(self.config.offset_file, self._offset)
                 self._status = ChannelStatus(
                     provider="telegram",
                     connected=True,
@@ -474,6 +471,7 @@ class TelegramChannel:
                 for update in updates:
                     message = _parse_update(update)
                     if message is None:
+                        self._commit_update_offset(update)
                         continue
                     message = _with_from_self(message, self._bot_id)
                     if not _allows_telegram_message(
@@ -486,9 +484,11 @@ class TelegramChannel:
                             message.message_id,
                             message.conversation_id,
                         )
+                        self._commit_update_offset(update)
                         continue
                     message = await self._prepare_inbound_media(message)
                     await self._dispatch(message)
+                    self._commit_update_offset(update)
             except (TelegramError, urllib.error.URLError, TimeoutError):
                 logger.exception("Telegram long-polling error; retrying after interval")
                 self._status = ChannelStatus(
@@ -499,6 +499,16 @@ class TelegramChannel:
             except asyncio.CancelledError:
                 raise
             await asyncio.sleep(self.config.poll_interval_seconds)
+
+    def _commit_update_offset(self, update: Mapping[str, object]) -> None:
+        update_id = update.get("update_id")
+        if not isinstance(update_id, int):
+            return
+        next_offset = update_id + 1
+        if next_offset <= self._offset:
+            return
+        self._offset = next_offset
+        _save_offset(self.config.offset_file, self._offset)
 
     async def _dispatch(self, message: ChannelMessage) -> None:
         if self._handler is None:

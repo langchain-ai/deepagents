@@ -989,6 +989,49 @@ async def test_channel_loads_persisted_offset_on_start(tmp_path: Path) -> None:
     assert get_updates_calls[0][1]["offset"] == 100
 
 
+async def test_channel_does_not_persist_failed_media_update_offset(tmp_path: Path) -> None:
+    class FailingGetFileTransport(RecordingTransport):
+        async def call(self, method: str, **params: object) -> object:
+            if method == "getFile":
+                self.calls.append((method, dict(params)))
+                msg = "temporary getFile failure"
+                raise TelegramError(msg)
+            return await super().call(method, **params)
+
+    transport = FailingGetFileTransport(
+        updates=[
+            _make_update(update_id=10, chat_id=111, sender_id=111, text="before media"),
+            _make_update(
+                update_id=11,
+                chat_id=111,
+                sender_id=111,
+                text="media",
+                photo=[{"file_id": "photo123", "file_size": 100}],
+            ),
+        ],
+    )
+    config = _make_config(tmp_path, operator_id="111")
+    channel = TelegramChannel(config, transport=cast("TelegramTransport", transport))
+    received: list[ChannelMessage] = []
+
+    async def record(message: ChannelMessage) -> None:
+        received.append(message)
+
+    channel.set_message_handler(record)
+
+    await channel.start()
+    deadline = asyncio.get_running_loop().time() + 2
+    while asyncio.get_running_loop().time() < deadline:
+        status = await channel.status()
+        if status.detail == "polling error":
+            break
+        await asyncio.sleep(0.01)
+    await channel.stop()
+
+    assert [msg.text for msg in received] == ["before media"]
+    assert _load_offset(config.offset_file) == 11
+
+
 async def _wait_for_received(messages: list[ChannelMessage], count: int) -> None:
     deadline = asyncio.get_running_loop().time() + 2
     while asyncio.get_running_loop().time() < deadline:

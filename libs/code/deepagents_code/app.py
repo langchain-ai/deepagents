@@ -8015,11 +8015,18 @@ class DeepAgentsApp(App):
             messages = self.query_one("#messages", Container)
         except NoMatches:
             return
-        for widget in list(messages.children):
+        existing = {
+            widget.id
+            for widget in messages.children
+            if _is_message_timestamp_footer(widget) and widget.id
+        }
+        pending: list[tuple[Static, Widget]] = []
+        for widget in messages.children:
             if (
                 _is_message_timestamp_footer(widget)
                 or isinstance(widget, QueuedUserMessage)
                 or not widget.id
+                or _message_timestamp_footer_id(widget.id) in existing
             ):
                 continue
             data = self._message_store.get_message(widget.id)
@@ -8031,24 +8038,17 @@ class DeepAgentsApp(App):
                     widget.id,
                 )
                 continue
-            footer_id = _message_timestamp_footer_id(data.id)
-            with suppress(NoMatches):
-                messages.query_one(f"#{footer_id}")
-                continue
             footer = self._build_message_timestamp_footer(data)
-            if footer is None:
-                continue
-            children = list(messages.children)
-            try:
-                index = children.index(widget)
-            except ValueError:
-                await messages.mount(footer)
-                continue
-            next_child = children[index + 1] if index + 1 < len(children) else None
-            if next_child is not None:
-                await messages.mount(footer, before=next_child)
-            else:
-                await messages.mount(footer)
+            if footer is not None:
+                pending.append((footer, widget))
+        if not pending:
+            return
+        # Mount every footer in one layout pass: mounting individually awaited
+        # a refresh per message, which made the toggle O(n) refreshes (and the
+        # old index lookup made it O(n^2)) for long conversations.
+        with self.app.batch_update():
+            for footer, anchor in pending:
+                await messages.mount(footer, after=anchor)
 
     async def _hide_message_timestamp_footers(self) -> None:
         """Remove all mounted timestamp footers."""

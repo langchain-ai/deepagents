@@ -4211,6 +4211,45 @@ class TestMessageTimestampFooters:
                 monkeypatch.setenv("TZ", previous_tz)
             self._sync_tz()
 
+    async def test_toggle_positions_footer_after_each_message(self) -> None:
+        """Toggling on mounts one footer directly after every message."""
+        from deepagents_code.app import _message_timestamp_footer_id
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            for index in range(5):
+                await app._mount_message(UserMessage("hi", id=f"msg-{index}"))
+            await pilot.pause()
+
+            await app._toggle_message_timestamp_footers()
+            await pilot.pause()
+
+            messages = app.query_one("#messages", Container)
+            children = list(messages.children)
+            for index in range(5):
+                message = app.query_one(f"#msg-{index}", UserMessage)
+                position = children.index(message)
+                footer = children[position + 1]
+                assert footer.id == _message_timestamp_footer_id(f"msg-{index}")
+
+    async def test_toggle_on_twice_is_idempotent(self) -> None:
+        """A second show pass must not add duplicate footers."""
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._mount_message(UserMessage("hi", id="msg-dup"))
+            await pilot.pause()
+
+            app._message_timestamps_visible = True
+            await app._show_message_timestamp_footers()
+            await app._show_message_timestamp_footers()
+            await pilot.pause()
+
+            assert len(app.query("#msg-dup-timestamp-footer")) == 1
+
     async def test_mount_message_adds_footer_when_enabled(self) -> None:
         """New messages receive a footer while timestamps are enabled."""
         app = DeepAgentsApp()

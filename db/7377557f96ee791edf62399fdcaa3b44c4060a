@@ -1,0 +1,20 @@
+libs/code/ARCHITECTURE.md
+  s_9b1d7f3a9aa0f9::t_01bc02839e7493 130
+  s_9b1d7f3a9aa0f9::t_10ffc60acd5822 108-111,118-121,127-129,131-140
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.9",
+  "base_commit_sha": "db7377557f96ee791edf62399fdcaa3b44c4060a",
+  "prompts": {},
+  "sessions": {
+    "s_9b1d7f3a9aa0f9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ee2d6-b7d7-7902-bb46-cc2f41174b80",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

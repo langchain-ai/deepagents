@@ -608,13 +608,20 @@ beyond the cap is truncated and flagged.
 # command `exit` cannot abort the wrapper, and `eval` preserves the backend's own
 # shell/env. The command is embedded via a quoted heredoc with a random delimiter
 # to avoid shell-quoting issues; the (internal, sanitized) path is shell-quoted.
-_EXECUTE_CAPTURE_CMD_TEMPLATE = """__da_f=__PATH_Q__
+_EXECUTE_CAPTURE_CMD_TEMPLATE = """# ===== deepagents capture-at-source offload (auto-generated wrapper) =====
+# Runs the requested command below, capturing its combined output to a file in
+# the sandbox: returned inline when small, or as a head/tail preview when large
+# (the full result stays at the path for read_file). Disable this wrapping with
+# BaseSandbox.enable_capture_offload = False.
+__da_f=__PATH_Q__
 __da_ecf="$__da_f.ec"
 mkdir -p "$(dirname "$__da_f")" 2>/dev/null
+# ----- requested command (verbatim, between the heredoc markers) -----
 __da_cmd=$(cat <<'__DELIM__'
 __COMMAND__
 __DELIM__
 )
+# ----- end requested command; everything below is offload machinery -----
 { ( eval "$__da_cmd" ); echo "$?" > "$__da_ecf"; } 2>&1 | head -c __MAXBYTES__ > "$__da_f"
 __da_ec=$(cat "$__da_ecf" 2>/dev/null)
 : "${__da_ec:=1}"

@@ -1,0 +1,14 @@
+libs/code/ARCHITECTURE.md
+  h_9f69767fa5fabf 5,7,11,14-23,26,28,30,32-36,38,40,42,44,46-49,51,53,55,57-65,67-70
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.9",
+  "base_commit_sha": "aefcdf934527c487f7b81513c7757e21e0c5114d",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

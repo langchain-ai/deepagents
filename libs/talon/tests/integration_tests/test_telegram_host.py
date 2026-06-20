@@ -73,6 +73,7 @@ def test_channels_factory_returns_both_when_both_enabled(tmp_path: Path) -> None
             "DEEPAGENTS_TALON_WHATSAPP_ENABLED": "1",
             "DEEPAGENTS_TALON_TELEGRAM_ENABLED": "1",
             "DEEPAGENTS_TALON_TELEGRAM_BOT_TOKEN": "test-token",
+            "DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID": "999",
         },
         base_home=tmp_path,
     )
@@ -90,6 +91,7 @@ def test_channels_factory_returns_only_telegram(tmp_path: Path) -> None:
             "AGENT_ASSISTANT_ID": "assistant",
             "DEEPAGENTS_TALON_TELEGRAM_ENABLED": "1",
             "DEEPAGENTS_TALON_TELEGRAM_BOT_TOKEN": "test-token",
+            "DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID": "999",
         },
         base_home=tmp_path,
     )
@@ -131,6 +133,7 @@ def test_channels_factory_accepts_cli_flags(tmp_path: Path) -> None:
         {
             "AGENT_ASSISTANT_ID": "assistant",
             "DEEPAGENTS_TALON_TELEGRAM_BOT_TOKEN": "test-token",
+            "DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID": "999",
         },
         base_home=tmp_path,
     )

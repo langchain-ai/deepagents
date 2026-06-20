@@ -8,11 +8,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import mimetypes
 import re
+import secrets
 import urllib.error
-import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -49,6 +50,16 @@ _MARKDOWNV2_SPECIAL = re.compile(r"([_*\[\]()~`>#=+\-|{}.!\\])")
 
 class TelegramError(RuntimeError):
     """Raised when the Telegram Bot API reports or causes a transport error."""
+
+
+@dataclass(frozen=True, slots=True)
+class _TelegramMediaInfo:
+    """Media metadata extracted from an inbound Telegram message."""
+
+    media_type: str
+    file_id: str
+    file_name: str | None = None
+    mime_type: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,7 +156,7 @@ class TelegramChannelConfig:
 
 
 class TelegramTransport:
-    """Small JSON HTTP client for the Telegram Bot API."""
+    """Small HTTP client for the Telegram Bot API."""
 
     def __init__(self, *, api_base: str, token: str, timeout: float) -> None:
         """Initialize the transport.
@@ -163,7 +174,7 @@ class TelegramTransport:
         """Call a Bot API method and return the decoded response.
 
         Args:
-            method: Bot API method name (e.g. ``getUpdates``).
+            method: Bot API method name (e.g. `getUpdates`).
             **params: Request parameters passed as JSON body.
 
         Returns:
@@ -174,6 +185,30 @@ class TelegramTransport:
         """
         return await asyncio.to_thread(self._request, method, params)
 
+    async def upload(
+        self,
+        method: str,
+        *,
+        file_field: str,
+        file_path: Path,
+        **params: object,
+    ) -> object:
+        """Call a Bot API method with one local file as multipart form data.
+
+        Args:
+            method: Bot API method name (e.g. `sendPhoto`).
+            file_field: Multipart field name for the file parameter.
+            file_path: Local file path to upload.
+            **params: Additional form fields.
+
+        Returns:
+            JSON-decoded response body.
+
+        Raises:
+            TelegramError: If the request fails or the API returns an error.
+        """
+        return await asyncio.to_thread(self._upload, method, file_field, file_path, params)
+
     def _request(self, method: str, params: dict[str, object]) -> object:
         url = f"{self.api_base}/bot{self.token}/{method}"
         body = json.dumps(params).encode()
@@ -183,6 +218,35 @@ class TelegramTransport:
             method="POST",
             headers={"content-type": "application/json"},
         )
+        return self._send_request(method, request)
+
+    def _upload(
+        self,
+        method: str,
+        file_field: str,
+        file_path: Path,
+        params: dict[str, object],
+    ) -> object:
+        url = f"{self.api_base}/bot{self.token}/{method}"
+        boundary = f"deepagents-talon-{secrets.token_hex(16)}"
+        body = _encode_multipart_form(
+            params,
+            file_field=file_field,
+            file_path=file_path,
+            boundary=boundary,
+        )
+        request = urllib.request.Request(  # noqa: S310  # URL is constructed from config.
+            url,
+            data=body,
+            method="POST",
+            headers={
+                "content-type": f"multipart/form-data; boundary={boundary}",
+                "content-length": str(len(body)),
+            },
+        )
+        return self._send_request(method, request)
+
+    def _send_request(self, method: str, request: urllib.request.Request) -> object:
         try:
             with urllib.request.urlopen(  # noqa: S310  # Bot API URL from config.
                 request,
@@ -192,11 +256,7 @@ class TelegramTransport:
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
             msg = f"Telegram Bot API request failed: {method}"
             raise TelegramError(msg) from error
-        if isinstance(payload, dict) and not cast("Mapping[str, object]", payload).get("ok", True):
-            description = cast("Mapping[str, object]", payload).get("description", "unknown error")
-            msg = f"Telegram Bot API error in {method}: {description}"
-            raise TelegramError(msg)
-        return payload
+        return _raise_for_api_error(method, payload)
 
 
 class TelegramChannel:
@@ -224,8 +284,9 @@ class TelegramChannel:
         self._poll: asyncio.Task[None] | None = None
         self._stopped = asyncio.Event()
         self._status = ChannelStatus(provider="telegram", connected=False, detail="disconnected")
+        self._exposure = _effective_exposure(config.exposure, config.operator_id)
+        self._bot_id: str | None = None
         self._bot_username: str | None = None
-        self._operator_id = config.operator_id
         self._offset = 0
 
     def set_message_handler(self, handler: MessageHandler) -> None:
@@ -293,19 +354,28 @@ class TelegramChannel:
         checked = validate_media(media, root=self.config.outbound_media_dir)
         _check_telegram_size(checked)
         caption = _escape_markdown_v2(checked.caption) if checked.caption else None
-        path = str(checked.path)
         if checked.media_type == "image":
-            params: dict[str, object] = {"chat_id": conversation_id, "photo": path}
+            params: dict[str, object] = {"chat_id": conversation_id}
             if caption:
                 params["caption"] = caption
                 params["parse_mode"] = "MarkdownV2"
-            await self._transport.call("sendPhoto", **params)
+            await self._transport.upload(
+                "sendPhoto",
+                file_field="photo",
+                file_path=checked.path,
+                **params,
+            )
         else:
-            params = {"chat_id": conversation_id, "document": path}
+            params = {"chat_id": conversation_id}
             if caption:
                 params["caption"] = caption
                 params["parse_mode"] = "MarkdownV2"
-            await self._transport.call("sendDocument", **params)
+            await self._transport.upload(
+                "sendDocument",
+                file_field="document",
+                file_path=checked.path,
+                **params,
+            )
 
     async def send_typing(self, conversation_id: str) -> None:
         """Send a Telegram typing indicator.
@@ -363,6 +433,9 @@ class TelegramChannel:
             )
             return
         result = _extract_result(payload)
+        bot_id = result.get("id") if isinstance(result, dict) else None
+        if isinstance(bot_id, int):
+            self._bot_id = str(bot_id)
         username = result.get("username") if isinstance(result, dict) else None
         if isinstance(username, str):
             self._bot_username = username
@@ -380,7 +453,7 @@ class TelegramChannel:
                     "getUpdates",
                     offset=self._offset,
                     timeout=int(self.config.poll_timeout_seconds),
-                    allowed_updates='["message"]',
+                    allowed_updates=["message"],
                 )
                 updates = _extract_updates(payload)
                 if updates:
@@ -395,16 +468,16 @@ class TelegramChannel:
                     message = _parse_update(update)
                     if message is None:
                         continue
-                    if not self._is_operator(message):
-                        self._operator_id = message.sender_id
-                    if self.config.exposure.allows(message):
-                        await self._dispatch(message)
-                    else:
+                    message = _with_from_self(message, self._bot_id)
+                    if not self._exposure.allows(message):
                         logger.debug(
                             "Dropping Telegram message %s from %s due to exposure policy",
                             message.message_id,
                             message.conversation_id,
                         )
+                        continue
+                    message = await self._prepare_inbound_media(message)
+                    await self._dispatch(message)
             except (TelegramError, urllib.error.URLError, TimeoutError):
                 logger.exception("Telegram long-polling error; retrying after interval")
                 self._status = ChannelStatus(
@@ -416,27 +489,59 @@ class TelegramChannel:
                 raise
             await asyncio.sleep(self.config.poll_interval_seconds)
 
-    def _is_operator(self, message: ChannelMessage) -> bool:
-        """Auto-capture operator ID from first inbound message if not set."""
-        if self._operator_id is not None:
-            return message.sender_id == self._operator_id
-        if message.sender_id is not None:
-            self._operator_id = message.sender_id
-            return True
-        return False
-
     async def _dispatch(self, message: ChannelMessage) -> None:
         if self._handler is None:
             logger.warning("Dropping Telegram message because no handler is registered")
             return
         await self._handler(message)
 
-    async def _download_inbound_media(self, file_id: str, destination: Path) -> None:
+    async def _prepare_inbound_media(self, message: ChannelMessage) -> ChannelMessage:
+        media_type = message.metadata.get("media_type")
+        file_id = message.metadata.get("file_id")
+        if not isinstance(media_type, str) or not isinstance(file_id, str):
+            return message
+        if self.config.inbound_media_dir is None:
+            return message
+
+        destination = await self._download_inbound_media(
+            file_id,
+            media_type=media_type,
+            message_id=message.message_id,
+        )
+        metadata = dict(message.metadata)
+        path = str(destination)
+        metadata["has_media"] = True
+        metadata["media_paths"] = [path]
+        metadata["media_path"] = path
+        if media_type == "voice":
+            metadata["voice_path"] = path
+        mime_type = _downloaded_mime_type(destination, metadata)
+        if mime_type is not None:
+            metadata["media_mime_types"] = [mime_type]
+        return ChannelMessage(
+            conversation_id=message.conversation_id,
+            text=message.text,
+            sender_id=message.sender_id,
+            message_id=message.message_id,
+            metadata=metadata,
+        )
+
+    async def _download_inbound_media(
+        self,
+        file_id: str,
+        *,
+        media_type: str,
+        message_id: str | None,
+    ) -> Path:
         """Download a file from the Telegram Bot API.
 
         Args:
             file_id: Telegram file identifier.
-            destination: Local path to save the downloaded file.
+            media_type: Normalized media category.
+            message_id: Telegram message identifier used to name the file.
+
+        Returns:
+            Local path to the downloaded file.
         """
         payload = await self._transport.call("getFile", file_id=file_id)
         result = _extract_result(payload)
@@ -444,8 +549,18 @@ class TelegramChannel:
         if not isinstance(file_path, str):
             msg = "Telegram getFile response missing file_path"
             raise TelegramError(msg)
+        if self.config.inbound_media_dir is None:
+            msg = "Telegram inbound media directory is not configured"
+            raise TelegramError(msg)
+        suffix = _safe_suffix(file_path, media_type)
+        destination = self.config.inbound_media_dir / _inbound_media_filename(
+            message_id=message_id,
+            file_id=file_id,
+            suffix=suffix,
+        )
         download_url = f"{self.config.api_base}/file/bot{self.config.bot_token}/{file_path}"
         await asyncio.to_thread(_download_file, download_url, destination, self.timeout)
+        return destination
 
     @property
     def timeout(self) -> float:
@@ -481,6 +596,147 @@ def _check_telegram_size(media: ChannelMedia) -> None:
     if media.media_type != "image" and size > MAX_DOCUMENT_BYTES:
         msg = f"document media is too large for Telegram: {size} bytes exceeds {MAX_DOCUMENT_BYTES}"
         raise ChannelMediaError(msg)
+
+
+def _raise_for_api_error(method: str, payload: object) -> object:
+    if isinstance(payload, dict) and not cast("Mapping[str, object]", payload).get("ok", True):
+        description = cast("Mapping[str, object]", payload).get("description", "unknown error")
+        msg = f"Telegram Bot API error in {method}: {description}"
+        raise TelegramError(msg)
+    return payload
+
+
+def _encode_multipart_form(
+    params: Mapping[str, object],
+    *,
+    file_field: str,
+    file_path: Path,
+    boundary: str,
+) -> bytes:
+    """Encode request parameters and one file as multipart form data.
+
+    Args:
+        params: Form fields to include before the file field.
+        file_field: Multipart field name for the file parameter.
+        file_path: Local file path to upload.
+        boundary: Multipart boundary string.
+
+    Returns:
+        Multipart request body.
+    """
+    chunks: list[bytes] = []
+    for key, value in params.items():
+        if value is None:
+            continue
+        chunks.extend(
+            [
+                f"--{boundary}\r\n".encode(),
+                (
+                    f'Content-Disposition: form-data; name="{_form_header_value(key)}"\r\n\r\n'
+                ).encode(),
+                _form_field_value(value).encode(),
+                b"\r\n",
+            ],
+        )
+
+    mime_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+    chunks.extend(
+        [
+            f"--{boundary}\r\n".encode(),
+            (
+                "Content-Disposition: form-data; "
+                f'name="{_form_header_value(file_field)}"; '
+                f'filename="{_form_header_value(file_path.name)}"\r\n'
+            ).encode(),
+            f"Content-Type: {mime_type}\r\n\r\n".encode(),
+            file_path.read_bytes(),
+            b"\r\n",
+            f"--{boundary}--\r\n".encode(),
+        ],
+    )
+    return b"".join(chunks)
+
+
+def _form_header_value(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\r", "").replace("\n", "")
+
+
+def _form_field_value(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (dict, list)):
+        return json.dumps(value)
+    return str(value)
+
+
+def _effective_exposure(
+    exposure: ChannelExposure,
+    operator_id: str | None,
+) -> ChannelExposure:
+    if (
+        exposure.mode != ExposureMode.SELF
+        or exposure.operator_id is not None
+        or operator_id is None
+    ):
+        return exposure
+    return replace(exposure, operator_id=operator_id)
+
+
+def _with_from_self(message: ChannelMessage, bot_id: str | None) -> ChannelMessage:
+    if bot_id is None or message.sender_id != bot_id:
+        return message
+    metadata = dict(message.metadata)
+    metadata["from_self"] = True
+    return ChannelMessage(
+        conversation_id=message.conversation_id,
+        text=message.text,
+        sender_id=message.sender_id,
+        message_id=message.message_id,
+        metadata=metadata,
+    )
+
+
+def _downloaded_mime_type(path: Path, metadata: dict[str, object]) -> str | None:
+    raw = metadata.get("mime_type")
+    if isinstance(raw, str) and "/" in raw:
+        return raw
+    raw_many = metadata.get("media_mime_types")
+    if isinstance(raw_many, list):
+        for item in raw_many:
+            if isinstance(item, str) and "/" in item:
+                return item
+    guessed, _ = mimetypes.guess_type(path)
+    return guessed
+
+
+def _safe_suffix(file_path: str, media_type: str) -> str:
+    suffix = Path(file_path).suffix.lower()
+    if re.fullmatch(r"\.[a-z0-9]{1,16}", suffix):
+        return suffix
+    return _default_suffix(media_type)
+
+
+def _default_suffix(media_type: str) -> str:
+    if media_type == "image":
+        return ".jpg"
+    if media_type == "voice":
+        return ".ogg"
+    return ".bin"
+
+
+def _inbound_media_filename(
+    *,
+    message_id: str | None,
+    file_id: str,
+    suffix: str,
+) -> str:
+    message = _safe_filename_part(message_id or "message")
+    token = _safe_filename_part(file_id)[-24:] or "file"
+    return f"{message}_{token}{suffix}"
+
+
+def _safe_filename_part(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._") or "file"
 
 
 def _extract_result(payload: object) -> dict[str, object]:
@@ -546,6 +802,22 @@ def _parse_update(update: Mapping[str, object]) -> ChannelMessage | None:
     Returns:
         Parsed channel message, or ``None`` if the update should be skipped.
     """
+    values = _private_message_values(update)
+    if values is None:
+        return None
+    msg, chat_id, message_id = values
+    return ChannelMessage(
+        conversation_id=str(chat_id),
+        text=_message_text(msg),
+        sender_id=_sender_id(msg),
+        message_id=str(message_id),
+        metadata=_message_metadata(msg),
+    )
+
+
+def _private_message_values(
+    update: Mapping[str, object],
+) -> tuple[Mapping[str, object], int, int] | None:
     message = update.get("message")
     if not isinstance(message, dict):
         return None
@@ -563,45 +835,55 @@ def _parse_update(update: Mapping[str, object]) -> ChannelMessage | None:
     message_id = msg.get("message_id")
     if not isinstance(message_id, int):
         return None
+    return msg, chat_id, message_id
+
+
+def _sender_id(msg: Mapping[str, object]) -> str | None:
     sender = msg.get("from")
-    sender_id: str | None = None
     if isinstance(sender, dict):
         sender_id_raw = cast("Mapping[str, object]", sender).get("id")
         if isinstance(sender_id_raw, int):
-            sender_id = str(sender_id_raw)
+            return str(sender_id_raw)
+    return None
 
+
+def _message_text(msg: Mapping[str, object]) -> str:
     text = msg.get("text")
     if not isinstance(text, str):
-        text = ""
+        text = msg.get("caption")
+    if not isinstance(text, str):
+        return ""
+    return text
 
+
+def _message_metadata(msg: Mapping[str, object]) -> dict[str, object]:
     metadata: dict[str, object] = {
         "provider": "telegram",
         "chat_type": "private",
-        "from_self": sender_id is not None and sender_id == str(chat_id),
+        "from_self": False,
     }
 
     media_info = _extract_media_info(msg)
     if media_info is not None:
-        metadata["media_type"] = media_info[0]
-        metadata["file_id"] = media_info[1]
+        metadata["media_type"] = media_info.media_type
+        metadata["file_id"] = media_info.file_id
+        if media_info.file_name is not None:
+            metadata["file_name"] = media_info.file_name
+        if media_info.mime_type is not None:
+            metadata["mime_type"] = media_info.mime_type
+            metadata["media_mime_types"] = [media_info.mime_type]
 
-    return ChannelMessage(
-        conversation_id=str(chat_id),
-        text=text,
-        sender_id=sender_id,
-        message_id=str(message_id),
-        metadata=metadata,
-    )
+    return metadata
 
 
-def _extract_media_info(msg: Mapping[str, object]) -> tuple[str, str] | None:
+def _extract_media_info(msg: Mapping[str, object]) -> _TelegramMediaInfo | None:
     """Extract media type and file_id from a Telegram message.
 
     Args:
         msg: Telegram message object.
 
     Returns:
-        Tuple of (media_type, file_id), or ``None`` if the message has no media.
+        Media info, or `None` if the message has no media.
     """
     photo = msg.get("photo")
     voice = msg.get("voice") or msg.get("audio")
@@ -609,16 +891,31 @@ def _extract_media_info(msg: Mapping[str, object]) -> tuple[str, str] | None:
     if isinstance(photo, list) and photo:
         file_id = _largest_photo_file_id(photo)
         if file_id is not None:
-            return "image", file_id
+            return _TelegramMediaInfo(media_type="image", file_id=file_id)
     if isinstance(voice, dict):
-        file_id = cast("Mapping[str, object]", voice).get("file_id")
+        values = cast("Mapping[str, object]", voice)
+        file_id = values.get("file_id")
         if isinstance(file_id, str):
-            return "voice", file_id
+            return _TelegramMediaInfo(
+                media_type="voice",
+                file_id=file_id,
+                mime_type=_optional_str(values.get("mime_type")),
+            )
     if isinstance(document, dict):
-        file_id = cast("Mapping[str, object]", document).get("file_id")
+        values = cast("Mapping[str, object]", document)
+        file_id = values.get("file_id")
         if isinstance(file_id, str):
-            return "document", file_id
+            return _TelegramMediaInfo(
+                media_type="document",
+                file_id=file_id,
+                file_name=_optional_str(values.get("file_name")),
+                mime_type=_optional_str(values.get("mime_type")),
+            )
     return None
+
+
+def _optional_str(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
 
 
 def _largest_photo_file_id(photo_sizes: object) -> str | None:
@@ -685,6 +982,13 @@ def _exposure_from_env(env: Mapping[str, str]) -> ChannelExposure:
         ValueError: If the exposure mode is invalid or open mode is not acknowledged.
     """
     mode = _exposure_mode(env.get("DEEPAGENTS_TALON_TELEGRAM_EXPOSURE", ExposureMode.SELF.value))
+    operator_id = env.get("DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID") or None
+    if mode == ExposureMode.SELF and operator_id is None:
+        msg = (
+            "Telegram self exposure requires DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID; "
+            "set DEEPAGENTS_TALON_TELEGRAM_EXPOSURE=allowlist or open for other modes"
+        )
+        raise ValueError(msg)
     if mode == ExposureMode.OPEN:
         _require_open_acknowledgement(env)
         logger.warning(
@@ -695,7 +999,7 @@ def _exposure_from_env(env: Mapping[str, str]) -> ChannelExposure:
     mentions = tuple(_split_csv(env.get("DEEPAGENTS_TALON_TELEGRAM_MENTION_PATTERNS", "")))
     return ChannelExposure(
         mode=mode,
-        operator_id=env.get("DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID"),
+        operator_id=operator_id,
         conversations=frozenset(conversations),
         mention_patterns=mentions,
     )

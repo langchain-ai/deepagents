@@ -799,6 +799,17 @@ class ExecuteResponse:
     truncated: bool = False
     """Whether the output was truncated due to backend limitations."""
 
+    # Supports the execute offload-without-roundtrip path (capture-at-source): for
+    # large output, the command result is written to a file in the sandbox and only
+    # a preview is returned, avoiding a full-payload round-trip back through the
+    # agent process. Unset for ordinary execution.
+    offloaded: bool = False
+    """Whether the full output was captured to a file in the sandbox.
+
+    When `True`, `output` holds only a head/tail preview; the full content lives
+    at the capture path on the sandbox filesystem.
+    """
+
 
 class SandboxBackendProtocol(BackendProtocol):
     """Extension of `BackendProtocol` that adds shell command execution.

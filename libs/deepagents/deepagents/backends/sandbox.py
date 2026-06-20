@@ -583,6 +583,88 @@ def _build_edit_tmpfile_cmd(file_path: str, old_tmp: str, new_tmp: str, *, repla
     )
 
 
+_EXECUTE_CAPTURE_SENTINEL: Final = "__DEEPAGENTS_EXEC_META__"
+"""First-line marker identifying capture-wrapper output: `<sentinel> <exit_code> <offloaded>`."""
+
+_EXECUTE_CAPTURE_TRUNC: Final = "__DEEPAGENTS_EXEC_TRUNC__"
+"""In-preview marker between the head and tail of an offloaded result."""
+
+_EXECUTE_CAPTURE_HEAD_BYTES: Final = 2000
+_EXECUTE_CAPTURE_TAIL_BYTES: Final = 2000
+
+_EXECUTE_CAPTURE_CMD_TEMPLATE = """__da_f=__PATH_Q__
+mkdir -p "$(dirname "$__da_f")" 2>/dev/null
+__da_cmd=$(cat <<'__DELIM__'
+__COMMAND__
+__DELIM__
+)
+( eval "$__da_cmd" ) > "$__da_f" 2>&1
+__da_ec=$?
+__da_bytes=$(wc -c < "$__da_f" 2>/dev/null | tr -d ' ')
+: "${__da_bytes:=0}"
+if [ "$__da_bytes" -le __BUDGET__ ]; then
+  printf '%s %s %s\\n' '__SENTINEL__' "$__da_ec" 0
+  cat "$__da_f"
+  rm -f "$__da_f"
+else
+  printf '%s %s %s\\n' '__SENTINEL__' "$__da_ec" 1
+  head -c __HEAD__ "$__da_f"
+  printf '\\n%s\\n' '__TRUNC__'
+  tail -c __TAIL__ "$__da_f"
+fi
+"""
+"""Pure POSIX sh wrapper for capture-at-source `execute`.
+
+Runs the command in a subshell — so a command `exit` cannot abort the
+measurement step, and the backend's own shell/env is preserved via `eval` — with
+combined output redirected to the capture file. A byte size (`wc -c`) then drives
+the inline-vs-offload branch. The command is embedded via a quoted heredoc with a
+random delimiter to avoid shell-quoting issues; the (internal, sanitized) path is
+shell-quoted.
+"""
+
+
+def _build_capture_execute_cmd(command: str, capture_path: str, *, inline_budget: int) -> str:
+    """Build the capture-at-source wrapper command for `execute`.
+
+    `inline_budget` is the byte threshold at or below which output is returned
+    inline; above it the output is left at `capture_path` and only a head/tail
+    preview is returned.
+    """
+    delim = "__DEEPAGENTS_CMD_" + base64.b32encode(os.urandom(10)).decode("ascii").rstrip("=") + "__"
+    # __COMMAND__ is substituted last so command content can never collide with a
+    # remaining placeholder token.
+    return (
+        _EXECUTE_CAPTURE_CMD_TEMPLATE.replace("__PATH_Q__", shlex.quote(capture_path))
+        .replace("__DELIM__", delim)
+        .replace("__BUDGET__", str(inline_budget))
+        .replace("__SENTINEL__", _EXECUTE_CAPTURE_SENTINEL)
+        .replace("__HEAD__", str(_EXECUTE_CAPTURE_HEAD_BYTES))
+        .replace("__TAIL__", str(_EXECUTE_CAPTURE_TAIL_BYTES))
+        .replace("__TRUNC__", _EXECUTE_CAPTURE_TRUNC)
+        .replace("__COMMAND__", command)
+    )
+
+
+def _parse_capture_execute_output(output: str, *, backend_truncated: bool = False) -> ExecuteResponse:
+    """Parse capture-wrapper stdout into an `ExecuteResponse`.
+
+    Returns the raw output verbatim (no exit code, not offloaded) when the meta
+    line is absent — e.g. if the backend truncated transport. The caller must
+    not re-run the command on this fallback. `backend_truncated` carries the
+    transport-truncation flag from the underlying `execute` through to the result.
+    """
+    first, _, body = output.partition("\n")
+    parts = first.split(" ")
+    if len(parts) != 3 or parts[0] != _EXECUTE_CAPTURE_SENTINEL:  # noqa: PLR2004
+        return ExecuteResponse(output=output, truncated=backend_truncated)
+    try:
+        exit_code = int(parts[1])
+    except ValueError:
+        return ExecuteResponse(output=output, truncated=backend_truncated)
+    return ExecuteResponse(output=body, exit_code=exit_code, offloaded=parts[2] == "1", truncated=backend_truncated)
+
+
 class BaseSandbox(SandboxBackendProtocol, ABC):
     """Base sandbox implementation with `execute()` as the core abstract method.
 

@@ -39,10 +39,12 @@ from pydantic import BaseModel, Field
 
 from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
+from deepagents.backends.composite import _route_for_path
 from deepagents.backends.protocol import (
     BACKEND_TYPES as BACKEND_TYPES,  # Re-export type here for backwards compatibility
     BackendProtocol,
     EditResult,
+    ExecuteResponse,
     FileData as FileData,  # Re-export for backwards compatibility
     FileInfo,
     GlobResult,
@@ -53,6 +55,12 @@ from deepagents.backends.protocol import (
     WriteResult,
     _resolve_backend,
     execute_accepts_timeout,
+)
+from deepagents.backends.sandbox import (
+    _EXECUTE_CAPTURE_TRUNC,
+    BaseSandbox,
+    _build_capture_execute_cmd,
+    _parse_capture_execute_output,
 )
 from deepagents.backends.utils import (
     _get_file_type,
@@ -1671,6 +1679,61 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=GrepSchema,
         )
 
+    def _capture_path_if_local(self, resolved_backend: BackendProtocol, tool_call_id: str | None) -> str | None:
+        """Return the sandbox-local offload path for capture-at-source, or `None` to skip.
+
+        Capture-at-source writes output to a literal path via the sandbox shell
+        and later reads it back through the backend, so it is only sound when
+        `execute()` and `read_file` share one filesystem at that path. Only
+        `BaseSandbox` guarantees this, so the optimization is gated on it (a
+        stub or host-shell backend falls back to inline execute plus generic
+        eviction). Also returns `None` when eviction is disabled, the tool call
+        has no id, or the offload path would route to a different backend.
+        """
+        if not self._tool_token_limit_before_evict or not tool_call_id:
+            return None
+        capture_path = f"{self._large_tool_results_prefix}/{sanitize_tool_call_id(tool_call_id)}"
+        if isinstance(resolved_backend, CompositeBackend):
+            if not isinstance(resolved_backend.default, BaseSandbox):
+                return None
+            backend, _backend_path, route_prefix = _route_for_path(
+                default=resolved_backend.default,
+                sorted_routes=resolved_backend.sorted_routes,
+                path=capture_path,
+            )
+            # Safe only when the path falls through to the default backend
+            # unchanged, since execute() also runs on the default.
+            if route_prefix is None and backend is resolved_backend.default:
+                return capture_path
+            return None
+        if isinstance(resolved_backend, BaseSandbox):
+            return capture_path
+        return None
+
+    @staticmethod
+    def _format_execute_output(output: str, exit_code: int | None, *, truncated: bool) -> str:
+        """Format raw command output with status and truncation notes for the model."""
+        parts = [output]
+        if exit_code is not None:
+            cmd_status = "succeeded" if exit_code == 0 else "failed"
+            parts.append(f"\n[Command {cmd_status} with exit code {exit_code}]")
+        if truncated:
+            parts.append("\n[Output was truncated due to size limits]")
+        return "".join(parts)
+
+    def _interpret_capture_output(self, result: ExecuteResponse, capture_path: str, tool_call_id: str) -> str:
+        """Build `ToolMessage` content from a capture-at-source `execute` result."""
+        if not result.offloaded:
+            return self._format_execute_output(result.output, result.exit_code, truncated=result.truncated)
+        cmd_status = "succeeded" if result.exit_code == 0 else "failed"
+        preview = result.output.replace(_EXECUTE_CAPTURE_TRUNC, "... [middle truncated] ...")
+        content_sample = f"[Command {cmd_status} with exit code {result.exit_code}]\n{preview}"
+        return TOO_LARGE_TOOL_MSG.format(
+            tool_call_id=tool_call_id,
+            file_path=capture_path,
+            content_sample=content_sample,
+        )
+
     def _create_execute_tool(self) -> BaseTool:  # noqa: C901
         """Create the execute tool for sandbox command execution."""
         tool_description = self._custom_tool_descriptions.get("execute") or EXECUTE_TOOL_DESCRIPTION
@@ -1729,8 +1792,16 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
+            capture_path = self._capture_path_if_local(resolved_backend, runtime.tool_call_id)
+            exec_command = (
+                _build_capture_execute_cmd(
+                    command, capture_path, inline_budget=NUM_CHARS_PER_TOKEN * cast("int", self._tool_token_limit_before_evict)
+                )
+                if capture_path is not None
+                else command
+            )
             try:
-                result = executable.execute(command, timeout=timeout) if timeout is not None else executable.execute(command)
+                result = executable.execute(exec_command, timeout=timeout) if timeout is not None else executable.execute(exec_command)
             except NotImplementedError as e:
                 return ToolMessage(
                     content=f"Error: Execution not available. {e}",
@@ -1746,18 +1817,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            # Format output for LLM consumption
-            parts = [result.output]
-
-            if result.exit_code is not None:
-                cmd_status = "succeeded" if result.exit_code == 0 else "failed"
-                parts.append(f"\n[Command {cmd_status} with exit code {result.exit_code}]")
-
-            if result.truncated:
-                parts.append("\n[Output was truncated due to size limits]")
+            if capture_path is not None:
+                parsed = _parse_capture_execute_output(result.output, backend_truncated=result.truncated)
+                content = self._interpret_capture_output(parsed, capture_path, cast("str", runtime.tool_call_id))
+            else:
+                content = self._format_execute_output(result.output, result.exit_code, truncated=result.truncated)
 
             return ToolMessage(
-                content="".join(parts),
+                content=content,
                 name="execute",
                 tool_call_id=runtime.tool_call_id,
                 status="success",
@@ -1818,8 +1885,16 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
+            capture_path = self._capture_path_if_local(resolved_backend, runtime.tool_call_id)
+            exec_command = (
+                _build_capture_execute_cmd(
+                    command, capture_path, inline_budget=NUM_CHARS_PER_TOKEN * cast("int", self._tool_token_limit_before_evict)
+                )
+                if capture_path is not None
+                else command
+            )
             try:
-                result = await executable.aexecute(command, timeout=timeout) if timeout is not None else await executable.aexecute(command)
+                result = await executable.aexecute(exec_command, timeout=timeout) if timeout is not None else await executable.aexecute(exec_command)
             except NotImplementedError as e:
                 return ToolMessage(
                     content=f"Error: Execution not available. {e}",
@@ -1835,18 +1910,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            # Format output for LLM consumption
-            parts = [result.output]
-
-            if result.exit_code is not None:
-                cmd_status = "succeeded" if result.exit_code == 0 else "failed"
-                parts.append(f"\n[Command {cmd_status} with exit code {result.exit_code}]")
-
-            if result.truncated:
-                parts.append("\n[Output was truncated due to size limits]")
+            if capture_path is not None:
+                parsed = _parse_capture_execute_output(result.output, backend_truncated=result.truncated)
+                content = self._interpret_capture_output(parsed, capture_path, cast("str", runtime.tool_call_id))
+            else:
+                content = self._format_execute_output(result.output, result.exit_code, truncated=result.truncated)
 
             return ToolMessage(
-                content="".join(parts),
+                content=content,
                 name="execute",
                 tool_call_id=runtime.tool_call_id,
                 status="success",

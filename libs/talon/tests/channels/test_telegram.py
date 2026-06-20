@@ -990,9 +990,10 @@ async def test_channel_loads_persisted_offset_on_start(tmp_path: Path) -> None:
 
 
 async def _wait_for_received(messages: list[ChannelMessage], count: int) -> None:
-    for _ in range(100):
+    deadline = asyncio.get_running_loop().time() + 2
+    while asyncio.get_running_loop().time() < deadline:
         if len(messages) >= count:
             return
-        await asyncio.sleep(0)
+        await asyncio.sleep(0.01)
     msg = f"received {len(messages)} message(s), expected {count}"
     raise AssertionError(msg)

@@ -209,6 +209,34 @@ def test_config_from_talon_env_maps_telegram_values(tmp_path: Path) -> None:
     assert telegram.max_media_bytes == DEFAULT_MAX_MEDIA_BYTES
 
 
+def test_config_from_talon_env_maps_multiple_operator_ids(tmp_path: Path) -> None:
+    config = TalonConfig.from_env(
+        {
+            "AGENT_ASSISTANT_ID": "assistant",
+            "DEEPAGENTS_TALON_TELEGRAM_BOT_TOKEN": "secret-token",
+            "DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID": "999, 1000",
+        },
+        base_home=tmp_path,
+    )
+
+    telegram = TelegramChannelConfig.from_talon_config(config)
+
+    assert telegram.operator_id == "999"
+    assert telegram.exposure == ChannelExposure(
+        operator_id="999",
+        operator_ids=frozenset({"999", "1000"}),
+    )
+    assert telegram.exposure.allows(
+        ChannelMessage(conversation_id="chat", text="hi", sender_id="999")
+    )
+    assert telegram.exposure.allows(
+        ChannelMessage(conversation_id="chat", text="hi", sender_id="1000")
+    )
+    assert not telegram.exposure.allows(
+        ChannelMessage(conversation_id="chat", text="hi", sender_id="1001")
+    )
+
+
 def test_config_from_talon_env_maps_max_media_bytes(tmp_path: Path) -> None:
     config = TalonConfig.from_env(
         {

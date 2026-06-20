@@ -104,6 +104,32 @@ def test_config_from_talon_env_maps_exposure(
     assert whatsapp.bot_header == "test bot"
 
 
+def test_config_from_talon_env_maps_multiple_operator_ids(tmp_path: Path) -> None:
+    config = TalonConfig.from_env(
+        {
+            "AGENT_ASSISTANT_ID": "assistant",
+            "DEEPAGENTS_TALON_WHATSAPP_OPERATOR_ID": "operator, backup-operator",
+        },
+        base_home=tmp_path,
+    )
+
+    whatsapp = WhatsAppChannelConfig.from_talon_config(config)
+
+    assert whatsapp.exposure == ChannelExposure(
+        operator_id="operator",
+        operator_ids=frozenset({"operator", "backup-operator"}),
+    )
+    assert whatsapp.exposure.allows(
+        ChannelMessage(conversation_id="chat", text="hi", sender_id="operator")
+    )
+    assert whatsapp.exposure.allows(
+        ChannelMessage(conversation_id="chat", text="hi", sender_id="backup-operator")
+    )
+    assert not whatsapp.exposure.allows(
+        ChannelMessage(conversation_id="chat", text="hi", sender_id="other")
+    )
+
+
 def test_config_from_talon_env_maps_max_media_bytes(tmp_path: Path) -> None:
     config = TalonConfig.from_env(
         {

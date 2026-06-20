@@ -84,7 +84,8 @@ class TelegramChannelConfig:
         request_timeout_seconds: Per-request HTTP timeout for Bot API calls.
         max_media_bytes: Maximum media bytes allowed for inbound downloads and
             outbound local files before provider-specific limits are applied.
-        operator_id: Telegram user ID for the operator (self exposure mode).
+        operator_id: First Telegram user ID for the operator, preserved for
+            compatibility with single-operator callers in self exposure mode.
         allowed_user_ids: Telegram user IDs allowed to trigger private chats in
             allowlist exposure mode.
     """
@@ -138,7 +139,6 @@ class TelegramChannelConfig:
             or "/workspace",
         )
         exposure = _exposure_from_env(env)
-        operator_id = env.get("DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID")
         return cls(
             bot_token=token,
             session_dir=session,
@@ -159,7 +159,7 @@ class TelegramChannelConfig:
                 DEFAULT_REQUEST_TIMEOUT_SECONDS,
             ),
             max_media_bytes=max_media_bytes_from_env(env),
-            operator_id=operator_id,
+            operator_id=exposure.operator_id,
             allowed_user_ids=frozenset(
                 split_csv(env.get("DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_USERS", "")),
             ),
@@ -701,6 +701,7 @@ def _effective_exposure(
     if (
         exposure.mode != ExposureMode.SELF
         or exposure.operator_id is not None
+        or exposure.operator_ids
         or operator_id is None
     ):
         return exposure

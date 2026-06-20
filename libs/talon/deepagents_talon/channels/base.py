@@ -53,7 +53,7 @@ class ChannelExposureEnv:
         exposure: Environment variable containing the exposure mode.
         allowlist_chats: Environment variable containing allowlisted chats.
         mention_patterns: Environment variable containing allowlist text patterns.
-        operator_id: Environment variable containing the trusted operator id.
+        operator_id: Environment variable containing trusted operator ids.
         open_ack: Environment variable acknowledging open-exposure risk.
         open_ack_value: Required acknowledgement value for open exposure.
         require_self_operator: Whether `self` exposure requires an operator id.
@@ -92,15 +92,26 @@ class ChannelExposure:
 
     Args:
         mode: Trigger policy for inbound messages.
-        operator_id: Channel-specific id for the operator's own account.
+        operator_id: Channel-specific id for the operator's own account. Preserved
+            for callers that configure a single operator.
         conversations: Conversation ids allowed in allowlist mode.
         mention_patterns: Glob-style patterns that may allow a message by text.
+        operator_ids: Channel-specific ids for operator accounts that may trigger
+            `self` exposure.
     """
 
     mode: ExposureMode = ExposureMode.SELF
     operator_id: str | None = None
     conversations: frozenset[str] = field(default_factory=frozenset)
     mention_patterns: tuple[str, ...] = ()
+    operator_ids: frozenset[str] = field(default_factory=frozenset, kw_only=True)
+
+    def __post_init__(self) -> None:
+        """Normalize the legacy single-operator field into the operator id set."""
+        operator_ids = set(self.operator_ids)
+        if self.operator_id is not None:
+            operator_ids.add(self.operator_id)
+        object.__setattr__(self, "operator_ids", frozenset(operator_ids))
 
     def allows(self, message: ChannelMessage) -> bool:
         """Return whether an inbound message may trigger the agent.
@@ -114,7 +125,7 @@ class ChannelExposure:
         if self.mode == ExposureMode.OPEN:
             return True
         if self.mode == ExposureMode.SELF:
-            return _is_self_message(message, self.operator_id)
+            return _is_self_message(message, self.operator_ids)
         return message.conversation_id in self.conversations or _matches_text(
             message.text,
             self.mention_patterns,
@@ -185,8 +196,9 @@ def channel_exposure_from_env(
         env.get(config.exposure, ExposureMode.SELF.value),
         provider=config.provider,
     )
-    operator_id = env.get(config.operator_id) or None
-    if mode == ExposureMode.SELF and config.require_self_operator and operator_id is None:
+    operator_ids = tuple(split_csv(env.get(config.operator_id, "")))
+    operator_id = operator_ids[0] if operator_ids else None
+    if mode == ExposureMode.SELF and config.require_self_operator and not operator_ids:
         msg = (
             f"{config.provider} self exposure requires {config.operator_id}; "
             f"set {config.exposure}=allowlist or open for other modes"
@@ -199,6 +211,7 @@ def channel_exposure_from_env(
         operator_id=operator_id,
         conversations=frozenset(split_csv(env.get(config.allowlist_chats, ""))),
         mention_patterns=tuple(split_csv(env.get(config.mention_patterns, ""))),
+        operator_ids=frozenset(operator_ids),
     )
 
 
@@ -454,10 +467,10 @@ def _validate_media_size(
     return ChannelMedia(path=path, media_type=media.media_type, caption=media.caption)
 
 
-def _is_self_message(message: ChannelMessage, operator_id: str | None) -> bool:
+def _is_self_message(message: ChannelMessage, operator_ids: frozenset[str]) -> bool:
     if message.metadata.get("from_self") is True:
         return True
-    return operator_id is not None and message.sender_id == operator_id
+    return message.sender_id is not None and message.sender_id in operator_ids
 
 
 def _matches_text(text: str, patterns: tuple[str, ...]) -> bool:

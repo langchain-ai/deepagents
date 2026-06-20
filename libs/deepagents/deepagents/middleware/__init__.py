@@ -19,15 +19,15 @@ hook that **intercepts every LLM request** before it is sent. This lets
 middleware:
 
 * **Filter tools dynamically** -- e.g. `FilesystemMiddleware` removes the
-  `execute` tool at call-time when the resolved backend doesn't support it.
+    `execute` tool at call-time when the resolved backend doesn't support it.
 * **Inject system-prompt context** -- e.g. `MemoryMiddleware` and
-  `SkillsMiddleware` inject relevant instructions into the system message on
-  every call so the LLM knows how to use the tools they provide.
+    `SkillsMiddleware` inject relevant instructions into the system message on
+    every call so the LLM knows how to use the tools they provide.
 * **Transform messages** -- e.g. `SummarizationMiddleware` counts tokens,
-  truncates old tool arguments, and replaces history with summaries when the
-  context window fills up.
+    truncates old tool arguments, and replaces history with summaries when the
+    context window fills up.
 * **Maintain cross-turn state** -- middleware can read/write a typed state
-  dict that persists across agent turns (e.g. summarization events).
+    dict that persists across agent turns (e.g. summarization events).
 
 A plain tool function in a `tools=[]` list cannot do any of this -- it is
 only invoked *by* the LLM, not *before* the LLM call.

@@ -1,8 +1,8 @@
 """Tests for HumanMessage eviction with DeltaChannel replay.
 
-Verifies that emitting only ``[tagged]`` (reusing the original message's
+Verifies that emitting only `[tagged]` (reusing the original message's
 ID) correctly deduplicates on DeltaChannel replay — without needing a
-``REMOVE_ALL_MESSAGES`` sentinel that would clobber the AIMessage written
+`REMOVE_ALL_MESSAGES` sentinel that would clobber the AIMessage written
 in the same super-step.
 """
 

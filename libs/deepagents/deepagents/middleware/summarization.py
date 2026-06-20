@@ -145,17 +145,16 @@ You should use the tool when:
 
 
 class SummarizationEvent(TypedDict):
-    """Represents a summarization event.
-
-    Attributes:
-        cutoff_index: The index in the messages list where summarization occurred.
-        summary_message: The HumanMessage containing the summary.
-        file_path: Path where the conversation history was offloaded, or None if offload failed.
-    """
+    """Represents a summarization event."""
 
     cutoff_index: int
+    """The index in the messages list where summarization occurred."""
+
     summary_message: HumanMessage
+    """The `HumanMessage` containing the summary."""
+
     file_path: str | None
+    """Path where the conversation history was offloaded, or `None` if offload failed."""
 
 
 class TriggerClause(TypedDict, total=False):
@@ -181,24 +180,24 @@ class TruncateArgsSettings(TypedDict, total=False):
 
     Typical large arguments include `write_file` content, `edit_file` patches,
     and verbose `execute` outputs.
-
-    Args:
-        trigger: Token/message/fraction threshold that activates truncation.
-
-            Uses the same `ContextSize` format as the summarization trigger.
-
-            If `None`, truncation is disabled.
-        keep: How many recent messages (or tokens/fraction of context) to
-            leave untouched.
-        max_length: Character limit per argument value before it is clipped.
-        truncation_text: Replacement suffix appended after the first 20
-            characters of a truncated argument.
     """
 
     trigger: ContextSize | None
+    """Token/message/fraction threshold that activates truncation.
+
+    Uses the same `ContextSize` format as the summarization trigger.
+
+    If `None`, truncation is disabled.
+    """
+
     keep: ContextSize
+    """How many recent messages, tokens, or fraction of context to leave untouched."""
+
     max_length: int
+    """Character limit per argument value before it is clipped."""
+
     truncation_text: str
+    """Replacement suffix appended after the first 20 characters of a truncated argument."""
 
 
 class SummarizationState(AgentState):
@@ -215,8 +214,13 @@ class SummarizationDefaults(TypedDict):
     """Default settings computed from model profile."""
 
     trigger: ContextSize
+    """Conversation size threshold that activates summarization."""
+
     keep: ContextSize
+    """How much recent conversation context to leave untouched."""
+
     truncate_args_settings: TruncateArgsSettings
+    """Settings for shortening large older tool-call arguments before summarization."""
 
 
 def _token_counter_accepts_tools(counter: TokenCounter) -> bool | None:
@@ -234,10 +238,10 @@ def _token_counter_accepts_tools(counter: TokenCounter) -> bool | None:
 
     Returns:
         `True` if the signature declares a `tools` parameter or accepts
-        arbitrary keyword arguments (`**kwargs`), `False` if it clearly does
-        not, or `None` when the signature cannot be introspected (some C-level
-        callables expose no signature), signaling that callers should fall back
-        to probing.
+            arbitrary keyword arguments (`**kwargs`), `False` if it clearly does
+            not, or `None` when the signature cannot be introspected (some C-level
+            callables expose no signature), signaling that callers should fall back
+            to probing.
     """
     try:
         parameters = inspect.signature(counter).parameters

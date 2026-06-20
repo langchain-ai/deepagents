@@ -2061,7 +2061,7 @@ class TestModalScreenCtrlDHandling:
         """Shift+Tab steps focus from the base-URL field back to the key field.
 
         The app binds Shift+Tab (priority) to auto-approve toggling, so the
-        Screen's own ``app.focus_previous`` binding never fires. The prompt has
+        Screen's own `app.focus_previous` binding never fires. The prompt has
         two inputs now, so the toggle handler must delegate backward navigation
         instead of swallowing the key.
         """

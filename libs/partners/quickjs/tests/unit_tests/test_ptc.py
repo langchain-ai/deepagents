@@ -1,7 +1,7 @@
 """Tests for programmatic tool calling (PTC).
 
-PTC exposes agent tools as ``tools.<camelCase>`` async functions inside
-the REPL so one ``eval`` can orchestrate many tool invocations.
+PTC exposes agent tools as `tools.<camelCase>` async functions inside
+the REPL so one `eval` can orchestrate many tool invocations.
 """
 
 from __future__ import annotations
@@ -52,8 +52,8 @@ class _UserLookup(TypedDict):
 def _greet_tool(record: list[dict] | None = None) -> BaseTool:
     """A synchronous tool that records its invocations.
 
-    Async-capable by default because ``StructuredTool.from_function``
-    synthesises a coroutine wrapper when only ``func=`` is passed.
+    Async-capable by default because `StructuredTool.from_function`
+    synthesises a coroutine wrapper when only `func=` is passed.
     """
     calls = record if record is not None else []
 
@@ -87,7 +87,7 @@ def _echo_tool(name: str = "echo") -> BaseTool:
 
 
 def _command_tool(name: str = "emit_command") -> BaseTool:
-    """A tool that returns a LangGraph ``Command`` update."""
+    """A tool that returns a LangGraph `Command` update."""
 
     class _In(BaseModel):
         value: int = Field(description="Integer marker to emit")
@@ -115,7 +115,7 @@ def _command_tool(name: str = "emit_command") -> BaseTool:
 
 
 def _tool_message_list_tool(name: str = "emit_messages") -> BaseTool:
-    """A tool that returns a list of ``ToolMessage`` values."""
+    """A tool that returns a list of `ToolMessage` values."""
 
     class _In(BaseModel):
         value: int = Field(description="Integer marker to emit")
@@ -143,7 +143,7 @@ def _tool_message_list_tool(name: str = "emit_messages") -> BaseTool:
 
 
 def _mixed_list_tool(name: str = "emit_mixed") -> BaseTool:
-    """A tool that returns a mixed list of ``Command`` and ``ToolMessage``."""
+    """A tool that returns a mixed list of `Command` and `ToolMessage`."""
 
     class _In(BaseModel):
         value: int = Field(description="Integer marker to emit")
@@ -365,7 +365,7 @@ async def test_tool_invocation_from_repl(repl: _ThreadREPL) -> None:
 
 
 async def test_promise_all_runs_tools_concurrently(repl: _ThreadREPL) -> None:
-    """``Promise.all`` on two tool calls resolves both before returning."""
+    """`Promise.all` on two tool calls resolves both before returning."""
     calls: list[dict] = []
     repl.install_tools([_greet_tool(calls)])
     outcome = await repl.eval_async(
@@ -484,7 +484,7 @@ async def test_install_tools_is_idempotent(repl: _ThreadREPL) -> None:
 
 
 async def test_install_tools_shrinks_namespace(repl: _ThreadREPL) -> None:
-    """Dropping a tool removes it from ``globalThis.tools`` on next install."""
+    """Dropping a tool removes it from `globalThis.tools` on next install."""
     repl.install_tools([_greet_tool(), _echo_tool("echo")])
     repl.install_tools([_greet_tool()])
     outcome = await repl.eval_async("typeof tools.echo")
@@ -624,9 +624,9 @@ async def test_ptc_install_and_eval_resolve_to_same_repl() -> None:
     """PTC install and the eval tool must see the same REPL instance.
 
     Regression: without a stable fallback thread id, each call to
-    ``_resolve_thread_id`` minted a fresh UUID, so ``wrap_model_call``
+    `_resolve_thread_id` minted a fresh UUID, so `wrap_model_call`
     installed tools on one REPL and the eval ran on another — JS saw
-    ``ReferenceError: tools is not defined``.
+    `ReferenceError: tools is not defined`.
     """
     from types import SimpleNamespace
 
@@ -765,7 +765,7 @@ def test_render_ptc_prompt_renders_concrete_primitive_return_types() -> None:
 
 
 def test_render_ptc_prompt_falls_back_to_unknown_for_unannotated_returns() -> None:
-    """Tools without a return annotation render as ``Promise<unknown>``."""
+    """Tools without a return annotation render as `Promise<unknown>`."""
 
     def no_annotation():
         """Return something."""
@@ -796,19 +796,19 @@ def _stub() -> None:
         (type(None), "Promise<null>"),
         # Containers of primitives.
         (list[int], "Promise<number[]>"),
-        # ``dict[str, V]`` uses ``additionalProperties`` in the schema, which
-        # ``_json_schema_to_ts`` doesn't currently read — value type collapses
-        # to ``unknown``.
+        # `dict[str, V]` uses `additionalProperties` in the schema, which
+        # `_json_schema_to_ts` doesn't currently read — value type collapses
+        # to `unknown`.
         (dict[str, int], "Promise<Record<string, unknown>>"),
-        # Optional / Literal / unions all flow through ``anyOf`` or ``enum``.
+        # Optional / Literal / unions all flow through `anyOf` or `enum`.
         (int | None, "Promise<number | null>"),
         (Literal["active", "resolved"], 'Promise<"active" | "resolved">'),
         (int | str, "Promise<number | string>"),
         # Top-level TypedDict / BaseModel — Pydantic inlines the schema.
         (_UserLookup, "Promise<{ id: number; name: string }>"),
         (_Status, "Promise<{ status: string; count: number }>"),
-        # Compound types that hit ``$ref`` (collections of TypedDict /
-        # BaseModel) — we don't resolve refs, so they collapse to ``unknown``.
+        # Compound types that hit `$ref` (collections of TypedDict /
+        # BaseModel) — we don't resolve refs, so they collapse to `unknown`.
         (list[_UserLookup], "Promise<unknown[]>"),
         (list[_Status], "Promise<unknown[]>"),
     ],
@@ -817,7 +817,7 @@ def test_render_ptc_prompt_return_types(annotation: Any, expected: str) -> None:
     """Return-type rendering covers each supported annotation shape."""
 
     # Build a fresh callable so the parametrized annotation is bound at runtime
-    # rather than at import (``from __future__ import annotations`` would
+    # rather than at import (`from __future__ import annotations` would
     # otherwise leave the annotation as a string).
     def _fn() -> None:
         """Tool stub."""
@@ -836,8 +836,8 @@ def test_render_ptc_prompt_return_types(annotation: Any, expected: str) -> None:
 def _get_status_record() -> _Status:
     """Module-level helper.
 
-    Defined at module scope so ``get_type_hints`` can resolve the return
-    annotation under ``from __future__ import annotations``.
+    Defined at module scope so `get_type_hints` can resolve the return
+    annotation under `from __future__ import annotations`.
     """
     return _Status(status="ok", count=3)
 

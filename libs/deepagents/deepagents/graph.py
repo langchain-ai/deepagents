@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 
 
 class DeepAgentState(AgentState):
-    """AgentState with DeltaChannel on messages to reduce checkpoint growth from O(N²) to O(N)."""
+    """AgentState with `DeltaChannel` on messages to reduce checkpoint growth from O(N²) to O(N)."""
 
     messages: Required[Annotated[list[AnyMessage], DeltaChannel(_messages_delta_reducer, snapshot_frequency=50)]]  # ty: ignore[invalid-argument-type]
 
@@ -189,11 +189,12 @@ def _merge_fs_interrupt_on(
     fs_interrupt_on: dict[str, InterruptOnConfig],
     user_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
 ) -> dict[str, bool | InterruptOnConfig] | None:
-    """Merge fs-permission-derived configs with user-supplied `interrupt_on`.
+    """Combine filesystem-permission configs with user-defined interrupts.
 
-    User-supplied entries override generated ones per tool name. Returns
-    `None` when both inputs are empty so callers can skip installing
-    `HumanInTheLoopMiddleware`.
+    User-defined `interrupt_on` entries take precedence over generated
+    filesystem-permission entries with the same tool name. Returns `None` when
+    there are no interrupts to configure, allowing `HumanInTheLoopMiddleware` to
+    be omitted.
     """
     if not fs_interrupt_on and not user_interrupt_on:
         return None
@@ -255,8 +256,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     cache: BaseCache | None = None,
 ) -> CompiledStateGraph[AgentState[ResponseT], ContextT, InputAgentState, OutputAgentState[ResponseT]]:  # ty: ignore[invalid-type-arguments]  # ty can't verify generic TypedDicts satisfy StateLike bound
     r"""Create a deep agent.
-
-    !!! warning "Deep agents require a LLM that supports tool calling!"
 
     By default, this agent has access to the following tools:
 
@@ -421,17 +420,17 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             Rules are evaluated in declaration order; the first match wins.
             If no rule matches, the call is allowed.
 
-            Each rule's ``mode`` can be:
+            Each rule's `mode` can be:
 
-            - ``"allow"`` (default): the call proceeds.
-            - ``"deny"``: the tool returns a permission-denied error.
-            - ``"interrupt"``: the call pauses for human approval via
-              `HumanInTheLoopMiddleware`. A `HumanInTheLoopMiddleware` is
-              auto-installed when any interrupt-mode rule is present, and the
-              generated `interrupt_on` entries are merged with the
-              `interrupt_on` argument below (user-supplied entries win per
-              tool name). Requires a `langchain` version that supports the
-              ``when`` predicate on `InterruptOnConfig`.
+            - `"allow"` (default): the call proceeds.
+            - `"deny"`: the tool returns a permission-denied error.
+            - `"interrupt"`: the call pauses for human approval via
+                `HumanInTheLoopMiddleware`. A `HumanInTheLoopMiddleware` is
+                auto-installed when any interrupt-mode rule is present, and the
+                generated `interrupt_on` entries are merged with the
+                `interrupt_on` argument below (user-supplied entries win per
+                tool name). Requires a `langchain` version that supports the
+                `when` predicate on `InterruptOnConfig`.
 
             Subagents inherit these rules unless they specify their own
             `permissions` field, which replaces the parent's rules entirely.

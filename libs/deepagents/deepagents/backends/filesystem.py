@@ -419,8 +419,9 @@ class FilesystemBackend(BackendProtocol):
             limit: Maximum number of lines to read.
 
         Returns:
-            ReadResult with raw (unformatted) content for the requested
-            window. Line-number formatting is applied by the middleware.
+            `ReadResult` with raw (unformatted) content for the requested window.
+
+                Line-number formatting is applied by the middleware.
         """
         try:
             resolved_path = self._resolve_path(file_path)
@@ -582,7 +583,7 @@ class FilesystemBackend(BackendProtocol):
             glob: Optional glob pattern to filter which files to search.
 
         Returns:
-            GrepResult with matches or error.
+            `GrepResult` with matches or error.
         """
         # Resolve base path
         try:
@@ -623,7 +624,9 @@ class FilesystemBackend(BackendProtocol):
 
         Returns:
             Dict mapping file paths to list of `(line_number, line_text)` tuples.
+
                 Returns `None` if ripgrep is unavailable or times out.
+
                 Results whose resolved path lies outside `base_full` are silently
                 filtered regardless of `virtual_mode`.
         """
@@ -882,10 +885,12 @@ class FilesystemBackend(BackendProtocol):
 
         Args:
             pattern: Glob pattern to match files against (e.g., `'*.py'`, `'**/*.txt'`).
-            path: Base directory to search from. Defaults to `root_dir` / `cwd`.
+            path: Base directory to search from.
+
+                Defaults to `root_dir` / `cwd`.
 
         Returns:
-            GlobResult with matching files or error.
+            `GlobResult` with matching files or error.
         """
         if pattern.startswith("/"):
             pattern = pattern.lstrip("/")
@@ -969,11 +974,12 @@ class FilesystemBackend(BackendProtocol):
         """Upload multiple files to the filesystem.
 
         Args:
-            files: List of (path, content) tuples where content is bytes.
+            files: List of `(path, content)` tuples where content is bytes.
 
         Returns:
-            List of FileUploadResponse objects, one per input file.
-            Response order matches input order.
+            List of `FileUploadResponse` objects, one per input file.
+
+                Response order matches input order.
         """
         responses: list[FileUploadResponse] = []
         for path, content in files:
@@ -1006,7 +1012,7 @@ class FilesystemBackend(BackendProtocol):
             paths: List of file paths to download.
 
         Returns:
-            List of FileDownloadResponse objects, one per input path.
+            List of `FileDownloadResponse` objects, one per input path.
         """
         responses: list[FileDownloadResponse] = []
         for path in paths:

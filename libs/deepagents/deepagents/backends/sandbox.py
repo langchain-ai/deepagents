@@ -184,7 +184,7 @@ __DEEPAGENTS_EDIT_EOF__
 """Server-side file edit via `execute()`.
 
 Reads the file, performs string replacement, and writes back — all on the
-sandbox. The payload (path, old/new strings, replace_all flag) is passed as
+sandbox. The payload (path, old/new strings, `replace_all` flag) is passed as
 base64-encoded JSON via heredoc stdin to avoid shell escaping issues.
 
 Output: single-line JSON with `{{"count": N}}` on success or `{{"error": ...}}`
@@ -198,7 +198,7 @@ detect end-of-input on a newline-delimited heredoc feed can observe completion.
 """
 
 _EDIT_INLINE_MAX_BYTES: Final = 50_000
-"""Maximum combined byte size of old_string + new_string for inline server-side edit.
+"""Maximum combined byte size of `old_string` + `new_string` for inline server-side edit.
 
 Payloads above this use _edit_via_upload (temp file upload + server-side replace)
 to avoid size limits on the execute() request body imposed by some sandbox providers.
@@ -612,16 +612,16 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         *,
         timeout: int | None = None,
     ) -> ExecuteResponse:
-        """Execute a command in the sandbox and return ExecuteResponse.
+        """Execute a command in the sandbox and return `ExecuteResponse`.
 
         Args:
             command: Full shell command string to execute.
             timeout: Maximum time in seconds to wait for the command to complete.
 
-                If None, uses the backend's default timeout.
+                If `None`, uses the backend's default timeout.
 
         Returns:
-            ExecuteResponse with combined output, exit code, and truncation flag.
+            `ExecuteResponse` with combined output, exit code, and truncation flag.
         """
 
     def ls(self, path: str) -> LsResult:
@@ -945,6 +945,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         Args:
             pattern: Literal string to search for (not a regex).
             path: Directory or file to search in.
+
                 Defaults to `"."`.
             glob: Optional file-name glob to restrict the search
                 (e.g. `'*.py'`).

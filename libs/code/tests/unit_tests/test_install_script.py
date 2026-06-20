@@ -36,7 +36,7 @@ def _write_fake_tools(
     """Stage fake `uv`, `curl`, and (optionally) `dcode` binaries on `PATH`.
 
     `installed_version` controls whether `dcode -v` reports an existing install
-    (``None`` simulates a fresh machine). `latest_version` is the version the
+    (`None` simulates a fresh machine). `latest_version` is the version the
     fake `curl` reports from PyPI; `curl_fails` makes that probe error out so
     the script's offline fallback can be exercised.
     """

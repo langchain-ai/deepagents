@@ -1,6 +1,6 @@
 name: "Deep Agents Code"
 description: "Run Deep Agents Code in GitHub workflows"
-author: "LangChain AI"
+author: "LangChain"
 branding:
   icon: "cpu"
   color: "blue"

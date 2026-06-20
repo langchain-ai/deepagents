@@ -92,8 +92,6 @@ The layers compose: any LangGraph `CompiledStateGraph` can be passed in as a sub
 
 ## Resources
 
-- [Architecture](ARCHITECTURE.md) — how a request flows through the stack and where to extend it
-- [Development](DEVELOPMENT.md) — monorepo setup and command reference for contributors
 - [Examples](examples/) — working agents and patterns
 - [Documentation](https://docs.langchain.com/oss/python/deepagents/overview) — conceptual overviews and guides
 - [LangChain ecosystem overview](https://docs.langchain.com/oss/python/concepts/products) — how Deep Agents, LangChain, LangGraph, and LangSmith fit together

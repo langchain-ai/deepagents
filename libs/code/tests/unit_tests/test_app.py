@@ -4505,6 +4505,17 @@ class TestMessageTimestampFooters:
             assert notify_mock.call_args.kwargs.get("markup") is False
             assert not app.query(UserMessage)
 
+            # Toggling back reports the "hidden" state via the same toast path.
+            with patch.object(app, "notify") as notify_mock:
+                await app._handle_command("/timestamps")
+                await pilot.pause()
+
+            notify_mock.assert_called_once()
+            assert notify_mock.call_args.args[0] == "Message timestamps hidden."
+            assert notify_mock.call_args.kwargs.get("severity") == "information"
+            assert notify_mock.call_args.kwargs.get("markup") is False
+            assert not app.query(UserMessage)
+
 
 class TestMessageTimestampsPersistence:
     """Tests for persisting the timestamp-footer visibility to config."""

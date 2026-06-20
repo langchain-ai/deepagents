@@ -4167,7 +4167,7 @@ class TestMessageTimestampFooters:
     async def test_toggle_adds_and_removes_footers(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The `/timestamps` toggle adds and removes visible footer widgets."""
+        """The `/timestamps` toggle shows and hides existing footer widgets."""
         previous_tz = os.environ.get("TZ")
         monkeypatch.setenv("TZ", "UTC")
         # Sandbox config so the toggle's persistence starts from "hidden" and
@@ -4187,23 +4187,56 @@ class TestMessageTimestampFooters:
             async with app.run_test() as pilot:
                 await pilot.pause()
                 await app._mount_message(UserMessage("hello", id="msg-fixed"))
-                data = app._message_store.get_message("msg-fixed")
-                assert data is not None
-                data.timestamp = 1_704_110_405.0
+
+                footer = app.query_one("#msg-fixed-timestamp-footer", Static)
+                assert footer.display is False
 
                 await app._toggle_message_timestamp_footers()
                 await pilot.pause()
 
                 footer = app.query_one("#msg-fixed-timestamp-footer", Static)
-                rendered = footer.render()
-                assert isinstance(rendered, Content)
-                assert rendered.plain == "Jan 1, 12:00:05 PM"
+                assert footer.display is True
 
                 await app._toggle_message_timestamp_footers()
                 await pilot.pause()
 
-                with pytest.raises(NoMatches):
-                    app.query_one("#msg-fixed-timestamp-footer", Static)
+                footer = app.query_one("#msg-fixed-timestamp-footer", Static)
+                assert footer.display is False
+        finally:
+            if previous_tz is None:
+                monkeypatch.delenv("TZ", raising=False)
+            else:
+                monkeypatch.setenv("TZ", previous_tz)
+            self._sync_tz()
+
+    def test_build_footer_formats_timestamp(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Timestamp footer labels are formatted from the message timestamp."""
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        previous_tz = os.environ.get("TZ")
+        monkeypatch.setenv("TZ", "UTC")
+        monkeypatch.setattr(
+            "deepagents_code.formatting.uses_24_hour_clock", lambda: False
+        )
+        self._sync_tz()
+        app = DeepAgentsApp()
+
+        try:
+            footer = app._build_message_timestamp_footer(
+                MessageData(
+                    type=MessageType.USER,
+                    content="hello",
+                    id="msg-fixed",
+                    timestamp=1_704_110_405.0,
+                )
+            )
+
+            assert footer is not None
+            rendered = footer.render()
+            assert isinstance(rendered, Content)
+            assert rendered.plain == "Jan 1, 12:00:05 PM"
         finally:
             if previous_tz is None:
                 monkeypatch.delenv("TZ", raising=False)
@@ -4212,7 +4245,7 @@ class TestMessageTimestampFooters:
             self._sync_tz()
 
     async def test_toggle_positions_footer_after_each_message(self) -> None:
-        """Toggling on mounts one footer directly after every message."""
+        """Message mounting keeps one footer directly after every message."""
         from deepagents_code.app import _message_timestamp_footer_id
 
         app = DeepAgentsApp()
@@ -4223,10 +4256,6 @@ class TestMessageTimestampFooters:
                 await app._mount_message(UserMessage("hi", id=f"msg-{index}"))
             await pilot.pause()
 
-            app._message_timestamps_visible = True
-            await app._show_message_timestamp_footers()
-            await pilot.pause()
-
             messages = app.query_one("#messages", Container)
             children = list(messages.children)
             for index in range(5):
@@ -4235,8 +4264,8 @@ class TestMessageTimestampFooters:
                 footer = children[position + 1]
                 assert footer.id == _message_timestamp_footer_id(f"msg-{index}")
 
-    async def test_toggle_on_twice_is_idempotent(self) -> None:
-        """A second show pass must not add duplicate footers."""
+    async def test_repeated_toggles_do_not_mount_or_remove_footers(self) -> None:
+        """Toggling flips visibility only; it never mounts or removes footers."""
         app = DeepAgentsApp()
 
         async with app.run_test() as pilot:
@@ -4244,12 +4273,40 @@ class TestMessageTimestampFooters:
             await app._mount_message(UserMessage("hi", id="msg-dup"))
             await pilot.pause()
 
-            app._message_timestamps_visible = True
-            await app._show_message_timestamp_footers()
-            await app._show_message_timestamp_footers()
+            assert len(app.query("#msg-dup-timestamp-footer")) == 1
+            await app._toggle_message_timestamp_footers()
+            await app._toggle_message_timestamp_footers()
             await pilot.pause()
 
             assert len(app.query("#msg-dup-timestamp-footer")) == 1
+
+    async def test_footers_visible_at_compose_when_preference_saved(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A saved `visible` preference shows footers on startup without toggling.
+
+        Footers are always mounted; visibility is driven by the
+        `message-timestamps-visible` class that `compose` seeds on `#messages`
+        from the persisted preference. This guards the restart-visibility path.
+        """
+        # Sandbox config with the preference persisted as visible so __init__
+        # loads `True` and compose seeds the visible class on `#messages`.
+        config = tmp_path / "config.toml"
+        config.write_text("[ui]\nshow_message_timestamps = true\n")
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        app = DeepAgentsApp()
+        assert app._message_timestamps_visible is True
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            messages = app.query_one("#messages", Container)
+            assert messages.has_class("message-timestamps-visible")
+
+            await app._mount_message(UserMessage("hello", id="msg-start"))
+            await pilot.pause()
+
+            footer = app.query_one("#msg-start-timestamp-footer", Static)
+            assert footer.display is True
 
     async def test_mount_message_adds_footer_when_enabled(self) -> None:
         """New messages receive a footer while timestamps are enabled."""

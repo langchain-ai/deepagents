@@ -4223,7 +4223,8 @@ class TestMessageTimestampFooters:
                 await app._mount_message(UserMessage("hi", id=f"msg-{index}"))
             await pilot.pause()
 
-            await app._toggle_message_timestamp_footers()
+            app._message_timestamps_visible = True
+            await app._show_message_timestamp_footers()
             await pilot.pause()
 
             messages = app.query_one("#messages", Container)

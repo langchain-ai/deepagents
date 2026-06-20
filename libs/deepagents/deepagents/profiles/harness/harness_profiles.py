@@ -694,10 +694,10 @@ class HarnessProfile:
     declarative synchronous subagents created from `SubAgent` specs —
     i.e., the stacks that `create_deep_agent` assembles itself.
 
-    Appended after the SDK defaults and before profile tool exclusions,
-    prompt caching, memory, and human-in-the-loop middleware. This lets
-    profiles tune the final request surface after extra middleware has added
-    any tools or prompt behavior.
+    Appended after the SDK defaults and any caller-supplied `middleware`, and
+    before profile tool exclusions, prompt caching, memory, and
+    human-in-the-loop middleware. This lets profiles tune the final request
+    surface after extra middleware has added any tools or prompt behavior.
 
     *Not* applied to `CompiledSubAgent` runnables or `AsyncSubAgent` entries.
     A `CompiledSubAgent` is passed in pre-built (its `runnable` is already a

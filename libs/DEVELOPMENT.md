@@ -106,7 +106,7 @@ The hooks run `make format lint` for changed packages and validate commit messag
 
 ## Contributing conventions
 
-The full conventions live in [`AGENTS.md`](./AGENTS.md) at the repo root. The points most likely to trip up a first PR:
+The full conventions live in [`AGENTS.md`](../AGENTS.md) at the repo root. The points most likely to trip up a first PR:
 
 - **Conventional Commits with a mandatory scope.** Titles look like `type(scope): description` — e.g. `fix(cli): resolve type hinting issue`. Allowed types and scopes are defined in `.github/workflows/pr_lint.yml`.
 - **Branch naming:** `<github-username>/<scope>/<short-description>` (e.g. `mdrxy/docs/architecture-guide`).

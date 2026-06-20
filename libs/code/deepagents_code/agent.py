@@ -1114,6 +1114,7 @@ def create_cli_agent(
     enable_skills: bool = True,
     enable_shell: bool = True,
     enable_interpreter: bool = False,
+    enable_verify: bool = False,
     checkpointer: BaseCheckpointSaver | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
     cwd: str | Path | None = None,
@@ -1191,6 +1192,11 @@ def create_cli_agent(
 
             Requires the `quickjs` optional extra
             (`langchain-quickjs>=0.1.2,<0.2.0`).
+        enable_verify: Add the `verify_implementation` tool, an independent
+            spec-compliance checker. It re-reads the original task verbatim
+            from agent state and the produced files from the backend, then runs
+            a fresh LLM-judge call to confirm every named identifier in the task
+            appears exactly in the implementation. Off by default.
         checkpointer: Optional checkpointer for session persistence.
             When `None`, the graph is compiled without a checkpointer.
         mcp_server_info: MCP server metadata to surface in the system prompt.
@@ -1567,6 +1573,17 @@ def create_cli_agent(
         create_summarization_tool_middleware(model, composite_backend)
     )
 
+    # Optionally add the independent spec-compliance verification tool. Built here
+    # (not by the caller) because it needs the composite backend, which only exists
+    # at this point. Copy the caller's tools rather than mutating them.
+    effective_tools: list[BaseTool | Callable | dict[str, Any]] = list(tools or [])
+    if enable_verify:
+        from deepagents_code.verify_tool import make_verify_tool
+
+        effective_tools.append(
+            make_verify_tool(model, composite_backend, cwd=str(effective_cwd))
+        )
+
     # Create the agent
     all_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = [
         *custom_subagents,
@@ -1575,7 +1592,7 @@ def create_cli_agent(
     agent = create_deep_agent(
         model=model,
         system_prompt=system_prompt,
-        tools=tools,
+        tools=effective_tools or None,
         backend=composite_backend,
         middleware=agent_middleware,
         interrupt_on=interrupt_on,

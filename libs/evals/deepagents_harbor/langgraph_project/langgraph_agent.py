@@ -88,22 +88,11 @@ artifact rather than leaving nothing.
 
 ## Validate with an Independent Checker
 
-Don't rely solely on your own validation — right after building something you tend to
-check it against your own assumptions instead of the actual requirements. For any task
-with a defined contract (an interface, schema, output format, or named deliverable),
-you MUST have an independent checker confirm it before concluding.
-
-1. Launch a verification subagent via the `task` tool (`subagent_type="general-purpose"`)
-   and instruct it to:
-   - Judge the implementation against the requirements as you originally received them,
-     which you pass along as-is — not as your summary of them.
-   - Derive expected names, paths, and formats from those requirements, not from your code.
-   - Use provided tests or write its own, running all checks from a clean environment.
-   - Produce a detailed report: the exact commands run, each check's result (PASS/FAIL
-     with failure detail), and confirmation it ran from a clean directory.
-2. Review the subagent's report and treat any FAIL as a real defect in your implementation.
-3. Fix the issues, re-launch the subagent, and repeat until every check passes.
-4. Only conclude once the subagent's report shows all checks passing.
+When the task specifies an exact contract — file names or paths, field/message/type/function/class
+names, a schema or wire format, or an exact output format — you MUST call the `verify_implementation`
+tool before concluding. It re-reads the original task and your files with a fresh, independent checker
+and reports any exact-match mismatches (a renamed field, a wrong path). Treat any FAIL as a real defect
+in your code: fix it and call `verify_implementation` again. Do not finish until it returns PASS.
 
 
 ## Finish with a verified deliverable
@@ -201,6 +190,7 @@ def make_graph(config: dict[str, object] | None = None) -> object:
             enable_memory=False,
             enable_skills=False,
             enable_shell=True,
+            enable_verify=True,
             cwd=_workdir(configurable),
         )
     return graph

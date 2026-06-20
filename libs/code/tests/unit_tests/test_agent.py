@@ -1815,6 +1815,78 @@ class TestEnableAskUser:
         assert not any(isinstance(mw, AskUserMiddleware) for mw in middleware)
 
 
+class TestEnableVerify:
+    """Verify enable_verify controls the verify_implementation tool inclusion."""
+
+    def _capture_tools(self, tmp_path: Path, *, enable_verify: bool) -> list[Any]:
+        agent_dir = tmp_path / "agent"
+        agent_dir.mkdir(exist_ok=True)
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir(exist_ok=True)
+
+        mock_settings = Mock()
+        mock_settings.ensure_agent_dir.return_value = agent_dir
+        mock_settings.ensure_user_skills_dir.return_value = skills_dir
+        mock_settings.get_project_skills_dir.return_value = None
+        mock_settings.get_built_in_skills_dir.return_value = (
+            Settings.get_built_in_skills_dir()
+        )
+        mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
+        mock_settings.get_project_agent_md_path.return_value = []
+        mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
+        mock_settings.get_project_agents_dir.return_value = None
+        mock_settings.model_name = None
+        mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
+        mock_settings.model_context_limit = None
+        mock_settings.project_root = None
+
+        captured: list[list[Any]] = []
+
+        def capture(**kwargs: Any) -> Mock:
+            captured.append(kwargs.get("tools") or [])
+            agent = Mock()
+            agent.with_config.return_value = agent
+            return agent
+
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                side_effect=capture,
+            ),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+            patch(
+                "deepagents_code.verify_tool.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_verify=enable_verify,
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+            )
+
+        return captured[0]
+
+    def test_verify_tool_included_when_enabled(self, tmp_path: Path) -> None:
+        tools = self._capture_tools(tmp_path, enable_verify=True)
+        assert any(getattr(t, "name", None) == "verify_implementation" for t in tools)
+
+    def test_verify_tool_excluded_when_disabled(self, tmp_path: Path) -> None:
+        tools = self._capture_tools(tmp_path, enable_verify=False)
+        assert not any(
+            getattr(t, "name", None) == "verify_implementation" for t in tools
+        )
+
+
 class TestLoadAsyncSubagents:
     def test_returns_empty_when_no_file(self, tmp_path: Path) -> None:
         result = load_async_subagents(tmp_path / "nonexistent.toml")

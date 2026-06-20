@@ -1,0 +1,19 @@
+ARCHITECTURE.md
+  s_840de0ec233239::t_a65ab9d166a344 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.9",
+  "base_commit_sha": "bdcc1807834d3db7e865546151583dd5e586ee18",
+  "prompts": {},
+  "sessions": {
+    "s_840de0ec233239": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f26c1f02-d50f-472a-a796-883a3373263c",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

@@ -3075,3 +3075,51 @@ class TestPrintUsageTable:
         print_usage_table(stats, wall_time=0.01, console=console)
         output = buf.getvalue()
         assert output.strip() == ""
+
+
+class TestExecuteTaskTextualResponsesPhase:
+    """OpenAI Responses API phase routing for text content blocks."""
+
+    async def test_commentary_phase_text_is_not_rendered(self) -> None:
+        """Commentary blocks are internal reasoning; only final_answer renders."""
+        message = SimpleNamespace(
+            content_blocks=[
+                {"type": "text", "phase": "commentary", "text": "inner thought"},
+                {"type": "text", "phase": "final_answer", "text": "user-visible"},
+                {
+                    "type": "tool_call",
+                    "name": "ls",
+                    "args": {"path": "."},
+                    "id": "tool-1",
+                },
+            ]
+        )
+        chunks = [
+            ((), "messages", (message, {})),
+            ((), "messages", (ToolMessage(content="ok", tool_call_id="tool-1"), {})),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        fake_msg = AsyncMock()
+        fake_msg.id = "asst-test"
+        with patch(
+            "deepagents_code.textual_adapter.AssistantMessage", return_value=fake_msg
+        ):
+            await execute_task_textual(
+                user_input="hi",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+                adapter=adapter,
+            )
+
+        appended = "".join(
+            call.args[0] for call in fake_msg.append_content.call_args_list
+        )
+        assert "inner thought" not in appended
+        assert appended == "user-visible"

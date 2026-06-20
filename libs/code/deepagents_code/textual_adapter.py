@@ -816,6 +816,13 @@ async def execute_task_textual(
                         block_type = block.get("type")
 
                         if block_type == "text":
+                            # OpenAI Responses API tags text blocks with a
+                            # `phase`: "commentary" carries internal planning
+                            # prose that must not surface as the assistant's
+                            # answer; only "final_answer" (or a missing phase,
+                            # for non-Responses providers) is user-visible.
+                            if block.get("phase") == "commentary":
+                                continue
                             text = block.get("text", "")
                             if text:
                                 # Track accumulated text for reference

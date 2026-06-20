@@ -1,0 +1,28 @@
+libs/code/ARCHITECTURE.md
+  s_67fc627429d4bf::t_1b808d8dfeb037 78,80-81
+  s_67fc627429d4bf::t_a31bc595c47472 82
+  s_67fc627429d4bf::t_080ca621dc6580 32
+ARCHITECTURE.md
+  s_67fc627429d4bf::t_2683d99c979076 132-133
+libs/README.md
+  s_67fc627429d4bf::t_8f03d23ea6741d 14
+DEVELOPMENT.md
+  s_67fc627429d4bf::t_b3bcfe27b2d588 34
+  s_67fc627429d4bf::t_fcf2a10a3f0d36 73-75
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.9",
+  "base_commit_sha": "9a1c6ac7ef5b7128c680f1a33f9c3828fdc3bfb5",
+  "prompts": {},
+  "sessions": {
+    "s_67fc627429d4bf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2bac527b-5e9a-4f13-b79d-6387f8985ff0",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

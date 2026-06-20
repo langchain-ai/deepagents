@@ -115,12 +115,14 @@ _SCOPE_VALUE_CWD = "cwd"
 _SCOPE_VALUE_ALL = "all"
 _AGENT_SELECT_ID = "thread-agent-select"
 _AGENT_VALUE_ALL = "__all__"
+_AGENT_VALUE_LOADING = "__loading__"
 # Label shown in the agent dropdown while the disk load is still pending and no
 # agent names are known yet. The options list is derived from visible threads
 # (plus the configured `/agents` list), so before the load completes it would
 # otherwise show only the "All agents" sentinel; "Loading..." signals that more
-# options may appear. Reuses `_AGENT_VALUE_ALL` so the unfiltered default value
-# stays valid. Matches the "Loading threads..." empty-state copy.
+# options may appear. Uses a distinct transient value so the final "All agents"
+# label refreshes when the completed load swaps in the real sentinel. Matches
+# the "Loading threads..." empty-state copy.
 _AGENT_LABEL_LOADING = "Loading..."
 # Display label and filter key for threads with no stored `agent_name`. Shared
 # between the Agent column renderer, the agent dropdown options, and the filter
@@ -1061,20 +1063,20 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         filterable.
 
         While the disk load is still pending and no agent names are known yet,
-        returns a single `("Loading...", _AGENT_VALUE_ALL)` option so the
+        returns a single `("Loading...", _AGENT_VALUE_LOADING)` option so the
         dropdown signals that more options are on the way rather than implying
         "All agents" is the only choice.
 
         Returns:
             List of `(label, value)` pairs; the first entry is always
                 `("All agents", _AGENT_VALUE_ALL)` once the load has completed
-                (or `("Loading...", _AGENT_VALUE_ALL)` while it is still
+                (or `("Loading...", _AGENT_VALUE_LOADING)` while it is still
                 pending with no known agents).
         """
         names = {t.get("agent_name") or _UNKNOWN_AGENT_LABEL for t in self._threads}
         names.update(self._available_agent_names)
         if not names and not self._disk_load_complete:
-            return [(_AGENT_LABEL_LOADING, _AGENT_VALUE_ALL)]
+            return [(_AGENT_LABEL_LOADING, _AGENT_VALUE_LOADING)]
         ordered = sorted(names, key=str.casefold)
         return [("All agents", _AGENT_VALUE_ALL), *((n, n) for n in ordered)]
 
@@ -1272,9 +1274,15 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                         classes="thread-controls-label",
                         markup=False,
                     )
+                    agent_options = self._collect_agent_options()
+                    agent_value = (
+                        _AGENT_VALUE_LOADING
+                        if agent_options[0][1] == _AGENT_VALUE_LOADING
+                        else _AGENT_VALUE_ALL
+                    )
                     yield ThreadScopeSelect(
-                        self._collect_agent_options(),
-                        value=_AGENT_VALUE_ALL,
+                        agent_options,
+                        value=agent_value,
                         allow_blank=False,
                         compact=True,
                         id=_AGENT_SELECT_ID,
@@ -2327,6 +2335,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         """
         if event.select.id == _AGENT_SELECT_ID:
             if self._confirming_delete:
+                return
+            if event.value == _AGENT_VALUE_LOADING:
                 return
             new_agent = None if event.value == _AGENT_VALUE_ALL else str(event.value)
             if new_agent == self._filter_agent:

@@ -83,6 +83,25 @@ class BlockingAgent:
         return AgentResult(text=f"reply:{request.text}")
 
 
+class HistoryAgent:
+    def __init__(self) -> None:
+        self.history: dict[str, list[str]] = {}
+        self.requests: list[AgentRequest] = []
+
+    async def start(self) -> None:
+        pass
+
+    async def stop(self) -> None:
+        pass
+
+    async def invoke(self, request: AgentRequest) -> AgentResult:
+        self.requests.append(request)
+        history = self.history.setdefault(request.conversation_id, [])
+        seen = len(history)
+        history.append(request.text)
+        return AgentResult(text=f"seen:{seen}")
+
+
 class VoiceTranscriber:
     async def transcribe(self, message: ChannelMessage) -> str | None:
         del message
@@ -181,6 +200,69 @@ async def test_stop_cancels_in_flight_conversation(tmp_path: Path) -> None:
     await host.stop()
 
     assert channel.sent == [("chat", "Stopped current run.")]
+
+
+async def test_new_command_starts_fresh_conversation_thread(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = HistoryAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="first"))
+    await _wait_for_sent_count(channel, 1)
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="/new"))
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="second"))
+    await _wait_for_sent_count(channel, 3)
+    await host.stop()
+
+    assert [request.text for request in agent.requests] == ["first", "second"]
+    assert agent.requests[0].conversation_id == "chat"
+    assert agent.requests[1].conversation_id.startswith("chat:talon-reset:")
+    assert channel.sent == [
+        ("chat", "seen:0"),
+        ("chat", "Started a fresh conversation."),
+        ("chat", "seen:0"),
+    ]
+
+
+async def test_new_command_accepts_telegram_bot_command_suffix(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = HistoryAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="/new@TestBot"))
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="hello"))
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    assert [request.text for request in agent.requests] == ["hello"]
+    assert agent.requests[0].conversation_id.startswith("chat:talon-reset:")
+    assert channel.sent == [
+        ("chat", "Started a fresh conversation."),
+        ("chat", "seen:0"),
+    ]
+
+
+async def test_new_command_cancels_in_flight_conversation(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
+    await _wait_for_request(agent, "block")
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="/new"))
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="second"))
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    assert [request.text for request in agent.requests] == ["block", "second"]
+    assert agent.requests[1].conversation_id.startswith("chat:talon-reset:")
+    assert channel.sent == [
+        ("chat", "Started a fresh conversation."),
+        ("chat", "reply:second"),
+    ]
 
 
 async def test_host_sends_markdown_media_refs_as_channel_media(tmp_path: Path) -> None:

@@ -50,10 +50,13 @@ SignalHandler = Callable[[int, FrameType | None], object] | int | None
 logger = logging.getLogger(__name__)
 
 _STOP_COMMAND = "/stop"
+_NEW_COMMAND = "/new"
+_NEW_CONVERSATION_MESSAGE = "Started a fresh conversation."
 _APPROVE_REPLIES = frozenset({"approve", "approved", "yes", "y"})
 _DENY_REPLIES = frozenset({"deny", "denied", "reject", "rejected", "no", "n"})
 _OUTBOUND_MEDIA_DIR_ENV = "DEEPAGENTS_TALON_OUTBOUND_MEDIA_DIR"
 _WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
+_RESET_THREAD_SEPARATOR = ":talon-reset:"
 
 
 @dataclass(slots=True)
@@ -90,6 +93,7 @@ class TalonHost:
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._conversation_tasks: defaultdict[str, set[asyncio.Task[None]]] = defaultdict(set)
+        self._conversation_resets: defaultdict[str, int] = defaultdict(int)
         self._pending_tool_approvals: dict[str, _PendingToolApproval] = {}
         self._stopped = asyncio.Event()
         self._running = False
@@ -160,22 +164,39 @@ class TalonHost:
             channel: Channel that delivered the message.
             message: Inbound message to process.
         """
-        if message.text.strip().lower() == _STOP_COMMAND:
-            await self._cancel_conversation(channel, message.conversation_id)
+        command = _command_name(message.text)
+        channel_conversation_id = message.conversation_id
+        agent_conversation_id = self._agent_conversation_id(channel_conversation_id)
+
+        if command == _NEW_COMMAND:
+            await self._start_new_conversation(channel, channel_conversation_id)
             return
 
-        pending = self._pending_tool_approvals.get(message.conversation_id)
+        if command == _STOP_COMMAND:
+            await self._cancel_conversation(
+                channel,
+                agent_conversation_id,
+                reply_conversation_id=channel_conversation_id,
+            )
+            return
+
+        pending = self._pending_tool_approvals.get(agent_conversation_id)
         if pending is not None:
             await self._handle_tool_approval_reply(channel, message, pending)
             return
 
         task = asyncio.create_task(
-            self._run_agent_turn(channel, message),
-            name=f"talon:{message.conversation_id}",
+            self._run_agent_turn(channel, message, agent_conversation_id),
+            name=f"talon:{agent_conversation_id}",
         )
-        self._track_conversation_task(message.conversation_id, task)
+        self._track_conversation_task(agent_conversation_id, task)
 
-    async def _run_agent_turn(self, channel: ChannelAdapter, message: ChannelMessage) -> None:
+    async def _run_agent_turn(
+        self,
+        channel: ChannelAdapter,
+        message: ChannelMessage,
+        agent_conversation_id: str,
+    ) -> None:
         message = await transcribe_voice_message(self.voice_transcriber, message)
         message = _prepare_inbound_message(message)
         provider = await _channel_provider(channel)
@@ -185,8 +206,8 @@ class TalonHost:
             "message_id": message.message_id,
             **message.metadata,
         }
-        origin_conversation_id = message.metadata.get("chat_id_from")
-        if isinstance(origin_conversation_id, str) and origin_conversation_id:
+        origin_conversation_id = _origin_conversation_id(message)
+        if origin_conversation_id != agent_conversation_id:
             metadata["origin_conversation_id"] = origin_conversation_id
         content = build_model_content(message.text, dict(message.metadata))
         if content != message.text:
@@ -194,12 +215,13 @@ class TalonHost:
 
         await _send_typing(channel, message.conversation_id)
         result = await self._invoke_agent(
-            conversation_id=message.conversation_id,
+            conversation_id=agent_conversation_id,
             text=message.text,
             metadata=metadata,
             approval_handler=lambda approval: self._request_tool_approval(
                 channel,
                 approval,
+                reply_conversation_id=message.conversation_id,
                 sender_id=message.sender_id,
             ),
         )
@@ -214,13 +236,15 @@ class TalonHost:
         Returns:
             Agent text output for scheduler delivery handling.
         """
+        conversation_id = self._agent_conversation_id(job.origin.conversation_id)
         result = await self._invoke_agent(
-            conversation_id=job.origin.conversation_id,
+            conversation_id=conversation_id,
             text=job.prompt,
             metadata={
                 "channel": job.origin.channel,
                 "cron_job_id": job.id,
                 "cron_job_name": job.name,
+                "origin_conversation_id": job.origin.conversation_id,
                 "cron_origin_message_id": job.origin.message_id,
                 "trigger": "cron",
             },
@@ -284,11 +308,32 @@ class TalonHost:
                 if self._tasks.get(conversation_id) is task:
                     del self._tasks[conversation_id]
 
-    async def _cancel_conversation(
+    async def _start_new_conversation(
         self,
         channel: ChannelAdapter,
         conversation_id: str,
     ) -> None:
+        current_conversation_id = self._agent_conversation_id(conversation_id)
+        await self._cancel_conversation_tasks(current_conversation_id)
+        self._conversation_resets[conversation_id] += 1
+        await channel.send_message(conversation_id, _NEW_CONVERSATION_MESSAGE)
+
+    async def _cancel_conversation(
+        self,
+        channel: ChannelAdapter,
+        conversation_id: str,
+        *,
+        reply_conversation_id: str | None = None,
+    ) -> None:
+        target_conversation_id = reply_conversation_id or conversation_id
+        cancelled = await self._cancel_conversation_tasks(conversation_id)
+        if not cancelled:
+            await channel.send_message(target_conversation_id, "No in-flight run to stop.")
+            return
+
+        await channel.send_message(target_conversation_id, "Stopped current run.")
+
+    async def _cancel_conversation_tasks(self, conversation_id: str) -> bool:
         tasks = {
             task
             for task in {
@@ -298,13 +343,18 @@ class TalonHost:
             if task is not None and not task.done()
         }
         if not tasks:
-            await channel.send_message(conversation_id, "No in-flight run to stop.")
-            return
+            return False
 
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        await channel.send_message(conversation_id, "Stopped current run.")
+        return True
+
+    def _agent_conversation_id(self, conversation_id: str) -> str:
+        reset = self._conversation_resets[conversation_id]
+        if reset == 0:
+            return conversation_id
+        return f"{conversation_id}{_RESET_THREAD_SEPARATOR}{reset}"
 
     async def _cancel_all(self) -> None:
         tasks = {
@@ -331,6 +381,7 @@ class TalonHost:
         channel: ChannelAdapter,
         approval: ToolApprovalRequest,
         *,
+        reply_conversation_id: str,
         sender_id: str | None,
     ) -> ToolApprovalDecision:
         loop = asyncio.get_running_loop()
@@ -339,7 +390,7 @@ class TalonHost:
         self._pending_tool_approvals[approval.conversation_id] = pending
         try:
             await channel.send_message(
-                approval.conversation_id,
+                reply_conversation_id,
                 _format_tool_approval_prompt(approval),
             )
             return await future
@@ -462,6 +513,23 @@ def _prepare_inbound_message(message: ChannelMessage) -> ChannelMessage:
         message_id=message.message_id,
         metadata={**message.metadata, "media_text_augmented": True},
     )
+
+
+def _command_name(text: str) -> str | None:
+    parts = text.strip().split(maxsplit=1)
+    if not parts:
+        return None
+    first = parts[0].lower()
+    if not first.startswith("/"):
+        return None
+    return first.split("@", maxsplit=1)[0]
+
+
+def _origin_conversation_id(message: ChannelMessage) -> str:
+    origin = message.metadata.get("chat_id_from")
+    if isinstance(origin, str) and origin:
+        return origin
+    return message.conversation_id
 
 
 def _outbound_media_from_refs(

@@ -30,7 +30,12 @@ Screen {
     padding: 0;
 }
 
-#messages.message-timestamps-visible .message-timestamp-footer {
+/*
+ * Visibility is toggled per-footer (not via a class on #messages) so a
+ * `/timestamps` toggle restyles only the footer leaves instead of forcing a
+ * re-cascade across every message subtree.
+ */
+.message-timestamp-footer.message-timestamp-footer-visible {
     display: block;
 }
 

@@ -4212,7 +4212,12 @@ class TestMessageTimestampFooters:
     def test_build_footer_formats_timestamp(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Timestamp footer labels are formatted from the message timestamp."""
+        """Timestamp footer labels are formatted; `visible` stamps the class.
+
+        `visible` is the only build-time lever over footer visibility, so it is
+        asserted in both directions: a footer built with `visible=False` must
+        not carry the visible class, and one built with `visible=True` must.
+        """
         from deepagents_code.widgets.message_store import MessageData, MessageType
 
         previous_tz = os.environ.get("TZ")
@@ -4222,21 +4227,25 @@ class TestMessageTimestampFooters:
         )
         self._sync_tz()
         app = DeepAgentsApp()
+        data = MessageData(
+            type=MessageType.USER,
+            content="hello",
+            id="msg-fixed",
+            timestamp=1_704_110_405.0,
+        )
 
         try:
-            footer = app._build_message_timestamp_footer(
-                MessageData(
-                    type=MessageType.USER,
-                    content="hello",
-                    id="msg-fixed",
-                    timestamp=1_704_110_405.0,
-                )
-            )
+            footer = app._build_message_timestamp_footer(data, visible=False)
 
             assert footer is not None
             rendered = footer.render()
             assert isinstance(rendered, Content)
             assert rendered.plain == "Jan 1, 12:00:05 PM"
+            assert not footer.has_class("message-timestamp-footer-visible")
+
+            visible_footer = app._build_message_timestamp_footer(data, visible=True)
+            assert visible_footer is not None
+            assert visible_footer.has_class("message-timestamp-footer-visible")
         finally:
             if previous_tz is None:
                 monkeypatch.delenv("TZ", raising=False)
@@ -4280,17 +4289,44 @@ class TestMessageTimestampFooters:
 
             assert len(app.query("#msg-dup-timestamp-footer")) == 1
 
-    async def test_footers_visible_at_compose_when_preference_saved(
+    async def test_toggle_with_no_footers_is_a_noop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Toggling on an empty thread takes the no-footer early-return safely.
+
+        With zero footers mounted, `_sync_message_timestamps_display` queries an
+        empty `DOMQuery` and returns early. This guards that realistic path
+        (open app, run `/timestamps` before sending anything) against a crash,
+        and confirms the visibility flag still flips as the source of truth.
+        """
+        # Sandbox the config so the toggle's persistence never touches the real
+        # user config on disk.
+        config = tmp_path / "config.toml"
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert not app.query(".message-timestamp-footer")
+
+            before = app._message_timestamps_visible
+            await app._toggle_message_timestamp_footers()
+            await pilot.pause()
+
+            assert not app.query(".message-timestamp-footer")
+            assert app._message_timestamps_visible is not before
+
+    async def test_footers_visible_on_startup_when_preference_saved(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A saved `visible` preference shows footers on startup without toggling.
 
-        Footers are always mounted; visibility is driven by the
-        `message-timestamps-visible` class that `compose` seeds on `#messages`
-        from the persisted preference. This guards the restart-visibility path.
+        Footers are always mounted; new ones built while the preference is on
+        carry the visible class so they render without waiting for a toggle.
+        This guards the restart-visibility path.
         """
         # Sandbox config with the preference persisted as visible so __init__
-        # loads `True` and compose seeds the visible class on `#messages`.
+        # loads `True` and new footers build with the visible class.
         config = tmp_path / "config.toml"
         config.write_text("[ui]\nshow_message_timestamps = true\n")
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
@@ -4299,13 +4335,11 @@ class TestMessageTimestampFooters:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            messages = app.query_one("#messages", Container)
-            assert messages.has_class("message-timestamps-visible")
-
             await app._mount_message(UserMessage("hello", id="msg-start"))
             await pilot.pause()
 
             footer = app.query_one("#msg-start-timestamp-footer", Static)
+            assert footer.has_class("message-timestamp-footer-visible")
             assert footer.display is True
 
     async def test_footers_render_for_restored_thread_history(

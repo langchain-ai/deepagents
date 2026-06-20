@@ -117,8 +117,14 @@ deadlock detector when two threads cold-import overlapping modules.
 _MESSAGE_TIMESTAMP_FOOTER_CLASS = "message-timestamp-footer"
 """CSS class applied to individual message timestamp footer widgets."""
 
-_MESSAGE_TIMESTAMPS_VISIBLE_CLASS = "message-timestamps-visible"
-"""CSS class applied to `#messages` when timestamp footers should be shown."""
+_MESSAGE_TIMESTAMP_FOOTER_VISIBLE_CLASS = "message-timestamp-footer-visible"
+"""CSS class applied to a footer widget when it should be shown.
+
+Visibility is toggled on the footer leaves rather than on `#messages`: a class
+change on the container would force Textual to re-cascade styles across every
+message subtree (O(mounted widgets)), whereas flipping the leaf footers
+restyles only the footers.
+"""
 
 _TIMESTAMP_FOOTER_EXCLUDED_TYPES: frozenset[MessageType] = frozenset(
     {MessageType.APP, MessageType.SUMMARIZATION}
@@ -2298,14 +2304,7 @@ class DeepAgentsApp(App):
                 mcp_awaiting_reconnect=self._mcp_awaiting_reconnect,
                 id="welcome-banner",
             )
-            yield Container(
-                id="messages",
-                classes=(
-                    _MESSAGE_TIMESTAMPS_VISIBLE_CLASS
-                    if self._message_timestamps_visible
-                    else None
-                ),
-            )
+            yield Container(id="messages")
         with Container(id="bottom-app-container"):
             yield ChatInput(
                 cwd=self._cwd,
@@ -4703,7 +4702,9 @@ class DeepAgentsApp(App):
 
         for widget, msg_data in reversed(hydrated_widgets):
             try:
-                footer = self._build_message_timestamp_footer(msg_data)
+                footer = self._build_message_timestamp_footer(
+                    msg_data, visible=self._message_timestamps_visible
+                )
                 if first_child:
                     if footer is not None:
                         await messages_container.mount(footer, before=first_child)
@@ -7913,7 +7914,9 @@ class DeepAgentsApp(App):
                 nodes: list[Widget] = []
                 for widget, msg_data in zip(widgets, visible, strict=False):
                     nodes.append(widget)
-                    footer = self._build_message_timestamp_footer(msg_data)
+                    footer = self._build_message_timestamp_footer(
+                        msg_data, visible=self._message_timestamps_visible
+                    )
                     if footer is not None:
                         nodes.append(footer)
                 await messages_container.mount(*nodes)
@@ -7962,11 +7965,16 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage(f"Could not load history: {e}"))
 
     @staticmethod
-    def _build_message_timestamp_footer(data: MessageData) -> Static | None:
+    def _build_message_timestamp_footer(
+        data: MessageData, *, visible: bool
+    ) -> Static | None:
         """Build a timestamp footer for a message.
 
         Args:
             data: Message data carrying the timestamp.
+            visible: Whether the footer should be shown immediately. New
+                footers built while timestamps are on must carry the visible
+                class so they render without waiting for a toggle.
 
         Returns:
             A footer widget, or `None` when the message type is in
@@ -7979,22 +7987,31 @@ class DeepAgentsApp(App):
         if label is None:
             logger.warning("Invalid timestamp for message %s", data.id)
             return None
+        classes = _MESSAGE_TIMESTAMP_FOOTER_CLASS
+        if visible:
+            classes = f"{classes} {_MESSAGE_TIMESTAMP_FOOTER_VISIBLE_CLASS}"
         return Static(
             Content.styled(label, "dim"),
             id=_message_timestamp_footer_id(data.id),
-            classes=_MESSAGE_TIMESTAMP_FOOTER_CLASS,
+            classes=classes,
         )
 
     def _sync_message_timestamps_display(self) -> None:
-        """Apply timestamp-footer visibility to the mounted messages container."""
-        try:
-            messages = self.query_one("#messages", Container)
-        except NoMatches:
+        """Apply the current visibility to every mounted timestamp footer.
+
+        Flips the visible class on the footer leaves directly (not on
+        `#messages`) so a toggle restyles only the footers rather than
+        re-cascading the entire message subtree. `batch_update` coalesces the
+        relayout into a single pass.
+        """
+        footers = self.query(f".{_MESSAGE_TIMESTAMP_FOOTER_CLASS}")
+        if not footers:
             return
-        messages.set_class(
-            self._message_timestamps_visible,
-            _MESSAGE_TIMESTAMPS_VISIBLE_CLASS,
-        )
+        with self.batch_update():
+            footers.set_class(
+                self._message_timestamps_visible,
+                _MESSAGE_TIMESTAMP_FOOTER_VISIBLE_CLASS,
+            )
 
     async def _toggle_message_timestamp_footers(self) -> None:
         """Toggle visible timestamp footers and persist the preference."""
@@ -8067,7 +8084,9 @@ class DeepAgentsApp(App):
             # mounted widget (and its timestamp footer) from its MessageData.
             widget.id = message_data.id
         self._message_store.append(message_data)
-        footer = self._build_message_timestamp_footer(message_data)
+        footer = self._build_message_timestamp_footer(
+            message_data, visible=self._message_timestamps_visible
+        )
 
         await self._mount_before_queued(messages, widget)
         if footer is not None:

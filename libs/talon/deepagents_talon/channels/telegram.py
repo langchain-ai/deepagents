@@ -745,6 +745,8 @@ def _downloaded_mime_type(path: Path, metadata: dict[str, object]) -> str | None
 
 def _safe_suffix(file_path: str, media_type: str) -> str:
     suffix = Path(file_path).suffix.lower()
+    if media_type == "voice" and suffix in {".oga", ".opus"}:
+        return ".ogg"
     if re.fullmatch(r"\.[a-z0-9]{1,16}", suffix):
         return suffix
     return _default_suffix(media_type)

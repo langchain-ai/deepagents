@@ -59,7 +59,7 @@ class RecordingTransport:
         if method == "getFile":
             file_id = params.get("file_id")
             if file_id == "voice123":
-                file_path = "voice/file.ogg"
+                file_path = "voice/file.oga"
             elif file_id == "doc123":
                 file_path = "documents/report.pdf"
             else:

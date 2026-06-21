@@ -30,6 +30,7 @@ from deepagents_talon.channels.base import (
     max_media_bytes_from_env,
     message_with_media_paths,
     optional_str,
+    outbound_media_root_from_env,
     parse_float,
     replace_message_metadata,
     split_csv,
@@ -136,11 +137,7 @@ class TelegramChannelConfig:
                 str(config.inbound_media_dir / "telegram"),
             ),
         )
-        outbound_media_dir = Path(
-            env.get("DEEPAGENTS_TALON_OUTBOUND_MEDIA_DIR")
-            or env.get("DEEPAGENTS_TALON_WORKSPACE")
-            or "/workspace",
-        )
+        outbound_media_dir = outbound_media_root_from_env(env)
         exposure = channel_exposure_from_env(
             env,
             ChannelExposureEnv(
@@ -1064,7 +1061,7 @@ def _save_offset(offset_file: Path, offset: int) -> None:
     """
     offset_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     content = json.dumps({"offset": offset})
-    tmp = offset_file.parent / f"{offset_file.name}.tmp"
+    tmp = offset_file.parent / f".{offset_file.name}.{secrets.token_hex(8)}.tmp"
     tmp.write_text(content, encoding="utf-8")
     tmp.chmod(0o600)
     tmp.replace(offset_file)

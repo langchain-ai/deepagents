@@ -26,6 +26,8 @@ MAX_VIDEO_BYTES = 64 * 1024 * 1024
 DEFAULT_MAX_MEDIA_BYTES = 1024 * 1024 * 1024
 MAX_MEDIA_BYTES_ENV = "DEEPAGENTS_TALON_MAX_MEDIA_BYTES"
 OPEN_EXPOSURE_ACK_VALUE = "allow-arbitrary-senders"
+OUTBOUND_MEDIA_DIR_ENV = "DEEPAGENTS_TALON_OUTBOUND_MEDIA_DIR"
+WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
 
 _LINK_PATTERN = re.compile(r"\[([^\]]+)]\(([^)]+)\)")
 _HEADING_PATTERN = re.compile(r"^#{1,6}\s+", flags=re.MULTILINE)
@@ -216,6 +218,21 @@ def channel_exposure_from_env(
     )
 
 
+def outbound_media_root_from_env(env: Mapping[str, str]) -> Path:
+    """Return the trusted outbound media root for channel attachments.
+
+    Args:
+        env: Environment variable mapping.
+
+    Returns:
+        Configured outbound media directory, workspace directory, or cwd.
+    """
+    raw = env.get(OUTBOUND_MEDIA_DIR_ENV) or env.get(WORKSPACE_ENV)
+    if raw:
+        return Path(raw).expanduser()
+    return Path.cwd()
+
+
 def validate_media(
     media: ChannelMedia,
     *,
@@ -284,6 +301,7 @@ def message_with_media_paths(
     *,
     media_paths: Sequence[str],
     mime_types: Sequence[str] = (),
+    has_media: bool | None = None,
 ) -> ChannelMessage:
     """Return `message` with normalized inbound-media path metadata.
 
@@ -291,6 +309,8 @@ def message_with_media_paths(
         message: Original channel message.
         media_paths: Local media paths associated with the message.
         mime_types: MIME types aligned with `media_paths`.
+        has_media: Optional provider-reported media presence. When omitted, this
+            is inferred from `media_paths`.
 
     Returns:
         Channel message with standard media path metadata.
@@ -303,7 +323,7 @@ def message_with_media_paths(
     metadata["media_mime_types"] = types
     metadata["media_types"] = types
     metadata["voice_path"] = paths[0] if paths and metadata.get("media_type") == "voice" else None
-    metadata["has_media"] = bool(paths)
+    metadata["has_media"] = bool(paths) if has_media is None else has_media
     return replace_message_metadata(message, metadata)
 
 

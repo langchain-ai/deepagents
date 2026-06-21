@@ -12,6 +12,7 @@ from deepagents_talon.channels.base import (
     chunk_text,
     format_markdown_for_channel,
     max_media_bytes_from_env,
+    message_with_media_paths,
     validate_media,
 )
 from deepagents_talon.interfaces import ChannelMedia, ChannelMessage
@@ -124,6 +125,27 @@ def test_validate_media_rejects_type_mismatch(tmp_path: Path) -> None:
 
     with pytest.raises(ChannelMediaError, match="does not match"):
         validate_media(ChannelMedia(path=path, media_type="video"))
+
+
+def test_message_with_media_paths_preserves_provider_media_presence() -> None:
+    message = ChannelMessage(
+        conversation_id="chat",
+        text="",
+        metadata={"media_type": "voice"},
+    )
+
+    with_media = message_with_media_paths(
+        message,
+        media_paths=[],
+        mime_types=[],
+        has_media=True,
+    )
+
+    assert with_media.metadata["media_paths"] == []
+    assert with_media.metadata["media_path"] is None
+    assert with_media.metadata["media_mime_types"] == []
+    assert with_media.metadata["voice_path"] is None
+    assert with_media.metadata["has_media"] is True
 
 
 def test_max_media_bytes_from_env_defaults_to_one_gb() -> None:

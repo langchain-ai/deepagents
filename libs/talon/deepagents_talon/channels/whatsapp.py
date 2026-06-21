@@ -32,6 +32,7 @@ from deepagents_talon.channels.base import (
     max_media_bytes_from_env,
     message_with_media_paths,
     optional_str,
+    outbound_media_root_from_env,
     parse_float,
     parse_int,
     replace_message_metadata,
@@ -134,11 +135,7 @@ class WhatsAppChannelConfig:
                 str(config.inbound_media_dir / "whatsapp"),
             ),
         )
-        outbound_media_dir = Path(
-            env.get("DEEPAGENTS_TALON_OUTBOUND_MEDIA_DIR")
-            or env.get("DEEPAGENTS_TALON_WORKSPACE")
-            or Path.cwd(),
-        )
+        outbound_media_dir = outbound_media_root_from_env(env)
         command = _bridge_command(env)
         return cls(
             session_dir=session,
@@ -605,7 +602,8 @@ def _parse_message(payload: object) -> ChannelMessage:
     text = values.get("text")
     if not isinstance(text, str):
         text = values.get("body")
-    return ChannelMessage(
+    has_media = bool(values.get("has_media") or values.get("hasMedia") or media_paths)
+    message = ChannelMessage(
         conversation_id=_required_str_any(values, ("chat_id", "chatId")),
         text=text if isinstance(text, str) else "",
         sender_id=optional_str(values.get("user_id") or values.get("senderId")),
@@ -618,15 +616,15 @@ def _parse_message(payload: object) -> ChannelMessage:
             "chat_type": values.get("chat_type") or values.get("chatType"),
             "chat_id_from": values.get("chat_id_from") or values.get("chatIdFrom"),
             "user_name": values.get("user_name") or values.get("senderName"),
-            "media_paths": media_paths,
-            "media_path": media_paths[0] if media_paths else None,
-            "media_mime_types": media_mime_types,
-            "media_types": media_mime_types,
-            "voice_path": media_paths[0] if media_paths and media_type == "voice" else None,
-            "has_media": bool(values.get("has_media") or values.get("hasMedia") or media_paths),
             "raw_message": values.get("raw_message") or {},
             "from_self": bool(values.get("from_self") or values.get("fromSelf")),
         },
+    )
+    return message_with_media_paths(
+        message,
+        media_paths=media_paths,
+        mime_types=media_mime_types,
+        has_media=has_media,
     )
 
 

@@ -31,6 +31,20 @@ from deepagents_talon.config import TalonConfig
 from deepagents_talon.interfaces import ChannelMedia, ChannelMessage
 
 
+class JsonResponse:
+    def __init__(self, payload: object) -> None:
+        self.payload = payload
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return json.dumps(self.payload).encode()
+
+
 class RecordingTransport:
     """Fake transport that records calls and returns canned responses."""
 
@@ -291,6 +305,25 @@ def test_config_accepts_telegram_bot_token_alias(tmp_path: Path) -> None:
     telegram = TelegramChannelConfig.from_talon_config(config)
 
     assert telegram.bot_token == "alias-token"  # noqa: S105  # inert test token
+
+
+def test_config_defaults_outbound_media_dir_to_cwd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    config = TalonConfig.from_env(
+        {
+            "AGENT_ASSISTANT_ID": "assistant",
+            "DEEPAGENTS_TALON_TELEGRAM_BOT_TOKEN": "token",
+            "DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID": "999",
+        },
+        base_home=tmp_path / "home",
+    )
+
+    telegram = TelegramChannelConfig.from_talon_config(config)
+
+    assert telegram.outbound_media_dir == tmp_path
 
 
 def test_config_requires_operator_for_self_exposure(tmp_path: Path) -> None:
@@ -593,6 +626,43 @@ async def test_send_message_chunks_long_text(tmp_path: Path) -> None:
     assert len(send_calls) == 2
     assert len(cast("str", send_calls[0][1]["text"])) <= 4096
     assert len(cast("str", send_calls[1][1]["text"])) <= 4096
+
+
+async def test_transport_rejects_bot_api_error_envelopes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_urlopen(request: object, *, timeout: float) -> JsonResponse:  # noqa: ARG001
+        return JsonResponse({"ok": False, "description": "bad request"})
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    transport = TelegramTransport(
+        api_base="https://api.telegram.org",
+        token="test-token",  # noqa: S106  # inert test token
+        timeout=1,
+    )
+
+    with pytest.raises(TelegramError, match="bad request"):
+        await transport.call("sendMessage", chat_id="123", text="hello")
+
+
+async def test_transport_rejects_upload_error_envelopes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_urlopen(request: object, *, timeout: float) -> JsonResponse:  # noqa: ARG001
+        return JsonResponse({"ok": False, "description": "upload rejected"})
+
+    image = tmp_path / "image.png"
+    image.write_bytes(b"image-data")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    transport = TelegramTransport(
+        api_base="https://api.telegram.org",
+        token="test-token",  # noqa: S106  # inert test token
+        timeout=1,
+    )
+
+    with pytest.raises(TelegramError, match="upload rejected"):
+        await transport.upload("sendPhoto", file_field="photo", file_path=image, chat_id="123")
 
 
 # --- Outbound media tests ---
@@ -932,7 +1002,7 @@ def test_offset_round_trip_uses_atomic_file_replace(tmp_path: Path) -> None:
 
     assert loaded == 100
     assert offset_file.is_file()
-    assert not (tmp_path / "telegram_offset.json.tmp").exists()
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["telegram_offset.json"]
     assert json.loads(offset_file.read_text(encoding="utf-8")) == {"offset": 100}
 
 

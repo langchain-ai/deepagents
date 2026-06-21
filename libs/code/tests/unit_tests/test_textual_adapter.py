@@ -771,25 +771,33 @@ class _SequencedAgent:
     def __init__(self, streams_by_call: list[list[tuple[Any, ...]]]) -> None:
         self._streams_by_call = streams_by_call
         self.stream_inputs: list[dict | Command] = []
+        self.contexts: list[Any] = []
 
     async def astream(
         self,
         stream_input: dict | Command,
         *_: Any,
+        context: object = None,
         **__: Any,
     ) -> AsyncIterator[tuple[Any, ...]]:
-        """Yield chunks for this invocation and record stream inputs."""
+        """Yield chunks for this invocation and record stream inputs/context."""
         self.stream_inputs.append(stream_input)
+        self.contexts.append(context)
         chunks = self._streams_by_call.pop(0) if self._streams_by_call else []
         for chunk in chunks:
             yield chunk
 
 
 class TestExecuteTaskTextualAutoApproveInput:
-    """Tests for seeding auto-approve state before the first graph run."""
+    """Auto-approve must ride on run context, never a first-turn `Command`."""
 
-    async def test_pre_enabled_auto_approve_uses_command_update(self) -> None:
-        """Private auto-approve state must be written through `Command.update`."""
+    async def test_pre_enabled_auto_approve_uses_plain_dict_and_context(self) -> None:
+        """A fresh turn sends a plain dict input; auto-approve rides on context.
+
+        A first-turn `Command(update=...)` is rebuilt with `goto=None` by the
+        LangGraph API server's `map_cmd`, crashing `_control_branch` on a fresh
+        thread. The flag must travel via run context instead.
+        """
         agent = _SequencedAgent([[]])
         adapter = TextualUIAdapter(
             mount_message=_mock_mount,
@@ -806,11 +814,9 @@ class TestExecuteTaskTextualAutoApproveInput:
         )
 
         stream_input = agent.stream_inputs[0]
-        assert isinstance(stream_input, Command)
-        assert stream_input.update == {
-            "messages": [{"role": "user", "content": "hi"}],
-            "_auto_approve": True,
-        }
+        assert not isinstance(stream_input, Command)
+        assert stream_input == {"messages": [{"role": "user", "content": "hi"}]}
+        assert agent.contexts[0]["auto_approve"] is True
 
 
 def _ask_user_interrupt_chunk(payload: dict[str, Any]) -> tuple[Any, ...]:

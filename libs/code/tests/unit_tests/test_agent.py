@@ -63,24 +63,37 @@ def test_add_interrupt_on_attaches_auto_approve_predicate() -> None:
         assert config.get("when") is _should_interrupt_tool_call
 
 
-def _request_with_state(state: object) -> "ToolCallRequest":
+def _request_with_context(context: object) -> "ToolCallRequest":
     return cast(
         "ToolCallRequest",
-        SimpleNamespace(state=state),
+        SimpleNamespace(runtime=SimpleNamespace(context=context)),
     )
 
 
-def test_should_interrupt_tool_call_respects_auto_approve_state() -> None:
-    """The predicate suppresses interrupts once auto-approve is in state."""
-    assert _should_interrupt_tool_call(_request_with_state({"_auto_approve": False}))
-    assert not _should_interrupt_tool_call(_request_with_state({"_auto_approve": True}))
+def test_should_interrupt_tool_call_respects_auto_approve_context() -> None:
+    """The predicate suppresses interrupts once auto-approve is in run context."""
+    # Dataclass-shaped context (in-process path).
+    assert _should_interrupt_tool_call(
+        _request_with_context(CLIContextSchema(auto_approve=False))
+    )
+    assert not _should_interrupt_tool_call(
+        _request_with_context(CLIContextSchema(auto_approve=True))
+    )
+    # Dict-shaped context (LangGraph API / RemoteGraph path).
+    assert _should_interrupt_tool_call(_request_with_context({"auto_approve": False}))
+    assert not _should_interrupt_tool_call(
+        _request_with_context({"auto_approve": True})
+    )
 
 
 def test_should_interrupt_tool_call_defaults_to_interrupting() -> None:
-    """Missing or malformed state should not auto-approve."""
-    assert _should_interrupt_tool_call(_request_with_state({}))
-    assert _should_interrupt_tool_call(_request_with_state(None))
-    assert _should_interrupt_tool_call(_request_with_state(SimpleNamespace()))
+    """Missing or malformed context must not auto-approve."""
+    assert _should_interrupt_tool_call(_request_with_context({}))
+    assert _should_interrupt_tool_call(_request_with_context(None))
+    assert _should_interrupt_tool_call(
+        cast("ToolCallRequest", SimpleNamespace(runtime=None))
+    )
+    assert _should_interrupt_tool_call(cast("ToolCallRequest", SimpleNamespace()))
 
 
 def test_sanitize_agent_message_name_replaces_provider_unsafe_chars() -> None:

@@ -9,7 +9,7 @@ import shutil
 import tempfile
 import tomllib
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, LocalShellBackend
@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from deepagents.middleware.async_subagents import AsyncSubAgent
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
     from langchain.agents.middleware import InterruptOnConfig
+    from langchain.agents.middleware.types import AgentState
     from langchain.messages import ToolCall
     from langchain.tools import BaseTool
     from langchain_core.language_models import BaseChatModel
@@ -48,11 +49,7 @@ if TYPE_CHECKING:
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.output import OutputFormat
 
-from langchain.agents.middleware.types import (
-    AgentMiddleware,
-    AgentState,
-    PrivateStateAttr,
-)
+from langchain.agents.middleware.types import AgentMiddleware
 
 from deepagents_code import theme
 from deepagents_code._cli_context import CLIContextSchema
@@ -1011,25 +1008,19 @@ def _format_execute_description(
     return "\n".join(lines)
 
 
-class AutoApproveState(AgentState):
-    """Private state for the current tool-approval mode."""
-
-    _auto_approve: Annotated[NotRequired[bool], PrivateStateAttr]
-
-
-class AutoApproveStateMiddleware(AgentMiddleware[AutoApproveState, Any]):
-    """Registers state used by tool-interrupt predicates."""
-
-    state_schema = AutoApproveState
-
-
 def _should_interrupt_tool_call(request: ToolCallRequest) -> bool:
     """Decide whether a gated tool call should pause for human approval.
 
-    Returns `False` once graph state carries `_auto_approve=True` so
+    Returns `False` once the run context carries `auto_approve=True` so
     `HumanInTheLoopMiddleware` skips the interrupt entirely. This avoids the
     interrupt-then-auto-resolve pattern that previously split each turn into a
     separate run after every tool call, producing noisy traces.
+
+    Auto-approve is read from the run-scoped `CLIContext` (set by the client)
+    rather than graph state. Sourcing it from state required seeding it with a
+    first-turn `Command(update=...)`, which the LangGraph API server rebuilds
+    with `goto=None` — crashing `_control_branch` on a fresh thread. Context
+    is also safer: the model cannot self-approve by writing state.
 
     Args:
         request: The pending tool call under review.
@@ -1037,10 +1028,13 @@ def _should_interrupt_tool_call(request: ToolCallRequest) -> bool:
     Returns:
         `True` to interrupt for approval, `False` to auto-approve.
     """
-    state = getattr(request, "state", None)
-    if not isinstance(state, dict):
-        return True
-    return not bool(state.get("_auto_approve", False))
+    runtime = getattr(request, "runtime", None)
+    ctx = getattr(runtime, "context", None)
+    if isinstance(ctx, CLIContextSchema):
+        return not ctx.auto_approve
+    if isinstance(ctx, dict):
+        return not bool(ctx.get("auto_approve", False))
+    return True
 
 
 def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
@@ -1387,7 +1381,6 @@ def create_cli_agent(
 
     # Build middleware stack based on enabled features
     agent_middleware: list[AgentMiddleware[Any, Any]] = [
-        AutoApproveStateMiddleware(),
         ConfigurableModelMiddleware(),
         _FilesystemEmptyResultMiddleware(),
     ]

@@ -283,7 +283,11 @@ class TelegramTransport:
 
 
 class TelegramChannel:
-    """Channel adapter for Telegram via the Bot API with long polling."""
+    """Channel adapter for Telegram via the Bot API with long polling.
+
+    Only private chats and channel posts are processed. Messages from group
+    and supergroup chats are silently dropped during parsing.
+    """
 
     def __init__(
         self,
@@ -372,26 +376,20 @@ class TelegramChannel:
         )
         _check_telegram_size(checked)
         caption = await self._media_caption(conversation_id, checked.caption)
-        if checked.media_type == "image":
-            params: dict[str, object] = {"chat_id": conversation_id}
-            if caption:
-                params["caption"] = caption
-            await self._transport.upload(
-                "sendPhoto",
-                file_field="photo",
-                file_path=checked.path,
-                **params,
-            )
-        else:
-            params = {"chat_id": conversation_id}
-            if caption:
-                params["caption"] = caption
-            await self._transport.upload(
-                "sendDocument",
-                file_field="document",
-                file_path=checked.path,
-                **params,
-            )
+        method, file_field = (
+            ("sendPhoto", "photo")
+            if checked.media_type == "image"
+            else ("sendDocument", "document")
+        )
+        params: dict[str, object] = {"chat_id": conversation_id}
+        if caption:
+            params["caption"] = caption
+        await self._transport.upload(
+            method,
+            file_field=file_field,
+            file_path=checked.path,
+            **params,
+        )
 
     async def send_typing(self, conversation_id: str) -> None:
         """Send a Telegram typing indicator.
@@ -620,9 +618,8 @@ def _check_telegram_size(media: ChannelMedia) -> None:
     try:
         validate_media_size(media.path, max_bytes=limit)
     except ChannelMediaError:
-        size = media.path.stat().st_size
         label = "photo" if media.media_type == "image" else "document"
-        msg = f"{label} media is too large for Telegram: {size} bytes exceeds {limit}"
+        msg = f"{label} media is too large for Telegram: exceeds {limit} bytes"
         raise ChannelMediaError(msg) from None
 
 
@@ -730,10 +727,6 @@ def _safe_suffix(file_path: str, media_type: str) -> str:
         return ".ogg"
     if re.fullmatch(r"\.[a-z0-9]{1,16}", suffix):
         return suffix
-    return _default_suffix(media_type)
-
-
-def _default_suffix(media_type: str) -> str:
     if media_type == "image":
         return ".jpg"
     if media_type == "voice":
@@ -856,6 +849,10 @@ def _message_values(
     chat_values = cast("Mapping[str, object]", chat)
     chat_type = chat_values.get("type")
     if chat_type != expected_chat_type:
+        logger.debug(
+            "Skipping Telegram update with chat type %r (expected %r)",
+            chat_type, expected_chat_type,
+        )
         return None
     chat_id = chat_values.get("id")
     if not isinstance(chat_id, int):

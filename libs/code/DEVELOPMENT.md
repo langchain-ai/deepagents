@@ -2,6 +2,62 @@
 
 New to the package? Start with [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a high-level map of how the TUI, the `langgraph dev` server subprocess, and the agent graph fit together.
 
+## Contents
+
+- [QuickStart](#quickstart) — get a local checkout running
+- [Running the tests and linters](#running-the-tests-and-linters) — the checks CI runs
+- [Live CSS development with Textual devtools](#live-css-development-with-textual-devtools) — UI/CSS hot-reload
+- [Debugging](#debugging) — diagnose startup crashes and client-side issues
+
+## QuickStart
+
+This package uses [`uv`](https://docs.astral.sh/uv/) for environment and dependency management. Install it first if you haven't:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Clone the monorepo and sync the `code` package with its test dependencies (this creates the virtualenv and installs everything you need to run and test the app):
+
+```bash
+git clone https://github.com/langchain-ai/deepagents.git
+cd deepagents/libs/code
+uv sync --group test
+```
+
+Run the TUI from your local checkout:
+
+```bash
+uv run deepagents-code
+```
+
+`uv run` executes against the editable install, so your local changes take effect on the next launch. If you want a persistent `dcode-dev` command that stays separate from a released install, see "Local dev installs" in [`AGENTS.md`](./AGENTS.md).
+
+## Running the tests and linters
+
+All commands run from `libs/code`. These mirror what CI enforces, so run them before opening a PR.
+
+```bash
+# Unit tests (no network)
+make test
+
+# A single test file
+make test TEST_FILE=tests/unit_tests/test_specific.py
+
+# Integration tests (network permitted)
+make integration_test
+```
+
+```bash
+# Auto-format (ruff format + autofix)
+make format
+
+# Lint + type-check (ruff, ty, commands-catalog check)
+make lint
+```
+
+Run `make help` to see every available target.
+
 ## Live CSS development with Textual devtools
 
 Textual's devtools console enables CSS hot-reload and live `self.log()` output during development.

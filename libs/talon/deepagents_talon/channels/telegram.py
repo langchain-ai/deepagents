@@ -851,7 +851,8 @@ def _message_values(
     if chat_type != expected_chat_type:
         logger.debug(
             "Skipping Telegram update with chat type %r (expected %r)",
-            chat_type, expected_chat_type,
+            chat_type,
+            expected_chat_type,
         )
         return None
     chat_id = chat_values.get("id")

@@ -173,7 +173,6 @@ def _make_config(
         ),
         poll_interval_seconds=60,
         poll_timeout_seconds=1,
-        operator_id=operator_id,
         allowed_user_ids=allowed_user_ids or frozenset(),
     )
 
@@ -260,7 +259,6 @@ def test_config_from_talon_env_maps_multiple_operator_ids(tmp_path: Path) -> Non
 
     telegram = TelegramChannelConfig.from_talon_config(config)
 
-    assert telegram.operator_id in {"999", "1000"}
     assert telegram.exposure == ChannelExposure(
         operator_ids=frozenset({"999", "1000"}),
     )

@@ -13,7 +13,7 @@ import re
 import secrets
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -88,8 +88,6 @@ class TelegramChannelConfig:
         request_timeout_seconds: Per-request HTTP timeout for Bot API calls.
         max_media_bytes: Maximum media bytes allowed for inbound downloads and
             outbound local files before provider-specific limits are applied.
-        operator_id: First Telegram user ID for the operator, preserved for
-            compatibility with single-operator callers in self exposure mode.
         allowed_user_ids: Telegram user IDs allowed to trigger private chats in
             allowlist exposure mode.
     """
@@ -104,7 +102,6 @@ class TelegramChannelConfig:
     poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
     max_media_bytes: int = DEFAULT_MAX_MEDIA_BYTES
-    operator_id: str | None = None
     allowed_user_ids: frozenset[str] = field(default_factory=frozenset)
 
     @classmethod
@@ -170,7 +167,6 @@ class TelegramChannelConfig:
                 DEFAULT_REQUEST_TIMEOUT_SECONDS,
             ),
             max_media_bytes=max_media_bytes_from_env(env),
-            operator_id=exposure.operator_id,
             allowed_user_ids=frozenset(
                 split_csv(env.get("DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_USERS", "")),
             ),
@@ -312,7 +308,7 @@ class TelegramChannel:
         self._poll: asyncio.Task[None] | None = None
         self._stopped = asyncio.Event()
         self._status = ChannelStatus(provider="telegram", connected=False, detail="disconnected")
-        self._exposure = _effective_exposure(config.exposure, config.operator_id)
+        self._exposure = config.exposure
         self._bot_id: str | None = None
         self._bot_username: str | None = None
         self._offset = 0
@@ -689,15 +685,6 @@ def _form_field_value(value: object) -> str:
     if isinstance(value, (dict, list)):
         return json.dumps(value)
     return str(value)
-
-
-def _effective_exposure(
-    exposure: ChannelExposure,
-    operator_id: str | None,
-) -> ChannelExposure:
-    if exposure.mode != ExposureMode.SELF or exposure.operator_ids or operator_id is None:
-        return exposure
-    return replace(exposure, operator_ids=frozenset({operator_id}))
 
 
 def _with_from_self(message: ChannelMessage, bot_id: str | None) -> ChannelMessage:

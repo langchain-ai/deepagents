@@ -92,7 +92,7 @@ class TalonHost:
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._conversation_tasks: defaultdict[str, set[asyncio.Task[None]]] = defaultdict(set)
-        self._conversation_resets: defaultdict[str, int] = defaultdict(int)
+        self._conversation_resets: dict[str, int] = {}
         self._pending_tool_approvals: dict[str, _PendingToolApproval] = {}
         self._stopped = asyncio.Event()
         self._running = False
@@ -166,10 +166,10 @@ class TalonHost:
         provider = await _channel_provider(channel)
         command = _command_name(message.text)
         channel_conversation_id = message.conversation_id
-        conversation_root = self._channel_conversation_root(
-            channel,
+        conversation_root = self._conversation_root(
             provider,
             channel_conversation_id,
+            fallback_provider=channel.__class__.__qualname__,
         )
         agent_conversation_id = self._agent_conversation_id(conversation_root)
 
@@ -245,9 +245,9 @@ class TalonHost:
         Returns:
             Agent text output for scheduler delivery handling.
         """
-        conversation_root = self._scheduled_conversation_root(
-            provider=job.origin.channel,
-            conversation_id=job.origin.conversation_id,
+        conversation_root = self._conversation_root(
+            job.origin.channel,
+            job.origin.conversation_id,
         )
         conversation_id = self._agent_conversation_id(conversation_root)
         result = await self._invoke_agent(
@@ -330,7 +330,7 @@ class TalonHost:
     ) -> None:
         current_conversation_id = self._agent_conversation_id(conversation_root)
         await self._cancel_conversation_tasks(current_conversation_id)
-        self._conversation_resets[conversation_root] += 1
+        self._conversation_resets[conversation_root] = self._conversation_resets.get(conversation_root, 0) + 1
         await channel.send_message(conversation_id, _NEW_CONVERSATION_MESSAGE)
 
     async def _cancel_conversation(
@@ -366,31 +366,24 @@ class TalonHost:
         return True
 
     def _agent_conversation_id(self, conversation_id: str) -> str:
-        reset = self._conversation_resets[conversation_id]
+        reset = self._conversation_resets.get(conversation_id, 0)
         if reset == 0:
             return conversation_id
         return f"{conversation_id}{_RESET_THREAD_SEPARATOR}{reset}"
 
-    def _channel_conversation_root(
+    def _conversation_root(
         self,
-        channel: ChannelAdapter,
         provider: str | None,
         conversation_id: str,
+        *,
+        fallback_provider: str | None = None,
     ) -> str:
         if len(self.channels) <= 1:
             return conversation_id
-        provider_key = provider or channel.__class__.__qualname__
-        return _conversation_key(provider_key, conversation_id)
-
-    def _scheduled_conversation_root(
-        self,
-        *,
-        provider: str | None,
-        conversation_id: str,
-    ) -> str:
-        if len(self.channels) <= 1 or provider is None:
+        provider_key = provider or fallback_provider
+        if provider_key is None:
             return conversation_id
-        return _conversation_key(provider, conversation_id)
+        return _conversation_key(provider_key, conversation_id)
 
     async def _cancel_all(self) -> None:
         tasks = {

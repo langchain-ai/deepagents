@@ -75,23 +75,6 @@ class ChannelExposureEnv:
 
 
 @dataclass(frozen=True, slots=True)
-class FilteredMediaPaths:
-    """Inbound media paths retained after applying local size caps.
-
-    Args:
-        paths: String paths that remain usable.
-        mime_types: MIME types aligned with `paths`.
-        changed: Whether any input path was dropped or ignored.
-        errors: Human-readable drop reasons for logs or metadata.
-    """
-
-    paths: tuple[str, ...]
-    mime_types: tuple[str, ...]
-    changed: bool
-    errors: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
 class ChannelExposure:
     """Inbound exposure policy shared by channel adapters.
 
@@ -325,58 +308,6 @@ def message_with_media_paths(
     metadata["voice_path"] = paths[0] if paths and metadata.get("media_type") == "voice" else None
     metadata["has_media"] = bool(paths) if has_media is None else has_media
     return replace_message_metadata(message, metadata)
-
-
-def filter_capped_media_paths(
-    media_paths: Sequence[object],
-    mime_types: Sequence[object],
-    *,
-    max_bytes: int,
-) -> FilteredMediaPaths:
-    """Filter inbound local media paths against a configured size cap.
-
-    Args:
-        media_paths: Candidate local media paths from a channel payload.
-        mime_types: Candidate MIME types aligned with `media_paths`.
-        max_bytes: Maximum allowed file size.
-
-    Returns:
-        Filter result containing kept paths and dropped-path reasons.
-
-    Note:
-        Paths that do not exist on disk are silently kept. This is intentional:
-        WhatsApp bridge downloads may still be in progress when inbound messages
-        are polled, so a missing file does not indicate an oversized or invalid
-        download — only one that has not landed yet.
-    """
-    kept: list[str] = []
-    kept_mime_types: list[str] = []
-    errors: list[str] = []
-    changed = False
-    for index, raw_path in enumerate(media_paths):
-        if not isinstance(raw_path, str):
-            changed = True
-            continue
-        try:
-            validate_media_size(Path(raw_path), max_bytes=max_bytes)
-        except FileNotFoundError:
-            kept.append(raw_path)
-        except ChannelMediaError as error:
-            changed = True
-            errors.append(str(error))
-            continue
-        else:
-            kept.append(raw_path)
-        if index < len(mime_types):
-            mime_type = mime_types[index]
-            if isinstance(mime_type, str):
-                kept_mime_types.append(mime_type)
-    return FilteredMediaPaths(
-        paths=tuple(kept),
-        mime_types=tuple(kept_mime_types),
-        changed=changed,
-        errors=tuple(errors),
-    )
 
 
 def validate_media_size(path: Path, *, max_bytes: int) -> None:

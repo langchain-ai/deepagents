@@ -24,10 +24,9 @@ from deepagents_talon.channels.base import (
     MAX_TEXT_CHARS,
     ChannelExposure,
     ChannelExposureEnv,
+    ChannelMediaError,
     channel_exposure_from_env,
     chunk_text,
-    dispatch_message,
-    filter_capped_media_paths,
     format_markdown_for_channel,
     max_media_bytes_from_env,
     message_with_media_paths,
@@ -37,11 +36,12 @@ from deepagents_talon.channels.base import (
     parse_int,
     replace_message_metadata,
     validate_media,
+    validate_media_size,
 )
 from deepagents_talon.interfaces import ChannelMedia, ChannelMessage, ChannelStatus, MessageHandler
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from deepagents_talon.config import TalonConfig
 
@@ -510,7 +510,10 @@ class WhatsAppChannel:
         self._bridge_stderr = None
 
     async def _dispatch(self, message: ChannelMessage) -> None:
-        await dispatch_message(self._handler, message, provider="WhatsApp")
+        if self._handler is None:
+            logger.warning("Dropping WhatsApp message because no handler is registered")
+            return
+        await self._handler(message)
 
     async def _post_result(self, path: str, payload: Mapping[str, object]) -> object:
         response = await self._transport.post(path, payload)
@@ -628,13 +631,82 @@ def _parse_message(payload: object) -> ChannelMessage:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _FilteredMediaPaths:
+    """Inbound media paths retained after applying local size caps.
+
+    Args:
+        paths: String paths that remain usable.
+        mime_types: MIME types aligned with `paths`.
+        changed: Whether any input path was dropped or ignored.
+        errors: Human-readable drop reasons for logs or metadata.
+    """
+
+    paths: tuple[str, ...]
+    mime_types: tuple[str, ...]
+    changed: bool
+    errors: tuple[str, ...] = ()
+
+
+def _filter_capped_media_paths(
+    media_paths: Sequence[object],
+    mime_types: Sequence[object],
+    *,
+    max_bytes: int,
+) -> _FilteredMediaPaths:
+    """Filter inbound local media paths against a configured size cap.
+
+    Args:
+        media_paths: Candidate local media paths from a channel payload.
+        mime_types: Candidate MIME types aligned with `media_paths`.
+        max_bytes: Maximum allowed file size.
+
+    Returns:
+        Filter result containing kept paths and dropped-path reasons.
+
+    Note:
+        Paths that do not exist on disk are silently kept. This is intentional:
+        WhatsApp bridge downloads may still be in progress when inbound messages
+        are polled, so a missing file does not indicate an oversized or invalid
+        download — only one that has not landed yet.
+    """
+    kept: list[str] = []
+    kept_mime_types: list[str] = []
+    errors: list[str] = []
+    changed = False
+    for index, raw_path in enumerate(media_paths):
+        if not isinstance(raw_path, str):
+            changed = True
+            continue
+        try:
+            validate_media_size(Path(raw_path), max_bytes=max_bytes)
+        except FileNotFoundError:
+            kept.append(raw_path)
+        except ChannelMediaError as error:
+            changed = True
+            errors.append(str(error))
+            continue
+        else:
+            kept.append(raw_path)
+        if index < len(mime_types):
+            mime_type = mime_types[index]
+            if isinstance(mime_type, str):
+                kept_mime_types.append(mime_type)
+    return _FilteredMediaPaths(
+        paths=tuple(kept),
+        mime_types=tuple(kept_mime_types),
+        changed=changed,
+        errors=tuple(errors),
+    )
+
+
 def _enforce_inbound_media_cap(message: ChannelMessage, *, max_bytes: int) -> ChannelMessage:
     media_paths = message.metadata.get("media_paths")
     if not isinstance(media_paths, list) or not media_paths:
         return message
 
     mime_types = message.metadata.get("media_mime_types")
-    filtered = filter_capped_media_paths(
+    filtered = _filter_capped_media_paths(
         media_paths=media_paths,
         mime_types=mime_types if isinstance(mime_types, list) else [],
         max_bytes=max_bytes,

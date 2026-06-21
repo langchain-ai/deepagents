@@ -97,10 +97,11 @@ def test_config_from_talon_env_maps_exposure(
     assert whatsapp.max_media_bytes == DEFAULT_WHATSAPP_MAX_MEDIA_BYTES
     assert whatsapp.exposure == ChannelExposure(
         mode=ExposureMode.ALLOWLIST,
-        operator_id="operator",
+        operator_ids=frozenset({"operator"}),
         conversations=frozenset({"chat-1", "chat-2"}),
         mention_patterns=("@agent *",),
     )
+    assert whatsapp.exposure.operator_id == "operator"
     assert whatsapp.bot_header == "test bot"
 
 
@@ -116,9 +117,9 @@ def test_config_from_talon_env_maps_multiple_operator_ids(tmp_path: Path) -> Non
     whatsapp = WhatsAppChannelConfig.from_talon_config(config)
 
     assert whatsapp.exposure == ChannelExposure(
-        operator_id="operator",
         operator_ids=frozenset({"operator", "backup-operator"}),
     )
+    assert whatsapp.exposure.operator_id in {"operator", "backup-operator"}
     assert whatsapp.exposure.allows(
         ChannelMessage(conversation_id="chat", text="hi", sender_id="operator")
     )
@@ -245,7 +246,7 @@ async def test_channel_polls_and_dispatches_allowed_messages(tmp_path: Path) -> 
     channel = WhatsAppChannel(
         WhatsAppChannelConfig(
             session_dir=tmp_path,
-            exposure=ChannelExposure(operator_id="operator"),
+            exposure=ChannelExposure(operator_ids=frozenset({"operator"})),
             poll_interval_seconds=60,
             health_interval_seconds=60,
         ),

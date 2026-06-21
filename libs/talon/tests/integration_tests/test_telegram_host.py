@@ -8,47 +8,11 @@ from deepagents_talon.channels.telegram import TelegramChannel
 from deepagents_talon.channels.whatsapp import WhatsAppChannel
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.host import TalonHost
-from deepagents_talon.interfaces import AgentRequest, AgentResult, ChannelMessage, ChannelStatus
+from deepagents_talon.interfaces import AgentRequest, AgentResult
+from tests.conftest import RecordingChannel
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
     from pathlib import Path
-
-
-class RecordingChannel:
-    def __init__(self, provider: str) -> None:
-        self.provider = provider
-        self.handler: Callable[[ChannelMessage], Awaitable[None]] | None = None
-        self.started = False
-        self.stopped = False
-        self.status_report = ChannelStatus(provider=provider, connected=True, detail="connected")
-
-    async def start(self) -> None:
-        self.started = True
-
-    async def stop(self) -> None:
-        self.stopped = True
-
-    def set_message_handler(self, handler: Callable[[ChannelMessage], Awaitable[None]]) -> None:
-        self.handler = handler
-
-    async def send_message(self, conversation_id: str, text: str) -> None:
-        pass
-
-    async def send_media(self, conversation_id: str, media: object) -> None:
-        pass
-
-    async def edit_message(self, conversation_id: str, message_id: str, text: str) -> None:
-        pass
-
-    async def status(self) -> ChannelStatus:
-        return self.status_report
-
-    async def receive(self, text: str, *, conversation_id: str = "chat") -> None:
-        if self.handler is None:
-            msg = "channel handler was not registered"
-            raise AssertionError(msg)
-        await self.handler(ChannelMessage(conversation_id=conversation_id, text=text))
 
 
 class EchoAgent:

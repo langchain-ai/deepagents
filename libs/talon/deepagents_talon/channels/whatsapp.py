@@ -24,13 +24,14 @@ from deepagents_talon.channels.base import (
     MAX_TEXT_CHARS,
     ChannelExposure,
     ChannelExposureEnv,
-    ExposureMode,
     channel_exposure_from_env,
     chunk_text,
+    dispatch_message,
     filter_capped_media_paths,
     format_markdown_for_channel,
     max_media_bytes_from_env,
     message_with_media_paths,
+    optional_str,
     parse_float,
     parse_int,
     replace_message_metadata,
@@ -145,14 +146,24 @@ class WhatsAppChannelConfig:
             outbound_media_dir=outbound_media_dir,
             host=host,
             port=port,
-            exposure=_exposure_from_env(env),
+            exposure=channel_exposure_from_env(
+                env,
+                ChannelExposureEnv(
+                    provider="WhatsApp",
+                    exposure="DEEPAGENTS_TALON_WHATSAPP_EXPOSURE",
+                    allowlist_chats="DEEPAGENTS_TALON_WHATSAPP_ALLOWLIST_CHATS",
+                    mention_patterns="DEEPAGENTS_TALON_WHATSAPP_MENTION_PATTERNS",
+                    operator_id="DEEPAGENTS_TALON_WHATSAPP_OPERATOR_ID",
+                    open_ack=OPEN_EXPOSURE_ACK_ENV,
+                ),
+            ),
             bot_header=env.get("DEEPAGENTS_TALON_WHATSAPP_BOT_HEADER", DEFAULT_BOT_HEADER),
             bridge_command=command,
             chrome_path=env.get("DEEPAGENTS_TALON_WHATSAPP_CHROME_PATH"),
             web_version_cache_url=env.get("DEEPAGENTS_TALON_WHATSAPP_WEB_VERSION_CACHE_URL"),
             bridge_token=env.get("DEEPAGENTS_TALON_WHATSAPP_BRIDGE_TOKEN")
             or secrets.token_hex(DEFAULT_BRIDGE_TOKEN_BYTES),
-            max_media_bytes=_whatsapp_max_media_bytes_from_env(env),
+            max_media_bytes=min(max_media_bytes_from_env(env), DEFAULT_WHATSAPP_MAX_MEDIA_BYTES),
             poll_interval_seconds=parse_float(
                 env.get("DEEPAGENTS_TALON_WHATSAPP_POLL_SECONDS"),
                 DEFAULT_POLL_INTERVAL_SECONDS,
@@ -502,10 +513,7 @@ class WhatsAppChannel:
         self._bridge_stderr = None
 
     async def _dispatch(self, message: ChannelMessage) -> None:
-        if self._handler is None:
-            logger.warning("Dropping WhatsApp message because no handler is registered")
-            return
-        await self._handler(message)
+        await dispatch_message(self._handler, message, provider="WhatsApp")
 
     async def _post_result(self, path: str, payload: Mapping[str, object]) -> object:
         response = await self._transport.post(path, payload)
@@ -543,10 +551,6 @@ def bridge_script_path() -> Path:
 
 def _bridge_media_dir(config: WhatsAppChannelConfig) -> Path:
     return config.inbound_media_dir or config.session_dir.parent / "media"
-
-
-def _whatsapp_max_media_bytes_from_env(env: Mapping[str, str]) -> int:
-    return min(max_media_bytes_from_env(env), DEFAULT_WHATSAPP_MAX_MEDIA_BYTES)
 
 
 def _stage_bridge_media(path: Path, config: WhatsAppChannelConfig) -> Path:
@@ -594,7 +598,7 @@ def _parse_message(payload: object) -> ChannelMessage:
         or values.get("mimeTypes")
         or values.get("media_types"),
     )
-    message_type = _optional_str(
+    message_type = optional_str(
         values.get("message_type") or values.get("messageType") or values.get("mediaType"),
     )
     media_type = _message_media_type(values, message_type, media_mime_types)
@@ -604,8 +608,8 @@ def _parse_message(payload: object) -> ChannelMessage:
     return ChannelMessage(
         conversation_id=_required_str_any(values, ("chat_id", "chatId")),
         text=text if isinstance(text, str) else "",
-        sender_id=_optional_str(values.get("user_id") or values.get("senderId")),
-        message_id=_optional_str(values.get("message_id") or values.get("messageId")),
+        sender_id=optional_str(values.get("user_id") or values.get("senderId")),
+        message_id=optional_str(values.get("message_id") or values.get("messageId")),
         metadata={
             "provider": "whatsapp",
             "message_type": message_type,
@@ -688,10 +692,6 @@ def _required_str_any(payload: Mapping[str, object], keys: tuple[str, ...]) -> s
     raise WhatsAppBridgeError(msg)
 
 
-def _optional_str(value: object) -> str | None:
-    return value if isinstance(value, str) and value else None
-
-
 def _str_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
@@ -703,7 +703,7 @@ def _message_media_type(
     message_type: str | None,
     media_mime_types: list[str],
 ) -> str | None:
-    raw = _optional_str(values.get("media_type") or values.get("mediaType"))
+    raw = optional_str(values.get("media_type") or values.get("mediaType"))
     candidates = [raw, message_type, *media_mime_types]
     if any(_is_voice_type(candidate) for candidate in candidates):
         return "voice"
@@ -730,26 +730,6 @@ def _is_image_type(value: str | None) -> bool:
 
 def _is_video_type(value: str | None) -> bool:
     return isinstance(value, str) and "video" in value.lower()
-
-
-def _exposure_from_env(env: Mapping[str, str]) -> ChannelExposure:
-    exposure = channel_exposure_from_env(
-        env,
-        ChannelExposureEnv(
-            provider="WhatsApp",
-            exposure="DEEPAGENTS_TALON_WHATSAPP_EXPOSURE",
-            allowlist_chats="DEEPAGENTS_TALON_WHATSAPP_ALLOWLIST_CHATS",
-            mention_patterns="DEEPAGENTS_TALON_WHATSAPP_MENTION_PATTERNS",
-            operator_id="DEEPAGENTS_TALON_WHATSAPP_OPERATOR_ID",
-            open_ack=OPEN_EXPOSURE_ACK_ENV,
-        ),
-    )
-    if exposure.mode == ExposureMode.OPEN:
-        logger.warning(
-            "WhatsApp open exposure enabled; arbitrary senders can trigger the agent with "
-            "operator credentials and local host access"
-        )
-    return exposure
 
 
 def _bridge_command(env: Mapping[str, str]) -> tuple[str, ...] | None:

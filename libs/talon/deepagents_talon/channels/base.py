@@ -6,6 +6,7 @@ Talon is an experimental runtime and is subject to change or removal at any time
 from __future__ import annotations
 
 import fnmatch
+import logging
 import mimetypes
 import re
 from dataclasses import dataclass, field
@@ -13,7 +14,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from deepagents_talon.interfaces import ChannelMedia, ChannelMessage
+from deepagents_talon.interfaces import ChannelMedia, ChannelMessage, MessageHandler
 from deepagents_talon.media import resolve_bounded_media_path
 
 if TYPE_CHECKING:
@@ -30,6 +31,8 @@ _LINK_PATTERN = re.compile(r"\[([^\]]+)]\(([^)]+)\)")
 _HEADING_PATTERN = re.compile(r"^#{1,6}\s+", flags=re.MULTILINE)
 _BOLD_PATTERN = re.compile(r"\*\*([^*]+)\*\*|__([^_]+)__")
 _ITALIC_PATTERN = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)|_([^_\n]+)_")
+
+logger = logging.getLogger(__name__)
 
 
 class ExposureMode(StrEnum):
@@ -92,8 +95,6 @@ class ChannelExposure:
 
     Args:
         mode: Trigger policy for inbound messages.
-        operator_id: Channel-specific id for the operator's own account. Preserved
-            for callers that configure a single operator.
         conversations: Conversation ids allowed in allowlist mode.
         mention_patterns: Glob-style patterns that may allow a message by text.
         operator_ids: Channel-specific ids for operator accounts that may trigger
@@ -101,17 +102,14 @@ class ChannelExposure:
     """
 
     mode: ExposureMode = ExposureMode.SELF
-    operator_id: str | None = None
     conversations: frozenset[str] = field(default_factory=frozenset)
     mention_patterns: tuple[str, ...] = ()
-    operator_ids: frozenset[str] = field(default_factory=frozenset, kw_only=True)
+    operator_ids: frozenset[str] = field(default_factory=frozenset)
 
-    def __post_init__(self) -> None:
-        """Normalize the legacy single-operator field into the operator id set."""
-        operator_ids = set(self.operator_ids)
-        if self.operator_id is not None:
-            operator_ids.add(self.operator_id)
-        object.__setattr__(self, "operator_ids", frozenset(operator_ids))
+    @property
+    def operator_id(self) -> str | None:
+        """First operator id, or ``None`` when no operators are configured."""
+        return next(iter(self.operator_ids), None)
 
     def allows(self, message: ChannelMessage) -> bool:
         """Return whether an inbound message may trigger the agent.
@@ -196,8 +194,7 @@ def channel_exposure_from_env(
         env.get(config.exposure, ExposureMode.SELF.value),
         provider=config.provider,
     )
-    operator_ids = tuple(split_csv(env.get(config.operator_id, "")))
-    operator_id = operator_ids[0] if operator_ids else None
+    operator_ids = frozenset(split_csv(env.get(config.operator_id, "")))
     if mode == ExposureMode.SELF and config.require_self_operator and not operator_ids:
         msg = (
             f"{config.provider} self exposure requires {config.operator_id}; "
@@ -206,12 +203,16 @@ def channel_exposure_from_env(
         raise ValueError(msg)
     if mode == ExposureMode.OPEN:
         _require_open_acknowledgement(env, config)
+        logger.warning(
+            "%s open exposure enabled; arbitrary senders can trigger the agent with "
+            "operator credentials and local host access",
+            config.provider,
+        )
     return ChannelExposure(
         mode=mode,
-        operator_id=operator_id,
         conversations=frozenset(split_csv(env.get(config.allowlist_chats, ""))),
         mention_patterns=tuple(split_csv(env.get(config.mention_patterns, ""))),
-        operator_ids=frozenset(operator_ids),
+        operator_ids=operator_ids,
     )
 
 
@@ -321,6 +322,12 @@ def filter_capped_media_paths(
 
     Returns:
         Filter result containing kept paths and dropped-path reasons.
+
+    Note:
+        Paths that do not exist on disk are silently kept. This is intentional:
+        WhatsApp bridge downloads may still be in progress when inbound messages
+        are polled, so a missing file does not indicate an oversized or invalid
+        download — only one that has not landed yet.
     """
     kept: list[str] = []
     kept_mime_types: list[str] = []
@@ -450,6 +457,18 @@ def split_csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def optional_str(value: object) -> str | None:
+    """Return a non-empty string value, or ``None``.
+
+    Args:
+        value: Raw value that may be a string.
+
+    Returns:
+        The string if it is a non-empty ``str``, otherwise ``None``.
+    """
+    return value if isinstance(value, str) and value else None
+
+
 def _validate_media_size(
     media: ChannelMedia,
     *,
@@ -475,6 +494,25 @@ def _is_self_message(message: ChannelMessage, operator_ids: frozenset[str]) -> b
 
 def _matches_text(text: str, patterns: tuple[str, ...]) -> bool:
     return any(fnmatch.fnmatchcase(text, pattern) for pattern in patterns)
+
+
+async def dispatch_message(
+    handler: MessageHandler | None,
+    message: ChannelMessage,
+    *,
+    provider: str,
+) -> None:
+    """Forward an inbound message to the registered handler.
+
+    Args:
+        handler: Host callback for inbound messages, or ``None``.
+        message: Accepted inbound channel message.
+        provider: Provider name used in the drop warning when no handler is set.
+    """
+    if handler is None:
+        logger.warning("Dropping %s message because no handler is registered", provider)
+        return
+    await handler(message)
 
 
 def _exposure_mode(value: str, *, provider: str) -> ExposureMode:

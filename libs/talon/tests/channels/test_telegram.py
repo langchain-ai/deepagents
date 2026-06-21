@@ -153,7 +153,10 @@ def _make_config(
         session_dir=tmp_path / "telegram",
         inbound_media_dir=tmp_path / "telegram" / "media",
         outbound_media_dir=tmp_path,
-        exposure=exposure or ChannelExposure(operator_id=operator_id),
+        exposure=exposure
+        or ChannelExposure(
+            operator_ids=frozenset({operator_id}) if operator_id else frozenset(),
+        ),
         poll_interval_seconds=60,
         poll_timeout_seconds=1,
         operator_id=operator_id,
@@ -222,7 +225,7 @@ def test_config_from_talon_env_maps_telegram_values(tmp_path: Path) -> None:
     assert telegram.inbound_media_dir == tmp_path / "assistant" / "media" / "inbound" / "telegram"
     assert telegram.exposure == ChannelExposure(
         mode=ExposureMode.ALLOWLIST,
-        operator_id="999",
+        operator_ids=frozenset({"999"}),
         conversations=frozenset({"123", "456"}),
     )
     assert telegram.allowed_user_ids == frozenset({"777", "888"})
@@ -243,11 +246,11 @@ def test_config_from_talon_env_maps_multiple_operator_ids(tmp_path: Path) -> Non
 
     telegram = TelegramChannelConfig.from_talon_config(config)
 
-    assert telegram.operator_id == "999"
+    assert telegram.operator_id in {"999", "1000"}
     assert telegram.exposure == ChannelExposure(
-        operator_id="999",
         operator_ids=frozenset({"999", "1000"}),
     )
+    assert telegram.exposure.operator_id in {"999", "1000"}
     assert telegram.exposure.allows(
         ChannelMessage(conversation_id="chat", text="hi", sender_id="999")
     )
@@ -862,7 +865,7 @@ async def test_channel_skips_oversized_inbound_media_from_get_file(
         session_dir=tmp_path / "telegram",
         inbound_media_dir=tmp_path / "telegram" / "media",
         outbound_media_dir=tmp_path,
-        exposure=ChannelExposure(operator_id="111"),
+        exposure=ChannelExposure(operator_ids=frozenset({"111"})),
         poll_interval_seconds=60,
         poll_timeout_seconds=1,
         max_media_bytes=10,

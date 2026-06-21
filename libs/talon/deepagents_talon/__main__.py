@@ -199,19 +199,24 @@ def _channels(
     telegram: bool = False,
 ) -> tuple[ChannelAdapter, ...]:
     channels: list[ChannelAdapter] = []
-    if whatsapp or config.env.get("DEEPAGENTS_TALON_WHATSAPP_ENABLED", "").lower() in {
-        "1",
-        "true",
-        "yes",
-    }:
+    if whatsapp or _env_enabled(config.env, "DEEPAGENTS_TALON_WHATSAPP_ENABLED"):
         channels.append(WhatsAppChannel(WhatsAppChannelConfig.from_talon_config(config)))
-    if telegram or config.env.get("DEEPAGENTS_TALON_TELEGRAM_ENABLED", "").lower() in {
-        "1",
-        "true",
-        "yes",
-    }:
+    if telegram or _env_enabled(config.env, "DEEPAGENTS_TALON_TELEGRAM_ENABLED"):
         channels.append(TelegramChannel(TelegramChannelConfig.from_talon_config(config)))
     return tuple(channels)
+
+
+def _env_enabled(env: dict[str, str], key: str) -> bool:
+    """Check whether a boolean environment flag is truthy.
+
+    Args:
+        env: Environment variable mapping.
+        key: Environment variable name.
+
+    Returns:
+        `True` when the value is one of ``1``, ``true``, or ``yes``.
+    """
+    return env.get(key, "").lower() in {"1", "true", "yes"}
 
 
 def _runtime_env(config: TalonConfig) -> dict[str, str]:

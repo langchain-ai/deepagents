@@ -26,12 +26,15 @@ from deepagents_talon.channels.base import (
     ExposureMode,
     channel_exposure_from_env,
     chunk_text,
+    dispatch_message,
     max_media_bytes_from_env,
     message_with_media_paths,
+    optional_str,
     parse_float,
     replace_message_metadata,
     split_csv,
     validate_media,
+    validate_media_size,
 )
 from deepagents_talon.interfaces import ChannelMedia, ChannelMessage, ChannelStatus, MessageHandler
 
@@ -138,7 +141,18 @@ class TelegramChannelConfig:
             or env.get("DEEPAGENTS_TALON_WORKSPACE")
             or "/workspace",
         )
-        exposure = _exposure_from_env(env)
+        exposure = channel_exposure_from_env(
+            env,
+            ChannelExposureEnv(
+                provider="Telegram",
+                exposure="DEEPAGENTS_TALON_TELEGRAM_EXPOSURE",
+                allowlist_chats="DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_CHATS",
+                mention_patterns="DEEPAGENTS_TALON_TELEGRAM_MENTION_PATTERNS",
+                operator_id="DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID",
+                open_ack=OPEN_EXPOSURE_ACK_ENV,
+                require_self_operator=True,
+            ),
+        )
         return cls(
             bot_token=token,
             session_dir=session,
@@ -272,7 +286,7 @@ class TelegramTransport:
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
             msg = f"Telegram Bot API request failed: {method}"
             raise TelegramError(msg) from error
-        return _raise_for_api_error(method, payload)
+        return payload
 
 
 class TelegramChannel:
@@ -511,10 +525,7 @@ class TelegramChannel:
         _save_offset(self.config.offset_file, self._offset)
 
     async def _dispatch(self, message: ChannelMessage) -> None:
-        if self._handler is None:
-            logger.warning("Dropping Telegram message because no handler is registered")
-            return
-        await self._handler(message)
+        await dispatch_message(self._handler, message, provider="Telegram")
 
     async def _prepare_inbound_media(self, message: ChannelMessage) -> ChannelMessage:
         media_type = message.metadata.get("media_type")
@@ -594,15 +605,10 @@ class TelegramChannel:
             _download_file,
             download_url,
             destination,
-            self.timeout,
+            self.config.request_timeout_seconds,
             self.config.max_media_bytes,
         )
         return destination
-
-    @property
-    def timeout(self) -> float:
-        """Request timeout for downloads."""
-        return self.config.request_timeout_seconds
 
 
 def _check_telegram_size(media: ChannelMedia) -> None:
@@ -614,21 +620,14 @@ def _check_telegram_size(media: ChannelMedia) -> None:
     Raises:
         ChannelMediaError: If the file exceeds Telegram's size limit.
     """
-    size = media.path.stat().st_size
-    if media.media_type == "image" and size > MAX_PHOTO_BYTES:
-        msg = f"photo media is too large for Telegram: {size} bytes exceeds {MAX_PHOTO_BYTES}"
-        raise ChannelMediaError(msg)
-    if media.media_type != "image" and size > MAX_DOCUMENT_BYTES:
-        msg = f"document media is too large for Telegram: {size} bytes exceeds {MAX_DOCUMENT_BYTES}"
-        raise ChannelMediaError(msg)
-
-
-def _raise_for_api_error(method: str, payload: object) -> object:
-    if isinstance(payload, dict) and not cast("Mapping[str, object]", payload).get("ok", True):
-        description = cast("Mapping[str, object]", payload).get("description", "unknown error")
-        msg = f"Telegram Bot API error in {method}: {description}"
-        raise TelegramError(msg)
-    return payload
+    limit = MAX_PHOTO_BYTES if media.media_type == "image" else MAX_DOCUMENT_BYTES
+    try:
+        validate_media_size(media.path, max_bytes=limit)
+    except ChannelMediaError:
+        size = media.path.stat().st_size
+        label = "photo" if media.media_type == "image" else "document"
+        msg = f"{label} media is too large for Telegram: {size} bytes exceeds {limit}"
+        raise ChannelMediaError(msg) from None
 
 
 def _encode_multipart_form(
@@ -698,14 +697,9 @@ def _effective_exposure(
     exposure: ChannelExposure,
     operator_id: str | None,
 ) -> ChannelExposure:
-    if (
-        exposure.mode != ExposureMode.SELF
-        or exposure.operator_id is not None
-        or exposure.operator_ids
-        or operator_id is None
-    ):
+    if exposure.mode != ExposureMode.SELF or exposure.operator_ids or operator_id is None:
         return exposure
-    return replace(exposure, operator_id=operator_id)
+    return replace(exposure, operator_ids=frozenset({operator_id}))
 
 
 def _with_from_self(message: ChannelMessage, bot_id: str | None) -> ChannelMessage:
@@ -775,6 +769,29 @@ def _safe_filename_part(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._") or "file"
 
 
+def _validate_response(payload: object) -> object:
+    """Validate a Bot API response envelope and return the raw ``result`` value.
+
+    Args:
+        payload: Full Bot API response.
+
+    Returns:
+        The ``result`` field from the response.
+
+    Raises:
+        TelegramError: If the response is not an object or reports an error.
+    """
+    if not isinstance(payload, dict):
+        msg = "Telegram Bot API response must be an object"
+        raise TelegramError(msg)
+    values = cast("Mapping[str, object]", payload)
+    if not values.get("ok", True):
+        description = values.get("description", "unknown error")
+        msg = f"Telegram Bot API error: {description}"
+        raise TelegramError(msg)
+    return values.get("result")
+
+
 def _extract_result(payload: object) -> dict[str, object]:
     """Extract the ``result`` field from a Bot API response.
 
@@ -787,15 +804,7 @@ def _extract_result(payload: object) -> dict[str, object]:
     Raises:
         TelegramError: If the response is malformed.
     """
-    if not isinstance(payload, dict):
-        msg = "Telegram Bot API response must be an object"
-        raise TelegramError(msg)
-    values = cast("Mapping[str, object]", payload)
-    if not values.get("ok", True):
-        description = values.get("description", "unknown error")
-        msg = f"Telegram Bot API error: {description}"
-        raise TelegramError(msg)
-    result = values.get("result")
+    result = _validate_response(payload)
     if not isinstance(result, dict):
         msg = "Telegram Bot API response missing result"
         raise TelegramError(msg)
@@ -814,15 +823,7 @@ def _extract_updates(payload: object) -> list[dict[str, object]]:
     Raises:
         TelegramError: If the response is malformed.
     """
-    if not isinstance(payload, dict):
-        msg = "Telegram getUpdates response must be an object"
-        raise TelegramError(msg)
-    values = cast("Mapping[str, object]", payload)
-    if not values.get("ok", True):
-        description = values.get("description", "unknown error")
-        msg = f"Telegram getUpdates error: {description}"
-        raise TelegramError(msg)
-    result = values.get("result")
+    result = _validate_response(payload)
     if not isinstance(result, list):
         msg = "Telegram getUpdates result must be a list"
         raise TelegramError(msg)
@@ -939,7 +940,7 @@ def _extract_media_info(msg: Mapping[str, object]) -> _TelegramMediaInfo | None:
             return _TelegramMediaInfo(
                 media_type="voice",
                 file_id=file_id,
-                mime_type=_optional_str(values.get("mime_type")),
+                mime_type=optional_str(values.get("mime_type")),
             )
     if isinstance(document, dict):
         values = cast("Mapping[str, object]", document)
@@ -948,14 +949,10 @@ def _extract_media_info(msg: Mapping[str, object]) -> _TelegramMediaInfo | None:
             return _TelegramMediaInfo(
                 media_type="document",
                 file_id=file_id,
-                file_name=_optional_str(values.get("file_name")),
-                mime_type=_optional_str(values.get("mime_type")),
+                file_name=optional_str(values.get("file_name")),
+                mime_type=optional_str(values.get("mime_type")),
             )
     return None
-
-
-def _optional_str(value: object) -> str | None:
-    return value if isinstance(value, str) and value else None
 
 
 def _largest_photo_file_id(photo_sizes: object) -> str | None:
@@ -969,25 +966,18 @@ def _largest_photo_file_id(photo_sizes: object) -> str | None:
     """
     if not isinstance(photo_sizes, list):
         return None
-    best: dict[str, object] | None = None
-    for size in photo_sizes:
-        if not isinstance(size, dict):
-            continue
-        current = best
-        if current is None:
-            best = cast("dict[str, object]", size)
-        else:
-            current_size = current.get("file_size", 0)
-            new_size = cast("Mapping[str, object]", size).get("file_size", 0)
-            if (
-                isinstance(new_size, int)
-                and isinstance(current_size, int)
-                and new_size > current_size
-            ):
-                best = cast("dict[str, object]", size)
-    if best is None:
+    sizes = [size for size in photo_sizes if isinstance(size, dict)]
+    if not sizes:
         return None
-    file_id = best.get("file_id")
+    best = max(
+        sizes,
+        key=lambda s: (
+            cast("Mapping[str, object]", s).get("file_size", 0)
+            if isinstance(cast("Mapping[str, object]", s).get("file_size"), int)
+            else 0
+        ),
+    )
+    file_id = cast("Mapping[str, object]", best).get("file_id")
     return file_id if isinstance(file_id, str) else None
 
 
@@ -1032,38 +1022,6 @@ def _download_file(url: str, destination: Path, timeout: float, max_bytes: int) 
     destination.chmod(0o600)
 
 
-def _exposure_from_env(env: Mapping[str, str]) -> ChannelExposure:
-    """Build ChannelExposure from Telegram-specific env vars.
-
-    Args:
-        env: Environment variable mapping.
-
-    Returns:
-        Exposure policy for the Telegram channel.
-
-    Raises:
-        ValueError: If the exposure mode is invalid or open mode is not acknowledged.
-    """
-    exposure = channel_exposure_from_env(
-        env,
-        ChannelExposureEnv(
-            provider="Telegram",
-            exposure="DEEPAGENTS_TALON_TELEGRAM_EXPOSURE",
-            allowlist_chats="DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_CHATS",
-            mention_patterns="DEEPAGENTS_TALON_TELEGRAM_MENTION_PATTERNS",
-            operator_id="DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID",
-            open_ack=OPEN_EXPOSURE_ACK_ENV,
-            require_self_operator=True,
-        ),
-    )
-    if exposure.mode == ExposureMode.OPEN:
-        logger.warning(
-            "Telegram open exposure enabled; arbitrary senders can trigger the agent with "
-            "operator credentials and local host access",
-        )
-    return exposure
-
-
 # --- Offset persistence (ticket 23) ---
 
 
@@ -1099,7 +1057,7 @@ def _save_offset(offset_file: Path, offset: int) -> None:
     """
     offset_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     content = json.dumps({"offset": offset})
-    tmp = offset_file.with_suffix(".json.tmp")
+    tmp = offset_file.parent / f"{offset_file.name}.tmp"
     tmp.write_text(content, encoding="utf-8")
     tmp.chmod(0o600)
     tmp.replace(offset_file)

@@ -18,9 +18,10 @@ from deepagents_talon.interfaces import ChannelMedia, ChannelMessage
 
 
 def test_default_exposure_allows_only_self_messages() -> None:
-    exposure = ChannelExposure(operator_id="operator")
+    exposure = ChannelExposure(operator_ids=frozenset({"operator"}))
 
     assert exposure.operator_ids == frozenset({"operator"})
+    assert exposure.operator_id == "operator"
     assert exposure.allows(ChannelMessage(conversation_id="chat", text="hi", sender_id="operator"))
     assert exposure.allows(
         ChannelMessage(
@@ -35,11 +36,11 @@ def test_default_exposure_allows_only_self_messages() -> None:
 
 def test_default_exposure_allows_multiple_operator_ids() -> None:
     exposure = ChannelExposure(
-        operator_id="operator",
-        operator_ids=frozenset({"backup-operator"}),
+        operator_ids=frozenset({"operator", "backup-operator"}),
     )
 
     assert exposure.operator_ids == frozenset({"operator", "backup-operator"})
+    assert exposure.operator_id in {"operator", "backup-operator"}
     assert exposure.allows(ChannelMessage(conversation_id="chat", text="hi", sender_id="operator"))
     assert exposure.allows(
         ChannelMessage(conversation_id="chat", text="hi", sender_id="backup-operator")

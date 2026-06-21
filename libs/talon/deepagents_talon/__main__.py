@@ -29,7 +29,7 @@ from deepagents_talon.runtime import (
 from deepagents_talon.speech import build_voice_transcriber
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from deepagents_talon.cron import CronJob
     from deepagents_talon.interfaces import ChannelAdapter
@@ -206,7 +206,7 @@ def _channels(
     return tuple(channels)
 
 
-def _env_enabled(env: dict[str, str], key: str) -> bool:
+def _env_enabled(env: Mapping[str, str], key: str) -> bool:
     """Check whether a boolean environment flag is truthy.
 
     Args:

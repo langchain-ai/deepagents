@@ -286,6 +286,7 @@ class TelegramTransport:
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
             msg = f"Telegram Bot API request failed: {method}"
             raise TelegramError(msg) from error
+        _validate_response(payload)
         return payload
 
 
@@ -955,6 +956,19 @@ def _extract_media_info(msg: Mapping[str, object]) -> _TelegramMediaInfo | None:
     return None
 
 
+def _safe_file_size(obj: Mapping[str, object]) -> int:
+    """Extract a numeric file_size from a Telegram photo size object.
+
+    Args:
+        obj: Telegram photo size mapping.
+
+    Returns:
+        Integer file size, or ``0`` if absent or non-integer.
+    """
+    raw = obj.get("file_size")
+    return raw if isinstance(raw, int) else 0
+
+
 def _largest_photo_file_id(photo_sizes: object) -> str | None:
     """Extract the file_id of the largest photo size from a photo array.
 
@@ -969,14 +983,7 @@ def _largest_photo_file_id(photo_sizes: object) -> str | None:
     sizes = [size for size in photo_sizes if isinstance(size, dict)]
     if not sizes:
         return None
-    best = max(
-        sizes,
-        key=lambda s: (
-            cast("Mapping[str, object]", s).get("file_size", 0)
-            if isinstance(cast("Mapping[str, object]", s).get("file_size"), int)
-            else 0
-        ),
-    )
+    best = max(sizes, key=lambda s: _safe_file_size(cast("Mapping[str, object]", s)))
     file_id = cast("Mapping[str, object]", best).get("file_id")
     return file_id if isinstance(file_id, str) else None
 

@@ -14,7 +14,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from deepagents_talon.interfaces import ChannelMedia, ChannelMessage, MessageHandler
+from deepagents_talon.interfaces import ChannelMedia, ChannelMessage
 from deepagents_talon.media import resolve_bounded_media_path
 
 if TYPE_CHECKING:
@@ -445,25 +445,6 @@ def _is_self_message(message: ChannelMessage, operator_ids: frozenset[str]) -> b
 
 def _matches_text(text: str, patterns: tuple[str, ...]) -> bool:
     return any(fnmatch.fnmatchcase(text, pattern) for pattern in patterns)
-
-
-async def dispatch_message(
-    handler: MessageHandler | None,
-    message: ChannelMessage,
-    *,
-    provider: str,
-) -> None:
-    """Forward an inbound message to the registered handler.
-
-    Args:
-        handler: Host callback for inbound messages, or ``None``.
-        message: Accepted inbound channel message.
-        provider: Provider name used in the drop warning when no handler is set.
-    """
-    if handler is None:
-        logger.warning("Dropping %s message because no handler is registered", provider)
-        return
-    await handler(message)
 
 
 def _exposure_mode(value: str, *, provider: str) -> ExposureMode:

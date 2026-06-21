@@ -26,7 +26,6 @@ from deepagents_talon.channels.base import (
     ExposureMode,
     channel_exposure_from_env,
     chunk_text,
-    dispatch_message,
     max_media_bytes_from_env,
     message_with_media_paths,
     optional_str,
@@ -519,7 +518,10 @@ class TelegramChannel:
         _save_offset(self.config.offset_file, self._offset)
 
     async def _dispatch(self, message: ChannelMessage) -> None:
-        await dispatch_message(self._handler, message, provider="Telegram")
+        if self._handler is None:
+            logger.warning("Dropping Telegram message because no handler is registered")
+            return
+        await self._handler(message)
 
     async def _prepare_inbound_media(self, message: ChannelMessage) -> ChannelMessage:
         media_type = message.metadata.get("media_type")

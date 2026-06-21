@@ -12,13 +12,13 @@ import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 from deepagents_talon.interfaces import ChannelMedia, ChannelMessage
 from deepagents_talon.media import resolve_bounded_media_path
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
 _T = TypeVar("_T")
 

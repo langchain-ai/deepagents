@@ -330,7 +330,8 @@ class TalonHost:
     ) -> None:
         current_conversation_id = self._agent_conversation_id(conversation_root)
         await self._cancel_conversation_tasks(current_conversation_id)
-        self._conversation_resets[conversation_root] = self._conversation_resets.get(conversation_root, 0) + 1
+        next_reset = self._conversation_resets.get(conversation_root, 0) + 1
+        self._conversation_resets[conversation_root] = next_reset
         await channel.send_message(conversation_id, _NEW_CONVERSATION_MESSAGE)
 
     async def _cancel_conversation(

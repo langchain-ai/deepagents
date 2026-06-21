@@ -12,6 +12,9 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 import httpx
+from langgraph.types import (
+    Command,  # noqa: TC002  # runtime: wraps initial astream input
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -26,7 +29,7 @@ if TYPE_CHECKING:
     )
     from langchain_core.messages import AIMessage
     from langchain_core.runnables import RunnableConfig
-    from langgraph.types import Command, Interrupt
+    from langgraph.types import Interrupt
     from pydantic import TypeAdapter
     from rich.console import Console
 
@@ -519,7 +522,10 @@ async def execute_task_textual(
     user_msg: dict[str, Any] = {"role": "user", "content": message_content}
     if message_kwargs:
         user_msg.update(message_kwargs)
-    stream_input: dict | Command = {"messages": [user_msg]}
+    # Wrap in an explicit Command so langgraph does not normalize a plain
+    # dict into Command(goto=None, ...); a null `goto` trips a TypeError in
+    # langgraph 1.2.5's `_control_branch` on the first turn under `langgraph dev`.
+    stream_input: dict | Command = Command(update={"messages": [user_msg]})
 
     # Track summarization lifecycle so spinner status and notification stay in sync.
     summarization_in_progress = False

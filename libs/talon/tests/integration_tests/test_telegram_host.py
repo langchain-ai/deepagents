@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 class EchoAgent:
     def __init__(self) -> None:
         self.requests: list[AgentRequest] = []
+        self.history: dict[str, list[str]] = {}
 
     async def start(self) -> None:
         pass
@@ -27,7 +28,10 @@ class EchoAgent:
 
     async def invoke(self, request: AgentRequest) -> AgentResult:
         self.requests.append(request)
-        return AgentResult(text=f"reply:{request.text}")
+        history = self.history.setdefault(request.conversation_id, [])
+        seen = len(history)
+        history.append(request.text)
+        return AgentResult(text=f"seen:{seen}:{request.text}")
 
 
 def test_channels_factory_selects_configured_channels(tmp_path: Path) -> None:
@@ -92,8 +96,8 @@ async def test_simultaneous_channels_coexist_without_interference(tmp_path: Path
     )
 
     await host.start()
-    await whatsapp_channel.receive("hello from whatsapp", conversation_id="wa-chat")
-    await telegram_channel.receive("hello from telegram", conversation_id="tg-chat")
+    await whatsapp_channel.receive("hello from whatsapp", conversation_id="chat")
+    await telegram_channel.receive("hello from telegram", conversation_id="chat")
     await _drain()
     await host.stop()
 
@@ -102,10 +106,13 @@ async def test_simultaneous_channels_coexist_without_interference(tmp_path: Path
     assert telegram_channel.started
     assert telegram_channel.stopped
     assert len(agent.requests) == 2
+    assert agent.requests[0].conversation_id != agent.requests[1].conversation_id
     assert agent.requests[0].text == "hello from whatsapp"
     assert agent.requests[0].metadata["channel"] == "whatsapp"
     assert agent.requests[1].text == "hello from telegram"
     assert agent.requests[1].metadata["channel"] == "telegram"
+    assert whatsapp_channel.sent == [("chat", "seen:0:hello from whatsapp")]
+    assert telegram_channel.sent == [("chat", "seen:0:hello from telegram")]
 
 
 async def _drain() -> None:

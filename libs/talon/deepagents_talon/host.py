@@ -13,10 +13,10 @@ import signal
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from pathlib import Path
 from types import FrameType
 from typing import TYPE_CHECKING, cast
 
+from deepagents_talon.channels.base import outbound_media_root_from_env
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
@@ -40,6 +40,7 @@ from deepagents_talon.speech import transcribe_voice_message
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from pathlib import Path
 
     from deepagents_talon.config import TalonConfig
     from deepagents_talon.cron.jobs import CronJob
@@ -54,8 +55,6 @@ _NEW_COMMAND = "/new"
 _NEW_CONVERSATION_MESSAGE = "Started a fresh conversation."
 _APPROVE_REPLIES = frozenset({"approve", "approved", "yes", "y"})
 _DENY_REPLIES = frozenset({"deny", "denied", "reject", "rejected", "no", "n"})
-_OUTBOUND_MEDIA_DIR_ENV = "DEEPAGENTS_TALON_OUTBOUND_MEDIA_DIR"
-_WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
 _RESET_THREAD_SEPARATOR = ":talon-reset:"
 
 
@@ -164,12 +163,22 @@ class TalonHost:
             channel: Channel that delivered the message.
             message: Inbound message to process.
         """
+        provider = await _channel_provider(channel)
         command = _command_name(message.text)
         channel_conversation_id = message.conversation_id
-        agent_conversation_id = self._agent_conversation_id(channel_conversation_id)
+        conversation_root = self._channel_conversation_root(
+            channel,
+            provider,
+            channel_conversation_id,
+        )
+        agent_conversation_id = self._agent_conversation_id(conversation_root)
 
         if command == _NEW_COMMAND:
-            await self._start_new_conversation(channel, channel_conversation_id)
+            await self._start_new_conversation(
+                channel,
+                channel_conversation_id,
+                conversation_root=conversation_root,
+            )
             return
 
         if command == _STOP_COMMAND:
@@ -186,7 +195,7 @@ class TalonHost:
             return
 
         task = asyncio.create_task(
-            self._run_agent_turn(channel, message, agent_conversation_id),
+            self._run_agent_turn(channel, message, agent_conversation_id, provider),
             name=f"talon:{agent_conversation_id}",
         )
         self._track_conversation_task(agent_conversation_id, task)
@@ -196,10 +205,10 @@ class TalonHost:
         channel: ChannelAdapter,
         message: ChannelMessage,
         agent_conversation_id: str,
+        provider: str | None,
     ) -> None:
         message = await transcribe_voice_message(self.voice_transcriber, message)
         message = _prepare_inbound_message(message)
-        provider = await _channel_provider(channel)
         metadata: dict[str, object] = {
             "channel": provider,
             "sender_id": message.sender_id,
@@ -236,7 +245,11 @@ class TalonHost:
         Returns:
             Agent text output for scheduler delivery handling.
         """
-        conversation_id = self._agent_conversation_id(job.origin.conversation_id)
+        conversation_root = self._scheduled_conversation_root(
+            provider=job.origin.channel,
+            conversation_id=job.origin.conversation_id,
+        )
+        conversation_id = self._agent_conversation_id(conversation_root)
         result = await self._invoke_agent(
             conversation_id=conversation_id,
             text=job.prompt,
@@ -312,10 +325,12 @@ class TalonHost:
         self,
         channel: ChannelAdapter,
         conversation_id: str,
+        *,
+        conversation_root: str,
     ) -> None:
-        current_conversation_id = self._agent_conversation_id(conversation_id)
+        current_conversation_id = self._agent_conversation_id(conversation_root)
         await self._cancel_conversation_tasks(current_conversation_id)
-        self._conversation_resets[conversation_id] += 1
+        self._conversation_resets[conversation_root] += 1
         await channel.send_message(conversation_id, _NEW_CONVERSATION_MESSAGE)
 
     async def _cancel_conversation(
@@ -355,6 +370,27 @@ class TalonHost:
         if reset == 0:
             return conversation_id
         return f"{conversation_id}{_RESET_THREAD_SEPARATOR}{reset}"
+
+    def _channel_conversation_root(
+        self,
+        channel: ChannelAdapter,
+        provider: str | None,
+        conversation_id: str,
+    ) -> str:
+        if len(self.channels) <= 1:
+            return conversation_id
+        provider_key = provider or channel.__class__.__qualname__
+        return _conversation_key(provider_key, conversation_id)
+
+    def _scheduled_conversation_root(
+        self,
+        *,
+        provider: str | None,
+        conversation_id: str,
+    ) -> str:
+        if len(self.channels) <= 1 or provider is None:
+            return conversation_id
+        return _conversation_key(provider, conversation_id)
 
     async def _cancel_all(self) -> None:
         tasks = {
@@ -551,10 +587,11 @@ def _outbound_media_from_refs(
 
 
 def _outbound_media_root(config: TalonConfig) -> Path:
-    raw = config.env.get(_OUTBOUND_MEDIA_DIR_ENV) or config.env.get(_WORKSPACE_ENV)
-    if raw:
-        return Path(raw).expanduser()
-    return Path.cwd()
+    return outbound_media_root_from_env(config.env)
+
+
+def _conversation_key(provider: str, conversation_id: str) -> str:
+    return f"{provider}:{conversation_id}"
 
 
 def _with_failed_attachment_text(text: str, failed: list[str]) -> str:

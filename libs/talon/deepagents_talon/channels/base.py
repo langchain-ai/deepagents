@@ -12,13 +12,15 @@ import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable, TypeVar
 
 from deepagents_talon.interfaces import ChannelMedia, ChannelMessage
 from deepagents_talon.media import resolve_bounded_media_path
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
+
+_T = TypeVar("_T")
 
 MAX_TEXT_CHARS = 4096
 MAX_IMAGE_BYTES = 16 * 1024 * 1024
@@ -301,12 +303,14 @@ def message_with_media_paths(
     paths = list(media_paths)
     types = list(mime_types)
     metadata = dict(message.metadata)
-    metadata["media_paths"] = paths
-    metadata["media_path"] = paths[0] if paths else None
-    metadata["media_mime_types"] = types
-    metadata["media_types"] = types
-    metadata["voice_path"] = paths[0] if paths and metadata.get("media_type") == "voice" else None
-    metadata["has_media"] = bool(paths) if has_media is None else has_media
+    has_media_value = bool(paths) if has_media is None else has_media
+    metadata["has_media"] = has_media_value
+    if paths:
+        metadata["media_paths"] = paths
+        metadata["media_path"] = paths[0]
+        metadata["media_mime_types"] = types
+        metadata["media_types"] = types
+        metadata["voice_path"] = paths[0] if metadata.get("media_type") == "voice" else None
     return replace_message_metadata(message, metadata)
 
 
@@ -341,13 +345,12 @@ def max_media_bytes_from_env(env: Mapping[str, str]) -> int:
     value = env.get(MAX_MEDIA_BYTES_ENV)
     if value is None:
         return DEFAULT_MAX_MEDIA_BYTES
+    msg = f"{MAX_MEDIA_BYTES_ENV} must be a positive integer byte count"
     try:
         parsed = int(value)
     except ValueError as error:
-        msg = f"{MAX_MEDIA_BYTES_ENV} must be a positive integer byte count"
         raise ValueError(msg) from error
     if parsed < 1:
-        msg = f"{MAX_MEDIA_BYTES_ENV} must be a positive integer byte count"
         raise ValueError(msg)
     return parsed
 
@@ -365,13 +368,7 @@ def parse_float(value: str | None, default: float) -> float:
     Raises:
         ValueError: If `value` is not a float.
     """
-    if value is None:
-        return default
-    try:
-        return float(value)
-    except ValueError as error:
-        msg = f"expected float value, got {value!r}"
-        raise ValueError(msg) from error
+    return _parse_number(float, value, default, label="float")
 
 
 def parse_int(value: str | None, default: int) -> int:
@@ -387,12 +384,22 @@ def parse_int(value: str | None, default: int) -> int:
     Raises:
         ValueError: If `value` is not an integer.
     """
+    return _parse_number(int, value, default, label="integer")
+
+
+def _parse_number(
+    convert: Callable[[str], _T],
+    value: str | None,
+    default: _T,
+    *,
+    label: str,
+) -> _T:
     if value is None:
         return default
     try:
-        return int(value)
+        return convert(value)  # type: ignore[return-value]
     except ValueError as error:
-        msg = f"expected integer value, got {value!r}"
+        msg = f"expected {label} value, got {value!r}"
         raise ValueError(msg) from error
 
 

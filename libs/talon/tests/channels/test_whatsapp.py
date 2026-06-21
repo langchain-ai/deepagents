@@ -395,9 +395,6 @@ async def test_channel_filters_oversized_inbound_media_payload(tmp_path: Path) -
 
     assert received[0].text == "oversized"
     assert received[0].metadata["has_media"] is False
-    assert received[0].metadata["media_paths"] == []
-    assert received[0].metadata["media_path"] is None
-    assert received[0].metadata["voice_path"] is None
     assert "media_error" in received[0].metadata
 
 

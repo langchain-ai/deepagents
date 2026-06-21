@@ -141,10 +141,10 @@ def test_message_with_media_paths_preserves_provider_media_presence() -> None:
         has_media=True,
     )
 
-    assert with_media.metadata["media_paths"] == []
-    assert with_media.metadata["media_path"] is None
-    assert with_media.metadata["media_mime_types"] == []
-    assert with_media.metadata["voice_path"] is None
+    assert "media_paths" not in with_media.metadata
+    assert "media_path" not in with_media.metadata
+    assert "media_mime_types" not in with_media.metadata
+    assert "voice_path" not in with_media.metadata
     assert with_media.metadata["has_media"] is True
 
 

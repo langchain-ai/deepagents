@@ -5,12 +5,11 @@ import asyncio
 import concurrent.futures
 import contextlib
 import contextvars
-import mimetypes
 import threading
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
 
 if TYPE_CHECKING:
@@ -56,6 +55,7 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.utils import (
     _get_file_type,
+    _get_mime_type,
     check_empty_content,
     format_content_with_line_numbers,
     format_grep_matches,
@@ -1105,9 +1105,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            file_type = _get_file_type(validated_path)
+            has_declared_encoding = "encoding" in read_result.file_data
             encoding = read_result.file_data.get("encoding", "utf-8")
             content = read_result.file_data["content"]
+            mime_type = _get_mime_type(validated_path, read_result.file_data)
+            file_type = _get_file_type(validated_path, read_result.file_data.get("mime_type"))
 
             # Empty files get a uniform warning regardless of encoding/type, so
             # check before routing to avoid a degenerate empty content block for
@@ -1126,9 +1128,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # when the extension is absent from `_EXTENSION_TO_FILE_TYPE`.
             # The extension map is only consulted to pick the multimodal block
             # type; unknown binary extensions fall back to the generic `"file"`.
-            if encoding == "base64" or file_type != "text":
+            if encoding == "base64" or (not has_declared_encoding and file_type != "text"):
                 block_type = file_type if file_type != "text" else "file"
-                mime_type = mimetypes.guess_type("file" + Path(validated_path).suffix)[0] or "application/octet-stream"
                 return ToolMessage(
                     content_blocks=cast("list[ContentBlock]", [{"type": block_type, "base64": content, "mime_type": mime_type}]),
                     name="read_file",

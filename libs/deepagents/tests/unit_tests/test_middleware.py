@@ -761,6 +761,57 @@ class TestFilesystemMiddleware:
         )
         assert result.content == "No matches found"
 
+    def test_read_file_uses_backend_declared_mime_type_for_binary_without_extension(self):
+        class ImageBackend(StateBackend):
+            def read(self, file_path: str, offset: int = 0, limit: int = 100) -> ReadResult:
+                return ReadResult(
+                    file_data=FileData(
+                        content="<base64_data>",
+                        encoding="base64",
+                        mime_type="image/png",
+                    )
+                )
+
+        middleware = FilesystemMiddleware(backend=ImageBackend())
+        read_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        result = read_tool.invoke({"file_path": "/media/blob", "runtime": _runtime()})
+
+        assert result.content_blocks == [
+            {
+                "type": "image",
+                "base64": "<base64_data>",
+                "mime_type": "image/png",
+            }
+        ]
+        assert result.additional_kwargs["read_file_media_type"] == "image/png"
+
+    def test_read_file_text_without_extension_stays_text(self):
+        class TextBackend(StateBackend):
+            def read(self, file_path: str, offset: int = 0, limit: int = 100) -> ReadResult:
+                return ReadResult(file_data=FileData(content="hello\nworld", encoding="utf-8"))
+
+        middleware = FilesystemMiddleware(backend=TextBackend())
+        read_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        result = read_tool.invoke({"file_path": "/notes/README", "runtime": _runtime()})
+
+        assert result.content == "     1\thello\n     2\tworld"
+        assert not isinstance(result.content, list)
+
+    def test_read_file_utf8_encoding_overrides_non_text_mime_type(self):
+        class JsonBackend(StateBackend):
+            def read(self, file_path: str, offset: int = 0, limit: int = 100) -> ReadResult:
+                return ReadResult(file_data=FileData(content='{"ok": true}', encoding="utf-8", mime_type="application/json"))
+
+        middleware = FilesystemMiddleware(backend=JsonBackend())
+        read_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        result = read_tool.invoke({"file_path": "/data/blob", "runtime": _runtime()})
+
+        assert result.content == '     1\t{"ok": true}'
+        assert not isinstance(result.content, list)
+
     def test_grep_search_shortterm_invalid_regex(self):
         """Test grep with special characters (literal search, not regex)."""
         files = {

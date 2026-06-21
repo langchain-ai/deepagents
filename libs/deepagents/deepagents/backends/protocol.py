@@ -173,6 +173,9 @@ class FileData(TypedDict):
     encoding: str
     """Content encoding: `"utf-8"` for text, `"base64"` for binary."""
 
+    mime_type: NotRequired[str]
+    """Backend-declared MIME type for content, when known."""
+
     created_at: NotRequired[str]
     """ISO 8601 timestamp of file creation."""
 

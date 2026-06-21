@@ -6,6 +6,7 @@ enable composition without fragile string parsing.
 """
 
 import functools
+import mimetypes
 import os
 import re
 from collections.abc import Sequence
@@ -62,6 +63,13 @@ Derived from Google's multimodal API supported formats:
 - Video: https://ai.google.dev/gemini-api/docs/video-understanding
 - Audio: https://ai.google.dev/gemini-api/docs/audio
 """
+
+_MIME_PREFIX_TO_FILE_TYPE: dict[str, FileType] = {
+    "image/": "image",
+    "audio/": "audio",
+    "video/": "video",
+}
+"""MIME type prefixes that map directly to multimodal content block types."""
 
 MAX_LINE_LENGTH = 5000
 LINE_NUMBER_WIDTH = 6
@@ -177,18 +185,40 @@ def check_empty_content(content: str) -> str | None:
     return None
 
 
-def _get_file_type(path: str) -> FileType:
-    """Classify a file by its extension.
+def _get_file_type(path: str, mime_type: str | None = None) -> FileType:
+    """Classify a file by backend-declared MIME type or extension.
 
     Args:
         path: File path to classify.
+        mime_type: Optional backend-declared MIME type.
 
     Returns:
         One of `"text"`, `"image"`, `"audio"`, `"video"`, or `"file"`.
 
             Defaults to `"text"` for unrecognized extensions.
     """
+    if mime_type:
+        normalized_mime_type = mime_type.split(";", maxsplit=1)[0].strip().lower()
+        for prefix, file_type in _MIME_PREFIX_TO_FILE_TYPE.items():
+            if normalized_mime_type.startswith(prefix):
+                return file_type
+        if normalized_mime_type.startswith("text/"):
+            return "text"
+        return "file"
     return _EXTENSION_TO_FILE_TYPE.get(PurePosixPath(path).suffix.lower(), "text")
+
+
+def _get_mime_type(path: str, file_data: FileData) -> str:
+    """Return the backend-declared MIME type or a path-based fallback.
+
+    Args:
+        path: File path used for extension-based fallback.
+        file_data: File data that may include a backend-declared MIME type.
+
+    Returns:
+        MIME type string for the file content.
+    """
+    return file_data.get("mime_type") or mimetypes.guess_type("file" + Path(path).suffix)[0] or "application/octet-stream"
 
 
 def _to_legacy_file_data(file_data: FileData) -> dict[str, Any]:

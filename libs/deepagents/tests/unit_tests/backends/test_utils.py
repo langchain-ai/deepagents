@@ -204,6 +204,20 @@ def test_get_file_type_returns_text_for_unknown_extensions() -> None:
     assert _get_file_type("/foo/bar") == "text"
 
 
+@pytest.mark.parametrize(
+    ("mime_type", "expected"),
+    [
+        ("image/png", "image"),
+        ("audio/mpeg", "audio"),
+        ("video/mp4", "video"),
+        ("text/markdown", "text"),
+        ("application/pdf", "file"),
+    ],
+)
+def test_get_file_type_prefers_declared_mime_type(mime_type: str, expected: str) -> None:
+    assert _get_file_type("/foo/blob", mime_type) == expected
+
+
 def test_get_file_type_non_text_values_are_valid_content_block_types() -> None:
     """Every non-text file type must be accepted as a ContentBlock `type`."""
     for file_type in _EXTENSION_TO_FILE_TYPE.values():

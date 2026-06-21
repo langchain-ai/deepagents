@@ -535,7 +535,7 @@ class TelegramChannel:
                 media_type=media_type,
                 message_id=message.message_id,
             )
-        except ChannelMediaError as error:
+        except (ChannelMediaError, urllib.error.URLError, TimeoutError) as error:
             logger.warning(
                 "Skipping Telegram inbound media for message %s: %s",
                 message.message_id,

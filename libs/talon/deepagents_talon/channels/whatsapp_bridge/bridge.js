@@ -14,8 +14,7 @@ const botHeader = process.env.WHATSAPP_BOT_HEADER || "deepagents bot";
 const bridgeToken = process.env.WHATSAPP_BRIDGE_TOKEN || "";
 const defaultWhatsAppMaxMediaBytes = 64 * 1024 * 1024;
 const rawMaxMediaBytes = Number(
-  process.env.DEEPAGENTS_TALON_MAX_MEDIA_BYTES ||
-    process.env.WHATSAPP_MAX_MEDIA_BYTES ||
+  process.env.WHATSAPP_MAX_MEDIA_BYTES ||
     String(defaultWhatsAppMaxMediaBytes),
 );
 const maxMediaBytes =

@@ -459,7 +459,7 @@ def show_doctor_help() -> None:
     """Show help information for the `doctor` subcommand."""
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  dcode doctor [options]")
+    console.print("  dcode doctor [options]", markup=False)
     console.print()
     console.print(
         "Print install health and diagnostics (versions, platform, install",

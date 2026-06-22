@@ -180,5 +180,5 @@ class TestDoctorHelp:
         with patch("deepagents_code.ui.console", test_console):
             show_doctor_help()
         output = buf.getvalue()
-        assert "dcode doctor" in output
+        assert "dcode doctor [options]" in output
         assert "Usage:" in output

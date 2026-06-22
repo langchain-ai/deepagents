@@ -1447,8 +1447,8 @@ class TestCtrlCCopySelection:
             exit_mock.assert_not_called()
             assert app._quit_pending is False
 
-    async def test_ctrl_c_without_selection_still_quits(self) -> None:
-        """Ctrl+C with no selection in ChatTextArea falls through to quit hint."""
+    async def test_ctrl_c_without_selection_copies_full_input(self) -> None:
+        """Ctrl+C with no selection in ChatTextArea copies the full input."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -1473,17 +1473,14 @@ class TestCtrlCCopySelection:
             ):
                 app.action_quit_or_interrupt()
 
-                copy_mock.assert_not_called()
+                copy_mock.assert_called_once_with(app, "hello world")
                 exit_mock.assert_not_called()
-                assert app._quit_pending is True
+                assert app._quit_pending is False
                 notify_mock.assert_called_once_with(
-                    "Press Ctrl+C again to quit",
+                    "Input copied to clipboard",
                     timeout=3,
                     markup=False,
                 )
-
-                app.action_quit_or_interrupt()
-                exit_mock.assert_called_once()
 
     async def test_ctrl_c_copies_input_selection(self) -> None:
         """Ctrl+C with a selection in a focused Input copies it, no quit."""

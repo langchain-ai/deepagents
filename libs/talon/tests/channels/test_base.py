@@ -183,3 +183,32 @@ async def test_send_with_retry_treats_none_return_as_success_on_retry() -> None:
 
     assert result.success is True
     assert calls == 2
+
+
+async def test_send_with_retry_converts_exception_to_failed_result() -> None:
+    async def raising_send() -> SendResult:
+        msg = "transport crashed"
+        raise RuntimeError(msg)
+
+    result = await send_with_retry(raising_send, max_retries=0)
+
+    assert result.success is False
+    assert "transport crashed" in (result.error or "")
+    assert result.retryable is True
+
+
+async def test_send_with_retry_retries_after_exception() -> None:
+    calls = 0
+
+    async def flaky_send() -> SendResult:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            msg = "connection reset"
+            raise RuntimeError(msg)
+        return SendResult(success=True)
+
+    result = await send_with_retry(flaky_send, max_retries=2, base_delay=0.01)
+
+    assert result.success is True
+    assert calls == 2

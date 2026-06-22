@@ -12,6 +12,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Container
 from textual.widgets import Static
 
+from deepagents_code import _textual_patches as _textual_patches
 from deepagents_code.command_registry import SLASH_COMMANDS
 from deepagents_code.input import MediaTracker
 from deepagents_code.widgets import chat_input as chat_input_module
@@ -309,6 +310,15 @@ class TestInputActionButtons:
 
         assert "[ X ]" in rendered
         assert "[ COPY ]" in rendered
+
+    async def test_copy_button_double_click_does_not_select_label(self) -> None:
+        """Double-clicking `[ COPY ]` should not trigger Textual word selection."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            await pilot.double_click("#copy-button", offset=(3, 0))
+            await pilot.pause()
+
+            assert app.screen.get_selected_text() is None
 
     async def test_clear_button_clears_input(self) -> None:
         """Clicking `[ X ]` empties the draft."""

@@ -270,6 +270,11 @@ class InputActionButton(Static):
             super().__init__()
             self.action = action
 
+    @property
+    def allow_select(self) -> bool:
+        """Disable terminal text selection for the action label."""
+        return False
+
     def __init__(self, label: str, action: str, **kwargs: Any) -> None:
         """Initialize the button with a label and an action identifier."""
         super().__init__(label, markup=False, **kwargs)

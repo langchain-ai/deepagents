@@ -31,6 +31,8 @@ from deepagents_talon.channels.base import (
     message_with_media_paths,
     optional_str,
     outbound_media_root_from_env,
+    parse_float,
+    split_csv,
     validate_media,
 )
 from deepagents_talon.interfaces import ChannelMedia, ChannelMessage, ChannelStatus, MessageHandler
@@ -64,6 +66,7 @@ class TelegramError(RuntimeError):
     """
 
     def __init__(self, message: str, *, retry_after: float | None = None) -> None:
+        """Initialize the Telegram error."""
         super().__init__(message)
         self.retry_after = retry_after
 
@@ -493,7 +496,11 @@ class TelegramChannel:
                 if updates:
                     self._advance_offset(updates)
             except TelegramError as error:
-                delay = error.retry_after if error.retry_after is not None else self.config.poll_interval_seconds
+                delay = (
+                    error.retry_after
+                    if error.retry_after is not None
+                    else self.config.poll_interval_seconds
+                )
                 logger.warning(
                     "Telegram long-polling error; retrying after %.1fs: %s",
                     delay,
@@ -517,7 +524,7 @@ class TelegramChannel:
                 raise
             await asyncio.sleep(self.config.poll_interval_seconds)
 
-    def _advance_offset(self, updates: list[Mapping[str, object]]) -> None:
+    def _advance_offset(self, updates: list[dict[str, object]]) -> None:
         """Advance the persisted offset past the last update in the batch.
 
         Args:
@@ -550,7 +557,7 @@ class TelegramChannel:
                 media_type=media_type,
                 message_id=message.message_id,
             )
-        except (ChannelMediaError, urllib.error.URLError, TimeoutError) as error:
+        except (ChannelMediaError, TelegramError, urllib.error.URLError, TimeoutError) as error:
             logger.warning(
                 "Skipping Telegram inbound media for message %s: %s",
                 message.message_id,
@@ -981,6 +988,12 @@ def _extract_media_info(msg: Mapping[str, object]) -> _TelegramMediaInfo | None:
     return None
 
 
+def _photo_size(size: dict[str, object]) -> int:
+    """Extract a numeric file_size from a Telegram photo size object."""
+    raw = size.get("file_size")
+    return raw if isinstance(raw, int) else 0
+
+
 def _largest_photo_file_id(photo_sizes: object) -> str | None:
     """Extract the file_id of the largest photo size from a photo array.
 
@@ -992,10 +1005,10 @@ def _largest_photo_file_id(photo_sizes: object) -> str | None:
     """
     if not isinstance(photo_sizes, list):
         return None
-    sizes = [size for size in photo_sizes if isinstance(size, dict)]
+    sizes = [cast("dict[str, object]", s) for s in photo_sizes if isinstance(s, dict)]
     if not sizes:
         return None
-    best = max(sizes, key=lambda s: s.get("file_size") if isinstance(s.get("file_size"), int) else 0)
+    best = max(sizes, key=_photo_size)
     file_id = best.get("file_id")
     return file_id if isinstance(file_id, str) else None
 

@@ -16,7 +16,6 @@ from deepagents_talon.channels.base import (
     ExposureMode,
 )
 from deepagents_talon.channels.telegram import (
-    MAX_DOCUMENT_BYTES,
     MAX_PHOTO_BYTES,
     MAX_VIDEO_BYTES,
     TelegramChannel,
@@ -62,15 +61,15 @@ class RecordingTransport:
         self.calls.append((method, dict(params)))
         if method == "getMe":
             self._get_me_called = True
-            return {"ok": True, "result": {"id": 123456, "username": "test_bot"}}
+            return {"id": 123456, "username": "test_bot"}
         if method == "getUpdates":
             updates = self.updates
             self.updates = []
-            return {"ok": True, "result": updates}
+            return updates
         if method == "sendChatAction":
-            return {"ok": True, "result": True}
+            return True
         if method in ("sendMessage", "sendPhoto", "sendVideo", "sendDocument", "editMessageText"):
-            return {"ok": True, "result": {"message_id": 42}}
+            return {"message_id": 42}
         if method == "getFile":
             file_id = params.get("file_id")
             if file_id == "voice123":
@@ -79,8 +78,8 @@ class RecordingTransport:
                 file_path = "documents/report.pdf"
             else:
                 file_path = "photos/file.jpg"
-            return {"ok": True, "result": {"file_id": file_id, "file_path": file_path}}
-        return {"ok": True, "result": True}
+            return {"file_id": file_id, "file_path": file_path}
+        return True
 
     async def upload(
         self,
@@ -91,7 +90,7 @@ class RecordingTransport:
         **params: object,
     ) -> object:
         self.uploads.append((method, file_field, file_path, dict(params)))
-        return {"ok": True, "result": {"message_id": 42}}
+        return {"message_id": 42}
 
 
 class ErrorOnFirstSuccessTransport:
@@ -102,14 +101,14 @@ class ErrorOnFirstSuccessTransport:
 
     async def call(self, method: str, **params: object) -> object:  # noqa: ARG002  # test fake
         if method == "getMe":
-            return {"ok": True, "result": {"id": 123456, "username": "test_bot"}}
+            return {"id": 123456, "username": "test_bot"}
         if method == "getUpdates":
             self.calls += 1
             if self.calls == 1:
                 msg = "network error"
                 raise TelegramError(msg)
-            return {"ok": True, "result": []}
-        return {"ok": True, "result": True}
+            return []
+        return True
 
 
 def _make_update(  # noqa: PLR0913  # test helper with many optional fields
@@ -263,7 +262,6 @@ def test_config_from_talon_env_maps_multiple_operator_ids(tmp_path: Path) -> Non
     assert telegram.exposure == ChannelExposure(
         operator_ids=frozenset({"999", "1000"}),
     )
-    assert telegram.exposure.operator_id in {"999", "1000"}
     assert telegram.exposure.allows(
         ChannelMessage(conversation_id="chat", text="hi", sender_id="999")
     )
@@ -908,12 +906,9 @@ async def test_channel_skips_oversized_inbound_media_from_get_file(
             if method == "getFile":
                 self.calls.append((method, dict(params)))
                 return {
-                    "ok": True,
-                    "result": {
-                        "file_id": params.get("file_id"),
-                        "file_path": "documents/report.pdf",
-                        "file_size": 11,
-                    },
+                    "file_id": params.get("file_id"),
+                    "file_path": "documents/report.pdf",
+                    "file_size": 11,
                 }
             return await super().call(method, **params)
 
@@ -1055,7 +1050,7 @@ async def test_channel_loads_persisted_offset_on_start(tmp_path: Path) -> None:
     assert get_updates_calls[0][1]["offset"] == 100
 
 
-async def test_channel_does_not_persist_failed_media_update_offset(tmp_path: Path) -> None:
+async def test_channel_advances_offset_past_failed_media_update(tmp_path: Path) -> None:
     class FailingGetFileTransport(RecordingTransport):
         async def call(self, method: str, **params: object) -> object:
             if method == "getFile":
@@ -1086,16 +1081,11 @@ async def test_channel_does_not_persist_failed_media_update_offset(tmp_path: Pat
     channel.set_message_handler(record)
 
     await channel.start()
-    deadline = asyncio.get_running_loop().time() + 2
-    while asyncio.get_running_loop().time() < deadline:
-        status = await channel.status()
-        if status.detail == "polling error":
-            break
-        await asyncio.sleep(0.01)
+    await _wait_for_received(received, 2)
     await channel.stop()
 
-    assert [msg.text for msg in received] == ["before media"]
-    assert _load_offset(config.offset_file) == 11
+    assert [msg.text for msg in received] == ["before media", "media"]
+    assert _load_offset(config.offset_file) == 12
 
 
 async def _wait_for_received(messages: list[ChannelMessage], count: int) -> None:

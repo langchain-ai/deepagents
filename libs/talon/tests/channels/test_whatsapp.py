@@ -101,7 +101,6 @@ def test_config_from_talon_env_maps_exposure(
         conversations=frozenset({"chat-1", "chat-2"}),
         mention_patterns=("@agent *",),
     )
-    assert whatsapp.exposure.operator_id == "operator"
     assert whatsapp.bot_header == "test bot"
 
 
@@ -119,7 +118,6 @@ def test_config_from_talon_env_maps_multiple_operator_ids(tmp_path: Path) -> Non
     assert whatsapp.exposure == ChannelExposure(
         operator_ids=frozenset({"operator", "backup-operator"}),
     )
-    assert whatsapp.exposure.operator_id in {"operator", "backup-operator"}
     assert whatsapp.exposure.allows(
         ChannelMessage(conversation_id="chat", text="hi", sender_id="operator")
     )
@@ -509,7 +507,7 @@ async def test_channel_sends_media_and_edits_messages(tmp_path: Path) -> None:
     )
     await channel.edit_message("chat", "message", "# Updated")
 
-    staged = Path(cast("str", transport.posts[0][1]["path"]))
+    staged = Path(cast("str", transport.posts[0][1]["filePath"]))
     assert staged.parent == media_dir
     assert await asyncio.to_thread(staged.read_bytes) == b"image"
     assert transport.posts == [

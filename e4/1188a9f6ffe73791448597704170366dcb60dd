@@ -1,0 +1,19 @@
+libs/evals/deepagents_evals/eval_registry.py
+  s_698778a02a8251::t_70c557181723e1 757-778
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "e41188a9f6ffe73791448597704170366dcb60dd",
+  "prompts": {},
+  "sessions": {
+    "s_698778a02a8251": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c2a0169b-bce8-484a-ad7f-18d87a45f565",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

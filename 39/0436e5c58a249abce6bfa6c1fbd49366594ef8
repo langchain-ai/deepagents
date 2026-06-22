@@ -1,0 +1,19 @@
+libs/code/tests/unit_tests/test_app.py
+  s_2b7b333dcc73f1::t_1badd08bc6a2a0 15353-15354,15375
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.9",
+  "base_commit_sha": "390436e5c58a249abce6bfa6c1fbd49366594ef8",
+  "prompts": {},
+  "sessions": {
+    "s_2b7b333dcc73f1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fde13fda-1eec-476d-86b9-0b45412b4ad4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

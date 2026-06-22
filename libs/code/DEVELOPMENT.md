@@ -60,12 +60,14 @@ Run `make help` to see every available target.
 
 ## Local dev installs
 
-Keep the released CLI and editable development CLI separate:
+A local dev install is useful when you want to dogfood changes from your checkout without replacing an installed, stable released version. We recommend keeping two commands available:
 
-- `dcode` / `deepagents-code` should point at the normal installed tool, typically managed by `uv tool install deepagents-code`.
-- `dcode-dev` should point at a dedicated editable venv under `~/.local/share/dcode-dev`, with a symlink in `~/.local/bin/dcode-dev`.
+- `dcode` / `deepagents-code` points at the normal installed tool (from the installation script)
+- `dcode-dev` to point at a local checkout through a dedicated editable venv under `~/.local/share/dcode-dev`, with a symlink in `~/.local/bin/dcode-dev`.
 
-This uses a manual `uv venv` + `uv pip install -e` rather than `uv sync` or `uv tool install --editable` on purpose: it builds an isolated venv outside the workspace's locked environment, so the dev binary can be re-resolved on demand without disturbing the released tool or the repo's `uv.lock`. `uv pip`/`uv venv` are first-class `uv` subcommands here, not bare `pip`.
+That split lets you quickly compare released behavior against local behavior, test unpublished fixes in real sessions, and recover to a known-good app install if the development checkout is broken. It also keeps dependency experiments for the dev binary out of both the released tool environment and the repo's locked `uv sync` environment.
+
+The setup below uses a manual `uv venv` + `uv pip install -e` rather than `uv sync` or `uv tool install --editable` on purpose: it builds an isolated venv outside the workspace's locked environment, so the dev binary can be re-resolved on demand without disturbing the released tool or the repo's `uv.lock`. `uv pip`/`uv venv` are first-class `uv` subcommands here, not bare `pip`.
 
 `~/.local/bin` must be on your `PATH` for the `dcode-dev` symlink to resolve (`uv tool install` adds its own shim directory automatically, but a hand-rolled symlink does not).
 
@@ -148,17 +150,9 @@ The interesting line is `Failed to initialize server graph: <exc>` followed by a
 
 ## Live CSS development with Textual devtools
 
-Textual's devtools console enables CSS hot-reload and live `self.log()` output during development.
+After completing the [Quickstart](#quickstart), use Textual's devtools console for CSS hot-reload and live `self.log()` output during development.
 
-### Prerequisites
-
-Sync the `test` dependency group (includes `textual-dev`):
-
-```bash
-cd libs/code && uv sync --group test
-```
-
-Create the dev wrapper script (one-time):
+Create the dev wrapper script once:
 
 ```bash
 cat > /tmp/dev_deepagents.py << 'PYEOF'
@@ -171,18 +165,18 @@ cli_main()
 PYEOF
 ```
 
-### Running
+Run both commands from `libs/code`:
 
 **Terminal 1** — devtools console:
 
 ```bash
-cd libs/code && uv run --group test textual console
+uv run --group test textual console
 ```
 
 **Terminal 2** — TUI with live reload:
 
 ```bash
-cd libs/code && uv run --group test textual run --dev /tmp/dev_deepagents.py
+uv run --group test textual run --dev /tmp/dev_deepagents.py
 ```
 
 Edit any `.tcss` file and save — changes appear immediately. Any `self.log()` calls in widget code show in the console.

@@ -492,12 +492,40 @@ fi
 #      `- pkg==X` / `+ pkg==Y` lines). A same-version reinstall that still
 #      bumps dependencies must report differently from a true no-op, so a
 #      later grep over this raw tempfile sets UV_REPORTED_PACKAGE_CHANGES.
+#   5. Persist the raw output to a log file (see INSTALL_LOG below) so a
+#      same-version dependency bump — or a failed install — can point the
+#      user at the full details after the terminal scrolls away.
 # Using a tempfile (vs. process substitution) ensures we see uv's full exit
 # status, don't race the warning past later log lines, and can re-scan the
 # raw output for (4) after the awk pass above has already reformatted it.
 uv_stderr=$(mktemp 2>/dev/null) || uv_stderr="/tmp/deepagents-install.$$.err"
 uv_rc=0
 UV_REPORTED_PACKAGE_CHANGES=false
+# Mirror uv's raw output to a persistent log under the XDG cache dir. A
+# same-version dependency bump prints only a one-line summary and a failed
+# install scrolls past, so the log preserves the full diff/errors for later.
+# Prefer $XDG_CACHE_HOME, falling back to ~/.cache. INSTALL_LOG is the real
+# path used for writes; INSTALL_LOG_DISPLAY is the tilde-collapsed form shown
+# to the user. Both stay empty when the dir can't be created, which every
+# consumer treats as "feature disabled" so messages degrade cleanly.
+INSTALL_LOG=""
+INSTALL_LOG_DISPLAY=""
+cache_root="${XDG_CACHE_HOME:-}"
+if [ -z "$cache_root" ] && [ -n "${HOME:-}" ]; then
+  cache_root="${HOME}/.cache"
+fi
+if [ -n "$cache_root" ]; then
+  install_log_dir="${cache_root}/deepagents-code"
+  if mkdir -p "$install_log_dir" 2>/dev/null; then
+    INSTALL_LOG="${install_log_dir}/install.log"
+    INSTALL_LOG_DISPLAY="$INSTALL_LOG"
+    if [ -n "${HOME:-}" ]; then
+      case "$INSTALL_LOG" in
+        "$HOME"/*) INSTALL_LOG_DISPLAY="~${INSTALL_LOG#"$HOME"}" ;;
+      esac
+    fi
+  fi
+fi
 if [[ -n "$PRERELEASE" ]]; then
   "$UV_BIN" tool install -U --python "$PYTHON_VERSION" \
     --prerelease "$PRERELEASE" "$PACKAGE" 2>"$uv_stderr" || uv_rc=$?
@@ -579,9 +607,18 @@ fi
 if grep -Eq '^[[:space:]]+[-+][[:space:]]+[^=]+==' "$uv_stderr"; then
   UV_REPORTED_PACKAGE_CHANGES=true
 fi
+if [ -n "$INSTALL_LOG" ]; then
+  cp "$uv_stderr" "$INSTALL_LOG" 2>/dev/null || INSTALL_LOG=""
+fi
 rm -f "$uv_stderr"
 if [ "$uv_rc" -ne 0 ]; then
   log_error "Failed to install ${PACKAGE}. See errors above."
+  # The log captured uv's full stderr (copied just above, before this exit), so
+  # point the user at it — non-verbose mode trims uv's lines from the terminal
+  # and piped `curl | bash` runs lose scrollback.
+  if [ -n "$INSTALL_LOG" ]; then
+    log_error "Full install log: ${INSTALL_LOG_DISPLAY}"
+  fi
   log_error "Common fixes: check your network, try a different Python version (DEEPAGENTS_CODE_PYTHON=3.12), or install manually."
   exit 1
 fi
@@ -590,6 +627,12 @@ if [ "$OS" = "macos" ] && [ -d "${HOME}/Library/Caches/uv" ]; then
   fix_owner "${HOME}/Library/Caches/uv"
 elif [ -d "${HOME}/.cache/uv" ]; then
   fix_owner "${HOME}/.cache/uv"
+fi
+# Restore user ownership of the install-log dir for root installs (matches the
+# uv-cache handling above); otherwise a sudo run leaves a root-owned log the
+# user can't rewrite on later non-root installs.
+if [ -n "$INSTALL_LOG" ]; then
+  fix_owner "$install_log_dir"
 fi
 # ---------------------------------------------------------------------------
 # Post-install verification + contextual status
@@ -639,7 +682,11 @@ elif [ -n "$NEW_VERSION" ] && [ "$PRE_VERSION" = "$NEW_VERSION" ]; then
   # the dep move entirely). UV_REPORTED_PACKAGE_CHANGES (set far above) is the
   # signal that the reinstall actually moved packages.
   if [ "$UV_REPORTED_PACKAGE_CHANGES" = true ]; then
-    log_success "deepagents-code ${NEW_VERSION} was already up to date; dependencies were updated."
+    if [ -n "$INSTALL_LOG" ]; then
+      log_success "deepagents-code ${NEW_VERSION} was already up to date; dependencies were updated. Details: ${INSTALL_LOG_DISPLAY}"
+    else
+      log_success "deepagents-code ${NEW_VERSION} was already up to date; dependencies were updated."
+    fi
   else
     log_success "deepagents-code ${NEW_VERSION} already up to date."
   fi

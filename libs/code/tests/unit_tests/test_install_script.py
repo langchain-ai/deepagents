@@ -63,7 +63,7 @@ if [ "${{1:-}}" = "tool" ] && [ "${{2:-}}" = "install" ]; then
   if [ -n "${{FAKE_UV_INSTALL_STDERR:-}}" ]; then
     printf '%s\n' "$FAKE_UV_INSTALL_STDERR" >&2
   fi
-  exit 0
+  exit "${{FAKE_UV_INSTALL_RC:-0}}"
 fi
 printf 'unexpected uv args: %s\n' "$*" >&2
 exit 1
@@ -112,6 +112,7 @@ def _env(
     return {
         **os.environ,
         "HOME": str(home),
+        "XDG_CACHE_HOME": str(home / ".cache"),
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
         "UV_BIN": str(uv),
         "DEEPAGENTS_CODE_SKIP_OPTIONAL": "1",
@@ -625,6 +626,8 @@ def test_install_script_same_version_with_dependency_updates_says_dependencies_u
     The fake `dcode -v` reports the same version before and after install, so
     `PRE_VERSION == NEW_VERSION` and the same-version branch fires; the `± pkg==`
     diff in stderr must steer it away from the flat "already up to date" message.
+    Also verifies the raw uv diff is persisted to the cache install log and that
+    the success line points the user at it via the `Details:` suffix.
     """
     proc, _ = _invoke(
         tmp_path,
@@ -635,10 +638,13 @@ def test_install_script_same_version_with_dependency_updates_says_dependencies_u
 
     assert proc.returncode == 0
     assert (
-        "deepagents-code 0.1.8 was already up to date; dependencies were updated"
-        in proc.stdout
-    )
+        "deepagents-code 0.1.8 was already up to date; dependencies were updated. "
+        "Details: ~/.cache/deepagents-code/install.log"
+    ) in proc.stdout
     assert "deepagents-code 0.1.8 already up to date" not in proc.stdout
+    assert (tmp_path / "home/.cache/deepagents-code/install.log").read_text() == (
+        f"{_DEPENDENCY_UPDATE_DIFF}\n"
+    )
     assert "✔ Dependencies updated. Run: dcode" in proc.stdout
     assert "✔ Already installed. Run: dcode" not in proc.stdout
 
@@ -651,7 +657,9 @@ def test_install_script_same_version_no_dependency_changes_says_up_to_date(
     The negative mirror of the dependency-update test: when uv runs but moves
     nothing (only timing/summary noise), the flag must stay false so the plain
     "already up to date" message is emitted. Guards against the flag defaulting
-    on, the conditional inverting, or the grep matching uv's noise lines.
+    on, the conditional inverting, or the grep matching uv's noise lines. The
+    log is still written (the no-op stderr) but the `Details:` suffix is
+    suppressed, since there's no dependency change worth pointing at.
     """
     proc, _ = _invoke(
         tmp_path,
@@ -663,6 +671,10 @@ def test_install_script_same_version_no_dependency_changes_says_up_to_date(
     assert proc.returncode == 0
     assert "deepagents-code 0.1.8 already up to date." in proc.stdout
     assert "dependencies were updated" not in proc.stdout
+    assert "Details: ~/.cache/deepagents-code/install.log" not in proc.stdout
+    assert (tmp_path / "home/.cache/deepagents-code/install.log").read_text() == (
+        f"{_NO_PACKAGE_CHANGE_STDERR}\n"
+    )
     assert "✔ Already installed. Run: dcode" in proc.stdout
 
 
@@ -673,7 +685,8 @@ def test_install_script_same_version_with_new_dependency_says_dependencies_updat
 
     A new transitive dep (a `+ pkg==` line with no matching `-`) trips the flag
     just like an upgrade does, so the same-version branch reports the change
-    rather than a flat no-op. Pins this `+`-only semantics deliberately.
+    rather than a flat no-op. Pins this `+`-only semantics deliberately, and
+    verifies the addition-only diff is persisted to the install log.
     """
     proc, _ = _invoke(
         tmp_path,
@@ -684,8 +697,122 @@ def test_install_script_same_version_with_new_dependency_says_dependencies_updat
 
     assert proc.returncode == 0
     assert (
-        "deepagents-code 0.1.8 was already up to date; dependencies were updated"
+        "deepagents-code 0.1.8 was already up to date; dependencies were updated. "
+        "Details: ~/.cache/deepagents-code/install.log"
+    ) in proc.stdout
+    assert (tmp_path / "home/.cache/deepagents-code/install.log").read_text() == (
+        f"{_DEPENDENCY_ADDITION_DIFF}\n"
+    )
+
+
+def test_install_script_dependency_update_without_writable_log_omits_details(
+    tmp_path: Path,
+) -> None:
+    """When the log dir can't be created, the message drops the `Details:` suffix.
+
+    Points `XDG_CACHE_HOME` under a regular file so `mkdir -p` fails, leaving
+    `INSTALL_LOG` empty. The dependency-update message must still fire, just
+    without a pointer to a log that was never written — guards against the
+    suffix being appended unconditionally.
+    """
+    blocker = tmp_path / "blocker"
+    blocker.write_text("")  # regular file; mkdir -p underneath must fail
+
+    proc, _ = _invoke(
+        tmp_path,
+        {
+            "FAKE_UV_INSTALL_STDERR": _DEPENDENCY_UPDATE_DIFF,
+            "XDG_CACHE_HOME": str(blocker / "cache"),
+        },
+        installed_version="0.1.8",
+        latest_version="0.1.20",
+    )
+
+    assert proc.returncode == 0
+    assert (
+        "deepagents-code 0.1.8 was already up to date; dependencies were updated."
         in proc.stdout
+    )
+    assert "Details:" not in proc.stdout
+    assert not (blocker / "cache").exists()
+
+
+def test_install_script_unset_xdg_cache_home_falls_back_to_home_cache(
+    tmp_path: Path,
+) -> None:
+    """An empty `XDG_CACHE_HOME` falls back to `~/.cache` for the log path.
+
+    `_env` always sets `XDG_CACHE_HOME`, which would otherwise mask the
+    fallback branch — the primary path on machines (e.g. macOS) that don't
+    export it. Overriding it to empty exercises that branch directly.
+    """
+    proc, _ = _invoke(
+        tmp_path,
+        {
+            "FAKE_UV_INSTALL_STDERR": _DEPENDENCY_UPDATE_DIFF,
+            "XDG_CACHE_HOME": "",
+        },
+        installed_version="0.1.8",
+        latest_version="0.1.20",
+    )
+
+    assert proc.returncode == 0
+    assert (
+        "deepagents-code 0.1.8 was already up to date; dependencies were updated. "
+        "Details: ~/.cache/deepagents-code/install.log"
+    ) in proc.stdout
+    assert (tmp_path / "home/.cache/deepagents-code/install.log").read_text() == (
+        f"{_DEPENDENCY_UPDATE_DIFF}\n"
+    )
+
+
+def test_install_script_log_path_outside_home_stays_absolute(tmp_path: Path) -> None:
+    """A log path outside `$HOME` is shown verbatim, not tilde-collapsed.
+
+    The `~` collapse only fires for paths under `$HOME`; an `XDG_CACHE_HOME`
+    elsewhere must surface the absolute path in the `Details:` suffix.
+    """
+    external = tmp_path / "external-cache"
+
+    proc, _ = _invoke(
+        tmp_path,
+        {
+            "FAKE_UV_INSTALL_STDERR": _DEPENDENCY_UPDATE_DIFF,
+            "XDG_CACHE_HOME": str(external),
+        },
+        installed_version="0.1.8",
+        latest_version="0.1.20",
+    )
+
+    assert proc.returncode == 0
+    expected_log = external / "deepagents-code" / "install.log"
+    assert f"Details: {expected_log}" in proc.stdout
+    assert "Details: ~/" not in proc.stdout
+    assert expected_log.read_text() == f"{_DEPENDENCY_UPDATE_DIFF}\n"
+
+
+def test_install_script_failed_install_points_to_log(tmp_path: Path) -> None:
+    """A failed `uv tool install` still writes the log and points the user at it.
+
+    The log is copied from uv's captured stderr before the failure exit, so the
+    error path can hand the user the full output — the case where a persistent
+    log matters most. Guards the `cp`-before-`exit` ordering.
+    """
+    proc, _ = _invoke(
+        tmp_path,
+        {
+            "FAKE_UV_INSTALL_STDERR": _DEPENDENCY_UPDATE_DIFF,
+            "FAKE_UV_INSTALL_RC": "1",
+        },
+        installed_version="0.1.8",
+        latest_version="0.1.20",
+    )
+
+    assert proc.returncode != 0
+    assert "Failed to install" in proc.stderr
+    assert "Full install log: ~/.cache/deepagents-code/install.log" in proc.stderr
+    assert (tmp_path / "home/.cache/deepagents-code/install.log").read_text() == (
+        f"{_DEPENDENCY_UPDATE_DIFF}\n"
     )
 
 

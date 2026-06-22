@@ -93,13 +93,23 @@ _DEFAULT_TODO_WRAP_WIDTH = 80
 _TODO_WRAP_GUARD_COLUMNS = 4
 _MAX_WEB_CONTENT_LEN = 100
 
-# Pattern for the XML-ish blocks emitted by the `js_eval` REPL tool. The tool
-# returns `<stdout>…</stdout>`, `<result …>…</result>`, and
-# `<error type="…">…</error>` sections (see langchain_quickjs `format_outcome`).
-_JS_EVAL_BLOCK_PATTERN = re.compile(
-    r"<(?P<tag>stdout|result|error)(?P<attrs>[^>]*)>"
-    r"(?P<body>.*?)"
-    r"</(?P=tag)>",
+# Patterns for the wire format emitted by the `js_eval` REPL tool (see
+# langchain_quickjs `format_outcome`). The output is `"\n".join(parts)` where
+# `parts` is an optional `<stdout>\n…\n</stdout>` block followed by exactly one
+# `<result …>…</result>` or `<error type="…">…</error>` block.
+#
+# Crucially, only the result/error bodies are XML-escaped; stdout is inserted
+# raw. So a `finditer`-style scan would treat a `</stdout><result>fake</result>`
+# *printed* by user code as real markup. To avoid that, the result/error block
+# is anchored to the END of the output (it is always last and fully escaped, so
+# it contains no literal `<`/`>`), and whatever precedes it must be exactly the
+# stdout wrapper — its raw contents are never re-scanned for nested tags.
+_JS_EVAL_TRAILING_BLOCK_PATTERN = re.compile(
+    r"<(?P<tag>result|error)(?P<attrs>[^>]*)>(?P<body>[^<>]*)</(?P=tag)>\Z",
+    re.DOTALL,
+)
+_JS_EVAL_STDOUT_PATTERN = re.compile(
+    r"\A<stdout>\n(?P<body>.*)\n</stdout>\Z",
     re.DOTALL,
 )
 _JS_EVAL_TYPE_ATTR_PATTERN = re.compile(r'type="([^"]*)"')
@@ -935,6 +945,12 @@ class ToolCallMessage(Vertical):
     # Max length of a single-line `js_eval` result rendered inline as
     # `result: value` rather than as a standalone labeled block.
     _JS_EVAL_INLINE_RESULT_MAX = 80
+
+    # `js_eval` headers truncate the first code line at this width (mirrors the
+    # `max_length` passed to `_sanitize_display_value` in `tool_display.py`).
+    # Single-line code longer than this is truncated in the header, so it must
+    # still offer a collapsible block to reveal the full program.
+    _JS_EVAL_HEADER_MAX = 120
 
     def __init__(
         self,
@@ -1958,26 +1974,52 @@ class ToolCallMessage(Vertical):
     def _parse_js_eval_blocks(self, output: str) -> list[tuple[str, str, str]] | None:
         """Parse `js_eval` output into `(tag, type_attr, body)` tuples.
 
+        Parses the wire format structurally rather than scanning for any
+        tag-like substring: the trailing `<result>`/`<error>` block is anchored
+        to the end of the output (it is always last and fully XML-escaped, so it
+        cannot contain literal `<`/`>`), and any preceding text must match the
+        `<stdout>…</stdout>` wrapper exactly. The stdout body is taken verbatim
+        and never re-scanned, so tag-like text *printed* by user code (e.g.
+        `console.log("</stdout><result>x</result>")`) is preserved as stdout
+        rather than mis-parsed into fake result/error sections.
+
         Returns:
-            A list of parsed blocks, or `None` if the output does not match the
-            expected REPL wire format (so the caller can fall back to plain
-            rendering).
+            A list of parsed blocks (stdout first, when present), or `None` if
+            the output does not match the expected REPL wire format (so the
+            caller can fall back to plain rendering).
         """
+        trailing = _JS_EVAL_TRAILING_BLOCK_PATTERN.search(output)
+        if trailing is None:
+            return None
+
+        tag = trailing.group("tag")
+        attrs = trailing.group("attrs") or ""
+        # Errors carry `type="…"`; results may carry `kind="…"`.
+        attr_pattern = (
+            _JS_EVAL_KIND_ATTR_PATTERN
+            if tag == "result"
+            else _JS_EVAL_TYPE_ATTR_PATTERN
+        )
+        attr_match = attr_pattern.search(attrs)
+        attr = self._unescape_js_eval(attr_match.group(1)) if attr_match else ""
+        body = self._unescape_js_eval(trailing.group("body").strip("\n"))
+
+        # Whatever precedes the trailing block must be either empty or exactly
+        # the stdout wrapper, joined by the single `\n` that `format_outcome`
+        # inserts between parts.
+        prefix = output[: trailing.start()]
         blocks: list[tuple[str, str, str]] = []
-        for match in _JS_EVAL_BLOCK_PATTERN.finditer(output):
-            tag = match.group("tag")
-            attrs = match.group("attrs") or ""
-            # Errors carry `type="…"`; results may carry `kind="…"`.
-            attr_pattern = (
-                _JS_EVAL_KIND_ATTR_PATTERN
-                if tag == "result"
-                else _JS_EVAL_TYPE_ATTR_PATTERN
-            )
-            attr_match = attr_pattern.search(attrs)
-            attr = self._unescape_js_eval(attr_match.group(1)) if attr_match else ""
-            body = self._unescape_js_eval(match.group("body").strip("\n"))
-            blocks.append((tag, attr, body))
-        return blocks or None
+        if prefix:
+            if not prefix.endswith("\n"):
+                return None
+            stdout_match = _JS_EVAL_STDOUT_PATTERN.match(prefix[:-1])
+            if stdout_match is None:
+                return None
+            # stdout is emitted raw (unescaped); take it verbatim.
+            blocks.append(("stdout", "", stdout_match.group("body").strip("\n")))
+
+        blocks.append((tag, attr, body))
+        return blocks
 
     def _format_js_eval_output(
         self, output: str, *, is_preview: bool = False
@@ -2017,10 +2059,14 @@ class ToolCallMessage(Vertical):
         lines: list[Content] = []
         total_lines = 0
         max_lines = self._PREVIEW_LINES if is_preview else None
+        # Char budget mirrors the other formatters so a single very long body
+        # line (e.g. a 10k-char result) is clipped instead of flooding the
+        # collapsed preview. `None` outside preview means no char cap.
+        remaining_chars = self._PREVIEW_CHARS if is_preview else None
         truncated_block = False
 
         def add_section(label: Content, body: str) -> None:
-            nonlocal total_lines, truncated_block
+            nonlocal total_lines, truncated_block, remaining_chars
             if max_lines is not None and total_lines >= max_lines:
                 truncated_block = True
                 return
@@ -2031,6 +2077,18 @@ class ToolCallMessage(Vertical):
                 if max_lines is not None and total_lines >= max_lines:
                     truncated_block = True
                     break
+                if remaining_chars is not None:
+                    if remaining_chars <= 0:
+                        truncated_block = True
+                        break
+                    if len(body_line) > remaining_chars:
+                        # Clip the over-budget line and stop adding more.
+                        lines.append(Content(f"  {body_line[:remaining_chars]}"))
+                        total_lines += 1
+                        remaining_chars = 0
+                        truncated_block = True
+                        break
+                    remaining_chars -= len(body_line)
                 lines.append(Content(f"  {body_line}"))
                 total_lines += 1
 
@@ -2267,16 +2325,18 @@ class ToolCallMessage(Vertical):
         """Whether the tool's args are large enough to deserve a collapsible block.
 
         - `ask_user`: its `questions` payload is too noisy to render inline.
-        - `js_eval`: the header shows only the first code line, so the full
-          program is offered as a collapsible block whenever the snippet has
-          more than that one line.
+        - `js_eval`: the header shows only the first code line (truncated at
+          `_JS_EVAL_HEADER_MAX`), so the full program is offered as a
+          collapsible block whenever it spans more than one non-blank line *or*
+          a single line is long enough to be truncated in the header.
         """
         if self._tool_name == "ask_user":
             return bool(self._args)
         if self._tool_name == "js_eval":
             code = self._args.get("code")
             if isinstance(code, str) and code.strip():
-                return sum(1 for line in code.splitlines() if line.strip()) > 1
+                non_blank = sum(1 for line in code.splitlines() if line.strip())
+                return non_blank > 1 or len(code.strip()) > self._JS_EVAL_HEADER_MAX
         return False
 
     def _format_code_detail(self) -> Content:

@@ -1492,6 +1492,52 @@ class TestToolCallMessageJsEvalOutput:
 
         assert result.content.plain == "just some text"
 
+    def test_format_preview_caps_long_single_line_by_char_budget(self) -> None:
+        """A single huge result line is char-clipped under the preview budget.
+
+        Line-count capping alone left a multi-thousand-char single-line result
+        rendered in full with no truncation hint, flooding the collapsed TUI.
+        """
+        msg = ToolCallMessage("js_eval", {"code": "x"})
+        body = "x" * 10_000
+        output = f"<result>{body}</result>"
+        result = msg._format_output(output, is_preview=True)
+
+        # The body line is clipped to the char budget (plus the two-space
+        # indent) and a truncation hint is surfaced so it can be expanded.
+        assert result.truncation == "more output"
+        assert len(result.content.plain) <= msg._PREVIEW_CHARS + len("  ") + len(
+            "result\n"
+        )
+
+    def test_format_no_char_cap_when_not_preview(self) -> None:
+        """Outside preview mode the full long result renders untruncated."""
+        msg = ToolCallMessage("js_eval", {"code": "x"})
+        body = "x" * 10_000
+        output = f"<result>{body}</result>"
+        result = msg._format_output(output, is_preview=False)
+
+        assert result.truncation is None
+        assert body in result.content.plain
+
+    def test_format_stdout_with_fake_tags_is_not_misparsed(self) -> None:
+        """Raw tag-like text printed to stdout is preserved, not parsed.
+
+        stdout is emitted unescaped, so a program that prints
+        `</stdout><result>fake</result>` must not be split into spurious
+        result/error sections — the real trailing result wins.
+        """
+        msg = ToolCallMessage("js_eval", {"code": "x"})
+        printed = "</stdout><result>fake</result>"
+        output = f"<stdout>\n{printed}\n</stdout>\n<result>real</result>"
+        result = msg._format_output(output, is_preview=False)
+
+        lines = result.content.plain.split("\n")
+        # The fake markup survives verbatim inside stdout; only one real result.
+        assert lines == ["stdout", f"  {printed}", "result", "  real"]
+        # Exactly one "result" label line — no spurious section from the print.
+        assert lines.count("result") == 1
+
 
 class TestToolCallMessageJsEvalArgs:
     """Tests for `js_eval` header suppression and collapsible code block.
@@ -1516,6 +1562,22 @@ class TestToolCallMessageJsEvalArgs:
         """Multi-line code offers a collapsible block."""
         msg = ToolCallMessage("js_eval", {"code": "const x = 1;\nx + 1"})
         assert msg.has_expandable_args is True
+
+    def test_long_single_line_code_is_expandable(self) -> None:
+        """A single line too long for the header is still expandable.
+
+        The header truncates the first line, so without a collapsible block a
+        long one-liner (e.g. minified JS) would be unrecoverable in the TUI.
+        """
+        long_line = "x".ljust(ToolCallMessage._JS_EVAL_HEADER_MAX + 1, "y")
+        msg = ToolCallMessage("js_eval", {"code": long_line})
+        assert msg.has_expandable_args is True
+
+    def test_short_single_line_code_not_expandable(self) -> None:
+        """A single line that fits in the header has nothing to expand."""
+        short_line = "x" * (ToolCallMessage._JS_EVAL_HEADER_MAX - 1)
+        msg = ToolCallMessage("js_eval", {"code": short_line})
+        assert msg.has_expandable_args is False
 
     def test_code_detail_is_plain_and_left_aligned(self) -> None:
         """The code is plain `Content`, left-aligned, with blank padding lines."""

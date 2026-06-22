@@ -186,13 +186,16 @@ def get_default_model() -> ChatAnthropic:
     return _build_default_model()
 
 
-def _create_bedrock_prompt_caching_middleware() -> AgentMiddleware[Any, Any, Any]:
+def _create_bedrock_prompt_caching_middleware() -> AgentMiddleware[Any, Any, Any] | None:
     """Create Bedrock prompt caching middleware when `langchain-aws` is installed."""
+    module_name = "langchain_aws.middleware.prompt_caching"
     try:
-        module = import_module("langchain_aws.middleware.prompt_caching")
+        module = import_module(module_name)
     except ImportError as exc:
-        msg = "Bedrock prompt caching requires `langchain-aws` to be installed."
-        raise ImportError(msg) from exc
+        if exc.name not in {"langchain_aws", "langchain_aws.middleware", module_name}:
+            raise
+        logger.debug("Bedrock prompt caching middleware is unavailable.", exc_info=exc)
+        return None
     middleware_cls = module.BedrockPromptCachingMiddleware
     return cast("AgentMiddleware[Any, Any, Any]", middleware_cls(unsupported_model_behavior="ignore"))
 
@@ -204,7 +207,9 @@ def _append_prompt_caching_middleware(
     """Append provider-specific prompt caching middleware."""
     middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
     if is_bedrock_model(model):
-        middleware.append(_create_bedrock_prompt_caching_middleware())
+        bedrock_middleware = _create_bedrock_prompt_caching_middleware()
+        if bedrock_middleware is not None:
+            middleware.append(bedrock_middleware)
 
 
 def _merge_fs_interrupt_on(

@@ -605,9 +605,7 @@ def _parse_message(payload: object) -> ChannelMessage:
         or values.get("media_urls"),
     )
     media_mime_types = _str_list(
-        values.get("media_mime_types")
-        or values.get("mediaMimeTypes")
-        or values.get("mimeTypes"),
+        values.get("media_mime_types") or values.get("mediaMimeTypes") or values.get("mimeTypes"),
     )
     message_type = optional_str(
         values.get("message_type") or values.get("messageType") or values.get("mediaType"),

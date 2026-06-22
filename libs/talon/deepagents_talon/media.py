@@ -297,10 +297,7 @@ def _path_from_value(value: object) -> Path | None:
 
 
 def _media_mime_types(metadata: dict[str, object]) -> list[str]:
-    raw = (
-        metadata.get("media_mime_types")
-        or metadata.get("mime_types")
-    )
+    raw = metadata.get("media_mime_types") or metadata.get("mime_types")
     if not isinstance(raw, list):
         return []
     return [item for item in raw if isinstance(item, str) and "/" in item]

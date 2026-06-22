@@ -276,9 +276,7 @@ class TalonHost:
             job: Cron job that produced the result.
             text: Message text to send.
         """
-        await send_with_retry(
-            lambda: channel.send_message(job.origin.conversation_id, text)
-        )
+        await send_with_retry(lambda: channel.send_message(job.origin.conversation_id, text))
 
     async def _invoke_agent(
         self,
@@ -469,9 +467,7 @@ class TalonHost:
         cleaned, refs = extract_markdown_media(result.text)
         if not refs:
             if result.text:
-                await send_with_retry(
-                    lambda: channel.send_message(conversation_id, result.text)
-                )
+                await send_with_retry(lambda: channel.send_message(conversation_id, result.text))
             return
 
         media, failed = _outbound_media_from_refs(
@@ -487,9 +483,7 @@ class TalonHost:
             fallback_caption=text,
         )
         if text and not sent_media:
-            await send_with_retry(
-                lambda: channel.send_message(conversation_id, text)
-            )
+            await send_with_retry(lambda: channel.send_message(conversation_id, text))
         elif send_failed and sent_media:
             await send_with_retry(
                 lambda: channel.send_message(
@@ -615,9 +609,7 @@ async def _send_channel_media(
     failed: list[str] = []
     for index, item in enumerate(media):
         payload = _media_with_fallback_caption(item, fallback_caption, is_first=index == 0)
-        result = await send_with_retry(
-            lambda p=payload: channel.send_media(conversation_id, p)
-        )
+        result = await send_with_retry(lambda p=payload: channel.send_media(conversation_id, p))
         if result.success:
             sent = True
         else:

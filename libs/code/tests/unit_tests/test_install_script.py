@@ -799,6 +799,34 @@ def test_install_script_refuses_symlinked_log_dir(tmp_path: Path) -> None:
     assert not (target / "install.log").exists()
 
 
+def test_install_script_refuses_symlinked_log_file(tmp_path: Path) -> None:
+    """A pre-existing log-file symlink disables the persistent install log."""
+    cache = tmp_path / "cache"
+    install_log_dir = cache / "deepagents-code"
+    target = tmp_path / "target.log"
+    install_log_dir.mkdir(parents=True)
+    target.write_text("keep me\n")
+    (install_log_dir / "install.log").symlink_to(target)
+
+    proc, _ = _invoke(
+        tmp_path,
+        {
+            "FAKE_UV_INSTALL_STDERR": _DEPENDENCY_UPDATE_DIFF,
+            "XDG_CACHE_HOME": str(cache),
+        },
+        installed_version="0.1.8",
+        latest_version="0.1.20",
+    )
+
+    assert proc.returncode == 0
+    assert (
+        "deepagents-code 0.1.8 was already up to date; dependencies were updated."
+        in proc.stdout
+    )
+    assert "Details:" not in proc.stdout
+    assert target.read_text() == "keep me\n"
+
+
 def test_install_script_unset_xdg_cache_home_falls_back_to_home_cache(
     tmp_path: Path,
 ) -> None:

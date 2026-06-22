@@ -292,6 +292,20 @@ fix_install_log_owner() {
   fi
 }
 
+copy_install_log() {
+  [ -n "${INSTALL_LOG:-}" ] || return 1
+  [ -n "${install_log_dir:-}" ] || return 1
+  [ -d "$install_log_dir" ] && [ ! -L "$install_log_dir" ] || return 1
+  if [ "$(id -u)" -eq 0 ]; then
+    path_is_under_home "$install_log_dir" || return 1
+  fi
+  [ ! -L "$INSTALL_LOG" ] || return 1
+  rm -f "$INSTALL_LOG" 2>/dev/null || return 1
+  # Publish the already-captured stderr without opening the destination for
+  # writing. `ln` fails if an attacker wins the race by creating install.log.
+  ln "$uv_stderr" "$INSTALL_LOG" 2>/dev/null
+}
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -660,7 +674,7 @@ if grep -Eq '^[[:space:]]+[-+][[:space:]]+[^=]+==' "$uv_stderr"; then
   UV_REPORTED_PACKAGE_CHANGES=true
 fi
 if [ -n "$INSTALL_LOG" ]; then
-  cp "$uv_stderr" "$INSTALL_LOG" 2>/dev/null || { INSTALL_LOG=""; INSTALL_LOG_DISPLAY=""; }
+  copy_install_log || { INSTALL_LOG=""; INSTALL_LOG_DISPLAY=""; }
 fi
 rm -f "$uv_stderr"
 if [ "$uv_rc" -ne 0 ]; then

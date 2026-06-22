@@ -19,6 +19,9 @@ _PROVIDER_ALIASES = {
     "mistralai": "mistral",
 }
 
+_BEDROCK_PROVIDERS = frozenset({"amazon_bedrock", "aws", "bedrock", "bedrock_converse"})
+_BEDROCK_MODEL_CLASSES = frozenset({"ChatBedrock", "ChatBedrockConverse"})
+
 
 def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
     """Resolve a model string to a `BaseChatModel`.
@@ -104,6 +107,18 @@ def get_model_provider(model: BaseChatModel) -> str | None:
     if isinstance(provider, str) and provider:
         return provider
     return None
+
+
+def is_bedrock_model(model: str | BaseChatModel) -> bool:
+    """Check whether a model targets AWS Bedrock."""
+    if isinstance(model, str):
+        provider, separator, _ = model.partition(":")
+        return bool(separator) and _normalize_provider(provider) in _BEDROCK_PROVIDERS
+
+    provider = get_model_provider(model)
+    if provider is not None and _normalize_provider(provider) in _BEDROCK_PROVIDERS:
+        return True
+    return type(model).__name__ in _BEDROCK_MODEL_CLASSES
 
 
 def model_matches_spec(model: BaseChatModel, spec: str) -> bool:

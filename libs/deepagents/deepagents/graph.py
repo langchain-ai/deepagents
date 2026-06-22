@@ -7,6 +7,7 @@ subagent, and summarization middleware.
 
 import logging
 from collections.abc import Callable, Sequence
+from importlib import import_module
 from typing import Annotated, Any, Required, cast
 
 from langchain.agents import AgentState, create_agent
@@ -32,7 +33,7 @@ from deepagents._excluded_middleware import (
     _verify_excluded_middleware_coverage,
 )
 from deepagents._messages_reducer import _messages_delta_reducer
-from deepagents._models import resolve_model
+from deepagents._models import is_bedrock_model, resolve_model
 from deepagents._tools import _apply_tool_description_overrides
 from deepagents._version import __version__
 from deepagents.backends import StateBackend
@@ -183,6 +184,27 @@ def get_default_model() -> ChatAnthropic:
         `ChatAnthropic` instance configured with `claude-sonnet-4-6`.
     """
     return _build_default_model()
+
+
+def _create_bedrock_prompt_caching_middleware() -> AgentMiddleware[Any, Any, Any]:
+    """Create Bedrock prompt caching middleware when `langchain-aws` is installed."""
+    try:
+        module = import_module("langchain_aws.middleware.prompt_caching")
+    except ImportError as exc:
+        msg = "Bedrock prompt caching requires `langchain-aws` to be installed."
+        raise ImportError(msg) from exc
+    middleware_cls = module.BedrockPromptCachingMiddleware
+    return cast("AgentMiddleware[Any, Any, Any]", middleware_cls(unsupported_model_behavior="ignore"))
+
+
+def _append_prompt_caching_middleware(
+    middleware: list[AgentMiddleware[Any, Any, Any]],
+    model: BaseChatModel,
+) -> None:
+    """Append provider-specific prompt caching middleware."""
+    middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+    if is_bedrock_model(model):
+        middleware.append(_create_bedrock_prompt_caching_middleware())
 
 
 def _merge_fs_interrupt_on(
@@ -349,6 +371,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             - `_ToolExclusionMiddleware` (if profile has `excluded_tools`)
             - [`AnthropicPromptCachingMiddleware`][langchain_anthropic.middleware.AnthropicPromptCachingMiddleware] (unconditional; no-ops for
                 non-Anthropic models)
+            - `BedrockPromptCachingMiddleware` for AWS Bedrock models when
+                `langchain-aws` is installed
             - [`MemoryMiddleware`][deepagents.middleware.memory.MemoryMiddleware] (if `memory` is provided)
             - [`HumanInTheLoopMiddleware`][langchain.agents.middleware.HumanInTheLoopMiddleware] (if `interrupt_on` is provided)
 
@@ -635,8 +659,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             if _subagent_profile.excluded_tools:
                 subagent_middleware.append(_ToolExclusionMiddleware(excluded=_subagent_profile.excluded_tools))
 
-            # Prompt caching
-            subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+            _append_prompt_caching_middleware(subagent_middleware, subagent_model)
 
             _subagent_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
             _subagent_matched_names: set[str] = set()
@@ -710,8 +733,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # Strip excluded tools after all tool-injecting middleware has run
         if _profile.excluded_tools:
             gp_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
-        # Prompt caching is unconditional: "ignore" silently skips non-Anthropic models
-        gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+        _append_prompt_caching_middleware(gp_middleware, model)
 
         gp_middleware = _apply_excluded_middleware(
             gp_middleware,
@@ -793,8 +815,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     deepagent_middleware.extend(_profile.materialize_extra_middleware())
     if _profile.excluded_tools:
         deepagent_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
-    # Unconditional prompt caching (see general-purpose subagent comment).
-    deepagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+    _append_prompt_caching_middleware(deepagent_middleware, model)
     if memory is not None:
         # MemoryMiddleware applies the cache_control breakpoint only when the
         # request model is Anthropic, making it safe to enable unconditionally.

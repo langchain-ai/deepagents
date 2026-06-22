@@ -266,7 +266,7 @@ class InputActionButton(Static):
 
     def __init__(self, label: str, action: str, **kwargs: Any) -> None:
         """Initialize the button with a label and an action identifier."""
-        super().__init__(label, **kwargs)
+        super().__init__(label, markup=False, **kwargs)
         self._action = action
 
     def on_click(self, event: Click) -> None:

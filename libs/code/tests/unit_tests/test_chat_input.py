@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 from typing import TYPE_CHECKING
 
 import pytest
@@ -298,6 +299,16 @@ class TestDiscardText:
 
 class TestInputActionButtons:
     """Tests for the `[ X ]` clear and `[ COPY ]` buttons in the chat input."""
+
+    async def test_buttons_render_labels(self) -> None:
+        """The action button labels render as text, not Rich markup tags."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            rendered = html.unescape(app.export_screenshot()).replace("\xa0", " ")
+
+        assert "[ X ]" in rendered
+        assert "[ COPY ]" in rendered
 
     async def test_clear_button_clears_input(self) -> None:
         """Clicking `[ X ]` empties the draft."""

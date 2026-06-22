@@ -13,7 +13,7 @@ import time
 import webbrowser
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 if TYPE_CHECKING:
@@ -15300,6 +15300,7 @@ class TestClearInputEscape:
         app = self._make_app()
         chat_input = MagicMock()
         chat_input.value = "draft text"
+        chat_input.discard_text.return_value = True
         app._chat_input = chat_input
 
         app._handle_clear_input_escape()
@@ -15309,6 +15310,53 @@ class TestClearInputEscape:
         app._handle_clear_input_escape()
         assert app._clear_input_pending is False
         chat_input.discard_text.assert_called_once_with()
+
+    def test_arm_and_clear_emit_separate_toasts(self) -> None:
+        """The arm hint and the clear confirmation are distinct toasts.
+
+        The first Esc hints to press again (no premature undo hint); the second
+        Esc confirms the clear and surfaces the ctrl+z undo hint at the moment
+        it becomes actionable.
+        """
+        app = self._make_app()
+        chat_input = MagicMock()
+        chat_input.value = "draft text"
+        chat_input.discard_text.return_value = True
+        app._chat_input = chat_input
+
+        notify = cast("MagicMock", app.notify)
+
+        app._handle_clear_input_escape()
+        notify.assert_called_once_with(
+            "Press Esc again to clear input",
+            timeout=3,
+            markup=False,
+        )
+
+        notify.reset_mock()
+        app._handle_clear_input_escape()
+        notify.assert_called_once_with(
+            "Input cleared (ctrl+z to undo)",
+            timeout=3,
+            markup=False,
+        )
+
+    def test_clear_toast_suppressed_when_nothing_discarded(self) -> None:
+        """No confirmation toast fires if `discard_text` reports nothing cleared."""
+        app = self._make_app()
+        chat_input = MagicMock()
+        chat_input.value = "draft text"
+        chat_input.discard_text.return_value = False
+        app._chat_input = chat_input
+
+        notify = cast("MagicMock", app.notify)
+
+        app._handle_clear_input_escape()  # arm
+        notify.reset_mock()
+        app._handle_clear_input_escape()  # clear attempt
+
+        chat_input.discard_text.assert_called_once_with()
+        notify.assert_not_called()
 
     def test_escape_no_op_when_input_empty(self) -> None:
         """Esc never arms a clear when the draft is empty."""

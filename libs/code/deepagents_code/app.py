@@ -8595,7 +8595,12 @@ class DeepAgentsApp(App):
             return
         if self._clear_input_pending:
             self._clear_input_pending = False
-            chat_input.discard_text()
+            if chat_input.discard_text():
+                self.notify(
+                    "Input cleared (ctrl+z to undo)",
+                    timeout=3,
+                    markup=False,
+                )
             return
         self._arm_clear_input_pending()
 
@@ -8604,7 +8609,7 @@ class DeepAgentsApp(App):
         self._clear_input_pending = True
         timeout = 3
         self.notify(
-            "Press Esc again to clear input (ctrl+z to undo)",
+            "Press Esc again to clear input",
             timeout=timeout,
             markup=False,
         )

@@ -1,0 +1,21 @@
+libs/code/scripts/install.sh
+  s_d71e3ac0045028::t_48a8b468b80b40 295-308,677
+libs/code/tests/unit_tests/test_install_script.py
+  s_d71e3ac0045028::t_405829b04abda4 802-829
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.9",
+  "base_commit_sha": "adf0dfa8f7623044b84b16e1bd31c1676d77d833",
+  "prompts": {},
+  "sessions": {
+    "s_d71e3ac0045028": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ef104-8525-7ef0-8031-fae4999c5ea3",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

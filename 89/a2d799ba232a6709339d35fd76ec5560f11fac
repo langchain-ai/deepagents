@@ -1,0 +1,19 @@
+libs/code/scripts/install.sh
+  s_b79f67cf721e0c::t_14e8ce155dbced 685-687
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.9",
+  "base_commit_sha": "89a2d799ba232a6709339d35fd76ec5560f11fac",
+  "prompts": {},
+  "sessions": {
+    "s_b79f67cf721e0c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8ca757f3-ac92-490e-b6c6-d4aa81e643fc",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

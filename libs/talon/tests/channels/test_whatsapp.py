@@ -487,7 +487,7 @@ async def test_channel_sends_chunked_formatted_text(tmp_path: Path) -> None:
 
     assert transport.posts[0] == (
         "/send",
-        {"chat_id": "chat", "text": "*deepagents bot*\n*bold*"},
+        {"chatId": "chat", "text": "*deepagents bot*\n*bold*"},
     )
     assert transport.posts[1][0] == "/send"
     assert len(cast("str", transport.posts[1][1]["text"])) <= 4096
@@ -516,9 +516,7 @@ async def test_channel_sends_media_and_edits_messages(tmp_path: Path) -> None:
         (
             "/send-media",
             {
-                "chat_id": "chat",
                 "chatId": "chat",
-                "path": str(staged),
                 "filePath": str(staged),
                 "mediaType": "image",
                 "caption": "*deepagents bot*\ncaption",
@@ -527,12 +525,9 @@ async def test_channel_sends_media_and_edits_messages(tmp_path: Path) -> None:
         (
             "/edit",
             {
-                "chat_id": "chat",
                 "chatId": "chat",
-                "message_id": "message",
                 "messageId": "message",
                 "content": "*deepagents bot*\nUpdated",
-                "message": "*deepagents bot*\nUpdated",
             },
         ),
     ]

@@ -14,7 +14,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 
-from deepagents_talon.interfaces import ChannelMedia, ChannelMessage
+from deepagents_talon.interfaces import ChannelMedia, ChannelMessage, MessageHandler
 from deepagents_talon.media import resolve_bounded_media_path
 
 if TYPE_CHECKING:
@@ -115,6 +115,28 @@ class ChannelExposure:
             message.text,
             self.mention_patterns,
         )
+
+
+async def dispatch_message(
+    handler: MessageHandler | None,
+    message: ChannelMessage,
+    *,
+    provider: str,
+) -> None:
+    """Dispatch an inbound message to the registered handler.
+
+    Args:
+        handler: Host callback for inbound messages, or ``None``.
+        message: Channel message to dispatch.
+        provider: Provider name for log messages.
+
+    Raises:
+        AssertionError: If no handler is registered (internal programming error).
+    """
+    if handler is None:
+        logger.warning("Dropping %s message because no handler is registered", provider)
+        return
+    await handler(message)
 
 
 def format_markdown_for_channel(text: str) -> str:
@@ -309,7 +331,6 @@ def message_with_media_paths(
         metadata["media_paths"] = paths
         metadata["media_path"] = paths[0]
         metadata["media_mime_types"] = types
-        metadata["media_types"] = types
         metadata["voice_path"] = paths[0] if metadata.get("media_type") == "voice" else None
     return replace_message_metadata(message, metadata)
 

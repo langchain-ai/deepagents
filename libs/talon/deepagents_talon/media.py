@@ -300,7 +300,6 @@ def _media_mime_types(metadata: dict[str, object]) -> list[str]:
     raw = (
         metadata.get("media_mime_types")
         or metadata.get("mime_types")
-        or metadata.get("media_types")
     )
     if not isinstance(raw, list):
         return []

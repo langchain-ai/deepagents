@@ -27,6 +27,7 @@ from deepagents_talon.channels.base import (
     ChannelMediaError,
     channel_exposure_from_env,
     chunk_text,
+    dispatch_message,
     format_markdown_for_channel,
     max_media_bytes_from_env,
     message_with_media_paths,
@@ -313,7 +314,7 @@ class WhatsAppChannel:
             text: Message content to send.
         """
         for chunk in _chunk_with_bot_header(text, bot_header=self.config.bot_header):
-            await self._post_result("/send", {"chat_id": conversation_id, "text": chunk})
+            await self._post_result("/send", {"chatId": conversation_id, "text": chunk})
 
     async def send_media(self, conversation_id: str, media: ChannelMedia) -> None:
         """Send validated image or video media to a WhatsApp chat.
@@ -329,9 +330,7 @@ class WhatsAppChannel:
         )
         staged = await asyncio.to_thread(_stage_bridge_media, checked.path, self.config)
         payload: dict[str, object] = {
-            "chat_id": conversation_id,
             "chatId": conversation_id,
-            "path": str(staged),
             "filePath": str(staged),
             "mediaType": checked.media_type,
         }
@@ -349,7 +348,7 @@ class WhatsAppChannel:
         Args:
             conversation_id: WhatsApp chat id.
         """
-        await self._post_result("/typing", {"chat_id": conversation_id, "chatId": conversation_id})
+        await self._post_result("/typing", {"chatId": conversation_id})
 
     async def edit_message(self, conversation_id: str, message_id: str, text: str) -> None:
         """Edit a previously sent WhatsApp message.
@@ -362,12 +361,9 @@ class WhatsAppChannel:
         await self._post_result(
             "/edit",
             {
-                "chat_id": conversation_id,
                 "chatId": conversation_id,
-                "message_id": message_id,
                 "messageId": message_id,
                 "content": _with_bot_header(text, bot_header=self.config.bot_header),
-                "message": _with_bot_header(text, bot_header=self.config.bot_header),
             },
         )
 
@@ -438,7 +434,7 @@ class WhatsAppChannel:
                             message,
                             max_bytes=self.config.max_media_bytes,
                         )
-                        await self._dispatch(checked)
+                        await dispatch_message(self._handler, checked, provider="WhatsApp")
                     else:
                         logger.debug(
                             "Dropping WhatsApp message %s from %s due to exposure policy",
@@ -508,12 +504,6 @@ class WhatsAppChannel:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._bridge_stdout = None
         self._bridge_stderr = None
-
-    async def _dispatch(self, message: ChannelMessage) -> None:
-        if self._handler is None:
-            logger.warning("Dropping WhatsApp message because no handler is registered")
-            return
-        await self._handler(message)
 
     async def _post_result(self, path: str, payload: Mapping[str, object]) -> object:
         response = await self._transport.post(path, payload)
@@ -595,8 +585,7 @@ def _parse_message(payload: object) -> ChannelMessage:
     media_mime_types = _str_list(
         values.get("media_mime_types")
         or values.get("mediaMimeTypes")
-        or values.get("mimeTypes")
-        or values.get("media_types"),
+        or values.get("mimeTypes"),
     )
     message_type = optional_str(
         values.get("message_type") or values.get("messageType") or values.get("mediaType"),

@@ -26,6 +26,7 @@ from deepagents_talon.channels.base import (
     ExposureMode,
     channel_exposure_from_env,
     chunk_text,
+    dispatch_message,
     max_media_bytes_from_env,
     message_with_media_paths,
     optional_str,
@@ -287,8 +288,7 @@ class TelegramTransport:
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
             msg = f"Telegram Bot API request failed: {method}"
             raise TelegramError(msg) from error
-        _validate_response(payload)
-        return payload
+        return _validate_response(payload)
 
 
 class TelegramChannel:
@@ -497,7 +497,7 @@ class TelegramChannel:
                         self._commit_update_offset(update)
                         continue
                     message = await self._prepare_inbound_media(message)
-                    await self._dispatch(message)
+                    await dispatch_message(self._handler, message, provider="Telegram")
                     self._commit_update_offset(update)
             except TelegramError as error:
                 delay = error.retry_after if error.retry_after is not None else self.config.poll_interval_seconds
@@ -533,12 +533,6 @@ class TelegramChannel:
             return
         self._offset = next_offset
         _save_offset(self.config.offset_file, self._offset)
-
-    async def _dispatch(self, message: ChannelMessage) -> None:
-        if self._handler is None:
-            logger.warning("Dropping Telegram message because no handler is registered")
-            return
-        await self._handler(message)
 
     async def _prepare_inbound_media(self, message: ChannelMessage) -> ChannelMessage:
         media_type = message.metadata.get("media_type")
@@ -789,38 +783,36 @@ def _validate_response(payload: object) -> object:
     return values.get("result")
 
 
-def _extract_result(payload: object) -> dict[str, object]:
-    """Extract the ``result`` field from a Bot API response.
+def _extract_result(result: object) -> dict[str, object]:
+    """Extract a dict result from a validated Bot API response.
 
     Args:
-        payload: Full Bot API response.
+        result: Validated ``result`` field from a Bot API response.
 
     Returns:
-        The ``result`` object.
+        The result object as a dict.
 
     Raises:
-        TelegramError: If the response is malformed.
+        TelegramError: If the result is not a dict.
     """
-    result = _validate_response(payload)
     if not isinstance(result, dict):
         msg = "Telegram Bot API response missing result"
         raise TelegramError(msg)
     return cast("dict[str, object]", result)
 
 
-def _extract_updates(payload: object) -> list[dict[str, object]]:
-    """Extract the list of updates from a getUpdates response.
+def _extract_updates(result: object) -> list[dict[str, object]]:
+    """Extract the list of updates from a getUpdates response result.
 
     Args:
-        payload: Full Bot API response.
+        result: Validated ``result`` field from a getUpdates response.
 
     Returns:
         List of update objects.
 
     Raises:
-        TelegramError: If the response is malformed.
+        TelegramError: If the result is not a list.
     """
-    result = _validate_response(payload)
     if not isinstance(result, list):
         msg = "Telegram getUpdates result must be a list"
         raise TelegramError(msg)

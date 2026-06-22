@@ -15,8 +15,11 @@ from deepagents_code.config import (
     CLI_MAX_RETRIES_KEY,
     RECOMMENDED_SAFE_SHELL_COMMANDS,
     SHELL_ALLOW_ALL,
+    LangSmithApiError,
+    LangSmithProjectNotFoundError,
     ModelResult,
     Settings,
+    _apply_default_langsmith_project,
     _create_model_from_class,
     _create_model_via_init,
     _disable_orphaned_tracing,
@@ -31,6 +34,7 @@ from deepagents_code.config import (
     detect_mode_prefix,
     detect_provider,
     fetch_langsmith_project_url,
+    fetch_langsmith_project_url_or_raise,
     get_langsmith_project_name,
     newline_shortcut,
     parse_shell_allow_list,
@@ -2229,6 +2233,25 @@ class TestFetchLangsmithProjectUrl:
         assert second == "https://smith.langchain.com/o/org/projects/p/b"
         assert mock_client_cls.return_value.read_project.call_count == 2
 
+    def test_or_raise_raises_project_not_found(self) -> None:
+        """A 404 from read_project raises LangSmithProjectNotFoundError."""
+        from langsmith.utils import LangSmithNotFoundError
+
+        with patch("langsmith.Client") as mock_client_cls:
+            mock_client_cls.return_value.read_project.side_effect = (
+                LangSmithNotFoundError("Project deepagents-code not found")
+            )
+            with pytest.raises(LangSmithProjectNotFoundError):
+                fetch_langsmith_project_url_or_raise("deepagents-code")
+
+    def test_or_raise_raises_api_error_on_other_failure(self) -> None:
+        """A non-404 SDK error raises the generic LangSmithApiError."""
+        with patch("langsmith.Client") as mock_client_cls:
+            mock_client_cls.return_value.read_project.side_effect = OSError("boom")
+            with pytest.raises(LangSmithApiError) as exc_info:
+                fetch_langsmith_project_url_or_raise("my-project")
+        assert not isinstance(exc_info.value, LangSmithProjectNotFoundError)
+
 
 class TestBuildLangsmithThreadUrl:
     """Tests for build_langsmith_thread_url()."""
@@ -3813,6 +3836,50 @@ class TestLazyModuleAttributes:
         finally:
             config_mod._bootstrap_done = original_done
             config_mod._original_langsmith_project = original_ls
+
+
+class TestApplyDefaultLangsmithProject:
+    """Tests for _apply_default_langsmith_project()."""
+
+    def test_defaults_when_tracing_on_and_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Tracing on with no project set routes to the default project."""
+        import os
+
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+        monkeypatch.setenv("LANGSMITH_TRACING", "true")
+        monkeypatch.delenv("LANGSMITH_PROJECT", raising=False)
+
+        _apply_default_langsmith_project()
+
+        assert os.environ["LANGSMITH_PROJECT"] == LANGSMITH_PROJECT_DEFAULT
+
+    def test_noop_when_project_already_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An existing LANGSMITH_PROJECT is never overwritten."""
+        import os
+
+        monkeypatch.setenv("LANGSMITH_TRACING", "true")
+        monkeypatch.setenv("LANGSMITH_PROJECT", "user-project")
+
+        _apply_default_langsmith_project()
+
+        assert os.environ["LANGSMITH_PROJECT"] == "user-project"
+
+    def test_noop_when_tracing_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No default is applied when tracing is not enabled."""
+        import os
+
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        monkeypatch.delenv("LANGCHAIN_TRACING_V2", raising=False)
+        monkeypatch.delenv("LANGSMITH_PROJECT", raising=False)
+
+        _apply_default_langsmith_project()
+
+        assert "LANGSMITH_PROJECT" not in os.environ
 
 
 class TestFindDotenvFromStartPath:

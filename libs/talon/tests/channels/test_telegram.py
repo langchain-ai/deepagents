@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from typing import Literal, Self, cast
 
@@ -16,16 +17,14 @@ from deepagents_talon.channels.base import (
     ExposureMode,
 )
 from deepagents_talon.channels.telegram import (
-    MAX_PHOTO_BYTES,
-    MAX_VIDEO_BYTES,
     TelegramChannel,
     TelegramChannelConfig,
-    TelegramError,
-    TelegramTransport,
     _download_file,
     _encode_multipart_form,
     _load_offset,
     _save_offset,
+    _TelegramError,
+    _TelegramTransport,
 )
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.interfaces import ChannelMedia, ChannelMessage
@@ -106,7 +105,7 @@ class ErrorOnFirstSuccessTransport:
             self.calls += 1
             if self.calls == 1:
                 msg = "network error"
-                raise TelegramError(msg)
+                raise _TelegramError(msg)
             return []
         return True
 
@@ -388,7 +387,7 @@ async def test_channel_polls_and_dispatches_allowed_messages(tmp_path: Path) -> 
     )
     channel = TelegramChannel(
         _make_config(tmp_path, operator_id="111"),
-        transport=cast("TelegramTransport", transport),
+        transport=cast("_TelegramTransport", transport),
     )
     received: list[ChannelMessage] = []
 
@@ -421,7 +420,7 @@ async def test_channel_polls_and_dispatches_allowed_channel_posts(tmp_path: Path
                 conversations=frozenset({"-100111"}),
             ),
         ),
-        transport=cast("TelegramTransport", transport),
+        transport=cast("_TelegramTransport", transport),
     )
     received: list[ChannelMessage] = []
 
@@ -457,7 +456,7 @@ async def test_channel_polls_and_dispatches_allowed_private_users(tmp_path: Path
             ),
             allowed_user_ids=frozenset({"111"}),
         ),
-        transport=cast("TelegramTransport", transport),
+        transport=cast("_TelegramTransport", transport),
     )
     received: list[ChannelMessage] = []
 
@@ -482,7 +481,7 @@ async def test_channel_posts_do_not_pass_self_exposure(tmp_path: Path) -> None:
     )
     channel = TelegramChannel(
         _make_config(tmp_path, operator_id="111"),
-        transport=cast("TelegramTransport", transport),
+        transport=cast("_TelegramTransport", transport),
     )
     received: list[ChannelMessage] = []
 
@@ -508,7 +507,7 @@ async def test_channel_drops_group_messages(tmp_path: Path) -> None:
     )
     channel = TelegramChannel(
         _make_config(tmp_path, exposure=ChannelExposure(mode=ExposureMode.OPEN)),
-        transport=cast("TelegramTransport", transport),
+        transport=cast("_TelegramTransport", transport),
     )
     received: list[ChannelMessage] = []
 
@@ -533,7 +532,7 @@ async def test_channel_does_not_trust_private_chat_sender_as_self(tmp_path: Path
     )
     channel = TelegramChannel(
         _make_config(tmp_path, operator_id="999"),
-        transport=cast("TelegramTransport", transport),
+        transport=cast("_TelegramTransport", transport),
     )
     received: list[ChannelMessage] = []
 
@@ -564,7 +563,7 @@ async def test_channel_survives_transient_polling_error(tmp_path: Path) -> None:
     )
     channel = TelegramChannel(
         config,
-        transport=cast("TelegramTransport", transport),
+        transport=cast("_TelegramTransport", transport),
     )
 
     await channel.start()
@@ -580,7 +579,7 @@ async def test_channel_identifies_bot_on_start(tmp_path: Path) -> None:
     transport = RecordingTransport()
     channel = TelegramChannel(
         _make_config(tmp_path, exposure=ChannelExposure(mode=ExposureMode.OPEN)),
-        transport=cast("TelegramTransport", transport),
+        transport=cast("_TelegramTransport", transport),
     )
 
     await channel.start()
@@ -597,7 +596,7 @@ async def test_send_message_uses_plain_text(tmp_path: Path) -> None:
     transport = RecordingTransport()
     channel = TelegramChannel(
         _make_config(tmp_path),
-        transport=cast("TelegramTransport", transport),
+        transport=cast("_TelegramTransport", transport),
     )
 
     await channel.send_message("123", "hello *world*")
@@ -613,7 +612,7 @@ async def test_send_message_chunks_long_text(tmp_path: Path) -> None:
     transport = RecordingTransport()
     channel = TelegramChannel(
         _make_config(tmp_path),
-        transport=cast("TelegramTransport", transport),
+        transport=cast("_TelegramTransport", transport),
     )
 
     long_text = "x" * 5000
@@ -632,13 +631,13 @@ async def test_transport_rejects_bot_api_error_envelopes(
         return JsonResponse({"ok": False, "description": "bad request"})
 
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-    transport = TelegramTransport(
+    transport = _TelegramTransport(
         api_base="https://api.telegram.org",
         token="test-token",  # noqa: S106  # inert test token
         timeout=1,
     )
 
-    with pytest.raises(TelegramError, match="bad request"):
+    with pytest.raises(_TelegramError, match="bad request"):
         await transport.call("sendMessage", chat_id="123", text="hello")
 
 
@@ -652,13 +651,13 @@ async def test_transport_rejects_upload_error_envelopes(
     image = tmp_path / "image.png"
     image.write_bytes(b"image-data")
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
-    transport = TelegramTransport(
+    transport = _TelegramTransport(
         api_base="https://api.telegram.org",
         token="test-token",  # noqa: S106  # inert test token
         timeout=1,
     )
 
-    with pytest.raises(TelegramError, match="upload rejected"):
+    with pytest.raises(_TelegramError, match="upload rejected"):
         await transport.upload("sendPhoto", file_field="photo", file_path=image, chat_id="123")
 
 
@@ -687,7 +686,7 @@ async def test_send_media_uses_expected_upload_method(tmp_path: Path) -> None:
         path.write_bytes(b"media-data")
         channel = TelegramChannel(
             _make_config(tmp_path),
-            transport=cast("TelegramTransport", transport),
+            transport=cast("_TelegramTransport", transport),
         )
 
         await channel.send_media(
@@ -704,7 +703,7 @@ async def test_send_media_sends_long_caption_as_text_before_upload(tmp_path: Pat
     image.write_bytes(b"image-data")
     channel = TelegramChannel(
         _make_config(tmp_path),
-        transport=cast("TelegramTransport", transport),
+        transport=cast("_TelegramTransport", transport),
     )
 
     caption = "x" * 1025
@@ -770,19 +769,21 @@ def _patch_file_size(
     monkeypatch.setattr(os, "stat", patched_stat)
 
 
-async def test_send_media_rejects_provider_oversized_files(
+async def test_send_media_rejects_oversized_files(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cases: tuple[tuple[str, Literal["image", "video"], int], ...] = (
-        ("big.png", "image", MAX_PHOTO_BYTES + 1),
-        ("big.mp4", "video", MAX_VIDEO_BYTES + 1),
+        ("big.png", "image", 11),
+        ("big.mp4", "video", 11),
     )
+    config = _make_config(tmp_path)
+    config = replace(config, max_media_bytes=10)
 
     for filename, media_type, fake_size in cases:
         path = tmp_path / filename
         path.write_bytes(b"x")
-        channel = TelegramChannel(_make_config(tmp_path))
+        channel = TelegramChannel(config)
 
         with monkeypatch.context() as patch:
             _patch_file_size(patch, path, fake_size)
@@ -800,7 +801,7 @@ async def test_edit_message_uses_plain_text(tmp_path: Path) -> None:
     transport = RecordingTransport()
     channel = TelegramChannel(
         _make_config(tmp_path),
-        transport=cast("TelegramTransport", transport),
+        transport=cast("_TelegramTransport", transport),
     )
 
     await channel.edit_message("123", "42", "updated *text*")
@@ -875,7 +876,7 @@ async def test_channel_parses_inbound_media(
         transport = RecordingTransport(updates=[update])
         channel = TelegramChannel(
             _make_config(case_dir, operator_id="111"),
-            transport=cast("TelegramTransport", transport),
+            transport=cast("_TelegramTransport", transport),
         )
 
         received = await _run_channel_once(channel)
@@ -934,7 +935,7 @@ async def test_channel_skips_oversized_inbound_media_from_get_file(
         poll_timeout_seconds=1,
         max_media_bytes=10,
     )
-    channel = TelegramChannel(config, transport=cast("TelegramTransport", transport))
+    channel = TelegramChannel(config, transport=cast("_TelegramTransport", transport))
     received: list[ChannelMessage] = []
 
     async def record(message: ChannelMessage) -> None:
@@ -1022,7 +1023,7 @@ async def test_channel_persists_offset_after_polling(tmp_path: Path) -> None:
         ],
     )
     config = _make_config(tmp_path, operator_id="111")
-    channel = TelegramChannel(config, transport=cast("TelegramTransport", transport))
+    channel = TelegramChannel(config, transport=cast("_TelegramTransport", transport))
 
     await channel.start()
     await asyncio.sleep(0)
@@ -1039,7 +1040,7 @@ async def test_channel_loads_persisted_offset_on_start(tmp_path: Path) -> None:
     transport = RecordingTransport(
         updates=[_make_update(update_id=101, chat_id=111, sender_id=111, text="msg1")],
     )
-    channel = TelegramChannel(config, transport=cast("TelegramTransport", transport))
+    channel = TelegramChannel(config, transport=cast("_TelegramTransport", transport))
 
     await channel.start()
     await asyncio.sleep(0)
@@ -1056,7 +1057,7 @@ async def test_channel_advances_offset_past_failed_media_update(tmp_path: Path) 
             if method == "getFile":
                 self.calls.append((method, dict(params)))
                 msg = "temporary getFile failure"
-                raise TelegramError(msg)
+                raise _TelegramError(msg)
             return await super().call(method, **params)
 
     transport = FailingGetFileTransport(
@@ -1072,7 +1073,7 @@ async def test_channel_advances_offset_past_failed_media_update(tmp_path: Path) 
         ],
     )
     config = _make_config(tmp_path, operator_id="111")
-    channel = TelegramChannel(config, transport=cast("TelegramTransport", transport))
+    channel = TelegramChannel(config, transport=cast("_TelegramTransport", transport))
     received: list[ChannelMessage] = []
 
     async def record(message: ChannelMessage) -> None:

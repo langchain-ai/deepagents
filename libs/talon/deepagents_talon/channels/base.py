@@ -24,8 +24,6 @@ if TYPE_CHECKING:
 _T = TypeVar("_T")
 
 MAX_TEXT_CHARS = 4096
-MAX_IMAGE_BYTES = 16 * 1024 * 1024
-MAX_VIDEO_BYTES = 64 * 1024 * 1024
 DEFAULT_MAX_MEDIA_BYTES = 1024 * 1024 * 1024
 MAX_MEDIA_BYTES_ENV = "DEEPAGENTS_TALON_MAX_MEDIA_BYTES"
 OPEN_EXPOSURE_ACK_VALUE = "allow-arbitrary-senders"
@@ -425,12 +423,11 @@ def _validate_media_size(
     path: Path,
     max_bytes: int | None = None,
 ) -> ChannelMedia:
-    limit = MAX_IMAGE_BYTES if media.media_type == "image" else MAX_VIDEO_BYTES
-    if max_bytes is not None:
-        limit = min(limit, max_bytes)
+    if max_bytes is None:
+        return ChannelMedia(path=path, media_type=media.media_type, caption=media.caption)
     size = path.stat().st_size
-    if size > limit:
-        msg = f"{media.media_type} media is too large: {size} bytes exceeds {limit}"
+    if size > max_bytes:
+        msg = f"{media.media_type} media is too large: {size} bytes exceeds {max_bytes}"
         raise ChannelMediaError(msg)
 
     return ChannelMedia(path=path, media_type=media.media_type, caption=media.caption)
@@ -507,7 +504,7 @@ _RETRYABLE_ERROR_FRAGMENTS = frozenset(
 )
 
 
-def is_retryable_error(error: str | None) -> bool:
+def _is_retryable_error(error: str | None) -> bool:
     """Return whether an error message looks like a transient network failure.
 
     Args:
@@ -541,7 +538,7 @@ async def send_with_retry(
     result = _normalize_send_result(await send_fn())
     if result.success:
         return result
-    if not (result.retryable or is_retryable_error(result.error)):
+    if not (result.retryable or _is_retryable_error(result.error)):
         return result
     for attempt in range(1, max_retries + 1):
         delay = base_delay * (2 ** (attempt - 1))
@@ -549,7 +546,7 @@ async def send_with_retry(
         result = _normalize_send_result(await send_fn())
         if result.success:
             return result
-        if not (result.retryable or is_retryable_error(result.error)):
+        if not (result.retryable or _is_retryable_error(result.error)):
             return result
     return result
 

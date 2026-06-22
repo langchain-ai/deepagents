@@ -66,7 +66,7 @@ _FAILED_HEALTH_RESTART_THRESHOLD = 3
 OPEN_EXPOSURE_ACK_ENV = "DEEPAGENTS_TALON_WHATSAPP_OPEN_ACK"
 
 
-class WhatsAppBridgeError(RuntimeError):
+class _WhatsAppBridgeError(RuntimeError):
     """Raised when the WhatsApp bridge reports or causes a transport error."""
 
 
@@ -184,7 +184,7 @@ class WhatsAppChannelConfig:
         return f"http://{self.host}:{self.port}"
 
 
-class BridgeTransport:
+class _BridgeTransport:
     """Small JSON HTTP client for the loopback bridge."""
 
     def __init__(self, *, base_url: str, timeout: float, token: str | None = None) -> None:
@@ -241,7 +241,7 @@ class BridgeTransport:
                 return json.loads(response.read().decode())
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
             msg = f"WhatsApp bridge request failed: {method} {path}"
-            raise WhatsAppBridgeError(msg) from error
+            raise _WhatsAppBridgeError(msg) from error
 
 
 class WhatsAppChannel:
@@ -251,7 +251,7 @@ class WhatsAppChannel:
         self,
         config: WhatsAppChannelConfig,
         *,
-        transport: BridgeTransport | None = None,
+        transport: _BridgeTransport | None = None,
     ) -> None:
         """Initialize the WhatsApp channel without starting it.
 
@@ -260,7 +260,7 @@ class WhatsAppChannel:
             transport: Optional test transport implementing the bridge API.
         """
         self.config = config
-        self._transport = transport or BridgeTransport(
+        self._transport = transport or _BridgeTransport(
             base_url=config.base_url,
             timeout=config.request_timeout_seconds,
             token=config.bridge_token,
@@ -455,7 +455,7 @@ class WhatsAppChannel:
                             message.message_id,
                             message.conversation_id,
                         )
-            except WhatsAppBridgeError:
+            except _WhatsAppBridgeError:
                 logger.exception("Failed to poll WhatsApp bridge messages")
             await asyncio.sleep(self.config.poll_interval_seconds)
 
@@ -465,7 +465,7 @@ class WhatsAppChannel:
                 payload = await self._transport.get("/health")
                 self._status = _parse_status(payload)
                 self._failed_health_checks = 0
-            except WhatsAppBridgeError:
+            except _WhatsAppBridgeError:
                 self._failed_health_checks += 1
                 self._status = ChannelStatus(
                     provider="whatsapp",
@@ -478,19 +478,19 @@ class WhatsAppChannel:
 
     async def _wait_for_bridge(self) -> None:
         deadline = asyncio.get_running_loop().time() + DEFAULT_BRIDGE_START_TIMEOUT_SECONDS
-        last_error: WhatsAppBridgeError | None = None
+        last_error: _WhatsAppBridgeError | None = None
         while not self._stopped.is_set():
             if self._process is not None and self._process.returncode is not None:
                 msg = f"WhatsApp bridge exited during startup with code {self._process.returncode}"
-                raise WhatsAppBridgeError(msg) from last_error
+                raise _WhatsAppBridgeError(msg) from last_error
             try:
                 payload = await self._transport.get("/health")
                 status = _parse_status(payload)
-            except WhatsAppBridgeError as error:
+            except _WhatsAppBridgeError as error:
                 last_error = error
                 if asyncio.get_running_loop().time() >= deadline:
                     msg = "WhatsApp bridge did not become ready before startup timeout"
-                    raise WhatsAppBridgeError(msg) from error
+                    raise _WhatsAppBridgeError(msg) from error
                 await asyncio.sleep(0.2)
             else:
                 self._status = status
@@ -526,7 +526,7 @@ class WhatsAppChannel:
             if result.get("success") is not False:
                 return response
             msg = str(result.get("error") or "WhatsApp bridge returned an error")
-            raise WhatsAppBridgeError(msg)
+            raise _WhatsAppBridgeError(msg)
         return response
 
 
@@ -556,7 +556,7 @@ def _chunk_with_bot_header(text: str, *, bot_header: str) -> list[str]:
     return [f"{header}\n{chunk}" for chunk in chunks]
 
 
-def bridge_script_path() -> Path:
+def _bridge_script_path() -> Path:
     """Return the packaged Node bridge script path."""
     return Path(str(files("deepagents_talon.channels.whatsapp_bridge").joinpath("bridge.js")))
 
@@ -582,21 +582,21 @@ def _validate_loopback_url(value: str) -> str:
     parsed = urllib.parse.urlparse(value)
     if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
         msg = "WhatsApp bridge URL must use HTTP loopback"
-        raise WhatsAppBridgeError(msg)
+        raise _WhatsAppBridgeError(msg)
     return value
 
 
 def _parse_messages(payload: object) -> list[ChannelMessage]:
     if not isinstance(payload, list):
         msg = "WhatsApp bridge /messages response must be a list"
-        raise WhatsAppBridgeError(msg)
+        raise _WhatsAppBridgeError(msg)
     return [_parse_message(item) for item in payload]
 
 
 def _parse_message(payload: object) -> ChannelMessage:
     if not isinstance(payload, dict):
         msg = "WhatsApp bridge message must be an object"
-        raise WhatsAppBridgeError(msg)
+        raise _WhatsAppBridgeError(msg)
     values = cast("Mapping[str, object]", payload)
     media_paths = _str_list(
         values.get("media_paths")
@@ -695,7 +695,7 @@ def _enforce_inbound_media_cap(message: ChannelMessage, *, max_bytes: int) -> Ch
 def _parse_status(payload: object) -> ChannelStatus:
     if not isinstance(payload, dict):
         msg = "WhatsApp bridge /health response must be an object"
-        raise WhatsAppBridgeError(msg)
+        raise _WhatsAppBridgeError(msg)
     values = cast("Mapping[str, object]", payload)
     detail = _required_str(values, "status")
     return ChannelStatus(
@@ -709,7 +709,7 @@ def _required_str(payload: Mapping[str, object], key: str) -> str:
     value = payload.get(key)
     if not isinstance(value, str) or not value:
         msg = f"WhatsApp bridge payload missing string field: {key}"
-        raise WhatsAppBridgeError(msg)
+        raise _WhatsAppBridgeError(msg)
     return value
 
 
@@ -720,7 +720,7 @@ def _required_str_any(payload: Mapping[str, object], keys: tuple[str, ...]) -> s
             return value
     names = ", ".join(keys)
     msg = f"WhatsApp bridge payload missing string field: {names}"
-    raise WhatsAppBridgeError(msg)
+    raise _WhatsAppBridgeError(msg)
 
 
 def _str_list(value: object) -> list[str]:
@@ -768,5 +768,5 @@ def _bridge_command(env: Mapping[str, str]) -> tuple[str, ...] | None:
     if value:
         return tuple(shlex.split(value))
     if env.get("DEEPAGENTS_TALON_WHATSAPP_START_BRIDGE", "").lower() in {"1", "true", "yes"}:
-        return ("node", str(bridge_script_path()))
+        return ("node", str(_bridge_script_path()))
     return None

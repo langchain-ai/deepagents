@@ -54,16 +54,13 @@ DEFAULT_API_BASE = "https://api.telegram.org"
 DEFAULT_POLL_TIMEOUT_SECONDS = 30.0
 DEFAULT_POLL_INTERVAL_SECONDS = 1.0
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 35.0
-MAX_PHOTO_BYTES = 10 * 1024 * 1024
-MAX_DOCUMENT_BYTES = 50 * 1024 * 1024
-MAX_VIDEO_BYTES = 50 * 1024 * 1024
 MAX_CAPTION_CHARS = 1024
 OPEN_EXPOSURE_ACK_ENV = "DEEPAGENTS_TALON_TELEGRAM_OPEN_ACK"
 _OFFSET_FILENAME = "telegram_offset.json"
 _ALLOWED_UPDATES = ["message", "channel_post"]
 
 
-class TelegramError(RuntimeError):
+class _TelegramError(RuntimeError):
     """Raised when the Telegram Bot API reports or causes a transport error.
 
     Args:
@@ -190,7 +187,7 @@ class TelegramChannelConfig:
         return self.session_dir / _OFFSET_FILENAME
 
 
-class TelegramTransport:
+class _TelegramTransport:
     """Small HTTP client for the Telegram Bot API."""
 
     def __init__(self, *, api_base: str, token: str, timeout: float) -> None:
@@ -216,7 +213,7 @@ class TelegramTransport:
             JSON-decoded response body.
 
         Raises:
-            TelegramError: If the request fails or the API returns an error.
+            _TelegramError: If the request fails or the API returns an error.
         """
         return await asyncio.to_thread(self._request, method, params)
 
@@ -240,7 +237,7 @@ class TelegramTransport:
             JSON-decoded response body.
 
         Raises:
-            TelegramError: If the request fails or the API returns an error.
+            _TelegramError: If the request fails or the API returns an error.
         """
         return await asyncio.to_thread(self._upload, method, file_field, file_path, params)
 
@@ -290,7 +287,7 @@ class TelegramTransport:
                 payload = json.loads(response.read().decode())
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
             msg = f"Telegram Bot API request failed: {method}"
-            raise TelegramError(msg) from error
+            raise _TelegramError(msg) from error
         return _validate_response(payload)
 
 
@@ -305,7 +302,7 @@ class TelegramChannel:
         self,
         config: TelegramChannelConfig,
         *,
-        transport: TelegramTransport | None = None,
+        transport: _TelegramTransport | None = None,
     ) -> None:
         """Initialize the Telegram channel without starting it.
 
@@ -314,7 +311,7 @@ class TelegramChannel:
             transport: Optional test transport implementing the Bot API.
         """
         self.config = config
-        self._transport = transport or TelegramTransport(
+        self._transport = transport or _TelegramTransport(
             api_base=config.api_base,
             token=config.bot_token,
             timeout=config.request_timeout_seconds,
@@ -388,11 +385,10 @@ class TelegramChannel:
         Raises:
             ChannelMediaError: If the media is too large or invalid.
         """
-        telegram_limit = _telegram_media_limit(media.media_type)
         checked = validate_media(
             media,
             root=self.config.outbound_media_dir,
-            max_bytes=min(self.config.max_media_bytes, telegram_limit),
+            max_bytes=self.config.max_media_bytes,
         )
         caption = await self._media_caption(conversation_id, checked.caption)
         method, file_field = _telegram_send_method(checked.media_type)
@@ -419,7 +415,7 @@ class TelegramChannel:
                 chat_id=conversation_id,
                 action="typing",
             )
-        except TelegramError:
+        except _TelegramError:
             logger.debug("Could not send Telegram typing indicator", exc_info=True)
 
     async def edit_message(self, conversation_id: str, message_id: str, text: str) -> SendResult:
@@ -448,7 +444,7 @@ class TelegramChannel:
     async def _identify_bot(self) -> None:
         try:
             payload = await self._transport.call("getMe")
-        except TelegramError:
+        except _TelegramError:
             logger.exception("Telegram getMe failed during startup")
             self._status = ChannelStatus(
                 provider="telegram",
@@ -513,7 +509,7 @@ class TelegramChannel:
                     await dispatch_message(self._handler, message, provider="Telegram")
                 if updates:
                     self._advance_offset(updates)
-            except TelegramError as error:
+            except _TelegramError as error:
                 delay = (
                     error.retry_after
                     if error.retry_after is not None
@@ -575,7 +571,7 @@ class TelegramChannel:
                 media_type=media_type,
                 message_id=message.message_id,
             )
-        except (ChannelMediaError, TelegramError, urllib.error.URLError, TimeoutError) as error:
+        except (ChannelMediaError, _TelegramError, urllib.error.URLError, TimeoutError) as error:
             logger.warning(
                 "Skipping Telegram inbound media for message %s: %s",
                 message.message_id,
@@ -615,7 +611,7 @@ class TelegramChannel:
         file_path = result.get("file_path") if isinstance(result, dict) else None
         if not isinstance(file_path, str):
             msg = "Telegram getFile response missing file_path"
-            raise TelegramError(msg)
+            raise _TelegramError(msg)
         file_size = result.get("file_size") if isinstance(result, dict) else None
         if isinstance(file_size, int) and file_size > self.config.max_media_bytes:
             msg = (
@@ -625,7 +621,7 @@ class TelegramChannel:
             raise ChannelMediaError(msg)
         if self.config.inbound_media_dir is None:
             msg = "Telegram inbound media directory is not configured"
-            raise TelegramError(msg)
+            raise _TelegramError(msg)
         suffix = _safe_suffix(file_path, media_type)
         destination = self.config.inbound_media_dir / _inbound_media_filename(
             message_id=message_id,
@@ -641,13 +637,6 @@ class TelegramChannel:
             self.config.max_media_bytes,
         )
         return destination
-
-
-def _telegram_media_limit(media_type: str) -> int:
-    """Return the Telegram Bot API upload size limit for a media type."""
-    if media_type == "image":
-        return MAX_PHOTO_BYTES
-    return MAX_DOCUMENT_BYTES
 
 
 def _telegram_send_method(media_type: str) -> tuple[str, str]:
@@ -812,18 +801,18 @@ def _validate_response(payload: object) -> object:
         The ``result`` field from the response.
 
     Raises:
-        TelegramError: If the response is not an object or reports an error.
+        _TelegramError: If the response is not an object or reports an error.
     """
     if not isinstance(payload, dict):
         msg = "Telegram Bot API response must be an object"
-        raise TelegramError(msg)
+        raise _TelegramError(msg)
     values = cast("Mapping[str, object]", payload)
     if not values.get("ok", True):
         description = values.get("description", "unknown error")
         msg = f"Telegram Bot API error: {description}"
         retry_after_raw = values.get("retry_after")
         retry_after = float(retry_after_raw) if isinstance(retry_after_raw, (int, float)) else None
-        raise TelegramError(msg, retry_after=retry_after)
+        raise _TelegramError(msg, retry_after=retry_after)
     return values.get("result")
 
 
@@ -837,11 +826,11 @@ def _extract_result(result: object) -> dict[str, object]:
         The result object as a dict.
 
     Raises:
-        TelegramError: If the result is not a dict.
+        _TelegramError: If the result is not a dict.
     """
     if not isinstance(result, dict):
         msg = "Telegram Bot API response missing result"
-        raise TelegramError(msg)
+        raise _TelegramError(msg)
     return cast("dict[str, object]", result)
 
 
@@ -864,11 +853,11 @@ def _extract_updates(result: object) -> list[dict[str, object]]:
         List of update objects.
 
     Raises:
-        TelegramError: If the result is not a list.
+        _TelegramError: If the result is not a list.
     """
     if not isinstance(result, list):
         msg = "Telegram getUpdates result must be a list"
-        raise TelegramError(msg)
+        raise _TelegramError(msg)
     return [cast("dict[str, object]", item) for item in result if isinstance(item, dict)]
 
 

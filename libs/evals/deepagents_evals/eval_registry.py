@@ -19,11 +19,18 @@ receives the base name via ``configurable["eval_name"]``.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
+from pathlib import Path
+from textwrap import dedent
 from typing import TYPE_CHECKING, Any
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
+from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.middleware.summarization import create_summarization_tool_middleware
+from langchain.agents.middleware import ModelCallLimitMiddleware
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
 
 from deepagents_evals.mock_tools import (
@@ -144,6 +151,110 @@ def _general_purpose_subagent_builder(
 ) -> CompiledStateGraph[Any, Any]:
     """Build the agent with the weather tool and general-purpose subagent."""
     return create_deep_agent(model=model, tools=[get_weather_fake])
+
+
+# ---------------------------------------------------------------------------
+# Summarization builders (test_summarization.py)
+#
+# These agents read a large source file that overflows the context window so
+# auto-summarization triggers. Unlike the pytest suite (which downloads the
+# pinned file into a per-test ``tmp_path``), the file is *environment data*:
+# the Harbor task's ``environment/Dockerfile`` provisions the pinned
+# ``summarization.py`` (and ``filesystem.py`` for the large-reads eval) into
+# ``DEEPAGENTS_EVALS_DATA_DIR``, and the builder roots a ``FilesystemBackend``
+# there. The builder never seeds files or hits the network.
+# ---------------------------------------------------------------------------
+
+_DATA_DIR_ENV = "DEEPAGENTS_EVALS_DATA_DIR"
+"""Env var naming the directory the environment seeds with eval data files."""
+
+_SUMMARIZATION_SYSTEM_PROMPT = dedent(
+    """
+    ## File Reading Best Practices
+
+    When exploring codebases or reading multiple files, use pagination to prevent context overflow.
+
+    **Pattern for codebase exploration:**
+    1. First scan: `read_file(path, limit=100)` - See file structure and key sections
+    2. Targeted read: `read_file(path, offset=100, limit=200)` - Read specific sections if needed
+    3. Full read: Only use `read_file(path)` without limit when necessary for editing
+
+    **When to paginate:**
+    - Reading any file >500 lines
+    - Exploring unfamiliar codebases (always start with limit=100)
+    - Reading multiple files in sequence
+
+    **When full read is OK:**
+    - Small files (<500 lines)
+    - Files you need to edit immediately after reading
+    """
+)
+"""Mirror of ``test_summarization.SYSTEM_PROMPT`` so the registry owns the config."""
+
+
+def _eval_data_dir() -> str:
+    """Directory the environment seeds with eval data files (default: cwd)."""
+    return os.environ.get(_DATA_DIR_ENV) or str(Path.cwd())
+
+
+def _build_summarization_agent(
+    model: BaseChatModel,
+    *,
+    max_input_tokens: int,
+    include_compact_tool: bool,
+    run_limit: int | None = None,
+) -> CompiledStateGraph[Any, Any]:
+    """Build a summarization eval agent over an environment-seeded filesystem.
+
+    Mirrors ``test_summarization._setup_summarization_test``: a
+    ``FilesystemBackend`` rooted at the env-provided data dir, a lowered
+    ``max_input_tokens`` so summarization triggers, a checkpointer, and the
+    optional ``compact_conversation`` tool / model-call-limit middleware. The
+    large data file itself is provisioned by the environment, not here.
+    """
+    backend = FilesystemBackend(root_dir=_eval_data_dir(), virtual_mode=True)
+
+    if model.profile is None:
+        model.profile = {}
+    model.profile["max_input_tokens"] = max_input_tokens
+
+    middleware: list[Any] = []
+    if run_limit is not None:
+        middleware.append(ModelCallLimitMiddleware(run_limit=run_limit))
+    if include_compact_tool:
+        middleware.append(create_summarization_tool_middleware(model, backend))
+
+    return create_deep_agent(
+        model=model,
+        system_prompt=_SUMMARIZATION_SYSTEM_PROMPT,
+        tools=[],
+        backend=backend,
+        checkpointer=InMemorySaver(),
+        middleware=middleware,
+    )
+
+
+def _make_summarization_builder(
+    *,
+    max_input_tokens: int,
+    include_compact_tool: bool,
+    run_limit: int | None = None,
+) -> Callable[..., CompiledStateGraph[Any, Any]]:
+    """Return a registry builder closure for a summarization eval variant."""
+
+    def _builder(
+        model: BaseChatModel,
+        *,
+        repl_name: str | None = None,  # noqa: ARG001
+    ) -> CompiledStateGraph[Any, Any]:
+        return _build_summarization_agent(
+            model,
+            max_input_tokens=max_input_tokens,
+            include_compact_tool=include_compact_tool,
+            run_limit=run_limit,
+        )
+
+    return _builder
 
 
 # ---------------------------------------------------------------------------
@@ -591,3 +702,55 @@ for _name in (
     _register(
         _builder_eval(_name, _TOOL_USE, _BASELINE, _incident_graph_builder, supports_repl=True)
     )
+
+# --- summarization (test_summarization.py) ---------------------------------
+
+_SUMMARIZATION = "summarization"
+
+_register(
+    _builder_eval(
+        "test_summarize_continues_task",
+        _SUMMARIZATION,
+        _BASELINE,
+        _make_summarization_builder(max_input_tokens=15_000, include_compact_tool=False),
+        supports_repl=False,
+    )
+)
+_register(
+    _builder_eval(
+        "test_summarization_offloads_to_filesystem",
+        _SUMMARIZATION,
+        _BASELINE,
+        _make_summarization_builder(max_input_tokens=15_000, include_compact_tool=False),
+        supports_repl=False,
+    )
+)
+_register(
+    _builder_eval(
+        "test_compact_tool_new_task",
+        _SUMMARIZATION,
+        _BASELINE,
+        _make_summarization_builder(max_input_tokens=35_000, include_compact_tool=True),
+        supports_repl=False,
+    )
+)
+_register(
+    _builder_eval(
+        "test_compact_tool_not_overly_sensitive",
+        _SUMMARIZATION,
+        _HILLCLIMB,
+        _make_summarization_builder(max_input_tokens=35_000, include_compact_tool=True),
+        supports_repl=False,
+    )
+)
+_register(
+    _builder_eval(
+        "test_compact_tool_large_reads",
+        _SUMMARIZATION,
+        _HILLCLIMB,
+        _make_summarization_builder(
+            max_input_tokens=35_000, include_compact_tool=True, run_limit=3
+        ),
+        supports_repl=False,
+    )
+)

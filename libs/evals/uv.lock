@@ -435,7 +435,7 @@ requires-dist = [
     { name = "langchain-core", specifier = ">=1.4.7,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.2.5,<5.0.0" },
     { name = "langchain-quickjs", marker = "extra == 'quickjs'" },
-    { name = "langsmith", specifier = ">=0.8.11" },
+    { name = "langsmith", specifier = ">=0.9.0" },
     { name = "wcmatch", specifier = ">=10.1" },
 ]
 provides-extras = ["quickjs"]
@@ -662,7 +662,7 @@ requires-dist = [
     { name = "langchain-openrouter", specifier = ">=0.2.3,<0.3.0" },
     { name = "langchain-quickjs", editable = "../partners/quickjs" },
     { name = "langchain-xai", specifier = ">=1.2.2,<1.3.0" },
-    { name = "langsmith", specifier = ">=0.8.11,<0.9.0" },
+    { name = "langsmith", specifier = ">=0.9.0,<0.10.0" },
     { name = "matplotlib", marker = "extra == 'charts'", specifier = ">=3.10.9" },
     { name = "modal", specifier = ">=1.4.3" },
     { name = "nltk", specifier = ">=3.9.4" },
@@ -1779,7 +1779,7 @@ wheels = [
 
 [[package]]
 name = "langsmith"
-version = "0.8.15"
+version = "0.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -1793,9 +1793,9 @@ dependencies = [
     { name = "xxhash", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "zstandard", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/64/2e/572ceee3ba566c86d4967fa19a146ed0a9485c2591f7e7762ecd2c03c045/langsmith-0.8.15.tar.gz", hash = "sha256:72e57c79eef82ddbbe22c5edb8bdf79eb557e65c3a1172ddfa05a724555c8294", size = 4508376, upload-time = "2026-06-12T03:02:56.118Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/92/34/a77abacdece10440fa04d8b2afd884708a98f62ff271ee79d75bcb8bb9bc/langsmith-0.9.0.tar.gz", hash = "sha256:21b381462ee44713dd5e2163b7db44fb28fde65146aad27aeabd778c464da0f0", size = 4556365, upload-time = "2026-06-22T15:37:18.733Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/df/2f/30d6c24c2b1a1504a63dd554c3e3b4b75712b85cd0586395c703f8e6a633/langsmith-0.8.15-py3-none-any.whl", hash = "sha256:9cdf26495814c9ae38998cee7895cdba267b0b3566b598e407c0bb7eefb5aaf9", size = 498036, upload-time = "2026-06-12T03:02:54.186Z" },
+    { url = "https://files.pythonhosted.org/packages/c6/64/d411be633d1c976955a09f6b3c58fbe70592d1370d262d171f7daf7e3793/langsmith-0.9.0-py3-none-any.whl", hash = "sha256:5eeccc36ff956946df8510a2b3b5a87d36c44f11bfb2e5205e9cf03d7b65ec9c", size = 578496, upload-time = "2026-06-22T15:37:16.42Z" },
 ]
 
 [package.optional-dependencies]
@@ -2451,16 +2451,16 @@ wheels = [
 
 [[package]]
 name = "pydantic-settings"
-version = "2.13.1"
+version = "2.14.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "python-dotenv", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "typing-inspection", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/52/6d/fffca34caecc4a3f97bda81b2098da5e8ab7efc9a66e819074a11955d87e/pydantic_settings-2.13.1.tar.gz", hash = "sha256:b4c11847b15237fb0171e1462bf540e294affb9b86db4d9aa5c01730bdbe4025", size = 223826, upload-time = "2026-02-19T13:45:08.055Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5c/b5/8f48e906c3e0205276e8bd8cb7512217a87b2685304d64be27cad5b3019f/pydantic_settings-2.14.2.tar.gz", hash = "sha256:c19dd64b19097f1de80184f0cc7b0272a13ae6e170cbf240a3e27e381ed14a5f", size = 237700, upload-time = "2026-06-19T13:44:56.324Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/00/4b/ccc026168948fec4f7555b9164c724cf4125eac006e176541483d2c959be/pydantic_settings-2.13.1-py3-none-any.whl", hash = "sha256:d56fd801823dbeae7f0975e1f8c8e25c258eb75d278ea7abb5d9cebb01b56237", size = 58929, upload-time = "2026-02-19T13:45:06.034Z" },
+    { url = "https://files.pythonhosted.org/packages/77/c1/6e422f34e569cf8e18df68d1939c81c099d2b61e4f7d9621c8a77560799c/pydantic_settings-2.14.2-py3-none-any.whl", hash = "sha256:a20c97b37910b6550d5ea50fbcc2d4187defe58cd57070b73863d069419c9440", size = 61715, upload-time = "2026-06-19T13:44:55.02Z" },
 ]
 
 [[package]]

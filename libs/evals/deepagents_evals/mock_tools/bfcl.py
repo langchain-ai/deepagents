@@ -1,12 +1,12 @@
 """BFCL v3 stateful-API tools for the external-benchmark eval suite.
 
-The API simulator classes live in ``bfcl_apis``; this module exposes the class
+The API simulator classes live in `bfcl_apis`; this module exposes the class
 registry, the agent system prompt, and helpers to wrap their public methods as
 tools.
 
 The pytest suite instantiates only each case's involved classes (seeded with
-per-case ``initial_config``). The registry/dispatcher path uses
-``make_bfcl_tools`` to bind the full default tool suite — the per-case
+per-case `initial_config`). The registry/dispatcher path uses
+`make_bfcl_tools` to bind the full default tool suite — the per-case
 involved-class subset and initial config are runtime data, not agent setup.
 """
 
@@ -33,7 +33,7 @@ BFCL_CLASS_REGISTRY: dict[str, type] = {
     "TravelAPI": TravelAPI,
     "TicketAPI": TicketAPI,
 }
-"""Map BFCL ``involved_classes`` names to their simulator class."""
+"""Map BFCL `involved_classes` names to their simulator class."""
 
 BFCL_SYSTEM_PROMPT = (
     "You are an assistant with access to domain-specific API tools. "
@@ -64,7 +64,7 @@ def make_bfcl_tools() -> list[StructuredTool]:
     """Build the full default BFCL tool suite (all classes, default state).
 
     Each simulator is instantiated and loaded with its default scenario; the
-    per-case ``initial_config`` is runtime data and is not applied here.
+    per-case `initial_config` is runtime data and is not applied here.
     """
     instances = []
     for cls in BFCL_CLASS_REGISTRY.values():

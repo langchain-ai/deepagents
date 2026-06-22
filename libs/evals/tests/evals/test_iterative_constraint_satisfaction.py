@@ -46,7 +46,7 @@ _START_PHRASE_LOWER = _START_PHRASE.lower()
 
 
 def _starts_with_phrase(sentence: str) -> bool:
-    """Case-insensitive check that ``sentence`` begins with ``_START_PHRASE``."""
+    """Case-insensitive check that `sentence` begins with `_START_PHRASE`."""
     return sentence.lower().startswith(_START_PHRASE_LOWER)
 
 
@@ -79,8 +79,8 @@ def _grade_response(answer: str, target_words: int) -> tuple[bool, list[str]]:
     or both — sometimes on separate lines, sometimes inline. We can't
     reliably point at "the answer paragraph" up front, so we walk the
     sentence list and consider every maximal run of consecutive sentences
-    starting with ``_START_PHRASE`` as a candidate. Within each such run,
-    every contiguous sub-window is checked for an exact ``target_words``
+    starting with `_START_PHRASE` as a candidate. Within each such run,
+    every contiguous sub-window is checked for an exact `target_words`
     match; if none hits, we fast-forward past any non-matching sentences
     (preamble, "Word count: 147" interjections, postamble) to the next
     qualifying run rather than restarting from each index — that lets the
@@ -124,8 +124,8 @@ def _grade_response(answer: str, target_words: int) -> tuple[bool, list[str]]:
 
 @dataclass(frozen=True)
 class ExactWordCountAndPhraseStarts(SuccessAssertion):
-    """At least one paragraph in the response must be exactly ``target_words``
-    long with every sentence beginning with the phrase ``_START_PHRASE``
+    """At least one paragraph in the response must be exactly `target_words`
+    long with every sentence beginning with the phrase `_START_PHRASE`
     (case-insensitive).
     """
 
@@ -163,7 +163,7 @@ def test_exact_word_count_and_z_starts(model: BaseChatModel) -> None:
     iteration cap is reached. The programmatic scorer below is the final
     test-pass gate and guards against grader hallucinations: it slides a
     window across the response's sentences and accepts any contiguous
-    z-starting span that totals exactly ``TARGET_WORDS`` words.
+    z-starting span that totals exactly `TARGET_WORDS` words.
     """
     agent = create_deep_agent(
         model=model,

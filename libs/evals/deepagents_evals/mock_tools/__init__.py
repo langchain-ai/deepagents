@@ -4,11 +4,12 @@ All mock tools used by the eval test suite live here so that both the pytest
 tests and the Harbor sandbox dispatcher import from the same source. Each
 submodule corresponds to one eval category's tool set:
 
-- ``tool_selection`` — 8 mock SaaS tools (Slack, GitHub, Linear, Gmail, etc.)
-- ``relational`` — 16 relational-data lookup/search tools
-- ``incident_graph`` — 34 incident-management graph tools + error middleware
-- ``subagents`` — weather stub tool for subagent delegation evals
-- ``constraints`` — word-count tool for the constraint-satisfaction eval
+- `tool_selection` — 8 mock SaaS tools (Slack, GitHub, Linear, Gmail, etc.)
+- `relational` — 16 relational-data lookup/search tools
+- `incident_graph` — 34 incident-management graph tools + error middleware
+- `subagents` — weather stub tool for subagent delegation evals
+- `constraints` — word-count tool for the constraint-satisfaction eval
+- `middleware_todo` — city-lookup tools for the TodoListMiddleware eval
 """
 
 from deepagents_evals.mock_tools.constraints import count_words

@@ -1,9 +1,9 @@
 """Mock city-data tools for the langchain TodoListMiddleware eval suite.
 
 Lightweight lookup tools returning fixed city facts, used to exercise
-``langchain``'s ``TodoListMiddleware`` on a bare ``create_agent``.
+`langchain`'s `TodoListMiddleware` on a bare `create_agent`.
 
-Extracted from ``tests/evals/test_langchain_middleware_todo.py`` so both the
+Extracted from `tests/evals/test_langchain_middleware_todo.py` so both the
 pytest suite and the Harbor sandbox dispatcher share the same definitions.
 """
 

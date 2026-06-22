@@ -1,6 +1,6 @@
 """Mock tools for the subagent delegation eval suite.
 
-Extracted from ``tests/evals/test_subagents.py`` so both the pytest suite and
+Extracted from `tests/evals/test_subagents.py` so both the pytest suite and
 the Harbor sandbox dispatcher share the same tool definitions.
 """
 

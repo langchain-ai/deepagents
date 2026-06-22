@@ -4,7 +4,7 @@ A synthetic operational incident-management domain with many entities and tools.
 The agent receives only graph lookup/search tools and must compose them to
 answer questions efficiently.
 
-Extracted from ``tests/evals/test_tool_usage_incident_graph.py`` so both the
+Extracted from `tests/evals/test_tool_usage_incident_graph.py` so both the
 pytest suite and the Harbor sandbox dispatcher share the same tool definitions.
 """
 
@@ -788,7 +788,7 @@ async def incident_graph_tool_error_middleware(
     request: ToolCallRequest,
     handler: Callable[[ToolCallRequest], Any],
 ) -> ToolMessage | Command[Any]:
-    """Wrap tool errors into ``ToolMessage`` with ``status="error"``."""
+    """Wrap tool errors into `ToolMessage` with `status="error"`."""
     try:
         return await handler(request)
     except ToolException as e:

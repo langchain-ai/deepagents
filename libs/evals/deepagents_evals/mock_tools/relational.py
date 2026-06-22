@@ -4,7 +4,7 @@ Recreates the relational data environment from langchain-benchmarks: fake
 users, locations, and foods connected by IDs. The agent receives only the
 lookup / search tools (no filesystem) and must chain them to answer questions.
 
-Extracted from ``tests/evals/test_tool_usage_relational.py`` so both the pytest
+Extracted from `tests/evals/test_tool_usage_relational.py` so both the pytest
 suite and the Harbor sandbox dispatcher share the same tool definitions.
 """
 

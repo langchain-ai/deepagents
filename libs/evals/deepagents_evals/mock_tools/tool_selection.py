@@ -4,7 +4,7 @@ Lightweight stubs that return a fixed string, used to test whether the agent
 selects the correct tool(s) from a pool given direct, indirect, and multi-step
 requests.
 
-Extracted from ``tests/evals/test_tool_selection.py`` so both the pytest suite
+Extracted from `tests/evals/test_tool_selection.py` so both the pytest suite
 and the Harbor sandbox dispatcher share the same tool definitions.
 """
 

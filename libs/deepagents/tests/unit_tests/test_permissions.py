@@ -280,10 +280,10 @@ class TestBuildInterruptOnFromPermissions:
         """Bulk-scope tools fire when the call subtree could intersect a rule.
 
         Covers the HITL-bypass regressions for pathless calls and current-dir
-        aliases like ``"."``/``""``/``"./"``: `validate_path` collapses those to
-        ``/.``, which doesn't string-prefix any anchor, so the predicate
-        previously returned False and an agent could call e.g. ``grep(pattern,
-        path=".")`` to read interrupt-protected paths with no HITL prompt.
+        aliases like `"."`/`""`/`"./"`: `validate_path` collapses those to
+        `/.`, which doesn't string-prefix any anchor, so the predicate
+        previously returned False and an agent could call e.g. `grep(pattern,
+        path=".")` to read interrupt-protected paths with no HITL prompt.
         """
         rule = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")
         when = _make_fs_when_predicate([rule], "read", "path", "bulk")

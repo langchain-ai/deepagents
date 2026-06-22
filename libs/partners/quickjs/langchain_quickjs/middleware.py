@@ -451,9 +451,9 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
     def _base_prompt(self, *, ptc_attached: bool) -> str:
         """Return the base REPL system prompt, rendered lazily and memoized.
 
-        The text depends only on construction-time config and ``ptc_attached``,
+        The text depends only on construction-time config and `ptc_attached`,
         so it's computed on first use per boolean and cached. Avoids rendering
-        the ``tools.*`` variant at all when PTC is disabled.
+        the `tools.*` variant at all when PTC is disabled.
         """
         cached = self._base_prompt_cache.get(ptc_attached)
         if cached is None:

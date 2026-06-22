@@ -685,7 +685,7 @@ def test_per_thread_slot_has_own_worker_and_runtime() -> None:
 
 
 def test_evict_closes_and_removes_slot() -> None:
-    """``evict`` closes the runtime and drops the slot from the registry."""
+    """`evict` closes the runtime and drops the slot from the registry."""
     reg = _Registry(
         memory_limit=32 * 1024 * 1024,
         timeout=5.0,
@@ -709,7 +709,7 @@ def test_evict_closes_and_removes_slot() -> None:
 
 
 def test_evict_returns_fresh_slot_on_next_get() -> None:
-    """After eviction, ``get`` rebuilds a new slot for the same thread_id."""
+    """After eviction, `get` rebuilds a new slot for the same thread_id."""
     reg = _Registry(
         memory_limit=32 * 1024 * 1024,
         timeout=5.0,
@@ -743,7 +743,7 @@ def test_evict_unknown_thread_id_is_noop() -> None:
 
 
 async def test_aevict_closes_and_removes_slot() -> None:
-    """``aevict`` closes the runtime via the worker loop and drops the slot."""
+    """`aevict` closes the runtime via the worker loop and drops the slot."""
     reg = _Registry(
         memory_limit=32 * 1024 * 1024,
         timeout=5.0,
@@ -767,7 +767,7 @@ async def test_aevict_closes_and_removes_slot() -> None:
 
 
 def test_after_agent_evicts_current_thread_slot() -> None:
-    """``after_agent`` snapshots state and evicts the resolved thread slot."""
+    """`after_agent` snapshots state and evicts the resolved thread slot."""
     mw = CodeInterpreterMiddleware()
     try:
         # Force a slot to exist for the middleware's fallback thread id.
@@ -783,7 +783,7 @@ def test_after_agent_evicts_current_thread_slot() -> None:
 
 
 async def test_aafter_agent_evicts_current_thread_slot() -> None:
-    """``aafter_agent`` snapshots state and evicts the resolved thread slot."""
+    """`aafter_agent` snapshots state and evicts the resolved thread slot."""
     mw = CodeInterpreterMiddleware()
     try:
         repl = mw._registry.get(mw._fallback_thread_id)
@@ -798,7 +798,7 @@ async def test_aafter_agent_evicts_current_thread_slot() -> None:
 
 
 def test_after_agent_snapshot_roundtrip_with_before_agent() -> None:
-    """Snapshots from ``after_agent`` restore into fresh slots in ``before_agent``."""
+    """Snapshots from `after_agent` restore into fresh slots in `before_agent`."""
     mw = CodeInterpreterMiddleware()
     try:
         repl = mw._registry.get(mw._fallback_thread_id)
@@ -955,7 +955,7 @@ async def test_mode_call_resets_state_between_tool_calls() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Async path (v0.2 native ``eval_async``)
+# Async path (v0.2 native `eval_async`)
 # ---------------------------------------------------------------------------
 
 
@@ -1417,7 +1417,7 @@ async def test_async_deadlock_detection(repl: _ThreadREPL) -> None:
 
 async def test_async_concurrent_calls_surface_error(repl: _ThreadREPL) -> None:
     """Overlapping async evals on the same context surface as
-    ``ConcurrentEvalError`` rather than silently serialising.
+    `ConcurrentEvalError` rather than silently serialising.
 
     A model issuing overlapping evals against shared state is almost
     always a prompting bug; a loud failure is a better signal than
@@ -1448,6 +1448,6 @@ async def test_async_concurrent_calls_surface_error(repl: _ThreadREPL) -> None:
 
 
 def test_sync_path_still_works(repl: _ThreadREPL) -> None:
-    """After the v0.2 split, the sync path continues to use ``ctx.eval``."""
+    """After the v0.2 split, the sync path continues to use `ctx.eval`."""
     repl.eval_sync("let n = 7")
     assert repl.eval_sync("n * 6").result == "42"

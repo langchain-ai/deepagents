@@ -2,25 +2,26 @@
 
 This module is the single source of truth for how each eval's agent is
 constructed. Both the pytest suite and the Harbor sandbox dispatcher import
-from here, ensuring the ``create_deep_agent`` call for a given eval exists in
+from here, ensuring the `create_deep_agent` call for a given eval exists in
 exactly one place.
 
 Each eval is described by an :class:`EvalSpec` that captures the
-``create_deep_agent`` kwargs (``system_prompt``, ``memory``, ``skills``,
-``tools``, ``middleware``, ``subagents``, ``backend``, ``store``) or a custom
-``builder`` callable for evals whose construction depends on runtime parameters
-(e.g. ``repl_name`` for the relational / incident-graph suites).
+`create_deep_agent` kwargs (`system_prompt`, `memory`, `skills`,
+`tools`, `middleware`, `subagents`, `backend`, `store`) or a custom
+`builder` callable for evals whose construction depends on runtime parameters
+(e.g. `repl_name` for the relational / incident-graph suites).
 
 The :data:`EVALS` dict maps the pytest test function name to its
 :class:`EvalSpec`. Parametrized evals (memory_multiturn, followup_quality) use
 the test function name without the parametrize suffix; the Harbor dispatcher
-receives the base name via ``configurable["eval_name"]``.
+receives the base name via `configurable["eval_name"]`.
 """
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from textwrap import dedent
 from typing import TYPE_CHECKING, Any
@@ -62,8 +63,8 @@ def _relational_builder(
 ) -> CompiledStateGraph[Any, Any]:
     """Build the relational-data agent.
 
-    When ``repl_name`` is ``None`` the tools are bound directly. When it is
-    ``"quickjs"`` the tools are routed through a ``CodeInterpreterMiddleware``
+    When `repl_name` is `None` the tools are bound directly. When it is
+    `"quickjs"` the tools are routed through a `CodeInterpreterMiddleware`
     instead.
     """
     middleware: list[Any] = []
@@ -86,8 +87,8 @@ def _incident_graph_builder(
 ) -> CompiledStateGraph[Any, Any]:
     """Build the incident-management agent.
 
-    Always includes the tool-error middleware. When ``repl_name`` is
-    ``"quickjs"`` the tools are routed through a ``CodeInterpreterMiddleware``
+    Always includes the tool-error middleware. When `repl_name` is
+    `"quickjs"` the tools are routed through a `CodeInterpreterMiddleware`
     instead of being bound directly.
     """
     middleware: list[Any] = [incident_graph_tool_error_middleware]
@@ -112,10 +113,20 @@ def _composite_backend_builder(
 ) -> CompiledStateGraph[Any, Any]:
     """Build the composite-backend memory agent.
 
-    Creates a fresh ``InMemoryStore`` and ``CompositeBackend`` on every call so
+    Creates a fresh `InMemoryStore` and `CompositeBackend` on every call so
     state doesn't leak between trials.
     """
     store = InMemoryStore()
+    now = datetime.now(UTC).isoformat()
+    store.put(
+        ("filesystem",),
+        "/AGENTS.md",
+        {
+            "content": ["Your name is Jackson"],
+            "created_at": now,
+            "modified_at": now,
+        },
+    )
     backend = CompositeBackend(
         default=StateBackend(),
         routes={"/memories/": StoreBackend(store=store)},
@@ -164,9 +175,9 @@ def _rubric_builder(
 ) -> CompiledStateGraph[Any, Any]:
     """Build the iterative constraint-satisfaction agent.
 
-    Wires ``RubricMiddleware`` (with the ``count_words`` tool) so a grader
+    Wires `RubricMiddleware` (with the `count_words` tool) so a grader
     sub-agent loops the main agent back until the rubric is satisfied. The
-    rubric itself is a runtime input (``extra_state["rubric"]``), not agent
+    rubric itself is a runtime input (`extra_state["rubric"]`), not agent
     setup.
     """
     middleware: list[Any] = [RubricMiddleware(model=model, tools=[count_words], max_iterations=5)]
@@ -180,7 +191,7 @@ _MEMORY_BENCH_FILESEEDED_SYSTEM_PROMPT = (
     "information before answering. Do not assume you already know the answer — "
     "always search the files first."
 )
-"""Mirror of ``memory_agent_bench.FILESEEDED_SYSTEM_PROMPT``."""
+"""Mirror of `memory_agent_bench.FILESEEDED_SYSTEM_PROMPT`."""
 
 
 def _make_memory_bench_builder(*, fileseeded: bool) -> Callable[..., CompiledStateGraph[Any, Any]]:
@@ -213,7 +224,7 @@ def _bfcl_builder(
     """Build the BFCL v3 stateful-API tool-calling agent.
 
     Binds the full default BFCL tool suite. The per-case involved-class subset
-    and ``initial_config`` are runtime data, not agent setup, so they are not
+    and `initial_config` are runtime data, not agent setup, so they are not
     applied here. Imported lazily so the registry import stays light for
     consumers that never build this eval.
     """
@@ -239,7 +250,7 @@ Always follow the policy. Be helpful, concise, and accurate.
 {domain_policy}
 </policy>\
 """
-"""Mirror of ``test_tau2_airline.AGENT_SYSTEM_PROMPT``."""
+"""Mirror of `test_tau2_airline.AGENT_SYSTEM_PROMPT`."""
 
 
 def _tau2_airline_builder(
@@ -251,7 +262,7 @@ def _tau2_airline_builder(
 
     Binds the airline domain tools (over a default-state DB) and the
     policy-formatted system prompt. The DB / policy files are environment data
-    loaded from ``DEEPAGENTS_EVALS_DATA_DIR``; the per-task ``initial_state``
+    loaded from `DEEPAGENTS_EVALS_DATA_DIR`; the per-task `initial_state`
     seeding is runtime data, not agent setup. Imported lazily so the registry
     import stays light for consumers that never build this eval.
     """
@@ -273,10 +284,10 @@ def _tau2_airline_builder(
 def _make_todo_middleware_builder(
     *, tools: list[BaseTool]
 ) -> Callable[..., CompiledStateGraph[Any, Any]]:
-    """Return a builder for a langchain ``TodoListMiddleware`` eval.
+    """Return a builder for a langchain `TodoListMiddleware` eval.
 
-    These evals exercise langchain's bare ``create_agent`` + ``TodoListMiddleware``
-    (not ``create_deep_agent``), so the builder constructs that agent directly.
+    These evals exercise langchain's bare `create_agent` + `TodoListMiddleware`
+    (not `create_deep_agent`), so the builder constructs that agent directly.
     The mock city-lookup tools are the only agent setup; the prompts are runtime
     inputs.
     """
@@ -297,10 +308,10 @@ def _make_todo_middleware_builder(
 #
 # These agents read a large source file that overflows the context window so
 # auto-summarization triggers. Unlike the pytest suite (which downloads the
-# pinned file into a per-test ``tmp_path``), the file is *environment data*:
-# the Harbor task's ``environment/Dockerfile`` provisions the pinned
-# ``summarization.py`` (and ``filesystem.py`` for the large-reads eval) into
-# ``DEEPAGENTS_EVALS_DATA_DIR``, and the builder roots a ``FilesystemBackend``
+# pinned file into a per-test `tmp_path`), the file is *environment data*:
+# the Harbor task's `environment/Dockerfile` provisions the pinned
+# `summarization.py` (and `filesystem.py` for the large-reads eval) into
+# `DEEPAGENTS_EVALS_DATA_DIR`, and the builder roots a `FilesystemBackend`
 # there. The builder never seeds files or hits the network.
 # ---------------------------------------------------------------------------
 
@@ -328,7 +339,7 @@ _SUMMARIZATION_SYSTEM_PROMPT = dedent(
     - Files you need to edit immediately after reading
     """
 )
-"""Mirror of ``test_summarization.SYSTEM_PROMPT`` so the registry owns the config."""
+"""Mirror of `test_summarization.SYSTEM_PROMPT` so the registry owns the config."""
 
 
 def _eval_data_dir() -> str:
@@ -345,10 +356,10 @@ def _build_summarization_agent(
 ) -> CompiledStateGraph[Any, Any]:
     """Build a summarization eval agent over an environment-seeded filesystem.
 
-    Mirrors ``test_summarization._setup_summarization_test``: a
-    ``FilesystemBackend`` rooted at the env-provided data dir, a lowered
-    ``max_input_tokens`` so summarization triggers, a checkpointer, and the
-    optional ``compact_conversation`` tool / model-call-limit middleware. The
+    Mirrors `test_summarization._setup_summarization_test`: a
+    `FilesystemBackend` rooted at the env-provided data dir, a lowered
+    `max_input_tokens` so summarization triggers, a checkpointer, and the
+    optional `compact_conversation` tool / model-call-limit middleware. The
     large data file itself is provisioned by the environment, not here.
     """
     backend = FilesystemBackend(root_dir=_eval_data_dir(), virtual_mode=True)
@@ -405,26 +416,26 @@ def _make_summarization_builder(
 class EvalSpec:
     """Describes how to build the agent for a single eval.
 
-    Most evals set only ``category``, ``tier``, and optionally ``system_prompt``
-    / ``memory`` / ``skills`` / ``tools``. Evals whose construction depends on
-    runtime parameters (e.g. ``repl_name``) set ``builder`` instead; when
-    ``builder`` is set, ``build()`` delegates to it and ignores the static
+    Most evals set only `category`, `tier`, and optionally `system_prompt`
+    / `memory` / `skills` / `tools`. Evals whose construction depends on
+    runtime parameters (e.g. `repl_name`) set `builder` instead; when
+    `builder` is set, `build()` delegates to it and ignores the static
     fields.
 
     Attributes:
         name: The pytest test function name (without parametrize suffix).
         category: Eval category (file_operations, tool_use, memory, etc.).
         tier: Eval tier (baseline or hillclimb).
-        system_prompt: Custom system prompt passed to ``create_deep_agent``.
-        memory: Memory file paths passed to ``create_deep_agent``.
-        skills: Skill directory paths passed to ``create_deep_agent``.
-        tools: Tools passed to ``create_deep_agent`` (replaces default tools).
-        middleware: Middleware passed to ``create_deep_agent``.
-        subagents: Subagent configs passed to ``create_deep_agent``.
+        system_prompt: Custom system prompt passed to `create_deep_agent`.
+        memory: Memory file paths passed to `create_deep_agent`.
+        skills: Skill directory paths passed to `create_deep_agent`.
+        tools: Tools passed to `create_deep_agent` (replaces default tools).
+        middleware: Middleware passed to `create_deep_agent`.
+        subagents: Subagent configs passed to `create_deep_agent`.
         builder: Custom builder for evals that need runtime construction.
             When set, takes precedence over the static fields.
-        supports_repl: Whether this eval supports the ``repl_name`` parameter
-            (only ``builder``-based evals do).
+        supports_repl: Whether this eval supports the `repl_name` parameter
+            (only `builder`-based evals do).
     """
 
     name: str
@@ -449,8 +460,8 @@ class EvalSpec:
 
         Args:
             model: The chat model to use.
-            repl_name: Optional REPL backend (``"quickjs"`` or ``None``).
-                Only used by evals with ``supports_repl=True``.
+            repl_name: Optional REPL backend (`"quickjs"` or `None`).
+                Only used by evals with `supports_repl=True`.
 
         Returns:
             A compiled LangGraph graph.
@@ -897,7 +908,7 @@ _register(
 # --- external_benchmarks (test_external_benchmarks.py) ----------------------
 #
 # FRAMES and Nexus share one file-backed agent shape; the per-case files they
-# read are runtime inputs (``initial_files``), not agent setup. test_bfcl_v3
+# read are runtime inputs (`initial_files`), not agent setup. test_bfcl_v3
 # binds the full default BFCL tool suite via a builder; its per-case
 # involved-class subset and initial config are runtime data, not agent setup.
 
@@ -906,9 +917,9 @@ _FILE_BACKED_SYSTEM_PROMPT = (
     "Return only the final answer requested by the prompt. "
     "Do not use the task tool or any subagent delegation."
 )
-"""Mirror of ``test_external_benchmarks._FILE_BACKED_SYSTEM_PROMPT``."""
+"""Mirror of `test_external_benchmarks._FILE_BACKED_SYSTEM_PROMPT`."""
 
-# ``test_frames`` / ``test_nexus`` are parametrized over cases spanning both
+# `test_frames` / `test_nexus` are parametrized over cases spanning both
 # tiers; the registry records the representative (majority) baseline tier.
 _register(_default("test_frames", _RETRIEVAL, _BASELINE, system_prompt=_FILE_BACKED_SYSTEM_PROMPT))
 _register(_default("test_nexus", _TOOL_USE, _BASELINE, system_prompt=_FILE_BACKED_SYSTEM_PROMPT))

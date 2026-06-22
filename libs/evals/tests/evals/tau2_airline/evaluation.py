@@ -74,8 +74,8 @@ class EpisodeScore:
     """Episode-level success + expectation-style diagnostics.
 
     Attributes:
-        success: ``True`` when the episode satisfies hard correctness criteria.
-        success_reasons: Machine-readable failure reasons when ``success=False``.
+        success: `True` when the episode satisfies hard correctness criteria.
+        success_reasons: Machine-readable failure reasons when `success=False`.
         expected_metrics: Non-blocking diagnostic metrics for observability.
     """
 
@@ -134,7 +134,7 @@ def _apply_initial_state(db: FlightDB, initial_state: dict[str, Any]) -> None:
     """Apply a task's initial_state mutations to the DB.
 
     The initial_state dict maps dotted paths to values, e.g.
-    ``{"users.alice.membership": "gold"}``. Currently supports direct
+    `{"users.alice.membership": "gold"}`. Currently supports direct
     top-level collection updates.
 
     Args:
@@ -301,8 +301,8 @@ def evaluate_task(
 ) -> TaskReward:
     """Run all evaluators and compute the final reward.
 
-    The reward is ``db_score * communicate_score``, matching tau2's
-    ``reward_basis=['DB', 'COMMUNICATE']`` logic for airline tasks.
+    The reward is `db_score * communicate_score`, matching tau2's
+    `reward_basis=['DB', 'COMMUNICATE']` logic for airline tasks.
 
     Args:
         actual_db: The DB state after the conversation.
@@ -341,7 +341,7 @@ def score_tau2_episode(reward: TaskReward) -> EpisodeScore:
     succeeds when both DB and communicate checks are perfect.
 
     Args:
-        reward: The combined reward object produced by ``evaluate_task``.
+        reward: The combined reward object produced by `evaluate_task`.
 
     Returns:
         Episode-level success status and expectation-style diagnostics.

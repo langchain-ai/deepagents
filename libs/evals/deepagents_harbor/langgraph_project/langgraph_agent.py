@@ -180,22 +180,22 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
 def make_eval_graph(config: dict[str, object] | None = None) -> object:
     """Create a Deep Agents graph for a specific eval.
 
-    Reads ``configurable["eval_name"]`` to look up the corresponding
+    Reads `configurable["eval_name"]` to look up the corresponding
     :class:`~deepagents_evals.eval_registry.EvalSpec` and delegates to its
-    ``build()`` method. This is the dispatcher entry point that lets a single
-    ``eval_langgraph.json`` graph serve every eval in the suite — each Harbor task
-    just passes its eval name via ``--agent-kwarg configurable='{"eval_name":
-    "test_write_file_simple"}'``.
+    `build()` method. This is the dispatcher entry point that lets a single
+    `eval_langgraph.json` graph serve every eval in the suite — each Harbor task
+    just passes its eval name via `--agent-kwarg configurable='{"eval_name":
+    "test_write_file_simple"}'`.
 
-    For evals that support the ``repl_name`` parameter (relational /
-    incident-graph suites), pass ``configurable["repl_name"]`` (``"quickjs"``
+    For evals that support the `repl_name` parameter (relational /
+    incident-graph suites), pass `configurable["repl_name"]` (`"quickjs"`
     or omit for direct tool binding).
 
     Args:
         config: LangGraph runtime config. Harbor passes the selected model in
-            ``configurable.model``, optional provider kwargs in
-            ``configurable.model_kwargs``, the eval name in
-            ``configurable.eval_name``, and optionally ``configurable.repl_name``.
+            `configurable.model`, optional provider kwargs in
+            `configurable.model_kwargs`, the eval name in
+            `configurable.eval_name`, and optionally `configurable.repl_name`.
 
     Returns:
         A compiled LangGraph graph invokable by Harbor's LangGraph runner.

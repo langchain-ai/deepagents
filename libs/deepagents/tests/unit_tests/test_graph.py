@@ -352,9 +352,8 @@ class TestGeneralPurposeSubagentProfileWiring:
 class TestPromptCachingWiring:
     """Tests for provider-specific prompt caching middleware wiring."""
 
-    def test_bedrock_main_and_general_purpose_agents_get_prompt_caching(self) -> None:
-        bedrock_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
-        bedrock_model._get_ls_params = MagicMock(return_value={"ls_provider": "amazon_bedrock"})
+    def test_main_and_general_purpose_agents_get_bedrock_prompt_caching(self) -> None:
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
         gp_cache = MagicMock()
         main_cache = MagicMock()
         fake_agent = MagicMock()
@@ -365,7 +364,7 @@ class TestPromptCachingWiring:
             patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
             patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
         ):
-            result = create_deep_agent(model=bedrock_model)
+            result = create_deep_agent(model=model)
 
         assert result == "compiled-agent"
         subagents = mock_subagents.call_args.kwargs["subagents"]

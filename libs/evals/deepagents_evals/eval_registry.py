@@ -754,3 +754,25 @@ _register(
         supports_repl=False,
     )
 )
+
+# --- external_benchmarks (test_external_benchmarks.py) ----------------------
+#
+# The FRAMES and Nexus evals share one file-backed agent shape; the per-case
+# files they read are runtime inputs (provided as ``initial_files``), not agent
+# setup. ``test_bfcl_v3`` is intentionally omitted: its tools are built per case
+# from the case's involved API classes, so its construction can't be expressed
+# as a static spec under the ``build(model, repl_name)`` contract.
+
+_FILE_BACKED_SYSTEM_PROMPT = (
+    "Use the files already present in the workspace to solve the task. "
+    "Return only the final answer requested by the prompt. "
+    "Do not use the task tool or any subagent delegation."
+)
+"""Mirror of ``test_external_benchmarks._FILE_BACKED_SYSTEM_PROMPT``."""
+
+# ``test_frames`` / ``test_nexus`` are parametrized over cases spanning both
+# tiers; the registry records the representative (majority) baseline tier.
+_register(
+    _default("test_frames", _RETRIEVAL, _BASELINE, system_prompt=_FILE_BACKED_SYSTEM_PROMPT)
+)
+_register(_default("test_nexus", _TOOL_USE, _BASELINE, system_prompt=_FILE_BACKED_SYSTEM_PROMPT))

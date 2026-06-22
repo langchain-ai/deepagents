@@ -12,16 +12,24 @@ from deepagents.profiles.provider.provider_profiles import apply_provider_profil
 
 logger = logging.getLogger(__name__)
 
-# LangChain specs and LangSmith params use different provider names for some
-# integrations. Canonicalize only known aliases before comparing providers.
 _PROVIDER_ALIASES = {
     "azure_openai": "azure",
     "mistralai": "mistral",
 }
+"""Known provider aliases between LangChain specs and LangSmith params.
 
-_BEDROCK_PROVIDERS = frozenset({"amazon_bedrock", "aws", "bedrock", "bedrock_converse"})
-_BEDROCK_MODEL_CLASSES = frozenset({"ChatBedrock", "ChatBedrockConverse"})
+LangChain specs and LangSmith params use different provider names for some
+integrations. Canonicalize only known aliases before comparing providers.
+"""
+
+_BEDROCK_PROVIDERS = frozenset({"amazon_bedrock", "anthropic_bedrock", "aws", "bedrock", "bedrock_converse"})
+"""Normalized provider names that identify AWS Bedrock chat models."""
+
+_BEDROCK_MODEL_CLASSES = frozenset({"ChatAnthropicBedrock", "ChatBedrock", "ChatBedrockConverse", "ChatBedrockNovaSonic"})
+"""`langchain-aws` chat model class names that identify AWS Bedrock models."""
+
 _BEDROCK_REGIONAL_PREFIXES = ("apac.", "amer.", "au.", "eu.", "global.", "jp.", "sa.", "us.", "us-gov.")
+"""Regional inference profile prefixes stripped from Bedrock model identifiers."""
 
 
 def resolve_model(model: str | BaseChatModel) -> BaseChatModel:

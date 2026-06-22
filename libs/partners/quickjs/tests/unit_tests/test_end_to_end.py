@@ -291,7 +291,9 @@ def test_shared_middleware_instance_still_isolates_repl_state_across_agents() ->
             ]
         ),
         middleware,
-    ).invoke({"messages": [HumanMessage(content="seed the interpreter")]}, config=config)
+    ).invoke(
+        {"messages": [HumanMessage(content="seed the interpreter")]}, config=config
+    )
     _assert_result_contains(_eval_tool_message(first).content, "ok")
 
     second = _make_agent_with_messages(
@@ -312,7 +314,10 @@ def test_shared_middleware_instance_still_isolates_repl_state_across_agents() ->
             ]
         ),
         middleware,
-    ).invoke({"messages": [HumanMessage(content="read the interpreter state")]}, config=config)
+    ).invoke(
+        {"messages": [HumanMessage(content="read the interpreter state")]},
+        config=config,
+    )
     _assert_result_contains(_eval_tool_message(second).content, "undefined")
 
 
@@ -337,7 +342,9 @@ def test_fresh_middleware_instance_gets_fresh_repl_state() -> None:
             ]
         ),
         CodeInterpreterMiddleware(),
-    ).invoke({"messages": [HumanMessage(content="seed the interpreter")]}, config=config)
+    ).invoke(
+        {"messages": [HumanMessage(content="seed the interpreter")]}, config=config
+    )
     _assert_result_contains(_eval_tool_message(first).content, "ok")
 
     second = _make_agent_with_messages(
@@ -358,7 +365,10 @@ def test_fresh_middleware_instance_gets_fresh_repl_state() -> None:
             ]
         ),
         CodeInterpreterMiddleware(),
-    ).invoke({"messages": [HumanMessage(content="read the interpreter state")]}, config=config)
+    ).invoke(
+        {"messages": [HumanMessage(content="read the interpreter state")]},
+        config=config,
+    )
     _assert_result_contains(_eval_tool_message(second).content, "undefined")
 
 

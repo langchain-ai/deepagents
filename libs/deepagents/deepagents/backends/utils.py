@@ -87,7 +87,7 @@ def _normalize_content(file_data: FileData) -> str:
     plain `str`; old data may still contain a list of lines.
 
     Args:
-        file_data: FileData dict with `content` key.
+        file_data: `FileData` dict with `content` key.
 
     Returns:
         Content as a single string.
@@ -120,13 +120,14 @@ def format_content_with_line_numbers(
     content: str | list[str],
     start_line: int = 1,
 ) -> str:
-    """Format file content with line numbers (cat -n style).
+    """Format file content with line numbers (`cat -n` style).
 
-    Chunks lines longer than MAX_LINE_LENGTH with continuation markers (e.g., 5.1, 5.2).
+    Chunks lines longer than `MAX_LINE_LENGTH` with continuation markers
+    (e.g., `5.1`, `5.2`).
 
     Args:
         content: File content as string or list of lines
-        start_line: Starting line number (default: 1)
+        start_line: Starting line number
 
     Returns:
         Formatted content with line numbers and continuation markers
@@ -169,7 +170,7 @@ def check_empty_content(content: str) -> str | None:
         content: Content to check
 
     Returns:
-        Warning message if empty, None otherwise
+        Warning message if empty, `None` otherwise
     """
     if not content or content.strip() == "":
         return EMPTY_CONTENT_WARNING
@@ -184,13 +185,14 @@ def _get_file_type(path: str) -> FileType:
 
     Returns:
         One of `"text"`, `"image"`, `"audio"`, `"video"`, or `"file"`.
-        Defaults to `"text"` for unrecognized extensions.
+
+            Defaults to `"text"` for unrecognized extensions.
     """
     return _EXTENSION_TO_FILE_TYPE.get(PurePosixPath(path).suffix.lower(), "text")
 
 
 def _to_legacy_file_data(file_data: FileData) -> dict[str, Any]:
-    r"""Convert a FileData dict to the legacy (v1) storage format.
+    r"""Convert a `FileData` dict to the legacy (v1) storage format.
 
     The v1 format stores content as `list[str]` (lines split on `\\n`)
     and omits the `encoding` field.  Use this when `file_format="v1"`
@@ -198,11 +200,11 @@ def _to_legacy_file_data(file_data: FileData) -> dict[str, Any]:
     expect `list[str]` content.
 
     Args:
-        file_data: Modern (v2) FileData with `content: str` and `encoding`.
+        file_data: Modern (v2) `FileData` with `content: str` and `encoding`.
 
     Returns:
         Dict with `content` as `list[str]`, plus `created_at` /
-        `modified_at` timestamps.  No `encoding` key.
+            `modified_at` timestamps.  No `encoding` key.
     """
     content = file_data["content"]
     result: dict[str, Any] = {
@@ -216,10 +218,10 @@ def _to_legacy_file_data(file_data: FileData) -> dict[str, Any]:
 
 
 def file_data_to_string(file_data: FileData) -> str:
-    """Convert FileData to plain string content.
+    """Convert `FileData` to plain string content.
 
     Args:
-        file_data: FileData dict with 'content' key
+        file_data: `FileData` dict with 'content' key
 
     Returns:
         Content as a single string.
@@ -232,7 +234,7 @@ def create_file_data(
     created_at: str | None = None,
     encoding: str = "utf-8",
 ) -> FileData:
-    """Create a FileData object with timestamps.
+    """Create a `FileData` object with timestamps.
 
     Args:
         content: File content as string (plain text or base64-encoded binary).
@@ -240,7 +242,7 @@ def create_file_data(
         encoding: Content encoding — `"utf-8"` for text, `"base64"` for binary.
 
     Returns:
-        FileData dict with content, encoding, and timestamps.
+        FileD`ata dict with content, encoding, and timestamps.
     """
     now = datetime.now(UTC).isoformat()
 
@@ -253,14 +255,14 @@ def create_file_data(
 
 
 def update_file_data(file_data: FileData, content: str) -> FileData:
-    """Update FileData with new content, preserving creation timestamp.
+    """Update `FileData` with new content, preserving creation timestamp.
 
     Args:
-        file_data: Existing FileData dict
+        file_data: Existing `FileData` dict
         content: New content as string
 
     Returns:
-        Updated FileData dict
+        Updated `FileData` dict
     """
     now = datetime.now(UTC).isoformat()
 
@@ -285,13 +287,13 @@ def slice_read_response(
     is applied downstream by the middleware layer.
 
     Args:
-        file_data: FileData dict.
+        file_data: `FileData` dict.
         offset: Line offset (0-indexed).
         limit: Maximum number of lines.
 
     Returns:
         Raw sliced content string on success, or `ReadResult` with
-        `error` set when the offset exceeds the file length.
+            `error` set when the offset exceeds the file length.
     """
     content = file_data_to_string(file_data)
 
@@ -332,7 +334,7 @@ def perform_string_replacement(
         replace_all: Whether to replace all occurrences
 
     Returns:
-        Tuple of (new_content, occurrences) on success, or error message string
+        Tuple of `(new_content, occurrences)` on success, or error message string
     """
     occurrences = content.count(old_string)
 
@@ -562,11 +564,11 @@ def _normalize_path(path: str | None) -> str:
 def _filter_files_by_path(files: dict[str, Any], normalized_path: str) -> dict[str, Any]:
     """Filter files dict by normalized path, handling exact file matches and directory prefixes.
 
-    Expects a normalized path from _normalize_path (no trailing slash except root).
+    Expects a normalized path from `_normalize_path` (no trailing slash except root).
 
     Args:
         files: Dictionary mapping file paths to file data
-        normalized_path: Normalized path from _normalize_path (e.g., "/", "/dir", "/dir/file")
+        normalized_path: Normalized path from `_normalize_path` (e.g., "/", "/dir", "/dir/file")
 
     Returns:
         Filtered dictionary of files matching the path
@@ -598,12 +600,13 @@ def _glob_search_files(
 
     Args:
         files: Dictionary of file paths to FileData.
-        pattern: Glob pattern (e.g., "*.py", "**/*.ts").
+        pattern: Glob pattern (e.g., `"*.py"`, `"**/*.ts"`).
         path: Base path to search from. `None` defaults to root.
 
     Returns:
         Newline-separated file paths, sorted by modification time (most recent first).
-        Returns "No files found" if no matches.
+
+            `"No files found"` if no matches.
 
     Example:
         ```python
@@ -658,8 +661,8 @@ def _format_grep_results(
     """Format grep search results based on output mode.
 
     Args:
-        results: Dictionary mapping file paths to list of (line_num, line_content) tuples
-        output_mode: Output format - "files_with_matches", "content", or "count"
+        results: Dictionary mapping file paths to list of `(line_num, line_content)` tuples
+        output_mode: Output format
 
     Returns:
         Formatted string output
@@ -693,7 +696,8 @@ def grep_matches_from_files(
 
     Performs literal text search (not regex).
 
-    Returns a GrepResult with matches on success.
+    Returns a `GrepResult` with matches on success.
+
     We deliberately do not raise here to keep backends non-throwing in tool
     contexts and preserve user-facing error messages.
     """

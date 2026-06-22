@@ -1785,7 +1785,9 @@ class TestGetLangsmithProjectName:
             assert get_langsmith_project_name() == "env-project"
 
     def test_falls_back_to_default(self) -> None:
-        """Should fall back to 'deepagents-code' when no project name configured."""
+        """Should fall back to the default project when none is configured."""
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
         env = {
             "LANGSMITH_API_KEY": "lsv2_test",
             "LANGSMITH_TRACING": "true",
@@ -1795,10 +1797,12 @@ class TestGetLangsmithProjectName:
             patch("deepagents_code.config.settings") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
-            assert get_langsmith_project_name() == "deepagents-code"
+            assert get_langsmith_project_name() == LANGSMITH_PROJECT_DEFAULT
 
     def test_accepts_langchain_api_key(self) -> None:
         """Should accept LANGCHAIN_API_KEY as alternative to LANGSMITH_API_KEY."""
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
         env = {
             "LANGSMITH_API_KEY": "",
             "LANGCHAIN_API_KEY": "lsv2_test",
@@ -1809,7 +1813,58 @@ class TestGetLangsmithProjectName:
             patch("deepagents_code.config.settings") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
-            assert get_langsmith_project_name() == "deepagents-code"
+            assert get_langsmith_project_name() == LANGSMITH_PROJECT_DEFAULT
+
+    def test_agrees_with_config_manifest_resolution(self) -> None:
+        """`get_langsmith_project_name` and `resolve_scalar` agree on the project.
+
+        The `fallback_env_vars` mechanism exists so `config show`/`get` report
+        the project agent traces actually route to. This pins that parity for
+        the bare-env and unset cases, catching future drift between the two
+        resolution paths.
+        """
+        from deepagents_code.config_manifest import (
+            LANGSMITH_PROJECT_DEFAULT,
+            get_option,
+            resolve_scalar,
+        )
+
+        opt = get_option("tracing.langsmith_project")
+        assert opt is not None
+
+        # Bare `LANGSMITH_PROJECT` set, no prefixed override, no settings value.
+        bare_env = {
+            "LANGSMITH_API_KEY": "lsv2_test",
+            "LANGSMITH_TRACING": "true",
+            "LANGSMITH_PROJECT": "parity-bare",
+            "DEEPAGENTS_CODE_LANGSMITH_PROJECT": "",
+        }
+        with (
+            patch.dict("os.environ", bare_env, clear=False),
+            patch("deepagents_code.config.settings") as mock_settings,
+        ):
+            mock_settings.deepagents_langchain_project = None
+            manifest_value, _ = resolve_scalar(opt, toml_data={})
+            assert get_langsmith_project_name() == manifest_value == "parity-bare"
+
+        # Nothing configured: both fall back to the shared default.
+        default_env = {
+            "LANGSMITH_API_KEY": "lsv2_test",
+            "LANGSMITH_TRACING": "true",
+            "LANGSMITH_PROJECT": "",
+            "DEEPAGENTS_CODE_LANGSMITH_PROJECT": "",
+        }
+        with (
+            patch.dict("os.environ", default_env, clear=False),
+            patch("deepagents_code.config.settings") as mock_settings,
+        ):
+            mock_settings.deepagents_langchain_project = None
+            manifest_value, _ = resolve_scalar(opt, toml_data={})
+            assert (
+                get_langsmith_project_name()
+                == manifest_value
+                == LANGSMITH_PROJECT_DEFAULT
+            )
 
 
 class TestDisableOrphanedTracing:

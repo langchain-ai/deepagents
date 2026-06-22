@@ -1086,14 +1086,13 @@ class TestMCPViewerScreen:
             assert screen._selected_index == 1
             assert scroll.scroll_offset.y > initial_offset
 
-            # Many Downs eventually expose the bottom and the next press jumps.
-            for _ in range(60):
-                if screen._selected_index == 2:
-                    break
-                await pilot.press("down")
-                await pilot.pause()
+            # Put the bottom edge in view, then the next Down should jump.
+            scroll.scroll_relative(y=1000, animate=False)
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.pause()
             assert screen._selected_index == 2, (
-                "expected to eventually jump to next tool"
+                "expected to jump to next tool once the bottom is visible"
             )
 
     async def test_arrow_up_scrolls_inside_tall_tool_then_jumps(self) -> None:
@@ -1136,13 +1135,11 @@ class TestMCPViewerScreen:
             assert screen._selected_index == 2
             assert scroll.scroll_offset.y < offset_before
 
-            # Many Ups eventually re-expose the top and the next press jumps
-            # to "prev" (row 1). Cap the loop so a regression can't hang.
-            for _ in range(60):
-                if screen._selected_index == 1:
-                    break
-                await pilot.press("up")
-                await pilot.pause()
+            # Put the top edge in view, then the next Up should jump to "prev".
+            scroll.scroll_relative(y=-1000, animate=False)
+            await pilot.pause()
+            await pilot.press("up")
+            await pilot.pause()
             assert screen._selected_index == 1
 
     async def test_up_jump_pins_previous_tool_to_viewport_bottom(self) -> None:
@@ -1175,17 +1172,15 @@ class TestMCPViewerScreen:
             await pilot.press("down")
             await pilot.press("enter")
             await pilot.pause()
-            # Scroll all the way down through "big" until we jump to "next"
-            # (row 2).
-            for _ in range(80):
-                await pilot.press("down")
-                await pilot.pause()
-                if screen._selected_index == 2:
-                    break
-            assert screen._selected_index == 2
-
             scroll = screen.query_one(".mcp-list", VerticalScroll)
             big = screen._tool_widgets[0]
+
+            # Put the bottom edge in view, then press Down to jump to "next" (row 2).
+            scroll.scroll_relative(y=1000, animate=False)
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.pause()
+            assert screen._selected_index == 2
 
             # Press Up — should jump back to "big" (row 1) and pin its
             # bottom near the viewport bottom (within 1 row, allowing for

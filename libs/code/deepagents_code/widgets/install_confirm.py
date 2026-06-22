@@ -118,3 +118,131 @@ class InstallPackageConfirmScreen(ModalScreen[bool]):
         `None` dismiss instead of an explicit cancel.
         """
         self.dismiss(False)
+
+
+class InstallProviderConfirmScreen(ModalScreen[bool]):
+    """Confirmation overlay for installing a model provider's extra.
+
+    Shown from the model selector when the user picks a model whose provider
+    integration package is not installed. Dismisses with `True` to install and
+    `False` to cancel; Esc cancels so the user is never forced into an install.
+    """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter", "confirm", "Install", show=False, priority=True),
+        Binding("escape", "cancel", "Cancel", show=False, priority=True),
+    ]
+
+    CSS = """
+    InstallProviderConfirmScreen {
+        align: center middle;
+    }
+
+    InstallProviderConfirmScreen > Vertical {
+        width: 64;
+        max-width: 90%;
+        height: auto;
+        background: $surface;
+        border: solid $primary;
+        padding: 1 2;
+    }
+
+    InstallProviderConfirmScreen .install-confirm-title {
+        text-style: bold;
+        color: $primary;
+        text-align: center;
+        margin-bottom: 1;
+    }
+
+    InstallProviderConfirmScreen .install-confirm-body {
+        height: auto;
+        color: $text;
+        margin-bottom: 1;
+    }
+
+    InstallProviderConfirmScreen .install-confirm-help {
+        height: 1;
+        color: $text-muted;
+        text-style: italic;
+        text-align: center;
+    }
+    """
+
+    def __init__(
+        self, provider: str, extra: str, model_spec: str | None = None
+    ) -> None:
+        """Initialize the prompt.
+
+        Args:
+            provider: The provider whose integration is missing.
+            extra: The `deepagents-code` extra that installs the provider.
+            model_spec: The selected `provider:model` spec, surfaced in the body
+                by the model selector. Omitted by the `/auth` manager, which
+                installs a provider so a key can be added rather than to switch
+                to a specific model.
+        """
+        super().__init__()
+        self._provider = provider
+        self._extra = extra
+        self._model_spec = model_spec
+
+    def compose(self) -> ComposeResult:
+        """Compose the provider-install confirmation dialog.
+
+        Yields:
+            Title, body, and help-row widgets parented inside a `Vertical`.
+        """
+        # Reuse the auth UI's curated labels (e.g. `google_genai` -> "Google
+        # Gemini") so the title reads naturally, falling back to a title-cased
+        # provider key. Avoids the event-loop config read in
+        # `_provider_display_name`, which is overkill for a static title.
+        from deepagents_code.widgets.auth import PROVIDER_DISPLAY_NAMES
+
+        provider = PROVIDER_DISPLAY_NAMES.get(
+            self._provider, self._provider.replace("_", " ").title()
+        )
+        if self._model_spec is not None:
+            body = Content.from_markup(
+                "To use [bold]$model[/bold], Deep Agents Code needs to "
+                "install the [bold]$extra[/bold] integration. This will add "
+                "the provider package to your dcode environment.",
+                model=self._model_spec,
+                extra=self._extra,
+            )
+        else:
+            body = Content.from_markup(
+                "To add a key for [bold]$provider[/bold], Deep Agents Code "
+                "needs to install the [bold]$extra[/bold] integration. This "
+                "will add the provider package to your dcode environment.",
+                provider=provider,
+                extra=self._extra,
+            )
+        with Vertical():
+            yield Static(
+                f"Install {provider} support?",
+                classes="install-confirm-title",
+                markup=False,
+            )
+            yield Static(
+                body,
+                classes="install-confirm-body",
+                markup=False,
+            )
+            yield Static(
+                "Enter to install, Esc to cancel",
+                classes="install-confirm-help",
+                markup=False,
+            )
+
+    def action_confirm(self) -> None:
+        """Dismiss with `True`."""
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        """Dismiss with `False`.
+
+        The method name must stay `cancel` for the same reason as
+        `InstallPackageConfirmScreen.action_cancel`: the app's priority
+        `escape` binding dispatches to it for an active `ModalScreen`.
+        """
+        self.dismiss(False)

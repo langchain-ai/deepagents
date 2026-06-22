@@ -382,7 +382,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.6.10"
+version = "0.6.11"
 source = { editable = "../../deepagents" }
 dependencies = [
     { name = "langchain" },
@@ -395,7 +395,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "langchain", specifier = ">=1.3.9,<2.0.0" },
+    { name = "langchain", specifier = ">=1.3.10,<2.0.0" },
     { name = "langchain-anthropic", specifier = ">=1.4.6,<2.0.0" },
     { name = "langchain-core", specifier = ">=1.4.7,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.2.5,<5.0.0" },
@@ -662,16 +662,16 @@ wheels = [
 
 [[package]]
 name = "langchain"
-version = "1.3.9"
+version = "1.3.10"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "langchain-core" },
     { name = "langgraph" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/56/7c/651d0dc4913a7a892156c03dd343b99cfe19ee729e6911ab1f4fe7567b8b/langchain-1.3.9.tar.gz", hash = "sha256:9b14ef0db9ef314299ded858b22ca2a40b8f1b05c8c9cb6b82d53a53075fef00", size = 631514, upload-time = "2026-06-12T16:53:27.083Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3b/f6/e351d85c7828b9b90c5729de66170457c882c754efef0712904cfcd3192d/langchain-1.3.10.tar.gz", hash = "sha256:fd6ac9da86c479e4ff376e772d9e17a9232bd3113e9f2ddcb70cdc4bf7afc119", size = 632522, upload-time = "2026-06-18T19:43:00.86Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b7/55/3481619d21b9bdfbfda8680fba5cfc6cfe926789b8eaaad95353078cfa20/langchain-1.3.9-py3-none-any.whl", hash = "sha256:4af49ad1095799e4408b489fb79d4b8b49292453618b202d8a697fca59bb6871", size = 132873, upload-time = "2026-06-12T16:53:25.489Z" },
+    { url = "https://files.pythonhosted.org/packages/59/f6/a682e68d004a2e23cae6c5c42e3c0d071bc0e7768167bd12277992f096f9/langchain-1.3.10-py3-none-any.whl", hash = "sha256:5da67f21aa56119744ad51b3e46ffac570c88f4fae0876e3b1c6a1c4bc0e344e", size = 133038, upload-time = "2026-06-18T19:42:58.918Z" },
 ]
 
 [[package]]
@@ -859,7 +859,7 @@ wheels = [
 
 [[package]]
 name = "langsmith"
-version = "0.8.11"
+version = "0.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
@@ -873,9 +873,9 @@ dependencies = [
     { name = "xxhash" },
     { name = "zstandard" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ea/0d/082410ece26ff9f3ed4f87b014a8675be47cbd7d65f06b922045dfc21c47/langsmith-0.8.11.tar.gz", hash = "sha256:d9b3496f8f7ca63f4f2d1dfd368afd6c527923fff2ce4026c82ce85f37db3965", size = 4495842, upload-time = "2026-06-08T22:54:44.395Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/92/34/a77abacdece10440fa04d8b2afd884708a98f62ff271ee79d75bcb8bb9bc/langsmith-0.9.0.tar.gz", hash = "sha256:21b381462ee44713dd5e2163b7db44fb28fde65146aad27aeabd778c464da0f0", size = 4556365, upload-time = "2026-06-22T15:37:18.733Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b4/65/f9c9dc19b21a9076286fafdb0ab732c9019ddf71aa7e7d720a830a98fe2a/langsmith-0.8.11-py3-none-any.whl", hash = "sha256:08aa5e84b00703ecc11dbeafda78d84b92da4e8c6114e0be9b59df9e71afc59b", size = 478985, upload-time = "2026-06-08T22:54:42.349Z" },
+    { url = "https://files.pythonhosted.org/packages/c6/64/d411be633d1c976955a09f6b3c58fbe70592d1370d262d171f7daf7e3793/langsmith-0.9.0-py3-none-any.whl", hash = "sha256:5eeccc36ff956946df8510a2b3b5a87d36c44f11bfb2e5205e9cf03d7b65ec9c", size = 578496, upload-time = "2026-06-22T15:37:16.42Z" },
 ]
 
 [[package]]
@@ -1710,15 +1710,15 @@ wheels = [
 
 [[package]]
 name = "vcrpy"
-version = "8.1.1"
+version = "8.2.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyyaml" },
     { name = "wrapt" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b3/07/bcfd5ebd7cb308026ab78a353e091bd699593358be49197d39d004e5ad83/vcrpy-8.1.1.tar.gz", hash = "sha256:58e3053e33b423f3594031cb758c3f4d1df931307f1e67928e30cf352df7709f", size = 85770, upload-time = "2026-01-04T19:22:03.886Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/08/db/08183b845b0040bb877dad2bd7e4e0976fc232bb3476d7ee369c6c4f8b5a/vcrpy-8.2.1.tar.gz", hash = "sha256:d73a6e4eb6dae8148e659764b7a00e68cc51ba29ba9e6a85e1f0790ad96b97df", size = 90511, upload-time = "2026-06-16T13:20:52.906Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3a/d7/f79b05a5d728f8786876a7d75dfb0c5cae27e428081b2d60152fb52f155f/vcrpy-8.1.1-py3-none-any.whl", hash = "sha256:2d16f31ad56493efb6165182dd99767207031b0da3f68b18f975545ede8ac4b9", size = 42445, upload-time = "2026-01-04T19:22:02.532Z" },
+    { url = "https://files.pythonhosted.org/packages/f8/7c/0e812ab83f5289404c674f3461ba783250b967d34b5ab034d361236ec042/vcrpy-8.2.1-py3-none-any.whl", hash = "sha256:7ce58c9e2792b246f79d6f4b3e9660676cc6f853be17e1547305b4437ab1ff85", size = 44925, upload-time = "2026-06-16T13:20:51.734Z" },
 ]
 
 [[package]]

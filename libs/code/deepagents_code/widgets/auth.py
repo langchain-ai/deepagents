@@ -45,6 +45,7 @@ from deepagents_code.model_config import (
     CODEX_PROVIDER,
     PROVIDER_API_KEY_ENV,
     PROVIDERS_DOCS_URL as _PROVIDERS_DOCS_URL,
+    SERVICE_API_KEY_ENV,
     ModelConfig,
     ProviderAuthSource,
     ProviderAuthState,
@@ -55,6 +56,8 @@ from deepagents_code.model_config import (
     get_credential_env_var,
     get_default_base_url_env,
     get_provider_auth_status,
+    get_service_auth_status,
+    is_service,
     resolved_env_var_name,
 )
 from deepagents_code.widgets._links import open_style_link
@@ -107,6 +110,7 @@ PROVIDER_API_KEY_URLS: dict[str, str] = {
     "openai": "https://platform.openai.com/api-keys",
     "openrouter": "https://openrouter.ai/workspaces/default/keys",
     "perplexity": "https://www.perplexity.ai/settings/api",
+    "tavily": "https://app.tavily.com",
     "together": "https://api.together.ai/settings/api-keys",
     "xai": "https://console.x.ai/team/default/api-keys",
 }
@@ -481,7 +485,11 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         # cached instance instead of reloading outside this crash-safety guard.
         try:
             self._config = ModelConfig.load()
-            self._auth_status = get_provider_auth_status(provider)
+            self._auth_status = (
+                get_service_auth_status(provider)
+                if is_service(provider)
+                else get_provider_auth_status(provider)
+            )
             self._has_existing = auth_store.get_stored_key(provider) is not None
             self._existing_base_url = auth_store.get_stored_base_url(provider) or ""
             self._advanced_visible = bool(self._existing_base_url)
@@ -943,6 +951,12 @@ class AuthManagerScreen(ModalScreen[None]):
     state changes are persisted by `AuthPromptScreen` and reflected by
     re-rendering the option list when this screen is reopened or after a
     save/delete completes.
+
+    Well-known providers whose integration package isn't installed yet are
+    surfaced greyed-out so they stay discoverable. Selecting one routes
+    through an install confirmation: on confirm the screen records the extra on
+    `pending_install_extra` and dismisses so the app can install it (mirroring
+    the model selector's install-on-select flow) and reopen the manager.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -1002,6 +1016,17 @@ class AuthManagerScreen(ModalScreen[None]):
     }
     """
 
+    def __init__(self) -> None:
+        """Initialize the manager with an empty install-on-select registry."""
+        super().__init__()
+        # Uninstalled known providers mapped to the extra that installs them,
+        # populated each time the option list is built. Selecting one routes
+        # to the install confirmation instead of the key prompt.
+        self._install_extras: dict[str, str] = {}
+        # Set when the user confirms installing a provider's extra; the app
+        # reads this off the screen after dismissal to install then reopen.
+        self.pending_install_extra: str | None = None
+
     def compose(self) -> ComposeResult:
         """Compose the manager.
 
@@ -1024,7 +1049,7 @@ class AuthManagerScreen(ModalScreen[None]):
             yield OptionList(*options, id="auth-manager-options")
             yield Static(
                 f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab/Shift+Tab "
-                f"navigate {glyphs.bullet} Enter add/replace/delete "
+                f"navigate {glyphs.bullet} Enter add/replace/delete/install "
                 f"{glyphs.bullet} Esc close",
                 classes="auth-manager-help",
             )
@@ -1049,9 +1074,9 @@ class AuthManagerScreen(ModalScreen[None]):
             )
         )
         return Content.assemble(
-            "Lists installed providers and any you've configured in "
-            "~/.deepagents/config.toml. Install more via "
-            "`/install <provider>`. ",
+            "Lists installed model providers, services like web search, and any "
+            "providers you've configured in ~/.deepagents/config.toml. Greyed-out "
+            "providers aren't installed yet — select one to install it. ",
             ("Docs", link_style),
         )
 
@@ -1075,9 +1100,18 @@ class AuthManagerScreen(ModalScreen[None]):
         self.styles.pointer = "default"
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        """Open the prompt for the selected provider."""
+        """Open the prompt for the selected provider.
+
+        Greyed-out (uninstalled) providers route to an install confirmation
+        instead of the key prompt, since their package must be installed before
+        a credential is useful.
+        """
         provider = event.option.id
         if not provider:
+            return
+        extra = self._install_extras.get(provider)
+        if extra is not None:
+            self._prompt_install_provider(provider, extra)
             return
         if provider == CODEX_PROVIDER:
             # ChatGPT auth uses an OAuth browser flow, not an API key. The
@@ -1087,10 +1121,47 @@ class AuthManagerScreen(ModalScreen[None]):
             # callback wait on a worker.
             self._open_codex_screen()
             return
+        if is_service(provider):
+            # Services (e.g. Tavily web search) use a plain API key, stored the
+            # same way as a model-provider key.
+            self.app.push_screen(
+                AuthPromptScreen(provider, SERVICE_API_KEY_ENV[provider]),
+                self._on_prompt_closed,
+            )
+            return
         env_var = get_credential_env_var(provider)
         self.app.push_screen(
             AuthPromptScreen(provider, env_var),
             self._on_prompt_closed,
+        )
+
+    def _prompt_install_provider(self, provider: str, extra: str) -> None:
+        """Confirm installing an uninstalled provider's extra, then dismiss.
+
+        On confirm, record the extra on `pending_install_extra` and dismiss so
+        the app can install it (with a server restart) and reopen the manager
+        with the provider now installed. On cancel, stay on the manager.
+
+        Args:
+            provider: The uninstalled provider the user selected.
+            extra: The `deepagents-code` extra that installs `provider`.
+        """
+        from deepagents_code.widgets.install_confirm import (
+            InstallProviderConfirmScreen,
+        )
+
+        def _on_confirm(proceed: bool | None) -> None:
+            if proceed:
+                self.pending_install_extra = extra
+                self.dismiss(None)
+            else:
+                # Declined or dismissed: clear any pending extra so a reused
+                # screen never carries a stale install request, and stay put.
+                self.pending_install_extra = None
+
+        self.app.push_screen(
+            InstallProviderConfirmScreen(provider, extra),
+            _on_confirm,
         )
 
     def _open_codex_screen(self) -> None:
@@ -1210,25 +1281,90 @@ class AuthManagerScreen(ModalScreen[None]):
         # `PROVIDER_API_KEY_ENV`, since it has no env var of its own.
         codex_installed = {CODEX_PROVIDER} if "openai" in installed else set()
 
-        providers = sorted(
-            well_known_installed | codex_installed | stored | config_providers
-        )
+        shown = well_known_installed | codex_installed | stored | config_providers
+        # Surface well-known providers whose package isn't installed yet as
+        # greyed-out, install-on-select entries so they stay
+        # discoverable (mirrors the model selector). Disabled providers and
+        # ones already shown above are skipped.
+        self._install_extras = self._uninstalled_known_providers(config, shown)
+
+        providers = sorted(shown | set(self._install_extras))
         options = [
-            Option(self._format_label(provider), id=provider) for provider in providers
+            Option(
+                self._format_label(
+                    provider, installed=provider not in self._install_extras
+                ),
+                id=provider,
+            )
+            for provider in providers
         ]
+        # Append non-model services (e.g. Tavily web search) after the model
+        # providers. These are always shown — their key is configurable here
+        # regardless of whether the backing package is installed — so users can
+        # enter it the same way they enter a model-provider key.
+        options.extend(
+            Option(self._format_label(service), id=service)
+            for service in sorted(set(SERVICE_API_KEY_ENV) - set(providers))
+        )
         return options, warning
 
     @staticmethod
-    def _format_label(provider: str) -> Content:
+    def _uninstalled_known_providers(
+        config: ModelConfig, shown: set[str]
+    ) -> dict[str, str]:
+        """Map known providers missing their package to the installing extra.
+
+        Args:
+            config: Loaded model config, used to skip disabled providers.
+            shown: Providers already listed (installed/stored/config) to skip.
+
+        Returns:
+            `{provider: extra}` for each well-known, enabled provider whose
+                integration package is not installed and has a curated extra.
+        """
+        from deepagents_code.config_manifest import (
+            is_provider_package_installed,
+            provider_install_extra,
+        )
+
+        uninstalled: dict[str, str] = {}
+        for provider in PROVIDER_API_KEY_ENV:
+            if provider in shown or not config.is_provider_enabled(provider):
+                continue
+            extra = provider_install_extra(provider)
+            if extra is None or is_provider_package_installed(provider):
+                continue
+            uninstalled[provider] = extra
+        return uninstalled
+
+    @staticmethod
+    def _format_label(provider: str, *, installed: bool = True) -> Content:
         """Build a `Content` label for `provider` showing its credential source.
+
+        Args:
+            provider: Provider config key.
+            installed: Whether the provider's integration package is installed.
+                Uninstalled providers render dimmed with a `[not installed]`
+                marker since selecting them prompts an install, not a key.
 
         Returns:
             A composed `Content` with the provider label and a status badge.
         """
-        status = get_provider_auth_status(provider)
+        name = _provider_display_name(provider)
+        if not installed:
+            return Content.assemble(
+                Content.styled(name, "dim"),
+                "  ",
+                Content.styled("[not installed]", "dim"),
+            )
+        status = (
+            get_service_auth_status(provider)
+            if is_service(provider)
+            else get_provider_auth_status(provider)
+        )
         badge = format_auth_badge(status)
         return Content.assemble(
-            Content.from_markup("$provider", provider=_provider_display_name(provider)),
+            Content.from_markup("$provider", provider=name),
             "  ",
             badge,
         )

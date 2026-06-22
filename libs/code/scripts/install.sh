@@ -14,12 +14,9 @@
 # an exact pin already selects a single version, so setting both is an error.
 #
 # Already installed?
-#   Re-running is safe — the script checks PyPI and only acts when needed:
-#     - Already up to date  -> exits without changes.
-#     - Newer version       -> asks before upgrading in a real terminal; a
-#                              piped run with no terminal (curl | bash) just
-#                              upgrades on its own.
-#   To skip the prompt:
+#   Safe to re-run. If a newer version exists, it asks before upgrading — or
+#   upgrades on its own when run unattended (cron/CI/Docker). If you're already
+#   on the latest, it does nothing. To skip the prompt:
 #     - DEEPAGENTS_CODE_YES=1                     accept the upgrade
 #     - DEEPAGENTS_CODE_VERSION / _PRERELEASE     install that exact selection
 #     - DEEPAGENTS_CODE_EXTRAS / _PYTHON          rebuild with those options
@@ -60,7 +57,8 @@
 #   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
 #   DEEPAGENTS_CODE_VERBOSE — set to 1 to show uv's raw stderr (timing lines,
 #     unfiltered package diff) and the quiet-by-default status lines
-#     (optional-tool checks, post-install footer); useful when debugging
+#     (optional-tool checks, post-install footer); useful when debugging. A
+#     fresh install otherwise hides the full list of installed dependencies.
 #   UV_BIN — path to uv binary (auto-detected if unset)
 #
 # Credits:
@@ -241,6 +239,71 @@ can_prompt() {
   [ "$IS_INTERACTIVE" = true ] || return 1
   [ -t 0 ] && return 0
   { : < /dev/tty; } 2>/dev/null
+}
+
+path_is_under_home() {
+  local path="$1"
+  local home_real=""
+  local path_real=""
+  [ -n "${HOME:-}" ] || return 1
+  [ -d "$path" ] || return 1
+  home_real=$(cd "$HOME" 2>/dev/null && pwd -P) || return 1
+  path_real=$(cd "$path" 2>/dev/null && pwd -P) || return 1
+  case "$path_real" in
+    "$home_real"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+prepare_install_log_dir() {
+  local cache_root="$1"
+  local dir="${cache_root}/deepagents-code"
+  [ -n "$cache_root" ] || return 1
+  [ ! -L "$cache_root" ] || return 1
+  [ ! -L "$dir" ] || return 1
+  if [ ! -d "$cache_root" ]; then
+    mkdir -m 700 -p "$cache_root" 2>/dev/null || return 1
+  fi
+  [ -d "$cache_root" ] && [ ! -L "$cache_root" ] || return 1
+  if [ -e "$dir" ]; then
+    [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+  else
+    mkdir -m 700 "$dir" 2>/dev/null || return 1
+  fi
+  if [ "$(id -u)" -eq 0 ]; then
+    path_is_under_home "$dir" || return 1
+  fi
+  printf '%s\n' "$dir"
+}
+
+fix_install_log_owner() {
+  [ -n "${INSTALL_LOG:-}" ] || return 0
+  [ "$(id -u)" -eq 0 ] || return 0
+  [ -n "${TARGET_USER:-}" ] && [ "$TARGET_USER" != "root" ] || return 0
+  [ -d "$install_log_dir" ] && [ ! -L "$install_log_dir" ] || return 0
+  path_is_under_home "$install_log_dir" || return 0
+  if ! chown -h "$TARGET_USER" "$install_log_dir" 2>&1; then
+    log_warn "Could not fix ownership of $install_log_dir for user ${TARGET_USER}."
+  fi
+  if [ -f "$INSTALL_LOG" ] && [ ! -L "$INSTALL_LOG" ]; then
+    if ! chown -h "$TARGET_USER" "$INSTALL_LOG" 2>&1; then
+      log_warn "Could not fix ownership of $INSTALL_LOG for user ${TARGET_USER}."
+    fi
+  fi
+}
+
+copy_install_log() {
+  [ -n "${INSTALL_LOG:-}" ] || return 1
+  [ -n "${install_log_dir:-}" ] || return 1
+  [ -d "$install_log_dir" ] && [ ! -L "$install_log_dir" ] || return 1
+  if [ "$(id -u)" -eq 0 ]; then
+    path_is_under_home "$install_log_dir" || return 1
+  fi
+  [ ! -L "$INSTALL_LOG" ] || return 1
+  rm -f "$INSTALL_LOG" 2>/dev/null || return 1
+  # Publish the already-captured stderr without opening the destination for
+  # writing. `ln` fails if an attacker wins the race by creating install.log.
+  ln "$uv_stderr" "$INSTALL_LOG" 2>/dev/null
 }
 
 # ---------------------------------------------------------------------------
@@ -490,10 +553,45 @@ fi
 #      a Verified line with the binary name and version.
 #   3. Reformat the `- pkg==X` / `+ pkg==Y` diff into an aligned
 #      "pkg  X → Y" table under a single header.
+#   4. Detect whether uv actually moved any packages (those same
+#      `- pkg==X` / `+ pkg==Y` lines). A same-version reinstall that still
+#      bumps dependencies must report differently from a true no-op, so a
+#      later grep over this raw tempfile sets UV_REPORTED_PACKAGE_CHANGES.
+#   5. Persist the raw output to a log file (see INSTALL_LOG below) so a
+#      same-version dependency bump — or a failed install — can point the
+#      user at the full details after the terminal scrolls away.
 # Using a tempfile (vs. process substitution) ensures we see uv's full exit
-# status and don't race the warning past later log lines.
+# status, don't race the warning past later log lines, and can re-scan the
+# raw output for (4) after the awk pass above has already reformatted it.
 uv_stderr=$(mktemp 2>/dev/null) || uv_stderr="/tmp/deepagents-install.$$.err"
 uv_rc=0
+UV_REPORTED_PACKAGE_CHANGES=false
+# Mirror uv's raw output to a persistent log under the XDG cache dir. A
+# same-version dependency bump prints only a one-line summary and a failed
+# install scrolls past, so the log preserves the full diff/errors for later.
+# Prefer $XDG_CACHE_HOME, falling back to ~/.cache. INSTALL_LOG is the real
+# path used for writes; INSTALL_LOG_DISPLAY is the tilde-collapsed form shown
+# to the user. Both stay empty when the dir can't be created, which every
+# consumer treats as "feature disabled" so messages degrade cleanly.
+INSTALL_LOG=""
+INSTALL_LOG_DISPLAY=""
+cache_root="${XDG_CACHE_HOME:-}"
+if [ "$(id -u)" -eq 0 ] && [ -n "${HOME:-}" ]; then
+  cache_root="${HOME}/.cache"
+elif [ -z "$cache_root" ] && [ -n "${HOME:-}" ]; then
+  cache_root="${HOME}/.cache"
+fi
+if [ -n "$cache_root" ]; then
+  if install_log_dir=$(prepare_install_log_dir "$cache_root"); then
+    INSTALL_LOG="${install_log_dir}/install.log"
+    INSTALL_LOG_DISPLAY="$INSTALL_LOG"
+    if [ -n "${HOME:-}" ]; then
+      case "$INSTALL_LOG" in
+        "$HOME"/*) INSTALL_LOG_DISPLAY="~${INSTALL_LOG#"$HOME"}" ;;
+      esac
+    fi
+  fi
+fi
 if [[ -n "$PRERELEASE" ]]; then
   "$UV_BIN" tool install -U --python "$PYTHON_VERSION" \
     --prerelease "$PRERELEASE" "$PACKAGE" 2>"$uv_stderr" || uv_rc=$?
@@ -535,14 +633,26 @@ if [ "$VERBOSE" != "1" ] && command -v awk >/dev/null 2>&1; then
     { print }
     END {
       if (cnt == 0) exit
-      maxw = 0
       any_removed = 0
+      for (i = 1; i <= cnt; i++) {
+        if (order[i] in removed) any_removed = 1
+      }
+      if (!any_removed) {
+        # No upgrades or removals — every touched package is a brand-new
+        # addition (a fresh install, or new extras pulled into an existing
+        # env). Listing the full transitive set is noise; verbose mode keeps
+        # the output available for debugging.
+        exit
+      }
+      maxw = 0
       for (i = 1; i <= cnt; i++) {
         p = order[i]
         if (length(p) > maxw) maxw = length(p)
-        if (p in removed) any_removed = 1
       }
-      print (any_removed ? "Updated packages:" : "Installed packages:")
+      # Upgrades touch only a handful of packages, so the diff stays compact and
+      # genuinely useful — keep printing it. "(new)" disambiguates added rows
+      # from upgraded/removed ones within this mixed list.
+      print "Updated packages:"
       for (i = 1; i <= cnt; i++) {
         p = order[i]
         pad = ""
@@ -550,11 +660,7 @@ if [ "$VERBOSE" != "1" ] && command -v awk >/dev/null 2>&1; then
         if ((p in removed) && (p in added)) {
           printf "  %s%s  %s → %s\n", p, pad, removed[p], added[p]
         } else if (p in added) {
-          # "(new)" only disambiguates within an Updated list (mixed with
-          # upgraded/removed rows). Under "Installed packages:" every row is
-          # new, so the header already says it — drop the suffix.
-          if (any_removed) printf "  %s%s  %s (new)\n", p, pad, added[p]
-          else             printf "  %s%s  %s\n", p, pad, added[p]
+          printf "  %s%s  %s (new)\n", p, pad, added[p]
         } else {
           printf "  %s%s  %s (removed)\n", p, pad, removed[p]
         }
@@ -564,9 +670,21 @@ if [ "$VERBOSE" != "1" ] && command -v awk >/dev/null 2>&1; then
 else
   cat "$uv_stderr" >&2
 fi
+if grep -Eq '^[[:space:]]+[-+][[:space:]]+[^=]+==' "$uv_stderr"; then
+  UV_REPORTED_PACKAGE_CHANGES=true
+fi
+if [ -n "$INSTALL_LOG" ]; then
+  copy_install_log || { INSTALL_LOG=""; INSTALL_LOG_DISPLAY=""; }
+fi
 rm -f "$uv_stderr"
 if [ "$uv_rc" -ne 0 ]; then
   log_error "Failed to install ${PACKAGE}. See errors above."
+  # The log captured uv's full stderr (copied just above, before this exit), so
+  # point the user at it — non-verbose mode trims uv's lines from the terminal
+  # and piped `curl | bash` runs lose scrollback.
+  if [ -n "$INSTALL_LOG" ]; then
+    log_error "Full install log: ${INSTALL_LOG_DISPLAY}"
+  fi
   log_error "Common fixes: check your network, try a different Python version (DEEPAGENTS_CODE_PYTHON=3.12), or install manually."
   exit 1
 fi
@@ -576,6 +694,9 @@ if [ "$OS" = "macos" ] && [ -d "${HOME}/Library/Caches/uv" ]; then
 elif [ -d "${HOME}/.cache/uv" ]; then
   fix_owner "${HOME}/.cache/uv"
 fi
+# Restore ownership for the log path without recursively chowning a cache path
+# that could have been swapped after creation.
+fix_install_log_owner
 # ---------------------------------------------------------------------------
 # Post-install verification + contextual status
 # ---------------------------------------------------------------------------
@@ -617,7 +738,19 @@ if [ "$IS_EDITABLE" = true ]; then
 elif [ -z "$PRE_VERSION" ]; then
   log_success "deepagents-code${NEW_VERSION:+ ${NEW_VERSION}} installed."
 elif [ -n "$NEW_VERSION" ] && [ "$PRE_VERSION" = "$NEW_VERSION" ]; then
-  log_success "deepagents-code ${NEW_VERSION} already up to date."
+  # Same app version, but uv may have refreshed transitive deps (security or
+  # compat bumps). The final status line is the user-facing summary, so a flat
+  # "already up to date" would contradict the package diff printed just above
+  # (and, in non-verbose mode where an addition-only diff is suppressed, hide
+  # the dep move entirely). UV_REPORTED_PACKAGE_CHANGES (set far above) is the
+  # signal that the reinstall actually moved packages.
+  if [ "$UV_REPORTED_PACKAGE_CHANGES" = true ]; then
+    # INSTALL_LOG_DISPLAY is empty exactly when no log was written, so the
+    # `:+` suffix appends the pointer only when there's a log to point at.
+    log_success "deepagents-code ${NEW_VERSION} was already up to date; dependencies were updated.${INSTALL_LOG_DISPLAY:+ Details: ${INSTALL_LOG_DISPLAY}}"
+  else
+    log_success "deepagents-code ${NEW_VERSION} already up to date."
+  fi
 elif [ -n "$NEW_VERSION" ]; then
   log_success "deepagents-code updated: ${PRE_VERSION} → ${NEW_VERSION}."
 else
@@ -777,11 +910,15 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Done — footer wording depends on whether anything changed:
-#   - already up to date  → "Already installed"
+# Done — footer wording depends on what changed:
+#   - same app version + dependency changes → "Dependencies updated"
+#   - already up to date                    → "Already installed"
 #   - fresh install / upgrade / editable→PyPI swap → "Setup complete"
 # ---------------------------------------------------------------------------
 if [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] \
+  && [ "$PRE_VERSION" = "$NEW_VERSION" ] && [ "$UV_REPORTED_PACKAGE_CHANGES" = true ]; then
+  footer_msg="Dependencies updated."
+elif [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] \
   && [ "$PRE_VERSION" = "$NEW_VERSION" ]; then
   footer_msg="Already installed."
 else

@@ -42,7 +42,10 @@ from deepagents_code import (
     theme,
 )
 from deepagents_code._cli_context import CLIContext
-from deepagents_code._constants import DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID
+from deepagents_code._constants import (
+    DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID,
+    SYSTEM_MESSAGE_PREFIX,
+)
 from deepagents_code._git import (
     read_git_branch_from_filesystem,
     read_git_branch_via_subprocess,
@@ -112,6 +115,16 @@ deadlock detector when two threads cold-import overlapping modules.
 """
 
 _MESSAGE_TIMESTAMP_FOOTER_CLASS = "message-timestamp-footer"
+"""CSS class applied to individual message timestamp footer widgets."""
+
+_MESSAGE_TIMESTAMP_FOOTER_VISIBLE_CLASS = "message-timestamp-footer-visible"
+"""CSS class applied to a footer widget when it should be shown.
+
+Visibility is toggled on the footer leaves rather than on `#messages`: a class
+change on the container would force Textual to re-cascade styles across every
+message subtree (O(mounted widgets)), whereas flipping the leaf footers
+restyles only the footers.
+"""
 
 _TIMESTAMP_FOOTER_EXCLUDED_TYPES: frozenset[MessageType] = frozenset(
     {MessageType.APP, MessageType.SUMMARIZATION}
@@ -128,11 +141,6 @@ reason.
 def _message_timestamp_footer_id(message_id: str) -> str:
     """Return the DOM id for a message timestamp footer."""
     return f"{message_id}-timestamp-footer"
-
-
-def _is_message_timestamp_footer(widget: Widget) -> bool:
-    """Return whether `widget` is a timestamp footer."""
-    return widget.has_class(_MESSAGE_TIMESTAMP_FOOTER_CLASS)
 
 
 def _create_model_with_deepagents_import_lock(
@@ -159,6 +167,32 @@ def _create_model_with_deepagents_import_lock(
             extra_kwargs=extra_kwargs,
             profile_overrides=profile_overrides,
         )
+
+
+def _extra_is_ready(extra: str) -> bool | None:
+    """Return whether all dependencies for `extra` are installed.
+
+    Returns:
+        `True` when every package declared by `extra` is importable, `False`
+            when one or more are missing, or `None` when the extra metadata
+            can't be introspected — an unknown state, distinct from a negative
+            one, so callers don't treat "couldn't check" as "not installed".
+    """
+    from deepagents_code.extras_info import (
+        ExtrasIntrospectionError,
+        get_optional_dependency_status,
+    )
+
+    try:
+        statuses = get_optional_dependency_status(strict=True)
+    except ExtrasIntrospectionError:
+        logger.warning(
+            "Could not verify whether extra %r is installed",
+            extra,
+            exc_info=True,
+        )
+        return None
+    return any(status.name == extra and status.ready for status in statuses)
 
 
 @dataclass(frozen=True)
@@ -202,6 +236,7 @@ if TYPE_CHECKING:
     from deepagents_code.textual_adapter import TextualUIAdapter
     from deepagents_code.widgets.approval import ApprovalMenu
     from deepagents_code.widgets.ask_user import AskUserMenu
+    from deepagents_code.widgets.model_selector import ModelSelectorScreen
     from deepagents_code.widgets.notification_center import (
         NotificationSuppressRequested,
     )
@@ -3687,7 +3722,8 @@ class DeepAgentsApp(App):
                 self.notify(
                     f"Update available: v{latest}{release_age}. "
                     f"Currently installed: {cli_version}{installed_age}. "
-                    "Restart dcode to install the update automatically.",
+                    "Quit and relaunch dcode to install the update "
+                    "automatically.",
                     severity="information",
                     timeout=12,
                     markup=False,
@@ -3927,7 +3963,9 @@ class DeepAgentsApp(App):
                 self._update_available = (False, None)
                 await self._mount_message(
                     AppMessage(
-                        f"Updated to v{latest}. Restart to use the new version."
+                        f"Updated to v{latest}. Quit and relaunch dcode to use "
+                        "the new version (`/restart` only restarts the server, "
+                        "not the CLI)."
                     ),
                 )
             else:
@@ -3988,7 +4026,30 @@ class DeepAgentsApp(App):
             return
 
         extra = names[0].lower()
+        await self._install_extra(extra, force=force)
 
+    async def _install_extra(
+        self, extra: str, *, force: bool = False, auto_restart: bool = False
+    ) -> bool:
+        """Install a `deepagents-code` extra, mounting progress and restart offer.
+
+        Shared by the `/install <extra>` command and the model selector's
+        install-on-select flow. Mounts its own status/error messages and offers
+        a one-keypress restart for restart-capable extras.
+
+        Args:
+            extra: The extra name to install (e.g. `"baseten"`, `"quickjs"`).
+            force: Skip the "unknown extra" guard for valid-but-unlisted names.
+            auto_restart: Restart the app-owned server immediately after a
+                restart-capable install. Used only when the user selected a model
+                that cannot load until the server respawns.
+
+        Returns:
+            `True` when the extra installed successfully and, when `auto_restart`
+                was requested, the server was restarted (or a fresh startup will
+                load it); `False` otherwise. The interactive restart offer
+                (non-`auto_restart` path) does not affect the return value.
+        """
         try:
             from deepagents_code.config import _is_editable_install
             from deepagents_code.extras_info import (
@@ -4009,7 +4070,7 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 ErrorMessage(f"Install failed: {type(exc).__name__}: {exc}"),
             )
-            return
+            return False
 
         if not is_valid_extra_name(extra):
             await self._mount_message(
@@ -4018,7 +4079,7 @@ class DeepAgentsApp(App):
                     "alphanumeric with `-`, `_`, or `.` (PEP 508).",
                 ),
             )
-            return
+            return False
 
         if await asyncio.to_thread(_is_editable_install):
             await self._mount_message(
@@ -4027,7 +4088,7 @@ class DeepAgentsApp(App):
                     + editable_extra_hint(extra),
                 ),
             )
-            return
+            return False
 
         # KNOWN_EXTRAS is a curated "did you mean" list, not the authoritative
         # set (that's pyproject, resolved by uv): defer to --force rather than
@@ -4040,7 +4101,7 @@ class DeepAgentsApp(App):
                 await self._mount_message(
                     ErrorMessage(f"Install failed: {type(exc).__name__}: {exc}"),
                 )
-                return
+                return False
             known = ", ".join(sorted(KNOWN_EXTRAS))
             await self._mount_message(
                 AppMessage(
@@ -4051,7 +4112,7 @@ class DeepAgentsApp(App):
                     f"`/install {extra} --force`",
                 ),
             )
-            return
+            return False
 
         log_path = create_update_log_path()
         # Load the restart modal before the upgrade rewrites our own package
@@ -4069,7 +4130,7 @@ class DeepAgentsApp(App):
                     f"Install failed: {type(exc).__name__}: {exc}\nLog: {log_path}",
                 ),
             )
-            return
+            return False
         try:
             success, output = await perform_install_extra(extra, log_path=log_path)
         except (OSError, asyncio.CancelledError) as exc:
@@ -4081,7 +4142,7 @@ class DeepAgentsApp(App):
                     f"Run manually: {manual_cmd}",
                 ),
             )
-            return
+            return False
 
         if not success:
             # Tail the last 200 chars — uv resolver prints the resolved
@@ -4094,7 +4155,7 @@ class DeepAgentsApp(App):
                     f"Run manually: {manual_cmd}",
                 ),
             )
-            return
+            return False
 
         # Model-provider and sandbox extras are imported by the langgraph
         # server subprocess; `/restart` respawns that subprocess and picks
@@ -4103,16 +4164,60 @@ class DeepAgentsApp(App):
         # (`verify_interpreter_deps` gates `--interpreter`), so a full
         # relaunch is required.
         restart_capable = extra in MODEL_PROVIDER_EXTRAS or extra in SANDBOX_EXTRAS
-        if restart_capable:
-            next_step = "Run `/restart` to load it now, or relaunch dcode."
-        else:
-            next_step = "Exit and relaunch dcode to use the new dependencies."
+        if restart_capable and auto_restart:
+            if self._restart_after_install_is_unneeded():
+                # No running server to respawn; a deferred/errored startup will
+                # import the extra on its first spawn. Acknowledge the install
+                # regardless of whether the config reload below succeeds.
+                await self._mount_message(
+                    AppMessage(f"Installed extra '{extra}'."),
+                )
+                return await self._reload_configuration_for_restart()
+            if await self._restart_after_install(extra):
+                return True
+            if self._server_kwargs is None:
+                await self._mount_message(
+                    AppMessage(
+                        f"Installed extra '{extra}', but this app is connected "
+                        "to a remote LangGraph server. Relaunch dcode to load it, "
+                        "then select the model again."
+                    ),
+                )
+            else:
+                await self._mount_message(
+                    AppMessage(
+                        f"Installed extra '{extra}', but couldn't restart the server "
+                        "automatically. Run `/restart` to load it, then select the "
+                        "model again."
+                    ),
+                )
+            return False
 
-        await self._mount_message(
-            AppMessage(f"Installed extra '{extra}'. {next_step}"),
-        )
-        if restart_capable:
-            await self._offer_restart_after_install(extra)
+        if not restart_capable:
+            if extra == "quickjs":
+                # `quickjs` only does anything behind `--interpreter`, a
+                # launch-only flag with a startup-time dependency gate, so a
+                # `/restart` (which reuses the original launch settings) can't
+                # enable it — a full relaunch with the flag is required.
+                next_step = (
+                    "Exit and relaunch dcode with `--interpreter` to use it — "
+                    "see `dcode --help`."
+                )
+            else:
+                next_step = "Exit and relaunch dcode to use the new dependencies."
+            await self._mount_message(
+                AppMessage(f"Installed extra '{extra}'. {next_step}"),
+            )
+            return True
+
+        # Restart-capable extra: announce success, then offer a one-keypress
+        # restart. `_offer_restart_after_install` owns all follow-up messaging
+        # (the prompt's button is the call to action when shown; it mounts a
+        # `/restart`-or-relaunch hint itself when it can't show the prompt), so
+        # a redundant "Run /restart" line is never appended here.
+        await self._mount_message(AppMessage(f"Installed extra '{extra}'."))
+        await self._offer_restart_after_install(extra)
+        return True
 
     async def _handle_install_package(self, package: str, *, force: bool) -> None:
         """Install an arbitrary package into the dcode tool env via `uv --with`.
@@ -4277,11 +4382,6 @@ class DeepAgentsApp(App):
         resolved versions of the core LangChain-ecosystem dependencies, which
         helps diagnose local checkouts.
         """
-        from importlib.metadata import (
-            PackageNotFoundError,
-            version as _pkg_version,
-        )
-
         lines: list[str] = []
         try:
             from deepagents_code._version import __version__ as cli_version
@@ -4296,17 +4396,15 @@ class DeepAgentsApp(App):
             logger.warning("Unexpected error looking up app version", exc_info=True)
             lines.append("deepagents-code version: unknown")
 
-        try:
+        from deepagents_code.extras_info import resolve_sdk_version
+
+        sdk_version, sdk_status = resolve_sdk_version()
+        if sdk_status == "resolved":
             from deepagents_code.update_check import format_sdk_age_suffix
 
-            sdk_version = _pkg_version("deepagents")
             sdk_age_suffix = await asyncio.to_thread(format_sdk_age_suffix, sdk_version)
             lines.append(f"deepagents (SDK) version: {sdk_version}{sdk_age_suffix}")
-        except PackageNotFoundError:
-            logger.debug("deepagents SDK package not found in environment")
-            lines.append("deepagents (SDK) version: unknown")
-        except Exception:
-            logger.warning("Unexpected error looking up SDK version", exc_info=True)
+        else:
             lines.append("deepagents (SDK) version: unknown")
 
         editable = False
@@ -4601,7 +4699,9 @@ class DeepAgentsApp(App):
 
         for widget, msg_data in reversed(hydrated_widgets):
             try:
-                footer = self._build_message_timestamp_footer(msg_data)
+                footer = self._build_message_timestamp_footer(
+                    msg_data, visible=self._message_timestamps_visible
+                )
                 if first_child:
                     if footer is not None:
                         await messages_container.mount(footer, before=first_child)
@@ -4662,6 +4762,35 @@ class DeepAgentsApp(App):
             else:
                 return
         await container.mount(widget)
+
+    async def _mount_transient_app_message(self, content: str) -> AppMessage | None:
+        """Mount an `AppMessage` that is not tracked by the message store.
+
+        Use for status text that should disappear once the state it describes
+        resolves (e.g. "Restarting server..."). The returned widget can be
+        removed directly; nothing lingers in the store to re-hydrate later.
+
+        Args:
+            content: The message text to display.
+
+        Returns:
+            The mounted widget, or `None` when the messages container is
+                missing or detached.
+        """
+        try:
+            messages = self.query_one("#messages", Container)
+        except (NoMatches, ScreenStackError):
+            logger.debug(
+                "Messages container unavailable; skipping transient status %r",
+                content,
+                exc_info=True,
+            )
+            return None
+        if not messages.is_attached:
+            return None
+        widget = AppMessage(content)
+        await self._mount_before_queued(messages, widget)
+        return widget
 
     def _is_spinner_at_correct_position(self, container: Container) -> bool:
         """Check whether the loading spinner is already correctly positioned.
@@ -6605,8 +6734,14 @@ class DeepAgentsApp(App):
         elif cmd == "/install" or cmd.startswith("/install "):
             await self._handle_install_command(command)
         elif cmd == "/timestamps":
-            await self._mount_message(UserMessage(command))
             await self._toggle_message_timestamp_footers()
+            label = "shown" if self._message_timestamps_visible else "hidden"
+            self.notify(
+                f"Message timestamps {label}.",
+                severity="information",
+                timeout=5,
+                markup=False,
+            )
         elif cmd == "/tokens":
             await self._mount_message(UserMessage(command))
             if self._context_tokens > 0:
@@ -7464,7 +7599,7 @@ class DeepAgentsApp(App):
                 content = (
                     msg.content if isinstance(msg.content, str) else str(msg.content)
                 )
-                if content.startswith("[SYSTEM]"):
+                if content.startswith(SYSTEM_MESSAGE_PREFIX):
                     continue
 
                 # Detect skill invocations persisted via additional_kwargs
@@ -7782,7 +7917,9 @@ class DeepAgentsApp(App):
                 nodes: list[Widget] = []
                 for widget, msg_data in zip(widgets, visible, strict=False):
                     nodes.append(widget)
-                    footer = self._build_message_timestamp_footer(msg_data)
+                    footer = self._build_message_timestamp_footer(
+                        msg_data, visible=self._message_timestamps_visible
+                    )
                     if footer is not None:
                         nodes.append(footer)
                 await messages_container.mount(*nodes)
@@ -7830,38 +7967,59 @@ class DeepAgentsApp(App):
             )
             await self._mount_message(AppMessage(f"Could not load history: {e}"))
 
-    def _build_message_timestamp_footer(self, data: MessageData) -> Static | None:
-        """Build a visible timestamp footer for a message.
+    @staticmethod
+    def _build_message_timestamp_footer(
+        data: MessageData, *, visible: bool
+    ) -> Static | None:
+        """Build a timestamp footer for a message.
 
         Args:
             data: Message data carrying the timestamp.
+            visible: Whether the footer should be shown immediately. New
+                footers built while timestamps are on must carry the visible
+                class so they render without waiting for a toggle.
 
         Returns:
-            A footer widget, or `None` when disabled, when the timestamp is
-            invalid, or when the message type is in
-            `_TIMESTAMP_FOOTER_EXCLUDED_TYPES`.
+            A footer widget, or `None` when the message type is in
+                `_TIMESTAMP_FOOTER_EXCLUDED_TYPES` or when the timestamp is
+                invalid.
         """
-        if not self._message_timestamps_visible:
-            return None
         if data.type in _TIMESTAMP_FOOTER_EXCLUDED_TYPES:
             return None
         label = format_message_timestamp(data.timestamp)
         if label is None:
             logger.warning("Invalid timestamp for message %s", data.id)
             return None
+        classes = _MESSAGE_TIMESTAMP_FOOTER_CLASS
+        if visible:
+            classes = f"{classes} {_MESSAGE_TIMESTAMP_FOOTER_VISIBLE_CLASS}"
         return Static(
             Content.styled(label, "dim"),
             id=_message_timestamp_footer_id(data.id),
-            classes=_MESSAGE_TIMESTAMP_FOOTER_CLASS,
+            classes=classes,
         )
+
+    def _sync_message_timestamps_display(self) -> None:
+        """Apply the current visibility to every mounted timestamp footer.
+
+        Flips the visible class on the footer leaves directly (not on
+        `#messages`) so a toggle restyles only the footers rather than
+        re-cascading the entire message subtree. `batch_update` coalesces the
+        relayout into a single pass.
+        """
+        footers = self.query(f".{_MESSAGE_TIMESTAMP_FOOTER_CLASS}")
+        if not footers:
+            return
+        with self.batch_update():
+            footers.set_class(
+                self._message_timestamps_visible,
+                _MESSAGE_TIMESTAMP_FOOTER_VISIBLE_CLASS,
+            )
 
     async def _toggle_message_timestamp_footers(self) -> None:
         """Toggle visible timestamp footers and persist the preference."""
         self._message_timestamps_visible = not self._message_timestamps_visible
-        if self._message_timestamps_visible:
-            await self._show_message_timestamp_footers()
-        else:
-            await self._hide_message_timestamp_footers()
+        self._sync_message_timestamps_display()
         await self._persist_message_timestamps_visible()
 
     async def _persist_message_timestamps_visible(self) -> None:
@@ -7883,57 +8041,6 @@ class DeepAgentsApp(App):
                 "Failed to persist message timestamp preference",
                 exc_info=True,
             )
-
-    async def _show_message_timestamp_footers(self) -> None:
-        """Insert timestamp footers under mounted message widgets."""
-        try:
-            messages = self.query_one("#messages", Container)
-        except NoMatches:
-            return
-        for widget in list(messages.children):
-            if (
-                _is_message_timestamp_footer(widget)
-                or isinstance(widget, QueuedUserMessage)
-                or not widget.id
-            ):
-                continue
-            data = self._message_store.get_message(widget.id)
-            if data is None:
-                # Mounted widget without a backing store entry => DOM/store
-                # desync; skip it but leave a breadcrumb (mirrors pruning).
-                logger.debug(
-                    "No store entry for mounted widget %s; skipping footer",
-                    widget.id,
-                )
-                continue
-            footer_id = _message_timestamp_footer_id(data.id)
-            with suppress(NoMatches):
-                messages.query_one(f"#{footer_id}")
-                continue
-            footer = self._build_message_timestamp_footer(data)
-            if footer is None:
-                continue
-            children = list(messages.children)
-            try:
-                index = children.index(widget)
-            except ValueError:
-                await messages.mount(footer)
-                continue
-            next_child = children[index + 1] if index + 1 < len(children) else None
-            if next_child is not None:
-                await messages.mount(footer, before=next_child)
-            else:
-                await messages.mount(footer)
-
-    async def _hide_message_timestamp_footers(self) -> None:
-        """Remove all mounted timestamp footers."""
-        try:
-            messages = self.query_one("#messages", Container)
-        except NoMatches:
-            return
-        for widget in list(messages.children):
-            if _is_message_timestamp_footer(widget):
-                await widget.remove()
 
     async def _mount_message(
         self,
@@ -7976,11 +8083,13 @@ class DeepAgentsApp(App):
         # Store message data for virtualization
         message_data = MessageData.from_widget(widget)
         if not widget.id:
-            # Keep the widget DOM id == store id so timestamp-footer toggling
-            # can map a mounted widget back to its MessageData.
+            # Keep the widget DOM id == store id so pruning can locate a
+            # mounted widget (and its timestamp footer) from its MessageData.
             widget.id = message_data.id
         self._message_store.append(message_data)
-        footer = self._build_message_timestamp_footer(message_data)
+        footer = self._build_message_timestamp_footer(
+            message_data, visible=self._message_timestamps_visible
+        )
 
         await self._mount_before_queued(messages, widget)
         if footer is not None:
@@ -8871,7 +8980,7 @@ class DeepAgentsApp(App):
         *,
         curated: bool = False,
         result_callback: Callable[[tuple[str, str] | None], None] | None = None,
-    ) -> ModalScreen:
+    ) -> ModelSelectorScreen:
         """Build the model selector screen with current app model state.
 
         Args:
@@ -8910,41 +9019,173 @@ class DeepAgentsApp(App):
         Args:
             extra_kwargs: Extra constructor kwargs from `--model-params`.
         """
-        from functools import partial
 
         def handle_result(result: tuple[str, str] | None) -> None:
             """Handle the model selector result."""
-            if result is not None:
-                model_spec, _ = result
-                if self._agent_running or self._shell_running or self._connecting:
-                    self._defer_action(
-                        DeferredAction(
-                            kind="model_switch",
-                            execute=partial(
-                                self._switch_model,
-                                model_spec,
-                                extra_kwargs=extra_kwargs,
-                            ),
-                        ),
-                    )
-                    self.notify(
-                        "Model will switch after current task completes.",
-                        timeout=3,
-                    )
-                else:
-                    self.call_later(
-                        partial(
-                            self._switch_model,
-                            model_spec,
-                            extra_kwargs=extra_kwargs,
-                        ),
-                    )
+            self._handle_model_selection(screen, result, extra_kwargs=extra_kwargs)
             # Refocus input after modal closes
             if self._chat_input:
                 self._chat_input.focus_input()
 
         screen = self._build_model_selector_screen()
         self.push_screen(screen, handle_result)
+
+    def _handle_model_selection(
+        self,
+        screen: ModelSelectorScreen,
+        result: tuple[str, str] | None,
+        *,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> None:
+        """Route a model-selector result to install-then-switch or a switch.
+
+        Args:
+            screen: The dismissed selector, read for a confirmed install extra.
+            result: The `(model_spec, provider)` pair, or `None` if cancelled.
+            extra_kwargs: Extra constructor kwargs from `--model-params`.
+        """
+        if result is None:
+            return
+        model_spec, _ = result
+        # When the selector confirmed installing a missing provider's extra,
+        # install it first (with restart offer) before switching.
+        extra = screen.pending_install_extra
+        if extra:
+            from functools import partial
+
+            self.call_later(
+                partial(
+                    self._install_extra_then_switch,
+                    extra,
+                    model_spec,
+                    extra_kwargs=extra_kwargs,
+                ),
+            )
+        else:
+            self._dispatch_model_switch(model_spec, extra_kwargs=extra_kwargs)
+
+    def _dispatch_model_switch(
+        self,
+        model_spec: str,
+        *,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> None:
+        """Switch to `model_spec` now, or defer until in-flight work finishes.
+
+        The deferral toast is shown only for genuine in-flight user work
+        (`_agent_running`/`_shell_running`). A switch deferred solely because the
+        server is reconnecting (`_connecting` — e.g. the transient restart during
+        install-then-switch) drains automatically once the server is ready and is
+        already confirmed by the following "Switched to ..." message, so the
+        "after current task completes" toast there is misleading noise.
+
+        Args:
+            model_spec: The `provider:model` spec to switch to.
+            extra_kwargs: Extra constructor kwargs from `--model-params`.
+        """
+        from functools import partial
+
+        if self._agent_running or self._shell_running or self._connecting:
+            self._defer_action(
+                DeferredAction(
+                    kind="model_switch",
+                    execute=partial(
+                        self._switch_model,
+                        model_spec,
+                        extra_kwargs=extra_kwargs,
+                    ),
+                ),
+            )
+            if self._agent_running or self._shell_running:
+                self.notify(
+                    "Model will switch after current task completes.",
+                    timeout=3,
+                )
+        else:
+            self.call_later(
+                partial(
+                    self._switch_model,
+                    model_spec,
+                    extra_kwargs=extra_kwargs,
+                ),
+            )
+
+    async def _install_extra_then_switch(
+        self,
+        extra: str,
+        model_spec: str,
+        *,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> None:
+        """Install a provider's extra, then switch to its model on success.
+
+        Args:
+            extra: The extra that installs the model's provider integration.
+            model_spec: The `provider:model` spec to switch to once installed.
+            extra_kwargs: Extra constructor kwargs from `--model-params`.
+        """
+        # `_install_extra` already surfaced the reason on any failure.
+        if not await self._install_extra(extra, auto_restart=True):
+            return
+        # The extra is now installed regardless of what happens next. If the
+        # user dismisses the credential prompt, only the switch is cancelled —
+        # the extra stays installed so they can switch later once a key is set.
+        # The selector is already gone, so confirm the install landed rather
+        # than leaving a silent no-op after a multi-step flow.
+        if not await self._prompt_model_auth_if_needed(model_spec):
+            await self._mount_message(
+                AppMessage(
+                    f"Installed '{extra}'. Skipped switching to {model_spec} for "
+                    f"now — add credentials with `/auth`, then switch with "
+                    f"`/model` anytime.",
+                ),
+            )
+            return
+        self._dispatch_model_switch(model_spec, extra_kwargs=extra_kwargs)
+
+    async def _prompt_model_auth_if_needed(self, model_spec: str) -> bool:
+        """Prompt for missing credentials before switching to `model_spec`.
+
+        Args:
+            model_spec: The `provider:model` spec selected after installation.
+
+        Returns:
+            `True` when switching can continue, or `False` when the user did not
+                save required credentials.
+        """
+        # This assumes API-key-style providers: it always uses the generic
+        # `AuthPromptScreen` (key / base-url), never the codex OAuth flow that
+        # the selector routes separately. That holds because only providers
+        # with a `_PROVIDER_DEPENDENCIES` extra reach the install-then-switch
+        # path, and the OAuth providers (e.g. `openai_codex`) have no such
+        # entry. If an OAuth provider ever gains an extra, route it to its
+        # dedicated sign-in here rather than the key prompt.
+        from deepagents_code.config import detect_provider
+        from deepagents_code.model_config import (
+            ModelSpec,
+            get_credential_env_var,
+            get_provider_auth_status,
+        )
+        from deepagents_code.widgets.auth import AuthPromptScreen, AuthResult
+
+        parsed = ModelSpec.try_parse(model_spec)
+        provider = parsed.provider if parsed else detect_provider(model_spec)
+        if not provider:
+            return True
+
+        status = get_provider_auth_status(provider)
+        if not status.blocks_start:
+            return True
+
+        env_var = status.env_var or get_credential_env_var(provider)
+        result = await self._push_screen_wait(
+            AuthPromptScreen(
+                provider,
+                env_var,
+                reason=f"Required to use {model_spec}",
+            )
+        )
+        return result is AuthResult.SAVED
 
     def _register_custom_themes(self) -> None:
         """Register all custom themes (built-in LC + user-defined) with Textual."""
@@ -9074,10 +9315,53 @@ class DeepAgentsApp(App):
         def handle_result(_result: None) -> None:
             if self._chat_input:
                 self._chat_input.focus_input()
+            # When the user selected a greyed-out (uninstalled) provider and
+            # confirmed installing it, install the extra and reopen the manager
+            # so they can add a key against the now-installed provider.
+            extra = screen.pending_install_extra
+            if extra is not None:
+                from functools import partial
+
+                self.call_later(
+                    partial(self._install_provider_then_reopen_auth, extra),
+                )
+                return
             task = asyncio.create_task(self._maybe_start_deferred_server_from_default())
             task.add_done_callback(_log_task_exception)
 
-        self.push_screen(AuthManagerScreen(), handle_result)
+        screen = AuthManagerScreen()
+        self.push_screen(screen, handle_result)
+
+    async def _install_provider_then_reopen_auth(self, extra: str) -> None:
+        """Install a provider's extra from `/auth`, then reopen the manager.
+
+        Args:
+            extra: The extra that installs the selected provider's integration.
+        """
+        if await self._install_extra(extra, auto_restart=True):
+            await self._show_auth_manager()
+            return
+        # `_install_extra` returns `False` both when the install genuinely
+        # failed (it already surfaced the reason) and when the package landed
+        # but the server restart didn't. Adding a key doesn't need the restart,
+        # so reopen whenever the extra is importable; only stay in chat on a
+        # real failure the user has already seen explained.
+        ready = await asyncio.to_thread(_extra_is_ready, extra)
+        if ready:
+            from deepagents_code.model_config import clear_caches
+
+            clear_caches()
+            await self._show_auth_manager()
+            return
+        if ready is None:
+            # Introspection couldn't confirm the state (rare). Don't dead-end
+            # silently after a multi-step flow — point the user back to `/auth`.
+            await self._mount_message(
+                AppMessage(
+                    f"Couldn't verify whether '{extra}' finished installing. "
+                    "Reopen `/auth` to add a key once it has.",
+                ),
+            )
 
     def _switch_agent(self, agent_name: str) -> None:
         """Switch to a different agent and hot-restart the backing server.
@@ -9870,7 +10154,48 @@ class DeepAgentsApp(App):
                     markup=False,
                 )
             return
+        if action_id == ActionId.ENTER_API_KEY:
+            await self._enter_service_api_key(entry, payload)
+            return
         self._log_unknown_action(entry, action_id)
+
+    async def _enter_service_api_key(
+        self,
+        entry: PendingNotification,
+        payload: MissingDepPayload,
+    ) -> None:
+        """Open the API-key entry prompt (the one `/auth` uses) for a service.
+
+        Lets the user store a service API key inline instead of exporting an
+        env var before launch.
+
+        Args:
+            entry: The missing-dependency notification entry.
+            payload: Typed payload carrying the service (tool) name.
+        """
+        from deepagents_code.model_config import SERVICE_API_KEY_ENV
+
+        service = payload.tool
+        # `env_var is None` covers any non-service tool, since `is_service` is
+        # exactly membership in `SERVICE_API_KEY_ENV`.
+        env_var = SERVICE_API_KEY_ENV.get(service)
+        if env_var is None:
+            self._log_unknown_action(entry, ActionId.ENTER_API_KEY)
+            return
+
+        from deepagents_code.widgets.auth import AuthPromptScreen, AuthResult
+
+        result = await self._push_screen_wait(
+            AuthPromptScreen(service, env_var),
+        )
+        if result == AuthResult.SAVED:
+            self._notice_registry.remove(entry.key)
+            self.notify(
+                f"Saved {service} API key. Restart to apply.",
+                severity="information",
+                timeout=6,
+                markup=False,
+            )
 
     async def _handle_update_action(
         self,
@@ -9946,7 +10271,8 @@ class DeepAgentsApp(App):
                     if not progress_modal_visible:
                         self.notify(
                             f"Updated to v{payload.latest}. "
-                            "Restart to use the new version.",
+                            "Quit and relaunch dcode to use the new version "
+                            "(/restart only restarts the server, not the CLI).",
                             severity="information",
                             timeout=10,
                             markup=False,
@@ -10843,19 +11169,38 @@ class DeepAgentsApp(App):
         app-owned LangGraph server subprocess, so a `/restart` loads them
         without exiting the TUI. When dcode owns that subprocess and is idle,
         prompt to run the restart immediately instead of making the user type
-        `/restart`. Skipped while a run is in flight or the server is still
-        connecting/restarting (a restart cancels in-flight work and a
-        connecting server has nothing to respawn into yet) and in
-        remote-server mode (no subprocess to respawn) — every skipped path
-        already carries the manual-restart hint in the install message.
+        `/restart`.
+
+        Owns all of its own follow-up messaging so the caller never appends a
+        redundant hint:
+
+        - Owned + idle: show the prompt (its button is the call to action). If
+          the prompt can't be shown, fall back to a `/restart` hint.
+        - Owned + busy/connecting: a restart cancels in-flight work, so point
+          at `/restart` for once the current task finishes.
+        - No owned subprocess (remote server): `/restart` can't respawn it, so a
+          full relaunch is the only way to load the package.
 
         Args:
             label: Installed extra/package name, surfaced in the prompt title.
         """
         if self._server_proc is None or self._server_kwargs is None:
+            await self._mount_message(
+                AppMessage(f"Relaunch dcode to load '{label}'."),
+            )
             return
         if self._agent_running or self._connecting:
+            await self._mount_message(
+                AppMessage(
+                    f"Run `/restart` to load '{label}' once the current task finishes.",
+                ),
+            )
             return
+
+        # Owned + idle. A `/restart` respawns the subprocess (same effect as a
+        # relaunch, without exiting), so every couldn't-show-the-prompt path
+        # below degrades to this hint rather than mentioning a relaunch.
+        manual_hint = f"Run `/restart` to load '{label}' now."
 
         try:
             from deepagents_code.widgets.restart_prompt import RestartPromptScreen
@@ -10863,17 +11208,17 @@ class DeepAgentsApp(App):
             # `/install` runs `uv tool install -U 'deepagents-code[...]'`, which
             # can rewrite deepagents-code's own on-disk package tree mid-session
             # (see `_ensure_restart_prompt_loaded`). A first import of the modal
-            # here may then fail with `ModuleNotFoundError`. The manual
-            # `/restart` hint was already mounted by the caller, so degrade to
-            # that instead of crashing the TUI. The catch is deliberately
-            # narrow — a genuine `ImportError` from a broken modal still
-            # propagates rather than being mistaken for an upgrade race.
+            # here may then fail with `ModuleNotFoundError`. Degrade to the
+            # manual `/restart` hint instead of crashing the TUI. The catch is
+            # deliberately narrow — a genuine `ImportError` from a broken modal
+            # still propagates rather than being mistaken for an upgrade race.
             logger.warning(
-                "restart_prompt unavailable after installing %r; leaving the "
-                "manual /restart hint in place",
+                "restart_prompt unavailable after installing %r; falling back "
+                "to the manual /restart hint",
                 label,
                 exc_info=True,
             )
+            await self._mount_message(AppMessage(manual_hint))
             return
 
         choice: RestartChoice | None
@@ -10887,25 +11232,81 @@ class DeepAgentsApp(App):
             )
         except TimeoutError:
             logger.warning(
-                "Restart prompt after installing %r timed out; leaving the "
-                "manual /restart hint in place",
+                "Restart prompt after installing %r timed out; falling back to "
+                "the manual /restart hint",
                 label,
             )
+            await self._mount_message(AppMessage(manual_hint))
             return
         except Exception:
             # Modal could not be mounted (e.g. another modal hijacked the
-            # stack). Leave the manual `/restart` hint in place.
+            # stack). Fall back to the manual `/restart` hint.
             logger.exception(
                 "Failed to mount restart prompt after installing %r", label
             )
+            await self._mount_message(AppMessage(manual_hint))
             return
 
-        if choice == "restart":
-            if not await self._reload_configuration_for_restart():
-                return
-            await self._mount_message(AppMessage("Restarting server..."))
-            if await self._restart_server_manual():
-                await self._mount_message(AppMessage("Restart complete."))
+        # The pre-prompt guards above ran before the modal await; server state
+        # can flip while the user reads the prompt (e.g. an agent run starts),
+        # tripping `_restart_after_install`'s busy/no-server guards, which only
+        # log. Surface a message so an explicit "restart" choice never looks
+        # like a silent no-op. Mirrors the `auto_restart` path.
+        if choice == "restart" and not await self._restart_after_install(label):
+            await self._mount_message(
+                AppMessage(
+                    f"Couldn't restart the server automatically to load "
+                    f"'{label}'. Run `/restart` to load it.",
+                ),
+            )
+        # Otherwise the prompt was shown and the user made an informed choice;
+        # no further hint is needed.
+
+    def _restart_after_install_is_unneeded(self) -> bool:
+        """Return whether a fresh startup will load the installed dependency."""
+        return (
+            self._server_proc is None
+            and self._server_kwargs is not None
+            and (
+                self._server_startup_deferred or self._server_startup_error is not None
+            )
+        )
+
+    async def _restart_after_install(self, label: str) -> bool:
+        """Restart the app-owned server after installing a dependency.
+
+        Args:
+            label: Installed extra/package name, used for logs and fallback copy.
+
+        Returns:
+            `True` when the server restarted successfully; `False` when restart is
+                not currently available or fails.
+        """
+        if self._server_proc is None or self._server_kwargs is None:
+            logger.info(
+                "Cannot auto-restart after installing %s: no app-owned server", label
+            )
+            return False
+        if self._agent_running or self._connecting:
+            logger.info(
+                "Cannot auto-restart after installing %s: server is busy",
+                label,
+            )
+            return False
+        if not await self._reload_configuration_for_restart():
+            return False
+        restarting = await self._mount_transient_app_message("Restarting server...")
+        restarted = False
+        try:
+            restarted = await self._restart_server_manual()
+        finally:
+            if restarting is not None:
+                with suppress(NoMatches, ScreenStackError):
+                    await restarting.remove()
+        if not restarted:
+            return False
+        await self._mount_message(AppMessage("Restart complete."))
+        return True
 
     async def _reload_configuration_for_restart(self) -> bool:
         """Reload config state before respawning the owned server.
@@ -11022,8 +11423,15 @@ class DeepAgentsApp(App):
                 )
             return
 
-        await self._mount_message(AppMessage("Restarting server..."))
-        if await self._restart_server_manual():
+        restarting = await self._mount_transient_app_message("Restarting server...")
+        restarted = False
+        try:
+            restarted = await self._restart_server_manual()
+        finally:
+            if restarting is not None:
+                with suppress(NoMatches, ScreenStackError):
+                    await restarting.remove()
+        if restarted:
             await self._mount_message(AppMessage("Restart complete."))
 
     async def _restart_server_manual(self) -> bool:

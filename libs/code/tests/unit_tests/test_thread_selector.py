@@ -15,11 +15,13 @@ from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Checkbox, Input, Select, Static
+from textual.widgets._select import SelectCurrent
 
 from deepagents_code.app import DeepAgentsApp, _ThreadHistoryPayload
 from deepagents_code.sessions import ThreadInfo
 from deepagents_code.widgets.thread_selector import (
     DeleteThreadConfirmScreen,
+    ThreadScopeSelect,
     ThreadScopeSelectOverlay,
     ThreadSelectorScreen,
 )
@@ -204,6 +206,20 @@ class AppWithEscapeBinding(App):
 
         screen = ThreadSelectorScreen(current_thread="abc12345", filter_cwd=None)
         self.push_screen(screen, handle_result)
+
+
+class TestThreadScopeSelect:
+    """Tests for the custom thread filter select."""
+
+    def test_open_before_overlay_mount_noops(self) -> None:
+        """Opening before composition should not leave the select expanded."""
+        select = ThreadScopeSelect(
+            [("All", "all")], value="all", allow_blank=False, compact=True
+        )
+
+        select.action_show_overlay()
+
+        assert not select.expanded
 
 
 class TestThreadSelectorEscapeKey:
@@ -492,34 +508,34 @@ class TestThreadSelectorTabSort:
                 agent_select = screen.query_one("#thread-agent-select", Select)
                 assert filter_input.has_focus
 
-                await pilot.press("tab")
+                screen.action_focus_next_filter()
                 await pilot.pause()
                 assert scope_select.has_focus
 
-                await pilot.press("tab")
+                screen.action_focus_next_filter()
                 await pilot.pause()
                 assert agent_select.has_focus
 
-                await pilot.press("tab")
+                screen.action_focus_next_filter()
                 await pilot.pause()
                 assert sort_switch.has_focus
 
                 relative_time_switch = screen.query_one(
                     "#thread-relative-time", Checkbox
                 )
-                await pilot.press("tab")
+                screen.action_focus_next_filter()
                 await pilot.pause()
                 assert relative_time_switch.has_focus
 
-                await pilot.press("tab")
+                screen.action_focus_next_filter()
                 await pilot.pause()
                 assert thread_id_switch.has_focus
 
-                await pilot.press("tab")
+                screen.action_focus_next_filter()
                 await pilot.pause()
                 assert agent_name_switch.has_focus
 
-                await pilot.press("tab")
+                screen.action_focus_next_filter()
                 await pilot.pause()
                 assert messages_switch.has_focus
 
@@ -4260,6 +4276,67 @@ class TestThreadSelectorAgentFilter:
         )
         options = screen._collect_agent_options()
         assert options[0] == ("All agents", _AGENT_VALUE_ALL)
+
+    def test_collect_agent_options_loading_while_pending(self) -> None:
+        """While loading with no known agents, the dropdown shows 'Loading...'."""
+        from deepagents_code.widgets.thread_selector import (
+            _AGENT_LABEL_LOADING,
+            _AGENT_VALUE_ALL,
+            _AGENT_VALUE_LOADING,
+        )
+
+        screen = ThreadSelectorScreen(
+            current_thread=None,
+            initial_threads=None,
+            filter_cwd=None,
+        )
+        assert screen._disk_load_complete is False
+        assert screen._collect_agent_options() == [
+            (_AGENT_LABEL_LOADING, _AGENT_VALUE_LOADING)
+        ]
+        # Once the disk load completes with no threads, fall back to "All agents".
+        screen._disk_load_complete = True
+        assert screen._collect_agent_options() == [("All agents", _AGENT_VALUE_ALL)]
+
+    async def test_agent_select_label_refreshes_after_empty_load(self) -> None:
+        """The loading placeholder is replaced by the final all-agents label."""
+        from deepagents_code.widgets.thread_selector import (
+            _AGENT_SELECT_ID,
+            _AGENT_VALUE_ALL,
+            _AGENT_VALUE_LOADING,
+        )
+
+        load_started = asyncio.Event()
+        load_finished = asyncio.Event()
+
+        async def list_threads_after_signal(**_: object) -> list[ThreadInfo]:
+            load_started.set()
+            await load_finished.wait()
+            return []
+
+        with (
+            patch("deepagents_code.sessions.list_threads", list_threads_after_signal),
+            _patch_columns(),
+            _patch_available_agents([]),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await asyncio.wait_for(load_started.wait(), timeout=1)
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                agent_select = screen.query_one(f"#{_AGENT_SELECT_ID}", Select)
+                assert agent_select.value == _AGENT_VALUE_LOADING
+                assert str(agent_select.query_one(SelectCurrent).label) == "Loading..."
+
+                load_finished.set()
+                await pilot.pause()
+                await pilot.pause()
+
+                assert agent_select.value == _AGENT_VALUE_ALL
+                assert str(agent_select.query_one(SelectCurrent).label) == "All agents"
 
     def test_collect_agent_options_sorted_unique(self) -> None:
         """collect_agent_options returns sorted unique agent names."""

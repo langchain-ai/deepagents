@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.widgets import Markdown, Static
 
 from deepagents_code.tool_display import format_tool_display
@@ -124,6 +125,22 @@ class TestTrailingAnnotationRegex:
     def test_leaves_question_without_annotation(self) -> None:
         text = "What is your name?"
         assert _TRAILING_ANNOTATION_RE.sub("", text) == text
+
+
+class TestAskUserTextAreaBindings:
+    """Ensures the ask-user text area matches chat input editing shortcuts."""
+
+    def test_modified_backspace_deletes_word_left(self) -> None:
+        """Modified Backspace aliases should delete the previous word."""
+        word_delete_keys = {
+            key.strip()
+            for binding in AskUserTextArea.BINDINGS
+            if isinstance(binding, Binding) and binding.action == "delete_word_left"
+            for key in binding.key.split(",")
+        }
+
+        assert "ctrl+backspace" in word_delete_keys
+        assert "alt+backspace" in word_delete_keys
 
 
 class TestAskUserMenu:

@@ -136,7 +136,11 @@ class TestAuthPromptScreen:
         known = set(model_config.PROVIDER_API_KEY_ENV) | {model_config.CODEX_PROVIDER}
         assert set(PROVIDER_DISPLAY_NAMES) <= known
         # Codex uses ChatGPT login, not an API-key page, so it has no key URL.
-        assert set(PROVIDER_API_KEY_URLS) <= set(model_config.PROVIDER_API_KEY_ENV)
+        # Services (e.g. Tavily) carry a key URL but live in SERVICE_API_KEY_ENV.
+        assert set(PROVIDER_API_KEY_URLS) <= (
+            set(model_config.PROVIDER_API_KEY_ENV)
+            | set(model_config.SERVICE_API_KEY_ENV)
+        )
 
     def test_every_known_provider_has_a_display_name(self) -> None:
         """A new provider can't ship without a branded `/auth` label.
@@ -874,6 +878,19 @@ api_key_env = "MY_GATEWAY_API_KEY"
         assert label is not None
         assert "stored" in str(label)
 
+    async def test_stored_service_is_not_duplicated(self) -> None:
+        """Stored non-model services appear once in the manager list."""
+        auth_store.set_stored_key("tavily", "k")
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            ids = [
+                options.get_option_at_index(i).id for i in range(options.option_count)
+            ]
+        assert ids.count("tavily") == 1
+
     async def test_env_badge_shows_canonical_when_only_canonical_set(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -931,16 +948,24 @@ api_key_env = "MY_GATEWAY_API_KEY"
     async def test_only_installed_well_known_providers_listed(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Hardcoded providers without an installed package are hidden.
+        """Installed providers show as live rows; uninstalled ones grey out.
 
         When `openai` is "installed", `openai_codex` rides along — it shares
         the same `langchain-openai` package, so the manager surfaces the
-        OAuth-backed twin alongside the API-key entry.
+        OAuth-backed twin alongside the API-key entry. With every known
+        package reported installed, no greyed install-on-select rows appear,
+        so the listing equals the installed set.
         """
         # Pretend only `openai` and `anthropic` are installed.
         monkeypatch.setattr(
             "deepagents_code.widgets.auth.get_available_models",
             lambda: {"openai": ["gpt-5.4"], "anthropic": ["claude-opus-4-7"]},
+        )
+        # Report every known package installed so no greyed-out
+        # install-on-select rows are appended to the listing.
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda _provider: True,
         )
         app = _AuthHostApp()
         async with app.run_test() as pilot:
@@ -950,7 +975,58 @@ api_key_env = "MY_GATEWAY_API_KEY"
             ids = {
                 options.get_option_at_index(i).id for i in range(options.option_count)
             }
-        assert ids == {"openai", "openai_codex", "anthropic"}
+        # Non-model services (e.g. Tavily) are always listed for key entry.
+        assert ids == {"openai", "openai_codex", "anthropic", "tavily"}
+
+    async def test_selecting_service_opens_prompt_for_its_env_var(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Selecting a service routes to the key prompt bound to its env var.
+
+        Services must not fall through to the model-provider branch, which
+        would look up a credential env var the service doesn't have.
+        """
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {"openai": ["gpt-5.4"]},
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            screen = cast("AuthManagerScreen", app.screen)
+            event = SimpleNamespace(option=SimpleNamespace(id="tavily"))
+            screen.on_option_list_option_selected(cast("Any", event))
+            await pilot.pause()
+            prompt = app.screen
+            assert isinstance(prompt, AuthPromptScreen)
+            assert prompt._provider == "tavily"
+            assert prompt._env_var == "TAVILY_API_KEY"
+
+    async def test_service_row_shows_stored_badge(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stored service key renders the `[stored]` badge on its row.
+
+        Confirms the service-aware status branch in `_format_label` is wired
+        up — a regression to `get_provider_auth_status` would `KeyError`.
+        """
+        auth_store.set_stored_key("tavily", "k")
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {"openai": ["gpt-5.4"]},
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            label = next(
+                str(options.get_option_at_index(i).prompt)
+                for i in range(options.option_count)
+                if options.get_option_at_index(i).id == "tavily"
+            )
+        assert "stored" in label
 
     async def test_stored_provider_shown_even_when_uninstalled(
         self, monkeypatch: pytest.MonkeyPatch
@@ -976,6 +1052,182 @@ api_key_env = "MY_GATEWAY_API_KEY"
         assert "groq" in ids
         assert "openai" in ids
 
+    async def test_uninstalled_known_provider_shown_greyed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A known provider whose package is missing appears, greyed out.
+
+        Only `openai`/`anthropic` are installed and `groq` reports no package,
+        so `groq` is surfaced as a `[not installed]` install-on-select entry
+        for discoverability rather than being hidden.
+        """
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {"openai": ["gpt-5.4"], "anthropic": ["claude-opus-4-7"]},
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda provider: provider in {"openai", "anthropic"},
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            screen = cast("AuthManagerScreen", app.screen)
+            options = screen.query_one("#auth-manager-options", OptionList)
+            label = next(
+                str(options.get_option_at_index(i).prompt)
+                for i in range(options.option_count)
+                if options.get_option_at_index(i).id == "groq"
+            )
+            install_extras = dict(screen._install_extras)
+        assert "not installed" in label
+        assert install_extras.get("groq") == "groq"
+
+    async def test_selecting_uninstalled_provider_prompts_install(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Selecting a greyed-out provider opens the install confirmation."""
+        from deepagents_code.widgets.install_confirm import (
+            InstallProviderConfirmScreen,
+        )
+
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {"openai": ["gpt-5.4"]},
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda provider: provider == "openai",
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            screen = cast("AuthManagerScreen", app.screen)
+            event = SimpleNamespace(option=SimpleNamespace(id="groq"))
+            screen.on_option_list_option_selected(cast("Any", event))
+            await pilot.pause()
+            assert isinstance(app.screen, InstallProviderConfirmScreen)
+
+    async def test_confirming_install_records_extra_and_dismisses(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Confirming the install records the extra and dismisses the manager."""
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {"openai": ["gpt-5.4"]},
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda provider: provider == "openai",
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            screen = cast("AuthManagerScreen", app.screen)
+            screen._prompt_install_provider("groq", "groq")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+        assert screen.pending_install_extra == "groq"
+
+    async def test_cancelling_install_leaves_manager_without_pending_extra(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Declining the install records nothing and keeps the user on the manager."""
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {"openai": ["gpt-5.4"]},
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda provider: provider == "openai",
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            screen = cast("AuthManagerScreen", app.screen)
+            screen._prompt_install_provider("groq", "groq")
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+            assert screen.pending_install_extra is None
+            assert isinstance(app.screen, AuthManagerScreen)
+
+    async def test_disabled_known_provider_not_offered_for_install(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A provider disabled in config is neither shown nor install-on-select.
+
+        `groq` reports no package and would normally surface greyed-out, but an
+        explicit `enabled = false` in config keeps it out of the listing
+        entirely — the same gate the model switcher honors.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.groq]
+enabled = false
+""")
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        model_config.clear_caches()
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {"openai": ["gpt-5.4"], "anthropic": ["claude-opus-4-7"]},
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda provider: provider in {"openai", "anthropic"},
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            screen = cast("AuthManagerScreen", app.screen)
+            options = screen.query_one("#auth-manager-options", OptionList)
+            ids = {
+                options.get_option_at_index(i).id for i in range(options.option_count)
+            }
+            install_extras = dict(screen._install_extras)
+        assert "groq" not in install_extras
+        assert "groq" not in ids
+
+    async def test_known_provider_without_extra_not_offered_for_install(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A known provider with no curated extra is skipped, not greyed-out.
+
+        Without a `provider_install_extra` mapping there is nothing to install,
+        so the provider must not appear as an install-on-select row pointing at
+        a `None` extra.
+        """
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {"openai": ["gpt-5.4"]},
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda provider: provider != "groq",
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.provider_install_extra",
+            lambda provider: None if provider == "groq" else provider,
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            screen = cast("AuthManagerScreen", app.screen)
+            options = screen.query_one("#auth-manager-options", OptionList)
+            ids = {
+                options.get_option_at_index(i).id for i in range(options.option_count)
+            }
+            install_extras = dict(screen._install_extras)
+        assert "groq" not in install_extras
+        assert "groq" not in ids
+
     async def test_description_includes_docs_link(self) -> None:
         """The manager description carries a clickable link to providers docs."""
         app = _AuthHostApp()
@@ -984,7 +1236,7 @@ api_key_env = "MY_GATEWAY_API_KEY"
             await pilot.pause()
             copy = app.screen.query_one(".auth-manager-copy", Static)
             content = str(copy.content)
-        assert "Lists installed providers" in content
+        assert "Lists installed model providers" in content
         assert "Docs" in content
         # URL is embedded as a Textual link style — assert the link target
         # surfaces in the rendered span representation.

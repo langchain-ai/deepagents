@@ -549,6 +549,13 @@ def _ensure_bootstrap() -> None:
             # Tracing enabled without a key floods the TUI with 401 ingest
             # errors; disable it before any traced run starts.
             _disable_orphaned_tracing()
+
+            # Bridge stored service keys (e.g. Tavily web search, entered via
+            # `/auth`) onto their canonical env vars before settings detection,
+            # so a stored key activates the feature without exporting the var.
+            from deepagents_code.model_config import apply_stored_service_credentials
+
+            apply_stored_service_credentials()
         except Exception:
             logger.exception(
                 "Bootstrap failed; .env values and LANGSMITH_PROJECT override "
@@ -747,17 +754,17 @@ Kept short so tracing metadata can never stall app flows.
 def _get_deepagents_version() -> str | None:
     """Read the installed Deep Agents SDK version from package metadata.
 
+    This intentionally calls `importlib.metadata.version` directly instead of
+    `resolve_sdk_version`: `config` is on the startup hot path, while
+    `resolve_sdk_version` lives in `extras_info` and imports `packaging`.
+
     Returns:
         The installed Deep Agents SDK version, or `None` when package metadata
-        is unavailable.
+            is unavailable.
     """
     try:
         return version("deepagents")
     except PackageNotFoundError:
-        logger.debug(
-            "Failed to read deepagents version from package metadata",
-            exc_info=True,
-        )
         return None
 
 
@@ -2378,6 +2385,7 @@ def get_langsmith_project_name() -> str | None:
     Returns:
         Project name string when LangSmith tracing is active, None otherwise.
     """
+    from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
     from deepagents_code.model_config import resolve_env_var
 
     langsmith_key = resolve_env_var("LANGSMITH_API_KEY") or resolve_env_var(
@@ -2392,7 +2400,7 @@ def get_langsmith_project_name() -> str | None:
     return (
         _get_settings().deepagents_langchain_project
         or os.environ.get("LANGSMITH_PROJECT")
-        or "deepagents-code"
+        or LANGSMITH_PROJECT_DEFAULT
     )
 
 

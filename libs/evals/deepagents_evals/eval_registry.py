@@ -25,7 +25,7 @@ from pathlib import Path
 from textwrap import dedent
 from typing import TYPE_CHECKING, Any
 
-from deepagents import create_deep_agent
+from deepagents import RubricMiddleware, create_deep_agent
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware.summarization import create_summarization_tool_middleware
@@ -37,6 +37,7 @@ from deepagents_evals.mock_tools import (
     INCIDENT_GRAPH_TOOLS,
     RELATIONAL_TOOLS,
     TOOL_SELECTION_TOOLS,
+    count_words,
     get_weather_fake,
     incident_graph_tool_error_middleware,
 )
@@ -151,6 +152,24 @@ def _general_purpose_subagent_builder(
 ) -> CompiledStateGraph[Any, Any]:
     """Build the agent with the weather tool and general-purpose subagent."""
     return create_deep_agent(model=model, tools=[get_weather_fake])
+
+
+def _rubric_builder(
+    model: BaseChatModel,
+    *,
+    repl_name: str | None = None,  # noqa: ARG001
+) -> CompiledStateGraph[Any, Any]:
+    """Build the iterative constraint-satisfaction agent.
+
+    Wires ``RubricMiddleware`` (with the ``count_words`` tool) so a grader
+    sub-agent loops the main agent back until the rubric is satisfied. The
+    rubric itself is a runtime input (``extra_state["rubric"]``), not agent
+    setup.
+    """
+    middleware: list[Any] = [
+        RubricMiddleware(model=model, tools=[count_words], max_iterations=5)
+    ]
+    return create_deep_agent(model=model, middleware=middleware)
 
 
 # ---------------------------------------------------------------------------
@@ -776,3 +795,15 @@ _register(
     _default("test_frames", _RETRIEVAL, _BASELINE, system_prompt=_FILE_BACKED_SYSTEM_PROMPT)
 )
 _register(_default("test_nexus", _TOOL_USE, _BASELINE, system_prompt=_FILE_BACKED_SYSTEM_PROMPT))
+
+# --- iterative_constraint_satisfaction (test_iterative_constraint_satisfaction.py) ---
+
+_register(
+    _builder_eval(
+        "test_exact_word_count_and_z_starts",
+        _CONVERSATION,
+        _HILLCLIMB,
+        _rubric_builder,
+        supports_repl=False,
+    )
+)

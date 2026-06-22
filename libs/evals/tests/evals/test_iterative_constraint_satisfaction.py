@@ -24,8 +24,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 from deepagents import RubricMiddleware, create_deep_agent
-from langchain_core.tools import tool
 
+from deepagents_evals.mock_tools import count_words
 from tests.evals.utils import (
     AgentTrajectory,
     SuccessAssertion,
@@ -35,16 +35,6 @@ from tests.evals.utils import (
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
-
-
-@tool
-def count_words(text: str) -> int:
-    """Return the number of whitespace-separated words in ``text``.
-
-    Use this whenever the rubric asks for an exact word count — do not
-    trust word-count claims that appear in the transcript itself.
-    """
-    return len(text.split())
 
 
 pytestmark = [pytest.mark.eval_category("conversation")]

@@ -8,8 +8,10 @@ submodule corresponds to one eval category's tool set:
 - ``relational`` — 16 relational-data lookup/search tools
 - ``incident_graph`` — 34 incident-management graph tools + error middleware
 - ``subagents`` — weather stub tool for subagent delegation evals
+- ``constraints`` — word-count tool for the constraint-satisfaction eval
 """
 
+from deepagents_evals.mock_tools.constraints import count_words
 from deepagents_evals.mock_tools.incident_graph import (
     INCIDENT_GRAPH_TOOLS,
     incident_graph_tool_error_middleware,
@@ -28,6 +30,7 @@ __all__ = [
     "RELATIONAL_TOOL_IMPLEMENTATIONS",
     "RELATIONAL_TOOL_NAMES",
     "TOOL_SELECTION_TOOLS",
+    "count_words",
     "get_weather_fake",
     "incident_graph_tool_error_middleware",
 ]

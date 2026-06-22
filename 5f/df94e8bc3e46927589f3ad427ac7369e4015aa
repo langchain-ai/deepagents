@@ -1,0 +1,35 @@
+libs/evals/deepagents_evals/eval_registry.py
+  s_698778a02a8251::t_4ba43486ade89d 237-276
+  s_698778a02a8251::t_99d0dd0162eb92 989-1001
+libs/evals/pyproject.toml
+  s_698778a02a8251::t_acdcfb02154c6a 117-121
+  s_698778a02a8251::t_05594c0be2dd36 133-137
+libs/evals/tests/evals/tau2_airline/evaluation.py
+  s_698778a02a8251::t_380a8c8fe23430 26
+libs/evals/tests/evals/tau2_airline/test_tau2_airline.py
+  s_698778a02a8251::t_5ecff6e97770ff 20
+  s_698778a02a8251::t_380a8c8fe23430 30
+  s_698778a02a8251::t_87d0806b6b73d1 48-60
+libs/evals/deepagents_evals/mock_tools/tau2_airline/domain.py
+  s_698778a02a8251::t_3c65fc6f55acd7 254
+  s_698778a02a8251::t_1d4a8bef79a2ad 15
+  s_698778a02a8251::t_22d77039b8e63a 209-238
+libs/evals/tests/evals/tau2_airline/runner.py
+  s_698778a02a8251::t_380a8c8fe23430 26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "5fdf94e8bc3e46927589f3ad427ac7369e4015aa",
+  "prompts": {},
+  "sessions": {
+    "s_698778a02a8251": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c2a0169b-bce8-484a-ad7f-18d87a45f565",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

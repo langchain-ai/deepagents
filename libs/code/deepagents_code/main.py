@@ -2256,7 +2256,7 @@ def cli_main() -> None:
 
             sys.exit(run_config_command(args))
 
-        if command == "auth":
+        if command == "auth" and getattr(args, "auth_command", None) == "path":
             from deepagents_code.auth_commands import run_auth_command
 
             sys.exit(run_auth_command(args))
@@ -2286,6 +2286,11 @@ def cli_main() -> None:
         # fast path so neither argparse's `--help`/`-h` exit nor
         # `deepagents <group>` pays the settings bootstrap cost.
         from deepagents_code.config import console, settings
+
+        if command == "auth":
+            from deepagents_code.auth_commands import run_auth_command
+
+            sys.exit(run_auth_command(args))
 
         model_params: dict[str, Any] | None = None
         raw_kwargs = getattr(args, "model_params", None)

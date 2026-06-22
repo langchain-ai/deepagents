@@ -83,13 +83,18 @@ def _commit_hash(path: str) -> str:
     Returns:
         The short commit hash, or `unknown` when git metadata cannot be read.
     """
+    import shutil
     import subprocess  # noqa: S404  # fixed-argv git metadata probe
     from pathlib import Path
 
     cwd = Path(path).expanduser()
+    git = shutil.which("git")
+    if git is None:
+        return "unknown"
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],  # noqa: S607
+        git_path = Path(git).expanduser().resolve(strict=True)
+        result = subprocess.run(  # noqa: S603  # fixed argv with absolute Git path
+            [str(git_path), "rev-parse", "--short", "HEAD"],
             capture_output=True,
             text=True,
             timeout=2,

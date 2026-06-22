@@ -4,6 +4,8 @@ import argparse
 import io
 import json
 import sys
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from rich.console import Console
@@ -11,6 +13,7 @@ from rich.console import Console
 from deepagents_code.doctor import (
     DiagnosticItem,
     DiagnosticSection,
+    _commit_hash,
     collect_sections,
     run_doctor_command,
 )
@@ -77,6 +80,39 @@ class TestCollectSections:
         assert labels["Commit hash"]
         assert "Platform" in labels
         assert "Install method" in labels
+
+
+class TestCommitHash:
+    """Tests for git commit hash detection."""
+
+    def test_uses_absolute_git_path(self, tmp_path) -> None:
+        """Git metadata probing must not rely on subprocess PATH lookup."""
+        git = tmp_path / "git"
+        git.write_text("", encoding="utf-8")
+        git.chmod(0o755)
+
+        with (
+            patch("shutil.which", return_value=str(git)),
+            patch(
+                "subprocess.run",
+                return_value=SimpleNamespace(returncode=0, stdout="abc123\n"),
+            ) as run,
+        ):
+            assert _commit_hash(str(tmp_path)) == "abc123"
+
+        argv = run.call_args.args[0]
+        assert Path(argv[0]).is_absolute()
+        assert argv[1:] == ["rev-parse", "--short", "HEAD"]
+
+    def test_missing_git_returns_unknown(self) -> None:
+        """Missing Git should degrade to `unknown` without spawning a process."""
+        with (
+            patch("shutil.which", return_value=None),
+            patch("subprocess.run") as run,
+        ):
+            assert _commit_hash("/tmp") == "unknown"
+
+        run.assert_not_called()
 
 
 class TestRunDoctorCommand:

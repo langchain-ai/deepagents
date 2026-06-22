@@ -145,6 +145,15 @@ def test_lightweight_commands_skip_settings_bootstrap(
     )
 
 
+def test_auth_credential_resolution_commands_run_settings_bootstrap() -> None:
+    """Auth commands that resolve credentials must see dotenv-loaded values."""
+    result = _run_cli_main(["auth", "status", "anthropic"])
+
+    assert result.returncode == 0, result.stderr
+    bootstrap_done = _read_marker(result.stderr, "BOOTSTRAP_DONE=")
+    assert bootstrap_done is True
+
+
 @pytest.mark.parametrize(
     "argv",
     [

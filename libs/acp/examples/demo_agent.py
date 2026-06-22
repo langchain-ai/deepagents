@@ -100,7 +100,7 @@ async def _serve_example_agent() -> None:
 
     # Define available models for dynamic switching
     baseten_models = [
-        {"value": "baseten:moonshotai/Kimi-K2.6", "name": "Kimi-K2.6"},
+        {"value": "baseten:moonshotai/Kimi-K2.7-Code", "name": "Kimi-K2.7-Code"},
         {"value": "baseten:zai-org/GLM-5", "name": "GLM-5"},
     ]
     anthropic_models = [

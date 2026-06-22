@@ -257,10 +257,7 @@ class StateBackend(BackendProtocol):
         files = self._read_files()
 
         existing = files.get(file_path)
-        if existing is not None:
-            new_file_data = update_file_data(existing, content)
-        else:
-            new_file_data = create_file_data(content)
+        new_file_data = update_file_data(existing, content) if existing is not None else create_file_data(content)
         self._send_files_update({file_path: self._prepare_for_storage(new_file_data)})
         return WriteResult(path=file_path)
 

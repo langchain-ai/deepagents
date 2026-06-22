@@ -36,7 +36,11 @@ from deepagents_code.widgets._links import open_style_link
 from deepagents_code.widgets.diff import compose_diff_lines
 
 if TYPE_CHECKING:
-    from rich.console import Console as RichConsole, ConsoleOptions, RenderResult
+    from rich.console import (
+        Console as RichConsole,
+        ConsoleOptions,
+        RenderResult,
+    )
     from textual.app import ComposeResult
     from textual.timer import Timer
     from textual.widgets import Markdown
@@ -89,6 +93,18 @@ _DEFAULT_TODO_WRAP_WIDTH = 80
 _TODO_WRAP_GUARD_COLUMNS = 4
 _MAX_WEB_CONTENT_LEN = 100
 
+# Pattern for the XML-ish blocks emitted by the `js_eval` REPL tool. The tool
+# returns `<stdout>…</stdout>`, `<result …>…</result>`, and
+# `<error type="…">…</error>` sections (see langchain_quickjs `format_outcome`).
+_JS_EVAL_BLOCK_PATTERN = re.compile(
+    r"<(?P<tag>stdout|result|error)(?P<attrs>[^>]*)>"
+    r"(?P<body>.*?)"
+    r"</(?P=tag)>",
+    re.DOTALL,
+)
+_JS_EVAL_TYPE_ATTR_PATTERN = re.compile(r'type="([^"]*)"')
+_JS_EVAL_KIND_ATTR_PATTERN = re.compile(r'kind="([^"]*)"')
+
 # Tools that have their key info already in the header (no need for args line)
 _TOOLS_WITH_HEADER_INFO: set[str] = {
     # Filesystem tools
@@ -99,6 +115,7 @@ _TOOLS_WITH_HEADER_INFO: set[str] = {
     "glob",
     "grep",
     "execute",  # sandbox shell
+    "js_eval",  # JS interpreter
     # Web tools
     "web_search",
     "fetch_url",
@@ -915,6 +932,10 @@ class ToolCallMessage(Vertical):
     _PREVIEW_LINES = 6
     _PREVIEW_CHARS = 400
 
+    # Max length of a single-line `js_eval` result rendered inline as
+    # `result: value` rather than as a standalone labeled block.
+    _JS_EVAL_INLINE_RESULT_MAX = 80
+
     def __init__(
         self,
         tool_name: str,
@@ -1299,9 +1320,16 @@ class ToolCallMessage(Vertical):
         self._update_args_display()
 
     def on_click(self, event: Click) -> None:
-        """Toggle output/argument expansion."""
+        """Toggle output/argument expansion.
+
+        Prefer toggling output, but only when the output can actually
+        expand/collapse. Otherwise fall through to the collapsible args/code
+        block — `js_eval` commonly has a short, unexpandable result sitting
+        below a multi-line, collapsible code block, and the old
+        "output wins whenever it exists" rule left that code block stuck.
+        """
         event.stop()  # Prevent click from bubbling up and scrolling
-        if self._output:
+        if self._output and self.has_expandable_output:
             self.toggle_output()
         elif self.has_expandable_args:
             self.toggle_args()
@@ -1338,6 +1366,7 @@ class ToolCallMessage(Vertical):
             "grep": self._format_search_output,
             "glob": self._format_search_output,
             "execute": self._format_shell_output,
+            "js_eval": self._format_js_eval_output,
             "web_search": self._format_web_output,
             "fetch_url": self._format_web_output,
             "task": self._format_task_output,
@@ -1361,6 +1390,18 @@ class ToolCallMessage(Vertical):
 
         # Default: plain text (Content treats input as literal)
         return FormattedOutput(content=Content(output))
+
+    @property
+    def has_expandable_output(self) -> bool:
+        """Whether collapsed output has hidden content worth a toggle.
+
+        Public wrapper around `_has_expandable_output` so toggle routing (click
+        and Ctrl+O) can tell "has output" apart from "has output that can
+        actually expand/collapse". `js_eval` results are frequently short and
+        unexpandable while the code block above them *is* collapsible, so the
+        routing must fall through to args when output cannot toggle.
+        """
+        return self._has_expandable_output()
 
     def _has_expandable_output(self) -> bool:
         """Return whether collapsed output has hidden content to expand."""
@@ -1902,6 +1943,111 @@ class ToolCallMessage(Vertical):
 
         return FormattedOutput(content=content, truncation=truncation)
 
+    @staticmethod
+    def _unescape_js_eval(text: str) -> str:
+        """Reverse the XML escaping applied by the `js_eval` wire format.
+
+        The REPL escapes `&`, `<`, and `>` inside each block; order matters so
+        `&amp;` is restored last to avoid double-unescaping.
+
+        Returns:
+            The original, unescaped text.
+        """
+        return text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+
+    def _parse_js_eval_blocks(self, output: str) -> list[tuple[str, str, str]] | None:
+        """Parse `js_eval` output into `(tag, type_attr, body)` tuples.
+
+        Returns:
+            A list of parsed blocks, or `None` if the output does not match the
+            expected REPL wire format (so the caller can fall back to plain
+            rendering).
+        """
+        blocks: list[tuple[str, str, str]] = []
+        for match in _JS_EVAL_BLOCK_PATTERN.finditer(output):
+            tag = match.group("tag")
+            attrs = match.group("attrs") or ""
+            # Errors carry `type="…"`; results may carry `kind="…"`.
+            attr_pattern = (
+                _JS_EVAL_KIND_ATTR_PATTERN
+                if tag == "result"
+                else _JS_EVAL_TYPE_ATTR_PATTERN
+            )
+            attr_match = attr_pattern.search(attrs)
+            attr = self._unescape_js_eval(attr_match.group(1)) if attr_match else ""
+            body = self._unescape_js_eval(match.group("body").strip("\n"))
+            blocks.append((tag, attr, body))
+        return blocks or None
+
+    def _format_js_eval_output(
+        self, output: str, *, is_preview: bool = False
+    ) -> FormattedOutput:
+        """Format `js_eval` (JS interpreter) output.
+
+        Unwraps the REPL's `<stdout>` / `<result>` / `<error>` envelope into
+        labeled, styled sections instead of dumping the raw XML-escaped blob.
+
+        Returns:
+            FormattedOutput with the formatted REPL output and optional
+            truncation info.
+        """
+        blocks = self._parse_js_eval_blocks(output)
+        if blocks is None:
+            # Unexpected shape — fall back to plain line rendering.
+            return self._format_lines_output(output.split("\n"), is_preview=is_preview)
+
+        colors = theme.get_theme_colors(self)
+
+        # Common case: a single short scalar result with no stdout. Rendering a
+        # standalone "result" header above a one-word value reads as a
+        # misplaced badge, so collapse it to an inline `result: value` line.
+        if len(blocks) == 1:
+            tag, attr, body = blocks[0]
+            if (
+                tag == "result"
+                and not attr
+                and "\n" not in body
+                and len(body) <= self._JS_EVAL_INLINE_RESULT_MAX
+            ):
+                content = Content.assemble(
+                    Content.styled("result: ", colors.success),
+                    Content(body) if body else Content.styled("undefined", "dim"),
+                )
+                return FormattedOutput(content=content)
+        lines: list[Content] = []
+        total_lines = 0
+        max_lines = self._PREVIEW_LINES if is_preview else None
+        truncated_block = False
+
+        def add_section(label: Content, body: str) -> None:
+            nonlocal total_lines, truncated_block
+            if max_lines is not None and total_lines >= max_lines:
+                truncated_block = True
+                return
+            lines.append(label)
+            total_lines += 1
+            body_lines = body.split("\n") if body else [""]
+            for body_line in body_lines:
+                if max_lines is not None and total_lines >= max_lines:
+                    truncated_block = True
+                    break
+                lines.append(Content(f"  {body_line}"))
+                total_lines += 1
+
+        for tag, type_attr, body in blocks:
+            if tag == "stdout":
+                add_section(Content.styled("stdout", "dim"), body)
+            elif tag == "error":
+                header = f"error ({type_attr})" if type_attr else "error"
+                add_section(Content.styled(header, colors.error), body)
+            else:  # result
+                label = "result (handle)" if type_attr else "result"
+                add_section(Content.styled(label, colors.success), body)
+
+        content = Content("\n").join(lines) if lines else Content("")
+        truncation = "more output" if is_preview and truncated_block else None
+        return FormattedOutput(content=content, truncation=truncation)
+
     def _format_web_output(
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
@@ -2120,17 +2266,46 @@ class ToolCallMessage(Vertical):
     def has_expandable_args(self) -> bool:
         """Whether the tool's args are large enough to deserve a collapsible block.
 
-        Only `ask_user` qualifies today: its `questions` payload is too noisy to
-        render inline, but users still need a way to inspect it.
+        - `ask_user`: its `questions` payload is too noisy to render inline.
+        - `js_eval`: the header shows only the first code line, so the full
+          program is offered as a collapsible block whenever the snippet has
+          more than that one line.
         """
-        return self._tool_name == "ask_user" and bool(self._args)
+        if self._tool_name == "ask_user":
+            return bool(self._args)
+        if self._tool_name == "js_eval":
+            code = self._args.get("code")
+            if isinstance(code, str) and code.strip():
+                return sum(1 for line in code.splitlines() if line.strip()) > 1
+        return False
+
+    def _format_code_detail(self) -> Content:
+        """Render the `js_eval` program for the collapsible code block.
+
+        The code is shown verbatim and left-aligned (its own indentation is the
+        only indentation), as plain uncolored `Content`. Blank lines of
+        top/bottom padding add breathing room between the `js_eval` header above
+        and the "show/hide code" hint below.
+
+        Returns:
+            A plain `Content` renderable with a blank line of padding on top and
+            bottom.
+        """
+        code = self._args.get("code")
+        code_str = code.strip("\n") if isinstance(code, str) else str(code)
+
+        # Blank lines of top/bottom padding separate the block from the header
+        # line above and the "show/hide code" hint below.
+        return Content("\n").join((Content(""), Content(code_str), Content("")))
 
     def _format_args_detail(self) -> Content:
         """Render tool arguments as an indented `Content` block.
 
-        Falls back to `str(self._args)` (with a visible marker) when JSON
-        serialization fails — `default=str` already handles most non-serializable
-        values, so reaching the fallback indicates a deeper issue worth logging.
+        Renders JSON-pretty-printed args, falling back to `str(self._args)`
+        (with a visible marker) when JSON serialization fails — `default=str`
+        already handles most non-serializable values, so reaching the fallback
+        indicates a deeper issue worth logging. `js_eval` code is handled
+        separately by `_format_code_detail`.
 
         Returns:
             Indented `Content` containing JSON-pretty-printed arguments, or a
@@ -2159,16 +2334,21 @@ class ToolCallMessage(Vertical):
             self._args_hint_widget.display = False
             return
 
+        is_code = self._tool_name == "js_eval"
+        noun = "code" if is_code else "arguments"
         if self._args_expanded:
-            self._args_widget.update(self._format_args_detail())
+            detail = (
+                self._format_code_detail() if is_code else self._format_args_detail()
+            )
+            self._args_widget.update(detail)
             self._args_widget.display = True
             self._args_hint_widget.update(
-                Content.styled("click or Ctrl+O to hide arguments", "dim italic")
+                Content.styled(f"click or Ctrl+O to hide {noun}", "dim italic")
             )
         else:
             self._args_widget.display = False
             self._args_hint_widget.update(
-                Content.styled("click or Ctrl+O to show arguments", "dim italic")
+                Content.styled(f"click or Ctrl+O to show {noun}", "dim italic")
             )
         self._args_hint_widget.display = True
 

@@ -2886,6 +2886,38 @@ class TestAskUserLifecycle:
         tool.toggle_args.assert_called_once_with()
         tool.toggle_output.assert_not_called()
 
+    def test_ctrl_o_falls_through_to_args_when_output_unexpandable(self) -> None:
+        """Ctrl+O on a tool with unexpandable output toggles its code/args.
+
+        Regression: `js_eval` sets `_output` to a short, unexpandable result,
+        which used to swallow the toggle and leave the collapsible code block
+        stuck. The action must fall through to args in that case.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        tool = MagicMock()
+        tool.has_output = True
+        tool.has_expandable_output = False  # short result, nothing to expand
+        tool.has_expandable_args = True  # multi-line code block
+
+        def fake_query(query_type: object) -> list[object]:
+            from deepagents_code.widgets.messages import (
+                SkillMessage,
+                ToolCallMessage,
+            )
+
+            if query_type is ToolCallMessage:
+                return [tool]
+            if query_type is SkillMessage:
+                return []
+            return []
+
+        with patch.object(app, "query", side_effect=fake_query):
+            app.action_toggle_tool_output()
+
+        tool.toggle_args.assert_called_once_with()
+        tool.toggle_output.assert_not_called()
+
     def test_ctrl_o_prefers_tool_with_output_over_expandable_args(self) -> None:
         """Tool with real output wins over a later one with only expandable args."""
         app = DeepAgentsApp(agent=MagicMock())

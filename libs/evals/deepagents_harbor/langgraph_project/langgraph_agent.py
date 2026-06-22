@@ -22,7 +22,7 @@ _DEFAULT_WORKDIR = Path("/app")
 # turn / degrade reasoning on a huge context (the dominant cause of timeouts).
 # Read by deepagents' `compute_summarization_defaults`; `setdefault` lets a
 # workflow `--agent-env` override them.
-_SUMMARIZE_TRIGGER_TOKENS = "75000"
+_SUMMARIZE_TRIGGER_TOKENS = "50000"
 _SUMMARIZE_KEEP_TOKENS = "15000"
 
 

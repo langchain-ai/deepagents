@@ -537,17 +537,17 @@ def test_sandbox_write_with_special_content() -> None:
     assert sandbox._uploaded[0][1] == content.encode("utf-8")
 
 
-def test_sandbox_write_returns_error_on_existing_file() -> None:
-    """Test that write() returns an error when the check command fails."""
+def test_sandbox_write_returns_error_on_preflight_failure() -> None:
+    """Test that write() returns an error and skips upload when the preflight fails."""
     sandbox = MockSandbox()
 
     def fail_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ARG001
         sandbox.last_command = command
-        return ExecuteResponse(output="Error: File already exists", exit_code=1)
+        return ExecuteResponse(output="Error: Permission denied", exit_code=1)
 
     sandbox.execute = fail_execute
 
-    result = sandbox.write("/test/existing.txt", "content")
+    result = sandbox.write("/test/protected.txt", "content")
     assert result.error is not None
     assert "Error:" in result.error
     assert len(sandbox._uploaded) == 0  # upload should not have been called

@@ -1,0 +1,27 @@
+.github/workflows/pr_labeler_backfill.yml
+  s_95699881c21ca9::t_3f2360f310a5de 35
+.github/workflows/pr_labeler.yml
+  s_95699881c21ca9::t_846fe8db378d34 61
+  s_95699881c21ca9::t_23e8da0fcd8b5e 20
+.github/workflows/close_unchecked_issues.yml
+  s_95699881c21ca9::t_893989dbfd0f3f 44
+.github/workflows/tag-external-issues.yml
+  s_95699881c21ca9::t_1b7d1d9e5ef832 15
+  s_95699881c21ca9::t_98b1132a28635e 58,126
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.9",
+  "base_commit_sha": "19c4066d17c5d4e2d078389024fa78652fb46f37",
+  "prompts": {},
+  "sessions": {
+    "s_95699881c21ca9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2dc6807d-6c1f-42ed-b2c7-8cae6980ae73",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

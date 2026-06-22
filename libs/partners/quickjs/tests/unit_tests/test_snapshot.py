@@ -28,6 +28,13 @@ if TYPE_CHECKING:
     from langchain_core.outputs import ChatResult
 
 
+def _assert_slot_update(update: dict[str, Any] | None) -> str:
+    assert isinstance(update, dict)
+    slot_id = update.get("_quickjs_slot_id")
+    assert isinstance(slot_id, str)
+    return slot_id
+
+
 def test_after_agent_snapshot_roundtrip_with_before_agent() -> None:
     """Snapshots from ``after_agent`` restore into fresh slots in ``before_agent``.
 
@@ -37,19 +44,21 @@ def test_after_agent_snapshot_roundtrip_with_before_agent() -> None:
     """
     mw = CodeInterpreterMiddleware()
     try:
-        repl = mw._registry.get(mw._fallback_thread_id)
+        slot_id = "snapshot-roundtrip"
+        state = {"_quickjs_slot_id": slot_id}
+        repl = mw._registry.get(slot_id)
         repl.eval_sync("const answer = 42")
-        update = mw.after_agent(state={}, runtime=MagicMock())
+        update = mw.after_agent(state=state, runtime=MagicMock())
         assert isinstance(update, dict)
-        assert mw._fallback_thread_id not in mw._registry._slots
+        assert slot_id not in mw._registry._slots
 
         materialized = replay_snapshot_chain(b"", [update["_quickjs_snapshot_payload"]])
         before_update = mw.before_agent(
             state={"_quickjs_snapshot_payload": materialized},
             runtime=MagicMock(),
         )
-        assert before_update is None
-        restored = mw._registry.get(mw._fallback_thread_id)
+        slot_id = _assert_slot_update(before_update)
+        restored = mw._registry.get(slot_id)
         assert restored.eval_sync("answer").result == "42"
     finally:
         mw._registry.close()
@@ -59,19 +68,21 @@ async def test_aafter_agent_snapshot_roundtrip_with_abefore_agent() -> None:
     """Async snapshot roundtrip restores state in a fresh slot."""
     mw = CodeInterpreterMiddleware()
     try:
-        repl = mw._registry.get(mw._fallback_thread_id)
+        slot_id = "async-snapshot-roundtrip"
+        state = {"_quickjs_slot_id": slot_id}
+        repl = mw._registry.get(slot_id)
         await repl.eval_async("const answer = 42")
-        update = await mw.aafter_agent(state={}, runtime=MagicMock())
+        update = await mw.aafter_agent(state=state, runtime=MagicMock())
         assert isinstance(update, dict)
-        assert mw._fallback_thread_id not in mw._registry._slots
+        assert slot_id not in mw._registry._slots
 
         materialized = replay_snapshot_chain(b"", [update["_quickjs_snapshot_payload"]])
         before_update = await mw.abefore_agent(
             state={"_quickjs_snapshot_payload": materialized},
             runtime=MagicMock(),
         )
-        assert before_update is None
-        restored = mw._registry.get(mw._fallback_thread_id)
+        slot_id = _assert_slot_update(before_update)
+        restored = mw._registry.get(slot_id)
         assert restored.eval_sync("answer").result == "42"
     finally:
         mw._registry.close()
@@ -84,7 +95,8 @@ def test_before_agent_clears_payload_on_restore_failure() -> None:
             state={"_quickjs_snapshot_payload": b"not-a-snapshot"},
             runtime=MagicMock(),
         )
-        assert update == {"_quickjs_snapshot_payload": None}
+        _assert_slot_update(update)
+        assert update["_quickjs_snapshot_payload"] is None
     finally:
         mw._registry.close()
 
@@ -100,8 +112,8 @@ def test_before_agent_ignores_empty_delta_channel_seed() -> None:
             state={"_quickjs_snapshot_payload": b""},
             runtime=MagicMock(),
         )
-        assert update is None
-        assert mw._registry.get_if_exists(mw._fallback_thread_id) is None
+        slot_id = _assert_slot_update(update)
+        assert mw._registry.get_if_exists(slot_id) is None
     finally:
         mw._registry.close()
 
@@ -114,8 +126,8 @@ async def test_abefore_agent_ignores_empty_delta_channel_seed() -> None:
             state={"_quickjs_snapshot_payload": b""},
             runtime=MagicMock(),
         )
-        assert update is None
-        assert mw._registry.get_if_exists(mw._fallback_thread_id) is None
+        slot_id = _assert_slot_update(update)
+        assert mw._registry.get_if_exists(slot_id) is None
     finally:
         mw._registry.close()
 
@@ -123,11 +135,13 @@ async def test_abefore_agent_ignores_empty_delta_channel_seed() -> None:
 def test_after_agent_clears_payload_on_snapshot_failure() -> None:
     mw = CodeInterpreterMiddleware()
     try:
-        repl = mw._registry.get(mw._fallback_thread_id)
+        slot_id = "snapshot-failure"
+        state = {"_quickjs_slot_id": slot_id}
+        repl = mw._registry.get(slot_id)
         with patch.object(repl, "create_snapshot", side_effect=RuntimeError("boom")):
-            update = mw.after_agent(state={}, runtime=MagicMock())
+            update = mw.after_agent(state=state, runtime=MagicMock())
         assert update == {"_quickjs_snapshot_payload": None}
-        assert mw._fallback_thread_id not in mw._registry._slots
+        assert slot_id not in mw._registry._slots
     finally:
         mw._registry.close()
 
@@ -135,11 +149,13 @@ def test_after_agent_clears_payload_on_snapshot_failure() -> None:
 def test_after_agent_drops_payload_above_snapshot_size_cap() -> None:
     mw = CodeInterpreterMiddleware(max_snapshot_bytes=4)
     try:
-        repl = mw._registry.get(mw._fallback_thread_id)
+        slot_id = "snapshot-size-cap"
+        state = {"_quickjs_slot_id": slot_id}
+        repl = mw._registry.get(slot_id)
         with patch.object(repl, "create_snapshot", return_value=b"12345"):
-            update = mw.after_agent(state={}, runtime=MagicMock())
+            update = mw.after_agent(state=state, runtime=MagicMock())
         assert update == {"_quickjs_snapshot_payload": None}
-        assert mw._fallback_thread_id not in mw._registry._slots
+        assert slot_id not in mw._registry._slots
     finally:
         mw._registry.close()
 
@@ -147,15 +163,17 @@ def test_after_agent_drops_payload_above_snapshot_size_cap() -> None:
 async def test_aafter_agent_drops_payload_above_snapshot_size_cap() -> None:
     mw = CodeInterpreterMiddleware(max_snapshot_bytes=4)
     try:
-        repl = mw._registry.get(mw._fallback_thread_id)
+        slot_id = "async-snapshot-size-cap"
+        state = {"_quickjs_slot_id": slot_id}
+        repl = mw._registry.get(slot_id)
         with patch.object(
             repl,
             "acreate_snapshot",
             new=AsyncMock(return_value=b"12345"),
         ):
-            update = await mw.aafter_agent(state={}, runtime=MagicMock())
+            update = await mw.aafter_agent(state=state, runtime=MagicMock())
         assert update == {"_quickjs_snapshot_payload": None}
-        assert mw._fallback_thread_id not in mw._registry._slots
+        assert slot_id not in mw._registry._slots
     finally:
         mw._registry.close()
 
@@ -269,7 +287,7 @@ def test_snapshot_update_first_write_is_anchor() -> None:
     """With no prior, ``_snapshot_update`` emits a full ``snap`` anchor."""
     mw = CodeInterpreterMiddleware()
     try:
-        update = mw._snapshot_update(payload=b"hello-world", prior=b"", thread_id="t")
+        update = mw._snapshot_update(payload=b"hello-world", prior=b"", slot_id="t")
         assert update == {"_quickjs_snapshot_payload": ("snap", b"hello-world")}
     finally:
         mw._registry.close()
@@ -280,7 +298,7 @@ def test_snapshot_update_subsequent_write_is_patch() -> None:
     mw = CodeInterpreterMiddleware()
     try:
         snaps = _make_snapshots()
-        update = mw._snapshot_update(payload=snaps[1], prior=snaps[0], thread_id="t")
+        update = mw._snapshot_update(payload=snaps[1], prior=snaps[0], slot_id="t")
         kind, blob = update["_quickjs_snapshot_payload"]
         assert kind == "patch"
         # The patch is dramatically smaller than the full snapshot.
@@ -299,7 +317,7 @@ def test_snapshot_update_falls_back_to_anchor_when_patch_not_smaller() -> None:
         # so it is not smaller than just re-anchoring.
         prior = b"abcd"
         payload = b"wxyz1234"
-        update = mw._snapshot_update(payload=payload, prior=prior, thread_id="t")
+        update = mw._snapshot_update(payload=payload, prior=prior, slot_id="t")
         assert update == {"_quickjs_snapshot_payload": ("snap", payload)}
     finally:
         mw._registry.close()
@@ -310,19 +328,26 @@ def test_after_agent_emits_patch_against_prior_state() -> None:
     mw = CodeInterpreterMiddleware()
     try:
         # Turn 1: establish a snapshot anchor.
-        repl = mw._registry.get(mw._fallback_thread_id)
+        slot_id = "patch-prior"
+        state = {"_quickjs_slot_id": slot_id}
+        repl = mw._registry.get(slot_id)
         repl.eval_sync("globalThis.x = 1")
-        first = mw.after_agent(state={}, runtime=MagicMock())
+        first = mw.after_agent(state=state, runtime=MagicMock())
         prior_full = replay_snapshot_chain(b"", [first["_quickjs_snapshot_payload"]])
 
         # Turn 2: restore, mutate, snapshot again against the materialized prior.
-        mw.before_agent(
+        before_update = mw.before_agent(
             state={"_quickjs_snapshot_payload": prior_full}, runtime=MagicMock()
         )
-        repl2 = mw._registry.get(mw._fallback_thread_id)
+        slot_id = _assert_slot_update(before_update)
+        repl2 = mw._registry.get(slot_id)
         repl2.eval_sync("globalThis.y = 2")
         second = mw.after_agent(
-            state={"_quickjs_snapshot_payload": prior_full}, runtime=MagicMock()
+            state={
+                "_quickjs_slot_id": slot_id,
+                "_quickjs_snapshot_payload": prior_full,
+            },
+            runtime=MagicMock(),
         )
         kind, _blob = second["_quickjs_snapshot_payload"]
         assert kind == "patch"
@@ -333,8 +358,11 @@ def test_after_agent_emits_patch_against_prior_state() -> None:
             second["_quickjs_snapshot_payload"],
         ]
         final = replay_snapshot_chain(b"", chain)
-        mw.before_agent(state={"_quickjs_snapshot_payload": final}, runtime=MagicMock())
-        restored = mw._registry.get(mw._fallback_thread_id)
+        restore_update = mw.before_agent(
+            state={"_quickjs_snapshot_payload": final}, runtime=MagicMock()
+        )
+        restore_slot_id = _assert_slot_update(restore_update)
+        restored = mw._registry.get(restore_slot_id)
         assert restored.eval_sync("x + y").result == "3"
     finally:
         mw._registry.close()
@@ -487,18 +515,20 @@ def test_snapshot_between_turns_disabled_keeps_reset_behavior() -> None:
     with pytest.warns(DeprecationWarning, match="snapshot_between_turns"):
         mw = CodeInterpreterMiddleware(snapshot_between_turns=False)
     try:
-        repl = mw._registry.get(mw._fallback_thread_id)
+        slot_id = "snapshot-disabled"
+        state = {"_quickjs_slot_id": slot_id}
+        repl = mw._registry.get(slot_id)
         repl.eval_sync("globalThis.answer = 42")
-        update = mw.after_agent(state={}, runtime=MagicMock())
+        update = mw.after_agent(state=state, runtime=MagicMock())
         assert update is None
-        assert mw._fallback_thread_id not in mw._registry._slots
+        assert slot_id not in mw._registry._slots
 
         before_update = mw.before_agent(
             state={"_quickjs_snapshot_payload": b"ignored"},
             runtime=MagicMock(),
         )
-        assert before_update is None
-        assert mw._registry.get_if_exists(mw._fallback_thread_id) is None
+        slot_id = _assert_slot_update(before_update)
+        assert mw._registry.get_if_exists(slot_id) is None
     finally:
         mw._registry.close()
 
@@ -510,7 +540,7 @@ def test_mode_call_ignores_snapshot_payload() -> None:
             state={"_quickjs_snapshot_payload": b"ignored"},
             runtime=MagicMock(),
         )
-        assert before_update is None
-        assert mw._registry.get_if_exists(mw._fallback_thread_id) is None
+        slot_id = _assert_slot_update(before_update)
+        assert mw._registry.get_if_exists(slot_id) is None
     finally:
         mw._registry.close()

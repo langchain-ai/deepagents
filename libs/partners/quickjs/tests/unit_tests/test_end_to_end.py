@@ -147,6 +147,16 @@ def _make_agent(
     )
 
 
+def _make_agent_with_messages(
+    messages: Iterator[AIMessage],
+    middleware: CodeInterpreterMiddleware,
+) -> Any:
+    return create_deep_agent(
+        model=FakeChatModel(messages=messages),
+        middleware=[middleware],
+    )
+
+
 def _eval_tool_message(result: dict[str, Any]) -> ToolMessage:
     messages = [
         m for m in result["messages"] if isinstance(m, ToolMessage) and m.name == "eval"
@@ -256,6 +266,110 @@ def test_ptc_injects_tool_call_id_per_call() -> None:
         {"messages": [HumanMessage(content="go")]}
     )
     _assert_result_contains(_eval_tool_message(result).content, "true:true:true")
+
+
+def test_shared_middleware_instance_still_isolates_repl_state_across_agents() -> None:
+    """Separate agent instances do not reuse interpreter globals."""
+    middleware = CodeInterpreterMiddleware()
+    config = {"configurable": {"thread_id": "shared-thread"}}
+
+    first = _make_agent_with_messages(
+        iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "eval",
+                            "args": {"code": "globalThis.shared = 123; 'ok';"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        ),
+        middleware,
+    ).invoke(
+        {"messages": [HumanMessage(content="seed the interpreter")]}, config=config
+    )
+    _assert_result_contains(_eval_tool_message(first).content, "ok")
+
+    second = _make_agent_with_messages(
+        iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "eval",
+                            "args": {"code": "typeof shared;"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        ),
+        middleware,
+    ).invoke(
+        {"messages": [HumanMessage(content="read the interpreter state")]},
+        config=config,
+    )
+    _assert_result_contains(_eval_tool_message(second).content, "undefined")
+
+
+def test_fresh_middleware_instance_gets_fresh_repl_state() -> None:
+    """A new middleware object starts with an empty interpreter slot."""
+    config = {"configurable": {"thread_id": "shared-thread"}}
+    first = _make_agent_with_messages(
+        iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "eval",
+                            "args": {"code": "globalThis.shared = 123; 'ok';"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        ),
+        CodeInterpreterMiddleware(),
+    ).invoke(
+        {"messages": [HumanMessage(content="seed the interpreter")]}, config=config
+    )
+    _assert_result_contains(_eval_tool_message(first).content, "ok")
+
+    second = _make_agent_with_messages(
+        iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "eval",
+                            "args": {"code": "typeof shared;"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        ),
+        CodeInterpreterMiddleware(),
+    ).invoke(
+        {"messages": [HumanMessage(content="read the interpreter state")]},
+        config=config,
+    )
+    _assert_result_contains(_eval_tool_message(second).content, "undefined")
 
 
 def test_deepagent_with_quickjs_mixed_foreign_function_sync() -> None:

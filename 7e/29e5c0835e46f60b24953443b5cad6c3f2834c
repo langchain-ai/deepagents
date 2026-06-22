@@ -1,0 +1,26 @@
+libs/code/DEVELOPMENT.md
+  s_e70c435e875ccb::t_3e67bda7aa7169 70,72,75,77-78,80-81,85-91,97-99
+  h_9f69767fa5fabf 63,65
+  s_e70c435e875ccb::t_b22b5bf4b481d3 66,68
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.9",
+  "base_commit_sha": "7e29e5c0835e46f60b24953443b5cad6c3f2834c",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  },
+  "sessions": {
+    "s_e70c435e875ccb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9351a2e0-b266-4de6-ba48-798de9eebd97",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

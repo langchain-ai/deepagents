@@ -172,6 +172,40 @@ def _rubric_builder(
     return create_deep_agent(model=model, middleware=middleware)
 
 
+_MEMORY_BENCH_FILESEEDED_SYSTEM_PROMPT = (
+    "You have access to a collection of text files in /data/ containing "
+    "information relevant to answering questions. Use your file tools "
+    "(grep, read_file, glob, ls) to search for and retrieve relevant "
+    "information before answering. Do not assume you already know the answer — "
+    "always search the files first."
+)
+"""Mirror of ``memory_agent_bench.FILESEEDED_SYSTEM_PROMPT``."""
+
+
+def _make_memory_bench_builder(
+    *, fileseeded: bool
+) -> Callable[..., CompiledStateGraph[Any, Any]]:
+    """Return a builder for a MemoryAgentBench eval variant.
+
+    Agent setup is a deep agent with a checkpointer (the benchmark feeds
+    context chunks then questions across turns on one thread). The fileseeded
+    variant adds a system prompt steering retrieval through file tools. The
+    chunks/files themselves are runtime data, not agent setup.
+    """
+
+    def _builder(
+        model: BaseChatModel,
+        *,
+        repl_name: str | None = None,  # noqa: ARG001
+    ) -> CompiledStateGraph[Any, Any]:
+        kwargs: dict[str, Any] = {"model": model, "checkpointer": InMemorySaver()}
+        if fileseeded:
+            kwargs["system_prompt"] = _MEMORY_BENCH_FILESEEDED_SYSTEM_PROMPT
+        return create_deep_agent(**kwargs)
+
+    return _builder
+
+
 # ---------------------------------------------------------------------------
 # Summarization builders (test_summarization.py)
 #
@@ -804,6 +838,32 @@ _register(
         _CONVERSATION,
         _HILLCLIMB,
         _rubric_builder,
+        supports_repl=False,
+    )
+)
+
+# --- memory_agent_bench (memory_agent_bench/test_memory_agent_bench.py) ------
+#
+# Agent setup is a deep agent with a checkpointer; the benchmark dataset
+# (context chunks, questions, and the fileseeded /data/ files) is runtime data
+# provisioned by the test harness, not agent setup.
+
+for _name in (
+    "test_conflict_resolution",
+    "test_time_learning",
+    "test_memory_agent_bench_ci",
+):
+    _register(
+        _builder_eval(
+            _name, _MEMORY, _BASELINE, _make_memory_bench_builder(fileseeded=False), supports_repl=False
+        )
+    )
+_register(
+    _builder_eval(
+        "test_memory_agent_bench_ci_fileseeded",
+        _MEMORY,
+        _BASELINE,
+        _make_memory_bench_builder(fileseeded=True),
         supports_repl=False,
     )
 )

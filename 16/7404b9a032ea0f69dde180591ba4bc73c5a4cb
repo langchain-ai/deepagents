@@ -1,0 +1,19 @@
+.github/workflows/pr_labeler.yml
+  s_fb8291d0012dd1::t_d11191cfd7bb4b 120-121
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.9",
+  "base_commit_sha": "167404b9a032ea0f69dde180591ba4bc73c5a4cb",
+  "prompts": {},
+  "sessions": {
+    "s_fb8291d0012dd1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f8d1e4b9-5f59-464f-b40d-8e269e1d4c87",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

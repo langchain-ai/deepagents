@@ -60,32 +60,43 @@ Run `make help` to see every available target.
 
 ## Local dev installs
 
-A local dev install is useful when you want to dogfood changes from your checkout without replacing an installed, stable released version. We recommend keeping two commands available:
+A *local dev install* gives you a persistent `dcode-dev` command that launches your checkout directly. It lives in a dedicated editable venv under `~/.local/share/dcode-dev`, symlinked into `~/.local/bin/dcode-dev`. It can sit alongside a released `dcode` without interfering:
 
-- `dcode` / `deepagents-code` points at the normal installed tool (from the installation script)
-- `dcode-dev` to point at a local checkout through a dedicated editable venv under `~/.local/share/dcode-dev`, with a symlink in `~/.local/bin/dcode-dev`.
+- `dcode` / `deepagents-code` — the released tool, installed via `curl -LsSf https://langch.in/dcode | bash` (the install script).
+- `dcode-dev` — your local checkout.
 
-That split lets you quickly compare released behavior against local behavior, test unpublished fixes in real sessions, and recover to a known-good app install if the development checkout is broken. It also keeps dependency experiments for the dev binary out of both the released tool environment and the repo's locked `uv sync` environment.
+That lets you compare released behavior against local, and fall back to a known-good build if your checkout breaks. Either way, the dedicated venv keeps the dev binary's dependency experiments out of the repo's locked `uv sync` environment.
 
-The setup below uses a manual `uv venv` + `uv pip install -e` rather than `uv sync` or `uv tool install --editable` on purpose: it builds an isolated venv outside the workspace's locked environment, so the dev binary can be re-resolved on demand without disturbing the released tool or the repo's `uv.lock`. `uv pip`/`uv venv` are first-class `uv` subcommands here, not bare `pip`.
+### Setup
 
-`~/.local/bin` must be on your `PATH` for the `dcode-dev` symlink to resolve (`uv tool install` adds its own shim directory automatically, but a hand-rolled symlink does not).
-
-Example setup. The `--python` value is illustrative — any interpreter satisfying the package's `requires-python` (currently `>=3.11`) works; omit the flag to let `uv` pick. Replace `<repo>` with your local checkout path.
+`~/.local/bin` must be on your `PATH` for the symlink to resolve (`uv tool install` adds its own shim directory automatically, but a hand-rolled symlink does not). Replace `<repo>` with your local checkout path:
 
 ```bash
+# 1. Create an isolated venv for the dev binary
 uv venv ~/.local/share/dcode-dev --python 3.13
+
+# 2. Install your checkout into it, editable
 uv pip install --python ~/.local/share/dcode-dev/bin/python -e <repo>/libs/code
+
+# 3. Expose it as `dcode-dev` on your PATH
 ln -sf ~/.local/share/dcode-dev/bin/dcode ~/.local/bin/dcode-dev
 ```
 
-When dependency constraints change in `libs/code/pyproject.toml`, update the dev venv explicitly:
+The `--python 3.13` is illustrative — any interpreter satisfying the package's `requires-python` (currently `>=3.11`) works; omit the flag to let `uv` pick.
+
+> **Why `uv venv` + `uv pip install -e` rather than `uv sync` or `uv tool install --editable`?** This builds an isolated venv *outside* the workspace's locked environment, so the dev binary can be re-resolved on demand without disturbing the released tool or the repo's `uv.lock`. (`uv pip` and `uv venv` are first-class `uv` subcommands here, not bare `pip`.)
+
+### Updating
+
+When dependency constraints change in `libs/code/pyproject.toml`, refresh the dev venv:
 
 ```bash
 uv pip install --python ~/.local/share/dcode-dev/bin/python -e <repo>/libs/code --upgrade
 ```
 
-Verify command resolution and editable imports (the `dcode` checks assume the released tool is installed separately, per above):
+### Verifying
+
+Confirm command resolution and editable imports (the `dcode` checks assume the released tool is installed separately, per above):
 
 ```bash
 which dcode

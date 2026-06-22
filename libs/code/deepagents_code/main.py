@@ -1186,6 +1186,14 @@ def parse_args() -> argparse.Namespace:
     )
     add_json_output_arg(update_parser)
 
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="Print install health and diagnostics",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_doctor_help")),
+    )
+    add_json_output_arg(doctor_parser)
+
     # Default interactive mode — argument order here determines the
     # usage line printed by argparse; keep in sync with ui.show_help().
     parser.add_argument(
@@ -2360,6 +2368,11 @@ def cli_main() -> None:
             from deepagents_code.auth_commands import run_auth_command
 
             sys.exit(run_auth_command(args))
+
+        if args.command == "doctor":
+            from deepagents_code.doctor import run_doctor_command
+
+            sys.exit(run_doctor_command(args))
 
         # Apply shell-allow-list from command line if provided (overrides env var)
         if args.shell_allow_list:

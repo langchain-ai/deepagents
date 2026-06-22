@@ -14,7 +14,7 @@ import sys
 import threading
 from dataclasses import dataclass
 from enum import StrEnum
-from importlib.metadata import PackageNotFoundError, distribution
+from importlib.metadata import PackageNotFoundError, distribution, version
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import unquote, urlparse
@@ -754,16 +754,18 @@ Kept short so tracing metadata can never stall app flows.
 def _get_deepagents_version() -> str | None:
     """Read the installed Deep Agents SDK version from package metadata.
 
+    This intentionally calls `importlib.metadata.version` directly instead of
+    `resolve_sdk_version`: `config` is on the startup hot path, while
+    `resolve_sdk_version` lives in `extras_info` and imports `packaging`.
+
     Returns:
         The installed Deep Agents SDK version, or `None` when package metadata
-        is unavailable.
+            is unavailable.
     """
-    # Imported lazily: `extras_info` pulls in `packaging`, which is kept off
-    # `config`'s module-import path because `config` is on the startup hot path.
-    from deepagents_code.extras_info import resolve_sdk_version
-
-    sdk_version, _status = resolve_sdk_version()
-    return sdk_version
+    try:
+        return version("deepagents")
+    except PackageNotFoundError:
+        return None
 
 
 def _resolve_editable_info() -> tuple[bool, str | None]:

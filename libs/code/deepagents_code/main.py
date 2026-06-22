@@ -2247,17 +2247,21 @@ def cli_main() -> None:
         # state migration and settings bootstrap. If a future command only reads
         # local files or delegates bootstrap to specific subcommands, dispatch it here
         # so lightweight diagnostic paths stay fast.
-        if args.command == "config":
+        # Use `getattr` because this fast-path block is for optional top-level
+        # subcommands only. ACP/root-mode invocations may not define `command`,
+        # and should fall through to the later handlers instead of raising here.
+        command = getattr(args, "command", None)
+        if command == "config":
             from deepagents_code.config_commands import run_config_command
 
             sys.exit(run_config_command(args))
 
-        if args.command == "auth":
+        if command == "auth":
             from deepagents_code.auth_commands import run_auth_command
 
             sys.exit(run_auth_command(args))
 
-        if args.command == "doctor":
+        if command == "doctor":
             from deepagents_code.doctor import run_doctor_command
 
             sys.exit(run_doctor_command(args))

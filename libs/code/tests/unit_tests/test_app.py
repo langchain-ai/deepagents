@@ -15348,8 +15348,9 @@ class TestCopyFocusedInputText:
 
     def test_copies_whole_input_when_no_selection(self, monkeypatch) -> None:
         """A focused, non-empty input with no selection is copied in full."""
-        import deepagents_code.clipboard as clipboard_module
         from textual.widgets import TextArea
+
+        import deepagents_code.clipboard as clipboard_module
 
         copied: list[str] = []
 
@@ -15369,8 +15370,9 @@ class TestCopyFocusedInputText:
 
     def test_no_copy_when_input_empty(self, monkeypatch) -> None:
         """An empty focused input is not copied."""
-        import deepagents_code.clipboard as clipboard_module
         from textual.widgets import TextArea
+
+        import deepagents_code.clipboard as clipboard_module
 
         copied: list[str] = []
 

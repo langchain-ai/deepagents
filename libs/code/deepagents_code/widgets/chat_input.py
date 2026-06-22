@@ -2404,7 +2404,9 @@ class ChatInput(Vertical):
 
     def _clear_via_button(self) -> None:
         """Clear the draft from the `[ X ]` button (undoable with ctrl+z)."""
-        if self.discard_text():
+        cleared = self.discard_text()
+        self.exit_mode()
+        if cleared:
             self.app.notify("Input cleared (ctrl+z to undo)", timeout=3, markup=False)
         if self._text_area is not None:
             self._text_area.focus()

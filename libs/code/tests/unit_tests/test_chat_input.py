@@ -331,6 +331,37 @@ class TestInputActionButtons:
             await pilot.pause()
             assert chat_input.value == "undo me"
 
+    async def test_clear_button_exits_command_mode(self) -> None:
+        """Clicking `[ X ]` should not leave a stale slash-command mode active."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+
+            text_area.insert("/")
+            await _pause_for_strip(pilot)
+            assert chat_input.mode == "command"
+            assert chat_input._current_suggestions
+
+            text_area.insert("help")
+            await pilot.pause()
+            await pilot.click("#clear-button")
+            await pilot.pause()
+
+            assert chat_input.mode == "normal"
+            assert chat_input.value == ""
+            assert chat_input._current_suggestions == []
+
+            text_area.insert("hello")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "hello"
+            assert app.submitted[0].mode == "normal"
+
     async def test_copy_button_copies_input(self, monkeypatch) -> None:
         """Clicking `[ COPY ]` sends the draft to the clipboard helper."""
         import deepagents_code.clipboard as clipboard_module

@@ -52,39 +52,39 @@ class ChannelMediaError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class ChannelExposureEnv:
-    """Environment variable prefix and options for channel exposure policy.
-
-    Args:
-        provider: Human-readable provider name used in error messages.
-        env_prefix: Prefix for exposure env vars (e.g. `DEEPAGENTS_TALON_TELEGRAM`).
-        open_ack: Environment variable acknowledging open-exposure risk.
-        open_ack_value: Required acknowledgement value for open exposure.
-        require_self_operator: Whether `self` exposure requires an operator id.
-    """
+    """Environment variable prefix and options for channel exposure policy."""
 
     provider: str
+    """Human-readable provider name used in error messages."""
+
     env_prefix: str
+    """Prefix for exposure env vars (e.g. `DEEPAGENTS_TALON_TELEGRAM`)."""
+
     open_ack: str
+    """Environment variable acknowledging open-exposure risk."""
+
     open_ack_value: str = OPEN_EXPOSURE_ACK_VALUE
+    """Required acknowledgement value for open exposure."""
+
     require_self_operator: bool = False
+    """Whether `self` exposure requires an operator id."""
 
 
 @dataclass(frozen=True, slots=True)
 class ChannelExposure:
-    """Inbound exposure policy shared by channel adapters.
-
-    Args:
-        mode: Trigger policy for inbound messages.
-        conversations: Conversation ids allowed in allowlist mode.
-        mention_patterns: Glob-style patterns that may allow a message by text.
-        operator_ids: Channel-specific ids for operator accounts that may trigger
-            `self` exposure.
-    """
+    """Inbound exposure policy shared by channel adapters."""
 
     mode: ExposureMode = ExposureMode.SELF
+    """Trigger policy for inbound messages."""
+
     conversations: frozenset[str] = field(default_factory=frozenset)
+    """Conversation ids allowed in allowlist mode."""
+
     mention_patterns: tuple[str, ...] = ()
+    """Glob-style patterns that may allow a message by text."""
+
     operator_ids: frozenset[str] = field(default_factory=frozenset)
+    """Channel-specific ids for operator accounts that may trigger `self` exposure."""
 
     def allows(self, message: ChannelMessage) -> bool:
         """Return whether an inbound message may trigger the agent.

@@ -60,50 +60,52 @@ Run `make help` to see every available target.
 
 ## Debugging
 
-The app runs a `langgraph dev` subprocess when it starts. When the subprocess crashes during startup, the TUI shows a one-line failure banner; the actual exception lives in the subprocess's stdout/stderr, which is captured to a temp file.
-
-### Environment variables
-
-| Variable | Effect |
-| --- | --- |
-| `DEEPAGENTS_CODE_DEBUG=1` | Preserves the server subprocess log on shutdown and prints its path to stderr. Without this, the log is deleted when the process stops. Also enables the app-process file handler below. Accepts `1`/`true`/`yes`/`on` (case-insensitive) as enabled; `0`/`false`/`no`/`off`/empty/unset as disabled. |
-| `DEEPAGENTS_CODE_DEBUG_FILE=<path>` | Overrides the default path (`/tmp/deepagents_debug.log`) for the app-process file handler, which attaches at `DEBUG` level to the `deepagents_code` package logger. **Only takes effect when `DEEPAGENTS_CODE_DEBUG` is truthy.** Useful for diagnosing client-side app issues; does **not** capture the server subprocess. |
-
-`DEEPAGENTS_CODE_DEBUG` is what you want for startup crashes (graph init, MCP config, sandbox): the preserved subprocess log contains the real traceback. The optional `DEEPAGENTS_CODE_DEBUG_FILE` override is for post-startup client-side debugging.
-
-To capture client-side logs while reproducing an issue:
+Deep Agents Code runs as two processes: the **Textual TUI** you interact with, and a **`langgraph dev` subprocess** that hosts the agent graph. Each writes its own log, and a single switch turns both on:
 
 ```bash
 cd libs/code
-DEEPAGENTS_CODE_DEBUG=1 uv run deepagents-code
+export DEEPAGENTS_CODE_DEBUG=1
+uv run deepagents-code
 ```
 
-Then in another terminal:
+| Variable | Effect |
+| --- | --- |
+| `DEEPAGENTS_CODE_DEBUG` | Master switch. Preserves the server subprocess log on exit (printing its path to stderr) and attaches the client `DEBUG` file handler. Truthy: `1`/`true`/`yes`/`on` (case-insensitive). Falsy: `0`/`false`/`no`/`off`/empty/unset. |
+| `DEEPAGENTS_CODE_DEBUG_FILE=<path>` | Overrides the client log path (default `/tmp/deepagents_debug.log`). **Only takes effect when `DEEPAGENTS_CODE_DEBUG` is truthy**; does **not** affect the server subprocess log. |
+
+Then pick the log you need by symptom:
+
+| Symptom | Log you want | Default location |
+| --- | --- | --- |
+| App crashes on launch (one-line failure banner) | **Server subprocess log** — the real traceback | `$TMPDIR/deepagents_server_log_*.txt` |
+| App starts, then misbehaves (UI, model calls, slash commands) | **Client app log** — `deepagents_code` at `DEBUG` | `/tmp/deepagents_debug.log` |
+
+### Startup crash -> server subprocess log
+
+The TUI only surfaces a one-line banner; the actual exception lives in the subprocess's combined stdout/stderr. To get it:
+
+1. **Re-run with debugging on** (see above). On exit, the log is preserved and its path is printed to stderr as `Server log preserved at: ...`. Textual's fullscreen mode can hide that line, but the file is still on disk.
+2. **Open the newest log.** On macOS, `tempfile` resolves to `$TMPDIR` (a path under `/var/folders/.../T/`):
+
+   ```bash
+   # Newest first
+   ls -lt ${TMPDIR:-/tmp}/deepagents_server_log_*.txt | head -5
+
+   # Or tail the latest live while you reproduce the crash
+   tail -F "$(ls -t ${TMPDIR:-/tmp}/deepagents_server_log_*.txt | head -1)"
+   ```
+
+3. **Search for `Failed to initialize server graph`.** The traceback beneath it names the concrete failure — MCP config validation, sandbox init, model resolution, subagent load, and so on. Everything above that line is uvicorn/lifespan unwinding and can be ignored.
+
+### Client-side issue -> app log
+
+For problems that appear after the app is up, tail the client log in another terminal while reproducing:
 
 ```bash
 tail -f /tmp/deepagents_debug.log
 ```
 
-### Finding the server subprocess log
-
-On macOS, `tempfile` resolves to `$TMPDIR` (a path under `/var/folders/.../T/`). Each `ServerProcess` writes its combined stdout+stderr to a file matching `deepagents_server_log_*.txt`:
-
-```bash
-# Newest first
-ls -lt ${TMPDIR:-/tmp}/deepagents_server_log_*.txt | head -5
-
-# Tail the latest while reproducing the crash
-tail -F "$(ls -t ${TMPDIR:-/tmp}/deepagents_server_log_*.txt | head -1)"
-```
-
-The interesting line is `Failed to initialize server graph: <exc>` followed by a traceback — everything above that is uvicorn/lifespan unwinding.
-
-### Triage flow for a startup crash
-
-1. **Rerun with `DEEPAGENTS_CODE_DEBUG=1`.** The log is preserved and a "Server log preserved at: ..." line is printed to stderr. Textual's fullscreen mode can hide that line, but the file itself is still on disk.
-2. **Locate the log** via the `ls` command above. Open it in your editor.
-3. **Search for `Failed to initialize server graph`.** The stack trace beneath names the concrete failure point (MCP config validation, sandbox init, model resolution, subagent load, etc.).
-4. **Pre-flight validators run in the app process** for the common failure modes (e.g., `--mcp-config` is validated in `start_server_and_get_agent` before the subprocess spawns). When the banner shows `MCPConfigError: <path>: <reason>`, the subprocess never started — fix the file and retry.
+To send it elsewhere, also `export DEEPAGENTS_CODE_DEBUG_FILE=<path>`. The handler appends across runs, so a single file accumulates every session.
 
 ## Local dev installs
 

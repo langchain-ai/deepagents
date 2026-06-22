@@ -682,11 +682,9 @@ elif [ -n "$NEW_VERSION" ] && [ "$PRE_VERSION" = "$NEW_VERSION" ]; then
   # the dep move entirely). UV_REPORTED_PACKAGE_CHANGES (set far above) is the
   # signal that the reinstall actually moved packages.
   if [ "$UV_REPORTED_PACKAGE_CHANGES" = true ]; then
-    if [ -n "$INSTALL_LOG" ]; then
-      log_success "deepagents-code ${NEW_VERSION} was already up to date; dependencies were updated. Details: ${INSTALL_LOG_DISPLAY}"
-    else
-      log_success "deepagents-code ${NEW_VERSION} was already up to date; dependencies were updated."
-    fi
+    # INSTALL_LOG_DISPLAY is empty exactly when no log was written, so the
+    # `:+` suffix appends the pointer only when there's a log to point at.
+    log_success "deepagents-code ${NEW_VERSION} was already up to date; dependencies were updated.${INSTALL_LOG_DISPLAY:+ Details: ${INSTALL_LOG_DISPLAY}}"
   else
     log_success "deepagents-code ${NEW_VERSION} already up to date."
   fi

@@ -27,6 +27,7 @@ from quickjs_rs import (
     MemoryLimitError,
     Runtime,
     Snapshot,
+    SourceTransform,
     ThreadWorker,
 )
 from quickjs_rs import (
@@ -986,7 +987,10 @@ class _Registry:
         slot.worker.close()
 
     async def _acreate_runtime(self) -> Runtime:
-        return Runtime(memory_limit=self.memory_limit)
+        return Runtime(
+            memory_limit=self.memory_limit,
+            transform_flags=SourceTransform.TOP_LEVEL_CONST_TO_VAR,
+        )
 
     def close(self) -> None:
         with self._lock:

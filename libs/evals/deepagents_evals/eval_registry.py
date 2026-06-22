@@ -169,9 +169,7 @@ def _rubric_builder(
     rubric itself is a runtime input (``extra_state["rubric"]``), not agent
     setup.
     """
-    middleware: list[Any] = [
-        RubricMiddleware(model=model, tools=[count_words], max_iterations=5)
-    ]
+    middleware: list[Any] = [RubricMiddleware(model=model, tools=[count_words], max_iterations=5)]
     return create_deep_agent(model=model, middleware=middleware)
 
 
@@ -185,9 +183,7 @@ _MEMORY_BENCH_FILESEEDED_SYSTEM_PROMPT = (
 """Mirror of ``memory_agent_bench.FILESEEDED_SYSTEM_PROMPT``."""
 
 
-def _make_memory_bench_builder(
-    *, fileseeded: bool
-) -> Callable[..., CompiledStateGraph[Any, Any]]:
+def _make_memory_bench_builder(*, fileseeded: bool) -> Callable[..., CompiledStateGraph[Any, Any]]:
     """Return a builder for a MemoryAgentBench eval variant.
 
     Agent setup is a deep agent with a checkpointer (the benchmark feeds
@@ -914,9 +910,7 @@ _FILE_BACKED_SYSTEM_PROMPT = (
 
 # ``test_frames`` / ``test_nexus`` are parametrized over cases spanning both
 # tiers; the registry records the representative (majority) baseline tier.
-_register(
-    _default("test_frames", _RETRIEVAL, _BASELINE, system_prompt=_FILE_BACKED_SYSTEM_PROMPT)
-)
+_register(_default("test_frames", _RETRIEVAL, _BASELINE, system_prompt=_FILE_BACKED_SYSTEM_PROMPT))
 _register(_default("test_nexus", _TOOL_USE, _BASELINE, system_prompt=_FILE_BACKED_SYSTEM_PROMPT))
 _register(_builder_eval("test_bfcl_v3", _TOOL_USE, _BASELINE, _bfcl_builder, supports_repl=False))
 
@@ -945,7 +939,11 @@ for _name in (
 ):
     _register(
         _builder_eval(
-            _name, _MEMORY, _BASELINE, _make_memory_bench_builder(fileseeded=False), supports_repl=False
+            _name,
+            _MEMORY,
+            _BASELINE,
+            _make_memory_bench_builder(fileseeded=False),
+            supports_repl=False,
         )
     )
 _register(

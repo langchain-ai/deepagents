@@ -120,9 +120,9 @@ file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test,l
 
 ## Conversation (`conversation`) (3 evals)
 
-- [`test_tau2_airline`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/tau2_airline/test_tau2_airline.py#L86) — `tests/evals/tau2_airline/test_tau2_airline.py:86`
+- [`test_tau2_airline`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/tau2_airline/test_tau2_airline.py#L100) — `tests/evals/tau2_airline/test_tau2_airline.py:100`
 - [`test_followup_question_quality`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_followup_quality.py#L96) — `tests/evals/test_followup_quality.py:96`
-- [`test_exact_word_count_and_z_starts`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_iterative_constraint_satisfaction.py#L168) — `tests/evals/test_iterative_constraint_satisfaction.py:168`
+- [`test_exact_word_count_and_z_starts`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_iterative_constraint_satisfaction.py#L158) — `tests/evals/test_iterative_constraint_satisfaction.py:158`
 
 ## Summarization (`summarization`) (5 evals)
 
@@ -146,10 +146,10 @@ file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test,l
 
 ## Upstream Middleware (`langchain/middleware`) (7 evals)
 
-- [`test_density_rank_lands_in_final_message`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_langchain_middleware_todo.py#L105) — `tests/evals/test_langchain_middleware_todo.py:105`
-- [`test_population_compare_lands_in_final_message`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_langchain_middleware_todo.py#L144) — `tests/evals/test_langchain_middleware_todo.py:144`
-- [`test_trivial_arithmetic_skips_write_todos`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_langchain_middleware_todo.py#L187) — `tests/evals/test_langchain_middleware_todo.py:187`
-- [`test_rank_with_unknown_lookup_lands_in_final_message`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_langchain_middleware_todo.py#L222) — `tests/evals/test_langchain_middleware_todo.py:222`
-- [`test_design_api_lands_in_final_message`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_langchain_middleware_todo.py#L283) — `tests/evals/test_langchain_middleware_todo.py:283`
-- [`test_density_cairo_lands_in_final_message`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_langchain_middleware_todo.py#L321) — `tests/evals/test_langchain_middleware_todo.py:321`
-- [`test_trivial_plan_skips_write_todos`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_langchain_middleware_todo.py#L355) — `tests/evals/test_langchain_middleware_todo.py:355`
+- [`test_density_rank_lands_in_final_message`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_langchain_middleware_todo.py#L76) — `tests/evals/test_langchain_middleware_todo.py:76`
+- [`test_population_compare_lands_in_final_message`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_langchain_middleware_todo.py#L115) — `tests/evals/test_langchain_middleware_todo.py:115`
+- [`test_trivial_arithmetic_skips_write_todos`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_langchain_middleware_todo.py#L158) — `tests/evals/test_langchain_middleware_todo.py:158`
+- [`test_rank_with_unknown_lookup_lands_in_final_message`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_langchain_middleware_todo.py#L193) — `tests/evals/test_langchain_middleware_todo.py:193`
+- [`test_design_api_lands_in_final_message`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_langchain_middleware_todo.py#L254) — `tests/evals/test_langchain_middleware_todo.py:254`
+- [`test_density_cairo_lands_in_final_message`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_langchain_middleware_todo.py#L292) — `tests/evals/test_langchain_middleware_todo.py:292`
+- [`test_trivial_plan_skips_write_todos`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_langchain_middleware_todo.py#L326) — `tests/evals/test_langchain_middleware_todo.py:326`

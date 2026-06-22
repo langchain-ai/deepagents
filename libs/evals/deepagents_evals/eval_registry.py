@@ -29,7 +29,8 @@ from deepagents import RubricMiddleware, create_deep_agent
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware.summarization import create_summarization_tool_middleware
-from langchain.agents.middleware import ModelCallLimitMiddleware
+from langchain.agents import create_agent
+from langchain.agents.middleware import ModelCallLimitMiddleware, TodoListMiddleware
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.store.memory import InMemoryStore
 
@@ -40,6 +41,8 @@ from deepagents_evals.mock_tools import (
     count_words,
     get_weather_fake,
     incident_graph_tool_error_middleware,
+    lookup_area_km2,
+    lookup_population,
 )
 
 if TYPE_CHECKING:
@@ -202,6 +205,28 @@ def _make_memory_bench_builder(
         if fileseeded:
             kwargs["system_prompt"] = _MEMORY_BENCH_FILESEEDED_SYSTEM_PROMPT
         return create_deep_agent(**kwargs)
+
+    return _builder
+
+
+def _make_todo_middleware_builder(
+    *, tools: list[BaseTool]
+) -> Callable[..., CompiledStateGraph[Any, Any]]:
+    """Return a builder for a langchain ``TodoListMiddleware`` eval.
+
+    These evals exercise langchain's bare ``create_agent`` + ``TodoListMiddleware``
+    (not ``create_deep_agent``), so the builder constructs that agent directly.
+    The mock city-lookup tools are the only agent setup; the prompts are runtime
+    inputs.
+    """
+
+    def _builder(
+        model: BaseChatModel,
+        *,
+        repl_name: str | None = None,  # noqa: ARG001
+    ) -> CompiledStateGraph[Any, Any]:
+        middleware: list[Any] = [TodoListMiddleware()]
+        return create_agent(model=model, tools=tools, middleware=middleware)
 
     return _builder
 
@@ -867,3 +892,32 @@ _register(
         supports_repl=False,
     )
 )
+
+# --- langchain middleware todo (test_langchain_middleware_todo.py) ----------
+#
+# These evals run langchain's bare create_agent + TodoListMiddleware (not
+# create_deep_agent) over mock city-lookup tools; the city prompts are runtime
+# inputs. Registered by tool config + tier.
+
+_LANGCHAIN_MIDDLEWARE = "langchain/middleware"
+_CITY_TOOLS: list[Any] = [lookup_population, lookup_area_km2]
+
+# Each entry binds an eval name to its tier and the tools its agent receives.
+for _name, _tier, _tools in (
+    ("test_density_rank_lands_in_final_message", _BASELINE, _CITY_TOOLS),
+    ("test_population_compare_lands_in_final_message", _BASELINE, [lookup_population]),
+    ("test_trivial_arithmetic_skips_write_todos", _BASELINE, []),
+    ("test_rank_with_unknown_lookup_lands_in_final_message", _HILLCLIMB, _CITY_TOOLS),
+    ("test_design_api_lands_in_final_message", _HILLCLIMB, []),
+    ("test_density_cairo_lands_in_final_message", _HILLCLIMB, _CITY_TOOLS),
+    ("test_trivial_plan_skips_write_todos", _HILLCLIMB, []),
+):
+    _register(
+        _builder_eval(
+            _name,
+            _LANGCHAIN_MIDDLEWARE,
+            _tier,
+            _make_todo_middleware_builder(tools=_tools),
+            supports_repl=False,
+        )
+    )

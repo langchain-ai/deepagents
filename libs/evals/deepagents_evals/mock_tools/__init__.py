@@ -16,6 +16,7 @@ from deepagents_evals.mock_tools.incident_graph import (
     INCIDENT_GRAPH_TOOLS,
     incident_graph_tool_error_middleware,
 )
+from deepagents_evals.mock_tools.middleware_todo import lookup_area_km2, lookup_population
 from deepagents_evals.mock_tools.relational import (
     RELATIONAL_TOOL_IMPLEMENTATIONS,
     RELATIONAL_TOOL_NAMES,
@@ -33,4 +34,6 @@ __all__ = [
     "count_words",
     "get_weather_fake",
     "incident_graph_tool_error_middleware",
+    "lookup_area_km2",
+    "lookup_population",
 ]

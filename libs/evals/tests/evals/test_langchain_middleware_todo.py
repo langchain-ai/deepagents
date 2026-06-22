@@ -27,8 +27,8 @@ from typing import TYPE_CHECKING
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware import TodoListMiddleware
-from langchain_core.tools import tool
 
+from deepagents_evals.mock_tools import lookup_area_km2, lookup_population
 from tests.evals.utils import (
     AgentTrajectory,
     MaxToolCallRequests,
@@ -45,35 +45,6 @@ if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
 
 pytestmark = [pytest.mark.eval_category("langchain/middleware")]
-
-
-# ---------------------------------------------------------------------------
-# Tools used by the tests
-# ---------------------------------------------------------------------------
-
-
-@tool
-def lookup_population(city: str) -> str:
-    """Return the population of a city as a string."""
-    data = {
-        "tokyo": "13,960,000",
-        "delhi": "32,900,000",
-        "shanghai": "29,200,000",
-        "cairo": "21,800,000",
-    }
-    return data.get(city.lower(), "unknown")
-
-
-@tool
-def lookup_area_km2(city: str) -> str:
-    """Return the area of a city in square kilometers as a string."""
-    data = {
-        "tokyo": "2,194",
-        "delhi": "1,484",
-        "shanghai": "6,341",
-        "cairo": "606",
-    }
-    return data.get(city.lower(), "unknown")
 
 
 def _max_tool_calls_success(n: int) -> SuccessAssertion:

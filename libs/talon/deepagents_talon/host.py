@@ -461,7 +461,7 @@ class TalonHost:
         media, failed = _outbound_media_from_refs(
             refs,
             cleaned,
-            root=_outbound_media_root(self.config),
+            root=outbound_media_root_from_env(self.config.env),
         )
         text = _with_failed_attachment_text(cleaned, failed)
         sent_media, send_failed = await _send_channel_media(
@@ -572,10 +572,6 @@ def _outbound_media_from_refs(
             path = getattr(ref, "path", None)
             failed.append(getattr(ref, "alt", "") or getattr(path, "name", "attachment"))
     return media, failed
-
-
-def _outbound_media_root(config: TalonConfig) -> Path:
-    return outbound_media_root_from_env(config.env)
 
 
 def _conversation_key(provider: str, conversation_id: str) -> str:

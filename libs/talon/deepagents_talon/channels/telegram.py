@@ -13,7 +13,7 @@ import re
 import secrets
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -31,9 +31,6 @@ from deepagents_talon.channels.base import (
     message_with_media_paths,
     optional_str,
     outbound_media_root_from_env,
-    parse_float,
-    replace_message_metadata,
-    split_csv,
     validate_media,
 )
 from deepagents_talon.interfaces import ChannelMedia, ChannelMessage, ChannelStatus, MessageHandler
@@ -148,10 +145,7 @@ class TelegramChannelConfig:
             env,
             ChannelExposureEnv(
                 provider="Telegram",
-                exposure="DEEPAGENTS_TALON_TELEGRAM_EXPOSURE",
-                allowlist_chats="DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_CHATS",
-                mention_patterns="DEEPAGENTS_TALON_TELEGRAM_MENTION_PATTERNS",
-                operator_id="DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID",
+                env_prefix="DEEPAGENTS_TALON_TELEGRAM",
                 open_ack=OPEN_EXPOSURE_ACK_ENV,
                 require_self_operator=True,
             ),
@@ -557,7 +551,7 @@ class TelegramChannel:
             metadata = dict(message.metadata)
             metadata["has_media"] = False
             metadata["media_error"] = str(error)
-            return replace_message_metadata(message, metadata)
+            return replace(message, metadata=metadata)
         path = str(destination)
         mime_type = _downloaded_mime_type(destination, dict(message.metadata))
         return message_with_media_paths(
@@ -700,7 +694,7 @@ def _with_from_self(message: ChannelMessage, bot_id: str | None) -> ChannelMessa
         return message
     metadata = dict(message.metadata)
     metadata["from_self"] = True
-    return replace_message_metadata(message, metadata)
+    return replace(message, metadata=metadata)
 
 
 def _allows_telegram_message(
@@ -949,19 +943,6 @@ def _extract_media_info(msg: Mapping[str, object]) -> _TelegramMediaInfo | None:
     return None
 
 
-def _safe_file_size(obj: Mapping[str, object]) -> int:
-    """Extract a numeric file_size from a Telegram photo size object.
-
-    Args:
-        obj: Telegram photo size mapping.
-
-    Returns:
-        Integer file size, or ``0`` if absent or non-integer.
-    """
-    raw = obj.get("file_size")
-    return raw if isinstance(raw, int) else 0
-
-
 def _largest_photo_file_id(photo_sizes: object) -> str | None:
     """Extract the file_id of the largest photo size from a photo array.
 
@@ -976,8 +957,8 @@ def _largest_photo_file_id(photo_sizes: object) -> str | None:
     sizes = [size for size in photo_sizes if isinstance(size, dict)]
     if not sizes:
         return None
-    best = max(sizes, key=lambda s: _safe_file_size(cast("Mapping[str, object]", s)))
-    file_id = cast("Mapping[str, object]", best).get("file_id")
+    best = max(sizes, key=lambda s: s.get("file_size") if isinstance(s.get("file_size"), int) else 0)
+    file_id = best.get("file_id")
     return file_id if isinstance(file_id, str) else None
 
 

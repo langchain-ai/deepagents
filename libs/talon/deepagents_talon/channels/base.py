@@ -9,7 +9,7 @@ import fnmatch
 import logging
 import mimetypes
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
@@ -53,24 +53,18 @@ class ChannelMediaError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class ChannelExposureEnv:
-    """Environment variable names used to build channel exposure policy.
+    """Environment variable prefix and options for channel exposure policy.
 
     Args:
         provider: Human-readable provider name used in error messages.
-        exposure: Environment variable containing the exposure mode.
-        allowlist_chats: Environment variable containing allowlisted chats.
-        mention_patterns: Environment variable containing allowlist text patterns.
-        operator_id: Environment variable containing trusted operator ids.
+        env_prefix: Prefix for exposure env vars (e.g. ``DEEPAGENTS_TALON_TELEGRAM``).
         open_ack: Environment variable acknowledging open-exposure risk.
         open_ack_value: Required acknowledgement value for open exposure.
         require_self_operator: Whether `self` exposure requires an operator id.
     """
 
     provider: str
-    exposure: str
-    allowlist_chats: str
-    mention_patterns: str
-    operator_id: str
+    env_prefix: str
     open_ack: str
     open_ack_value: str = OPEN_EXPOSURE_ACK_VALUE
     require_self_operator: bool = False
@@ -92,11 +86,6 @@ class ChannelExposure:
     conversations: frozenset[str] = field(default_factory=frozenset)
     mention_patterns: tuple[str, ...] = ()
     operator_ids: frozenset[str] = field(default_factory=frozenset)
-
-    @property
-    def operator_id(self) -> str | None:
-        """First operator id, or ``None`` when no operators are configured."""
-        return next(iter(self.operator_ids), None)
 
     def allows(self, message: ChannelMessage) -> bool:
         """Return whether an inbound message may trigger the agent.
@@ -187,7 +176,7 @@ def channel_exposure_from_env(
     env: Mapping[str, str],
     config: ChannelExposureEnv,
 ) -> ChannelExposure:
-    """Build shared channel exposure policy from provider-specific env names.
+    """Build shared channel exposure policy from provider-specific env prefix.
 
     Args:
         env: Environment variable mapping.
@@ -199,15 +188,18 @@ def channel_exposure_from_env(
     Raises:
         ValueError: If the exposure mode is invalid or risk acknowledgement is missing.
     """
+    prefix = config.env_prefix
+    exposure_var = f"{prefix}_EXPOSURE"
+    operator_var = f"{prefix}_OPERATOR_ID"
     mode = _exposure_mode(
-        env.get(config.exposure, ExposureMode.SELF.value),
+        env.get(exposure_var, ExposureMode.SELF.value),
         provider=config.provider,
     )
-    operator_ids = frozenset(split_csv(env.get(config.operator_id, "")))
+    operator_ids = frozenset(split_csv(env.get(operator_var, "")))
     if mode == ExposureMode.SELF and config.require_self_operator and not operator_ids:
         msg = (
-            f"{config.provider} self exposure requires {config.operator_id}; "
-            f"set {config.exposure}=allowlist or open for other modes"
+            f"{config.provider} self exposure requires {operator_var}; "
+            f"set {exposure_var}=allowlist or open for other modes"
         )
         raise ValueError(msg)
     if mode == ExposureMode.OPEN:
@@ -219,8 +211,8 @@ def channel_exposure_from_env(
         )
     return ChannelExposure(
         mode=mode,
-        conversations=frozenset(split_csv(env.get(config.allowlist_chats, ""))),
-        mention_patterns=tuple(split_csv(env.get(config.mention_patterns, ""))),
+        conversations=frozenset(split_csv(env.get(f"{prefix}_ALLOWLIST_CHATS", ""))),
+        mention_patterns=tuple(split_csv(env.get(f"{prefix}_MENTION_PATTERNS", ""))),
         operator_ids=operator_ids,
     )
 
@@ -281,28 +273,6 @@ def validate_media(
     return _validate_media_size(media, path=path, max_bytes=max_bytes)
 
 
-def replace_message_metadata(
-    message: ChannelMessage,
-    metadata: Mapping[str, object],
-) -> ChannelMessage:
-    """Return `message` with replaced metadata.
-
-    Args:
-        message: Original channel message.
-        metadata: Replacement metadata.
-
-    Returns:
-        Channel message with the same identity and text, plus new metadata.
-    """
-    return ChannelMessage(
-        conversation_id=message.conversation_id,
-        text=message.text,
-        sender_id=message.sender_id,
-        message_id=message.message_id,
-        metadata=metadata,
-    )
-
-
 def message_with_media_paths(
     message: ChannelMessage,
     *,
@@ -332,7 +302,7 @@ def message_with_media_paths(
         metadata["media_path"] = paths[0]
         metadata["media_mime_types"] = types
         metadata["voice_path"] = paths[0] if metadata.get("media_type") == "voice" else None
-    return replace_message_metadata(message, metadata)
+    return replace(message, metadata=metadata)
 
 
 def validate_media_size(path: Path, *, max_bytes: int) -> None:

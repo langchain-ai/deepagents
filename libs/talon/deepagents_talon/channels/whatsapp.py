@@ -15,7 +15,7 @@ import shutil
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -35,14 +35,13 @@ from deepagents_talon.channels.base import (
     outbound_media_root_from_env,
     parse_float,
     parse_int,
-    replace_message_metadata,
     validate_media,
     validate_media_size,
 )
 from deepagents_talon.interfaces import ChannelMedia, ChannelMessage, ChannelStatus, MessageHandler
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Mapping
 
     from deepagents_talon.config import TalonConfig
 
@@ -148,10 +147,7 @@ class WhatsAppChannelConfig:
                 env,
                 ChannelExposureEnv(
                     provider="WhatsApp",
-                    exposure="DEEPAGENTS_TALON_WHATSAPP_EXPOSURE",
-                    allowlist_chats="DEEPAGENTS_TALON_WHATSAPP_ALLOWLIST_CHATS",
-                    mention_patterns="DEEPAGENTS_TALON_WHATSAPP_MENTION_PATTERNS",
-                    operator_id="DEEPAGENTS_TALON_WHATSAPP_OPERATOR_ID",
+                    env_prefix="DEEPAGENTS_TALON_WHATSAPP",
                     open_ack=OPEN_EXPOSURE_ACK_ENV,
                 ),
             ),
@@ -620,48 +616,21 @@ def _parse_message(payload: object) -> ChannelMessage:
     )
 
 
-@dataclass(frozen=True, slots=True)
-class _FilteredMediaPaths:
-    """Inbound media paths retained after applying local size caps.
+def _enforce_inbound_media_cap(message: ChannelMessage, *, max_bytes: int) -> ChannelMessage:
+    """Filter inbound media paths against a configured size cap.
 
-    Args:
-        paths: String paths that remain usable.
-        mime_types: MIME types aligned with `paths`.
-        changed: Whether any input path was dropped or ignored.
-        errors: Human-readable drop reasons for logs or metadata.
+    Paths that do not exist on disk are silently kept — WhatsApp bridge
+    downloads may still be in progress when inbound messages are polled.
     """
+    media_paths = message.metadata.get("media_paths")
+    if not isinstance(media_paths, list) or not media_paths:
+        return message
 
-    paths: tuple[str, ...]
-    mime_types: tuple[str, ...]
-    changed: bool
-    errors: tuple[str, ...] = ()
+    mime_types = message.metadata.get("media_mime_types")
+    mime_list = mime_types if isinstance(mime_types, list) else []
 
-
-def _filter_capped_media_paths(
-    media_paths: Sequence[object],
-    mime_types: Sequence[object],
-    *,
-    max_bytes: int,
-) -> _FilteredMediaPaths:
-    """Filter inbound local media paths against a configured size cap.
-
-    Args:
-        media_paths: Candidate local media paths from a channel payload.
-        mime_types: Candidate MIME types aligned with `media_paths`.
-        max_bytes: Maximum allowed file size.
-
-    Returns:
-        Filter result containing kept paths and dropped-path reasons.
-
-    Note:
-        Paths that do not exist on disk are silently kept. This is intentional:
-        WhatsApp bridge downloads may still be in progress when inbound messages
-        are polled, so a missing file does not indicate an oversized or invalid
-        download — only one that has not landed yet.
-    """
     kept: list[str] = []
     kept_mime_types: list[str] = []
-    errors: list[str] = []
     changed = False
     for index, raw_path in enumerate(media_paths):
         if not isinstance(raw_path, str):
@@ -670,53 +639,32 @@ def _filter_capped_media_paths(
         try:
             validate_media_size(Path(raw_path), max_bytes=max_bytes)
         except FileNotFoundError:
-            kept.append(raw_path)
+            pass  # download may still be in progress
         except ChannelMediaError as error:
+            logger.warning(
+                "Skipping WhatsApp inbound media for message %s: %s",
+                message.message_id,
+                error,
+            )
             changed = True
-            errors.append(str(error))
             continue
-        else:
-            kept.append(raw_path)
-        if index < len(mime_types):
-            mime_type = mime_types[index]
-            if isinstance(mime_type, str):
-                kept_mime_types.append(mime_type)
-    return _FilteredMediaPaths(
-        paths=tuple(kept),
-        mime_types=tuple(kept_mime_types),
-        changed=changed,
-        errors=tuple(errors),
-    )
+        kept.append(raw_path)
+        if index < len(mime_list):
+            mime = mime_list[index]
+            if isinstance(mime, str):
+                kept_mime_types.append(mime)
 
-
-def _enforce_inbound_media_cap(message: ChannelMessage, *, max_bytes: int) -> ChannelMessage:
-    media_paths = message.metadata.get("media_paths")
-    if not isinstance(media_paths, list) or not media_paths:
-        return message
-
-    mime_types = message.metadata.get("media_mime_types")
-    filtered = _filter_capped_media_paths(
-        media_paths=media_paths,
-        mime_types=mime_types if isinstance(mime_types, list) else [],
-        max_bytes=max_bytes,
-    )
-    for error in filtered.errors:
-        logger.warning(
-            "Skipping WhatsApp inbound media for message %s: %s",
-            message.message_id,
-            error,
-        )
-    if not filtered.changed:
+    if not changed:
         return message
     checked = message_with_media_paths(
         message,
-        media_paths=filtered.paths,
-        mime_types=filtered.mime_types,
+        media_paths=tuple(kept),
+        mime_types=tuple(kept_mime_types),
     )
-    if not filtered.paths:
+    if not kept:
         metadata = dict(checked.metadata)
         metadata["media_error"] = f"all media files exceeded {max_bytes} bytes"
-        return replace_message_metadata(checked, metadata)
+        return replace(checked, metadata=metadata)
     return checked
 
 

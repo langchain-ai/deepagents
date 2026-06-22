@@ -488,10 +488,16 @@ fi
 #      a Verified line with the binary name and version.
 #   3. Reformat the `- pkg==X` / `+ pkg==Y` diff into an aligned
 #      "pkg  X → Y" table under a single header.
+#   4. Detect whether uv actually moved any packages (those same
+#      `- pkg==X` / `+ pkg==Y` lines). A same-version reinstall that still
+#      bumps dependencies must report differently from a true no-op, so a
+#      later grep over this raw tempfile sets UV_REPORTED_PACKAGE_CHANGES.
 # Using a tempfile (vs. process substitution) ensures we see uv's full exit
-# status and don't race the warning past later log lines.
+# status, don't race the warning past later log lines, and can re-scan the
+# raw output for (4) after the awk pass above has already reformatted it.
 uv_stderr=$(mktemp 2>/dev/null) || uv_stderr="/tmp/deepagents-install.$$.err"
 uv_rc=0
+UV_REPORTED_PACKAGE_CHANGES=false
 if [[ -n "$PRERELEASE" ]]; then
   "$UV_BIN" tool install -U --python "$PYTHON_VERSION" \
     --prerelease "$PRERELEASE" "$PACKAGE" 2>"$uv_stderr" || uv_rc=$?
@@ -570,6 +576,9 @@ if [ "$VERBOSE" != "1" ] && command -v awk >/dev/null 2>&1; then
 else
   cat "$uv_stderr" >&2
 fi
+if grep -Eq '^[[:space:]]+[-+][[:space:]]+[^=]+==' "$uv_stderr"; then
+  UV_REPORTED_PACKAGE_CHANGES=true
+fi
 rm -f "$uv_stderr"
 if [ "$uv_rc" -ne 0 ]; then
   log_error "Failed to install ${PACKAGE}. See errors above."
@@ -623,7 +632,17 @@ if [ "$IS_EDITABLE" = true ]; then
 elif [ -z "$PRE_VERSION" ]; then
   log_success "deepagents-code${NEW_VERSION:+ ${NEW_VERSION}} installed."
 elif [ -n "$NEW_VERSION" ] && [ "$PRE_VERSION" = "$NEW_VERSION" ]; then
-  log_success "deepagents-code ${NEW_VERSION} already up to date."
+  # Same app version, but uv may have refreshed transitive deps (security or
+  # compat bumps). The final status line is the user-facing summary, so a flat
+  # "already up to date" would contradict the package diff printed just above
+  # (and, in non-verbose mode where an addition-only diff is suppressed, hide
+  # the dep move entirely). UV_REPORTED_PACKAGE_CHANGES (set far above) is the
+  # signal that the reinstall actually moved packages.
+  if [ "$UV_REPORTED_PACKAGE_CHANGES" = true ]; then
+    log_success "deepagents-code ${NEW_VERSION} was already up to date; dependencies were updated."
+  else
+    log_success "deepagents-code ${NEW_VERSION} already up to date."
+  fi
 elif [ -n "$NEW_VERSION" ]; then
   log_success "deepagents-code updated: ${PRE_VERSION} → ${NEW_VERSION}."
 else

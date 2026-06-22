@@ -562,6 +562,15 @@ _REMOVAL_DIFF = (
     " - deepagents-code==0.1.18\n + deepagents-code==0.1.19\n - dropped-dep==2.0.0"
 )
 
+_DEPENDENCY_UPDATE_DIFF = " - boto3==1.43.33\n + boto3==1.43.34"
+
+# A pure-addition diff: uv pulled in a brand-new transitive dep without any
+# version change to an existing package.
+_DEPENDENCY_ADDITION_DIFF = " + brand-new-dep==1.0.0"
+
+# uv ran but moved nothing — only timing/summary noise, no `± pkg==ver` lines.
+_NO_PACKAGE_CHANGE_STDERR = "Resolved 5 packages in 12ms\nAudited 5 packages in 1ms"
+
 
 def test_install_script_fresh_install_hides_packages(tmp_path: Path) -> None:
     """A fresh install hides every dependency touched by uv."""
@@ -606,6 +615,75 @@ def test_install_script_upgrade_still_shows_diff(tmp_path: Path) -> None:
     assert "brand-new-dep" in proc.stderr
     assert "(new)" in proc.stderr
     assert "Installed 3 packages" not in proc.stderr
+
+
+def test_install_script_same_version_with_dependency_updates_says_dependencies_updated(
+    tmp_path: Path,
+) -> None:
+    """Unchanged app version + a uv dependency diff reports the deps were updated.
+
+    The fake `dcode -v` reports the same version before and after install, so
+    `PRE_VERSION == NEW_VERSION` and the same-version branch fires; the `± pkg==`
+    diff in stderr must steer it away from the flat "already up to date" message.
+    """
+    proc, _ = _invoke(
+        tmp_path,
+        {"FAKE_UV_INSTALL_STDERR": _DEPENDENCY_UPDATE_DIFF},
+        installed_version="0.1.8",
+        latest_version="0.1.20",
+    )
+
+    assert proc.returncode == 0
+    assert (
+        "deepagents-code 0.1.8 was already up to date; dependencies were updated"
+        in proc.stdout
+    )
+    assert "deepagents-code 0.1.8 already up to date" not in proc.stdout
+
+
+def test_install_script_same_version_no_dependency_changes_says_up_to_date(
+    tmp_path: Path,
+) -> None:
+    """Unchanged app version + no uv package diff keeps the flat no-op message.
+
+    The negative mirror of the dependency-update test: when uv runs but moves
+    nothing (only timing/summary noise), the flag must stay false so the plain
+    "already up to date" message is emitted. Guards against the flag defaulting
+    on, the conditional inverting, or the grep matching uv's noise lines.
+    """
+    proc, _ = _invoke(
+        tmp_path,
+        {"FAKE_UV_INSTALL_STDERR": _NO_PACKAGE_CHANGE_STDERR},
+        installed_version="0.1.8",
+        latest_version="0.1.20",
+    )
+
+    assert proc.returncode == 0
+    assert "deepagents-code 0.1.8 already up to date." in proc.stdout
+    assert "dependencies were updated" not in proc.stdout
+
+
+def test_install_script_same_version_with_new_dependency_says_dependencies_updated(
+    tmp_path: Path,
+) -> None:
+    """A pure-addition diff also counts as a dependency change.
+
+    A new transitive dep (a `+ pkg==` line with no matching `-`) trips the flag
+    just like an upgrade does, so the same-version branch reports the change
+    rather than a flat no-op. Pins this `+`-only semantics deliberately.
+    """
+    proc, _ = _invoke(
+        tmp_path,
+        {"FAKE_UV_INSTALL_STDERR": _DEPENDENCY_ADDITION_DIFF},
+        installed_version="0.1.8",
+        latest_version="0.1.20",
+    )
+
+    assert proc.returncode == 0
+    assert (
+        "deepagents-code 0.1.8 was already up to date; dependencies were updated"
+        in proc.stdout
+    )
 
 
 def test_install_script_upgrade_marks_removed_packages(tmp_path: Path) -> None:

@@ -376,27 +376,27 @@ console.log({ city, normalized });
 
 ```typescript
 /** Find users with the given name. */
-async function findUsersByName(input: {
+tools.findUsersByName(input: {
   name: string;
 }): Promise<unknown[]>
 
 /** Get the location id for a user. */
-async function getUserLocation(input: {
+tools.getUserLocation(input: {
   user_id: number;
 }): Promise<number>
 
 /** Get the city for a location. */
-async function getCityForLocation(input: {
+tools.getCityForLocation(input: {
   location_id: number;
 }): Promise<string>
 
 /** Normalize a user name for matching. */
-async function normalizeName(input: {
+tools.normalizeName(input: {
   name: string;
 }): Promise<string>
 
 /** Fetch the current weather for a city. */
-async function fetchWeather(input: {
+tools.fetchWeather(input: {
   city: string;
 }): Promise<string>
 ```

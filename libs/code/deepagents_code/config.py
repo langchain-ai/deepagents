@@ -754,17 +754,17 @@ Kept short so tracing metadata can never stall app flows.
 def _get_deepagents_version() -> str | None:
     """Read the installed Deep Agents SDK version from package metadata.
 
+    This intentionally calls `importlib.metadata.version` directly instead of
+    `resolve_sdk_version`: `config` is on the startup hot path, while
+    `resolve_sdk_version` lives in `extras_info` and imports `packaging`.
+
     Returns:
         The installed Deep Agents SDK version, or `None` when package metadata
-        is unavailable.
+            is unavailable.
     """
     try:
         return version("deepagents")
     except PackageNotFoundError:
-        logger.debug(
-            "Failed to read deepagents version from package metadata",
-            exc_info=True,
-        )
         return None
 
 

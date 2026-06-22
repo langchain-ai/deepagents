@@ -4,7 +4,7 @@ Run locally:  `make benchmark`
 Run with CodSpeed:  `uv run --group test pytest ./tests -m benchmark --codspeed`
 
 These tests measure throughput for many single-thread eval iterations where the
-workload combines PTC tool calls with ``console.log`` output.
+workload combines PTC tool calls with `console.log` output.
 """
 
 from __future__ import annotations
@@ -26,6 +26,8 @@ from tests.benchmarks._common import (
 )
 
 if TYPE_CHECKING:
+    from typing import Literal
+
     from pytest_benchmark.fixture import BenchmarkFixture
 
 
@@ -80,26 +82,26 @@ class TestQuickJSThroughputBenchmarks:
     @pytest.mark.throughput_benchmark
     @pytest.mark.parametrize("turn_count", [10, 50, 200], ids=lambda n: f"{n}_turns")
     @pytest.mark.parametrize(
-        "snapshot_between_turns",
-        [False, True],
-        ids=["snapshot_disabled", "snapshot_enabled"],
+        "mode",
+        ["turn", "thread"],
+        ids=["mode_turn", "mode_thread"],
     )
     def test_multi_turn_snapshot_throughput(
         self,
         benchmark: BenchmarkFixture,
         turn_count: int,
-        snapshot_between_turns: bool,
+        mode: Literal["thread", "turn"],
     ) -> None:
         """Measure throughput across explicit multi-turn REPL lifecycle calls."""
 
         def _run_round() -> None:
             values = run_counter_turns(
                 turn_count=turn_count,
-                snapshot_between_turns=snapshot_between_turns,
+                mode=mode,
             )
             assert_counter_turn_values(
                 values=values,
-                snapshot_between_turns=snapshot_between_turns,
+                mode=mode,
             )
 
         @benchmark
@@ -108,6 +110,6 @@ class TestQuickJSThroughputBenchmarks:
 
         benchmark.extra_info["thread_count"] = 1
         benchmark.extra_info["turn_count"] = turn_count
-        benchmark.extra_info["snapshot_between_turns"] = snapshot_between_turns
+        benchmark.extra_info["mode"] = mode
         benchmark.extra_info["workload"] = "multi_turn_snapshot_restore"
         self._record_turn_metrics(benchmark=benchmark, turns_per_round=turn_count)

@@ -113,6 +113,9 @@ def show_help() -> None:
     console.print(
         "  dcode update                              Check for and install updates"
     )
+    console.print(
+        "  dcode doctor                              Print install diagnostics"
+    )
     console.print()
 
     console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
@@ -449,6 +452,30 @@ def show_update_help() -> None:
     console.print("  dcode update")
     console.print("  dcode update --prerelease")
     console.print("  dcode update --json")
+    console.print()
+
+
+def show_doctor_help() -> None:
+    """Show help information for the `doctor` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode doctor [options]", markup=False)
+    console.print()
+    console.print(
+        "Print install health and diagnostics (versions, platform, install",
+    )
+    console.print(
+        "method, update status, and config locations). Runs offline and is",
+    )
+    console.print(
+        "safe to paste into a bug report.",
+    )
+    console.print()
+    _print_option_section()
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode doctor")
+    console.print("  dcode doctor --json")
     console.print()
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from deepagents.backends.state import StateBackend
@@ -264,9 +264,8 @@ def test_system_prompt_omits_subagent_guidance_when_disabled() -> None:
     assert "await task({" not in sys_text
 
 
-def test_system_prompt_mentions_single_turn_when_snapshots_disabled() -> None:
-    with pytest.warns(DeprecationWarning, match="snapshot_between_turns"):
-        mw = CodeInterpreterMiddleware(snapshot_between_turns=False)
+def test_system_prompt_mentions_single_turn_for_mode_turn() -> None:
+    mw = CodeInterpreterMiddleware(mode="turn")
     assert "DO NOT persist across multiple turns" in mw._base_prompt(ptc_attached=False)
 
 
@@ -277,47 +276,24 @@ def test_system_prompt_mentions_mode_call() -> None:
     assert "does not persist across tool calls" in base_prompt
 
 
-def test_mode_call_defaults_snapshot_between_turns_to_false() -> None:
-    mw = CodeInterpreterMiddleware(mode="call")
-    assert mw._snapshot_between_turns is False
+def test_default_mode_is_thread() -> None:
+    mw = CodeInterpreterMiddleware()
+    assert mw._mode == "thread"
 
 
-def test_mode_turn_defaults_snapshot_between_turns_to_false() -> None:
+def test_mode_turn_is_stored() -> None:
     mw = CodeInterpreterMiddleware(mode="turn")
-    assert mw._snapshot_between_turns is False
-
-
-def test_snapshot_between_turns_false_resolves_to_mode_turn() -> None:
-    with pytest.warns(DeprecationWarning, match="snapshot_between_turns"):
-        mw = CodeInterpreterMiddleware(snapshot_between_turns=False)
     assert mw._mode == "turn"
 
 
-def test_snapshot_between_turns_emits_deprecation_warning() -> None:
-    with pytest.warns(DeprecationWarning, match="snapshot_between_turns"):
-        CodeInterpreterMiddleware(snapshot_between_turns=True)
+def test_mode_call_is_stored() -> None:
+    mw = CodeInterpreterMiddleware(mode="call")
+    assert mw._mode == "call"
 
 
-def test_mode_call_with_snapshot_between_turns_true_raises() -> None:
-    with (
-        pytest.warns(DeprecationWarning, match="snapshot_between_turns"),
-        pytest.raises(ValueError, match="incompatible"),
-    ):
-        CodeInterpreterMiddleware(
-            mode="call",
-            snapshot_between_turns=True,
-        )
-
-
-def test_mode_thread_with_snapshot_between_turns_false_raises() -> None:
-    with (
-        pytest.warns(DeprecationWarning, match="snapshot_between_turns"),
-        pytest.raises(ValueError, match="incompatible"),
-    ):
-        CodeInterpreterMiddleware(
-            mode="thread",
-            snapshot_between_turns=False,
-        )
+def test_rejects_invalid_mode() -> None:
+    with pytest.raises(ValueError, match="must be one of"):
+        CodeInterpreterMiddleware(mode="session")  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -685,7 +661,7 @@ def test_per_thread_slot_has_own_worker_and_runtime() -> None:
 
 
 def test_evict_closes_and_removes_slot() -> None:
-    """``evict`` closes the runtime and drops the slot from the registry."""
+    """`evict` closes the runtime and drops the slot from the registry."""
     reg = _Registry(
         memory_limit=32 * 1024 * 1024,
         timeout=5.0,
@@ -709,7 +685,7 @@ def test_evict_closes_and_removes_slot() -> None:
 
 
 def test_evict_returns_fresh_slot_on_next_get() -> None:
-    """After eviction, ``get`` rebuilds a new slot for the same thread_id."""
+    """After eviction, `get` rebuilds a new slot for the same thread_id."""
     reg = _Registry(
         memory_limit=32 * 1024 * 1024,
         timeout=5.0,
@@ -743,7 +719,7 @@ def test_evict_unknown_thread_id_is_noop() -> None:
 
 
 async def test_aevict_closes_and_removes_slot() -> None:
-    """``aevict`` closes the runtime via the worker loop and drops the slot."""
+    """`aevict` closes the runtime via the worker loop and drops the slot."""
     reg = _Registry(
         memory_limit=32 * 1024 * 1024,
         timeout=5.0,
@@ -767,7 +743,7 @@ async def test_aevict_closes_and_removes_slot() -> None:
 
 
 def test_after_agent_evicts_current_thread_slot() -> None:
-    """``after_agent`` snapshots state and evicts the resolved thread slot."""
+    """`after_agent` snapshots state and evicts the resolved thread slot."""
     mw = CodeInterpreterMiddleware()
     try:
         # Force a slot to exist for the middleware's fallback thread id.
@@ -776,14 +752,17 @@ def test_after_agent_evicts_current_thread_slot() -> None:
         assert mw._fallback_thread_id in mw._registry._slots
         update = mw.after_agent(state={}, runtime=MagicMock())
         assert isinstance(update, dict)
-        assert isinstance(update["_quickjs_snapshot_payload"], bytes)
+        # First write (no prior snapshot) is a full anchor record.
+        kind, blob = update["_quickjs_snapshot_payload"]
+        assert kind == "snap"
+        assert isinstance(blob, bytes)
         assert mw._fallback_thread_id not in mw._registry._slots
     finally:
         mw._registry.close()
 
 
 async def test_aafter_agent_evicts_current_thread_slot() -> None:
-    """``aafter_agent`` snapshots state and evicts the resolved thread slot."""
+    """`aafter_agent` snapshots state and evicts the resolved thread slot."""
     mw = CodeInterpreterMiddleware()
     try:
         repl = mw._registry.get(mw._fallback_thread_id)
@@ -791,129 +770,10 @@ async def test_aafter_agent_evicts_current_thread_slot() -> None:
         assert mw._fallback_thread_id in mw._registry._slots
         update = await mw.aafter_agent(state={}, runtime=MagicMock())
         assert isinstance(update, dict)
-        assert isinstance(update["_quickjs_snapshot_payload"], bytes)
+        kind, blob = update["_quickjs_snapshot_payload"]
+        assert kind == "snap"
+        assert isinstance(blob, bytes)
         assert mw._fallback_thread_id not in mw._registry._slots
-    finally:
-        mw._registry.close()
-
-
-def test_after_agent_snapshot_roundtrip_with_before_agent() -> None:
-    """Snapshots from ``after_agent`` restore into fresh slots in ``before_agent``."""
-    mw = CodeInterpreterMiddleware()
-    try:
-        repl = mw._registry.get(mw._fallback_thread_id)
-        repl.eval_sync("const answer = 42")
-        update = mw.after_agent(state={}, runtime=MagicMock())
-        assert isinstance(update, dict)
-        assert mw._fallback_thread_id not in mw._registry._slots
-
-        before_update = mw.before_agent(state=update, runtime=MagicMock())
-        assert before_update is None
-        restored = mw._registry.get(mw._fallback_thread_id)
-        assert restored.eval_sync("answer").result == "42"
-    finally:
-        mw._registry.close()
-
-
-async def test_aafter_agent_snapshot_roundtrip_with_abefore_agent() -> None:
-    """Async snapshot roundtrip restores state in a fresh slot."""
-    mw = CodeInterpreterMiddleware()
-    try:
-        repl = mw._registry.get(mw._fallback_thread_id)
-        await repl.eval_async("const answer = 42")
-        update = await mw.aafter_agent(state={}, runtime=MagicMock())
-        assert isinstance(update, dict)
-        assert mw._fallback_thread_id not in mw._registry._slots
-
-        before_update = await mw.abefore_agent(state=update, runtime=MagicMock())
-        assert before_update is None
-        restored = mw._registry.get(mw._fallback_thread_id)
-        assert restored.eval_sync("answer").result == "42"
-    finally:
-        mw._registry.close()
-
-
-def test_before_agent_clears_payload_on_restore_failure() -> None:
-    mw = CodeInterpreterMiddleware()
-    try:
-        update = mw.before_agent(
-            state={"_quickjs_snapshot_payload": b"not-a-snapshot"},
-            runtime=MagicMock(),
-        )
-        assert update == {"_quickjs_snapshot_payload": None}
-    finally:
-        mw._registry.close()
-
-
-def test_after_agent_clears_payload_on_snapshot_failure() -> None:
-    mw = CodeInterpreterMiddleware()
-    try:
-        repl = mw._registry.get(mw._fallback_thread_id)
-        with patch.object(repl, "create_snapshot", side_effect=RuntimeError("boom")):
-            update = mw.after_agent(state={}, runtime=MagicMock())
-        assert update == {"_quickjs_snapshot_payload": None}
-        assert mw._fallback_thread_id not in mw._registry._slots
-    finally:
-        mw._registry.close()
-
-
-def test_after_agent_drops_payload_above_snapshot_size_cap() -> None:
-    mw = CodeInterpreterMiddleware(max_snapshot_bytes=4)
-    try:
-        repl = mw._registry.get(mw._fallback_thread_id)
-        with patch.object(repl, "create_snapshot", return_value=b"12345"):
-            update = mw.after_agent(state={}, runtime=MagicMock())
-        assert update == {"_quickjs_snapshot_payload": None}
-        assert mw._fallback_thread_id not in mw._registry._slots
-    finally:
-        mw._registry.close()
-
-
-async def test_aafter_agent_drops_payload_above_snapshot_size_cap() -> None:
-    mw = CodeInterpreterMiddleware(max_snapshot_bytes=4)
-    try:
-        repl = mw._registry.get(mw._fallback_thread_id)
-        with patch.object(
-            repl,
-            "acreate_snapshot",
-            new=AsyncMock(return_value=b"12345"),
-        ):
-            update = await mw.aafter_agent(state={}, runtime=MagicMock())
-        assert update == {"_quickjs_snapshot_payload": None}
-        assert mw._fallback_thread_id not in mw._registry._slots
-    finally:
-        mw._registry.close()
-
-
-def test_snapshot_between_turns_disabled_keeps_reset_behavior() -> None:
-    with pytest.warns(DeprecationWarning, match="snapshot_between_turns"):
-        mw = CodeInterpreterMiddleware(snapshot_between_turns=False)
-    try:
-        repl = mw._registry.get(mw._fallback_thread_id)
-        repl.eval_sync("globalThis.answer = 42")
-        update = mw.after_agent(state={}, runtime=MagicMock())
-        assert update is None
-        assert mw._fallback_thread_id not in mw._registry._slots
-
-        before_update = mw.before_agent(
-            state={"_quickjs_snapshot_payload": b"ignored"},
-            runtime=MagicMock(),
-        )
-        assert before_update is None
-        assert mw._registry.get_if_exists(mw._fallback_thread_id) is None
-    finally:
-        mw._registry.close()
-
-
-def test_mode_call_ignores_snapshot_payload() -> None:
-    mw = CodeInterpreterMiddleware(mode="call")
-    try:
-        before_update = mw.before_agent(
-            state={"_quickjs_snapshot_payload": b"ignored"},
-            runtime=MagicMock(),
-        )
-        assert before_update is None
-        assert mw._registry.get_if_exists(mw._fallback_thread_id) is None
     finally:
         mw._registry.close()
 
@@ -955,7 +815,7 @@ async def test_mode_call_resets_state_between_tool_calls() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Async path (v0.2 native ``eval_async``)
+# Async path (v0.2 native `eval_async`)
 # ---------------------------------------------------------------------------
 
 
@@ -1417,7 +1277,7 @@ async def test_async_deadlock_detection(repl: _ThreadREPL) -> None:
 
 async def test_async_concurrent_calls_surface_error(repl: _ThreadREPL) -> None:
     """Overlapping async evals on the same context surface as
-    ``ConcurrentEvalError`` rather than silently serialising.
+    `ConcurrentEvalError` rather than silently serialising.
 
     A model issuing overlapping evals against shared state is almost
     always a prompting bug; a loud failure is a better signal than
@@ -1448,6 +1308,6 @@ async def test_async_concurrent_calls_surface_error(repl: _ThreadREPL) -> None:
 
 
 def test_sync_path_still_works(repl: _ThreadREPL) -> None:
-    """After the v0.2 split, the sync path continues to use ``ctx.eval``."""
+    """After the v0.2 split, the sync path continues to use `ctx.eval`."""
     repl.eval_sync("let n = 7")
     assert repl.eval_sync("n * 6").result == "42"

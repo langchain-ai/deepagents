@@ -160,11 +160,11 @@ class TestPathStatus:
 
         from deepagents_code.doctor import _path_status
 
-        def _raise(self: Path) -> bool:  # noqa: ARG001  # must match Path.exists signature
+        def _raise(self: Path) -> object:  # noqa: ARG001  # must match Path.stat signature
             msg = "permission denied"
             raise PermissionError(msg)
 
-        monkeypatch.setattr(Path, "exists", _raise)
+        monkeypatch.setattr(Path, "stat", _raise)
         item = _path_status("Config file", "/some/protected/path")
         assert item.ok is False
         assert "unreadable" in item.value

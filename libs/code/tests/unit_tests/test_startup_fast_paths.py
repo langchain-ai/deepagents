@@ -46,24 +46,25 @@ def _run_cli_main(argv: list[str]) -> subprocess.CompletedProcess[str]:
         from deepagents_code.main import cli_main
 
         argv = ["deepagents", *json.loads(sys.argv[1])]
-        with (
-            patch.object(sys, "argv", argv),
-            patch("deepagents_code.main.check_cli_dependencies"),
-        ):
-            cli_main()
-
-        prefixes = tuple(json.loads(sys.argv[2]))
-        loaded = sorted(
-            name for name in sys.modules if name.startswith(prefixes)
-        )
-        config_module = sys.modules.get("deepagents_code.config")
-        bootstrap_done = (
-            getattr(config_module, "_bootstrap_done", None)
-            if config_module is not None
-            else None
-        )
-        print("LOADED_MODULES=" + json.dumps(loaded), file=sys.stderr)
-        print("BOOTSTRAP_DONE=" + json.dumps(bootstrap_done), file=sys.stderr)
+        try:
+            with (
+                patch.object(sys, "argv", argv),
+                patch("deepagents_code.main.check_cli_dependencies"),
+            ):
+                cli_main()
+        finally:
+            prefixes = tuple(json.loads(sys.argv[2]))
+            loaded = sorted(
+                name for name in sys.modules if name.startswith(prefixes)
+            )
+            config_module = sys.modules.get("deepagents_code.config")
+            bootstrap_done = (
+                getattr(config_module, "_bootstrap_done", None)
+                if config_module is not None
+                else None
+            )
+            print("LOADED_MODULES=" + json.dumps(loaded), file=sys.stderr)
+            print("BOOTSTRAP_DONE=" + json.dumps(bootstrap_done), file=sys.stderr)
     """
     return subprocess.run(
         [
@@ -118,6 +119,20 @@ def test_help_only_commands_skip_runtime_imports(
     # In neither case may the heavy settings/dotenv path have executed.
     assert bootstrap_done in (None, False), (
         f"settings bootstrap must not run on the fast path; got {bootstrap_done!r}"
+    )
+
+
+def test_doctor_skips_settings_bootstrap() -> None:
+    """`doctor` should stay on the lightweight diagnostic path."""
+    result = _run_cli_main(["doctor", "--json"])
+
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    assert data["command"] == "doctor"
+
+    bootstrap_done = _read_marker(result.stderr, "BOOTSTRAP_DONE=")
+    assert bootstrap_done in (None, False), (
+        f"settings bootstrap must not run for doctor; got {bootstrap_done!r}"
     )
 
 

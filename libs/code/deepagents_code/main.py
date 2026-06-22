@@ -2243,6 +2243,11 @@ def cli_main() -> None:
         if _show_bare_command_group_help(args):
             return
 
+        if args.command == "doctor":
+            from deepagents_code.doctor import run_doctor_command
+
+            sys.exit(run_doctor_command(args))
+
         # Best-effort, idempotent migration. Placed after parse_args and the
         # bare-help fast path so --help / --version / `deepagents <group>`
         # exit before any I/O. Wrapped broadly so an unexpected non-OSError
@@ -2359,11 +2364,6 @@ def cli_main() -> None:
             from deepagents_code.auth_commands import run_auth_command
 
             sys.exit(run_auth_command(args))
-
-        if args.command == "doctor":
-            from deepagents_code.doctor import run_doctor_command
-
-            sys.exit(run_doctor_command(args))
 
         # Apply shell-allow-list from command line if provided (overrides env var)
         if args.shell_allow_list:

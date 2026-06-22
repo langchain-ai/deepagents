@@ -477,9 +477,9 @@ def _config_paths() -> list[tuple[str, Any, bool]]:
     for label, path in candidates:
         if path is None:
             continue
-        # `classify_path` swallows the OSError a bare `.exists()` would raise on
-        # an unreadable path (logging it at debug). `config path` reports a
-        # plain exists/missing bool, so an unreadable path collapses to missing.
+        # `classify_path` logs unreadable paths at debug level. `config path`
+        # reports a plain exists/missing bool, so unreadable still collapses to
+        # missing here while `doctor` can surface it as a problem.
         exists = classify_path(path) is PathState.EXISTS
         rows.append((label, path, exists))
     return rows

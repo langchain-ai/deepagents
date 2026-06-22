@@ -25,18 +25,17 @@ class TestClassifyPath:
         assert classify_path(tmp_path / "absent") is PathState.MISSING
 
     def test_unreadable_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """An OSError from `Path.exists()` classifies as UNREADABLE.
+        """An OSError from `Path.stat()` classifies as UNREADABLE.
 
-        Simulates EACCES on a parent directory (which `Path.exists()` does not
-        swallow) rather than relying on chmod, which is ignored when running
-        as root and varies by platform.
+        Simulates EACCES on a parent directory rather than relying on chmod,
+        which is ignored when running as root and varies by platform.
         """
 
-        def _raise(self: Path) -> bool:  # noqa: ARG001  # must match Path.exists signature
+        def _raise(self: Path) -> object:  # noqa: ARG001  # must match Path.stat signature
             msg = "permission denied"
             raise PermissionError(msg)
 
-        monkeypatch.setattr(Path, "exists", _raise)
+        monkeypatch.setattr(Path, "stat", _raise)
         assert classify_path(Path("/anything")) is PathState.UNREADABLE
 
     def test_state_value_is_json_friendly(self) -> None:

@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import bsdiff4
-import pytest
 from langchain.agents import create_agent
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
@@ -483,9 +482,8 @@ def test_delta_channel_resume_from_history_reconstructs_state() -> None:
     assert any(getattr(m, "content", None) == "done" for m in final["messages"])
 
 
-def test_snapshot_between_turns_disabled_keeps_reset_behavior() -> None:
-    with pytest.warns(DeprecationWarning, match="snapshot_between_turns"):
-        mw = CodeInterpreterMiddleware(snapshot_between_turns=False)
+def test_mode_turn_keeps_reset_behavior() -> None:
+    mw = CodeInterpreterMiddleware(mode="turn")
     try:
         repl = mw._registry.get(mw._fallback_thread_id)
         repl.eval_sync("globalThis.answer = 42")

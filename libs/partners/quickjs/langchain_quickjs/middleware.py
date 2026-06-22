@@ -56,7 +56,7 @@ _DEFAULT_TOOL_NAME = "eval"
 class REPLState(AgentState):
     """State schema for `CodeInterpreterMiddleware`."""
 
-    _quickjs_slot_id: NotRequired[Annotated[str | None, PrivateStateAttr]]
+    _quickjs_slot_id: NotRequired[Annotated[str, PrivateStateAttr]]
     _quickjs_snapshot_payload: NotRequired[
         Annotated[
             bytes,
@@ -277,10 +277,6 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         self._base_prompt_cache: dict[bool, str] = {}
         self._ptc_prompt_cache: tuple[frozenset[str], str] | None = None
         self._ptc_tools_by_slot: dict[str, tuple[BaseTool, ...]] = {}
-        self._fallback_slot_id = _new_slot_id()
-        # Backward-compatible alias for tests and private consumers that
-        # reached into the old thread-keyed implementation.
-        self._fallback_thread_id = self._fallback_slot_id
         self.tools: list[BaseTool] = [self._build_tool()]
 
     def _build_tool(self) -> BaseTool:
@@ -304,7 +300,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             runtime: ToolRuntime[None, Any],
             code: Annotated[str, code_doc],
         ) -> ToolMessage:
-            slot_id = middleware._slot_id_for_state(runtime.state)
+            slot_id = middleware._slot_id(runtime.state)
             repl = middleware._repl_for_eval(slot_id)
             try:
                 outcome = repl.eval_sync(
@@ -320,7 +316,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             runtime: ToolRuntime[None, Any],
             code: Annotated[str, code_doc],
         ) -> ToolMessage:
-            slot_id = middleware._slot_id_for_state(runtime.state)
+            slot_id = middleware._slot_id(runtime.state)
             repl = middleware._repl_for_eval(slot_id)
             try:
                 outcome = await repl.eval_async(
@@ -360,16 +356,19 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             repl.install_tools(list(self._ptc_tools_by_slot.get(slot_id, ())))
         return repl
 
-    def _slot_id_for_state(
+    def _slot_id(
         self,
         state: dict[str, Any] | None,
     ) -> str:
-        """Return the private interpreter slot id for a state/config pair."""
-        state = state or {}
-        slot_id = state.get("_quickjs_slot_id")
+        """Return the private interpreter slot initialized by `before_agent`."""
+        slot_id = state.get("_quickjs_slot_id") if isinstance(state, dict) else None
         if isinstance(slot_id, str) and slot_id:
             return slot_id
-        return self._fallback_slot_id
+        msg = (
+            "QuickJS private state is missing `_quickjs_slot_id`; "
+            "`CodeInterpreterMiddleware.before_agent` must run before eval."
+        )
+        raise ValueError(msg)
 
     def _slot_update_for_runtime(self) -> dict[str, str]:
         """Build a private state update with a fresh slot id when needed."""
@@ -501,7 +500,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             self_tool_name=self._tool_name,
         )
         prompt = self._base_prompt(ptc_attached=bool(exposed)) + subagent_section
-        slot_id = self._slot_id_for_state(getattr(request, "state", None))
+        slot_id = self._slot_id(getattr(request, "state", None))
         repl = self._registry.get(slot_id)
         repl.install_tools(exposed)
         self._ptc_tools_by_slot[slot_id] = tuple(exposed)
@@ -547,7 +546,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Snapshot REPL state (optional) and evict this turn's REPL slot."""
-        slot_id = self._slot_id_for_state(state)
+        slot_id = self._slot_id(state)
         self._ptc_tools_by_slot.pop(slot_id, None)
         if self._reset_between_calls or not self._snapshot_between_turns:
             self._registry.evict(slot_id)
@@ -581,7 +580,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Async variant of `after_agent` snapshot+evict behavior."""
-        slot_id = self._slot_id_for_state(state)
+        slot_id = self._slot_id(state)
         self._ptc_tools_by_slot.pop(slot_id, None)
         if self._reset_between_calls or not self._snapshot_between_turns:
             await self._registry.aevict(slot_id)

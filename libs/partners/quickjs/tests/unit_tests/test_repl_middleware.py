@@ -78,6 +78,14 @@ def repl(worker: ThreadWorker, runtime: Runtime) -> _ThreadREPL:
     )
 
 
+def _new_slot_state(mw: CodeInterpreterMiddleware) -> dict[str, Any]:
+    update = mw.before_agent(state={}, runtime=MagicMock())
+    assert isinstance(update, dict)
+    slot_id = update.get("_quickjs_slot_id")
+    assert isinstance(slot_id, str)
+    return {"_quickjs_slot_id": slot_id}
+
+
 # ---------------------------------------------------------------------------
 # Registration + system prompt
 # ---------------------------------------------------------------------------
@@ -770,17 +778,18 @@ def test_after_agent_evicts_current_thread_slot() -> None:
     """`after_agent` snapshots state and evicts the resolved thread slot."""
     mw = CodeInterpreterMiddleware()
     try:
-        # Force a slot to exist for the middleware's fallback thread id.
-        repl = mw._registry.get(mw._fallback_thread_id)
+        state = _new_slot_state(mw)
+        slot_id = state["_quickjs_slot_id"]
+        repl = mw._registry.get(slot_id)
         repl.eval_sync("globalThis.counter = 10")
-        assert mw._fallback_thread_id in mw._registry._slots
-        update = mw.after_agent(state={}, runtime=MagicMock())
+        assert slot_id in mw._registry._slots
+        update = mw.after_agent(state=state, runtime=MagicMock())
         assert isinstance(update, dict)
         # First write (no prior snapshot) is a full anchor record.
         kind, blob = update["_quickjs_snapshot_payload"]
         assert kind == "snap"
         assert isinstance(blob, bytes)
-        assert mw._fallback_thread_id not in mw._registry._slots
+        assert slot_id not in mw._registry._slots
     finally:
         mw._registry.close()
 
@@ -789,15 +798,17 @@ async def test_aafter_agent_evicts_current_thread_slot() -> None:
     """`aafter_agent` snapshots state and evicts the resolved thread slot."""
     mw = CodeInterpreterMiddleware()
     try:
-        repl = mw._registry.get(mw._fallback_thread_id)
+        state = _new_slot_state(mw)
+        slot_id = state["_quickjs_slot_id"]
+        repl = mw._registry.get(slot_id)
         repl.eval_sync("globalThis.counter = 10")
-        assert mw._fallback_thread_id in mw._registry._slots
-        update = await mw.aafter_agent(state={}, runtime=MagicMock())
+        assert slot_id in mw._registry._slots
+        update = await mw.aafter_agent(state=state, runtime=MagicMock())
         assert isinstance(update, dict)
         kind, blob = update["_quickjs_snapshot_payload"]
         assert kind == "snap"
         assert isinstance(blob, bytes)
-        assert mw._fallback_thread_id not in mw._registry._slots
+        assert slot_id not in mw._registry._slots
     finally:
         mw._registry.close()
 
@@ -806,6 +817,46 @@ async def test_mode_call_resets_state_between_tool_calls() -> None:
     mw = CodeInterpreterMiddleware(mode="call")
     try:
         tool = mw.tools[0]
+        state = _new_slot_state(mw)
+        slot_id = state["_quickjs_slot_id"]
+        runtime = ToolRuntime(
+            state=state,
+            context={},
+            config={},
+            stream_writer=lambda _chunk: None,
+            tools=[tool],
+            tool_call_id="outer_eval_call",
+            store=None,
+        )
+        assert tool.coroutine is not None
+        first_repl = mw._registry.get(slot_id)
+        first_runtime = mw._registry._slots[slot_id].runtime
+        first = await tool.coroutine(
+            runtime=runtime,
+            code="globalThis.answer = 42; answer",
+        )
+        assert "<result>42</result>" in first.content
+        after_first = mw._registry.get_if_exists(slot_id)
+        assert after_first is not None
+        assert after_first is not first_repl
+        assert mw._registry._slots[slot_id].runtime is first_runtime
+
+        second = await tool.coroutine(runtime=runtime, code="typeof answer")
+        assert "<result>undefined</result>" in second.content
+        after_second = mw._registry.get_if_exists(slot_id)
+        assert after_second is not None
+        assert after_second is not after_first
+        assert mw._registry._slots[slot_id].runtime is first_runtime
+    finally:
+        mw._registry.close()
+
+
+async def test_eval_without_middleware_initialized_slot_fails_fast() -> None:
+    """Eval should not create hidden fallback interpreter state."""
+    mw = CodeInterpreterMiddleware()
+    try:
+        tool = mw.tools[0]
+        assert tool.coroutine is not None
         runtime = ToolRuntime(
             state={},
             context={},
@@ -815,25 +866,9 @@ async def test_mode_call_resets_state_between_tool_calls() -> None:
             tool_call_id="outer_eval_call",
             store=None,
         )
-        assert tool.coroutine is not None
-        first_repl = mw._registry.get(mw._fallback_thread_id)
-        first_runtime = mw._registry._slots[mw._fallback_thread_id].runtime
-        first = await tool.coroutine(
-            runtime=runtime,
-            code="globalThis.answer = 42; answer",
-        )
-        assert "<result>42</result>" in first.content
-        after_first = mw._registry.get_if_exists(mw._fallback_thread_id)
-        assert after_first is not None
-        assert after_first is not first_repl
-        assert mw._registry._slots[mw._fallback_thread_id].runtime is first_runtime
-
-        second = await tool.coroutine(runtime=runtime, code="typeof answer")
-        assert "<result>undefined</result>" in second.content
-        after_second = mw._registry.get_if_exists(mw._fallback_thread_id)
-        assert after_second is not None
-        assert after_second is not after_first
-        assert mw._registry._slots[mw._fallback_thread_id].runtime is first_runtime
+        with pytest.raises(ValueError, match="before_agent"):
+            await tool.coroutine(runtime=runtime, code="1 + 1")
+        assert mw._registry._slots == {}
     finally:
         mw._registry.close()
 
@@ -982,10 +1017,19 @@ async def test_eval_tool_does_not_install_subagent_when_disabled() -> None:
     try:
         tool = mw.tools[0]
         assert tool.coroutine is not None
-        runtime = _subagent_runtime(
+        task_tool = _task_tool_for_runnable(
             RunnableLambda(
                 lambda _state, _config: {"messages": [AIMessage(content="ok")]}
             )
+        )
+        runtime = ToolRuntime(
+            state=_new_slot_state(mw),
+            context={},
+            config={"configurable": {}},
+            stream_writer=lambda _chunk: None,
+            tools=[task_tool],
+            tool_call_id="outer_eval_call",
+            store=None,
         )
 
         result = await tool.coroutine(runtime=runtime, code="typeof task")

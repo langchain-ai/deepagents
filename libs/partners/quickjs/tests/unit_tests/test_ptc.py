@@ -602,7 +602,8 @@ def test_middleware_ptc_list_includes_prompt_block() -> None:
     from types import SimpleNamespace
 
     mw = CodeInterpreterMiddleware(ptc=["greet", "eval"])
-    req = SimpleNamespace(tools=[_greet_tool(), _echo_tool("eval")])
+    state = {"_quickjs_slot_id": "ptc-prompt"}
+    req = SimpleNamespace(tools=[_greet_tool(), _echo_tool("eval")], state=state)
     prompt = mw._prepare_for_call(req)
     # Greet included
     assert "tools.greet(" in prompt
@@ -615,28 +616,33 @@ def test_middleware_ptc_list_of_tools_exposes_without_agent_tools() -> None:
     from types import SimpleNamespace
 
     mw = CodeInterpreterMiddleware(ptc=[_greet_tool()])
-    req = SimpleNamespace(tools=[])
+    state = {"_quickjs_slot_id": "ptc-tool-only"}
+    req = SimpleNamespace(tools=[], state=state)
     prompt = mw._prepare_for_call(req)
     assert "tools.greet(" in prompt
+
+
+def test_middleware_ptc_requires_private_slot_state() -> None:
+    from types import SimpleNamespace
+
+    mw = CodeInterpreterMiddleware(ptc=["greet"])
+    with pytest.raises(ValueError, match="_quickjs_slot_id"):
+        mw._prepare_for_call(SimpleNamespace(tools=[_greet_tool()]))
 
 
 async def test_ptc_install_and_eval_resolve_to_same_repl() -> None:
     """PTC install and the eval tool must see the same REPL instance.
 
-    Regression: without a stable fallback thread id, each call to
-    `_resolve_thread_id` minted a fresh UUID, so `wrap_model_call`
-    installed tools on one REPL and the eval ran on another — JS saw
-    `ReferenceError: tools is not defined`.
+    Regression: PTC installation must use the private slot id that the eval
+    tool reads from runtime state, not a shared middleware fallback.
     """
     from types import SimpleNamespace
 
     mw = CodeInterpreterMiddleware(ptc=["greet", "eval"])
-    # Simulate a model-call turn without any langgraph config present.
-    req = SimpleNamespace(tools=[_greet_tool(), _echo_tool("eval")])
+    state = {"_quickjs_slot_id": "ptc-shared-slot"}
+    req = SimpleNamespace(tools=[_greet_tool(), _echo_tool("eval")], state=state)
     mw._prepare_for_call(req)
-    # Now invoke the eval tool directly via the middleware-owned registry.
-    # The resolver should return the *same* REPL instance.
-    first = mw._registry.get(mw._fallback_thread_id)
+    first = mw._registry.get(state["_quickjs_slot_id"])
     outcome = await first.eval_async("typeof tools.greet")
     assert outcome.error_type is None, outcome.error_message
     assert outcome.result == "function"
@@ -650,9 +656,10 @@ async def test_middleware_eval_tool_returns_tool_message_only() -> None:
     command_tool = _command_tool()
     mw = CodeInterpreterMiddleware(ptc=[command_tool])
     tool = mw.tools[0]
-    mw._prepare_for_call(SimpleNamespace(tools=[command_tool, tool]))
+    state = {"_quickjs_slot_id": "ptc-command-slot"}
+    mw._prepare_for_call(SimpleNamespace(tools=[command_tool, tool], state=state))
     runtime = ToolRuntime(
-        state={},
+        state=state,
         context={},
         config={},
         stream_writer=lambda _chunk: None,
@@ -678,9 +685,10 @@ async def test_mode_call_reinstalls_ptc_tools_for_each_eval_call() -> None:
     greet_tool = _greet_tool()
     mw = CodeInterpreterMiddleware(ptc=[greet_tool], mode="call")
     tool = mw.tools[0]
-    mw._prepare_for_call(SimpleNamespace(tools=[greet_tool, tool]))
+    state = {"_quickjs_slot_id": "ptc-call-slot"}
+    mw._prepare_for_call(SimpleNamespace(tools=[greet_tool, tool], state=state))
     runtime = ToolRuntime(
-        state={},
+        state=state,
         context={},
         config={},
         stream_writer=lambda _chunk: None,

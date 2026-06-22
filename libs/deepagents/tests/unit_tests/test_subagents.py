@@ -338,7 +338,6 @@ class TestSubAgents:
             state_schema = _LocalPrivateState
 
             def before_agent(self, state: _LocalPrivateState, runtime: object) -> dict[str, Any] | None:
-                del runtime
                 if "shared_value" in state:
                     return None
                 return {"shared_value": "seeded"}
@@ -427,7 +426,6 @@ class TestSubAgents:
             state_schema = _ChildCaptureState
 
             def before_agent(self, state: _ChildCaptureState, runtime: object) -> dict[str, Any] | None:
-                del runtime
                 captured_child_states.append(dict(state))
                 return None
 
@@ -435,7 +433,6 @@ class TestSubAgents:
             state_schema = _ParentPrivateState
 
             def before_agent(self, state: _ParentPrivateState, runtime: object) -> dict[str, Any] | None:
-                del runtime
                 if "shared_value" in state:
                     return None
                 return {"shared_value": "parent-secret"}

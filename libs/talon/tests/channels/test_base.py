@@ -13,9 +13,10 @@ from deepagents_talon.channels.base import (
     format_markdown_for_channel,
     max_media_bytes_from_env,
     message_with_media_paths,
+    send_with_retry,
     validate_media,
 )
-from deepagents_talon.interfaces import ChannelMedia, ChannelMessage
+from deepagents_talon.interfaces import ChannelMedia, ChannelMessage, SendResult
 
 
 def test_default_exposure_allows_only_self_messages() -> None:
@@ -157,3 +158,28 @@ def test_max_media_bytes_from_env_accepts_positive_integer() -> None:
 def test_max_media_bytes_from_env_rejects_invalid_values() -> None:
     with pytest.raises(ValueError, match="positive integer"):
         max_media_bytes_from_env({"DEEPAGENTS_TALON_MAX_MEDIA_BYTES": "0"})
+
+
+async def test_send_with_retry_treats_none_return_as_success() -> None:
+    async def legacy_send() -> None:
+        return None
+
+    result = await send_with_retry(legacy_send)
+
+    assert result.success is True
+
+
+async def test_send_with_retry_treats_none_return_as_success_on_retry() -> None:
+    calls = 0
+
+    async def flaky_legacy_send() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return SendResult(success=False, error="connection error", retryable=True)
+        return None
+
+    result = await send_with_retry(flaky_legacy_send, base_delay=0.01)
+
+    assert result.success is True
+    assert calls == 2

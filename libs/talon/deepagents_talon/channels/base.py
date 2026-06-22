@@ -523,7 +523,7 @@ def is_retryable_error(error: str | None) -> bool:
 
 
 async def send_with_retry(
-    send_fn: Callable[[], Awaitable[SendResult]],
+    send_fn: Callable[[], Awaitable[SendResult | None]],
     *,
     max_retries: int = 2,
     base_delay: float = 2.0,
@@ -538,7 +538,7 @@ async def send_with_retry(
     Returns:
         The final `SendResult` from the send function.
     """
-    result = await send_fn()
+    result = _normalize_send_result(await send_fn())
     if result.success:
         return result
     if not (result.retryable or is_retryable_error(result.error)):
@@ -546,9 +546,23 @@ async def send_with_retry(
     for attempt in range(1, max_retries + 1):
         delay = base_delay * (2 ** (attempt - 1))
         await asyncio.sleep(delay)
-        result = await send_fn()
+        result = _normalize_send_result(await send_fn())
         if result.success:
             return result
         if not (result.retryable or is_retryable_error(result.error)):
             return result
+    return result
+
+
+def _normalize_send_result(result: SendResult | None) -> SendResult:
+    """Normalize a send result, treating ``None`` as success for legacy adapters.
+
+    Args:
+        result: Return value from a channel send method, or ``None``.
+
+    Returns:
+        The original result, or a success result when the adapter returned ``None``.
+    """
+    if result is None:
+        return SendResult(success=True)
     return result

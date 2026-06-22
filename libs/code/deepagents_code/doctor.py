@@ -57,16 +57,21 @@ def _platform_tag() -> str:
 
 
 def _sdk_version() -> tuple[str, bool]:
-    """Return the installed `deepagents` SDK version and whether it resolved."""
-    from importlib.metadata import PackageNotFoundError, version as pkg_version
+    """Return the installed `deepagents` SDK version and whether it resolved.
 
-    try:
-        return pkg_version("deepagents"), True
-    except PackageNotFoundError:
+    Maps the shared `resolve_sdk_version` outcome onto doctor's display: a
+    genuinely missing package reads as `not installed`, an unexpected lookup
+    failure as `unknown`, and only a resolved version is marked healthy.
+    """
+    from deepagents_code.extras_info import resolve_sdk_version
+
+    sdk_version, status = resolve_sdk_version()
+    if status == "resolved":
+        # `sdk_version` is a real string when the status is "resolved".
+        return sdk_version or "unknown", True
+    if status == "not_installed":
         return "not installed", False
-    except Exception:  # Best-effort lookup; never fail the doctor over it
-        logger.warning("Unexpected error looking up SDK version", exc_info=True)
-        return "unknown", False
+    return "unknown", False
 
 
 def _collect_diagnostics() -> DiagnosticSection:
@@ -148,6 +153,10 @@ def _collect_updates() -> DiagnosticSection:
 def _path_status(label: str, path: object) -> DiagnosticItem:
     """Build an item reporting a path and whether it exists on disk.
 
+    An unreadable path (e.g. a parent directory that denies traversal) is
+    flagged as a genuine problem (`ok=False`) so it surfaces in the section
+    health and exit code, rather than being mistaken for a not-yet-created one.
+
     Args:
         label: Human-readable name for the path.
         path: Filesystem path to probe.
@@ -157,10 +166,18 @@ def _path_status(label: str, path: object) -> DiagnosticItem:
     """
     from pathlib import Path
 
+    from deepagents_code._paths import PathState, classify_path
+
     resolved = Path(str(path))
-    exists = resolved.exists()
-    suffix = "exists" if exists else "not created"
-    return DiagnosticItem(label, f"{resolved} ({suffix})")
+    state = classify_path(resolved)
+    suffix = {
+        PathState.EXISTS: "exists",
+        PathState.MISSING: "not created",
+        PathState.UNREADABLE: "unreadable",
+    }[state]
+    return DiagnosticItem(
+        label, f"{resolved} ({suffix})", ok=state is not PathState.UNREADABLE
+    )
 
 
 def _collect_configuration() -> DiagnosticSection:

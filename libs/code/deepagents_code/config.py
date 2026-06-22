@@ -14,7 +14,7 @@ import sys
 import threading
 from dataclasses import dataclass
 from enum import StrEnum
-from importlib.metadata import PackageNotFoundError, distribution, version
+from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import unquote, urlparse
@@ -758,14 +758,12 @@ def _get_deepagents_version() -> str | None:
         The installed Deep Agents SDK version, or `None` when package metadata
         is unavailable.
     """
-    try:
-        return version("deepagents")
-    except PackageNotFoundError:
-        logger.debug(
-            "Failed to read deepagents version from package metadata",
-            exc_info=True,
-        )
-        return None
+    # Imported lazily: `extras_info` pulls in `packaging`, which is kept off
+    # `config`'s module-import path because `config` is on the startup hot path.
+    from deepagents_code.extras_info import resolve_sdk_version
+
+    sdk_version, _status = resolve_sdk_version()
+    return sdk_version
 
 
 def _resolve_editable_info() -> tuple[bool, str | None]:

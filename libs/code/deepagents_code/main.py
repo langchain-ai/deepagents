@@ -55,19 +55,10 @@ def build_version_text() -> str:
     Returns:
         Multi-line version string suitable for stdout.
     """
-    from importlib.metadata import (
-        PackageNotFoundError,
-        version as _pkg_version,
-    )
+    from deepagents_code.extras_info import resolve_sdk_version
 
-    try:
-        sdk_version = _pkg_version("deepagents")
-    except PackageNotFoundError:
-        logger.debug("deepagents SDK package not found in environment")
-        sdk_version = "unknown"
-    except Exception:  # Best-effort SDK version lookup
-        logger.warning("Unexpected error looking up SDK version", exc_info=True)
-        sdk_version = "unknown"
+    sdk_version_value, status = resolve_sdk_version()
+    sdk_version = sdk_version_value if status == "resolved" else "unknown"
 
     text = f"deepagents-code {__version__}\ndeepagents (SDK) {sdk_version}"
 

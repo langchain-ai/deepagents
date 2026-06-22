@@ -133,6 +133,41 @@ class TestRunDoctorCommand:
         assert code == 1
 
 
+class TestPathStatus:
+    """Tests for the path-existence diagnostic item."""
+
+    def test_existing_path_is_healthy(self, tmp_path) -> None:
+        """An existing path reports `exists` and stays healthy."""
+        from deepagents_code.doctor import _path_status
+
+        item = _path_status("Data directory", tmp_path)
+        assert item.ok is True
+        assert "exists" in item.value
+
+    def test_missing_path_is_healthy(self, tmp_path) -> None:
+        """A not-yet-created path is informational, not a failure."""
+        from deepagents_code.doctor import _path_status
+
+        item = _path_status("Data directory", tmp_path / "absent")
+        assert item.ok is True
+        assert "not created" in item.value
+
+    def test_unreadable_path_is_unhealthy(self, monkeypatch) -> None:
+        """An unreadable path is flagged as a genuine problem (`ok=False`)."""
+        from pathlib import Path
+
+        from deepagents_code.doctor import _path_status
+
+        def _raise(self: Path) -> bool:  # noqa: ARG001  # must match Path.exists signature
+            msg = "permission denied"
+            raise PermissionError(msg)
+
+        monkeypatch.setattr(Path, "exists", _raise)
+        item = _path_status("Config file", "/some/protected/path")
+        assert item.ok is False
+        assert "unreadable" in item.value
+
+
 class TestDoctorHelp:
     """Tests for the doctor help screen."""
 

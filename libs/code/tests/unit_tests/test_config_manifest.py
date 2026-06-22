@@ -1047,7 +1047,9 @@ def test_config_paths_logs_and_reports_missing_on_oserror(monkeypatch, caplog) -
         return real_exists(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "exists", fake_exists)
-    with caplog.at_level(logging.DEBUG, logger="deepagents_code.config_commands"):
+    # The OSError guard and its debug log now live in the shared `_paths`
+    # classifier that `_config_paths` delegates to.
+    with caplog.at_level(logging.DEBUG, logger="deepagents_code._paths"):
         rows = _config_paths()
     config_row = next(row for row in rows if row[0] == "config.toml")
     assert config_row[2] is False

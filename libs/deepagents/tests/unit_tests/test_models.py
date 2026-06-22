@@ -236,6 +236,8 @@ class TestIsBedrockModel:
             "bedrock:anthropic.claude-3-5-sonnet-20240620-v1:0",
             "bedrock_converse:us.anthropic.claude-3-7-sonnet-20250219-v1:0",
             "aws:amazon.nova-pro-v1:0",
+            "amazon.nova-pro-v1:0",
+            "us.amazon.nova-pro-v1:0",
         ],
     )
     def test_detects_bedrock_provider_strings(self, model: str) -> None:
@@ -244,7 +246,7 @@ class TestIsBedrockModel:
     @pytest.mark.parametrize(
         "model",
         [
-            "amazon.nova-pro-v1:0",
+            "amazon.titan-text-express-v1:0",
             "anthropic:claude-3-opus",
             "openai:gpt-5",
         ],

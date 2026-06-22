@@ -21,6 +21,7 @@ _PROVIDER_ALIASES = {
 
 _BEDROCK_PROVIDERS = frozenset({"amazon_bedrock", "aws", "bedrock", "bedrock_converse"})
 _BEDROCK_MODEL_CLASSES = frozenset({"ChatBedrock", "ChatBedrockConverse"})
+_BEDROCK_REGIONAL_PREFIXES = ("apac.", "amer.", "au.", "eu.", "global.", "jp.", "sa.", "us.", "us-gov.")
 
 
 def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
@@ -112,6 +113,8 @@ def get_model_provider(model: BaseChatModel) -> str | None:
 def is_bedrock_model(model: str | BaseChatModel) -> bool:
     """Check whether a model targets AWS Bedrock."""
     if isinstance(model, str):
+        if _is_bedrock_nova_model_id(model):
+            return True
         provider, separator, _ = model.partition(":")
         return bool(separator) and _normalize_provider(provider) in _BEDROCK_PROVIDERS
 
@@ -119,6 +122,16 @@ def is_bedrock_model(model: str | BaseChatModel) -> bool:
     if provider is not None and _normalize_provider(provider) in _BEDROCK_PROVIDERS:
         return True
     return type(model).__name__ in _BEDROCK_MODEL_CLASSES
+
+
+def _is_bedrock_nova_model_id(model: str) -> bool:
+    """Check for cache-capable Bedrock Nova model identifiers."""
+    identifier = model
+    for prefix in _BEDROCK_REGIONAL_PREFIXES:
+        if identifier.startswith(prefix):
+            identifier = identifier.removeprefix(prefix)
+            break
+    return identifier.startswith("amazon.nova-")
 
 
 def model_matches_spec(model: BaseChatModel, spec: str) -> bool:

@@ -2403,6 +2403,8 @@ class ChatInput(Vertical):
         """
         if self._text_area is None:
             return False
+        if self._text_area.text:
+            self._skip_media_sync_events += 1
         return self._text_area.discard_text()
 
     def on_input_action_button_clicked(self, event: InputActionButton.Clicked) -> None:

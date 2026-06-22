@@ -15413,6 +15413,31 @@ class TestCopyFocusedInputText:
         assert app._copy_focused_input_text() is True
         assert copied == ["whole input draft"]
 
+    def test_failed_input_copy_is_handled(self, monkeypatch) -> None:
+        """A focused input copy failure must not fall through to quit handling."""
+        from textual.widgets import TextArea
+
+        import deepagents_code.clipboard as clipboard_module
+
+        copied: list[str] = []
+
+        def fake_copy(_app: object, text: str) -> tuple[bool, str | None]:
+            copied.append(text)
+            return False, "no clipboard backend"
+
+        monkeypatch.setattr(clipboard_module, "copy_text_to_clipboard", fake_copy)
+
+        app = self._make_app()
+        notify = MagicMock()
+        app.notify = notify  # ty: ignore[invalid-assignment]
+        text_area = TextArea()
+        text_area.text = "whole input draft"
+        monkeypatch.setattr(type(app), "focused", property(lambda _self: text_area))
+
+        assert app._copy_focused_input_text() is True
+        assert copied == ["whole input draft"]
+        notify.assert_called_once()
+
     def test_no_copy_when_input_empty(self, monkeypatch) -> None:
         """An empty focused input is not copied."""
         from textual.widgets import TextArea

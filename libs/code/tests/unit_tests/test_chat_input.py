@@ -15,6 +15,7 @@ from textual.widgets import Static
 from deepagents_code import _textual_patches as _textual_patches
 from deepagents_code.command_registry import SLASH_COMMANDS
 from deepagents_code.input import MediaTracker
+from deepagents_code.media_utils import ImageData
 from deepagents_code.widgets import chat_input as chat_input_module
 from deepagents_code.widgets.autocomplete import MAX_SUGGESTIONS
 from deepagents_code.widgets.chat_input import (
@@ -296,6 +297,30 @@ class TestDiscardText:
             text_area.undo()
             await pilot.pause()
             assert chat_input.value == "restore me"
+
+    async def test_discard_text_preserves_media_for_undo(self) -> None:
+        """Undoing a cleared media draft keeps placeholder media attached."""
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            placeholder = app.tracker.add_image(
+                ImageData(base64_data="abc", format="png", placeholder="")
+            )
+            text_area.insert(placeholder)
+            await pilot.pause()
+
+            assert len(app.tracker.get_images()) == 1
+            assert chat_input.discard_text() is True
+            await pilot.pause()
+            assert chat_input.value == ""
+            assert len(app.tracker.get_images()) == 1
+
+            text_area.undo()
+            await pilot.pause()
+            assert chat_input.value == placeholder
+            assert len(app.tracker.get_images()) == 1
 
 
 class TestInputActionButtons:

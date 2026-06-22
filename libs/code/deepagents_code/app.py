@@ -8460,7 +8460,7 @@ class DeepAgentsApp(App):
         draft is copied instead of arming quit.
 
         Returns:
-            `True` when non-empty text was copied to the clipboard.
+            `True` when non-empty text was handled by a clipboard attempt.
         """
         from textual.widgets import Input, TextArea
 
@@ -8488,7 +8488,7 @@ class DeepAgentsApp(App):
                 timeout=3,
                 markup=False,
             )
-        return success
+        return True
 
     def _arm_quit_pending(self, shortcut: str) -> None:
         """Set the pending-quit flag and show a matching hint.

@@ -16,11 +16,11 @@ from langchain_core.tools import StructuredTool
 from langgraph.checkpoint.memory import MemorySaver
 from langsmith import testing as t
 
-from tests.evals.data.bfcl_apis.message_api import MessageAPI
-from tests.evals.data.bfcl_apis.ticket_api import TicketAPI
-from tests.evals.data.bfcl_apis.trading_bot import TradingBot
-from tests.evals.data.bfcl_apis.travel_booking import TravelAPI
-from tests.evals.data.bfcl_apis.vehicle_control import VehicleControlAPI
+from deepagents_evals.mock_tools.bfcl_apis.message_api import MessageAPI
+from deepagents_evals.mock_tools.bfcl_apis.ticket_api import TicketAPI
+from deepagents_evals.mock_tools.bfcl_apis.trading_bot import TradingBot
+from deepagents_evals.mock_tools.bfcl_apis.travel_booking import TravelAPI
+from deepagents_evals.mock_tools.bfcl_apis.vehicle_control import VehicleControlAPI
 from tests.evals.utils import (
     AgentTrajectory,
     SuccessAssertion,

@@ -209,6 +209,31 @@ def _make_memory_bench_builder(
     return _builder
 
 
+def _bfcl_builder(
+    model: BaseChatModel,
+    *,
+    repl_name: str | None = None,  # noqa: ARG001
+) -> CompiledStateGraph[Any, Any]:
+    """Build the BFCL v3 stateful-API tool-calling agent.
+
+    Binds the full default BFCL tool suite. The per-case involved-class subset
+    and ``initial_config`` are runtime data, not agent setup, so they are not
+    applied here. Imported lazily so the registry import stays light for
+    consumers that never build this eval.
+    """
+    from deepagents_evals.mock_tools.bfcl import (  # noqa: PLC0415
+        BFCL_SYSTEM_PROMPT,
+        make_bfcl_tools,
+    )
+
+    return create_deep_agent(
+        model=model,
+        tools=make_bfcl_tools(),
+        system_prompt=BFCL_SYSTEM_PROMPT,
+        checkpointer=InMemorySaver(),
+    )
+
+
 def _make_todo_middleware_builder(
     *, tools: list[BaseTool]
 ) -> Callable[..., CompiledStateGraph[Any, Any]]:
@@ -835,11 +860,10 @@ _register(
 
 # --- external_benchmarks (test_external_benchmarks.py) ----------------------
 #
-# The FRAMES and Nexus evals share one file-backed agent shape; the per-case
-# files they read are runtime inputs (provided as ``initial_files``), not agent
-# setup. ``test_bfcl_v3`` is intentionally omitted: its tools are built per case
-# from the case's involved API classes, so its construction can't be expressed
-# as a static spec under the ``build(model, repl_name)`` contract.
+# FRAMES and Nexus share one file-backed agent shape; the per-case files they
+# read are runtime inputs (``initial_files``), not agent setup. test_bfcl_v3
+# binds the full default BFCL tool suite via a builder; its per-case
+# involved-class subset and initial config are runtime data, not agent setup.
 
 _FILE_BACKED_SYSTEM_PROMPT = (
     "Use the files already present in the workspace to solve the task. "
@@ -854,6 +878,7 @@ _register(
     _default("test_frames", _RETRIEVAL, _BASELINE, system_prompt=_FILE_BACKED_SYSTEM_PROMPT)
 )
 _register(_default("test_nexus", _TOOL_USE, _BASELINE, system_prompt=_FILE_BACKED_SYSTEM_PROMPT))
+_register(_builder_eval("test_bfcl_v3", _TOOL_USE, _BASELINE, _bfcl_builder, supports_repl=False))
 
 # --- iterative_constraint_satisfaction (test_iterative_constraint_satisfaction.py) ---
 

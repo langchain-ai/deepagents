@@ -122,17 +122,26 @@ def test_help_only_commands_skip_runtime_imports(
     )
 
 
-def test_doctor_skips_settings_bootstrap() -> None:
-    """`doctor` should stay on the lightweight diagnostic path."""
-    result = _run_cli_main(["doctor", "--json"])
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["auth", "path"], "/auth.json"),
+        (["config", "path", "--json"], '"command": "config path"'),
+        (["doctor", "--json"], '"command": "doctor"'),
+    ],
+)
+def test_lightweight_commands_skip_settings_bootstrap(
+    argv: list[str], expected: str
+) -> None:
+    """Lightweight diagnostics commands should avoid settings bootstrap."""
+    result = _run_cli_main(argv)
 
     assert result.returncode == 0, result.stderr
-    data = json.loads(result.stdout)
-    assert data["command"] == "doctor"
+    assert expected in result.stdout
 
     bootstrap_done = _read_marker(result.stderr, "BOOTSTRAP_DONE=")
     assert bootstrap_done in (None, False), (
-        f"settings bootstrap must not run for doctor; got {bootstrap_done!r}"
+        f"settings bootstrap must not run for {argv}; got {bootstrap_done!r}"
     )
 
 

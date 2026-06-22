@@ -2243,6 +2243,20 @@ def cli_main() -> None:
         if _show_bare_command_group_help(args):
             return
 
+        # Keep self-contained commands that do not need global settings here, before
+        # state migration and settings bootstrap. If a future command only reads
+        # local files or delegates bootstrap to specific subcommands, dispatch it here
+        # so lightweight diagnostic paths stay fast.
+        if args.command == "config":
+            from deepagents_code.config_commands import run_config_command
+
+            sys.exit(run_config_command(args))
+
+        if args.command == "auth":
+            from deepagents_code.auth_commands import run_auth_command
+
+            sys.exit(run_auth_command(args))
+
         if args.command == "doctor":
             from deepagents_code.doctor import run_doctor_command
 
@@ -2354,16 +2368,6 @@ def cli_main() -> None:
                 )
             )
             sys.exit(exit_code)
-
-        if args.command == "config":
-            from deepagents_code.config_commands import run_config_command
-
-            sys.exit(run_config_command(args))
-
-        if args.command == "auth":
-            from deepagents_code.auth_commands import run_auth_command
-
-            sys.exit(run_auth_command(args))
 
         # Apply shell-allow-list from command line if provided (overrides env var)
         if args.shell_allow_list:

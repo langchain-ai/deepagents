@@ -23,7 +23,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from tests.evals.tau2_airline.domain import (
+from deepagents_evals.mock_tools.tau2_airline.domain import (
     FlightDB,
     ToolCallEntry,
     create_airline_tools,

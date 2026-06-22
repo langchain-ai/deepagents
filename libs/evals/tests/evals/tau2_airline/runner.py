@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
     from langgraph.graph.state import CompiledStateGraph
 
-    from tests.evals.tau2_airline.domain import ToolCallEntry
+    from deepagents_evals.mock_tools.tau2_airline.domain import ToolCallEntry
     from tests.evals.tau2_airline.user_sim import UserSimulator
 
 logger = logging.getLogger(__name__)

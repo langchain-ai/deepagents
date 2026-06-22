@@ -114,8 +114,11 @@ deepagents = { path = "../deepagents", editable = true }
 langchain-quickjs = { path = "../partners/quickjs", editable = true }
 
 [tool.ty.src]
-# Vendored BFCL benchmark files — not authored to this project's type standards
-exclude = ["deepagents_evals/mock_tools/bfcl_apis"]
+# Vendored/adapted external benchmark code — not authored to this project's type standards
+exclude = [
+    "deepagents_evals/mock_tools/bfcl_apis",
+    "deepagents_evals/mock_tools/tau2_airline",
+]
 
 [tool.ty.environment]
 extra-paths = ["../deepagents", "../code"]
@@ -127,8 +130,11 @@ division-by-zero = "error"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-# Vendored BFCL benchmark files — skip both lint and format
-exclude = ["deepagents_evals/mock_tools/bfcl_apis"]
+# Vendored/adapted external benchmark code — skip both lint and format
+exclude = [
+    "deepagents_evals/mock_tools/bfcl_apis",
+    "deepagents_evals/mock_tools/tau2_airline",
+]
 force-exclude = true
 
 [tool.ruff.format]

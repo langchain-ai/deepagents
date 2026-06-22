@@ -234,6 +234,46 @@ def _bfcl_builder(
     )
 
 
+_TAU2_AGENT_SYSTEM_PROMPT = """\
+You are a customer service agent that helps the user according to the <policy> provided below.
+Use the available tools to look up information, verify customer identity, and take actions.
+Always follow the policy. Be helpful, concise, and accurate.
+
+<policy>
+{domain_policy}
+</policy>\
+"""
+"""Mirror of ``test_tau2_airline.AGENT_SYSTEM_PROMPT``."""
+
+
+def _tau2_airline_builder(
+    model: BaseChatModel,
+    *,
+    repl_name: str | None = None,  # noqa: ARG001
+) -> CompiledStateGraph[Any, Any]:
+    """Build the tau2 airline customer-service agent.
+
+    Binds the airline domain tools (over a default-state DB) and the
+    policy-formatted system prompt. The DB / policy files are environment data
+    loaded from ``DEEPAGENTS_EVALS_DATA_DIR``; the per-task ``initial_state``
+    seeding is runtime data, not agent setup. Imported lazily so the registry
+    import stays light for consumers that never build this eval.
+    """
+    from deepagents_evals.mock_tools.tau2_airline.domain import (  # noqa: PLC0415
+        create_airline_tools,
+        load_db,
+        load_policy,
+    )
+
+    tools, _ = create_airline_tools(load_db())
+    return create_deep_agent(
+        model=model,
+        tools=tools,
+        system_prompt=_TAU2_AGENT_SYSTEM_PROMPT.format(domain_policy=load_policy()),
+        checkpointer=InMemorySaver(),
+    )
+
+
 def _make_todo_middleware_builder(
     *, tools: list[BaseTool]
 ) -> Callable[..., CompiledStateGraph[Any, Any]]:
@@ -946,3 +986,16 @@ for _name, _tier, _tools in (
             supports_repl=False,
         )
     )
+
+# --- tau2_airline (tau2_airline/test_tau2_airline.py) -----------------------
+#
+# The airline domain tools + policy are agent setup (extracted into the
+# package). The DB / policy / task files are environment data loaded from
+# DEEPAGENTS_EVALS_DATA_DIR, and the per-task initial_state seeding is runtime
+# data — neither is applied in the builder.
+
+_register(
+    _builder_eval(
+        "test_tau2_airline", _CONVERSATION, _HILLCLIMB, _tau2_airline_builder, supports_repl=False
+    )
+)

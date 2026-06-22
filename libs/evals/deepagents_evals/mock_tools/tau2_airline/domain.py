@@ -12,6 +12,7 @@ Source: https://github.com/sierra-research/tau2-bench (dev/tau3 branch)
 from __future__ import annotations
 
 import json
+import os
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
@@ -205,18 +206,36 @@ class FlightDB(BaseModel):
 # Data loading
 # ---------------------------------------------------------------------------
 
-_DATA_DIR = Path(__file__).parent / "data"
+_DATA_DIR_ENV = "DEEPAGENTS_EVALS_DATA_DIR"
+
+
+def _data_dir() -> Path:
+    """Directory the environment seeds with the tau2 airline data files.
+
+    The 6.7MB ``db.json`` (plus ``policy.md`` / ``tasks.json``) is environment
+    data, not agent setup, so it is provisioned by the Harbor task's
+    ``environment/Dockerfile`` (and by the pytest fixture for local runs) rather
+    than bundled into the package.
+    """
+    value = os.environ.get(_DATA_DIR_ENV)
+    if not value:
+        msg = (
+            f"{_DATA_DIR_ENV} must point at the directory containing the tau2 "
+            "airline data files (db.json, policy.md, tasks.json)."
+        )
+        raise RuntimeError(msg)
+    return Path(value)
 
 
 def load_db() -> FlightDB:
-    """Load a fresh FlightDB from the bundled db.json."""
-    with (_DATA_DIR / "db.json").open() as fp:
+    """Load a fresh FlightDB from the environment-provided db.json."""
+    with (_data_dir() / "db.json").open() as fp:
         return FlightDB.model_validate_json(fp.read())
 
 
 def load_policy() -> str:
     """Load the airline customer service policy."""
-    with (_DATA_DIR / "policy.md").open() as fp:
+    with (_data_dir() / "policy.md").open() as fp:
         return fp.read()
 
 
@@ -232,7 +251,7 @@ def load_task(task_id: str) -> dict[str, Any]:
     Raises:
         KeyError: If the task ID is not found.
     """
-    with (_DATA_DIR / "tasks.json").open() as fp:
+    with (_data_dir() / "tasks.json").open() as fp:
         tasks = json.load(fp)
     for task in tasks:
         if str(task.get("id")) == str(task_id):

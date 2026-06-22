@@ -17,6 +17,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -26,7 +27,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langsmith import testing as t
 from langsmith.run_helpers import get_current_run_tree
 
-from tests.evals.tau2_airline.domain import (
+from deepagents_evals.mock_tools.tau2_airline.domain import (
     create_airline_tools,
     load_db,
     load_policy,
@@ -43,6 +44,19 @@ pytestmark = [pytest.mark.eval_category("conversation")]
 """Apply conversation category to all tests in this module. Tier is set per-test."""
 
 logger = logging.getLogger(__name__)
+
+
+@pytest.fixture(autouse=True)
+def _seed_tau2_data_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the eval data-dir env var at the bundled tau2 airline data.
+
+    ``domain.py`` now reads its data files from ``DEEPAGENTS_EVALS_DATA_DIR``
+    (the 6.7MB db.json is environment data, provisioned by the Harbor task's
+    Dockerfile in the dispatcher path); locally the data still lives beside this
+    test, so point the env var there.
+    """
+    monkeypatch.setenv("DEEPAGENTS_EVALS_DATA_DIR", str(Path(__file__).parent / "data"))
+
 
 TASK_IDS = [
     "2",

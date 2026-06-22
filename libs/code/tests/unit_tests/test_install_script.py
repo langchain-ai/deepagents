@@ -737,6 +737,40 @@ def test_install_script_dependency_update_without_writable_log_omits_details(
     assert not (blocker / "cache").exists()
 
 
+def test_install_script_dependency_update_with_failed_log_copy_omits_details(
+    tmp_path: Path,
+) -> None:
+    """When log creation succeeds but copying fails, the message omits `Details:`."""
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        pytest.skip("root can write through directory permissions")
+
+    cache = tmp_path / "cache"
+    install_log_dir = cache / "deepagents-code"
+    install_log_dir.mkdir(parents=True)
+    install_log_dir.chmod(0o500)
+
+    try:
+        proc, _ = _invoke(
+            tmp_path,
+            {
+                "FAKE_UV_INSTALL_STDERR": _DEPENDENCY_UPDATE_DIFF,
+                "XDG_CACHE_HOME": str(cache),
+            },
+            installed_version="0.1.8",
+            latest_version="0.1.20",
+        )
+    finally:
+        install_log_dir.chmod(0o700)
+
+    assert proc.returncode == 0
+    assert (
+        "deepagents-code 0.1.8 was already up to date; dependencies were updated."
+        in proc.stdout
+    )
+    assert "Details:" not in proc.stdout
+    assert not (install_log_dir / "install.log").exists()
+
+
 def test_install_script_unset_xdg_cache_home_falls_back_to_home_cache(
     tmp_path: Path,
 ) -> None:

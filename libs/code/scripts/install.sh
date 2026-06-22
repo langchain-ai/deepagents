@@ -608,7 +608,7 @@ if grep -Eq '^[[:space:]]+[-+][[:space:]]+[^=]+==' "$uv_stderr"; then
   UV_REPORTED_PACKAGE_CHANGES=true
 fi
 if [ -n "$INSTALL_LOG" ]; then
-  cp "$uv_stderr" "$INSTALL_LOG" 2>/dev/null || INSTALL_LOG=""
+  cp "$uv_stderr" "$INSTALL_LOG" 2>/dev/null || { INSTALL_LOG=""; INSTALL_LOG_DISPLAY=""; }
 fi
 rm -f "$uv_stderr"
 if [ "$uv_rc" -ne 0 ]; then

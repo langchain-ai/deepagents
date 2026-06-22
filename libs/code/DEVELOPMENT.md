@@ -4,12 +4,12 @@ New to the package? Start with [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a high
 
 ## Contents
 
-- [QuickStart](#quickstart) — get a local checkout running
-- [Running the tests and linters](#running-the-tests-and-linters) — the checks CI runs
-- [Live CSS development with Textual devtools](#live-css-development-with-textual-devtools) — UI/CSS hot-reload
+- [Quickstart](#quickstart) — get a local checkout running and run the checks CI enforces
+- [Local dev installs](#local-dev-installs) — keep an editable `dcode-dev` separate from a released install
 - [Debugging](#debugging) — diagnose startup crashes and client-side issues
+- [Live CSS development with Textual devtools](#live-css-development-with-textual-devtools) — UI/CSS hot-reload
 
-## QuickStart
+## Quickstart
 
 This package uses [`uv`](https://docs.astral.sh/uv/) for environment and dependency management. Install it first if you haven't:
 
@@ -25,15 +25,15 @@ cd deepagents/libs/code
 uv sync --group test
 ```
 
-Run the TUI from your local checkout:
+Run the TUI from `libs/code` in your local checkout:
 
 ```bash
 uv run deepagents-code
 ```
 
-`uv run` executes against the editable install, so your local changes take effect on the next launch. If you want a persistent `dcode-dev` command that stays separate from a released install, see "Local dev installs" in [`AGENTS.md`](./AGENTS.md).
+`uv run` uses the project environment with the package installed editable, so source changes take effect on the next launch. If you want a persistent `dcode-dev` command that stays separate from a released install, use the local dev install setup below.
 
-## Running the tests and linters
+### Running the tests and linters
 
 All commands run from `libs/code`. These mirror what CI enforces, so run them before opening a PR.
 
@@ -58,56 +58,40 @@ make lint
 
 Run `make help` to see every available target.
 
-## Live CSS development with Textual devtools
+## Local dev installs
 
-Textual's devtools console enables CSS hot-reload and live `self.log()` output during development.
+Keep the released CLI and editable development CLI separate:
 
-### Prerequisites
+- `dcode` / `deepagents-code` should point at the normal installed tool, typically managed by `uv tool install deepagents-code`.
+- `dcode-dev` should point at a dedicated editable venv under `~/.local/share/dcode-dev`, with a symlink in `~/.local/bin/dcode-dev`.
 
-Sync the `test` dependency group (includes `textual-dev`):
+This uses a manual `uv venv` + `uv pip install -e` rather than `uv sync` or `uv tool install --editable` on purpose: it builds an isolated venv outside the workspace's locked environment, so the dev binary can be re-resolved on demand without disturbing the released tool or the repo's `uv.lock`. `uv pip`/`uv venv` are first-class `uv` subcommands here, not bare `pip`.
 
-```bash
-cd libs/code && uv sync --group test
-```
+`~/.local/bin` must be on your `PATH` for the `dcode-dev` symlink to resolve (`uv tool install` adds its own shim directory automatically, but a hand-rolled symlink does not).
 
-Create the dev wrapper script (one-time):
-
-```bash
-cat > /tmp/dev_deepagents.py << 'PYEOF'
-"""Dev wrapper to run Deep Agents Code with textual devtools."""
-import sys
-sys.argv = ["deepagents"] + sys.argv[1:]
-
-from deepagents_code.main import cli_main
-cli_main()
-PYEOF
-```
-
-### Running
-
-**Terminal 1** — devtools console:
+Example setup. The `--python` value is illustrative — any interpreter satisfying the package's `requires-python` (currently `>=3.11`) works; omit the flag to let `uv` pick. Replace `<repo>` with your local checkout path.
 
 ```bash
-cd libs/code && uv run --group test textual console
+uv venv ~/.local/share/dcode-dev --python 3.13
+uv pip install --python ~/.local/share/dcode-dev/bin/python -e <repo>/libs/code
+ln -sf ~/.local/share/dcode-dev/bin/dcode ~/.local/bin/dcode-dev
 ```
 
-**Terminal 2** — TUI with live reload:
+When dependency constraints change in `libs/code/pyproject.toml`, update the dev venv explicitly:
 
 ```bash
-cd libs/code && uv run --group test textual run --dev /tmp/dev_deepagents.py
+uv pip install --python ~/.local/share/dcode-dev/bin/python -e <repo>/libs/code --upgrade
 ```
 
-Edit any `.tcss` file and save — changes appear immediately. Any `self.log()` calls in widget code show in the console.
+Verify command resolution and editable imports (the `dcode` checks assume the released tool is installed separately, per above):
 
-### Console options
-
-- `textual console -v` — verbose mode, shows all events (key presses, mouse, etc.)
-- `textual console -x EVENT` — exclude noisy event groups
-- `textual console --port 7342` — custom port (pass matching `--port` to `textual run`)
-
-### Why the wrapper script?
-
-`textual run --dev` handles the devtools connection, but it needs to run inside the project's virtualenv to import `deepagents_code`. The wrapper script bridges the gap — `uv run --group test textual run --dev` ensures both `textual-dev` (from the `test` group) and `deepagents_code` are available in the same environment.
+```bash
+which dcode
+which dcode-dev
+dcode --version
+dcode-dev --version
+~/.local/share/dcode-dev/bin/python -c 'import deepagents_code; print(deepagents_code.__file__)'
+```
 
 ## Debugging
 
@@ -161,3 +145,54 @@ The interesting line is `Failed to initialize server graph: <exc>` followed by a
 - **`MCPConfigError: Invalid MCP config at <path>: ...`** — malformed `--mcp-config`. The pre-flight wraps the underlying `ValueError`/`TypeError` with the offending path. See `_preflight_validate_mcp_config` in `server_manager.py`.
 - **`Server 'X' missing required 'command' field`** (from a discovered project `.mcp.json`, not `--mcp-config`) — an stdio server config without `command`. For remote servers, just use `{"url": "..."}`; transport is inferred as `http` when no `type`/`transport` is present.
 - **Uncaught exception inside a bare `sys.exit(1)`** — usually means the surrounding `make_graph()` raised. Look one traceback up in the subprocess log for the real cause.
+
+## Live CSS development with Textual devtools
+
+Textual's devtools console enables CSS hot-reload and live `self.log()` output during development.
+
+### Prerequisites
+
+Sync the `test` dependency group (includes `textual-dev`):
+
+```bash
+cd libs/code && uv sync --group test
+```
+
+Create the dev wrapper script (one-time):
+
+```bash
+cat > /tmp/dev_deepagents.py << 'PYEOF'
+"""Dev wrapper to run Deep Agents Code with textual devtools."""
+import sys
+sys.argv = ["deepagents"] + sys.argv[1:]
+
+from deepagents_code.main import cli_main
+cli_main()
+PYEOF
+```
+
+### Running
+
+**Terminal 1** — devtools console:
+
+```bash
+cd libs/code && uv run --group test textual console
+```
+
+**Terminal 2** — TUI with live reload:
+
+```bash
+cd libs/code && uv run --group test textual run --dev /tmp/dev_deepagents.py
+```
+
+Edit any `.tcss` file and save — changes appear immediately. Any `self.log()` calls in widget code show in the console.
+
+### Console options
+
+- `textual console -v` — verbose mode, shows all events (key presses, mouse, etc.)
+- `textual console -x EVENT` — exclude noisy event groups
+- `textual console --port 7342` — custom port (pass matching `--port` to `textual run`)
+
+### Why the wrapper script?
+
+`textual run --dev` handles the devtools connection, but it needs to run inside the project's virtualenv to import `deepagents_code`. The wrapper script bridges the gap — `uv run --group test textual run --dev` ensures both `textual-dev` (from the `test` group) and `deepagents_code` are available in the same environment.

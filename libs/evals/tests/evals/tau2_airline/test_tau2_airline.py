@@ -28,6 +28,7 @@ from langsmith import testing as t
 from langsmith.run_helpers import get_current_run_tree
 
 from deepagents_evals.mock_tools.tau2_airline.domain import (
+    apply_initial_state,
     create_airline_tools,
     load_db,
     load_policy,
@@ -126,16 +127,7 @@ def test_tau2_airline(model: BaseChatModel, task_id: str) -> None:
     db = load_db()
     initial_state = task.get("initial_state")
     if initial_state:
-        for key, value in initial_state.items():
-            parts = key.split(".")
-            obj = db
-            for part in parts[:-1]:
-                obj = getattr(obj, part) if not isinstance(obj, dict) else obj[part]
-            final_key = parts[-1]
-            if isinstance(obj, dict):
-                obj[final_key] = value
-            else:
-                setattr(obj, final_key, value)
+        apply_initial_state(db, initial_state)
 
     tools, tool_log = create_airline_tools(db)
 

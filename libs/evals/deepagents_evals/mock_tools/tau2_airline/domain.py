@@ -260,6 +260,26 @@ def load_task(task_id: str) -> dict[str, Any]:
     raise KeyError(msg)
 
 
+def apply_initial_state(db: FlightDB, initial_state: dict[str, Any]) -> None:
+    """Apply a task's dotted-key ``initial_state`` patches onto a ``FlightDB``.
+
+    Each key is a dotted path (e.g. ``"users.u1.membership"``) resolved through
+    dict keys and attributes; the final segment is assigned ``value``. Mutates
+    ``db`` in place, mirroring the tau2 pytest setup so the agent operates on the
+    task-seeded database.
+    """
+    for key, value in initial_state.items():
+        parts = key.split(".")
+        obj: Any = db
+        for part in parts[:-1]:
+            obj = obj[part] if isinstance(obj, dict) else getattr(obj, part)
+        final_key = parts[-1]
+        if isinstance(obj, dict):
+            obj[final_key] = value
+        else:
+            setattr(obj, final_key, value)
+
+
 # ---------------------------------------------------------------------------
 # Tool call logging
 # ---------------------------------------------------------------------------

@@ -21,6 +21,7 @@ from deepagents_evals.mock_tools import (
     get_weather_fake,
     incident_graph_tool_error_middleware,
 )
+from deepagents_evals.mock_tools.bfcl import BFCL_CLASS_REGISTRY, make_bfcl_tools
 
 if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
@@ -215,3 +216,41 @@ def test_build_repl_name_defaults_to_none(fake_model: Any) -> None:
     spec = EvalSpec(name="synthetic", builder=_builder, supports_repl=True)
     spec.build(fake_model)
     assert captured.get("repl_name") is None
+
+
+def test_build_forwards_config_to_builder(fake_model: Any) -> None:
+    """build() forwards per-case config to the builder when provided."""
+    captured: dict[str, Any] = {}
+
+    def _builder(model: Any, **kwargs: Any) -> CompiledStateGraph[Any, Any]:
+        captured.update(kwargs)
+        return cast("CompiledStateGraph[Any, Any]", object())
+
+    spec = EvalSpec(name="synthetic", builder=_builder)
+    spec.build(fake_model, config={"initial_state": {"x": 1}})
+    assert captured.get("config") == {"initial_state": {"x": 1}}
+
+
+def test_build_omits_config_when_none(fake_model: Any) -> None:
+    """A builder that doesn't accept `config` still works when none is passed.
+
+    build() only forwards `config` when non-None, so config-agnostic builders
+    keep their `(model, *, repl_name)` signature.
+    """
+    captured: dict[str, Any] = {}
+
+    def _builder(model: Any, *, repl_name: str | None = None) -> CompiledStateGraph[Any, Any]:
+        captured["repl_name"] = repl_name
+        return cast("CompiledStateGraph[Any, Any]", object())
+
+    spec = EvalSpec(name="synthetic", builder=_builder)
+    spec.build(fake_model)  # must not raise despite no `config` kwarg on _builder
+    assert captured == {"repl_name": None}
+
+
+def test_make_bfcl_tools_scopes_to_involved_classes() -> None:
+    """make_bfcl_tools binds only requested classes; default binds all (OpenSWE fix)."""
+    full = make_bfcl_tools()
+    scoped = make_bfcl_tools(involved_classes=["MessageAPI"])
+    assert 0 < len(scoped) < len(full)
+    assert len(make_bfcl_tools(involved_classes=list(BFCL_CLASS_REGISTRY))) == len(full)

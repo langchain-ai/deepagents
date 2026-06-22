@@ -220,22 +220,30 @@ def _bfcl_builder(
     model: BaseChatModel,
     *,
     repl_name: str | None = None,  # noqa: ARG001
+    config: dict[str, Any] | None = None,
 ) -> CompiledStateGraph[Any, Any]:
     """Build the BFCL v3 stateful-API tool-calling agent.
 
-    Binds the full default BFCL tool suite. The per-case involved-class subset
-    and `initial_config` are runtime data, not agent setup, so they are not
-    applied here. Imported lazily so the registry import stays light for
-    consumers that never build this eval.
+    When the dispatcher forwards a case via `config` (`involved_classes` and
+    `initial_config`), only those simulators are instantiated and seeded with
+    the case state — matching the pytest path so stateful scoring is valid.
+    Without a case (`config is None`), binds the full default suite. Imported
+    lazily so the registry import stays light for consumers that never build
+    this eval.
     """
     from deepagents_evals.mock_tools.bfcl import (  # noqa: PLC0415
         BFCL_SYSTEM_PROMPT,
         make_bfcl_tools,
     )
 
+    config = config or {}
+    tools = make_bfcl_tools(
+        involved_classes=config.get("involved_classes"),
+        initial_config=config.get("initial_config"),
+    )
     return create_deep_agent(
         model=model,
-        tools=make_bfcl_tools(),
+        tools=tools,
         system_prompt=BFCL_SYSTEM_PROMPT,
         checkpointer=InMemorySaver(),
     )
@@ -257,22 +265,30 @@ def _tau2_airline_builder(
     model: BaseChatModel,
     *,
     repl_name: str | None = None,  # noqa: ARG001
+    config: dict[str, Any] | None = None,
 ) -> CompiledStateGraph[Any, Any]:
     """Build the tau2 airline customer-service agent.
 
-    Binds the airline domain tools (over a default-state DB) and the
-    policy-formatted system prompt. The DB / policy files are environment data
-    loaded from `DEEPAGENTS_EVALS_DATA_DIR`; the per-task `initial_state`
-    seeding is runtime data, not agent setup. Imported lazily so the registry
-    import stays light for consumers that never build this eval.
+    When the dispatcher forwards a task's `initial_state` via `config`, it is
+    applied to the freshly loaded `FlightDB` before tools are bound — matching
+    the pytest path so the agent operates on the task-seeded DB. Without it
+    (`config is None`), tools bind over the default DB. The DB / policy files
+    are environment data loaded from `DEEPAGENTS_EVALS_DATA_DIR`. Imported
+    lazily so the registry import stays light for consumers that never build
+    this eval.
     """
     from deepagents_evals.mock_tools.tau2_airline.domain import (  # noqa: PLC0415
+        apply_initial_state,
         create_airline_tools,
         load_db,
         load_policy,
     )
 
-    tools, _ = create_airline_tools(load_db())
+    db = load_db()
+    initial_state = (config or {}).get("initial_state")
+    if isinstance(initial_state, dict):
+        apply_initial_state(db, initial_state)
+    tools, _ = create_airline_tools(db)
     return create_deep_agent(
         model=model,
         tools=tools,
@@ -455,6 +471,7 @@ class EvalSpec:
         model: BaseChatModel,
         *,
         repl_name: str | None = None,
+        config: dict[str, Any] | None = None,
     ) -> CompiledStateGraph[Any, Any]:
         """Build the agent graph for this eval.
 
@@ -462,11 +479,17 @@ class EvalSpec:
             model: The chat model to use.
             repl_name: Optional REPL backend (`"quickjs"` or `None`).
                 Only used by evals with `supports_repl=True`.
+            config: Optional per-case runtime data the dispatcher forwards from
+                `configurable["eval_config"]`. Stateful evals (tau2, BFCL) use it
+                to seed per-task/per-case state and tool selection; evals whose
+                construction needs no runtime data ignore it.
 
         Returns:
             A compiled LangGraph graph.
         """
         if self.builder is not None:
+            if config is not None:
+                return self.builder(model, repl_name=repl_name, config=config)
             return self.builder(model, repl_name=repl_name)
 
         kwargs: dict[str, Any] = {"model": model}

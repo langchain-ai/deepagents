@@ -12,6 +12,7 @@ involved-class subset and initial config are runtime data, not agent setup.
 
 from __future__ import annotations
 
+import copy
 import inspect
 from typing import TYPE_CHECKING, Any
 
@@ -60,15 +61,24 @@ def wrap_bfcl_methods_as_tools(instances: Iterable[Any]) -> list[StructuredTool]
     return tools
 
 
-def make_bfcl_tools() -> list[StructuredTool]:
-    """Build the full default BFCL tool suite (all classes, default state).
+def make_bfcl_tools(
+    *,
+    involved_classes: Iterable[str] | None = None,
+    initial_config: dict[str, Any] | None = None,
+) -> list[StructuredTool]:
+    """Build BFCL tools, optionally scoped and seeded to a case.
 
-    Each simulator is instantiated and loaded with its default scenario; the
-    per-case `initial_config` is runtime data and is not applied here.
+    Mirrors the pytest BFCL setup: instantiate each class in `involved_classes`
+    (defaulting to every registered class) and load its `initial_config` entry
+    (defaulting to an empty scenario) before wrapping its methods as tools. The
+    case's `involved_classes` / `initial_config` are runtime data the dispatcher
+    forwards via `configurable["eval_config"]`.
     """
+    names = list(involved_classes) if involved_classes else list(BFCL_CLASS_REGISTRY)
+    initial_config = initial_config or {}
     instances = []
-    for cls in BFCL_CLASS_REGISTRY.values():
-        instance = cls()
-        instance._load_scenario({}, long_context=False)
+    for name in names:
+        instance = BFCL_CLASS_REGISTRY[name]()
+        instance._load_scenario(copy.deepcopy(initial_config.get(name, {})), long_context=False)  # noqa: SLF001
         instances.append(instance)
     return wrap_bfcl_methods_as_tools(instances)

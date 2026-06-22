@@ -195,7 +195,10 @@ def make_eval_graph(config: dict[str, object] | None = None) -> object:
         config: LangGraph runtime config. Harbor passes the selected model in
             `configurable.model`, optional provider kwargs in
             `configurable.model_kwargs`, the eval name in
-            `configurable.eval_name`, and optionally `configurable.repl_name`.
+            `configurable.eval_name`, optionally `configurable.repl_name`, and
+            optionally `configurable.eval_config` (per-case runtime data
+            forwarded to the eval's builder, e.g. tau2 `initial_state` or BFCL
+            `involved_classes` / `initial_config`).
 
     Returns:
         A compiled LangGraph graph invokable by Harbor's LangGraph runner.
@@ -228,4 +231,10 @@ def make_eval_graph(config: dict[str, object] | None = None) -> object:
         msg = f"Eval {eval_name!r} does not support repl_name"
         raise ValueError(msg)
 
-    return spec.build(model, repl_name=repl_name)
+    eval_config = configurable.get("eval_config")
+    if eval_config is not None and not isinstance(eval_config, dict):
+        msg = "`configurable.eval_config` must be a mapping or omitted"
+        raise TypeError(msg)
+    eval_config = {str(k): v for k, v in eval_config.items()} if eval_config else None
+
+    return spec.build(model, repl_name=repl_name, config=eval_config)

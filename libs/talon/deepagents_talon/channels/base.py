@@ -56,7 +56,7 @@ class ChannelExposureEnv:
 
     Args:
         provider: Human-readable provider name used in error messages.
-        env_prefix: Prefix for exposure env vars (e.g. ``DEEPAGENTS_TALON_TELEGRAM``).
+        env_prefix: Prefix for exposure env vars (e.g. `DEEPAGENTS_TALON_TELEGRAM`).
         open_ack: Environment variable acknowledging open-exposure risk.
         open_ack_value: Required acknowledgement value for open exposure.
         require_self_operator: Whether `self` exposure requires an operator id.

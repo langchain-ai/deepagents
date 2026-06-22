@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from types import FrameType
 from typing import TYPE_CHECKING, cast
 
-from deepagents_talon.channels.base import outbound_media_root_from_env
+from deepagents_talon.channels.base import outbound_media_root_from_env, send_with_retry
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
@@ -276,7 +276,9 @@ class TalonHost:
             job: Cron job that produced the result.
             text: Message text to send.
         """
-        await channel.send_message(job.origin.conversation_id, text)
+        await send_with_retry(
+            lambda: channel.send_message(job.origin.conversation_id, text)
+        )
 
     async def _invoke_agent(
         self,
@@ -331,7 +333,9 @@ class TalonHost:
         await self._cancel_conversation_tasks(current_conversation_id)
         next_reset = self._conversation_resets.get(conversation_root, 0) + 1
         self._conversation_resets[conversation_root] = next_reset
-        await channel.send_message(conversation_id, _NEW_CONVERSATION_MESSAGE)
+        await send_with_retry(
+            lambda: channel.send_message(conversation_id, _NEW_CONVERSATION_MESSAGE)
+        )
 
     async def _cancel_conversation(
         self,
@@ -343,10 +347,14 @@ class TalonHost:
         target_conversation_id = reply_conversation_id or conversation_id
         cancelled = await self._cancel_conversation_tasks(conversation_id)
         if not cancelled:
-            await channel.send_message(target_conversation_id, "No in-flight run to stop.")
+            await send_with_retry(
+                lambda: channel.send_message(target_conversation_id, "No in-flight run to stop.")
+            )
             return
 
-        await channel.send_message(target_conversation_id, "Stopped current run.")
+        await send_with_retry(
+            lambda: channel.send_message(target_conversation_id, "Stopped current run.")
+        )
 
     async def _cancel_conversation_tasks(self, conversation_id: str) -> bool:
         tasks = {
@@ -413,9 +421,11 @@ class TalonHost:
         pending = _PendingToolApproval(future=future, sender_id=sender_id)
         self._pending_tool_approvals[approval.conversation_id] = pending
         try:
-            await channel.send_message(
-                reply_conversation_id,
-                _format_tool_approval_prompt(approval),
+            await send_with_retry(
+                lambda: channel.send_message(
+                    reply_conversation_id,
+                    _format_tool_approval_prompt(approval),
+                )
             )
             return await future
         finally:
@@ -429,17 +439,21 @@ class TalonHost:
         pending: _PendingToolApproval,
     ) -> None:
         if pending.sender_id is not None and message.sender_id != pending.sender_id:
-            await channel.send_message(
-                message.conversation_id,
-                "Only the operator who started this run can approve or deny it.",
+            await send_with_retry(
+                lambda: channel.send_message(
+                    message.conversation_id,
+                    "Only the operator who started this run can approve or deny it.",
+                )
             )
             return
 
         decision = _parse_tool_approval_reply(message.text)
         if decision is None:
-            await channel.send_message(
-                message.conversation_id,
-                "Reply `approve` to run the tool call or `deny` to skip it.",
+            await send_with_retry(
+                lambda: channel.send_message(
+                    message.conversation_id,
+                    "Reply `approve` to run the tool call or `deny` to skip it.",
+                )
             )
             return
 
@@ -455,7 +469,9 @@ class TalonHost:
         cleaned, refs = extract_markdown_media(result.text)
         if not refs:
             if result.text:
-                await channel.send_message(conversation_id, result.text)
+                await send_with_retry(
+                    lambda: channel.send_message(conversation_id, result.text)
+                )
             return
 
         media, failed = _outbound_media_from_refs(
@@ -471,11 +487,15 @@ class TalonHost:
             fallback_caption=text,
         )
         if text and not sent_media:
-            await channel.send_message(conversation_id, text)
+            await send_with_retry(
+                lambda: channel.send_message(conversation_id, text)
+            )
         elif send_failed and sent_media:
-            await channel.send_message(
-                conversation_id,
-                f"_(Could not attach: {', '.join(send_failed)}.)_",
+            await send_with_retry(
+                lambda: channel.send_message(
+                    conversation_id,
+                    f"_(Could not attach: {', '.join(send_failed)}.)_",
+                )
             )
 
     def _track_conversation_task(
@@ -595,11 +615,17 @@ async def _send_channel_media(
     failed: list[str] = []
     for index, item in enumerate(media):
         payload = _media_with_fallback_caption(item, fallback_caption, is_first=index == 0)
-        try:
-            await channel.send_media(conversation_id, payload)
+        result = await send_with_retry(
+            lambda p=payload: channel.send_media(conversation_id, p)
+        )
+        if result.success:
             sent = True
-        except Exception:  # noqa: BLE001  # adapters raise transport-specific failures.
-            logger.warning("Could not send outbound media: %s", payload.path, exc_info=True)
+        else:
+            logger.warning(
+                "Could not send outbound media: %s (%s)",
+                payload.path,
+                result.error,
+            )
             failed.append(payload.caption or payload.path.name)
     return sent, failed
 
@@ -616,13 +642,8 @@ def _media_with_fallback_caption(
 
 
 async def _send_typing(channel: ChannelAdapter, conversation_id: str) -> None:
-    send_typing = getattr(channel, "send_typing", None)
-    if not callable(send_typing):
-        return
     try:
-        result = send_typing(conversation_id)
-        if isinstance(result, Awaitable):
-            await result
+        await channel.send_typing(conversation_id)
     except Exception:  # noqa: BLE001  # typing indicators are best-effort adapter calls.
         logger.debug("Could not send typing indicator", exc_info=True)
 

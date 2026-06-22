@@ -5,6 +5,7 @@ Talon is an experimental runtime and is subject to change or removal at any time
 
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import logging
 import mimetypes
@@ -14,11 +15,11 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeVar
 
-from deepagents_talon.interfaces import ChannelMedia, ChannelMessage, MessageHandler
+from deepagents_talon.interfaces import ChannelMedia, ChannelMessage, MessageHandler, SendResult
 from deepagents_talon.media import resolve_bounded_media_path
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Awaitable, Callable, Mapping, Sequence
 
 _T = TypeVar("_T")
 
@@ -488,3 +489,66 @@ def _media_type(path: Path) -> str:
         return "video"
     msg = f"unsupported media mime type: {mime}"
     raise ChannelMediaError(msg)
+
+
+_RETRYABLE_ERROR_FRAGMENTS = frozenset(
+    {
+        "connectionerror",
+        "connectionreset",
+        "connectionrefused",
+        "connecttimeout",
+        "timeout",
+        "broken pipe",
+        "remotedisconnected",
+        "eoferror",
+        "network",
+        "transient",
+    }
+)
+
+
+def is_retryable_error(error: str | None) -> bool:
+    """Return whether an error message looks like a transient network failure.
+
+    Args:
+        error: Error string from a failed send operation.
+
+    Returns:
+        `True` when the error text matches a known transient-network pattern.
+    """
+    if error is None:
+        return False
+    lowered = error.lower()
+    return any(fragment in lowered for fragment in _RETRYABLE_ERROR_FRAGMENTS)
+
+
+async def send_with_retry(
+    send_fn: Callable[[], Awaitable[SendResult]],
+    *,
+    max_retries: int = 2,
+    base_delay: float = 2.0,
+) -> SendResult:
+    """Call a channel send function with automatic retry on transient errors.
+
+    Args:
+        send_fn: Zero-argument coroutine that performs the actual send.
+        max_retries: Maximum number of retry attempts after the first failure.
+        base_delay: Base delay in seconds for exponential backoff.
+
+    Returns:
+        The final `SendResult` from the send function.
+    """
+    result = await send_fn()
+    if result.success:
+        return result
+    if not (result.retryable or is_retryable_error(result.error)):
+        return result
+    for attempt in range(1, max_retries + 1):
+        delay = base_delay * (2 ** (attempt - 1))
+        await asyncio.sleep(delay)
+        result = await send_fn()
+        if result.success:
+            return result
+        if not (result.retryable or is_retryable_error(result.error)):
+            return result
+    return result

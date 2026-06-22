@@ -35,7 +35,13 @@ from deepagents_talon.channels.base import (
     split_csv,
     validate_media,
 )
-from deepagents_talon.interfaces import ChannelMedia, ChannelMessage, ChannelStatus, MessageHandler
+from deepagents_talon.interfaces import (
+    ChannelMedia,
+    ChannelMessage,
+    ChannelStatus,
+    MessageHandler,
+    SendResult,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -351,26 +357,33 @@ class TelegramChannel:
             self._poll = None
         self._status = ChannelStatus(provider="telegram", connected=False, detail="disconnected")
 
-    async def send_message(self, conversation_id: str, text: str) -> None:
+    async def send_message(self, conversation_id: str, text: str) -> SendResult:
         """Send chunked plain text.
 
         Args:
             conversation_id: Telegram chat id.
             text: Message content to send.
+
+        Returns:
+            Result indicating whether the send succeeded.
         """
         for chunk in chunk_text(text, limit=MAX_TEXT_CHARS):
-            await self._transport.call(
+            payload = await self._transport.call(
                 "sendMessage",
                 chat_id=conversation_id,
                 text=chunk,
             )
+        return SendResult(success=True, message_id=_extract_telegram_message_id(payload))
 
-    async def send_media(self, conversation_id: str, media: ChannelMedia) -> None:
+    async def send_media(self, conversation_id: str, media: ChannelMedia) -> SendResult:
         """Send validated image, video, or document media to a Telegram chat.
 
         Args:
             conversation_id: Telegram chat id.
             media: Media payload to send.
+
+        Returns:
+            Result indicating whether the send succeeded.
 
         Raises:
             ChannelMediaError: If the media is too large or invalid.
@@ -386,12 +399,13 @@ class TelegramChannel:
         params: dict[str, object] = {"chat_id": conversation_id}
         if caption:
             params["caption"] = caption
-        await self._transport.upload(
+        payload = await self._transport.upload(
             method,
             file_field=file_field,
             file_path=checked.path,
             **params,
         )
+        return SendResult(success=True, message_id=_extract_telegram_message_id(payload))
 
     async def send_typing(self, conversation_id: str) -> None:
         """Send a Telegram typing indicator.
@@ -408,13 +422,16 @@ class TelegramChannel:
         except TelegramError:
             logger.debug("Could not send Telegram typing indicator", exc_info=True)
 
-    async def edit_message(self, conversation_id: str, message_id: str, text: str) -> None:
+    async def edit_message(self, conversation_id: str, message_id: str, text: str) -> SendResult:
         """Edit a previously sent Telegram message.
 
         Args:
             conversation_id: Telegram chat id.
             message_id: Telegram message id.
             text: Replacement message content.
+
+        Returns:
+            Result indicating whether the edit succeeded.
         """
         await self._transport.call(
             "editMessageText",
@@ -422,6 +439,7 @@ class TelegramChannel:
             message_id=int(message_id),
             text=text,
         )
+        return SendResult(success=True, message_id=message_id)
 
     async def status(self) -> ChannelStatus:
         """Report the most recent Telegram Bot API connection status."""
@@ -825,6 +843,15 @@ def _extract_result(result: object) -> dict[str, object]:
         msg = "Telegram Bot API response missing result"
         raise TelegramError(msg)
     return cast("dict[str, object]", result)
+
+
+def _extract_telegram_message_id(payload: object) -> str | None:
+    """Extract a message id from a Bot API send response payload."""
+    result = _extract_result(payload)
+    message_id = result.get("message_id")
+    if isinstance(message_id, int):
+        return str(message_id)
+    return None
 
 
 def _extract_updates(result: object) -> list[dict[str, object]]:

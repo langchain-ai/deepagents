@@ -9,6 +9,8 @@ from deepagents_talon.channels.base import (
     ExposureMode,
     chunk_text,
     format_markdown_for_channel,
+    is_retryable_error,
+    send_with_retry,
     validate_media,
 )
 from deepagents_talon.channels.telegram import TelegramChannel, TelegramChannelConfig
@@ -24,5 +26,7 @@ __all__ = [
     "WhatsAppChannelConfig",
     "chunk_text",
     "format_markdown_for_channel",
+    "is_retryable_error",
+    "send_with_retry",
     "validate_media",
 ]

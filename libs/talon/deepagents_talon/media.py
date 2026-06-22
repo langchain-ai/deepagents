@@ -38,7 +38,7 @@ READABLE_DOCUMENT_EXTENSIONS = frozenset(
 VIDEO_EXTENSIONS = frozenset({".mp4", ".mov", ".webm", ".3gp", ".m4v"})
 
 ContentBlock = dict[str, object]
-OutboundMediaType = Literal["image", "video"]
+OutboundMediaType = Literal["image", "video", "document", "audio", "voice"]
 
 _MARKDOWN_MEDIA_PATTERN = re.compile(r"!\[([^\]]*)]\(([^)\s]+)\)")
 _FENCE_PATTERN = re.compile(r"```[\s\S]*?```")

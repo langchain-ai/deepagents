@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from deepagents_talon.interfaces import ChannelMedia, ChannelMessage, ChannelStatus
+from deepagents_talon.interfaces import ChannelMedia, ChannelMessage, ChannelStatus, SendResult
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -33,15 +33,21 @@ class RecordingChannel:
     def set_message_handler(self, handler: Callable[[ChannelMessage], Awaitable[None]]) -> None:
         self.handler = handler
 
-    async def send_message(self, conversation_id: str, text: str) -> None:
+    async def send_message(self, conversation_id: str, text: str) -> SendResult:
         self.sent.append((conversation_id, text))
+        return SendResult(success=True)
 
-    async def send_media(self, conversation_id: str, media: ChannelMedia) -> None:
+    async def send_media(self, conversation_id: str, media: ChannelMedia) -> SendResult:
         self.media.append((conversation_id, media))
         self.sent.append((conversation_id, f"{media.media_type}:{media.path}"))
+        return SendResult(success=True)
 
-    async def edit_message(self, conversation_id: str, message_id: str, text: str) -> None:
+    async def edit_message(self, conversation_id: str, message_id: str, text: str) -> SendResult:
         self.sent.append((conversation_id, f"{message_id}:{text}"))
+        return SendResult(success=True)
+
+    async def send_typing(self, conversation_id: str) -> None:
+        pass
 
     async def status(self) -> ChannelStatus:
         return self.status_report

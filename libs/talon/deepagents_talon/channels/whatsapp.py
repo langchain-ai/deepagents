@@ -38,7 +38,13 @@ from deepagents_talon.channels.base import (
     validate_media,
     validate_media_size,
 )
-from deepagents_talon.interfaces import ChannelMedia, ChannelMessage, ChannelStatus, MessageHandler
+from deepagents_talon.interfaces import (
+    ChannelMedia,
+    ChannelMessage,
+    ChannelStatus,
+    MessageHandler,
+    SendResult,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -302,22 +308,29 @@ class WhatsAppChannel:
         await self._stop_bridge()
         self._status = ChannelStatus(provider="whatsapp", connected=False, detail="disconnected")
 
-    async def send_message(self, conversation_id: str, text: str) -> None:
+    async def send_message(self, conversation_id: str, text: str) -> SendResult:
         """Send chunked, formatted text to a WhatsApp chat.
 
         Args:
             conversation_id: WhatsApp chat id.
             text: Message content to send.
+
+        Returns:
+            Result indicating whether the send succeeded.
         """
         for chunk in _chunk_with_bot_header(text, bot_header=self.config.bot_header):
-            await self._post_result("/send", {"chatId": conversation_id, "text": chunk})
+            response = await self._post_result("/send", {"chatId": conversation_id, "text": chunk})
+        return SendResult(success=True, message_id=_extract_message_id(response))
 
-    async def send_media(self, conversation_id: str, media: ChannelMedia) -> None:
+    async def send_media(self, conversation_id: str, media: ChannelMedia) -> SendResult:
         """Send validated image or video media to a WhatsApp chat.
 
         Args:
             conversation_id: WhatsApp chat id.
             media: Media payload to send.
+
+        Returns:
+            Result indicating whether the send succeeded.
         """
         checked = validate_media(
             media,
@@ -336,7 +349,8 @@ class WhatsAppChannel:
             )
         else:
             payload["caption"] = _bot_header(self.config.bot_header)
-        await self._post_result("/send-media", payload)
+        response = await self._post_result("/send-media", payload)
+        return SendResult(success=True, message_id=_extract_message_id(response))
 
     async def send_typing(self, conversation_id: str) -> None:
         """Send a WhatsApp typing indicator when the bridge supports it.
@@ -346,13 +360,16 @@ class WhatsAppChannel:
         """
         await self._post_result("/typing", {"chatId": conversation_id})
 
-    async def edit_message(self, conversation_id: str, message_id: str, text: str) -> None:
+    async def edit_message(self, conversation_id: str, message_id: str, text: str) -> SendResult:
         """Edit a previously sent WhatsApp message.
 
         Args:
             conversation_id: WhatsApp chat id.
             message_id: Bridge message id.
             text: Replacement content.
+
+        Returns:
+            Result indicating whether the edit succeeded.
         """
         await self._post_result(
             "/edit",
@@ -362,6 +379,7 @@ class WhatsAppChannel:
                 "content": _with_bot_header(text, bot_header=self.config.bot_header),
             },
         )
+        return SendResult(success=True, message_id=message_id)
 
     async def status(self) -> ChannelStatus:
         """Report the most recent bridge connection status."""
@@ -521,6 +539,14 @@ def _with_bot_header(text: str, *, bot_header: str) -> str:
     if not text:
         return header
     return f"{header}\n{format_markdown_for_channel(text)}"
+
+
+def _extract_message_id(response: object) -> str | None:
+    if isinstance(response, dict):
+        value = cast("Mapping[str, object]", response).get("message_id")
+        if isinstance(value, str) and value:
+            return value
+    return None
 
 
 def _chunk_with_bot_header(text: str, *, bot_header: str) -> list[str]:

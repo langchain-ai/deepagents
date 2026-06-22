@@ -1,0 +1,29 @@
+libs/evals/deepagents_evals/eval_registry.py
+  s_698778a02a8251::t_646cce978fefa0 28,40
+  s_698778a02a8251::t_ca3cffeb79ece3 798-809
+  s_698778a02a8251::t_96a74ab56d3a70 157-168,173-174
+  s_698778a02a8251::t_7ee8e12700180d 169-172
+libs/evals/deepagents_evals/mock_tools/constraints.py
+  s_698778a02a8251::t_cee97615750819 1-20
+libs/evals/deepagents_evals/mock_tools/__init__.py
+  s_698778a02a8251::t_87b233c8654196 11,14
+  s_698778a02a8251::t_48cbe275a4c9d1 33
+libs/evals/tests/evals/test_iterative_constraint_satisfaction.py
+  s_698778a02a8251::t_d18d14a0ff78a9 28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "b7b89eda1bdfca0e0312bd0a5302e772a589cc3f",
+  "prompts": {},
+  "sessions": {
+    "s_698778a02a8251": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c2a0169b-bce8-484a-ad7f-18d87a45f565",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

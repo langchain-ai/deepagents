@@ -52,6 +52,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import os
 import uuid
 import warnings
 from collections.abc import Mapping
@@ -220,6 +221,18 @@ def _token_counter_accepts_tools(counter: TokenCounter) -> bool | None:
     return False
 
 
+def _positive_int_env(name: str) -> int | None:
+    """Return a positive int from env var ``name``, or None if unset/invalid."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
 def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefaults:
     """Compute default summarization settings based on model profile.
 
@@ -238,8 +251,9 @@ def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefault
         and isinstance(model.profile["max_input_tokens"], int)
     )
 
+    defaults: SummarizationDefaults
     if has_profile:
-        return {
+        defaults = {
             "trigger": ("fraction", 0.85),
             "keep": ("fraction", 0.10),
             "truncate_args_settings": {
@@ -247,17 +261,32 @@ def compute_summarization_defaults(model: BaseChatModel) -> SummarizationDefault
                 "keep": ("fraction", 0.10),
             },
         }
+    else:
+        # Defaults for models without profile info are more conservative to avoid
+        # overshooting context limits.
+        defaults = {
+            "trigger": ("tokens", 170000),
+            "keep": ("messages", 6),
+            "truncate_args_settings": {
+                "trigger": ("messages", 20),
+                "keep": ("messages", 20),
+            },
+        }
 
-    # Defaults for models without profile info are more conservative to avoid
-    # overshooting context limits.
-    return {
-        "trigger": ("tokens", 170000),
-        "keep": ("messages", 6),
-        "truncate_args_settings": {
-            "trigger": ("messages", 20),
-            "keep": ("messages", 20),
-        },
-    }
+    # Optional fixed-token overrides via env vars. When set, they cap the
+    # per-call working context regardless of the model's (possibly huge)
+    # context window — useful for long agentic runs where a large per-call
+    # context slows every turn and degrades reasoning. Unset/invalid values
+    # leave the computed defaults untouched.
+    trigger_tokens = _positive_int_env("DEEPAGENTS_SUMMARIZE_TRIGGER_TOKENS")
+    keep_tokens = _positive_int_env("DEEPAGENTS_SUMMARIZE_KEEP_TOKENS")
+    if trigger_tokens is not None:
+        defaults["trigger"] = ("tokens", trigger_tokens)
+        defaults["truncate_args_settings"]["trigger"] = ("tokens", trigger_tokens)
+    if keep_tokens is not None:
+        defaults["keep"] = ("tokens", keep_tokens)
+        defaults["truncate_args_settings"]["keep"] = ("tokens", keep_tokens)
+    return defaults
 
 
 class _DeepAgentsSummarizationMiddleware(AgentMiddleware):

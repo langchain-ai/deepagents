@@ -18,6 +18,20 @@ if TYPE_CHECKING:
 
 _DEFAULT_WORKDIR = Path("/app")
 
+# Cap the agent's per-call working context so long agentic runs don't slow every
+# turn / degrade reasoning on a huge context (the dominant cause of timeouts).
+# Read by deepagents' `compute_summarization_defaults`; `setdefault` lets a
+# workflow `--agent-env` override them.
+_SUMMARIZE_TRIGGER_TOKENS = "75000"
+_SUMMARIZE_KEEP_TOKENS = "15000"
+
+
+def _apply_context_budget() -> None:
+    """Set the summarization trigger/keep budget before the agent is built."""
+    os.environ.setdefault("DEEPAGENTS_SUMMARIZE_TRIGGER_TOKENS", _SUMMARIZE_TRIGGER_TOKENS)
+    os.environ.setdefault("DEEPAGENTS_SUMMARIZE_KEEP_TOKENS", _SUMMARIZE_KEEP_TOKENS)
+
+
 _SHELL_ENV_DENYLIST = frozenset(
     {
         "ANTHROPIC_API_KEY",
@@ -183,6 +197,7 @@ def make_graph(config: dict[str, object] | None = None) -> object:
         TypeError: If configurable values have unexpected types.
         ValueError: If no model name is provided.
     """
+    _apply_context_budget()
     configurable = _configurable(config)
     model = init_chat_model(_model_name(configurable), **_model_kwargs(configurable))
     assistant_id = os.environ.get("HARBOR_SESSION_ID") or f"harbor-{uuid.uuid4()}"
@@ -223,6 +238,7 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
         TypeError: If configurable values have unexpected types.
         ValueError: If no model name is provided.
     """
+    _apply_context_budget()
     configurable = _configurable(config)
     model = init_chat_model(_model_name(configurable), **_model_kwargs(configurable))
     backend = LocalShellBackend(root_dir=_workdir(configurable), inherit_env=False)

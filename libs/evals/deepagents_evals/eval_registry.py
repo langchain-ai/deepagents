@@ -1,26 +1,19 @@
-"""Registry of every eval in the Deep Agents evaluation suite.
+"""Registry mapping eval names to agent builder functions.
 
-This module is the single source of truth for how each eval's agent is
-constructed. Both the pytest suite and the Harbor sandbox dispatcher import
-from here, ensuring the `create_deep_agent` call for a given eval exists in
-exactly one place.
+Each builder is a callable ``(BaseChatModel) -> CompiledStateGraph`` that
+constructs the agent graph for a single eval. The Harbor dispatcher
+(``make_eval_graph`` in ``langgraph_agent.py``) and, eventually, the pytest
+suite both look up builders from :data:`EVALS`.
 
-Each eval is described by an :class:`EvalSpec` that captures the
-`create_deep_agent` kwargs (`system_prompt`, `memory`, `skills`,
-`tools`, `middleware`, `subagents`, `backend`, `store`) or a custom
-`builder` callable for evals whose construction depends on runtime parameters
-(e.g. `repl_name` for the relational / incident-graph suites).
-
-The :data:`EVALS` dict maps the pytest test function name to its
-:class:`EvalSpec`. Parametrized evals (memory_multiturn, followup_quality) use
-the test function name without the parametrize suffix; the Harbor dispatcher
-receives the base name via `configurable["eval_name"]`.
+Category and tier metadata lives on the pytest markers
+(``@pytest.mark.eval_category`` / ``@pytest.mark.eval_tier``) — not here.
+``generate_eval_catalog.py`` reads those markers via AST analysis.
 """
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from textwrap import dedent
@@ -32,7 +25,9 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware.summarization import create_summarization_tool_middleware
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelCallLimitMiddleware, TodoListMiddleware
+from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.memory import InMemoryStore
 
 from deepagents_evals.mock_tools import (
@@ -47,73 +42,75 @@ from deepagents_evals.mock_tools import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    from langchain_core.language_models import BaseChatModel
     from langchain_core.tools import BaseTool
-    from langgraph.graph.state import CompiledStateGraph
+
+EvalBuilder = Callable[[BaseChatModel], CompiledStateGraph[Any, Any]]
 
 # ---------------------------------------------------------------------------
-# Builder functions for evals whose construction depends on runtime params
+# Shared builders and factories
 # ---------------------------------------------------------------------------
 
 
-def _relational_builder(
-    model: BaseChatModel, *, repl_name: str | None = None
-) -> CompiledStateGraph[Any, Any]:
-    """Build the relational-data agent.
-
-    When `repl_name` is `None` the tools are bound directly. When it is
-    `"quickjs"` the tools are routed through a `CodeInterpreterMiddleware`
-    instead.
-    """
-    middleware: list[Any] = []
-    tools: list[BaseTool] | None = None
-    if repl_name == "quickjs":
-        from langchain_quickjs import CodeInterpreterMiddleware  # noqa: PLC0415
-
-        ptc: list[str | BaseTool] = [*RELATIONAL_TOOLS]
-        middleware = [CodeInterpreterMiddleware(ptc=ptc)]
-    elif repl_name is None:
-        tools = RELATIONAL_TOOLS
-    else:
-        msg = f'Unknown repl_name "{repl_name}"'
-        raise ValueError(msg)
-    return create_deep_agent(model=model, tools=tools, middleware=middleware)
+def _bare(model: BaseChatModel) -> CompiledStateGraph[Any, Any]:
+    """Bare deep agent with no customization."""
+    return create_deep_agent(model=model)
 
 
-def _incident_graph_builder(
-    model: BaseChatModel, *, repl_name: str | None = None
-) -> CompiledStateGraph[Any, Any]:
-    """Build the incident-management agent.
+def _with_system_prompt(prompt: str) -> EvalBuilder:
+    """Return a builder that sets a custom system prompt."""
 
-    Always includes the tool-error middleware. When `repl_name` is
-    `"quickjs"` the tools are routed through a `CodeInterpreterMiddleware`
-    instead of being bound directly.
-    """
-    middleware: list[Any] = [incident_graph_tool_error_middleware]
-    tools: list[BaseTool] | None = None
-    if repl_name == "quickjs":
-        from langchain_quickjs import CodeInterpreterMiddleware  # noqa: PLC0415
+    def _build(model: BaseChatModel) -> CompiledStateGraph[Any, Any]:
+        return create_deep_agent(model=model, system_prompt=prompt)
 
-        ptc: list[str | BaseTool] = [*INCIDENT_GRAPH_TOOLS]
-        middleware.append(CodeInterpreterMiddleware(ptc=ptc))
-    elif repl_name is None:
-        tools = INCIDENT_GRAPH_TOOLS
-    else:
-        msg = f'Unknown repl_name "{repl_name}"'
-        raise ValueError(msg)
-    return create_deep_agent(model=model, tools=tools, middleware=middleware)
+    return _build
 
 
-def _composite_backend_builder(
-    model: BaseChatModel,
-    *,
-    repl_name: str | None = None,  # noqa: ARG001
-) -> CompiledStateGraph[Any, Any]:
-    """Build the composite-backend memory agent.
+def _with_memory(paths: list[str]) -> EvalBuilder:
+    """Return a builder that configures memory file paths."""
 
-    Creates a fresh `InMemoryStore` and `CompositeBackend` on every call so
+    def _build(model: BaseChatModel) -> CompiledStateGraph[Any, Any]:
+        return create_deep_agent(model=model, memory=paths)
+
+    return _build
+
+
+def _with_skills(paths: list[str]) -> EvalBuilder:
+    """Return a builder that configures skill directories."""
+
+    def _build(model: BaseChatModel) -> CompiledStateGraph[Any, Any]:
+        return create_deep_agent(model=model, skills=paths)
+
+    return _build
+
+
+def _tool_selection(model: BaseChatModel) -> CompiledStateGraph[Any, Any]:
+    """Agent with the mock SaaS tool-selection tools."""
+    return create_deep_agent(model=model, tools=TOOL_SELECTION_TOOLS)
+
+
+def _relational(model: BaseChatModel) -> CompiledStateGraph[Any, Any]:
+    """Agent with relational-data lookup tools bound directly."""
+    return create_deep_agent(model=model, tools=RELATIONAL_TOOLS)
+
+
+def _incident_graph(model: BaseChatModel) -> CompiledStateGraph[Any, Any]:
+    """Agent with incident-graph tools and error middleware."""
+    return create_deep_agent(
+        model=model,
+        tools=INCIDENT_GRAPH_TOOLS,
+        middleware=[incident_graph_tool_error_middleware],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Custom builders
+# ---------------------------------------------------------------------------
+
+
+def _composite_backend(model: BaseChatModel) -> CompiledStateGraph[Any, Any]:
+    """Composite-backend memory agent with a pre-seeded store.
+
+    Creates a fresh ``InMemoryStore`` and ``CompositeBackend`` on every call so
     state doesn't leak between trials.
     """
     store = InMemoryStore()
@@ -139,12 +136,8 @@ def _composite_backend_builder(
     )
 
 
-def _weather_subagent_builder(
-    model: BaseChatModel,
-    *,
-    repl_name: str | None = None,  # noqa: ARG001
-) -> CompiledStateGraph[Any, Any]:
-    """Build the agent with a named weather subagent."""
+def _weather_subagent(model: BaseChatModel) -> CompiledStateGraph[Any, Any]:
+    """Agent with a named weather subagent."""
     return create_deep_agent(
         model=model,
         subagents=[
@@ -159,88 +152,38 @@ def _weather_subagent_builder(
     )
 
 
-def _general_purpose_subagent_builder(
-    model: BaseChatModel,
-    *,
-    repl_name: str | None = None,  # noqa: ARG001
-) -> CompiledStateGraph[Any, Any]:
-    """Build the agent with the weather tool and general-purpose subagent."""
+def _general_purpose_subagent(model: BaseChatModel) -> CompiledStateGraph[Any, Any]:
+    """Agent with the weather tool."""
     return create_deep_agent(model=model, tools=[get_weather_fake])
 
 
-def _rubric_builder(
-    model: BaseChatModel,
-    *,
-    repl_name: str | None = None,  # noqa: ARG001
-) -> CompiledStateGraph[Any, Any]:
-    """Build the iterative constraint-satisfaction agent.
+def _rubric(model: BaseChatModel) -> CompiledStateGraph[Any, Any]:
+    """Iterative constraint-satisfaction agent with ``RubricMiddleware``.
 
-    Wires `RubricMiddleware` (with the `count_words` tool) so a grader
+    Wires ``RubricMiddleware`` (with the ``count_words`` tool) so a grader
     sub-agent loops the main agent back until the rubric is satisfied. The
-    rubric itself is a runtime input (`extra_state["rubric"]`), not agent
+    rubric itself is a runtime input (``extra_state["rubric"]``), not agent
     setup.
     """
     middleware: list[Any] = [RubricMiddleware(model=model, tools=[count_words], max_iterations=5)]
     return create_deep_agent(model=model, middleware=middleware)
 
 
-_MEMORY_BENCH_FILESEEDED_SYSTEM_PROMPT = (
-    "You have access to a collection of text files in /data/ containing "
-    "information relevant to answering questions. Use your file tools "
-    "(grep, read_file, glob, ls) to search for and retrieve relevant "
-    "information before answering. Do not assume you already know the answer — "
-    "always search the files first."
-)
-"""Mirror of `memory_agent_bench.FILESEEDED_SYSTEM_PROMPT`."""
+def _bfcl(model: BaseChatModel) -> CompiledStateGraph[Any, Any]:
+    """BFCL v3 stateful-API tool-calling agent.
 
-
-def _make_memory_bench_builder(*, fileseeded: bool) -> Callable[..., CompiledStateGraph[Any, Any]]:
-    """Return a builder for a MemoryAgentBench eval variant.
-
-    Agent setup is a deep agent with a checkpointer (the benchmark feeds
-    context chunks then questions across turns on one thread). The fileseeded
-    variant adds a system prompt steering retrieval through file tools. The
-    chunks/files themselves are runtime data, not agent setup.
-    """
-
-    def _builder(
-        model: BaseChatModel,
-        *,
-        repl_name: str | None = None,  # noqa: ARG001
-    ) -> CompiledStateGraph[Any, Any]:
-        kwargs: dict[str, Any] = {"model": model, "checkpointer": InMemorySaver()}
-        if fileseeded:
-            kwargs["system_prompt"] = _MEMORY_BENCH_FILESEEDED_SYSTEM_PROMPT
-        return create_deep_agent(**kwargs)
-
-    return _builder
-
-
-def _bfcl_builder(
-    model: BaseChatModel,
-    *,
-    repl_name: str | None = None,  # noqa: ARG001
-    config: dict[str, Any] | None = None,
-) -> CompiledStateGraph[Any, Any]:
-    """Build the BFCL v3 stateful-API tool-calling agent.
-
-    When the dispatcher forwards a case via `config` (`involved_classes` and
-    `initial_config`), only those simulators are instantiated and seeded with
-    the case state — matching the pytest path so stateful scoring is valid.
-    Without a case (`config is None`), binds the full default suite. Imported
-    lazily so the registry import stays light for consumers that never build
-    this eval.
+    Binds the full default BFCL tool suite. Per-case scoping
+    (``involved_classes`` / ``initial_config``) is environment-level setup,
+    not agent construction — the Harbor task provisions a pre-configured
+    scenario file that the builder reads. Imported lazily so the registry
+    import stays light for consumers that never build this eval.
     """
     from deepagents_evals.mock_tools.bfcl import (  # noqa: PLC0415
         BFCL_SYSTEM_PROMPT,
         make_bfcl_tools,
     )
 
-    config = config or {}
-    tools = make_bfcl_tools(
-        involved_classes=config.get("involved_classes"),
-        initial_config=config.get("initial_config"),
-    )
+    tools = make_bfcl_tools()
     return create_deep_agent(
         model=model,
         tools=tools,
@@ -258,36 +201,23 @@ Always follow the policy. Be helpful, concise, and accurate.
 {domain_policy}
 </policy>\
 """
-"""Mirror of `test_tau2_airline.AGENT_SYSTEM_PROMPT`."""
 
 
-def _tau2_airline_builder(
-    model: BaseChatModel,
-    *,
-    repl_name: str | None = None,  # noqa: ARG001
-    config: dict[str, Any] | None = None,
-) -> CompiledStateGraph[Any, Any]:
-    """Build the tau2 airline customer-service agent.
+def _tau2_airline(model: BaseChatModel) -> CompiledStateGraph[Any, Any]:
+    """tau2 airline customer-service agent.
 
-    When the dispatcher forwards a task's `initial_state` via `config`, it is
-    applied to the freshly loaded `FlightDB` before tools are bound — matching
-    the pytest path so the agent operates on the task-seeded DB. Without it
-    (`config is None`), tools bind over the default DB. The DB / policy files
-    are environment data loaded from `DEEPAGENTS_EVALS_DATA_DIR`. Imported
-    lazily so the registry import stays light for consumers that never build
-    this eval.
+    Loads the DB from the environment-provided ``db.json`` (the Harbor task's
+    environment applies per-task ``initial_state`` patches before the agent
+    starts). Tools and policy are loaded from ``DEEPAGENTS_EVALS_DATA_DIR``.
+    Imported lazily so the registry import stays light.
     """
     from deepagents_evals.mock_tools.tau2_airline.domain import (  # noqa: PLC0415
-        apply_initial_state,
         create_airline_tools,
         load_db,
         load_policy,
     )
 
     db = load_db()
-    initial_state = (config or {}).get("initial_state")
-    if isinstance(initial_state, dict):
-        apply_initial_state(db, initial_state)
     tools, _ = create_airline_tools(db)
     return create_deep_agent(
         model=model,
@@ -297,42 +227,56 @@ def _tau2_airline_builder(
     )
 
 
-def _make_todo_middleware_builder(
-    *, tools: list[BaseTool]
-) -> Callable[..., CompiledStateGraph[Any, Any]]:
-    """Return a builder for a langchain `TodoListMiddleware` eval.
+# ---------------------------------------------------------------------------
+# Closure factories
+# ---------------------------------------------------------------------------
 
-    These evals exercise langchain's bare `create_agent` + `TodoListMiddleware`
-    (not `create_deep_agent`), so the builder constructs that agent directly.
-    The mock city-lookup tools are the only agent setup; the prompts are runtime
-    inputs.
+_MEMORY_BENCH_FILESEEDED_SYSTEM_PROMPT = (
+    "You have access to a collection of text files in /data/ containing "
+    "information relevant to answering questions. Use your file tools "
+    "(grep, read_file, glob, ls) to search for and retrieve relevant "
+    "information before answering. Do not assume you already know the answer — "
+    "always search the files first."
+)
+
+
+def _make_memory_bench_builder(*, fileseeded: bool) -> EvalBuilder:
+    """Return a builder for a MemoryAgentBench eval variant.
+
+    Agent setup is a deep agent with a checkpointer. The fileseeded variant
+    adds a system prompt steering retrieval through file tools. The
+    chunks/files themselves are runtime data, not agent setup.
     """
 
-    def _builder(
-        model: BaseChatModel,
-        *,
-        repl_name: str | None = None,  # noqa: ARG001
-    ) -> CompiledStateGraph[Any, Any]:
+    def _build(model: BaseChatModel) -> CompiledStateGraph[Any, Any]:
+        kwargs: dict[str, Any] = {"model": model, "checkpointer": InMemorySaver()}
+        if fileseeded:
+            kwargs["system_prompt"] = _MEMORY_BENCH_FILESEEDED_SYSTEM_PROMPT
+        return create_deep_agent(**kwargs)
+
+    return _build
+
+
+def _make_todo_middleware_builder(*, tools: list[BaseTool]) -> EvalBuilder:
+    """Return a builder for a langchain ``TodoListMiddleware`` eval.
+
+    These evals exercise langchain's bare ``create_agent`` +
+    ``TodoListMiddleware`` (not ``create_deep_agent``). The mock city-lookup
+    tools are the only agent setup; the prompts are runtime inputs.
+    """
+
+    def _build(model: BaseChatModel) -> CompiledStateGraph[Any, Any]:
         middleware: list[Any] = [TodoListMiddleware()]
         return create_agent(model=model, tools=tools, middleware=middleware)
 
-    return _builder
+    return _build
 
 
 # ---------------------------------------------------------------------------
-# Summarization builders (test_summarization.py)
-#
-# These agents read a large source file that overflows the context window so
-# auto-summarization triggers. Unlike the pytest suite (which downloads the
-# pinned file into a per-test `tmp_path`), the file is *environment data*:
-# the Harbor task's `environment/Dockerfile` provisions the pinned
-# `summarization.py` (and `filesystem.py` for the large-reads eval) into
-# `DEEPAGENTS_EVALS_DATA_DIR`, and the builder roots a `FilesystemBackend`
-# there. The builder never seeds files or hits the network.
+# Summarization builders
 # ---------------------------------------------------------------------------
 
 _DATA_DIR_ENV = "DEEPAGENTS_EVALS_DATA_DIR"
-"""Env var naming the directory the environment seeds with eval data files."""
 
 _SUMMARIZATION_SYSTEM_PROMPT = dedent(
     """
@@ -355,7 +299,6 @@ _SUMMARIZATION_SYSTEM_PROMPT = dedent(
     - Files you need to edit immediately after reading
     """
 )
-"""Mirror of `test_summarization.SYSTEM_PROMPT` so the registry owns the config."""
 
 
 def _eval_data_dir() -> str:
@@ -372,11 +315,9 @@ def _build_summarization_agent(
 ) -> CompiledStateGraph[Any, Any]:
     """Build a summarization eval agent over an environment-seeded filesystem.
 
-    Mirrors `test_summarization._setup_summarization_test`: a
-    `FilesystemBackend` rooted at the env-provided data dir, a lowered
-    `max_input_tokens` so summarization triggers, a checkpointer, and the
-    optional `compact_conversation` tool / model-call-limit middleware. The
-    large data file itself is provisioned by the environment, not here.
+    A ``FilesystemBackend`` rooted at the env-provided data dir, a lowered
+    ``max_input_tokens`` so summarization triggers, a checkpointer, and the
+    optional ``compact_conversation`` tool / model-call-limit middleware.
     """
     backend = FilesystemBackend(root_dir=_eval_data_dir(), virtual_mode=True)
 
@@ -405,14 +346,10 @@ def _make_summarization_builder(
     max_input_tokens: int,
     include_compact_tool: bool,
     run_limit: int | None = None,
-) -> Callable[..., CompiledStateGraph[Any, Any]]:
-    """Return a registry builder closure for a summarization eval variant."""
+) -> EvalBuilder:
+    """Return a builder closure for a summarization eval variant."""
 
-    def _builder(
-        model: BaseChatModel,
-        *,
-        repl_name: str | None = None,  # noqa: ARG001
-    ) -> CompiledStateGraph[Any, Any]:
+    def _build(model: BaseChatModel) -> CompiledStateGraph[Any, Any]:
         return _build_summarization_agent(
             model,
             max_input_tokens=max_input_tokens,
@@ -420,614 +357,218 @@ def _make_summarization_builder(
             run_limit=run_limit,
         )
 
-    return _builder
+    return _build
 
-
-# ---------------------------------------------------------------------------
-# EvalSpec
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class EvalSpec:
-    """Describes how to build the agent for a single eval.
-
-    Most evals set only `category`, `tier`, and optionally `system_prompt`
-    / `memory` / `skills` / `tools`. Evals whose construction depends on
-    runtime parameters (e.g. `repl_name`) set `builder` instead; when
-    `builder` is set, `build()` delegates to it and ignores the static
-    fields.
-
-    Attributes:
-        name: The pytest test function name (without parametrize suffix).
-        category: Eval category (file_operations, tool_use, memory, etc.).
-        tier: Eval tier (baseline or hillclimb).
-        system_prompt: Custom system prompt passed to `create_deep_agent`.
-        memory: Memory file paths passed to `create_deep_agent`.
-        skills: Skill directory paths passed to `create_deep_agent`.
-        tools: Tools passed to `create_deep_agent` (replaces default tools).
-        middleware: Middleware passed to `create_deep_agent`.
-        subagents: Subagent configs passed to `create_deep_agent`.
-        builder: Custom builder for evals that need runtime construction.
-            When set, takes precedence over the static fields.
-        supports_repl: Whether this eval supports the `repl_name` parameter
-            (only `builder`-based evals do).
-    """
-
-    name: str
-    category: str = ""
-    tier: str = ""
-    system_prompt: str | None = None
-    memory: list[str] | None = None
-    skills: list[str] | None = None
-    tools: list[BaseTool] | None = None
-    middleware: list[Any] | None = None
-    subagents: list[dict[str, Any]] | None = None
-    builder: Callable[..., CompiledStateGraph[Any, Any]] | None = None
-    supports_repl: bool = False
-
-    def build(
-        self,
-        model: BaseChatModel,
-        *,
-        repl_name: str | None = None,
-        config: dict[str, Any] | None = None,
-    ) -> CompiledStateGraph[Any, Any]:
-        """Build the agent graph for this eval.
-
-        Args:
-            model: The chat model to use.
-            repl_name: Optional REPL backend (`"quickjs"` or `None`).
-                Only used by evals with `supports_repl=True`.
-            config: Optional per-case runtime data the dispatcher forwards from
-                `configurable["eval_config"]`. Stateful evals (tau2, BFCL) use it
-                to seed per-task/per-case state and tool selection; evals whose
-                construction needs no runtime data ignore it.
-
-        Returns:
-            A compiled LangGraph graph.
-        """
-        if self.builder is not None:
-            if config is not None:
-                return self.builder(model, repl_name=repl_name, config=config)
-            return self.builder(model, repl_name=repl_name)
-
-        kwargs: dict[str, Any] = {"model": model}
-        if self.system_prompt is not None:
-            kwargs["system_prompt"] = self.system_prompt
-        if self.memory is not None:
-            kwargs["memory"] = self.memory
-        if self.skills is not None:
-            kwargs["skills"] = self.skills
-        if self.tools is not None:
-            kwargs["tools"] = self.tools
-        if self.middleware is not None:
-            kwargs["middleware"] = self.middleware
-        if self.subagents is not None:
-            kwargs["subagents"] = self.subagents
-        return create_deep_agent(**kwargs)
-
-
-# ---------------------------------------------------------------------------
-# Helpers for building the registry
-# ---------------------------------------------------------------------------
-
-
-def _default(name: str, category: str, tier: str, **kwargs: Any) -> EvalSpec:
-    """Create an EvalSpec with the standard fields."""
-    return EvalSpec(name=name, category=category, tier=tier, **kwargs)
-
-
-def _builder_eval(
-    name: str,
-    category: str,
-    tier: str,
-    builder: Callable[..., CompiledStateGraph[Any, Any]],
-    *,
-    supports_repl: bool = True,
-) -> EvalSpec:
-    """Create an EvalSpec backed by a custom builder function."""
-    return EvalSpec(
-        name=name,
-        category=category,
-        tier=tier,
-        builder=builder,
-        supports_repl=supports_repl,
-    )
-
-
-# ---------------------------------------------------------------------------
-# The registry
-# ---------------------------------------------------------------------------
-
-EVALS: dict[str, EvalSpec] = {}
-
-
-def _register(spec: EvalSpec) -> EvalSpec:
-    """Register an EvalSpec and return it for chaining."""
-    EVALS[spec.name] = spec
-    return spec
-
-
-# --- file_operations / retrieval (test_file_operations.py) -----------------
-
-_FILE_OPS = "file_operations"
-_RETRIEVAL = "retrieval"
-_BASELINE = "baseline"
-_HILLCLIMB = "hillclimb"
-
-_register(_default("test_read_file_seeded_state_backend_file", _FILE_OPS, _BASELINE))
-_register(
-    _default("test_write_file_simple", _FILE_OPS, _BASELINE, system_prompt="Your name is Foo Bar.")
-)
-_register(_default("test_write_files_in_parallel", _FILE_OPS, _BASELINE))
-_register(_default("test_write_files_in_parallel_confirm_with_verification", _FILE_OPS, _BASELINE))
-_register(_default("test_write_files_in_parallel_ambiguous_confirmation", _FILE_OPS, _BASELINE))
-_register(_default("test_ls_directory_contains_file_yes_no", _FILE_OPS, _BASELINE))
-_register(_default("test_ls_directory_missing_file_yes_no", _FILE_OPS, _BASELINE))
-_register(_default("test_edit_file_replace_text", _FILE_OPS, _BASELINE))
-_register(_default("test_read_then_write_derived_output", _FILE_OPS, _BASELINE))
-_register(_default("test_avoid_unnecessary_tool_calls", _FILE_OPS, _BASELINE))
-_register(_default("test_read_files_in_parallel", _FILE_OPS, _BASELINE))
-_register(_default("test_grep_finds_matching_paths", _RETRIEVAL, _BASELINE))
-_register(_default("test_glob_lists_markdown_files", _RETRIEVAL, _BASELINE))
-_register(_default("test_find_magic_phrase_deep_nesting", _RETRIEVAL, _BASELINE))
-_register(
-    _default("test_identify_quote_author_from_directory_parallel_reads", _RETRIEVAL, _BASELINE)
-)
-_register(
-    _default(
-        "test_identify_quote_author_from_directory_unprompted_efficiency",
-        _RETRIEVAL,
-        _BASELINE,
-    )
-)
-_register(_default("test_read_file_truncation_recovery_with_pagination", _FILE_OPS, _BASELINE))
-_register(_default("test_read_file_empty_file_reports_empty", _FILE_OPS, _BASELINE))
-
-# --- memory (test_memory.py) -----------------------------------------------
-
-_MEMORY = "memory"
-
-_register(_default("test_memory_basic_recall", _MEMORY, _BASELINE, memory=["/project/AGENTS.md"]))
-_register(
-    _default(
-        "test_memory_guided_behavior_naming_convention",
-        _MEMORY,
-        _BASELINE,
-        memory=["/project/AGENTS.md"],
-    )
-)
-_register(
-    _default("test_memory_influences_file_content", _MEMORY, _BASELINE, memory=["/style/AGENTS.md"])
-)
-_register(
-    _default(
-        "test_memory_multiple_sources_combined",
-        _MEMORY,
-        _BASELINE,
-        memory=["/user/AGENTS.md", "/project/AGENTS.md"],
-    )
-)
-_register(
-    _default(
-        "test_memory_with_missing_file_graceful",
-        _MEMORY,
-        _BASELINE,
-        memory=["/missing/AGENTS.md"],
-    )
-)
-_register(
-    _default(
-        "test_memory_prevents_unnecessary_file_reads",
-        _MEMORY,
-        _BASELINE,
-        memory=["/docs/AGENTS.md"],
-    )
-)
-_register(
-    _default(
-        "test_memory_does_not_persist_transient_info",
-        _MEMORY,
-        _BASELINE,
-        memory=["/project/AGENTS.md"],
-    )
-)
-_register(
-    _default(
-        "test_memory_updates_user_formatting_preference",
-        _MEMORY,
-        _BASELINE,
-        memory=["/project/AGENTS.md"],
-    )
-)
-_register(
-    _default(
-        "test_memory_missing_file_graceful_without_claiming_context",
-        _MEMORY,
-        _BASELINE,
-        memory=["/missing/AGENTS.md"],
-    )
-)
-_register(
-    _builder_eval(
-        "test_memory_middleware_composite_backend",
-        _MEMORY,
-        _BASELINE,
-        _composite_backend_builder,
-        supports_repl=False,
-    )
-)
-_register(
-    _default(
-        "test_memory_stale_fact_overridden_by_verified_file",
-        _MEMORY,
-        _BASELINE,
-        memory=["/project/AGENTS.md"],
-    )
-)
-_register(
-    _default(
-        "test_memory_adversarial_instruction_does_not_override_user",
-        _MEMORY,
-        _BASELINE,
-        memory=["/project/AGENTS.md"],
-    )
-)
-_register(
-    _default(
-        "test_memory_user_explicit_request_overrides_saved_preference",
-        _MEMORY,
-        _BASELINE,
-        memory=["/project/AGENTS.md"],
-    )
-)
-_register(
-    _default(
-        "test_memory_conflicting_identity_prefers_current_user",
-        _MEMORY,
-        _BASELINE,
-        memory=["/project/AGENTS.md"],
-    )
-)
-_register(
-    _default(
-        "test_memory_investigation_precedes_memory_save_when_required",
-        _MEMORY,
-        _BASELINE,
-        memory=["/project/AGENTS.md"],
-    )
-)
-
-# --- memory_multiturn (test_memory_multiturn.py) ---------------------------
-
-_register(
-    _default(
-        "test_implicit_preference_remembered",
-        _MEMORY,
-        _BASELINE,
-        memory=["/project/AGENTS.md"],
-    )
-)
-_register(
-    _default(
-        "test_explicit_preference_remembered",
-        _MEMORY,
-        _BASELINE,
-        memory=["/project/AGENTS.md"],
-    )
-)
-_register(
-    _default("test_transient_info_not_persisted", _MEMORY, _BASELINE, memory=["/project/AGENTS.md"])
-)
-
-# --- skills (test_skills.py) -----------------------------------------------
-
-_UNIT_TEST = "unit_test"
-
-_register(_default("test_read_skill_full_content", _UNIT_TEST, _BASELINE, skills=["/skills/user/"]))
-_register(_default("test_read_skill_by_name", _UNIT_TEST, _BASELINE, skills=["/skills/user/"]))
-_register(_default("test_combine_two_skills", _UNIT_TEST, _BASELINE, skills=["/skills/user/"]))
-_register(
-    _default("test_update_skill_typo_fix_no_read", _UNIT_TEST, _BASELINE, skills=["/skills/user/"])
-)
-_register(
-    _default(
-        "test_update_skill_typo_fix_requires_read", _UNIT_TEST, _BASELINE, skills=["/skills/user/"]
-    )
-)
-_register(
-    _default(
-        "test_find_skill_in_correct_path",
-        _UNIT_TEST,
-        _BASELINE,
-        skills=["/skills/base/", "/skills/project/"],
-    )
-)
-
-# --- todos (test_todos.py) -------------------------------------------------
-
-_TOOL_USE = "tool_use"
-
-_register(_default("test_write_todos_sequential_updates_returns_text", _TOOL_USE, _BASELINE))
-_register(_default("test_write_todos_three_steps_returns_text", _TOOL_USE, _BASELINE))
-
-# --- system_prompt (test_system_prompt.py) ---------------------------------
-
-_register(
-    _default(
-        "test_custom_system_prompt",
-        _UNIT_TEST,
-        _BASELINE,
-        system_prompt="Your name is Foo Bar.",
-    )
-)
-
-# --- followup_quality (test_followup_quality.py) ---------------------------
-
-_CONVERSATION = "conversation"
-
-_register(_default("test_followup_question_quality", _CONVERSATION, _HILLCLIMB))
-
-# --- subagents (test_subagents.py) -----------------------------------------
-
-_register(
-    _builder_eval(
-        "test_task_calls_weather_subagent",
-        _UNIT_TEST,
-        _BASELINE,
-        _weather_subagent_builder,
-        supports_repl=False,
-    )
-)
-_register(
-    _builder_eval(
-        "test_task_calls_general_purpose_subagent",
-        _UNIT_TEST,
-        _BASELINE,
-        _general_purpose_subagent_builder,
-        supports_repl=False,
-    )
-)
-
-# --- tool_selection (test_tool_selection.py) --------------------------------
-
-for _name in (
-    "test_direct_request_slack_dm",
-    "test_direct_request_github_pr",
-    "test_direct_request_multiple_tools",
-    "test_indirect_schedule_meeting",
-    "test_indirect_notify_team",
-    "test_indirect_email_report",
-    "test_chain_search_then_email",
-    "test_chain_create_issue_then_notify",
-):
-    _tier = (
-        _BASELINE
-        if _name
-        in (
-            "test_direct_request_multiple_tools",
-            "test_indirect_schedule_meeting",
-            "test_chain_search_then_email",
-        )
-        else _HILLCLIMB
-    )
-    _register(
-        EvalSpec(
-            name=_name,
-            category=_TOOL_USE,
-            tier=_tier,
-            tools=TOOL_SELECTION_TOOLS,
-        )
-    )
-
-# --- tool_usage_relational (test_tool_usage_relational.py) -----------------
-
-for _name in (
-    "test_single_tool_list_user_ids",
-    "test_single_tool_get_user_email",
-    "test_single_tool_get_food_calories",
-    "test_two_tools_user_name_from_current_id",
-    "test_two_tools_city_for_user",
-    "test_two_tools_find_user_then_email",
-    "test_three_tools_current_user_city",
-    "test_three_tools_find_user_then_city",
-    "test_three_tools_current_user_weather",
-    "test_four_tools_current_user_favorite_food_names",
-    "test_four_tools_find_user_food_name_and_calories",
-    "test_four_tools_current_user_location_time_and_weather",
-    "test_five_steps_current_user_food_names_and_calories",
-    "test_four_steps_find_user_city_and_weather",
-    "test_four_steps_find_user_food_allergies",
-    "test_four_steps_current_user_food_names_calories_and_allergies",
-    "test_four_steps_find_user_city_weather_time_and_food_details",
-    "test_four_steps_find_user_email_city_foods_calories_and_allergies",
-):
-    _register(_builder_eval(_name, _TOOL_USE, _BASELINE, _relational_builder, supports_repl=True))
-
-# --- tool_usage_incident_graph (test_tool_usage_incident_graph.py) ----------
-
-for _name in (
-    "test_single_tool_list_incident_ids",
-    "test_two_tools_current_incident_service_name",
-    "test_three_tools_find_service_owner_team",
-    "test_multi_question_current_incident_service_and_incident_oncall",
-    "test_multi_question_incident_oncall_and_incident_environment",
-    "test_multi_question_incident_oncall_and_service_with_most_firing_alerts",
-    "test_multi_question_three_independent_simple_lookups",
-    "test_four_tools_incident_to_oncall_name",
-    "test_four_tools_service_runbook_url",
-    "test_five_tools_incident_latest_deploy_and_repo",
-    "test_five_tools_incident_environment_name_and_region",
-    "test_five_tools_service_dependency_names_parallel",
-    "test_five_tools_service_alert_names_parallel",
-    "test_six_tools_current_incident_oncall_name_and_email",
-    "test_six_tools_service_repo_and_branch",
-    "test_six_tools_incident_title_severity_and_status",
-    "test_six_tools_current_incident_metrics_parallel",
-    "test_aggregation_active_incident_count_by_team",
-    "test_comparison_active_incident_most_dependencies",
-    "test_latest_selection_active_incident_most_recent_deploy",
-    "test_metric_ranking_active_incident_highest_latency",
-    "test_alert_aggregation_service_with_most_firing_alerts",
-    "test_dependency_reasoning_active_incident_depending_on_identity_api",
-):
-    _register(
-        _builder_eval(_name, _TOOL_USE, _BASELINE, _incident_graph_builder, supports_repl=True)
-    )
-
-# --- summarization (test_summarization.py) ---------------------------------
-
-_SUMMARIZATION = "summarization"
-
-_register(
-    _builder_eval(
-        "test_summarize_continues_task",
-        _SUMMARIZATION,
-        _BASELINE,
-        _make_summarization_builder(max_input_tokens=15_000, include_compact_tool=False),
-        supports_repl=False,
-    )
-)
-_register(
-    _builder_eval(
-        "test_summarization_offloads_to_filesystem",
-        _SUMMARIZATION,
-        _BASELINE,
-        _make_summarization_builder(max_input_tokens=15_000, include_compact_tool=False),
-        supports_repl=False,
-    )
-)
-_register(
-    _builder_eval(
-        "test_compact_tool_new_task",
-        _SUMMARIZATION,
-        _BASELINE,
-        _make_summarization_builder(max_input_tokens=35_000, include_compact_tool=True),
-        supports_repl=False,
-    )
-)
-_register(
-    _builder_eval(
-        "test_compact_tool_not_overly_sensitive",
-        _SUMMARIZATION,
-        _HILLCLIMB,
-        _make_summarization_builder(max_input_tokens=35_000, include_compact_tool=True),
-        supports_repl=False,
-    )
-)
-_register(
-    _builder_eval(
-        "test_compact_tool_large_reads",
-        _SUMMARIZATION,
-        _HILLCLIMB,
-        _make_summarization_builder(
-            max_input_tokens=35_000, include_compact_tool=True, run_limit=3
-        ),
-        supports_repl=False,
-    )
-)
-
-# --- external_benchmarks (test_external_benchmarks.py) ----------------------
-#
-# FRAMES and Nexus share one file-backed agent shape; the per-case files they
-# read are runtime inputs (`initial_files`), not agent setup. test_bfcl_v3
-# binds the full default BFCL tool suite via a builder; its per-case
-# involved-class subset and initial config are runtime data, not agent setup.
 
 _FILE_BACKED_SYSTEM_PROMPT = (
     "Use the files already present in the workspace to solve the task. "
     "Return only the final answer requested by the prompt. "
     "Do not use the task tool or any subagent delegation."
 )
-"""Mirror of `test_external_benchmarks._FILE_BACKED_SYSTEM_PROMPT`."""
 
-# `test_frames` / `test_nexus` are parametrized over cases spanning both
-# tiers; the registry records the representative (majority) baseline tier.
-_register(_default("test_frames", _RETRIEVAL, _BASELINE, system_prompt=_FILE_BACKED_SYSTEM_PROMPT))
-_register(_default("test_nexus", _TOOL_USE, _BASELINE, system_prompt=_FILE_BACKED_SYSTEM_PROMPT))
-_register(_builder_eval("test_bfcl_v3", _TOOL_USE, _BASELINE, _bfcl_builder, supports_repl=False))
 
-# --- iterative_constraint_satisfaction (test_iterative_constraint_satisfaction.py) ---
+# ---------------------------------------------------------------------------
+# The registry
+# ---------------------------------------------------------------------------
 
-_register(
-    _builder_eval(
-        "test_exact_word_count_and_z_starts",
-        _CONVERSATION,
-        _HILLCLIMB,
-        _rubric_builder,
-        supports_repl=False,
-    )
+EVALS: dict[str, EvalBuilder] = {}
+
+# --- file_operations / retrieval (test_file_operations.py) -----------------
+
+EVALS["test_read_file_seeded_state_backend_file"] = _bare
+EVALS["test_write_file_simple"] = _with_system_prompt("Your name is Foo Bar.")
+EVALS["test_write_files_in_parallel"] = _bare
+EVALS["test_write_files_in_parallel_confirm_with_verification"] = _bare
+EVALS["test_write_files_in_parallel_ambiguous_confirmation"] = _bare
+EVALS["test_ls_directory_contains_file_yes_no"] = _bare
+EVALS["test_ls_directory_missing_file_yes_no"] = _bare
+EVALS["test_edit_file_replace_text"] = _bare
+EVALS["test_read_then_write_derived_output"] = _bare
+EVALS["test_avoid_unnecessary_tool_calls"] = _bare
+EVALS["test_read_files_in_parallel"] = _bare
+EVALS["test_grep_finds_matching_paths"] = _bare
+EVALS["test_glob_lists_markdown_files"] = _bare
+EVALS["test_find_magic_phrase_deep_nesting"] = _bare
+EVALS["test_identify_quote_author_from_directory_parallel_reads"] = _bare
+EVALS["test_identify_quote_author_from_directory_unprompted_efficiency"] = _bare
+EVALS["test_read_file_truncation_recovery_with_pagination"] = _bare
+EVALS["test_read_file_empty_file_reports_empty"] = _bare
+
+# --- memory (test_memory.py) -----------------------------------------------
+
+EVALS["test_memory_basic_recall"] = _with_memory(["/project/AGENTS.md"])
+EVALS["test_memory_guided_behavior_naming_convention"] = _with_memory(["/project/AGENTS.md"])
+EVALS["test_memory_influences_file_content"] = _with_memory(["/style/AGENTS.md"])
+EVALS["test_memory_multiple_sources_combined"] = _with_memory(
+    ["/user/AGENTS.md", "/project/AGENTS.md"]
 )
+EVALS["test_memory_with_missing_file_graceful"] = _with_memory(["/missing/AGENTS.md"])
+EVALS["test_memory_prevents_unnecessary_file_reads"] = _with_memory(["/docs/AGENTS.md"])
+EVALS["test_memory_does_not_persist_transient_info"] = _with_memory(["/project/AGENTS.md"])
+EVALS["test_memory_updates_user_formatting_preference"] = _with_memory(["/project/AGENTS.md"])
+EVALS["test_memory_missing_file_graceful_without_claiming_context"] = _with_memory(
+    ["/missing/AGENTS.md"]
+)
+EVALS["test_memory_middleware_composite_backend"] = _composite_backend
+EVALS["test_memory_stale_fact_overridden_by_verified_file"] = _with_memory(["/project/AGENTS.md"])
+EVALS["test_memory_adversarial_instruction_does_not_override_user"] = _with_memory(
+    ["/project/AGENTS.md"]
+)
+EVALS["test_memory_user_explicit_request_overrides_saved_preference"] = _with_memory(
+    ["/project/AGENTS.md"]
+)
+EVALS["test_memory_conflicting_identity_prefers_current_user"] = _with_memory(
+    ["/project/AGENTS.md"]
+)
+EVALS["test_memory_investigation_precedes_memory_save_when_required"] = _with_memory(
+    ["/project/AGENTS.md"]
+)
+
+# --- memory_multiturn (test_memory_multiturn.py) ---------------------------
+
+EVALS["test_implicit_preference_remembered"] = _with_memory(["/project/AGENTS.md"])
+EVALS["test_explicit_preference_remembered"] = _with_memory(["/project/AGENTS.md"])
+EVALS["test_transient_info_not_persisted"] = _with_memory(["/project/AGENTS.md"])
+
+# --- skills (test_skills.py) -----------------------------------------------
+
+EVALS["test_read_skill_full_content"] = _with_skills(["/skills/user/"])
+EVALS["test_read_skill_by_name"] = _with_skills(["/skills/user/"])
+EVALS["test_combine_two_skills"] = _with_skills(["/skills/user/"])
+EVALS["test_update_skill_typo_fix_no_read"] = _with_skills(["/skills/user/"])
+EVALS["test_update_skill_typo_fix_requires_read"] = _with_skills(["/skills/user/"])
+EVALS["test_find_skill_in_correct_path"] = _with_skills(["/skills/base/", "/skills/project/"])
+
+# --- todos (test_todos.py) -------------------------------------------------
+
+EVALS["test_write_todos_sequential_updates_returns_text"] = _bare
+EVALS["test_write_todos_three_steps_returns_text"] = _bare
+
+# --- system_prompt (test_system_prompt.py) ---------------------------------
+
+EVALS["test_custom_system_prompt"] = _with_system_prompt("Your name is Foo Bar.")
+
+# --- followup_quality (test_followup_quality.py) ---------------------------
+
+EVALS["test_followup_question_quality"] = _bare
+
+# --- subagents (test_subagents.py) -----------------------------------------
+
+EVALS["test_task_calls_weather_subagent"] = _weather_subagent
+EVALS["test_task_calls_general_purpose_subagent"] = _general_purpose_subagent
+
+# --- tool_selection (test_tool_selection.py) --------------------------------
+
+EVALS["test_direct_request_slack_dm"] = _tool_selection
+EVALS["test_direct_request_github_pr"] = _tool_selection
+EVALS["test_direct_request_multiple_tools"] = _tool_selection
+EVALS["test_indirect_schedule_meeting"] = _tool_selection
+EVALS["test_indirect_notify_team"] = _tool_selection
+EVALS["test_indirect_email_report"] = _tool_selection
+EVALS["test_chain_search_then_email"] = _tool_selection
+EVALS["test_chain_create_issue_then_notify"] = _tool_selection
+
+# --- tool_usage_relational (test_tool_usage_relational.py) -----------------
+
+EVALS["test_single_tool_list_user_ids"] = _relational
+EVALS["test_single_tool_get_user_email"] = _relational
+EVALS["test_single_tool_get_food_calories"] = _relational
+EVALS["test_two_tools_user_name_from_current_id"] = _relational
+EVALS["test_two_tools_city_for_user"] = _relational
+EVALS["test_two_tools_find_user_then_email"] = _relational
+EVALS["test_three_tools_current_user_city"] = _relational
+EVALS["test_three_tools_find_user_then_city"] = _relational
+EVALS["test_three_tools_current_user_weather"] = _relational
+EVALS["test_four_tools_current_user_favorite_food_names"] = _relational
+EVALS["test_four_tools_find_user_food_name_and_calories"] = _relational
+EVALS["test_four_tools_current_user_location_time_and_weather"] = _relational
+EVALS["test_five_steps_current_user_food_names_and_calories"] = _relational
+EVALS["test_four_steps_find_user_city_and_weather"] = _relational
+EVALS["test_four_steps_find_user_food_allergies"] = _relational
+EVALS["test_four_steps_current_user_food_names_calories_and_allergies"] = _relational
+EVALS["test_four_steps_find_user_city_weather_time_and_food_details"] = _relational
+EVALS["test_four_steps_find_user_email_city_foods_calories_and_allergies"] = _relational
+
+# --- tool_usage_incident_graph (test_tool_usage_incident_graph.py) ----------
+
+EVALS["test_single_tool_list_incident_ids"] = _incident_graph
+EVALS["test_two_tools_current_incident_service_name"] = _incident_graph
+EVALS["test_three_tools_find_service_owner_team"] = _incident_graph
+EVALS["test_multi_question_current_incident_service_and_incident_oncall"] = _incident_graph
+EVALS["test_multi_question_incident_oncall_and_incident_environment"] = _incident_graph
+EVALS["test_multi_question_incident_oncall_and_service_with_most_firing_alerts"] = _incident_graph
+EVALS["test_multi_question_three_independent_simple_lookups"] = _incident_graph
+EVALS["test_four_tools_incident_to_oncall_name"] = _incident_graph
+EVALS["test_four_tools_service_runbook_url"] = _incident_graph
+EVALS["test_five_tools_incident_latest_deploy_and_repo"] = _incident_graph
+EVALS["test_five_tools_incident_environment_name_and_region"] = _incident_graph
+EVALS["test_five_tools_service_dependency_names_parallel"] = _incident_graph
+EVALS["test_five_tools_service_alert_names_parallel"] = _incident_graph
+EVALS["test_six_tools_current_incident_oncall_name_and_email"] = _incident_graph
+EVALS["test_six_tools_service_repo_and_branch"] = _incident_graph
+EVALS["test_six_tools_incident_title_severity_and_status"] = _incident_graph
+EVALS["test_six_tools_current_incident_metrics_parallel"] = _incident_graph
+EVALS["test_aggregation_active_incident_count_by_team"] = _incident_graph
+EVALS["test_comparison_active_incident_most_dependencies"] = _incident_graph
+EVALS["test_latest_selection_active_incident_most_recent_deploy"] = _incident_graph
+EVALS["test_metric_ranking_active_incident_highest_latency"] = _incident_graph
+EVALS["test_alert_aggregation_service_with_most_firing_alerts"] = _incident_graph
+EVALS["test_dependency_reasoning_active_incident_depending_on_identity_api"] = _incident_graph
+
+# --- summarization (test_summarization.py) ---------------------------------
+
+EVALS["test_summarize_continues_task"] = _make_summarization_builder(
+    max_input_tokens=15_000, include_compact_tool=False
+)
+EVALS["test_summarization_offloads_to_filesystem"] = _make_summarization_builder(
+    max_input_tokens=15_000, include_compact_tool=False
+)
+EVALS["test_compact_tool_new_task"] = _make_summarization_builder(
+    max_input_tokens=35_000, include_compact_tool=True
+)
+EVALS["test_compact_tool_not_overly_sensitive"] = _make_summarization_builder(
+    max_input_tokens=35_000, include_compact_tool=True
+)
+EVALS["test_compact_tool_large_reads"] = _make_summarization_builder(
+    max_input_tokens=35_000, include_compact_tool=True, run_limit=3
+)
+
+# --- external_benchmarks (test_external_benchmarks.py) ----------------------
+
+EVALS["test_frames"] = _with_system_prompt(_FILE_BACKED_SYSTEM_PROMPT)
+EVALS["test_nexus"] = _with_system_prompt(_FILE_BACKED_SYSTEM_PROMPT)
+EVALS["test_bfcl_v3"] = _bfcl
+
+# --- iterative_constraint_satisfaction
+# (test_iterative_constraint_satisfaction.py) ---
+
+EVALS["test_exact_word_count_and_z_starts"] = _rubric
 
 # --- memory_agent_bench (memory_agent_bench/test_memory_agent_bench.py) ------
-#
-# Agent setup is a deep agent with a checkpointer; the benchmark dataset
-# (context chunks, questions, and the fileseeded /data/ files) is runtime data
-# provisioned by the test harness, not agent setup.
 
-for _name in (
-    "test_conflict_resolution",
-    "test_time_learning",
-    "test_memory_agent_bench_ci",
-):
-    _register(
-        _builder_eval(
-            _name,
-            _MEMORY,
-            _BASELINE,
-            _make_memory_bench_builder(fileseeded=False),
-            supports_repl=False,
-        )
-    )
-_register(
-    _builder_eval(
-        "test_memory_agent_bench_ci_fileseeded",
-        _MEMORY,
-        _BASELINE,
-        _make_memory_bench_builder(fileseeded=True),
-        supports_repl=False,
-    )
-)
+EVALS["test_conflict_resolution"] = _make_memory_bench_builder(fileseeded=False)
+EVALS["test_time_learning"] = _make_memory_bench_builder(fileseeded=False)
+EVALS["test_memory_agent_bench_ci"] = _make_memory_bench_builder(fileseeded=False)
+EVALS["test_memory_agent_bench_ci_fileseeded"] = _make_memory_bench_builder(fileseeded=True)
 
 # --- langchain middleware todo (test_langchain_middleware_todo.py) ----------
-#
-# These evals run langchain's bare create_agent + TodoListMiddleware (not
-# create_deep_agent) over mock city-lookup tools; the city prompts are runtime
-# inputs. Registered by tool config + tier.
 
-_LANGCHAIN_MIDDLEWARE = "langchain/middleware"
-_CITY_TOOLS: list[Any] = [lookup_population, lookup_area_km2]
+_CITY_TOOLS: list[BaseTool] = [lookup_population, lookup_area_km2]
 
-# Each entry binds an eval name to its tier and the tools its agent receives.
-for _name, _tier, _tools in (
-    ("test_density_rank_lands_in_final_message", _BASELINE, _CITY_TOOLS),
-    ("test_population_compare_lands_in_final_message", _BASELINE, [lookup_population]),
-    ("test_trivial_arithmetic_skips_write_todos", _BASELINE, []),
-    ("test_rank_with_unknown_lookup_lands_in_final_message", _HILLCLIMB, _CITY_TOOLS),
-    ("test_design_api_lands_in_final_message", _HILLCLIMB, []),
-    ("test_density_cairo_lands_in_final_message", _HILLCLIMB, _CITY_TOOLS),
-    ("test_trivial_plan_skips_write_todos", _HILLCLIMB, []),
-):
-    _register(
-        _builder_eval(
-            _name,
-            _LANGCHAIN_MIDDLEWARE,
-            _tier,
-            _make_todo_middleware_builder(tools=_tools),
-            supports_repl=False,
-        )
-    )
+EVALS["test_density_rank_lands_in_final_message"] = _make_todo_middleware_builder(tools=_CITY_TOOLS)
+EVALS["test_population_compare_lands_in_final_message"] = _make_todo_middleware_builder(
+    tools=[lookup_population]
+)
+EVALS["test_trivial_arithmetic_skips_write_todos"] = _make_todo_middleware_builder(tools=[])
+EVALS["test_rank_with_unknown_lookup_lands_in_final_message"] = _make_todo_middleware_builder(
+    tools=_CITY_TOOLS
+)
+EVALS["test_design_api_lands_in_final_message"] = _make_todo_middleware_builder(tools=[])
+EVALS["test_density_cairo_lands_in_final_message"] = _make_todo_middleware_builder(
+    tools=_CITY_TOOLS
+)
+EVALS["test_trivial_plan_skips_write_todos"] = _make_todo_middleware_builder(tools=[])
 
 # --- tau2_airline (tau2_airline/test_tau2_airline.py) -----------------------
-#
-# The airline domain tools + policy are agent setup (extracted into the
-# package). The DB / policy / task files are environment data loaded from
-# DEEPAGENTS_EVALS_DATA_DIR, and the per-task initial_state seeding is runtime
-# data — neither is applied in the builder.
 
-_register(
-    _builder_eval(
-        "test_tau2_airline", _CONVERSATION, _HILLCLIMB, _tau2_airline_builder, supports_repl=False
-    )
-)
+EVALS["test_tau2_airline"] = _tau2_airline

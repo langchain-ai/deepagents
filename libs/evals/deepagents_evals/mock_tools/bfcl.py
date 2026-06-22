@@ -71,8 +71,8 @@ def make_bfcl_tools(
     Mirrors the pytest BFCL setup: instantiate each class in `involved_classes`
     (defaulting to every registered class) and load its `initial_config` entry
     (defaulting to an empty scenario) before wrapping its methods as tools. The
-    case's `involved_classes` / `initial_config` are runtime data the dispatcher
-    forwards via `configurable["eval_config"]`.
+    case's `involved_classes` / `initial_config` are runtime data provisioned
+    by the test harness or Harbor task environment.
     """
     names = list(involved_classes) if involved_classes else list(BFCL_CLASS_REGISTRY)
     initial_config = initial_config or {}

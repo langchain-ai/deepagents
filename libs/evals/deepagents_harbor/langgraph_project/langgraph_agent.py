@@ -180,25 +180,18 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
 def make_eval_graph(config: dict[str, object] | None = None) -> object:
     """Create a Deep Agents graph for a specific eval.
 
-    Reads `configurable["eval_name"]` to look up the corresponding
-    :class:`~deepagents_evals.eval_registry.EvalSpec` and delegates to its
-    `build()` method. This is the dispatcher entry point that lets a single
-    `eval_langgraph.json` graph serve every eval in the suite — each Harbor task
-    just passes its eval name via `--agent-kwarg configurable='{"eval_name":
+    Reads `configurable["eval_name"]` to look up the corresponding builder
+    in :data:`~deepagents_evals.eval_registry.EVALS` and calls it with the
+    model. This is the dispatcher entry point that lets a single
+    `eval_langgraph.json` graph serve every eval in the suite — each Harbor
+    task just passes its eval name via `--agent-kwarg configurable='{"eval_name":
     "test_write_file_simple"}'`.
-
-    For evals that support the `repl_name` parameter (relational /
-    incident-graph suites), pass `configurable["repl_name"]` (`"quickjs"`
-    or omit for direct tool binding).
 
     Args:
         config: LangGraph runtime config. Harbor passes the selected model in
             `configurable.model`, optional provider kwargs in
-            `configurable.model_kwargs`, the eval name in
-            `configurable.eval_name`, optionally `configurable.repl_name`, and
-            optionally `configurable.eval_config` (per-case runtime data
-            forwarded to the eval's builder, e.g. tau2 `initial_state` or BFCL
-            `involved_classes` / `initial_config`).
+            `configurable.model_kwargs`, and the eval name in
+            `configurable.eval_name`.
 
     Returns:
         A compiled LangGraph graph invokable by Harbor's LangGraph runner.
@@ -217,24 +210,9 @@ def make_eval_graph(config: dict[str, object] | None = None) -> object:
         msg = "`configurable.eval_name` must provide an eval name"
         raise ValueError(msg)
 
-    spec = EVALS.get(eval_name)
-    if spec is None:
+    builder = EVALS.get(eval_name)
+    if builder is None:
         msg = f"Unknown eval_name {eval_name!r}. Registered evals: {sorted(EVALS)}"
         raise ValueError(msg)
 
-    repl_name = configurable.get("repl_name")
-    if repl_name is not None and not isinstance(repl_name, str):
-        msg = "`configurable.repl_name` must be a string or omitted"
-        raise TypeError(msg)
-
-    if repl_name is not None and not spec.supports_repl:
-        msg = f"Eval {eval_name!r} does not support repl_name"
-        raise ValueError(msg)
-
-    eval_config = configurable.get("eval_config")
-    if eval_config is not None and not isinstance(eval_config, dict):
-        msg = "`configurable.eval_config` must be a mapping or omitted"
-        raise TypeError(msg)
-    eval_config = {str(k): v for k, v in eval_config.items()} if eval_config else None
-
-    return spec.build(model, repl_name=repl_name, config=eval_config)
+    return builder(model)

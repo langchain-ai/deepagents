@@ -241,10 +241,6 @@ class InputActionButton(Static):
         text-style: bold;
     }
 
-    InputActionButton:hover {
-        background: $surface-lighten-1;
-    }
-
     InputActionButton.input-action-clear {
         width: 5;
         color: $error;
@@ -253,6 +249,16 @@ class InputActionButton(Static):
     InputActionButton.input-action-copy {
         width: 8;
         color: $primary;
+    }
+
+    InputActionButton.input-action-clear:hover {
+        background: $error;
+        color: auto;
+    }
+
+    InputActionButton.input-action-copy:hover {
+        background: $primary;
+        color: auto;
     }
     """
 

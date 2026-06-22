@@ -1,0 +1,29 @@
+libs/evals/deepagents_evals/mock_tools/middleware_todo.py
+  s_698778a02a8251::t_5718218f52130d 1-36
+libs/evals/tests/evals/test_langchain_middleware_todo.py
+  s_698778a02a8251::t_3f998b9cf34884 31
+libs/evals/deepagents_evals/mock_tools/__init__.py
+  s_698778a02a8251::t_4b6c49e52187c9 37-38
+  s_698778a02a8251::t_15b2354f769971 19
+libs/evals/deepagents_evals/eval_registry.py
+  s_698778a02a8251::t_39d9b7523de5a8 212-233
+  s_698778a02a8251::t_35563e408a9363 905
+  s_698778a02a8251::t_0c16b355640c39 895-904,906-923
+  s_698778a02a8251::t_cbeee9fa12b808 32-33,44-45
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "86ea105a26ac297d70dd5ce8c114dc84d7bea960",
+  "prompts": {},
+  "sessions": {
+    "s_698778a02a8251": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c2a0169b-bce8-484a-ad7f-18d87a45f565",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

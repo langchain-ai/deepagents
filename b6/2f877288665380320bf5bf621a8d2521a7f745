@@ -1,0 +1,29 @@
+libs/evals/deepagents_evals/mock_tools/bfcl.py
+  s_698778a02a8251::t_c7ed73651b2bf3 1-71,73-74
+  s_698778a02a8251::t_d5ea12c1f376e4 72
+libs/evals/pyproject.toml
+  s_698778a02a8251::t_b730b31b882e50 116-119
+  s_698778a02a8251::t_3dc5f0117bf90d 131
+libs/evals/tests/evals/external_benchmarks.py
+  s_698778a02a8251::t_64a29f2d5dd6d4 19-23
+libs/evals/deepagents_evals/eval_registry.py
+  s_698778a02a8251::t_2324fbf84d255c 881
+  s_698778a02a8251::t_24d229dde52a3f 863-866
+  s_698778a02a8251::t_12a8ec994a9429 212-236
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "b62f877288665380320bf5bf621a8d2521a7f745",
+  "prompts": {},
+  "sessions": {
+    "s_698778a02a8251": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c2a0169b-bce8-484a-ad7f-18d87a45f565",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

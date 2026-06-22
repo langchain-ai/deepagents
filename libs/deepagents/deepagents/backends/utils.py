@@ -11,7 +11,7 @@ import re
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal, overload
+from typing import Any, Final, Literal, overload
 
 import wcmatch.glob as wcglob
 
@@ -19,6 +19,8 @@ from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMatch as _GrepMatch, GrepResult, ReadResult
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
+MAX_VIDEO_INPUT_BYTES: Final = 50 * 1024 * 1024
+"""Maximum raw video payload size accepted by `read_file` frame extraction."""
 
 FileType = Literal["text", "image", "audio", "video", "file"]
 """Classification of a file by extension."""

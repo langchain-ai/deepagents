@@ -1554,8 +1554,27 @@ class TestFilesystemMiddleware:
         assert call["sampling_rate"] == 0.5
         assert call["len"] == len(raw_bytes)
 
-    def test_read_file_video_offset_and_limit_reinterpreted_as_seconds(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """`offset` skips into the source and the agent-supplied `limit` is authoritative."""
+    @pytest.mark.parametrize(
+        ("tool_input", "expected"),
+        [
+            (
+                {"offset": 12, "limit": 90},
+                {"offset_seconds": 12.0, "duration_seconds": 90.0, "sampling_rate": 0.5},
+            ),
+            (
+                {},
+                {"offset_seconds": 0.0, "duration_seconds": 100.0, "sampling_rate": 0.5},
+            ),
+        ],
+        ids=["explicit-window", "default-window"],
+    )
+    def test_read_file_video_window_forwards_seconds(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tool_input: dict[str, int],
+        expected: dict[str, float],
+    ) -> None:
+        """`offset`/`limit` become seconds, with the default window preserved."""
         captured: dict[str, float] = {}
 
         def fake_extract(content, *, offset_seconds, duration_seconds, sampling_rate):  # type: ignore[no-untyped-def]  # noqa: ARG001
@@ -1565,42 +1584,12 @@ class TestFilesystemMiddleware:
         monkeypatch.setattr(filesystem_middleware, "extract_video_frames", fake_extract)
         middleware = FilesystemMiddleware(backend=_video_backend())
         state = FilesystemState(messages=[], files={})
-        runtime = _build_runtime(state, "video-read-2")
+        runtime = _build_runtime(state, "video-read-window")
         read_file_tool = next(t for t in middleware.tools if t.name == "read_file")
 
-        read_file_tool.invoke(
-            {
-                "file_path": "/c.mp4",
-                "offset": 12,  # -> seek 12 seconds into the source
-                "limit": 90,  # -> sample a 90-second window, no per-call clamp
-                "runtime": runtime,
-            }
-        )
+        read_file_tool.invoke({"file_path": "/c.mp4", "runtime": runtime, **tool_input})
 
-        assert captured == {"offset_seconds": 12.0, "duration_seconds": 90.0, "sampling_rate": 0.5}
-
-    def test_read_file_video_omitted_limit_uses_video_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Omitting `limit` samples the first 100 seconds (video default) for video reads."""
-        captured: dict[str, float] = {}
-
-        def fake_extract(content, *, offset_seconds, duration_seconds, sampling_rate):  # type: ignore[no-untyped-def]  # noqa: ARG001
-            captured.update(offset_seconds=offset_seconds, duration_seconds=duration_seconds, sampling_rate=sampling_rate)
-            return [{"type": "text", "text": "ok"}]
-
-        monkeypatch.setattr(filesystem_middleware, "extract_video_frames", fake_extract)
-        middleware = FilesystemMiddleware(backend=_video_backend())
-        state = FilesystemState(messages=[], files={})
-        runtime = _build_runtime(state, "video-read-default")
-        read_file_tool = next(t for t in middleware.tools if t.name == "read_file")
-
-        read_file_tool.invoke(
-            {
-                "file_path": "/c.mp4",
-                "runtime": runtime,
-            }
-        )
-
-        assert captured == {"offset_seconds": 0.0, "duration_seconds": 100.0, "sampling_rate": 0.5}
+        assert captured == expected
 
     def test_read_file_video_extraction_error_surfaces_as_error_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """PyAV failures and missing-dep errors render as a tool error, not an exception."""
@@ -1639,6 +1628,28 @@ class TestFilesystemMiddleware:
         assert isinstance(result, ToolMessage)
         assert result.status == "error"
         assert "limit must be > 0" in result.content  # type: ignore[operator]
+        assert called["count"] == 0
+
+    def test_read_file_video_payload_size_cap_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """State/store/custom video payloads are capped after base64 decoding."""
+        called = {"count": 0}
+
+        def fake_extract(*args: "object", **kwargs: "object") -> "list[dict[str, object]]":  # noqa: ARG001
+            called["count"] += 1
+            return [{"type": "text", "text": "ok"}]
+
+        monkeypatch.setattr(filesystem_middleware, "MAX_VIDEO_INPUT_BYTES", 3)
+        monkeypatch.setattr(filesystem_middleware, "extract_video_frames", fake_extract)
+        middleware = FilesystemMiddleware(backend=_video_backend(b"abcd"))
+        state = FilesystemState(messages=[], files={})
+        runtime = _build_runtime(state, "video-read-big-payload")
+        read_file_tool = next(t for t in middleware.tools if t.name == "read_file")
+
+        result = read_file_tool.invoke({"file_path": "/c.mp4", "runtime": runtime})
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "video payload exceeds maximum input size of 3 bytes" in result.content  # type: ignore[operator]
         assert called["count"] == 0
 
     def test_read_file_image_returns_standard_image_content_block(self):

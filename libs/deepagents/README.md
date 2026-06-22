@@ -20,8 +20,9 @@ uv add deepagents
 
 `read_file` can sample video files into image content blocks (`.mp4`, `.mov`, `.webm`, `.mkv`, etc.).
 The agent uses `offset` to skip seconds into the source and `limit` to control how many
-seconds of source to sample, capped at 30 seconds per read; the frames-per-second is
-a deploy-time knob.
+seconds of source to sample; the frames-per-second is a deploy-time knob. Video reads
+are bounded by fixed input size, decode time, frame count, frame size, and emitted-byte
+budgets.
 Install with:
 
 ```bash

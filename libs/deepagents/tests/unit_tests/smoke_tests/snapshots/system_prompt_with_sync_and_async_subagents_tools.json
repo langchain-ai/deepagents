@@ -68,16 +68,9 @@
             "type": "string"
           },
           "limit": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "description": "Maximum number of lines to read for text files. Omit to use the default window."
+            "default": 100,
+            "description": "Maximum number of lines to read for text files. For videos, seconds of source to sample.",
+            "type": "integer"
           },
           "offset": {
             "default": 0,

@@ -161,6 +161,26 @@ def test_sample_frames_normalizes_non_zero_stream_start(monkeypatch: pytest.Monk
     ]
 
 
+def test_sample_frames_keeps_next_target_after_late_frame(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A late frame should not skip the next sampling target."""
+    monkeypatch.setattr(video_module, "_encode_jpeg", lambda _frame: b"jpeg")
+
+    blocks = video_module._sample_frames_in_window(
+        [_FakeFrame(1), _FakeFrame(2), _FakeFrame(3)],
+        offset_seconds=0.4,
+        duration_seconds=4,
+        sampling_rate=1,
+        time_base=1,
+    )
+
+    headers = [block["text"] for block in blocks if block["type"] == "text"]
+    assert headers == [
+        "Frame at t=00:00:01.000",
+        "Frame at t=00:00:02.000",
+        "Frame at t=00:00:03.000",
+    ]
+
+
 def test_sample_frames_does_not_cap_requested_duration(monkeypatch: pytest.MonkeyPatch) -> None:
     """Huge requested windows are passed through unchanged.
 

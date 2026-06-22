@@ -59,6 +59,7 @@ from deepagents.backends.protocol import (
     execute_accepts_timeout,
 )
 from deepagents.backends.utils import (
+    MAX_VIDEO_INPUT_BYTES,
     _get_file_type,
     _glob_anchor,
     _paths_overlap,
@@ -97,12 +98,6 @@ _DEFAULT_FS_TOOL_OPS: dict[str, FilesystemOperation] = {
     "delete": "write",
 }
 
-# Reinterpret offset/limit as seconds for video reads. The agent's `limit`
-# is authoritative; this is only the fallback when the agent omits the
-# argument. Mirrors `DEFAULT_READ_LIMIT` (the text-read default).
-_VIDEO_DEFAULT_LIMIT_SECONDS = 100
-
-
 def _tool_error(name: str, tool_call_id: str | None, content: str) -> ToolMessage:
     """Build a success-shaped `ToolMessage` carrying a plain text error."""
     return ToolMessage(content=content, name=name, tool_call_id=tool_call_id, status="error")
@@ -113,27 +108,26 @@ def _handle_video_read(
     validated_path: str,
     tool_call_id: str | None,
     offset: int,
-    limit: int | None,
+    limit: int,
     sampling_rate: float,
 ) -> ToolMessage:
     """Slice a video byte payload into a sampled frame window for the model.
 
     `offset` is reinterpreted as seconds into the source to skip; `limit` as
     seconds of source to sample. The agent's supplied `limit` is authoritative
-    (no per-call upper clamp); omitting it falls back to
-    `_VIDEO_DEFAULT_LIMIT_SECONDS` and supplying a non-positive value is
-    rejected as a tool error. Output volume is bounded by the layered caps on
-    the extractor (`MAX_VIDEO_DECODE_SECONDS`, `MAX_VIDEO_SAMPLED_FRAMES`,
+    (no per-call upper clamp), and supplying a non-positive value is rejected
+    as a tool error. Output volume is bounded by the layered caps on the
+    extractor (`MAX_VIDEO_DECODE_SECONDS`, `MAX_VIDEO_SAMPLED_FRAMES`,
     `MAX_VIDEO_EMITTED_BYTES`, `MAX_VIDEO_FRAME_PIXELS`, `MAX_VIDEO_FRAME_SIDE`).
 
     Errors are returned as `ToolMessage` errors so the turn still completes and
     the agent can recover (e.g. by retrying with a smaller window).
     """
-    if limit is not None and limit <= 0:
+    if limit <= 0:
         return _tool_error("read_file", tool_call_id, f"Error reading video {validated_path}: limit must be > 0, got {limit!r}")
     rate = float(sampling_rate)
     offset_seconds = max(0.0, float(offset))
-    duration_seconds = float(_VIDEO_DEFAULT_LIMIT_SECONDS if limit is None else limit)
+    duration_seconds = float(limit)
     header = _video_window_header(validated_path, offset_seconds, duration_seconds, rate)
 
     def _err(msg: str) -> ToolMessage:
@@ -143,6 +137,8 @@ def _handle_video_read(
         raw_bytes = base64.b64decode(content, validate=True) if isinstance(content, str) else content
     except (ValueError, TypeError, binascii.Error) as exc:
         return _err(f"video bytes are not valid base64 ({exc})")
+    if len(raw_bytes) > MAX_VIDEO_INPUT_BYTES:
+        return _err(f"video payload exceeds maximum input size of {MAX_VIDEO_INPUT_BYTES} bytes")
 
     try:
         blocks = extract_video_frames(
@@ -492,9 +488,9 @@ class ReadFileSchema(BaseModel):
         description="Line number to start reading from (0-indexed). Use for pagination of large files.",
     )
 
-    limit: int | None = Field(
-        default=None,
-        description="Maximum number of lines to read for text files. Omit to use the default window.",
+    limit: int = Field(
+        default=DEFAULT_READ_LIMIT,
+        description="Maximum number of lines to read for text files. For videos, seconds of source to sample.",
     )
 
 
@@ -1237,9 +1233,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             validated_path: str,
             tool_call_id: str | None,
             offset: int,
-            limit: int | None,
+            limit: int,
         ) -> ToolMessage:
-            effective_limit = DEFAULT_READ_LIMIT if limit is None else limit
             if isinstance(read_result, str):
                 warn_deprecated(
                     since="0.5.0",
@@ -1253,7 +1248,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
                 # Legacy backends already format with line numbers
                 return ToolMessage(
-                    content=_truncate(read_result, validated_path, line_limit=effective_limit),
+                    content=_truncate(read_result, validated_path, line_limit=limit),
                     name="read_file",
                     tool_call_id=tool_call_id,
                     status="success",
@@ -1326,7 +1321,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         def _resolve_read_inputs(
             file_path: str,
             tool_call_id: str | None,
-            limit: int | None,
+            limit: int,
         ) -> tuple[str, int] | ToolMessage:
             """Validate path + permission and resolve the effective backend limit.
 
@@ -1339,16 +1334,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 return _tool_error("read_file", tool_call_id, f"Error: {e}")
             if _check_fs_permission(self._permissions, "read", validated_path) == "deny":
                 return _tool_error("read_file", tool_call_id, f"Error: permission denied for read on {validated_path}")
-            return validated_path, DEFAULT_READ_LIMIT if limit is None else limit
+            return validated_path, limit
 
         def sync_read_file(
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
             runtime: ToolRuntime[None, FilesystemState],
             offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
-            limit: Annotated[
-                int | None,
-                "Maximum number of lines to read for text files. Omit to use the default window.",
-            ] = None,
+            limit: Annotated[int, "Maximum number of lines to read for text files. For videos, seconds of source to sample."] = DEFAULT_READ_LIMIT,
         ) -> ToolMessage:
             """Synchronous wrapper for read_file tool."""
             backend = self._get_backend(runtime)
@@ -1363,10 +1355,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
             runtime: ToolRuntime[None, FilesystemState],
             offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
-            limit: Annotated[
-                int | None,
-                "Maximum number of lines to read for text files. Omit to use the default window.",
-            ] = None,
+            limit: Annotated[int, "Maximum number of lines to read for text files. For videos, seconds of source to sample."] = DEFAULT_READ_LIMIT,
         ) -> ToolMessage:
             """Asynchronous wrapper for read_file tool."""
             backend = self._get_backend(runtime)

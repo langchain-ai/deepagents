@@ -18,6 +18,7 @@ operators trade frame density for token cost without prompting changes.
 
 import base64
 import io
+import math
 import time
 from typing import TYPE_CHECKING, Any, Final
 
@@ -297,8 +298,11 @@ def _sample_frames_in_window(
             emitted_bytes += next_block_bytes
             if emitted_frames >= MAX_VIDEO_SAMPLED_FRAMES:
                 break
-            emitted_index = round((frame_seconds - offset_seconds) / frame_interval_seconds) + 1
-            next_emit_seconds = offset_seconds + frame_interval_seconds * emitted_index
+            emitted_index = math.floor((frame_seconds - offset_seconds) / frame_interval_seconds) + 1
+            next_emit_seconds = max(
+                next_emit_seconds + frame_interval_seconds,
+                offset_seconds + frame_interval_seconds * emitted_index,
+            )
     except decode_error_types as exc:
         msg = f"Failed to decode video frames: {exc}"
         raise VideoExtractionError(msg) from exc

@@ -1,0 +1,27 @@
+libs/code/tests/unit_tests/test_install_script.py
+  s_b79f67cf721e0c::t_755b661e864ca0 688-689
+  s_b79f67cf721e0c::t_047b2ae10f0dd4 660-662
+  s_b79f67cf721e0c::t_7dcef9b8e31ffd 641-643,645-647,675,677,700-703,705,708-733,736-816
+  s_b79f67cf721e0c::t_54c208d83b9fa0 66
+  s_b79f67cf721e0c::t_e8c7d4f2cd9862 629-630
+libs/code/scripts/install.sh
+  s_b79f67cf721e0c::t_5c4feb92c8565f 495-497
+  s_b79f67cf721e0c::t_5c96f374e2a8c4 504-510
+  s_b79f67cf721e0c::t_3ad4750a7aa4b0 527,610,616-621,631-635
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.9",
+  "base_commit_sha": "5f468ffb0b9245985874eca172176900b316b842",
+  "prompts": {},
+  "sessions": {
+    "s_b79f67cf721e0c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8ca757f3-ac92-490e-b6c6-d4aa81e643fc",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

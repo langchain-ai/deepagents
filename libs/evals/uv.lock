@@ -3076,13 +3076,13 @@ wheels = [
 
 [[package]]
 name = "ty"
-version = "0.0.46"
+version = "0.0.51"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/5a/7d/d95b5a9dea83472006be3ce5e480028c44b34138d84d0172e910f287fb69/ty-0.0.46.tar.gz", hash = "sha256:c6c2d7105b5633b49950b4c3a90d1ed2613eb9d794ad582bbbf6c4ffcb93accf", size = 5832380, upload-time = "2026-06-09T03:28:05.056Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7e/ce/352fcdba5c72ea20e5d2e46e28809cdb617575b71209d971eff2ace8e6c4/ty-0.0.51.tar.gz", hash = "sha256:b90172d46365bb9d51a7011cbb5c60cc4f514f42c86635df6c092b717f85e1ac", size = 5953151, upload-time = "2026-06-19T01:48:58.015Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/82/4a/e7e3209e353c5835c7756339bbcdfda10852407b80fbb9ed46c17241873a/ty-0.0.46-py3-none-macosx_11_0_arm64.whl", hash = "sha256:acbafd6a2351b07a6cf4c945b0b1d47f6d2826faac2526a351dfa74d3a3cc664", size = 10892822, upload-time = "2026-06-09T03:27:51.179Z" },
-    { url = "https://files.pythonhosted.org/packages/a8/3a/2cd541f6320f5d6f70a45725c4e1016efedd5545348bb23b47ffb3e4c724/ty-0.0.46-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:d1160e6dc86536109ab755f7142f36f4dda5333c8330cf230d61819494d27125", size = 12079480, upload-time = "2026-06-09T03:27:55.847Z" },
-    { url = "https://files.pythonhosted.org/packages/fe/9a/6643894bc12cb30c281f4c8bf37f6d30c1fbd9484ef39a12b0ea6dae3c1c/ty-0.0.46-py3-none-musllinux_1_2_x86_64.whl", hash = "sha256:0a7d9f58d26d938e5d2f607481b7a412d8c00d675a1ec72004fa9d6b3b9def99", size = 12180448, upload-time = "2026-06-09T03:28:32.329Z" },
+    { url = "https://files.pythonhosted.org/packages/33/57/136e83f24fc04f5afdcabff42f40fa27eae5ac3f0e3f12627d072a55f679/ty-0.0.51-py3-none-macosx_11_0_arm64.whl", hash = "sha256:2faed19a8f1505370de071c008df52a994fc03a204f3267c3a33a32ca26f854f", size = 11063076, upload-time = "2026-06-19T01:48:25.223Z" },
+    { url = "https://files.pythonhosted.org/packages/74/50/aabfe55c132ebe72b4d639cbf772d931e11b0990d29c1f691922b6ccabc1/ty-0.0.51-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:f8f52952cff665bc52a36147e610c10f5699d30007d7a14ab7f345cff93476ff", size = 12230135, upload-time = "2026-06-19T01:48:38.445Z" },
+    { url = "https://files.pythonhosted.org/packages/e6/a2/88f681d826d97cc96ef9f6cadd4935f775758944cee07340aa46113bce28/ty-0.0.51-py3-none-musllinux_1_2_x86_64.whl", hash = "sha256:49a21237f6fd1de56beaff0a3e85fe022a09a3401e67e3abec41ce838a5d4d2e", size = 12333449, upload-time = "2026-06-19T01:48:49.091Z" },
 ]
 
 [[package]]

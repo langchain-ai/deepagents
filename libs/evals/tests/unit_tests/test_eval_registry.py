@@ -5,8 +5,10 @@ exports — without hardcoding specific eval configurations, so they don't break
 when evals are added, removed, or reconfigured.
 """
 
+# ruff: noqa: ANN401  # fake_model is intentionally Any to bypass BaseChatModel typing
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -92,11 +94,11 @@ class _FakeModel:
 
 
 @pytest.fixture
-def fake_model() -> _FakeModel:
+def fake_model() -> Any:
     return _FakeModel()
 
 
-def test_bare_eval_builder_calls_create_deep_agent(fake_model: _FakeModel) -> None:
+def test_bare_eval_builder_calls_create_deep_agent(fake_model: Any) -> None:
     """A simple eval builder calls create_deep_agent with just model."""
     builder = EVALS["test_read_file_seeded_state_backend_file"]
     with patch("deepagents_evals.eval_registry.create_deep_agent") as mock_create:
@@ -104,7 +106,7 @@ def test_bare_eval_builder_calls_create_deep_agent(fake_model: _FakeModel) -> No
         mock_create.assert_called_once_with(model=fake_model)
 
 
-def test_memory_eval_builder_passes_memory(fake_model: _FakeModel) -> None:
+def test_memory_eval_builder_passes_memory(fake_model: Any) -> None:
     """A memory eval builder forwards memory to create_deep_agent."""
     builder = EVALS["test_memory_basic_recall"]
     with patch("deepagents_evals.eval_registry.create_deep_agent") as mock_create:
@@ -112,7 +114,7 @@ def test_memory_eval_builder_passes_memory(fake_model: _FakeModel) -> None:
         assert mock_create.call_args.kwargs["memory"] == ["/project/AGENTS.md"]
 
 
-def test_composite_backend_builder_seeds_memory(fake_model: _FakeModel) -> None:
+def test_composite_backend_builder_seeds_memory(fake_model: Any) -> None:
     """Composite-backend eval preserves its pytest memory setup."""
     builder = EVALS["test_memory_middleware_composite_backend"]
     with patch("deepagents_evals.eval_registry.create_deep_agent") as mock_create:

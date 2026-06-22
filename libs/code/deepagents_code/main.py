@@ -55,19 +55,10 @@ def build_version_text() -> str:
     Returns:
         Multi-line version string suitable for stdout.
     """
-    from importlib.metadata import (
-        PackageNotFoundError,
-        version as _pkg_version,
-    )
+    from deepagents_code.extras_info import resolve_sdk_version
 
-    try:
-        sdk_version = _pkg_version("deepagents")
-    except PackageNotFoundError:
-        logger.debug("deepagents SDK package not found in environment")
-        sdk_version = "unknown"
-    except Exception:  # Best-effort SDK version lookup
-        logger.warning("Unexpected error looking up SDK version", exc_info=True)
-        sdk_version = "unknown"
+    sdk_version_value, status = resolve_sdk_version()
+    sdk_version = sdk_version_value if status == "resolved" else "unknown"
 
     text = f"deepagents-code {__version__}\ndeepagents (SDK) {sdk_version}"
 
@@ -1186,6 +1177,14 @@ def parse_args() -> argparse.Namespace:
     )
     add_json_output_arg(update_parser)
 
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="Print install health and diagnostics",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_doctor_help")),
+    )
+    add_json_output_arg(doctor_parser)
+
     # Default interactive mode — argument order here determines the
     # usage line printed by argparse; keep in sync with ui.show_help().
     parser.add_argument(
@@ -2244,6 +2243,29 @@ def cli_main() -> None:
         if _show_bare_command_group_help(args):
             return
 
+        # Keep self-contained commands that do not need global settings here, before
+        # state migration and settings bootstrap. If a future command only reads
+        # local files or delegates bootstrap to specific subcommands, dispatch it here
+        # so lightweight diagnostic paths stay fast.
+        # Use `getattr` because this fast-path block is for optional top-level
+        # subcommands only. ACP/root-mode invocations may not define `command`,
+        # and should fall through to the later handlers instead of raising here.
+        command = getattr(args, "command", None)
+        if command == "config":
+            from deepagents_code.config_commands import run_config_command
+
+            sys.exit(run_config_command(args))
+
+        if command == "auth" and getattr(args, "auth_command", None) == "path":
+            from deepagents_code.auth_commands import run_auth_command
+
+            sys.exit(run_auth_command(args))
+
+        if command == "doctor":
+            from deepagents_code.doctor import run_doctor_command
+
+            sys.exit(run_doctor_command(args))
+
         # Best-effort, idempotent migration. Placed after parse_args and the
         # bare-help fast path so --help / --version / `deepagents <group>`
         # exit before any I/O. Wrapped broadly so an unexpected non-OSError
@@ -2264,6 +2286,11 @@ def cli_main() -> None:
         # fast path so neither argparse's `--help`/`-h` exit nor
         # `deepagents <group>` pays the settings bootstrap cost.
         from deepagents_code.config import console, settings
+
+        if command == "auth":
+            from deepagents_code.auth_commands import run_auth_command
+
+            sys.exit(run_auth_command(args))
 
         model_params: dict[str, Any] | None = None
         raw_kwargs = getattr(args, "model_params", None)
@@ -2350,16 +2377,6 @@ def cli_main() -> None:
                 )
             )
             sys.exit(exit_code)
-
-        if args.command == "config":
-            from deepagents_code.config_commands import run_config_command
-
-            sys.exit(run_config_command(args))
-
-        if args.command == "auth":
-            from deepagents_code.auth_commands import run_auth_command
-
-            sys.exit(run_auth_command(args))
 
         # Apply shell-allow-list from command line if provided (overrides env var)
         if args.shell_allow_list:

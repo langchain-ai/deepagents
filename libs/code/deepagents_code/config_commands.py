@@ -471,17 +471,15 @@ def _config_paths() -> list[tuple[str, Any, bool]]:
         ("recent models", DEFAULT_STATE_DIR / RECENT_MODELS_FILENAME),
     ]
 
+    from deepagents_code._paths import PathState, classify_path
+
     rows: list[tuple[str, Any, bool]] = []
     for label, path in candidates:
         if path is None:
             continue
-        try:
-            exists = path.exists()
-        except OSError:
-            # A permission/transient FS error is not the same as "missing"; log
-            # it (at debug, to keep normal output clean) so a developer can tell
-            # the two apart when triaging a `config path` report.
-            logger.debug("Could not stat %s", path, exc_info=True)
-            exists = False
+        # `classify_path` logs unreadable paths at debug level. `config path`
+        # reports a plain exists/missing bool, so unreadable still collapses to
+        # missing here while `doctor` can surface it as a problem.
+        exists = classify_path(path) is PathState.EXISTS
         rows.append((label, path, exists))
     return rows

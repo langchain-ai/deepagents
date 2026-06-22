@@ -1030,7 +1030,7 @@ def test_resolve_theme_unknown_saved_warns(monkeypatch, caplog) -> None:
 
 
 def test_config_paths_logs_and_reports_missing_on_oserror(monkeypatch, caplog) -> None:
-    """An `OSError` from `path.exists()` is logged and reported as missing."""
+    """An `OSError` from `path.stat()` is logged and reported as missing."""
     import logging
     from pathlib import Path
 
@@ -1038,16 +1038,18 @@ def test_config_paths_logs_and_reports_missing_on_oserror(monkeypatch, caplog) -
     from deepagents_code.config_commands import _config_paths
 
     target = model_config.DEFAULT_CONFIG_PATH
-    real_exists = Path.exists
+    real_stat = Path.stat
 
-    def fake_exists(self, *args: object, **kwargs: object) -> bool:
+    def fake_stat(self, *, follow_symlinks: bool = True) -> object:
         if self == target:
             msg = "boom"
             raise OSError(msg)
-        return real_exists(self, *args, **kwargs)
+        return real_stat(self, follow_symlinks=follow_symlinks)
 
-    monkeypatch.setattr(Path, "exists", fake_exists)
-    with caplog.at_level(logging.DEBUG, logger="deepagents_code.config_commands"):
+    monkeypatch.setattr(Path, "stat", fake_stat)
+    # The OSError guard and its debug log now live in the shared `_paths`
+    # classifier that `_config_paths` delegates to.
+    with caplog.at_level(logging.DEBUG, logger="deepagents_code._paths"):
         rows = _config_paths()
     config_row = next(row for row in rows if row[0] == "config.toml")
     assert config_row[2] is False

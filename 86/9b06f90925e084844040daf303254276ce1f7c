@@ -1,0 +1,19 @@
+libs/evals/uv.lock
+  s_698778a02a8251::t_fc41bd12362345 438
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "869b06f90925e084844040daf303254276ce1f7c",
+  "prompts": {},
+  "sessions": {
+    "s_698778a02a8251": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c2a0169b-bce8-484a-ad7f-18d87a45f565",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

@@ -2,19 +2,19 @@
 
 This module is the single source of truth for how each eval's agent is
 constructed. Both the pytest suite and the Harbor sandbox dispatcher import
-from here, ensuring the ``create_deep_agent`` call for a given eval exists in
+from here, ensuring the `create_deep_agent` call for a given eval exists in
 exactly one place.
 
 Each eval is described by an :class:`EvalSpec` that captures the
-``create_deep_agent`` kwargs (``system_prompt``, ``memory``, ``skills``,
-``tools``, ``middleware``, ``subagents``, ``backend``, ``store``) or a custom
-``builder`` callable for evals whose construction depends on runtime parameters
-(e.g. ``repl_name`` for the relational / incident-graph suites).
+`create_deep_agent` kwargs (`system_prompt`, `memory`, `skills`,
+`tools`, `middleware`, `subagents`, `backend`, `store`) or a custom
+`builder` callable for evals whose construction depends on runtime parameters
+(e.g. `repl_name` for the relational / incident-graph suites).
 
 The :data:`EVALS` dict maps the pytest test function name to its
 :class:`EvalSpec`. Parametrized evals (memory_multiturn, followup_quality) use
 the test function name without the parametrize suffix; the Harbor dispatcher
-receives the base name via ``configurable["eval_name"]``.
+receives the base name via `configurable["eval_name"]`.
 """
 
 from __future__ import annotations
@@ -51,8 +51,8 @@ def _relational_builder(
 ) -> CompiledStateGraph[Any, Any]:
     """Build the relational-data agent.
 
-    When ``repl_name`` is ``None`` the tools are bound directly. When it is
-    ``"quickjs"`` the tools are routed through a ``CodeInterpreterMiddleware``
+    When `repl_name` is `None` the tools are bound directly. When it is
+    `"quickjs"` the tools are routed through a `CodeInterpreterMiddleware`
     instead.
     """
     middleware: list[Any] = []
@@ -75,8 +75,8 @@ def _incident_graph_builder(
 ) -> CompiledStateGraph[Any, Any]:
     """Build the incident-management agent.
 
-    Always includes the tool-error middleware. When ``repl_name`` is
-    ``"quickjs"`` the tools are routed through a ``CodeInterpreterMiddleware``
+    Always includes the tool-error middleware. When `repl_name` is
+    `"quickjs"` the tools are routed through a `CodeInterpreterMiddleware`
     instead of being bound directly.
     """
     middleware: list[Any] = [incident_graph_tool_error_middleware]
@@ -101,7 +101,7 @@ def _composite_backend_builder(
 ) -> CompiledStateGraph[Any, Any]:
     """Build the composite-backend memory agent.
 
-    Creates a fresh ``InMemoryStore`` and ``CompositeBackend`` on every call so
+    Creates a fresh `InMemoryStore` and `CompositeBackend` on every call so
     state doesn't leak between trials.
     """
     store = InMemoryStore()
@@ -155,26 +155,26 @@ def _general_purpose_subagent_builder(
 class EvalSpec:
     """Describes how to build the agent for a single eval.
 
-    Most evals set only ``category``, ``tier``, and optionally ``system_prompt``
-    / ``memory`` / ``skills`` / ``tools``. Evals whose construction depends on
-    runtime parameters (e.g. ``repl_name``) set ``builder`` instead; when
-    ``builder`` is set, ``build()`` delegates to it and ignores the static
+    Most evals set only `category`, `tier`, and optionally `system_prompt`
+    / `memory` / `skills` / `tools`. Evals whose construction depends on
+    runtime parameters (e.g. `repl_name`) set `builder` instead; when
+    `builder` is set, `build()` delegates to it and ignores the static
     fields.
 
     Attributes:
         name: The pytest test function name (without parametrize suffix).
         category: Eval category (file_operations, tool_use, memory, etc.).
         tier: Eval tier (baseline or hillclimb).
-        system_prompt: Custom system prompt passed to ``create_deep_agent``.
-        memory: Memory file paths passed to ``create_deep_agent``.
-        skills: Skill directory paths passed to ``create_deep_agent``.
-        tools: Tools passed to ``create_deep_agent`` (replaces default tools).
-        middleware: Middleware passed to ``create_deep_agent``.
-        subagents: Subagent configs passed to ``create_deep_agent``.
+        system_prompt: Custom system prompt passed to `create_deep_agent`.
+        memory: Memory file paths passed to `create_deep_agent`.
+        skills: Skill directory paths passed to `create_deep_agent`.
+        tools: Tools passed to `create_deep_agent` (replaces default tools).
+        middleware: Middleware passed to `create_deep_agent`.
+        subagents: Subagent configs passed to `create_deep_agent`.
         builder: Custom builder for evals that need runtime construction.
             When set, takes precedence over the static fields.
-        supports_repl: Whether this eval supports the ``repl_name`` parameter
-            (only ``builder``-based evals do).
+        supports_repl: Whether this eval supports the `repl_name` parameter
+            (only `builder`-based evals do).
     """
 
     name: str
@@ -199,8 +199,8 @@ class EvalSpec:
 
         Args:
             model: The chat model to use.
-            repl_name: Optional REPL backend (``"quickjs"`` or ``None``).
-                Only used by evals with ``supports_repl=True``.
+            repl_name: Optional REPL backend (`"quickjs"` or `None`).
+                Only used by evals with `supports_repl=True`.
 
         Returns:
             A compiled LangGraph graph.

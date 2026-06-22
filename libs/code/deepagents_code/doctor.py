@@ -74,6 +74,36 @@ def _sdk_version() -> tuple[str, bool]:
     return "unknown", False
 
 
+def _commit_hash(path: str) -> str:
+    """Return the short git commit hash for a source path, if available.
+
+    Args:
+        path: Directory used as the git command working directory.
+
+    Returns:
+        The short commit hash, or `unknown` when git metadata cannot be read.
+    """
+    import subprocess  # noqa: S404  # fixed-argv git metadata probe
+    from pathlib import Path
+
+    cwd = Path(path).expanduser()
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],  # noqa: S607
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+            cwd=cwd,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        logger.debug("Git commit hash detection failed", exc_info=True)
+        return "unknown"
+    if result.returncode != 0:
+        return "unknown"
+    return result.stdout.strip() or "unknown"
+
+
 def _collect_diagnostics() -> DiagnosticSection:
     """Collect core version, platform, and install-location facts.
 
@@ -101,6 +131,7 @@ def _collect_diagnostics() -> DiagnosticSection:
         items=[
             DiagnosticItem("deepagents-code", __version__),
             DiagnosticItem("deepagents (SDK)", sdk_version, ok=sdk_ok),
+            DiagnosticItem("Commit hash", _commit_hash(path)),
             DiagnosticItem("Python", platform.python_version()),
             DiagnosticItem("Platform", _platform_tag()),
             DiagnosticItem("Install method", method),

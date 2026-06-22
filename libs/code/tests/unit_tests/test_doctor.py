@@ -73,6 +73,8 @@ class TestCollectSections:
         diagnostics = collect_sections()[0]
         labels = {item.label: item.value for item in diagnostics.items}
         assert labels["deepagents-code"] == __version__
+        assert "Commit hash" in labels
+        assert labels["Commit hash"]
         assert "Platform" in labels
         assert "Install method" in labels
 

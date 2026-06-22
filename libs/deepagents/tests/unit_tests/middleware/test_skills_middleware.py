@@ -254,8 +254,8 @@ Content
     assert result is None
 
 
-def test_parse_skill_metadata_description_truncation() -> None:
-    """Test _parse_skill_metadata truncates long descriptions."""
+def test_parse_skill_metadata_description_truncation(caplog: pytest.LogCaptureFixture) -> None:
+    """Test _parse_skill_metadata truncates long descriptions with an actionable warning."""
     long_description = "A" * (MAX_SKILL_DESCRIPTION_LENGTH + 100)
     content = f"""---
 name: test-skill
@@ -265,9 +265,15 @@ description: {long_description}
 Content
 """
 
-    result = _parse_skill_metadata(content, "/skills/test/SKILL.md", "test-skill")
+    with caplog.at_level(logging.WARNING, logger="deepagents.middleware.skills"):
+        result = _parse_skill_metadata(content, "/skills/test/SKILL.md", "test-skill")
     assert result is not None
     assert len(result["description"]) == MAX_SKILL_DESCRIPTION_LENGTH
+    message = caplog.text
+    assert "/skills/test/SKILL.md" in message
+    assert str(MAX_SKILL_DESCRIPTION_LENGTH + 100) in message
+    assert str(MAX_SKILL_DESCRIPTION_LENGTH) in message
+    assert "'description'" in message
 
 
 def test_parse_skill_metadata_too_large() -> None:
@@ -302,7 +308,7 @@ Content
     assert result["compatibility"] is None  # Empty string should become None
 
 
-def test_parse_skill_metadata_compatibility_max_length() -> None:
+def test_parse_skill_metadata_compatibility_max_length(caplog: pytest.LogCaptureFixture) -> None:
     """Test _parse_skill_metadata truncates compatibility exceeding 500 chars.
 
     Per Agent Skills spec, compatibility field must be max 500 characters.
@@ -317,10 +323,16 @@ compatibility: {long_compat}
 Content
 """
 
-    result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
+    with caplog.at_level(logging.WARNING, logger="deepagents.middleware.skills"):
+        result = _parse_skill_metadata(content, "/skills/test-skill/SKILL.md", "test-skill")
     assert result is not None
     assert result["compatibility"] is not None
     assert len(result["compatibility"]) == MAX_SKILL_COMPATIBILITY_LENGTH
+    message = caplog.text
+    assert "/skills/test-skill/SKILL.md" in message
+    assert "600" in message
+    assert str(MAX_SKILL_COMPATIBILITY_LENGTH) in message
+    assert "'compatibility'" in message
 
 
 def test_parse_skill_metadata_whitespace_only_description() -> None:

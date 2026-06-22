@@ -426,9 +426,15 @@ def _parse_skill_metadata(
     description_str = description
     if len(description_str) > MAX_SKILL_DESCRIPTION_LENGTH:
         logger.warning(
-            "Description exceeds %d characters in %s, truncating",
-            MAX_SKILL_DESCRIPTION_LENGTH,
+            "Skill description in %s is %d characters, over the Agent Skills "
+            "spec limit of %d. Keeping only the first %d characters; the rest "
+            "is dropped from what the model sees when deciding whether to use "
+            "this skill. Shorten the 'description' field in the SKILL.md "
+            "frontmatter to stay within the limit.",
             skill_path,
+            len(description_str),
+            MAX_SKILL_DESCRIPTION_LENGTH,
+            MAX_SKILL_DESCRIPTION_LENGTH,
         )
         description_str = description_str[:MAX_SKILL_DESCRIPTION_LENGTH]
 
@@ -437,9 +443,14 @@ def _parse_skill_metadata(
     compatibility_str = str(frontmatter_data.get("compatibility", "")).strip() or None
     if compatibility_str and len(compatibility_str) > MAX_SKILL_COMPATIBILITY_LENGTH:
         logger.warning(
-            "Compatibility exceeds %d characters in %s, truncating",
-            MAX_SKILL_COMPATIBILITY_LENGTH,
+            "Skill compatibility in %s is %d characters, over the Agent Skills "
+            "spec limit of %d. Keeping only the first %d characters and dropping "
+            "the rest. Shorten the 'compatibility' field in the SKILL.md "
+            "frontmatter to stay within the limit.",
             skill_path,
+            len(compatibility_str),
+            MAX_SKILL_COMPATIBILITY_LENGTH,
+            MAX_SKILL_COMPATIBILITY_LENGTH,
         )
         compatibility_str = compatibility_str[:MAX_SKILL_COMPATIBILITY_LENGTH]
 

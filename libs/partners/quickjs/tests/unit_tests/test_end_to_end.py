@@ -1,9 +1,9 @@
-"""End-to-end tests for ``CodeInterpreterMiddleware`` with a fake LLM.
+"""End-to-end tests for `CodeInterpreterMiddleware` with a fake LLM.
 
 Regression gate for the sync tool handler: before the worker-thread
-refactor, sync ``invoke`` ran ``ctx.eval``, which cannot dispatch async
-host functions (PTC bridges are ``is_async=True``). Any eval that
-referenced ``tools.*`` surfaced as:
+refactor, sync `invoke` ran `ctx.eval`, which cannot dispatch async
+host functions (PTC bridges are `is_async=True`). Any eval that
+referenced `tools.*` surfaced as:
 
     <error type="ConcurrentEval">sync ctx.eval dispatched a registered
     async host function; use ctx.eval_async for code that awaits async
@@ -182,7 +182,7 @@ def test_deepagent_with_quickjs_interpreter_sync() -> None:
 
 
 def test_deepagent_with_quickjs_list_returning_foreign_function_sync() -> None:
-    """A PTC tool returning a Python ``list`` surfaces as a native JS Array."""
+    """A PTC tool returning a Python `list` surfaces as a native JS Array."""
     code = "const ids = await tools.listUserIds({});\nids.join(',');"
     result = _make_agent(code, CodeInterpreterMiddleware(ptc=[list_user_ids])).invoke(
         {
@@ -199,7 +199,7 @@ def test_deepagent_with_quickjs_list_returning_foreign_function_sync() -> None:
 
 
 def test_ptc_int_return_is_native_js_number() -> None:
-    """A PTC tool returning a Python ``int`` surfaces as a JS ``number``."""
+    """A PTC tool returning a Python `int` surfaces as a JS `number`."""
     code = "const n = await tools.getUserCount({});\n`${typeof n}:${n + 1}`;"
     result = _make_agent(code, CodeInterpreterMiddleware(ptc=[get_user_count])).invoke(
         {"messages": [HumanMessage(content="go")]}
@@ -208,7 +208,7 @@ def test_ptc_int_return_is_native_js_number() -> None:
 
 
 def test_ptc_dict_return_is_native_js_object() -> None:
-    """A PTC tool returning a Python ``dict`` surfaces as a JS object."""
+    """A PTC tool returning a Python `dict` surfaces as a JS object."""
     code = (
         "const u = await tools.getUserProfile({});\n"
         "`${u.id}:${u.name}:${u.tags.join(',')}`;"
@@ -237,7 +237,7 @@ def test_ptc_dict_with_nested_non_native_values_does_not_break_eval() -> None:
 
 
 def test_ptc_none_return_is_js_null() -> None:
-    """A PTC tool returning ``None`` surfaces as JS ``null``."""
+    """A PTC tool returning `None` surfaces as JS `null`."""
     code = "const r = await tools.getUserEmailOrNone({user_id: -1});\n`${r === null}`;"
     result = _make_agent(
         code, CodeInterpreterMiddleware(ptc=[get_user_email_or_none])
@@ -246,7 +246,7 @@ def test_ptc_none_return_is_js_null() -> None:
 
 
 def test_ptc_injects_tool_call_id_per_call() -> None:
-    """``InjectedToolCallId`` receives a fresh id on each PTC sub-call."""
+    """`InjectedToolCallId` receives a fresh id on each PTC sub-call."""
     code = (
         "const a = await tools.echoCallId({value: 'a'});\n"
         "const b = await tools.echoCallId({value: 'b'});\n"
@@ -384,7 +384,7 @@ def test_quickjs_sync_parallel_agents_across_threads() -> None:
 
 
 def test_sync_ptc_eval_through_repl() -> None:
-    """``invoke`` path: the observed production snippet must not error."""
+    """`invoke` path: the observed production snippet must not error."""
     result = _make_agent(
         _EVAL_CODE, CodeInterpreterMiddleware(ptc=[list_user_ids])
     ).invoke({"messages": [HumanMessage(content="go")]})
@@ -392,7 +392,7 @@ def test_sync_ptc_eval_through_repl() -> None:
 
 
 async def test_async_ptc_eval_through_repl() -> None:
-    """``ainvoke`` path: same guard on the async handler."""
+    """`ainvoke` path: same guard on the async handler."""
     result = await _make_agent(
         _EVAL_CODE,
         CodeInterpreterMiddleware(ptc=[list_user_ids]),

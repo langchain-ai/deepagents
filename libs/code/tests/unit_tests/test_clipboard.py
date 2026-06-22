@@ -149,7 +149,7 @@ class TestCopyOsc52:
     """Direct coverage of the OSC 52 escape sequence (`_copy_osc52`)."""
 
     def test_emits_escape_envelope(self, monkeypatch) -> None:
-        r"""Emits ``\x1b]52;c;<base64>\a`` written to ``/dev/tty``."""
+        r"""Emits `\x1b]52;c;<base64>\a` written to `/dev/tty`."""
         captured = io.StringIO()
 
         class _DummyTTY:

@@ -9,12 +9,14 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import (
     AIMessage,
     HumanMessage,
+    RemoveMessage,
     SystemMessage,
     ToolCall,
     ToolMessage,
 )
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.store.memory import InMemoryStore
-from langgraph.types import Command, Overwrite
+from langgraph.types import Command
 
 import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
@@ -1136,40 +1138,56 @@ class TestFilesystemMiddleware:
         assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
         assert result.update["custom_key"] == "custom_value"
 
-    def test_intercept_command_with_overwrite_messages(self):
-        """Test that Commands wrapping messages in Overwrite are handled."""
+    def test_intercept_command_with_remove_all_sentinel(self):
+        """Commands prefixed with a `REMOVE_ALL_MESSAGES` sentinel are handled."""
         backend, mem_store = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
         runtime = _runtime("test_123")
 
         large_content = "y" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
-        command = Command(update={"messages": Overwrite([tool_message]), "files": {}})
+        command = Command(
+            update={
+                "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), tool_message],
+                "files": {},
+            }
+        )
         result = middleware._intercept_large_tool_result(command, runtime)
 
         assert isinstance(result, Command)
-        assert isinstance(result.update["messages"], Overwrite)
+        messages = result.update["messages"]
+        assert isinstance(messages, list)
+        assert isinstance(messages[0], RemoveMessage)
+        assert messages[0].id == REMOVE_ALL_MESSAGES
         assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
-        assert "Tool result too large" in result.update["messages"].value[0].content
+        assert "Tool result too large" in messages[1].content
 
-    async def test_aintercept_command_with_overwrite_messages(self):
-        """Test that the async path handles Overwrite-wrapped messages."""
+    async def test_aintercept_command_with_remove_all_sentinel(self):
+        """Async path handles `REMOVE_ALL_MESSAGES`-prefixed message lists."""
         backend, mem_store = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
         runtime = _runtime("test_123")
 
         large_content = "y" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
-        command = Command(update={"messages": Overwrite([tool_message]), "files": {}})
+        command = Command(
+            update={
+                "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), tool_message],
+                "files": {},
+            }
+        )
         result = await middleware._aintercept_large_tool_result(command, runtime)
 
         assert isinstance(result, Command)
-        assert isinstance(result.update["messages"], Overwrite)
+        messages = result.update["messages"]
+        assert isinstance(messages, list)
+        assert isinstance(messages[0], RemoveMessage)
+        assert messages[0].id == REMOVE_ALL_MESSAGES
         assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
-        assert "Tool result too large" in result.update["messages"].value[0].content
+        assert "Tool result too large" in messages[1].content
 
-    def test_intercept_command_with_short_overwrite_messages(self):
-        """A small ToolMessage stays wrapped and unchanged."""
+    def test_intercept_command_with_short_sentinel_messages(self):
+        """A small ToolMessage stays prefixed with the sentinel and unchanged."""
         backend, mem_store = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
         runtime = _runtime("test_123")
@@ -1178,7 +1196,7 @@ class TestFilesystemMiddleware:
         tool_message = ToolMessage(content=small_content, tool_call_id="test_123")
         command = Command(
             update={
-                "messages": Overwrite([tool_message]),
+                "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), tool_message],
                 "files": {},
                 "custom_key": "custom_value",
             }
@@ -1186,13 +1204,16 @@ class TestFilesystemMiddleware:
         result = middleware._intercept_large_tool_result(command, runtime)
 
         assert isinstance(result, Command)
-        assert isinstance(result.update["messages"], Overwrite)
-        assert result.update["messages"].value == [tool_message]
+        messages = result.update["messages"]
+        assert isinstance(messages, list)
+        assert isinstance(messages[0], RemoveMessage)
+        assert messages[0].id == REMOVE_ALL_MESSAGES
+        assert messages[1:] == [tool_message]
         assert result.update["custom_key"] == "custom_value"
         assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is None
 
-    def test_intercept_command_with_mixed_overwrite_messages(self):
-        """Non-tool messages in an Overwrite update survive in order."""
+    def test_intercept_command_with_mixed_sentinel_messages(self):
+        """Non-tool messages in a sentinel-prefixed update survive in order."""
         backend, mem_store = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
         runtime = _runtime("test_123")
@@ -1203,7 +1224,12 @@ class TestFilesystemMiddleware:
         final_message = AIMessage(content="Done")
         command = Command(
             update={
-                "messages": Overwrite([ai_message, tool_message, final_message]),
+                "messages": [
+                    RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                    ai_message,
+                    tool_message,
+                    final_message,
+                ],
                 "files": {},
                 "custom_key": "custom_value",
             }
@@ -1211,16 +1237,18 @@ class TestFilesystemMiddleware:
         result = middleware._intercept_large_tool_result(command, runtime)
 
         assert isinstance(result, Command)
-        assert isinstance(result.update["messages"], Overwrite)
-        messages = result.update["messages"].value
-        assert messages[0] == ai_message
-        assert "Tool result too large" in messages[1].content
-        assert messages[2] == final_message
+        messages = result.update["messages"]
+        assert isinstance(messages, list)
+        assert isinstance(messages[0], RemoveMessage)
+        assert messages[0].id == REMOVE_ALL_MESSAGES
+        assert messages[1] == ai_message
+        assert "Tool result too large" in messages[2].content
+        assert messages[3] == final_message
         assert result.update["custom_key"] == "custom_value"
         assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
 
-    async def test_aintercept_command_with_mixed_overwrite_messages(self):
-        """The async path preserves non-tool messages in Overwrite updates."""
+    async def test_aintercept_command_with_mixed_sentinel_messages(self):
+        """Async path preserves non-tool messages in sentinel-prefixed updates."""
         backend, mem_store = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
         runtime = _runtime("test_123")
@@ -1228,28 +1256,42 @@ class TestFilesystemMiddleware:
         ai_message = AIMessage(content="Use a tool")
         large_content = "y" * 5000
         tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
-        command = Command(update={"messages": Overwrite([ai_message, tool_message])})
+        command = Command(
+            update={
+                "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), ai_message, tool_message],
+            }
+        )
         result = await middleware._aintercept_large_tool_result(command, runtime)
 
         assert isinstance(result, Command)
-        assert isinstance(result.update["messages"], Overwrite)
-        messages = result.update["messages"].value
-        assert messages[0] == ai_message
-        assert "Tool result too large" in messages[1].content
+        messages = result.update["messages"]
+        assert isinstance(messages, list)
+        assert isinstance(messages[0], RemoveMessage)
+        assert messages[0].id == REMOVE_ALL_MESSAGES
+        assert messages[1] == ai_message
+        assert "Tool result too large" in messages[2].content
         assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
 
-    def test_intercept_command_with_empty_overwrite_messages(self):
-        """An empty Overwrite remains an empty Overwrite."""
+    def test_intercept_command_with_empty_sentinel_messages(self):
+        """A sentinel-only message list stays as just the sentinel."""
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
         runtime = _runtime("test_123")
 
-        command = Command(update={"messages": Overwrite([]), "custom_key": "custom_value"})
+        command = Command(
+            update={
+                "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES)],
+                "custom_key": "custom_value",
+            }
+        )
         result = middleware._intercept_large_tool_result(command, runtime)
 
         assert isinstance(result, Command)
-        assert isinstance(result.update["messages"], Overwrite)
-        assert result.update["messages"].value == []
+        messages = result.update["messages"]
+        assert isinstance(messages, list)
+        assert len(messages) == 1
+        assert isinstance(messages[0], RemoveMessage)
+        assert messages[0].id == REMOVE_ALL_MESSAGES
         assert result.update["custom_key"] == "custom_value"
 
     def test_sanitize_tool_call_id(self):
@@ -2058,8 +2100,11 @@ class TestPatchToolCallsMiddleware:
         middleware = PatchToolCallsMiddleware()
         state_update = middleware.before_agent({"messages": input_messages}, None)
         assert state_update is not None
-        assert isinstance(state_update["messages"], Overwrite)
-        patched_messages = state_update["messages"].value
+        messages = state_update["messages"]
+        assert isinstance(messages, list)
+        assert isinstance(messages[0], RemoveMessage)
+        assert messages[0].id == REMOVE_ALL_MESSAGES
+        patched_messages = messages[1:]
         assert len(patched_messages) == 5
         assert patched_messages[0].type == "system"
         assert patched_messages[0].content == "You are a helpful assistant."
@@ -2112,8 +2157,11 @@ class TestPatchToolCallsMiddleware:
         middleware = PatchToolCallsMiddleware()
         state_update = middleware.before_agent({"messages": input_messages}, None)
         assert state_update is not None
-        assert isinstance(state_update["messages"], Overwrite)
-        patched_messages = state_update["messages"].value
+        messages = state_update["messages"]
+        assert isinstance(messages, list)
+        assert isinstance(messages[0], RemoveMessage)
+        assert messages[0].id == REMOVE_ALL_MESSAGES
+        patched_messages = messages[1:]
         assert len(patched_messages) == 8
         assert patched_messages[0].type == "system"
         assert patched_messages[0].content == "You are a helpful assistant."

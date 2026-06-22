@@ -22,6 +22,7 @@ from langchain_core._api import beta
 from langchain_core._api.deprecation import warn_deprecated
 from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
+from langgraph.channels import DeltaChannel
 from langgraph.config import get_config
 from pydantic import BaseModel, Field
 
@@ -41,6 +42,7 @@ from langchain_quickjs._ptc import (
     render_ptc_prompt,
 )
 from langchain_quickjs._repl import _Registry
+from langchain_quickjs._snapshot import encode_snapshot, replay_snapshot_chain
 from langchain_quickjs._subagent import find_subagent_task_tool
 
 logger = logging.getLogger(__name__)
@@ -55,7 +57,13 @@ _DEFAULT_TOOL_NAME = "eval"
 class REPLState(AgentState):
     """State schema for `CodeInterpreterMiddleware`."""
 
-    _quickjs_snapshot_payload: NotRequired[Annotated[bytes | None, PrivateStateAttr]]
+    _quickjs_snapshot_payload: NotRequired[
+        Annotated[
+            bytes,
+            DeltaChannel(replay_snapshot_chain),
+            PrivateStateAttr,
+        ]
+    ]
 
 
 class EvalSchema(BaseModel):
@@ -381,7 +389,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         if self._reset_between_calls or not self._snapshot_between_turns:
             return None
         payload = state.get("_quickjs_snapshot_payload")
-        if payload is None:
+        if not payload:
             return None
         thread_id = _resolve_thread_id(self._fallback_thread_id)
         repl = self._registry.get(thread_id)
@@ -405,7 +413,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         if self._reset_between_calls or not self._snapshot_between_turns:
             return None
         payload = state.get("_quickjs_snapshot_payload")
-        if payload is None:
+        if not payload:
             return None
         thread_id = _resolve_thread_id(self._fallback_thread_id)
         repl = self._registry.get(thread_id)
@@ -513,9 +521,9 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         return append_to_system_message(system_message, prompt)
 
     def _snapshot_update(
-        self, *, payload: bytes, thread_id: str
-    ) -> dict[str, bytes | None]:
-        """Build state update for a serialized snapshot payload."""
+        self, *, payload: bytes, prior: bytes, thread_id: str
+    ) -> dict[str, Any]:
+        """Build a patch-chain state update for a fresh snapshot ``payload``."""
         size = len(payload)
         if size > self._max_snapshot_bytes:
             logger.warning(
@@ -528,11 +536,11 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 self._max_snapshot_bytes,
             )
             return {"_quickjs_snapshot_payload": None}
-        return {"_quickjs_snapshot_payload": payload}
+        return {"_quickjs_snapshot_payload": encode_snapshot(payload, prior)}
 
     def after_agent(
         self,
-        state: REPLState,  # noqa: ARG002
+        state: REPLState,
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Snapshot REPL state (optional) and evict this turn's REPL slot."""
@@ -545,10 +553,12 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         repl = self._registry.get_if_exists(thread_id)
         if repl is None:
             return None
+        prior = state.get("_quickjs_snapshot_payload") or b""
         update: dict[str, Any]
         try:
             update = self._snapshot_update(
                 payload=repl.create_snapshot(),
+                prior=prior,
                 thread_id=thread_id,
             )
         except Exception:  # noqa: BLE001  # best-effort snapshot path
@@ -564,7 +574,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
 
     async def aafter_agent(
         self,
-        state: REPLState,  # noqa: ARG002
+        state: REPLState,
         runtime: "Runtime[ContextT]",  # noqa: ARG002
     ) -> dict[str, Any] | None:
         """Async variant of `after_agent` snapshot+evict behavior."""
@@ -577,10 +587,12 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         repl = self._registry.get_if_exists(thread_id)
         if repl is None:
             return None
+        prior = state.get("_quickjs_snapshot_payload") or b""
         update: dict[str, Any]
         try:
             update = self._snapshot_update(
                 payload=await repl.acreate_snapshot(),
+                prior=prior,
                 thread_id=thread_id,
             )
         except Exception:  # noqa: BLE001  # best-effort snapshot path

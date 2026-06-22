@@ -172,7 +172,7 @@ def check_empty_content(content: str) -> str | None:
     Returns:
         Warning message if empty, `None` otherwise
     """
-    if not content or content.strip() == "":
+    if not content:
         return EMPTY_CONTENT_WARNING
     return None
 
@@ -297,7 +297,7 @@ def slice_read_response(
     """
     content = file_data_to_string(file_data)
 
-    if not content or content.strip() == "":
+    if not content:
         return content
 
     # `splitlines(keepends=True)` retains each line's terminator, including
@@ -317,6 +317,35 @@ def slice_read_response(
     # State/Store backends may carry CRLF or CR content as written;
     # downstream tooling (edit match, grep, format) assumes LF.
     return "".join(lines[start_idx:end_idx]).replace("\r\n", "\n").replace("\r", "\n")
+
+
+def build_sliced_read_result(file_data: FileData, offset: int, limit: int) -> ReadResult:
+    """Build a `ReadResult` for a paginated text read.
+
+    The returned `file_data` contains only the requested window while the result
+    metadata preserves the total source line count so middleware can tell the
+    model whether more content remains.
+    """
+    sliced = slice_read_response(file_data, offset, limit)
+    if isinstance(sliced, ReadResult):
+        return sliced
+
+    sliced_fd = FileData(
+        content=sliced,
+        encoding=file_data.get("encoding", "utf-8"),
+    )
+    if "created_at" in file_data:
+        sliced_fd["created_at"] = file_data["created_at"]
+    if "modified_at" in file_data:
+        sliced_fd["modified_at"] = file_data["modified_at"]
+
+    content = file_data_to_string(file_data)
+    if not content:
+        return ReadResult(file_data=sliced_fd)
+
+    total_lines = len(content.splitlines(keepends=True))
+    end_line = min(offset + limit, total_lines)
+    return ReadResult(file_data=sliced_fd, total_lines=total_lines, start_line=offset + 1, end_line=end_line)
 
 
 def perform_string_replacement(

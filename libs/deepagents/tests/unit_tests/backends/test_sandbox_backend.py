@@ -29,6 +29,7 @@ from deepagents.backends.sandbox import (
     _GLOB_COMMAND_TEMPLATE,
     _READ_COMMAND_TEMPLATE,
     _WRITE_CHECK_TEMPLATE,
+    MAX_OUTPUT_BYTES,
     BaseSandbox,
     _check_preflight_result,
     _map_edit_error,
@@ -1147,6 +1148,20 @@ def test_read_script_ascii_larger_than_prefix(tmp_path: Path) -> None:
     result = _run_read_script(target)
 
     assert result["encoding"] == "utf-8"
+
+
+def test_read_script_byte_truncation_omits_line_metadata(tmp_path: Path) -> None:
+    """A byte-truncated line is not a complete line window for pagination notices."""
+    target = tmp_path / "huge-line.txt"
+    target.write_text("a" * (MAX_OUTPUT_BYTES + 100), encoding="utf-8")
+
+    result = _run_read_script(target, offset=0, limit=1)
+
+    assert result["encoding"] == "utf-8"
+    assert "Output was truncated due to size limits" in result["content"]
+    assert "total_lines" not in result
+    assert "start_line" not in result
+    assert "end_line" not in result
 
 
 # -- script-level permission/error tests --------------------------------------

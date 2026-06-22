@@ -458,6 +458,7 @@ class FilesystemBackend(BackendProtocol):
                         return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
 
                     file_data = FileData(content="".join(lines[start_idx:end_idx]), encoding="utf-8")
+                    return ReadResult(file_data=file_data, total_lines=len(lines), start_line=offset + 1, end_line=end_idx)
 
             return ReadResult(file_data=file_data)
         except (OSError, UnicodeDecodeError) as e:

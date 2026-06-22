@@ -17,7 +17,6 @@ from deepagents.backends.protocol import (
     INVALID_PATH,
     BackendProtocol,
     EditResult,
-    FileData,
     FileDownloadResponse,
     FileInfo,
     FileUploadResponse,
@@ -29,9 +28,9 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.utils import (
+    build_sliced_read_result,
     create_file_data,
     perform_string_replacement,
-    slice_read_response,
 )
 
 if TYPE_CHECKING:
@@ -150,17 +149,7 @@ class ContextHubBackend(BackendProtocol):
             return ReadResult(error=f"File '{file_path}' not found")
 
         file_data = create_file_data(content)
-        sliced = slice_read_response(file_data, offset, limit)
-        if isinstance(sliced, ReadResult):
-            return sliced
-        return ReadResult(
-            file_data=FileData(
-                content=sliced,
-                encoding=file_data.get("encoding", "utf-8"),
-                created_at=file_data.get("created_at", ""),
-                modified_at=file_data.get("modified_at", ""),
-            )
-        )
+        return build_sliced_read_result(file_data, offset, limit)
 
     def write(self, file_path: str, content: str) -> WriteResult:
         """Commit `content` to `file_path`."""

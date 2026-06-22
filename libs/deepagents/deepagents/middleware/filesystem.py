@@ -1063,6 +1063,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
             return content
 
+        def _remaining_lines_notice(read_result: ReadResult) -> str:
+            if read_result.total_lines is None or read_result.start_line is None or read_result.end_line is None:
+                return ""
+            if read_result.end_line >= read_result.total_lines:
+                return ""
+
+            read_lines = read_result.end_line - read_result.start_line + 1
+            remaining = read_result.total_lines - read_result.end_line
+            line_noun = "line" if remaining == 1 else "lines"
+            return (
+                f"\n\n[Read {read_lines} lines (lines {read_result.start_line}-{read_result.end_line} "
+                f"of {read_result.total_lines} total). {remaining} {line_noun} remaining from offset {read_result.end_line}.]"
+            )
+
         def _handle_read_result(
             read_result: ReadResult | str,
             validated_path: str,
@@ -1115,7 +1129,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             empty_msg = check_empty_content(content)
             if empty_msg:
                 return ToolMessage(
-                    content=empty_msg,
+                    content=empty_msg + _remaining_lines_notice(read_result),
                     name="read_file",
                     tool_call_id=tool_call_id,
                     status="success",
@@ -1138,6 +1152,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
 
             content = format_content_with_line_numbers(content, start_line=offset + 1)
+            content += _remaining_lines_notice(read_result)
             # `limit` already bounded raw source lines at the backend; do not
             # re-truncate by row count here, or wrapped continuation rows would
             # push real source lines off the end of the page (#2453).

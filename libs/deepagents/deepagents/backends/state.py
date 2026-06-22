@@ -26,11 +26,11 @@ from deepagents.backends.utils import (
     _get_file_type,
     _glob_search_files,
     _to_legacy_file_data,
+    build_sliced_read_result,
     create_file_data,
     file_data_to_string,
     grep_matches_from_files,
     perform_string_replacement,
-    slice_read_response,
     update_file_data,
 )
 
@@ -233,18 +233,7 @@ class StateBackend(BackendProtocol):
         if _get_file_type(file_path) != "text":
             return ReadResult(file_data=file_data)
 
-        sliced = slice_read_response(file_data, offset, limit)
-        if isinstance(sliced, ReadResult):
-            return sliced
-        sliced_fd = FileData(
-            content=sliced,
-            encoding=file_data.get("encoding", "utf-8"),
-        )
-        if "created_at" in file_data:
-            sliced_fd["created_at"] = file_data["created_at"]
-        if "modified_at" in file_data:
-            sliced_fd["modified_at"] = file_data["modified_at"]
-        return ReadResult(file_data=sliced_fd)
+        return build_sliced_read_result(file_data, offset, limit)
 
     def write(
         self,

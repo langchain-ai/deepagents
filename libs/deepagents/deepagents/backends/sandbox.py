@@ -347,8 +347,8 @@ try:
             line_count += 1
             if line_count <= offset:
                 continue
-            if returned_lines >= limit:
-                break
+            if returned_lines >= limit or truncated:
+                continue
 
             line = raw_line.rstrip('\\n').rstrip('\\r')
             piece = line if returned_lines == 0 else '\\n' + line
@@ -361,7 +361,7 @@ try:
                     if prefix:
                         parts.append(prefix)
                         current_bytes += len(prefix.encode('utf-8'))
-                break
+                continue
 
             parts.append(piece)
             current_bytes += piece_bytes
@@ -375,7 +375,14 @@ try:
     if truncated:
         text += TRUNCATION_MSG
 
-    print(json.dumps({{'encoding': 'utf-8', 'content': text}}))
+    response = {{'encoding': 'utf-8', 'content': text}}
+    if not truncated:
+        response.update({{
+            'total_lines': line_count,
+            'start_line': offset + 1,
+            'end_line': offset + returned_lines,
+        }})
+    print(json.dumps(response))
 except FileNotFoundError:
     print(json.dumps({{'error': 'file_not_found'}}))
 except PermissionError:
@@ -466,7 +473,10 @@ def _parse_read_output(output: str, file_path: str) -> ReadResult:
         file_data=FileData(
             content=data["content"],
             encoding=data.get("encoding", "utf-8"),
-        )
+        ),
+        total_lines=data.get("total_lines"),
+        start_line=data.get("start_line"),
+        end_line=data.get("end_line"),
     )
 
 

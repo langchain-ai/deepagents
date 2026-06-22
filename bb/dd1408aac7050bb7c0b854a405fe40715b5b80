@@ -1,0 +1,14 @@
+DEVELOPMENT.md
+  h_9f69767fa5fabf 6,11,76
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.9",
+  "base_commit_sha": "bbdd1408aac7050bb7c0b854a405fe40715b5b80",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

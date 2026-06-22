@@ -1,0 +1,24 @@
+libs/partners/quickjs/langchain_quickjs/_subagent.py
+  s_55bb2e5cb9e884::t_7ed3541fbc6789 34-37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "3340f9cc69009ebab8d92f2a4051e8d5e7b48234",
+  "prompts": {},
+  "humans": {
+    "h_f78d33d4280f3f": {
+      "author": "Colin Francis <colin.francis@langchain.dev>"
+    }
+  },
+  "sessions": {
+    "s_55bb2e5cb9e884": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90d8eefc-b814-4369-9677-981c907ab665",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Colin Francis <colin.francis@langchain.dev>"
+    }
+  }
+}

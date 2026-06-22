@@ -1,0 +1,14 @@
+libs/deepagents/CHANGELOG.md
+  h_9f69767fa5fabf 9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "7125bf7be3ba8cf96980c4dbf6ab674410c33459",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

@@ -1,0 +1,14 @@
+libs/code/deepagents_code/command_registry.py
+  h_9f69767fa5fabf 83,90,96,101,107,112,119,124,130,137,143,149,155,160,166,172,178,184,196,203,208,213,219,224,229
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.9",
+  "base_commit_sha": "08389cc2f9924ec5e78a8a346013008b652998e8",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

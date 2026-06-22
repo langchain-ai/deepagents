@@ -1,0 +1,14 @@
+libs/deepagents/deepagents/middleware/summarization.py
+  h_9f69767fa5fabf 32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.8",
+  "base_commit_sha": "5bae63aed07a6873a575b2a7920c42b989f5f067",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

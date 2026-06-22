@@ -294,13 +294,11 @@ async def test_repl_top_level_const_let_persist_across_evals_same_turn(
         invoke_mode,
     )
     eval_messages = [
-        m
-        for m in result["messages"]
-        if isinstance(m, ToolMessage) and m.name == "eval"
+        m for m in result["messages"] if isinstance(m, ToolMessage) and m.name == "eval"
     ]
     assert len(eval_messages) == 2, eval_messages
     for msg in eval_messages:
         assert "<error" not in msg.content, msg.content
-    assert "<result>hello42</result>" in eval_messages[-1].content, (
-        eval_messages[-1].content
-    )
+    assert "<result>hello42</result>" in eval_messages[-1].content, eval_messages[
+        -1
+    ].content

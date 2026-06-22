@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
 
+from deepagents_code._env_vars import LANGSMITH_REPLICA_PROJECTS
 from deepagents_code.remote_client import (
     RemoteAgent,
     _convert_ai_message,
@@ -250,6 +251,72 @@ def _make_agent(
 
 def _config() -> dict[str, Any]:
     return {"configurable": {"thread_id": _TEST_THREAD_ID}}
+
+
+def _make_capturing_agent() -> tuple[RemoteAgent, dict[str, Any]]:
+    """RemoteAgent whose mock graph records the kwargs passed to `astream`."""
+    agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+    captured: dict[str, Any] = {}
+    mock_graph = MagicMock()
+
+    async def fake_astream(  # noqa: RUF029
+        input: Any,  # noqa: A002, ANN401, ARG001
+        **kwargs: Any,
+    ) -> Any:  # noqa: ANN401
+        captured.update(kwargs)
+        for ev in ():  # async generator that yields nothing
+            yield ev
+
+    mock_graph.astream = fake_astream
+    agent._graph = mock_graph
+    return agent, captured
+
+
+class TestRemoteAgentReplicaForwarding:
+    """`astream` forwards the LangSmith replica project to the server SDK.
+
+    The server mirrors a run to an extra project only via the SDK's
+    `langsmith_tracing` field, so these lock the exact kwarg name and payload
+    shape `RemoteGraph.astream` (and thus `client.runs.stream`) expects.
+
+    `test_forwards_replica_project` / `test_no_kwarg_when_unset` assert the
+    payload against a mock graph that swallows any kwarg, so they verify only
+    the `RemoteAgent` side of the contract. `test_sdk_accepts_langsmith_tracing`
+    pins the *other* side — that the real SDK still accepts the kwarg and shape —
+    so a future SDK rename surfaces here rather than silently dropping replicas.
+    """
+
+    async def test_forwards_replica_project(self, monkeypatch) -> None:
+        """A configured replica is passed through as `langsmith_tracing`."""
+        monkeypatch.setenv(LANGSMITH_REPLICA_PROJECTS, "mason-dual-trace")
+        agent, captured = _make_capturing_agent()
+        async for _ in agent.astream({"messages": []}, config=_config()):
+            pass
+        assert captured["langsmith_tracing"] == {"project_name": "mason-dual-trace"}
+
+    async def test_no_kwarg_when_unset(self, monkeypatch) -> None:
+        """Without a replica, `langsmith_tracing` is not passed at all."""
+        monkeypatch.delenv(LANGSMITH_REPLICA_PROJECTS, raising=False)
+        agent, captured = _make_capturing_agent()
+        async for _ in agent.astream({"messages": []}, config=_config()):
+            pass
+        assert "langsmith_tracing" not in captured
+
+    def test_sdk_accepts_langsmith_tracing(self) -> None:
+        """The real SDK still accepts the kwarg name and `project_name` shape.
+
+        `RemoteGraph.astream` forwards unknown kwargs to `client.runs.stream`, so
+        a silent drop would happen if either the parameter or the payload key
+        were renamed upstream. This guards both.
+        """
+        import inspect
+
+        from langgraph_sdk.client import RunsClient
+        from langgraph_sdk.schema import LangSmithTracing
+
+        params = inspect.signature(RunsClient.stream).parameters
+        assert "langsmith_tracing" in params
+        assert "project_name" in LangSmithTracing.__annotations__
 
 
 # ---------------------------------------------------------------------------

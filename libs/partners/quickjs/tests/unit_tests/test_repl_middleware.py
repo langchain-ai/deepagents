@@ -267,13 +267,14 @@ def test_system_prompt_omits_subagent_guidance_when_disabled() -> None:
 def test_system_prompt_mentions_single_turn_when_snapshots_disabled() -> None:
     with pytest.warns(DeprecationWarning, match="snapshot_between_turns"):
         mw = CodeInterpreterMiddleware(snapshot_between_turns=False)
-    assert "DO NOT persist across multiple turns" in mw._base_system_prompt
+    assert "DO NOT persist across multiple turns" in mw._base_prompt(ptc_attached=False)
 
 
 def test_system_prompt_mentions_mode_call() -> None:
     mw = CodeInterpreterMiddleware(mode="call")
-    assert "fresh sandboxed REPL for each invocation" in mw._base_system_prompt
-    assert "does not persist across tool calls" in mw._base_system_prompt
+    base_prompt = mw._base_prompt(ptc_attached=False)
+    assert "fresh sandboxed REPL for each invocation" in base_prompt
+    assert "does not persist across tool calls" in base_prompt
 
 
 def test_mode_call_defaults_snapshot_between_turns_to_false() -> None:
@@ -684,7 +685,7 @@ def test_per_thread_slot_has_own_worker_and_runtime() -> None:
 
 
 def test_evict_closes_and_removes_slot() -> None:
-    """``evict`` closes the runtime and drops the slot from the registry."""
+    """`evict` closes the runtime and drops the slot from the registry."""
     reg = _Registry(
         memory_limit=32 * 1024 * 1024,
         timeout=5.0,
@@ -708,7 +709,7 @@ def test_evict_closes_and_removes_slot() -> None:
 
 
 def test_evict_returns_fresh_slot_on_next_get() -> None:
-    """After eviction, ``get`` rebuilds a new slot for the same thread_id."""
+    """After eviction, `get` rebuilds a new slot for the same thread_id."""
     reg = _Registry(
         memory_limit=32 * 1024 * 1024,
         timeout=5.0,
@@ -742,7 +743,7 @@ def test_evict_unknown_thread_id_is_noop() -> None:
 
 
 async def test_aevict_closes_and_removes_slot() -> None:
-    """``aevict`` closes the runtime via the worker loop and drops the slot."""
+    """`aevict` closes the runtime via the worker loop and drops the slot."""
     reg = _Registry(
         memory_limit=32 * 1024 * 1024,
         timeout=5.0,
@@ -766,7 +767,7 @@ async def test_aevict_closes_and_removes_slot() -> None:
 
 
 def test_after_agent_evicts_current_thread_slot() -> None:
-    """``after_agent`` snapshots state and evicts the resolved thread slot."""
+    """`after_agent` snapshots state and evicts the resolved thread slot."""
     mw = CodeInterpreterMiddleware()
     try:
         # Force a slot to exist for the middleware's fallback thread id.
@@ -782,7 +783,7 @@ def test_after_agent_evicts_current_thread_slot() -> None:
 
 
 async def test_aafter_agent_evicts_current_thread_slot() -> None:
-    """``aafter_agent`` snapshots state and evicts the resolved thread slot."""
+    """`aafter_agent` snapshots state and evicts the resolved thread slot."""
     mw = CodeInterpreterMiddleware()
     try:
         repl = mw._registry.get(mw._fallback_thread_id)
@@ -797,7 +798,7 @@ async def test_aafter_agent_evicts_current_thread_slot() -> None:
 
 
 def test_after_agent_snapshot_roundtrip_with_before_agent() -> None:
-    """Snapshots from ``after_agent`` restore into fresh slots in ``before_agent``."""
+    """Snapshots from `after_agent` restore into fresh slots in `before_agent`."""
     mw = CodeInterpreterMiddleware()
     try:
         repl = mw._registry.get(mw._fallback_thread_id)
@@ -954,7 +955,7 @@ async def test_mode_call_resets_state_between_tool_calls() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Async path (v0.2 native ``eval_async``)
+# Async path (v0.2 native `eval_async`)
 # ---------------------------------------------------------------------------
 
 
@@ -1124,15 +1125,23 @@ async def test_async_task_global_invokes_runner(repl: _ThreadREPL) -> None:
     runnable = RunnableLambda(_sync, afunc=_async)
 
     outcome = await repl.eval_async(
-        "globalThis.task = null;"
-        "delete globalThis.task;"
-        "task.extra = 1;"
+        # The `task` global is bound writable:false / configurable:false, so under
+        # strict-mode eval every tamper attempt must THROW (a stronger guarantee
+        # than the old sloppy-mode silent no-op). Each attempt is required to
+        # raise, and `task` must survive intact and remain callable afterwards.
+        "const mustThrow = (label, fn) => {"
+        "  try { fn(); } catch (e) { return; }"
+        "  throw new Error('task binding is mutable: ' + label);"
+        "};"
+        "mustThrow('assign', () => { globalThis.task = null; });"
+        "mustThrow('delete', () => { delete globalThis.task; });"
+        "mustThrow('addProp', () => { task.extra = 1; });"
         "if (!Object.isFrozen(task) || task.extra !== undefined) {"
         "  throw new Error('task binding is mutable');"
         "}"
         "JSON.stringify(await task({"
         "description: 'work', "
-        "subagent_type: 'worker'"
+        "subagentType: 'worker'"
         "}))",
         outer_runtime=_subagent_runtime(runnable),
     )
@@ -1167,20 +1176,20 @@ async def test_async_task_global_not_installed_when_disabled(
     ("code", "message"),
     [
         (
-            "await task({subagent_type: 'worker'})",
+            "await task({subagentType: 'worker'})",
             "task() requires non-empty string field `description`",
         ),
         (
             "await task({description: 'work'})",
-            "task() requires non-empty string field `subagent_type`",
+            "task() requires non-empty string field `subagentType`",
         ),
         (
             "await task({"
             "description: 'work', "
-            "subagent_type: 'worker', "
-            "response_schema: 'bad'"
+            "subagentType: 'worker', "
+            "responseSchema: 'bad'"
             "})",
-            "task() field `response_schema` must be an object when provided",
+            "task() field `responseSchema` must be an object when provided",
         ),
     ],
 )
@@ -1214,7 +1223,7 @@ async def test_async_task_global_missing_task_tool_surfaces_as_eval_error(
     )
 
     outcome = await repl.eval_async(
-        "await task({description: 'work', subagent_type: 'worker'})",
+        "await task({description: 'work', subagentType: 'worker'})",
         outer_runtime=runtime,
     )
 
@@ -1233,13 +1242,13 @@ async def test_async_task_global_returns_declarative_structured_response_object(
         "};"
         "const first = await task({"
         "description: 'work', "
-        "subagent_type: 'worker', "
-        "response_schema: schema"
+        "subagentType: 'worker', "
+        "responseSchema: schema"
         "});"
         "const second = await task({"
         "description: 'work again', "
-        "subagent_type: 'worker', "
-        "response_schema: schema"
+        "subagentType: 'worker', "
+        "responseSchema: schema"
         "});"
         "JSON.stringify({"
         "label: first.label, "
@@ -1266,8 +1275,8 @@ async def test_async_task_global_rejects_compiled_response_schema(
     outcome = await repl.eval_async(
         "await task({"
         "description: 'work', "
-        "subagent_type: 'worker', "
-        "response_schema: {"
+        "subagentType: 'worker', "
+        "responseSchema: {"
         "type: 'object', "
         "properties: {ok: {type: 'boolean'}}, "
         "required: ['ok']"
@@ -1296,7 +1305,7 @@ async def test_async_task_global_uses_last_non_empty_ai_message(
     )
 
     outcome = await repl.eval_async(
-        "JSON.stringify(await task({description: 'work', subagent_type: 'worker'}))",
+        "JSON.stringify(await task({description: 'work', subagentType: 'worker'}))",
         outer_runtime=_subagent_runtime(runnable),
     )
 
@@ -1317,7 +1326,7 @@ async def test_async_task_global_rejects_state_without_messages(
     )
 
     outcome = await repl.eval_async(
-        "await task({description: 'work', subagent_type: 'worker'})",
+        "await task({description: 'work', subagentType: 'worker'})",
         outer_runtime=_subagent_runtime(runnable),
     )
 
@@ -1369,7 +1378,7 @@ async def test_async_task_global_limits_concurrency_per_repl(
     outcome = await repl.eval_async(
         "const calls = [];"
         "for (let i = 0; i < 64; i++) {"
-        "  calls.push(task({description: String(i), subagent_type: 'worker'}));"
+        "  calls.push(task({description: String(i), subagentType: 'worker'}));"
         "}"
         "(await Promise.all(calls)).length",
         outer_runtime=_subagent_runtime(runnable),
@@ -1408,7 +1417,7 @@ async def test_async_deadlock_detection(repl: _ThreadREPL) -> None:
 
 async def test_async_concurrent_calls_surface_error(repl: _ThreadREPL) -> None:
     """Overlapping async evals on the same context surface as
-    ``ConcurrentEvalError`` rather than silently serialising.
+    `ConcurrentEvalError` rather than silently serialising.
 
     A model issuing overlapping evals against shared state is almost
     always a prompting bug; a loud failure is a better signal than
@@ -1439,6 +1448,6 @@ async def test_async_concurrent_calls_surface_error(repl: _ThreadREPL) -> None:
 
 
 def test_sync_path_still_works(repl: _ThreadREPL) -> None:
-    """After the v0.2 split, the sync path continues to use ``ctx.eval``."""
+    """After the v0.2 split, the sync path continues to use `ctx.eval`."""
     repl.eval_sync("let n = 7")
     assert repl.eval_sync("n * 6").result == "42"

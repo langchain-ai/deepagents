@@ -223,7 +223,7 @@ def test_rank_with_unknown_lookup_lands_in_final_message(model: BaseChatModel) -
     """Substantive answer must land in the last AIMessage when a lookup fails.
 
     Atlantis is intentionally absent from the lookup data — both lookups
-    return ``"unknown"`` for it. The agent has to revise its plan, present
+    return `"unknown"` for it. The agent has to revise its plan, present
     a partial ranking for the cities it could look up, and surface the
     missing data.
 

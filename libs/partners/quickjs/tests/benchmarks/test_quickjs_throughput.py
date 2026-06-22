@@ -4,7 +4,7 @@ Run locally:  `make benchmark`
 Run with CodSpeed:  `uv run --group test pytest ./tests -m benchmark --codspeed`
 
 These tests measure throughput for many single-thread eval iterations where the
-workload combines PTC tool calls with ``console.log`` output.
+workload combines PTC tool calls with `console.log` output.
 """
 
 from __future__ import annotations

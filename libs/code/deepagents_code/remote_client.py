@@ -193,12 +193,28 @@ class RemoteAgent:
         config = _prepare_config(config)
         dropped_count = 0
 
+        # Mirror this server-side run to an extra LangSmith project when
+        # configured. The server (`langgraph_api`) reads the SDK's
+        # `langsmith_tracing` field and replicates the run to that project plus
+        # its primary project. This is the only channel that reaches the run:
+        # it executes in the server process, and reserved `configurable` keys
+        # like `__langsmith_project__` are stripped from client input
+        # server-side, so they cannot be set directly here. (Server internals
+        # verified against `langgraph-api` 0.10.0 and subject to change.)
+        from deepagents_code.config import get_langsmith_replica_project
+
+        extra_stream_kwargs: dict[str, Any] = {}
+        replica_project = get_langsmith_replica_project()
+        if replica_project:
+            extra_stream_kwargs["langsmith_tracing"] = {"project_name": replica_project}
+
         async for ns, mode, data in graph.astream(
             input,
             stream_mode=stream_mode or ["messages", "updates"],
             subgraphs=subgraphs,
             config=config,
             context=context,
+            **extra_stream_kwargs,
         ):
             logger.debug("RemoteGraph event mode=%s ns=%s", mode, ns)
 

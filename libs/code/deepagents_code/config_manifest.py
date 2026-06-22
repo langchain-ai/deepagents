@@ -58,6 +58,12 @@ INTERPRETER_MAX_RESULT_CHARS_DEFAULT = 4000
 INTERPRETER_PTC_DEFAULT: str | bool | list[str] = False
 INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT = False
 
+LANGSMITH_PROJECT_DEFAULT = "deepagents-code"
+"""Project agent traces fall back to when no project env var is set.
+
+Single source of truth shared by the `tracing.langsmith_project` option and
+`config.get_langsmith_project_name`."""
+
 
 class OptionKind(Enum):
     """How an option's raw env/TOML value is coerced to a typed value.
@@ -163,6 +169,14 @@ class ConfigOption:
     `DEEPAGENTS_CODE_` prefix override is applied dynamically at resolution time.
     """
 
+    fallback_env_vars: tuple[str, ...] = ()
+    """Secondary env vars read (in order) when `env_var` is unset.
+
+    Read literally — no `DEEPAGENTS_CODE_` prefix logic — so `config show`/`get`
+    mirror runtime fallbacks such as `get_langsmith_project_name` reading bare
+    `LANGSMITH_PROJECT`.
+    """
+
     toml_keys: tuple[str, ...] | None = None
     """Section/key path within `config.toml`, or `None`."""
 
@@ -207,9 +221,24 @@ class ConfigOption:
         `resolve_scalar`. Catching it here fails the import (and the test suite).
 
         Raises:
-            TypeError: When `default` is mutable, a `STRUCTURED` option declares
-                a default, or a scalar option's default has the wrong type.
+            TypeError: When `fallback_env_vars` is not a tuple of non-empty
+                strings, `default` is mutable, a `STRUCTURED` option declares a
+                default, or a scalar option's default has the wrong type.
         """
+        # Guard `fallback_env_vars` independently of `default` (which has its own
+        # early-return path below): like `default`, it is shared by reference
+        # through the `get_config_options` `lru_cache`, so a mutable value (a
+        # `list`) would reintroduce the aliasing hazard the default guard exists
+        # to prevent. Empty names never match any env var, so reject those too.
+        if not isinstance(self.fallback_env_vars, tuple) or any(
+            not isinstance(name, str) or not name for name in self.fallback_env_vars
+        ):
+            msg = (
+                f"{self.key}: fallback_env_vars must be a tuple of non-empty "
+                f"strings, got {self.fallback_env_vars!r}"
+            )
+            raise TypeError(msg)
+
         default = self.default
         if default is None:
             if self.invert_toml_bool:
@@ -498,27 +527,40 @@ def resolve_scalar(
         option: The option to resolve.
         toml_data: Parsed `config.toml` mapping (see `load_config_toml`).
 
+    Resolution order is: the prefixed primary `env_var`, then each
+    `fallback_env_vars` name in declaration order, then `config.toml`, then the
+    typed `default`.
+
     Returns:
         `(value, source)`, where `source` is `env (<name>)`, `config.toml`, or
         `default`. A malformed `int`/`float`/list/PTC value, an unrecognized
         boolean token, or any TOML value of the wrong type is logged and skipped
         so the next layer (or the typed default) applies. An empty env value is
         treated as unset (mirroring `resolve_env_var`), so it falls through to
-        `config.toml`/`default` rather than counting as set. Theme resolution
-        (`THEME_DELEGATE`) reports its own richer `config.toml [ui.*]` sources.
+        the next env var, then `config.toml`/`default`, rather than counting as
+        set. Theme resolution (`THEME_DELEGATE`) reports its own richer
+        `config.toml [ui.*]` sources.
     """
     if option.kind is OptionKind.THEME_DELEGATE:
         return _resolve_theme(toml_data)
 
-    if option.env_var:
+    if option.env_var or option.fallback_env_vars:
         from deepagents_code.model_config import resolved_env_var_name
 
-        name = resolved_env_var_name(option.env_var)
-        # An empty string counts as unset, matching `resolve_env_var`: this
-        # keeps `config show`/`get` aligned with what the runtime reads (and
-        # lets a prefixed empty var suppress a canonical one).
-        raw = os.environ.get(name)
-        if raw:
+        names: list[str] = []
+        if option.env_var:
+            names.append(resolved_env_var_name(option.env_var))
+        names.extend(option.fallback_env_vars)
+        # An empty string counts as unset, matching `resolve_env_var`, so it is
+        # skipped and the loop continues to the next name. This keeps
+        # `config show`/`get` aligned with what the runtime reads: e.g. an empty
+        # prefixed `DEEPAGENTS_CODE_LANGSMITH_PROJECT` falls through to a bare
+        # `LANGSMITH_PROJECT`, mirroring `get_langsmith_project_name`. Names are
+        # tried in order, so the primary `env_var` wins over any fallback.
+        for name in names:
+            raw = os.environ.get(name)
+            if not raw:
+                continue
             value = _coerce_env(option, raw, name)
             if value is not _INVALID:
                 return value, f"env ({name})"
@@ -575,6 +617,7 @@ _PROVIDER_DEPENDENCIES: dict[str, tuple[str, str]] = {
     "anthropic": ("langchain_anthropic", "anthropic"),
     "azure_openai": ("langchain_openai", "openai"),
     "baseten": ("langchain_baseten", "baseten"),
+    "bedrock": ("langchain_aws", "bedrock"),
     "cohere": ("langchain_cohere", "cohere"),
     "deepseek": ("langchain_deepseek", "deepseek"),
     "fireworks": ("langchain_fireworks", "fireworks"),
@@ -586,6 +629,7 @@ _PROVIDER_DEPENDENCIES: dict[str, tuple[str, str]] = {
     "litellm": ("langchain_litellm", "litellm"),
     "mistralai": ("langchain_mistralai", "mistralai"),
     "nvidia": ("langchain_nvidia_ai_endpoints", "nvidia"),
+    "ollama": ("langchain_ollama", "ollama"),
     "openai": ("langchain_openai", "openai"),
     "openrouter": ("langchain_openrouter", "openrouter"),
     "perplexity": ("langchain_perplexity", "perplexity"),
@@ -593,6 +637,57 @@ _PROVIDER_DEPENDENCIES: dict[str, tuple[str, str]] = {
     "xai": ("langchain_xai", "xai"),
 }
 """Provider integration import modules and the extras that install them."""
+
+
+def provider_install_extra(provider: str) -> str | None:
+    """Return the `deepagents-code` extra that installs `provider`, if known.
+
+    Args:
+        provider: Provider name (e.g. `"baseten"`, `"google_genai"`).
+
+    Returns:
+        The extra name (e.g. `"baseten"`, `"google-genai"`), or `None` when the
+            provider has no curated extra (custom `class_path` providers,
+            ambient-auth providers, etc.).
+    """
+    dependency = _PROVIDER_DEPENDENCIES.get(provider)
+    return dependency[1] if dependency else None
+
+
+def is_provider_package_installed(provider: str) -> bool:
+    """Return whether `provider`'s integration package is importable.
+
+    Providers without a curated extra (no `_PROVIDER_DEPENDENCIES` entry) are
+    reported as installed — they manage their own dependencies, so the app
+    should never prompt to install an extra for them.
+
+    Args:
+        provider: Provider name (e.g. `"baseten"`).
+
+    Returns:
+        `True` when the integration package is importable or the provider has
+            no curated extra; `False` when the curated package is missing or
+            cannot be resolved.
+    """
+    import importlib.util
+
+    dependency = _PROVIDER_DEPENDENCIES.get(provider)
+    if dependency is None:
+        return True
+    try:
+        return importlib.util.find_spec(dependency[0]) is not None
+    except (ImportError, ValueError):
+        # `find_spec` re-raises errors from a broken parent package and raises
+        # `ValueError` for a malformed spec. Treat "can't tell" as "missing"
+        # so the model selector routes to the install prompt rather than
+        # crashing a synchronous Textual handler.
+        logger.warning(
+            "Could not resolve provider package %r; treating as not installed",
+            dependency[0],
+            exc_info=True,
+        )
+        return False
+
 
 # Credentials that back a `Settings` field, keyed by canonical env var.
 _CREDENTIAL_SETTINGS_FIELD: dict[str, str] = {
@@ -714,6 +809,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.HIDE_LANGSMITH_TRACING,
     ),
     ConfigOption(
+        key="display.show_langsmith_replica_tracing",
+        group="Display",
+        summary="Show LangSmith replica project info in the startup splash.",
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.SHOW_LANGSMITH_REPLICA_TRACING,
+    ),
+    ConfigOption(
         key="display.hide_splash_tips",
         group="Display",
         summary="Hide rotating tips in the startup splash.",
@@ -758,7 +861,9 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         group="Models",
         summary="LangSmith project name for deepagents agent traces.",
         kind=OptionKind.STR,
+        default=LANGSMITH_PROJECT_DEFAULT,
         env_var=_env_vars.LANGSMITH_PROJECT,
+        fallback_env_vars=("LANGSMITH_PROJECT",),
         settings_field="deepagents_langchain_project",
     ),
     ConfigOption(
@@ -767,6 +872,17 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         summary="User identifier attached to LangSmith trace metadata.",
         kind=OptionKind.STR,
         env_var=_env_vars.USER_ID,
+    ),
+    ConfigOption(
+        key="tracing.langsmith_replica_projects",
+        group="Models",
+        summary=(
+            "Extra LangSmith project to also write agent traces to. "
+            "Comma-separated for forward-compatibility, but only the first "
+            "project is used; the server mirrors runs to one extra project."
+        ),
+        kind=OptionKind.STR,
+        env_var=_env_vars.LANGSMITH_REPLICA_PROJECTS,
     ),
     # --- Tools / Features ----------------------------------------------
     ConfigOption(
@@ -922,7 +1038,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         group="Updates",
         summary="Enable automatic app updates.",
         kind=OptionKind.BOOL,
-        default=False,
+        default=True,
         env_var=_env_vars.AUTO_UPDATE,
         toml_keys=("update", "auto_update"),
         cli_flag="--set-auto-update",

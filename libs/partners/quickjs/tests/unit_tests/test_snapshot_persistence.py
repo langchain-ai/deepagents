@@ -174,13 +174,13 @@ async def test_repl_snapshot_persists_top_level_await_binding_between_turns(
 ) -> None:
     """Top-level-await bindings persist after cross-turn snapshot restore.
 
-    Historically, ``quickjs-rs`` dropped lexical bindings created in an eval
-    that used top-level ``await``. The first turn could read ``story``, but
-    after ``after_agent`` snapshot + ``before_agent`` restore, turn 2 raised
-    ``ReferenceError: story is not defined``.
+    Historically, `quickjs-rs` dropped lexical bindings created in an eval
+    that used top-level `await`. The first turn could read `story`, but
+    after `after_agent` snapshot + `before_agent` restore, turn 2 raised
+    `ReferenceError: story is not defined`.
 
     This regression test locks in the fixed behavior: once the first turn
-    declares ``story`` via top-level ``await``, the second turn can still read it.
+    declares `story` via top-level `await`, the second turn can still read it.
     """
     script = [
         AIMessage(

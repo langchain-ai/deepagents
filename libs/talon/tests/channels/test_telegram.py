@@ -18,6 +18,7 @@ from deepagents_talon.channels.base import (
 from deepagents_talon.channels.telegram import (
     MAX_DOCUMENT_BYTES,
     MAX_PHOTO_BYTES,
+    MAX_VIDEO_BYTES,
     TelegramChannel,
     TelegramChannelConfig,
     TelegramError,
@@ -68,7 +69,7 @@ class RecordingTransport:
             return {"ok": True, "result": updates}
         if method == "sendChatAction":
             return {"ok": True, "result": True}
-        if method in ("sendMessage", "sendPhoto", "sendDocument", "editMessageText"):
+        if method in ("sendMessage", "sendPhoto", "sendVideo", "sendDocument", "editMessageText"):
             return {"ok": True, "result": {"message_id": 42}}
         if method == "getFile":
             file_id = params.get("file_id")
@@ -679,7 +680,7 @@ async def test_send_media_uses_expected_upload_method(tmp_path: Path) -> None:
             "photo",
             {"chat_id": "123", "caption": "cap"},
         ),
-        ("clip.mp4", "video", None, "sendDocument", "document", {"chat_id": "123"}),
+        ("clip.mp4", "video", None, "sendVideo", "video", {"chat_id": "123"}),
     )
 
     for filename, media_type, caption, method, file_field, params in cases:
@@ -777,7 +778,7 @@ async def test_send_media_rejects_provider_oversized_files(
 ) -> None:
     cases: tuple[tuple[str, Literal["image", "video"], int], ...] = (
         ("big.png", "image", MAX_PHOTO_BYTES + 1),
-        ("big.mp4", "video", MAX_DOCUMENT_BYTES + 1),
+        ("big.mp4", "video", MAX_VIDEO_BYTES + 1),
     )
 
     for filename, media_type, fake_size in cases:
@@ -787,7 +788,7 @@ async def test_send_media_rejects_provider_oversized_files(
 
         with monkeypatch.context() as patch:
             _patch_file_size(patch, path, fake_size)
-            with pytest.raises(ChannelMediaError, match="too large for Telegram"):
+            with pytest.raises(ChannelMediaError, match="too large"):
                 await channel.send_media(
                     "123",
                     ChannelMedia(path=path, media_type=media_type),

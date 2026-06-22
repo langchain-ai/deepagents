@@ -34,7 +34,6 @@ from deepagents_talon.channels.base import (
     replace_message_metadata,
     split_csv,
     validate_media,
-    validate_media_size,
 )
 from deepagents_talon.interfaces import ChannelMedia, ChannelMessage, ChannelStatus, MessageHandler
 
@@ -51,6 +50,7 @@ DEFAULT_POLL_INTERVAL_SECONDS = 1.0
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 35.0
 MAX_PHOTO_BYTES = 10 * 1024 * 1024
 MAX_DOCUMENT_BYTES = 50 * 1024 * 1024
+MAX_VIDEO_BYTES = 50 * 1024 * 1024
 MAX_CAPTION_CHARS = 1024
 OPEN_EXPOSURE_ACK_ENV = "DEEPAGENTS_TALON_TELEGRAM_OPEN_ACK"
 _OFFSET_FILENAME = "telegram_offset.json"
@@ -58,7 +58,16 @@ _ALLOWED_UPDATES = ["message", "channel_post"]
 
 
 class TelegramError(RuntimeError):
-    """Raised when the Telegram Bot API reports or causes a transport error."""
+    """Raised when the Telegram Bot API reports or causes a transport error.
+
+    Args:
+        message: Error description.
+        retry_after: Seconds to wait before retrying, as reported by a 429 response.
+    """
+
+    def __init__(self, message: str, *, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 @dataclass(frozen=True, slots=True)
@@ -360,7 +369,7 @@ class TelegramChannel:
             )
 
     async def send_media(self, conversation_id: str, media: ChannelMedia) -> None:
-        """Send validated image or document media to a Telegram chat.
+        """Send validated image, video, or document media to a Telegram chat.
 
         Args:
             conversation_id: Telegram chat id.
@@ -369,18 +378,14 @@ class TelegramChannel:
         Raises:
             ChannelMediaError: If the media is too large or invalid.
         """
+        telegram_limit = _telegram_media_limit(media.media_type)
         checked = validate_media(
             media,
             root=self.config.outbound_media_dir,
-            max_bytes=self.config.max_media_bytes,
+            max_bytes=min(self.config.max_media_bytes, telegram_limit),
         )
-        _check_telegram_size(checked)
         caption = await self._media_caption(conversation_id, checked.caption)
-        method, file_field = (
-            ("sendPhoto", "photo")
-            if checked.media_type == "image"
-            else ("sendDocument", "document")
-        )
+        method, file_field = _telegram_send_method(checked.media_type)
         params: dict[str, object] = {"chat_id": conversation_id}
         if caption:
             params["caption"] = caption
@@ -494,7 +499,21 @@ class TelegramChannel:
                     message = await self._prepare_inbound_media(message)
                     await self._dispatch(message)
                     self._commit_update_offset(update)
-            except (TelegramError, urllib.error.URLError, TimeoutError):
+            except TelegramError as error:
+                delay = error.retry_after if error.retry_after is not None else self.config.poll_interval_seconds
+                logger.warning(
+                    "Telegram long-polling error; retrying after %.1fs: %s",
+                    delay,
+                    error,
+                )
+                self._status = ChannelStatus(
+                    provider="telegram",
+                    connected=False,
+                    detail="polling error",
+                )
+                await asyncio.sleep(delay)
+                continue
+            except (urllib.error.URLError, TimeoutError):
                 logger.exception("Telegram long-polling error; retrying after interval")
                 self._status = ChannelStatus(
                     provider="telegram",
@@ -545,10 +564,8 @@ class TelegramChannel:
             metadata["has_media"] = False
             metadata["media_error"] = str(error)
             return replace_message_metadata(message, metadata)
-        metadata = dict(message.metadata)
         path = str(destination)
-        mime_type = _downloaded_mime_type(destination, metadata)
-        message = replace_message_metadata(message, metadata)
+        mime_type = _downloaded_mime_type(destination, dict(message.metadata))
         return message_with_media_paths(
             message,
             media_paths=[path],
@@ -605,22 +622,20 @@ class TelegramChannel:
         return destination
 
 
-def _check_telegram_size(media: ChannelMedia) -> None:
-    """Validate media size against Telegram-specific limits.
+def _telegram_media_limit(media_type: str) -> int:
+    """Return the Telegram Bot API upload size limit for a media type."""
+    if media_type == "image":
+        return MAX_PHOTO_BYTES
+    return MAX_DOCUMENT_BYTES
 
-    Args:
-        media: Validated media payload.
 
-    Raises:
-        ChannelMediaError: If the file exceeds Telegram's size limit.
-    """
-    limit = MAX_PHOTO_BYTES if media.media_type == "image" else MAX_DOCUMENT_BYTES
-    try:
-        validate_media_size(media.path, max_bytes=limit)
-    except ChannelMediaError:
-        label = "photo" if media.media_type == "image" else "document"
-        msg = f"{label} media is too large for Telegram: exceeds {limit} bytes"
-        raise ChannelMediaError(msg) from None
+def _telegram_send_method(media_type: str) -> tuple[str, str]:
+    """Return the Bot API method and file field for a media type."""
+    if media_type == "image":
+        return ("sendPhoto", "photo")
+    if media_type == "video":
+        return ("sendVideo", "video")
+    return ("sendDocument", "document")
 
 
 def _encode_multipart_form(
@@ -768,7 +783,9 @@ def _validate_response(payload: object) -> object:
     if not values.get("ok", True):
         description = values.get("description", "unknown error")
         msg = f"Telegram Bot API error: {description}"
-        raise TelegramError(msg)
+        retry_after_raw = values.get("retry_after")
+        retry_after = float(retry_after_raw) if isinstance(retry_after_raw, (int, float)) else None
+        raise TelegramError(msg, retry_after=retry_after)
     return values.get("result")
 
 

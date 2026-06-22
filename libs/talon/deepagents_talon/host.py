@@ -167,9 +167,8 @@ class TalonHost:
         command = _command_name(message.text)
         channel_conversation_id = message.conversation_id
         conversation_root = self._conversation_root(
-            provider,
+            provider or type(channel).__name__,
             channel_conversation_id,
-            fallback_provider=channel.__class__.__qualname__,
         )
         agent_conversation_id = self._agent_conversation_id(conversation_root)
 
@@ -246,7 +245,7 @@ class TalonHost:
             Agent text output for scheduler delivery handling.
         """
         conversation_root = self._conversation_root(
-            job.origin.channel,
+            job.origin.channel or "cron",
             job.origin.conversation_id,
         )
         conversation_id = self._agent_conversation_id(conversation_root)
@@ -374,17 +373,12 @@ class TalonHost:
 
     def _conversation_root(
         self,
-        provider: str | None,
+        channel_key: str,
         conversation_id: str,
-        *,
-        fallback_provider: str | None = None,
     ) -> str:
         if len(self.channels) <= 1:
             return conversation_id
-        provider_key = provider or fallback_provider
-        if provider_key is None:
-            return conversation_id
-        return _conversation_key(provider_key, conversation_id)
+        return _conversation_key(channel_key, conversation_id)
 
     async def _cancel_all(self) -> None:
         tasks = {

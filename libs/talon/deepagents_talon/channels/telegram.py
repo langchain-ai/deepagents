@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, NamedTuple, cast
 
 from deepagents_talon.channels.base import (
     DEFAULT_MAX_MEDIA_BYTES,
@@ -475,7 +475,6 @@ class TelegramChannel:
                 for update in updates:
                     message = _parse_update(update)
                     if message is None:
-                        self._commit_update_offset(update)
                         continue
                     message = _with_from_self(message, self._bot_id)
                     if not _allows_telegram_message(
@@ -488,11 +487,11 @@ class TelegramChannel:
                             message.message_id,
                             message.conversation_id,
                         )
-                        self._commit_update_offset(update)
                         continue
                     message = await self._prepare_inbound_media(message)
                     await dispatch_message(self._handler, message, provider="Telegram")
-                    self._commit_update_offset(update)
+                if updates:
+                    self._advance_offset(updates)
             except TelegramError as error:
                 delay = error.retry_after if error.retry_after is not None else self.config.poll_interval_seconds
                 logger.warning(
@@ -518,11 +517,20 @@ class TelegramChannel:
                 raise
             await asyncio.sleep(self.config.poll_interval_seconds)
 
-    def _commit_update_offset(self, update: Mapping[str, object]) -> None:
-        update_id = update.get("update_id")
-        if not isinstance(update_id, int):
+    def _advance_offset(self, updates: list[Mapping[str, object]]) -> None:
+        """Advance the persisted offset past the last update in the batch.
+
+        Args:
+            updates: Updates from a single getUpdates response.
+        """
+        max_id = -1
+        for update in updates:
+            update_id = update.get("update_id")
+            if isinstance(update_id, int) and update_id >= max_id:
+                max_id = update_id
+        if max_id < 0:
             return
-        next_offset = update_id + 1
+        next_offset = max_id + 1
         if next_offset <= self._offset:
             return
         self._offset = next_offset
@@ -677,8 +685,16 @@ def _encode_multipart_form(
     return b"".join(chunks)
 
 
+_C0_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
 def _form_header_value(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\r", "").replace("\n", "")
+    """Escape a string for safe inclusion in a multipart form-data header.
+
+    Strips all C0 control characters and DEL, then escapes backslashes and
+    double quotes to prevent header injection.
+    """
+    return _C0_CONTROL_RE.sub("", value).replace("\\", "\\\\").replace('"', '\\"')
 
 
 def _form_field_value(value: object) -> str:
@@ -711,14 +727,23 @@ def _allows_telegram_message(
     return exposure.allows(message)
 
 
+_MIME_RE = re.compile(r"^[a-z]+/[a-z0-9.+\-]+$")
+
+
 def _downloaded_mime_type(path: Path, metadata: dict[str, object]) -> str | None:
+    """Determine MIME type for a downloaded media file.
+
+    Checks metadata-provided MIME types first, falling back to file extension
+    guessing. Metadata values are validated against the standard MIME format
+    (``type/subtype``) rather than naively checking for a slash.
+    """
     raw = metadata.get("mime_type")
-    if isinstance(raw, str) and "/" in raw:
+    if isinstance(raw, str) and _MIME_RE.match(raw):
         return raw
     raw_many = metadata.get("media_mime_types")
     if isinstance(raw_many, list):
         for item in raw_many:
-            if isinstance(item, str) and "/" in item:
+            if isinstance(item, str) and _MIME_RE.match(item):
                 return item
     guessed, _ = mimetypes.guess_type(path)
     return guessed
@@ -825,19 +850,27 @@ def _parse_update(update: Mapping[str, object]) -> ChannelMessage | None:
     values = _message_values(update)
     if values is None:
         return None
-    msg, chat_id, message_id, chat_type = values
     return ChannelMessage(
-        conversation_id=str(chat_id),
-        text=_message_text(msg),
-        sender_id=_sender_id(msg),
-        message_id=str(message_id),
-        metadata=_message_metadata(msg, chat_type=chat_type),
+        conversation_id=str(values.chat_id),
+        text=_message_text(values.msg),
+        sender_id=_sender_id(values.msg),
+        message_id=str(values.message_id),
+        metadata=_message_metadata(values.msg, chat_type=values.chat_type),
     )
+
+
+class _MessageValues(NamedTuple):
+    """Parsed core fields from a Telegram update payload."""
+
+    msg: Mapping[str, object]
+    chat_id: int
+    message_id: int
+    chat_type: str
 
 
 def _message_values(
     update: Mapping[str, object],
-) -> tuple[Mapping[str, object], int, int, str] | None:
+) -> _MessageValues | None:
     message = update.get("message")
     expected_chat_type = "private"
     if not isinstance(message, dict):
@@ -864,7 +897,12 @@ def _message_values(
     message_id = msg.get("message_id")
     if not isinstance(message_id, int):
         return None
-    return msg, chat_id, message_id, expected_chat_type
+    return _MessageValues(
+        msg=msg,
+        chat_id=chat_id,
+        message_id=message_id,
+        chat_type=expected_chat_type,
+    )
 
 
 def _sender_id(msg: Mapping[str, object]) -> str | None:

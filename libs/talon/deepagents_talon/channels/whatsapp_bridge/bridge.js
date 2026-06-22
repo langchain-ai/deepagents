@@ -339,16 +339,7 @@ function messageMimeType(message, media) {
 
 function messageMediaSize(message) {
   const data = message && message._data ? message._data : {};
-  const candidates = [
-    message.size,
-    message.fileSize,
-    message.filesize,
-    message.mediaSize,
-    data.size,
-    data.fileSize,
-    data.filesize,
-    data.mediaSize,
-  ];
+  const candidates = [data.size, data.fileSize];
   for (const candidate of candidates) {
     const parsed = Number(candidate);
     if (Number.isFinite(parsed) && parsed >= 0) {

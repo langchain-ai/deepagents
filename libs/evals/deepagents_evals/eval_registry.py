@@ -20,6 +20,7 @@ receives the base name via `configurable["eval_name"]`.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from deepagents import create_deep_agent
@@ -105,6 +106,16 @@ def _composite_backend_builder(
     state doesn't leak between trials.
     """
     store = InMemoryStore()
+    now = datetime.now(UTC).isoformat()
+    store.put(
+        ("filesystem",),
+        "/AGENTS.md",
+        {
+            "content": ["Your name is Jackson"],
+            "created_at": now,
+            "modified_at": now,
+        },
+    )
     backend = CompositeBackend(
         default=StateBackend(),
         routes={"/memories/": StoreBackend(store=store)},

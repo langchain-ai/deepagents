@@ -178,6 +178,19 @@ def test_build_with_builder_overrides_fields(fake_model: Any) -> None:
     assert result is sentinel
 
 
+def test_composite_backend_builder_seeds_memory(fake_model: Any) -> None:
+    """Composite-backend eval preserves its pytest memory setup."""
+    spec = EVALS["test_memory_middleware_composite_backend"]
+    with patch("deepagents_evals.eval_registry.create_deep_agent") as mock_create:
+        spec.build(fake_model)
+
+    store = mock_create.call_args.kwargs["store"]
+    item = store.get(("filesystem",), "/AGENTS.md")
+
+    assert item is not None
+    assert item.value["content"] == ["Your name is Jackson"]
+
+
 def test_build_repl_name_passed_to_builder(fake_model: Any) -> None:
     """build() forwards repl_name to the builder."""
     captured: dict[str, Any] = {}

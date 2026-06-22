@@ -241,6 +241,57 @@ can_prompt() {
   { : < /dev/tty; } 2>/dev/null
 }
 
+path_is_under_home() {
+  local path="$1"
+  local home_real=""
+  local path_real=""
+  [ -n "${HOME:-}" ] || return 1
+  [ -d "$path" ] || return 1
+  home_real=$(cd "$HOME" 2>/dev/null && pwd -P) || return 1
+  path_real=$(cd "$path" 2>/dev/null && pwd -P) || return 1
+  case "$path_real" in
+    "$home_real"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+prepare_install_log_dir() {
+  local cache_root="$1"
+  local dir="${cache_root}/deepagents-code"
+  [ -n "$cache_root" ] || return 1
+  [ ! -L "$cache_root" ] || return 1
+  [ ! -L "$dir" ] || return 1
+  if [ ! -d "$cache_root" ]; then
+    mkdir -m 700 -p "$cache_root" 2>/dev/null || return 1
+  fi
+  [ -d "$cache_root" ] && [ ! -L "$cache_root" ] || return 1
+  if [ -e "$dir" ]; then
+    [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+  else
+    mkdir -m 700 "$dir" 2>/dev/null || return 1
+  fi
+  if [ "$(id -u)" -eq 0 ]; then
+    path_is_under_home "$dir" || return 1
+  fi
+  printf '%s\n' "$dir"
+}
+
+fix_install_log_owner() {
+  [ -n "${INSTALL_LOG:-}" ] || return 0
+  [ "$(id -u)" -eq 0 ] || return 0
+  [ -n "${TARGET_USER:-}" ] && [ "$TARGET_USER" != "root" ] || return 0
+  [ -d "$install_log_dir" ] && [ ! -L "$install_log_dir" ] || return 0
+  path_is_under_home "$install_log_dir" || return 0
+  if ! chown -h "$TARGET_USER" "$install_log_dir" 2>&1; then
+    log_warn "Could not fix ownership of $install_log_dir for user ${TARGET_USER}."
+  fi
+  if [ -f "$INSTALL_LOG" ] && [ ! -L "$INSTALL_LOG" ]; then
+    if ! chown -h "$TARGET_USER" "$INSTALL_LOG" 2>&1; then
+      log_warn "Could not fix ownership of $INSTALL_LOG for user ${TARGET_USER}."
+    fi
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -511,12 +562,13 @@ UV_REPORTED_PACKAGE_CHANGES=false
 INSTALL_LOG=""
 INSTALL_LOG_DISPLAY=""
 cache_root="${XDG_CACHE_HOME:-}"
-if [ -z "$cache_root" ] && [ -n "${HOME:-}" ]; then
+if [ "$(id -u)" -eq 0 ] && [ -n "${HOME:-}" ]; then
+  cache_root="${HOME}/.cache"
+elif [ -z "$cache_root" ] && [ -n "${HOME:-}" ]; then
   cache_root="${HOME}/.cache"
 fi
 if [ -n "$cache_root" ]; then
-  install_log_dir="${cache_root}/deepagents-code"
-  if mkdir -p "$install_log_dir" 2>/dev/null; then
+  if install_log_dir=$(prepare_install_log_dir "$cache_root"); then
     INSTALL_LOG="${install_log_dir}/install.log"
     INSTALL_LOG_DISPLAY="$INSTALL_LOG"
     if [ -n "${HOME:-}" ]; then
@@ -628,12 +680,9 @@ if [ "$OS" = "macos" ] && [ -d "${HOME}/Library/Caches/uv" ]; then
 elif [ -d "${HOME}/.cache/uv" ]; then
   fix_owner "${HOME}/.cache/uv"
 fi
-# Restore user ownership of the install-log dir for root installs (matches the
-# uv-cache handling above); otherwise a sudo run leaves a root-owned log the
-# user can't rewrite on later non-root installs.
-if [ -n "$INSTALL_LOG" ]; then
-  fix_owner "$install_log_dir"
-fi
+# Restore ownership for the log path without recursively chowning a cache path
+# that could have been swapped after creation.
+fix_install_log_owner
 # ---------------------------------------------------------------------------
 # Post-install verification + contextual status
 # ---------------------------------------------------------------------------

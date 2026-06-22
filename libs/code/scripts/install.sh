@@ -802,11 +802,15 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Done — footer wording depends on whether anything changed:
-#   - already up to date  → "Already installed"
+# Done — footer wording depends on what changed:
+#   - same app version + dependency changes → "Dependencies updated"
+#   - already up to date                    → "Already installed"
 #   - fresh install / upgrade / editable→PyPI swap → "Setup complete"
 # ---------------------------------------------------------------------------
 if [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] \
+  && [ "$PRE_VERSION" = "$NEW_VERSION" ] && [ "$UV_REPORTED_PACKAGE_CHANGES" = true ]; then
+  footer_msg="Dependencies updated."
+elif [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] \
   && [ "$PRE_VERSION" = "$NEW_VERSION" ]; then
   footer_msg="Already installed."
 else

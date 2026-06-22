@@ -639,6 +639,8 @@ def test_install_script_same_version_with_dependency_updates_says_dependencies_u
         in proc.stdout
     )
     assert "deepagents-code 0.1.8 already up to date" not in proc.stdout
+    assert "✔ Dependencies updated. Run: dcode" in proc.stdout
+    assert "✔ Already installed. Run: dcode" not in proc.stdout
 
 
 def test_install_script_same_version_no_dependency_changes_says_up_to_date(
@@ -661,6 +663,7 @@ def test_install_script_same_version_no_dependency_changes_says_up_to_date(
     assert proc.returncode == 0
     assert "deepagents-code 0.1.8 already up to date." in proc.stdout
     assert "dependencies were updated" not in proc.stdout
+    assert "✔ Already installed. Run: dcode" in proc.stdout
 
 
 def test_install_script_same_version_with_new_dependency_says_dependencies_updated(

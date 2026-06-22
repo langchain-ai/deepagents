@@ -10,7 +10,6 @@ services:
     environment:
       DEEPAGENTS_TALON_HOME: /workspace/.deepagents
       DEEPAGENTS_TALON_WORKSPACE: /workspace
-      DEEPAGENTS_TALON_WHATSAPP_SESSION_DIR: /workspace/.deepagents/whatsapp-session
       DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_ENABLED: ${DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_ENABLED:-true}
       DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_DEVICE: ${DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_DEVICE:-cpu}
     volumes:
@@ -19,5 +18,5 @@ services:
       bash -c "
       mkdir -p /workspace/.deepagents/$${AGENT_ASSISTANT_ID}/agent &&
       cp /opt/deepagents-talon/AGENTS.md /workspace/.deepagents/$${AGENT_ASSISTANT_ID}/agent/AGENTS.md &&
-      /opt/deepagents-talon-venv/bin/deepagents-talon --whatsapp
+      /opt/deepagents-talon-venv/bin/deepagents-talon
       "

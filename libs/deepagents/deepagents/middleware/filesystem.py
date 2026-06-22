@@ -98,6 +98,7 @@ _DEFAULT_FS_TOOL_OPS: dict[str, FilesystemOperation] = {
     "delete": "write",
 }
 
+
 def _tool_error(name: str, tool_call_id: str | None, content: str) -> ToolMessage:
     """Build a success-shaped `ToolMessage` carrying a plain text error."""
     return ToolMessage(content=content, name=name, tool_call_id=tool_call_id, status="error")

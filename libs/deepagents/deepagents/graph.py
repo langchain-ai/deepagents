@@ -235,16 +235,24 @@ def _apply_user_middleware(
 
     For each custom entry whose ``.name`` matches a base entry, the base entry
     is replaced in-place (preserving stack order). Custom entries that don't
-    match any base entry are appended at the end in their original order.
+    match any base name are appended at the end in their original order,
+    without deduplication; same-named non-default entries are all preserved.
     """
     if not custom:
         return base
-    custom_by_name: dict[str, AgentMiddleware[Any, Any, Any]] = {m.name: m for m in custom}
+    base_names = {m.name for m in base}
+    replacements: dict[str, AgentMiddleware[Any, Any, Any]] = {}
+    appended: list[AgentMiddleware[Any, Any, Any]] = []
+    for m in custom:
+        if m.name in base_names:
+            replacements[m.name] = m
+        else:
+            appended.append(m)
     result = list(base)
     for i, m in enumerate(result):
-        if m.name in custom_by_name:
-            result[i] = custom_by_name.pop(m.name)
-    result.extend(custom_by_name.values())
+        if m.name in replacements:
+            result[i] = replacements[m.name]
+    result.extend(appended)
     return result
 
 

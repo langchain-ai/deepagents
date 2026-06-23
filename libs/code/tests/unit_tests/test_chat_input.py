@@ -387,7 +387,7 @@ class TestInputActionButtons:
             assert button_widget is copy
 
     async def test_buttons_hidden_until_draft_entered(self) -> None:
-        """The action buttons appear only while the draft is non-empty."""
+        """The buttons appear only while the draft has non-whitespace content."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -399,6 +399,12 @@ class TestInputActionButtons:
             # Empty draft: nothing to clear or copy, so the buttons stay hidden.
             assert actions.display is False
 
+            # Whitespace-only input has nothing worth acting on: still hidden.
+            text_area.insert("  \n\n  ")
+            await pilot.pause()
+            assert actions.display is False
+
+            # Real content reveals them.
             text_area.insert("draft")
             await pilot.pause()
             assert actions.display is True
@@ -511,25 +517,6 @@ class TestInputActionButtons:
 
         assert copied == ["copy me"]
 
-    async def test_copy_button_no_op_when_empty(self, monkeypatch) -> None:
-        """Clicking `[ COPY ]` with an empty draft does not call the helper."""
-        import deepagents_code.clipboard as clipboard_module
-
-        copied: list[str] = []
-
-        def fake_copy(_app: object, text: str) -> tuple[bool, str | None]:
-            copied.append(text)
-            return True, None
-
-        monkeypatch.setattr(clipboard_module, "copy_text_to_clipboard", fake_copy)
-
-        app = _ChatInputTestApp()
-        async with app.run_test() as pilot:
-            await pilot.click("#copy-button")
-            await pilot.pause()
-
-        assert copied == []
-
     async def test_copy_button_failure_warns(self, monkeypatch) -> None:
         """A failed `[ COPY ]` surfaces a warning toast instead of failing silently."""
         import deepagents_code.clipboard as clipboard_module
@@ -575,10 +562,8 @@ class TestInputActionButtons:
             await pilot.pause()
             assert text_area.has_focus
 
-    async def test_copy_button_refocuses_input_even_when_empty(
-        self, monkeypatch
-    ) -> None:
-        """`[ COPY ]` returns focus to the input even with an empty draft."""
+    async def test_copy_button_refocuses_input(self, monkeypatch) -> None:
+        """`[ COPY ]` returns focus to the input (not the non-focusable button)."""
         import deepagents_code.clipboard as clipboard_module
 
         monkeypatch.setattr(
@@ -592,6 +577,7 @@ class TestInputActionButtons:
             chat_input = app.query_one(ChatInput)
             text_area = chat_input.input_widget
             assert text_area is not None
+            text_area.insert("copy me")  # buttons only render with a draft
             await pilot.pause()
 
             await pilot.click("#copy-button")
@@ -669,8 +655,9 @@ class TestPromptIndicator:
             chat_input.mode = "shell_incognito"
             await pilot.pause()
 
+            input_box = chat_input.query_one("#input-box")
             assert _prompt_text(prompt) == "$"
-            assert chat_input.border_title == "incognito"
+            assert input_box.border_title == "incognito"
             assert chat_input.has_class("mode-shell-incognito")
 
     async def test_incognito_shell_to_shell_clears_incognito_styling(self) -> None:
@@ -683,14 +670,15 @@ class TestPromptIndicator:
         async with app.run_test() as pilot:
             chat_input = app.query_one(ChatInput)
 
+            input_box = chat_input.query_one("#input-box")
             chat_input.mode = "shell_incognito"
             await pilot.pause()
-            assert chat_input.border_title == "incognito"
+            assert input_box.border_title == "incognito"
             assert chat_input.has_class("mode-shell-incognito")
 
             chat_input.mode = "shell"
             await pilot.pause()
-            assert chat_input.border_title is None
+            assert input_box.border_title is None
             assert not chat_input.has_class("mode-shell-incognito")
             assert chat_input.has_class("mode-shell")
 

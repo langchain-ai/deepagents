@@ -1617,17 +1617,24 @@ class ChatInput(Vertical):
         self._text_area.argument_hint = ""
 
     def _set_action_buttons_visible(self, *, visible: bool) -> None:
-        """Show or hide the clear/copy action buttons on the input border."""
-        if self._action_buttons is not None:
+        """Show or hide the clear/copy action buttons on the input border.
+
+        Only writes `display` when it actually changes. Mutating it on every
+        keystroke would trigger a layout reflow each time, which perturbs the
+        completion popup's deferred (`call_after_refresh`) show/hide ordering.
+        """
+        if self._action_buttons is not None and self._action_buttons.display != visible:
             self._action_buttons.display = visible
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """Detect input mode and update completions."""
         text = event.text_area.text
-        # Reveal the clear/copy buttons only when there is a draft to act on, so
-        # an empty input keeps a clean, uncluttered border. Done before the
-        # early returns below so recalled-history text shows them too.
-        self._set_action_buttons_visible(visible=bool(text))
+        # Reveal the clear/copy buttons only when there is a meaningful draft to
+        # act on, so an empty input keeps a clean, uncluttered border.
+        # Whitespace-only input (e.g. stray spaces or newlines) has nothing
+        # worth clearing or copying, so it stays hidden too. Done before the
+        # early returns below so recalled-history text shows them as well.
+        self._set_action_buttons_visible(visible=bool(text.strip()))
         # Drag-drop / bracketed paste arrive as one Changed event with a
         # multi-character inserted span. Normal typing arrives one character at
         # a time. Checking the changed span (rather than net length delta)
@@ -2482,8 +2489,8 @@ class ChatInput(Vertical):
                 failure_noun="input",
                 success_message="Input copied to clipboard",
             )
-        # Refocus even on an empty draft so clicking the button never strands
-        # focus on the (non-focusable) button.
+        # Refocus the input so clicking the button never strands focus on the
+        # (non-focusable) button.
         if self._text_area is not None:
             self._text_area.focus()
 

@@ -898,12 +898,12 @@ def dependency_refresh_supported(
 
 
 class ShadowedDcode(NamedTuple):
-    """A different `dcode` is winning on the user's PATH than the one we upgraded.
+    """A different dcode entry point is winning on PATH than the one we upgraded.
 
     Returned by `detect_shadowed_dcode` after a successful upgrade so the TUI can
     warn the user that re-launching will pick up the wrong binary. The most
-    common cause is a pre-uv install of `dcode` (e.g. a leftover from a previous
-    `pipx`/`pip`-based install) earlier on `PATH` than the uv tool shim.
+    common cause is a pre-uv install (e.g. a leftover from a previous
+    `pipx`/`pip`-based install) earlier on `PATH` than the uv tool shims.
     """
 
     shadowing_bin: Path
@@ -998,7 +998,7 @@ def _uv_tool_bin_dir() -> Path | None:
 
 
 def detect_shadowed_dcode() -> ShadowedDcode | None:
-    """Return the shadowing `dcode` on the user's PATH, if any.
+    """Return the shadowing dcode entry point on the user's PATH, if any.
 
     After a successful `uv tool upgrade`, the upgraded binary only takes effect
     on the next launch if the user's `PATH` resolves to uv's tool bin dir for
@@ -1006,8 +1006,8 @@ def detect_shadowed_dcode() -> ShadowedDcode | None:
     silently win and report the old version, which looks like "the upgrade
     didn't work" to the user.
 
-    This compares `shutil.which("dcode")` against uv's tool bin dir. A mismatch
-    means a different binary will run next launch.
+    This compares each supported console script against uv's tool bin dir. A
+    mismatch means a different binary will run next launch for that entry point.
 
     Caveat: a `dcode` symlink that lives in some unrelated bin dir but
     points *into* the upgraded tool venv (e.g. a manually-created
@@ -1020,17 +1020,16 @@ def detect_shadowed_dcode() -> ShadowedDcode | None:
     Returns:
         A `ShadowedDcode` describing the conflict, or `None` when there is no
             shadowing binary (the common case) or when detection is not
-            applicable (non-uv install, uv bin dir unknown, no `dcode` on
-            `PATH` at all).
+            applicable (non-uv install, uv bin dir unknown, no supported entry
+            point on `PATH` at all).
     """
     if detect_install_method() != "uv":
         return None
     upgraded_bin_dir = _uv_tool_bin_dir()
     if upgraded_bin_dir is None:
         return None
-    # Prefer `dcode` (the documented entry point) and fall back to the legacy
-    # `deepagents-code` name, mirroring how the install script verifies the
-    # post-install binary.
+    # Check every supported entry point. One healthy command name does not
+    # prove another command name cannot still be shadowed earlier on PATH.
     for name in ("dcode", "deepagents-code"):
         resolved = shutil.which(name)
         if resolved is None:
@@ -1065,8 +1064,10 @@ def detect_shadowed_dcode() -> ShadowedDcode | None:
             )
             continue
         if canonical_path_dir == upgraded_bin_dir:
-            # PATH resolves to the directory uv just wrote into — no shadow.
-            return None
+            # This entry point resolves to the directory uv just wrote into.
+            # Keep checking the other supported entry point before declaring
+            # there is no shadow.
+            continue
         return ShadowedDcode(
             shadowing_bin=Path(resolved),
             upgraded_bin_dir=upgraded_bin_dir,

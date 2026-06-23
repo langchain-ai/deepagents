@@ -1162,6 +1162,39 @@ class TestDetectShadowedDcode:
         ):
             assert detect_shadowed_dcode() is None
 
+    def test_checks_deepagents_code_when_dcode_is_healthy(self, tmp_path) -> None:
+        """A healthy `dcode` must not hide a shadowed `deepagents-code`."""
+        uv_bin = tmp_path / "uv-bin"
+        uv_bin.mkdir()
+        (uv_bin / "dcode").write_text("")
+        (uv_bin / "deepagents-code").write_text("")
+        stale_bin = tmp_path / "stale-bin"
+        stale_bin.mkdir()
+        stale = stale_bin / "deepagents-code"
+        stale.write_text("")
+
+        def _which(name: str) -> str | None:
+            if name == "dcode":
+                return str(uv_bin / "dcode")
+            if name == "deepagents-code":
+                return str(stale)
+            return None
+
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch.dict(os.environ, {"UV_TOOL_BIN_DIR": str(uv_bin)}),
+            patch("shutil.which", side_effect=_which),
+        ):
+            shadow = detect_shadowed_dcode()
+
+        assert shadow == ShadowedDcode(
+            shadowing_bin=stale,
+            upgraded_bin_dir=uv_bin.resolve(),
+        )
+
     def test_returns_none_for_uv_symlink_shim(self, tmp_path) -> None:
         """A uv-style symlink shim under the user bin dir is NOT a shadow.
 
@@ -1277,7 +1310,7 @@ class TestDetectShadowedDcode:
             assert detect_shadowed_dcode() is None
 
     def test_falls_back_to_deepagents_code_binary_name(self, tmp_path) -> None:
-        """The legacy `deepagents-code` binary is checked when `dcode` is missing.
+        """The `deepagents-code` binary is checked when `dcode` is missing.
 
         Mirrors the install-script verification loop so an install that only
         exposes `deepagents-code` (e.g. an older `uv tool install` that
@@ -1350,8 +1383,10 @@ class TestDetectShadowedDcode:
         )
         assert command.replace("\n", "\n  ") in rendered
 
-    def test_canonicalize_failure_continues_to_legacy_name(self, tmp_path) -> None:
-        """A `resolve()` failure on `dcode` must not hide a legacy-name shadow.
+    def test_canonicalize_failure_continues_to_deepagents_code_name(
+        self, tmp_path
+    ) -> None:
+        """A `resolve()` failure on `dcode` must not hide another shadow.
 
         The detector deliberately `continue`s to the `deepagents-code` name
         when canonicalizing `dcode`'s PATH directory raises, rather than
@@ -1368,20 +1403,20 @@ class TestDetectShadowedDcode:
         (bad_dir / "dcode").write_text("")
         stale_bin = tmp_path / "stale-bin"
         stale_bin.mkdir()
-        legacy = stale_bin / "deepagents-code"
-        legacy.write_text("")
+        stale_deepagents_code = stale_bin / "deepagents-code"
+        stale_deepagents_code.write_text("")
 
         def _which(name: str) -> str | None:
             if name == "dcode":
                 return str(bad_dir / "dcode")
             if name == "deepagents-code":
-                return str(legacy)
+                return str(stale_deepagents_code)
             return None
 
         real_resolve = Path.resolve
 
         def _resolve(self: Path, strict: bool = False) -> Path:
-            # Only `dcode`'s PATH-entry directory raises; the legacy binary's
+            # Only `dcode`'s PATH-entry directory raises; the other binary's
             # directory resolves cleanly so the loop can reach a real answer.
             if self == bad_dir:
                 msg = "simulated resolve failure"
@@ -1403,7 +1438,7 @@ class TestDetectShadowedDcode:
             shadow = detect_shadowed_dcode()
 
         assert shadow is not None
-        assert shadow.shadowing_bin == legacy
+        assert shadow.shadowing_bin == stale_deepagents_code
         assert shadow.upgraded_bin_dir == uv_bin
 
 

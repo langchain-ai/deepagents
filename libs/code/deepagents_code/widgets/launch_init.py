@@ -113,10 +113,7 @@ class LaunchNameScreen(ModalScreen[str | None]):
         with Vertical():
             yield Static("Welcome to Deep Agents", classes="launch-init-title")
             yield Static(
-                Content.assemble(
-                    "What should Deep Agents call you? This is optional and "
-                    "will be remembered for future sessions."
-                ),
+                Content.assemble("What should Deep Agents call you?"),
                 classes="launch-init-copy",
             )
             yield Input(

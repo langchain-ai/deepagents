@@ -7767,6 +7767,9 @@ class DeepAgentsApp(App):
                 image_tracker=self._image_tracker,
                 sandbox_type=self._sandbox_type,
                 message_kwargs=message_kwargs,
+                # `auto_approve` is intentionally omitted here: execute_task_textual
+                # writes it into this context from `session_state.auto_approve` at
+                # the top of every stream iteration, so seeding it would be dead.
                 context=CLIContext(
                     model=self._model_override,
                     model_params=self._model_params_override or {},

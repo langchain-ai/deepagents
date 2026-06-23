@@ -199,8 +199,10 @@ _MONTH_YEAR_RE = re.compile(
     r"Answer\s*:\s*([A-Za-z]+\s+\d{4})",
     re.IGNORECASE,
 )
+# COMPARISON: extract the direction phrase regardless of how many words the
+# subject has (e.g. "numeric value is less common than entity").
 _COMPARISON_RE = re.compile(
-    r"Answer\s*:\s*[A-Za-z_]+\s+is\s+([a-z ]+?)\s+[A-Za-z_0-9-]+",
+    r"\b((?:more|less)\s+common\s+than|equally\s+common)\b",
     re.IGNORECASE,
 )
 # DATE: match MM/DD/YYYY or YYYY-MM-DD in the model's answer
@@ -285,28 +287,15 @@ class _OolongAnswerMatches(SuccessAssertion):
 # ---------------------------------------------------------------------------
 
 _PLAIN_SYSTEM_PROMPT = (
-    "You are answering an aggregation question over a long document.\n"
-    "The full document is in your workspace at `/context.txt`.\n"
-    "\n"
-    "Use the `task` tool to delegate chunk-level analysis to subagents. "
-    "Tell each subagent which lines of `/context.txt` to read and what to extract. "
-    "Aggregate the results and reply with ONLY the final answer in the exact format "
-    "requested (e.g. `Label: Business`, `Answer: 4`, `User: 76063`)."
+    "You are a helpful assistant. "
+    "The document you need to analyze is at `/context.txt` in your workspace. "
+    "Use the task tool to delegate parts of the analysis to subagents."
 )
 
 _CODE_INTERPRETER_SYSTEM_PROMPT = (
-    "You are answering an aggregation question over a long document.\n"
-    "The full document is in the workspace at `/context.txt`.\n"
-    "\n"
-    "Solve this as a workflow:\n"
-    "1. Use `task` to launch subagents in parallel — each subagent reads a "
-    "specific range of `/context.txt` (e.g. lines 0-100) and returns the "
-    "atomic facts needed (e.g. per-article label, user ID, or date).\n"
-    "2. Use `eval` to aggregate the structured results from all subagents "
-    "in JavaScript (e.g. count, sort, find the majority).\n"
-    "3. Reply with ONLY the final answer in the exact format the "
-    "question requests (e.g. `Label: Business`, `Answer: 4`, "
-    "`User: 76063`)."
+    "You are a helpful assistant. "
+    "The document you need to analyze is at `/context.txt` in your workspace. "
+    "Use the eval and task tools to analyze the document."
 )
 
 
@@ -323,15 +312,12 @@ def build_agent(
     subagent_cfg = [
         {
             "name": "general-purpose",
-            "description": (
-                "Reads a specified range of /context.txt and extracts atomic "
-                "facts (labels, dates, user IDs, counts). Used for chunk-level "
-                "analysis delegated by the orchestrator."
-            ),
+            "description": "Reads a range of /context.txt and extracts facts as directed.",
             "system_prompt": (
-                "You are a document analysis subagent. Read the assigned range of "
-                "/context.txt using read_file, extract the requested facts, and "
-                "return concise structured results. Do not delegate further."
+                "You are a helpful assistant. "
+                "Read the assigned range of /context.txt using read_file, "
+                "extract the requested facts, and return concise results. "
+                "Do not delegate further."
             ),
             "model": sub_model_id,
         }

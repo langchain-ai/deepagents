@@ -1533,17 +1533,26 @@ class TestFilesystemMiddleware:
             }
         )
 
-        assert isinstance(result, ToolMessage)
-        assert result.status == "success"
-        assert result.additional_kwargs["read_file_path"] == "/clips/intro.mkv"
-        # Raw video bytes must NOT leak to the model: the content_blocks are
-        # the extracted frames, not the original base64 from the backend.
-        assert isinstance(result.content, list)
-        assert result.content == [
+        assert isinstance(result, Command)
+        messages = result.update["messages"]  # type: ignore[index]
+        assert len(messages) == 2
+        tool_message, media_message = messages
+        assert isinstance(tool_message, ToolMessage)
+        assert tool_message.status == "success"
+        assert tool_message.content == "Read video /clips/intro.mkv: sampled 2 frames. The sampled frames are attached in the following message."
+        assert tool_message.additional_kwargs["read_file_path"] == "/clips/intro.mkv"
+        assert tool_message.additional_kwargs["read_file_frame_count"] == 2
+        assert isinstance(media_message, HumanMessage)
+        assert media_message.additional_kwargs["read_file_media_result"] is True
+        assert media_message.additional_kwargs["read_file_path"] == "/clips/intro.mkv"
+        assert media_message.additional_kwargs["read_file_tool_call_id"] == "video-read-1"
+        # Raw video bytes must NOT leak to the model: the media message contains
+        # extracted frames, not the original base64 from the backend.
+        assert media_message.content == [
             {"type": "text", "text": "Reading first 30s of /clips/intro.mkv at 0.5 fps."},
             *sentinel,
         ]
-        assert b"\x00\x01\x02" not in str(result.content).encode()
+        assert b"\x00\x01\x02" not in str(media_message.content).encode()
 
         # The middleware must convert offset/limit to seconds with the
         # constructor-defined sampling rate forwarded verbatim.
@@ -1590,6 +1599,30 @@ class TestFilesystemMiddleware:
         read_file_tool.invoke({"file_path": "/c.mp4", "runtime": runtime, **tool_input})
 
         assert captured == expected
+
+    def test_read_file_video_media_result_ordered_after_parallel_tool_results(self) -> None:
+        """Video frame attachments do not split a provider-required tool result batch."""
+        ai_message = AIMessage(
+            content="",
+            tool_calls=[
+                {"id": "call_video", "name": "read_file", "args": {"file_path": "/c.mp4"}},
+                {"id": "call_ls", "name": "ls", "args": {"path": "/"}},
+            ],
+        )
+        video_tool = ToolMessage(content="sampled frames", name="read_file", tool_call_id="call_video")
+        video_media = HumanMessage(
+            content=[
+                {"type": "text", "text": "Reading first 100s of /c.mp4 at 0.5 fps."},
+                {"type": "image", "base64": "AAAA", "mime_type": "image/jpeg"},
+            ],
+            additional_kwargs={"read_file_media_result": True},
+        )
+        ls_tool = ToolMessage(content="[]", name="ls", tool_call_id="call_ls")
+
+        user_message = HumanMessage(content="read and list")
+        reordered = filesystem_middleware._move_media_results_after_tool_results([user_message, ai_message, video_tool, video_media, ls_tool])
+
+        assert reordered == [user_message, ai_message, video_tool, ls_tool, video_media]
 
     def test_read_file_video_extraction_error_surfaces_as_error_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """PyAV failures and missing-dep errors render as a tool error, not an exception."""

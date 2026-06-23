@@ -30,7 +30,7 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
-from langchain_core.messages import AnyMessage, HumanMessage, RemoveMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.channels.delta import DeltaChannel
@@ -98,10 +98,48 @@ _DEFAULT_FS_TOOL_OPS: dict[str, FilesystemOperation] = {
     "delete": "write",
 }
 
+_READ_FILE_MEDIA_RESULT = "read_file_media_result"
+
 
 def _tool_error(name: str, tool_call_id: str | None, content: str) -> ToolMessage:
     """Build a success-shaped `ToolMessage` carrying a plain text error."""
     return ToolMessage(content=content, name=name, tool_call_id=tool_call_id, status="error")
+
+
+def _is_read_file_media_result(message: AnyMessage) -> bool:
+    """Return whether `message` carries media emitted by a `read_file` tool result."""
+    return isinstance(message, HumanMessage) and message.additional_kwargs.get(_READ_FILE_MEDIA_RESULT) is True
+
+
+def _move_media_results_after_tool_results(messages: list[AnyMessage]) -> list[AnyMessage]:
+    """Keep synthetic media messages after the tool-result batch they describe.
+
+    Tool-call providers require every `ToolMessage` for an assistant tool-call
+    batch to arrive before any non-tool message. Video reads attach sampled
+    frames as a synthetic `HumanMessage`; when multiple tools run in the same
+    turn this helper keeps those attachments behind the full batch.
+    """
+    reordered: list[AnyMessage] = []
+    i = 0
+    while i < len(messages):
+        message = messages[i]
+        reordered.append(message)
+        i += 1
+        if not isinstance(message, AIMessage) or not message.tool_calls:
+            continue
+
+        batch: list[AnyMessage] = []
+        while i < len(messages):
+            next_message = messages[i]
+            if isinstance(next_message, ToolMessage) or _is_read_file_media_result(next_message):
+                batch.append(next_message)
+                i += 1
+                continue
+            break
+        if batch:
+            reordered.extend(message for message in batch if isinstance(message, ToolMessage))
+            reordered.extend(message for message in batch if _is_read_file_media_result(message))
+    return reordered
 
 
 def _handle_video_read(
@@ -111,7 +149,7 @@ def _handle_video_read(
     offset: int,
     limit: int,
     sampling_rate: float,
-) -> ToolMessage:
+) -> ToolMessage | Command:
     """Slice a video byte payload into a sampled frame window for the model.
 
     `offset` is reinterpreted as seconds into the source to skip; `limit` as
@@ -151,12 +189,30 @@ def _handle_video_read(
     except VideoExtractionError as exc:
         return _err(str(exc))
     blocks.insert(0, {"type": "text", "text": header})
-    return ToolMessage(
-        content_blocks=blocks,
+    frame_count = sum(1 for block in blocks if isinstance(block, dict) and block.get("type") == "image")
+    frame_label = "frame" if frame_count == 1 else "frames"
+    tool_message = ToolMessage(
+        content=f"Read video {validated_path}: sampled {frame_count} {frame_label}. The sampled frames are attached in the following message.",
         name="read_file",
         tool_call_id=tool_call_id,
-        additional_kwargs={"read_file_path": validated_path},
+        additional_kwargs={"read_file_path": validated_path, "read_file_frame_count": frame_count},
         status="success",
+    )
+    media_message = HumanMessage(
+        content_blocks=blocks,
+        additional_kwargs={
+            _READ_FILE_MEDIA_RESULT: True,
+            "read_file_path": validated_path,
+            "read_file_tool_call_id": tool_call_id,
+        },
+    )
+    return Command(
+        update={
+            "messages": [
+                tool_message,
+                media_message,
+            ],
+        }
     )
 
 
@@ -1235,7 +1291,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             tool_call_id: str | None,
             offset: int,
             limit: int,
-        ) -> ToolMessage:
+        ) -> ToolMessage | Command:
             if isinstance(read_result, str):
                 warn_deprecated(
                     since="0.5.0",
@@ -1342,7 +1398,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
             offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
             limit: Annotated[int, "Maximum number of lines to read for text files. For videos, seconds of source to sample."] = DEFAULT_READ_LIMIT,
-        ) -> ToolMessage:
+        ) -> ToolMessage | Command:
             """Synchronous wrapper for read_file tool."""
             backend = self._get_backend(runtime)
             prepared = _resolve_read_inputs(file_path, runtime.tool_call_id, limit)
@@ -1357,7 +1413,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             runtime: ToolRuntime[None, FilesystemState],
             offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
             limit: Annotated[int, "Maximum number of lines to read for text files. For videos, seconds of source to sample."] = DEFAULT_READ_LIMIT,
-        ) -> ToolMessage:
+        ) -> ToolMessage | Command:
             """Asynchronous wrapper for read_file tool."""
             backend = self._get_backend(runtime)
             prepared = _resolve_read_inputs(file_path, runtime.tool_call_id, limit)
@@ -2202,6 +2258,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """
         request = self._filter_unsupported_tools_and_apply_prompt(request)
 
+        request_messages = _move_media_results_after_tool_results(list(request.messages))
+        if request_messages != list(request.messages):
+            request = request.override(messages=request_messages)
+
         eviction_result = self._evict_and_truncate_messages(request)
         if eviction_result is not None:
             messages, state_command = eviction_result
@@ -2232,6 +2292,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 with a state update tagging newly evicted messages.
         """
         request = self._filter_unsupported_tools_and_apply_prompt(request)
+
+        request_messages = _move_media_results_after_tool_results(list(request.messages))
+        if request_messages != list(request.messages):
+            request = request.override(messages=request_messages)
 
         eviction_result = await self._aevict_and_truncate_messages(request)
         if eviction_result is not None:

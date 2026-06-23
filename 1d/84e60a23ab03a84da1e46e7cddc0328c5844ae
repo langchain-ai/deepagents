@@ -1,0 +1,28 @@
+.github/scripts/models.py
+  s_fe5c272b297603::t_ab7f00efdec842 288-299
+  s_fe5c272b297603::t_c6c0a774ac097a 693-704
+libs/evals/MODEL_GROUPS.md
+  s_fe5c272b297603::t_8578fd9a96df50 90,98,100,104,140,147,192,200,207,226,262
+.github/workflows/evals.yml
+  s_fe5c272b297603::t_77eb1adde29a2e 86
+  s_fe5c272b297603::t_3eaae9c9e043a4 119
+.github/workflows/harbor.yml
+  s_fe5c272b297603::t_92a46ff2d26ba6 107
+  s_fe5c272b297603::t_2ae2ddf42a8cb3 75
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.9",
+  "base_commit_sha": "1d84e60a23ab03a84da1e46e7cddc0328c5844ae",
+  "prompts": {},
+  "sessions": {
+    "s_fe5c272b297603": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75185c86-316b-4dd5-8c53-8e1b5801623f",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

@@ -9780,6 +9780,23 @@ class TestNotificationCenterIntegration:
         ):
             yield
 
+    @pytest.fixture(autouse=True)
+    def _no_shadowed_dcode(self) -> Iterator[None]:
+        """Default to no PATH shadow for the notification-action tests.
+
+        Without this, every successful "Install now" test runs the real
+        `detect_shadowed_dcode` against the host filesystem. The runner's
+        editable install currently short-circuits at `detect_install_method()`,
+        but a uv-tool-managed runner would silently re-route every success
+        case through the new warning branch. Pin to `None` here; the
+        dedicated shadow-present test below overrides it.
+        """
+        with patch(
+            "deepagents_code.update_check.detect_shadowed_dcode",
+            return_value=None,
+        ):
+            yield
+
     async def test_ctrl_n_with_empty_registry_emits_toast(self) -> None:
         """ctrl+n with nothing pending notifies and doesn't push a modal."""
         from deepagents_code.notifications import NotificationRegistry
@@ -10291,6 +10308,154 @@ class TestNotificationCenterIntegration:
 
         assert app._notice_registry.get("update:available") is None
 
+    async def test_install_success_with_shadow_surfaces_warning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When PATH is shadowed, modal success is replaced by the warning.
+
+        Regression guard for the inverted `if/elif` in the install-action
+        branch: a `if shadow / elif not progress_modal_visible` that got
+        flipped would ship a reassuring "Updated to vX.Y.Z" state over a
+        broken upgrade. This pins the contract that the success modal status
+        and toast are suppressed while the warning stays visible.
+        """
+        from deepagents_code.notifications import ActionId
+        from deepagents_code.update_check import (
+            ShadowedDcode,
+            format_shadowed_dcode_fix_command,
+        )
+        from deepagents_code.widgets.update_progress import UpdateProgressScreen
+
+        shadow = ShadowedDcode(
+            shadowing_bin=Path("/opt/stale/bin/dcode"),
+            upgraded_bin_dir=Path("/home/user/.local/bin"),
+        )
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _update_entry()
+        app._notice_registry.add(entry)
+
+        copied: list[str] = []
+        notified: list[str] = []
+        original_notify = app.notify
+        monkeypatch.setattr(app, "copy_to_clipboard", copied.append)
+
+        def capture_notify(message: str, **kwargs: Any) -> None:
+            notified.append(message)
+            original_notify(message, **kwargs)
+
+        app.notify = capture_notify  # ty: ignore
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.update_check.perform_upgrade",
+                    new=AsyncMock(return_value=(True, "Updated deepagents-code")),
+                ),
+                # Override the autouse `None` patch.
+                patch(
+                    "deepagents_code.update_check.detect_shadowed_dcode",
+                    return_value=shadow,
+                ),
+            ):
+                await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
+                await pilot.pause()
+
+            assert isinstance(app.screen, UpdateProgressScreen)
+            status = app.screen.query(Static).filter(".up-status").first()
+            assert "Update complete" not in str(status.render())
+            assert "/opt/stale/bin/dcode" in str(status.render())
+            assert "/home/user/.local/bin/dcode" in str(status.render())
+            await pilot.press("c")
+            await pilot.pause()
+
+        # The entry is still cleared — the upgrade did succeed; only the
+        # post-restart guidance is different.
+        assert app._notice_registry.get("update:available") is None
+        assert copied == [format_shadowed_dcode_fix_command(shadow)]
+        # The toast must NOT congratulate the user on a working upgrade.
+        assert not any(
+            "Updated to v" in m and "Quit and relaunch" in m for m in notified
+        )
+        # The warning toast names both paths so the user can act on it.
+        assert any(
+            "/opt/stale/bin/dcode" in m and "/home/user/.local/bin" in m
+            for m in notified
+        )
+
+    async def test_install_success_with_shadow_toast_only_when_modal_hidden(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A shadow with no progress modal still reaches the user as a toast.
+
+        When a modal is already on screen the install runs without pushing the
+        `UpdateProgressScreen`, so `progress_modal_visible` is `False` and
+        `mark_warning` is skipped. The shadow warning must still fire as a
+        `notify(severity="warning")` toast — this is the less-common leg of the
+        shadow branch, and the exact "user silently keeps the old version"
+        failure mode this PR exists to prevent. A regression that nested the
+        `self.notify(warning, ...)` inside `if progress_modal_visible:` would
+        drop the warning entirely here and pass the modal-visible test.
+        """
+        from textual.screen import ModalScreen
+
+        from deepagents_code.notifications import ActionId
+        from deepagents_code.update_check import ShadowedDcode
+        from deepagents_code.widgets.update_progress import UpdateProgressScreen
+
+        shadow = ShadowedDcode(
+            shadowing_bin=Path("/opt/stale/bin/dcode"),
+            upgraded_bin_dir=Path("/home/user/.local/bin"),
+        )
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _update_entry()
+        app._notice_registry.add(entry)
+
+        notified: list[str] = []
+        original_notify = app.notify
+
+        def capture_notify(message: str, **kwargs: Any) -> None:
+            notified.append(message)
+            original_notify(message, **kwargs)
+
+        monkeypatch.setattr(app, "notify", capture_notify)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # A modal already owns the screen, so the install path takes the
+            # toast-only branch (`progress_modal_visible` is False).
+            await app.push_screen(ModalScreen())
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.update_check.perform_upgrade",
+                    new=AsyncMock(return_value=(True, "Updated deepagents-code")),
+                ),
+                patch(
+                    "deepagents_code.update_check.detect_shadowed_dcode",
+                    return_value=shadow,
+                ),
+            ):
+                await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
+                await pilot.pause()
+
+            # The progress modal was never pushed, so the warning could only
+            # have reached the user as a toast.
+            assert not isinstance(app.screen, UpdateProgressScreen)
+
+        assert app._notice_registry.get("update:available") is None
+        # The success line must not appear — relaunch would keep the old binary.
+        assert not any(
+            "Updated to v" in m and "Quit and relaunch" in m for m in notified
+        )
+        # The warning toast names both paths so the user can act on it.
+        assert any(
+            "/opt/stale/bin/dcode" in m and "/home/user/.local/bin" in m
+            for m in notified
+        )
+
     async def test_debug_update_install_does_not_run_upgrade(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -10396,7 +10561,7 @@ class TestNotificationCenterIntegration:
             spinner = app.screen.query(Static).filter(".up-spinner").first()
             assert "Update failed. Try manually:" in str(status.render())
             assert details.display is True
-            assert str(spinner.render()) == get_glyphs().checkmark
+            assert str(spinner.render()) == get_glyphs().error
 
     async def test_update_skip_once_clears_notified_marker(self) -> None:
         """'Remind me next launch' calls clear_update_notified and removes the entry."""

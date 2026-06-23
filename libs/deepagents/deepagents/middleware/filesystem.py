@@ -467,7 +467,7 @@ WRITE_FILE_TOOL_DESCRIPTION = """Writes content to a file. Creates the file if i
 
 Usage:
 - Use this tool when you intend to create a new file or replace the whole file. You do not need to read the file first.
-- Prefer edit_file when making targeted changes to an existing file while leaving the rest intact.
+- Prefer to edit existing files (with the edit_file tool) over creating new ones when possible.
 """
 
 DELETE_TOOL_DESCRIPTION = """Deletes a file or directory from the filesystem.

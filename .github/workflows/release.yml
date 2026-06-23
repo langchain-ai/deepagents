@@ -722,21 +722,15 @@ jobs:
             RELEASE_BODY=$(printf "%s\n\nInternal maintainers: %s" "$RELEASE_BODY" "$INTERNAL_LIST")
           fi
 
-          # Credit whoever shipped the release, unless they're already listed as a
-          # community contributor or internal maintainer (avoid crediting twice).
+          # Credit whoever shipped the release. This is a distinct role from
+          # contributing release changes, so show it even when the same user also
+          # appears as a community contributor or internal maintainer.
           if [ -n "$RELEASER" ]; then
-            ALREADY_PRESENT=false
-            if printf '%s %s' "$CONTRIBUTOR_LIST" "$INTERNAL_LIST" \
-              | grep -qE "(^|[ ,])@${RELEASER}([ ,(]|\$)"; then
-              ALREADY_PRESENT=true
+            if [ "$SEPARATOR_ADDED" = "false" ]; then
+              RELEASE_BODY=$(printf "%s\n\n---" "$RELEASE_BODY")
+              SEPARATOR_ADDED=true
             fi
-            if [ "$ALREADY_PRESENT" = "false" ]; then
-              if [ "$SEPARATOR_ADDED" = "false" ]; then
-                RELEASE_BODY=$(printf "%s\n\n---" "$RELEASE_BODY")
-                SEPARATOR_ADDED=true
-              fi
-              RELEASE_BODY=$(printf "%s\n\nReleased by: @%s" "$RELEASE_BODY" "$RELEASER")
-            fi
+            RELEASE_BODY=$(printf "%s\n\nReleased by: @%s" "$RELEASE_BODY" "$RELEASER")
           fi
 
           # Output release body using heredoc for proper multiline handling

@@ -3,13 +3,13 @@
 
 import asyncio
 import base64
-import binascii
 import concurrent.futures
 import contextlib
 import contextvars
 import mimetypes
 import threading
 import uuid
+from binascii import Error as BinasciiError
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -174,7 +174,7 @@ def _handle_video_read(
 
     try:
         raw_bytes = base64.b64decode(content, validate=True) if isinstance(content, str) else content
-    except (ValueError, TypeError, binascii.Error) as exc:
+    except (ValueError, TypeError, BinasciiError) as exc:
         return _err(f"video bytes are not valid base64 ({exc})")
     if len(raw_bytes) > MAX_VIDEO_INPUT_BYTES:
         return _err(f"video payload exceeds maximum input size of {MAX_VIDEO_INPUT_BYTES} bytes")

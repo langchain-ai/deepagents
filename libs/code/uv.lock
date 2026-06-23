@@ -1105,7 +1105,7 @@ version = "0.1.27"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
-    { name = "deepagents", extra = ["video"] },
+    { name = "deepagents" },
     { name = "deepagents-acp" },
     { name = "httpx" },
     { name = "langchain" },
@@ -1240,6 +1240,9 @@ vercel = [
 vertex = [
     { name = "langchain-google-vertexai" },
 ]
+video = [
+    { name = "deepagents", extra = ["video"] },
+]
 xai = [
     { name = "langchain-xai" },
 ]
@@ -1268,7 +1271,8 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.22.1,<1.0.0" },
-    { name = "deepagents", extras = ["video"], editable = "../deepagents" },
+    { name = "deepagents", editable = "../deepagents" },
+    { name = "deepagents", extras = ["video"], marker = "extra == 'video'", editable = "../deepagents" },
     { name = "deepagents-acp", specifier = ">=0.0.8,<1.0.0" },
     { name = "deepagents-code", extras = ["agentcore", "daytona", "modal", "runloop", "vercel"], marker = "extra == 'all-sandboxes'" },
     { name = "deepagents-code", extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "together", "vertex", "xai"], marker = "extra == 'all-providers'" },
@@ -1327,7 +1331,7 @@ requires-dist = [
     { name = "tomli-w", specifier = ">=1.2.0,<2.0.0" },
     { name = "uuid-utils", specifier = ">=0.16.2,<1.0.0" },
 ]
-provides-extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "together", "vertex", "xai", "all-providers", "agentcore", "daytona", "modal", "runloop", "vercel", "all-sandboxes", "quickjs"]
+provides-extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "together", "vertex", "xai", "all-providers", "agentcore", "daytona", "modal", "runloop", "vercel", "all-sandboxes", "quickjs", "video"]
 
 [package.metadata.requires-dev]
 test = [

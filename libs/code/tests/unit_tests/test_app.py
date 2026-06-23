@@ -7696,16 +7696,74 @@ class TestHandleModelSelection:
         call_after_refresh.assert_called_once()  # ty: ignore
         # Running the deferred callback starts the worker.
         run_worker.assert_not_called()
+        assert app._model_install_switching is True
         call_after_refresh.call_args.args[0]()
         run_worker.assert_called_once()
         assert run_worker.call_args.kwargs.get("group") == "model-install-switch"
-        # Close the unconsumed coroutine the worker would have awaited.
-        run_worker.call_args.args[0].close()
-        install.assert_called_once_with(
+        assert run_worker.call_args.kwargs.get("exclusive") is False
+        await run_worker.call_args.args[0]
+        install.assert_awaited_once_with(
             "baseten",
             "baseten:moonshotai/Kimi-K2.6",
             extra_kwargs={"temperature": 0},
         )
+        assert app._model_install_switching is False
+
+    async def test_install_then_switch_resets_guard_on_error(self) -> None:
+        """The in-progress guard resets even when the install raises.
+
+        The reset lives in the coroutine's `finally`, not a trailing assignment,
+        precisely so a failed install can't strand the guard `True` and block
+        every later install behind the "already in progress" notice.
+        """
+        app = DeepAgentsApp()
+        app.call_after_refresh = MagicMock()  # ty: ignore
+        run_worker = MagicMock()
+        app.run_worker = run_worker  # ty: ignore
+        install = AsyncMock(side_effect=RuntimeError("install boom"))
+        app._install_extra_then_switch = install  # ty: ignore
+        screen = SimpleNamespace(pending_install_extra="baseten")
+
+        app._handle_model_selection(
+            screen,  # ty: ignore
+            ("baseten:moonshotai/Kimi-K2.6", "baseten"),
+        )
+
+        assert app._model_install_switching is True
+        # Run the deferred callback to build and schedule the worker coroutine.
+        app.call_after_refresh.call_args.args[0]()  # ty: ignore
+        with pytest.raises(RuntimeError, match="install boom"):
+            await run_worker.call_args.args[0]
+        assert app._model_install_switching is False
+
+    async def test_pending_install_extra_does_not_start_concurrent_install(
+        self,
+    ) -> None:
+        """A second provider install selection waits for the active one."""
+        app = DeepAgentsApp()
+        app._model_install_switching = True
+        app.call_after_refresh = MagicMock()  # ty: ignore
+        app.run_worker = MagicMock()  # ty: ignore
+        app.notify = MagicMock()  # ty: ignore
+        dispatch = MagicMock()
+        app._dispatch_model_switch = dispatch  # ty: ignore
+        screen = SimpleNamespace(pending_install_extra="baseten")
+
+        app._handle_model_selection(
+            screen,  # ty: ignore
+            ("baseten:moonshotai/Kimi-K2.6", "baseten"),
+        )
+
+        app.notify.assert_called_once()
+        assert app.notify.call_args.kwargs.get("severity") == "warning"
+        # `markup=False` keeps a provider/extra name with `[...]` from being
+        # parsed as console markup.
+        assert app.notify.call_args.kwargs.get("markup") is False
+        app.call_after_refresh.assert_not_called()  # ty: ignore
+        app.run_worker.assert_not_called()  # ty: ignore
+        dispatch.assert_not_called()
+        # The early return must not clear the in-flight flow's guard.
+        assert app._model_install_switching is True
 
     async def test_plain_switch_when_no_pending_extra(self) -> None:
         """No pending extra dispatches a normal model switch."""

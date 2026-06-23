@@ -13,7 +13,7 @@ import time
 import webbrowser
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 if TYPE_CHECKING:
@@ -1447,8 +1447,8 @@ class TestCtrlCCopySelection:
             exit_mock.assert_not_called()
             assert app._quit_pending is False
 
-    async def test_ctrl_c_without_selection_still_quits(self) -> None:
-        """Ctrl+C with no selection in ChatTextArea falls through to quit hint."""
+    async def test_ctrl_c_without_selection_copies_full_input(self) -> None:
+        """Ctrl+C with no selection in ChatTextArea copies the full input."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -1473,17 +1473,214 @@ class TestCtrlCCopySelection:
             ):
                 app.action_quit_or_interrupt()
 
-                copy_mock.assert_not_called()
+                copy_mock.assert_called_once_with(app, "hello world")
                 exit_mock.assert_not_called()
-                assert app._quit_pending is True
+                assert app._quit_pending is False
                 notify_mock.assert_called_once_with(
-                    "Press Ctrl+C again to quit",
+                    "Input copied to clipboard",
                     timeout=3,
                     markup=False,
                 )
 
+    async def test_ctrl_c_rapid_presses_force_quit_over_draft_copy(self) -> None:
+        """Mashing Ctrl+C with a draft skips copy, arms quit, then exits.
+
+        A non-empty draft makes the copy branch absorb every single press, so
+        the rapid escape hatch is the only way to reach quit via Ctrl+C alone.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.text = "draft text"
+            await pilot.pause()
+            text_area.focus()
+            await pilot.pause()
+
+            with (
+                patch(
+                    "deepagents_code.clipboard.copy_text_to_clipboard",
+                    return_value=(True, None),
+                ) as copy_mock,
+                patch.object(app, "notify"),
+                patch.object(app, "exit") as exit_mock,
+                patch(
+                    "deepagents_code.app._monotonic",
+                    side_effect=[0.0, 0.2, 0.4, 0.6],
+                ),
+            ):
+                # First press copies the draft (standard terminal copy).
+                app.action_quit_or_interrupt()
+                assert app._quit_pending is False
+                copy_mock.assert_called_once()
+                exit_mock.assert_not_called()
+
+                # Second rapid press skips copy and arms quit instead.
+                app.action_quit_or_interrupt()
+                assert app._quit_pending is True
+                copy_mock.assert_called_once()  # copy was skipped this time
+                exit_mock.assert_not_called()
+
+                # Third rapid press exits.
                 app.action_quit_or_interrupt()
                 exit_mock.assert_called_once()
+
+    async def test_ctrl_c_quit_pending_beats_draft_copy(self) -> None:
+        """Once the quit prompt is shown, the next Ctrl+C exits before copying."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.text = "draft text"
+            await pilot.pause()
+            text_area.focus()
+            await pilot.pause()
+
+            with (
+                patch(
+                    "deepagents_code.clipboard.copy_text_to_clipboard",
+                    return_value=(True, None),
+                ) as copy_mock,
+                patch.object(app, "notify"),
+                patch.object(app, "exit") as exit_mock,
+                patch(
+                    "deepagents_code.app._monotonic",
+                    side_effect=[0.0, 0.2, 1.4],
+                ),
+            ):
+                app.action_quit_or_interrupt()
+                assert app._quit_pending is False
+                copy_mock.assert_called_once()
+                exit_mock.assert_not_called()
+
+                app.action_quit_or_interrupt()
+                assert app._quit_pending is True
+                copy_mock.assert_called_once()
+                exit_mock.assert_not_called()
+
+                app.action_quit_or_interrupt()
+                exit_mock.assert_called_once()
+                copy_mock.assert_called_once()
+
+    async def test_ctrl_c_slow_presses_keep_copying_draft(self) -> None:
+        """Ctrl+C presses spaced beyond the rapid window keep copying, never quit."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.text = "draft text"
+            await pilot.pause()
+            text_area.focus()
+            await pilot.pause()
+
+            with (
+                patch(
+                    "deepagents_code.clipboard.copy_text_to_clipboard",
+                    return_value=(True, None),
+                ) as copy_mock,
+                patch.object(app, "notify"),
+                patch.object(app, "exit") as exit_mock,
+                patch(
+                    "deepagents_code.app._monotonic",
+                    side_effect=[0.0, 2.0, 4.0],
+                ),
+            ):
+                for _ in range(3):
+                    app.action_quit_or_interrupt()
+
+                assert copy_mock.call_count == 3
+                assert app._quit_pending is False
+                exit_mock.assert_not_called()
+
+    async def test_ctrl_c_window_boundary_is_inclusive(self) -> None:
+        """Two presses exactly one window apart count as rapid (`<=` boundary).
+
+        Pins the inclusive edge of `now - t <= _RAPID_QUIT_CTRL_C_WINDOW_SECONDS`
+        so a future flip to `<` (or a window tweak) is caught.
+        """
+        from deepagents_code.app import _RAPID_QUIT_CTRL_C_WINDOW_SECONDS
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.text = "draft text"
+            await pilot.pause()
+            text_area.focus()
+            await pilot.pause()
+
+            with (
+                patch(
+                    "deepagents_code.clipboard.copy_text_to_clipboard",
+                    return_value=(True, None),
+                ) as copy_mock,
+                patch.object(app, "notify"),
+                patch.object(app, "exit") as exit_mock,
+                patch(
+                    "deepagents_code.app._monotonic",
+                    side_effect=[0.0, _RAPID_QUIT_CTRL_C_WINDOW_SECONDS],
+                ),
+            ):
+                # Press 1 copies the draft.
+                app.action_quit_or_interrupt()
+                copy_mock.assert_called_once()
+                assert app._quit_pending is False
+
+                # Press 2 sits exactly on the window edge: still rapid, so it
+                # skips the copy and arms quit instead.
+                app.action_quit_or_interrupt()
+                copy_mock.assert_called_once()
+                assert app._quit_pending is True
+                exit_mock.assert_not_called()
+
+    async def test_ctrl_c_just_past_window_keeps_copying(self) -> None:
+        """A press just past the window is not rapid: it copies again, never quits."""
+        from deepagents_code.app import _RAPID_QUIT_CTRL_C_WINDOW_SECONDS
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.text = "draft text"
+            await pilot.pause()
+            text_area.focus()
+            await pilot.pause()
+
+            with (
+                patch(
+                    "deepagents_code.clipboard.copy_text_to_clipboard",
+                    return_value=(True, None),
+                ) as copy_mock,
+                patch.object(app, "notify"),
+                patch.object(app, "exit") as exit_mock,
+                patch(
+                    "deepagents_code.app._monotonic",
+                    side_effect=[0.0, _RAPID_QUIT_CTRL_C_WINDOW_SECONDS + 0.001],
+                ),
+            ):
+                # Press 1 copies; press 2 falls just outside the window, so the
+                # first timestamp is pruned and it copies again rather than
+                # arming quit.
+                app.action_quit_or_interrupt()
+                app.action_quit_or_interrupt()
+                assert copy_mock.call_count == 2
+                assert app._quit_pending is False
+                exit_mock.assert_not_called()
 
     async def test_ctrl_c_copies_input_selection(self) -> None:
         """Ctrl+C with a selection in a focused Input copies it, no quit."""
@@ -2886,6 +3083,38 @@ class TestAskUserLifecycle:
         tool.toggle_args.assert_called_once_with()
         tool.toggle_output.assert_not_called()
 
+    def test_ctrl_o_falls_through_to_args_when_output_unexpandable(self) -> None:
+        """Ctrl+O on a tool with unexpandable output toggles its code/args.
+
+        Regression: `js_eval` sets `_output` to a short, unexpandable result,
+        which used to swallow the toggle and leave the collapsible code block
+        stuck. The action must fall through to args in that case.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        tool = MagicMock()
+        tool.has_output = True
+        tool.has_expandable_output = False  # short result, nothing to expand
+        tool.has_expandable_args = True  # multi-line code block
+
+        def fake_query(query_type: object) -> list[object]:
+            from deepagents_code.widgets.messages import (
+                SkillMessage,
+                ToolCallMessage,
+            )
+
+            if query_type is ToolCallMessage:
+                return [tool]
+            if query_type is SkillMessage:
+                return []
+            return []
+
+        with patch.object(app, "query", side_effect=fake_query):
+            app.action_toggle_tool_output()
+
+        tool.toggle_args.assert_called_once_with()
+        tool.toggle_output.assert_not_called()
+
     def test_ctrl_o_prefers_tool_with_output_over_expandable_args(self) -> None:
         """Tool with real output wins over a later one with only expandable args."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -3228,6 +3457,36 @@ class TestTraceCommand:
             assert "401 Unauthorized" in rendered
             assert "LANGSMITH_API_KEY" in rendered
             assert "Check your network" not in rendered
+
+    async def test_trace_shows_friendly_message_when_project_not_found(self) -> None:
+        """A not-found project shows a 'created on first trace' hint, not an error."""
+        from deepagents_code.config import LangSmithProjectNotFoundError
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+
+            with (
+                patch(
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value="deepagents-code",
+                ),
+                patch(
+                    "deepagents_code.config.fetch_langsmith_project_url_or_raise",
+                    side_effect=LangSmithProjectNotFoundError(
+                        "Project deepagents-code not found"
+                    ),
+                ),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            rendered = " ".join(str(w._content) for w in app_msgs)
+            assert "No traces have been recorded" in rendered
+            assert "first time a run is traced" in rendered
+            assert "rejected the project lookup" not in rendered
 
     async def test_trace_shows_error_when_project_name_raises(self) -> None:
         """Should surface a friendly error if `get_langsmith_project_name` raises."""
@@ -15283,3 +15542,355 @@ class TestNotifyOrphanedTracingDisabled:
             app._notify_orphaned_tracing_disabled()
 
         log_mock.assert_called_once()
+
+
+class TestClearInputEscape:
+    """Tests for the double-Esc chat-input clear fallback."""
+
+    @staticmethod
+    def _make_app() -> DeepAgentsApp:
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app.notify = MagicMock()  # ty: ignore[invalid-assignment]
+        app.set_timer = MagicMock()  # ty: ignore[invalid-assignment]
+        return app
+
+    def test_double_escape_clears_input(self) -> None:
+        """First Esc arms the clear; the second clears the draft."""
+        app = self._make_app()
+        chat_input = MagicMock()
+        chat_input.value = "draft text"
+        chat_input.discard_text.return_value = True
+        app._chat_input = chat_input
+
+        app._handle_clear_input_escape()
+        assert app._clear_input_pending is True
+        chat_input.discard_text.assert_not_called()
+
+        app._handle_clear_input_escape()
+        assert app._clear_input_pending is False
+        chat_input.discard_text.assert_called_once_with()
+
+    def test_arm_and_clear_emit_separate_toasts(self) -> None:
+        """The arm hint and the clear confirmation are distinct toasts.
+
+        The first Esc hints to press again (no premature undo hint); the second
+        Esc confirms the clear and surfaces the ctrl+z undo hint at the moment
+        it becomes actionable.
+        """
+        app = self._make_app()
+        chat_input = MagicMock()
+        chat_input.value = "draft text"
+        chat_input.discard_text.return_value = True
+        app._chat_input = chat_input
+
+        notify = cast("MagicMock", app.notify)
+
+        app._handle_clear_input_escape()
+        notify.assert_called_once_with(
+            "Press Esc again to clear input",
+            timeout=3,
+            markup=False,
+        )
+
+        notify.reset_mock()
+        app._handle_clear_input_escape()
+        notify.assert_called_once_with(
+            "Input cleared (ctrl+z to undo)",
+            timeout=3,
+            markup=False,
+        )
+
+    def test_clear_toast_suppressed_when_nothing_discarded(self) -> None:
+        """No confirmation toast fires if `discard_text` reports nothing cleared."""
+        app = self._make_app()
+        chat_input = MagicMock()
+        chat_input.value = "draft text"
+        chat_input.discard_text.return_value = False
+        app._chat_input = chat_input
+
+        notify = cast("MagicMock", app.notify)
+
+        app._handle_clear_input_escape()  # arm
+        notify.reset_mock()
+        app._handle_clear_input_escape()  # clear attempt
+
+        chat_input.discard_text.assert_called_once_with()
+        notify.assert_not_called()
+
+    def test_escape_no_op_when_input_empty(self) -> None:
+        """Esc never arms a clear when the draft is empty."""
+        app = self._make_app()
+        chat_input = MagicMock()
+        chat_input.value = ""
+        app._chat_input = chat_input
+
+        app._handle_clear_input_escape()
+        assert app._clear_input_pending is False
+        chat_input.discard_text.assert_not_called()
+
+    def test_whitespace_only_draft_is_clearable(self) -> None:
+        """esc+esc acts on a whitespace-only draft via raw `value`.
+
+        Deliberately broader than the `[ X ]`/`[ COPY ]` buttons, which gate on
+        `text.strip()` and stay hidden for whitespace-only input.
+        """
+        app = self._make_app()
+        chat_input = MagicMock()
+        chat_input.value = "   \n  "
+        chat_input.discard_text.return_value = True
+        app._chat_input = chat_input
+
+        app._handle_clear_input_escape()
+        assert app._clear_input_pending is True
+        chat_input.discard_text.assert_not_called()
+
+        app._handle_clear_input_escape()
+        assert app._clear_input_pending is False
+        chat_input.discard_text.assert_called_once_with()
+
+    def test_pending_resets_when_input_emptied_between_presses(self) -> None:
+        """A pending clear is disarmed if the draft becomes empty before press 2."""
+        app = self._make_app()
+        chat_input = MagicMock()
+        chat_input.value = "x"
+        app._chat_input = chat_input
+
+        app._handle_clear_input_escape()
+        assert app._clear_input_pending is True
+
+        chat_input.value = ""
+        app._handle_clear_input_escape()
+        assert app._clear_input_pending is False
+        chat_input.discard_text.assert_not_called()
+
+    def test_pending_resets_after_timer_expiry(self) -> None:
+        """When the arm window elapses, the timer disarms so a later Esc re-arms.
+
+        Without the reset, a stale pending flag would let a much-later Esc clear
+        a draft the user typed long after the hint vanished.
+        """
+        app = self._make_app()
+        chat_input = MagicMock()
+        chat_input.value = "draft text"
+        chat_input.discard_text.return_value = True
+        app._chat_input = chat_input
+
+        set_timer = cast("MagicMock", app.set_timer)
+
+        app._handle_clear_input_escape()  # arm
+        assert app._clear_input_pending is True
+
+        # Fire the scheduled reset callback as Textual's timer would.
+        _delay, reset_callback = set_timer.call_args.args
+        reset_callback()
+        assert app._clear_input_pending is False
+
+        # The next Esc re-arms instead of clearing the untouched draft.
+        app._handle_clear_input_escape()
+        assert app._clear_input_pending is True
+        chat_input.discard_text.assert_not_called()
+
+    async def test_double_escape_clears_via_full_escape_chain(self) -> None:
+        """Through the real Esc handler, esc+esc clears when nothing else pends.
+
+        Exercises the precedence chain: the clear only fires as the last resort
+        of `action_interrupt`, after every higher-priority interrupt has passed.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.insert("a draft I regret")
+            await pilot.pause()
+
+            app.action_interrupt()
+            await pilot.pause()
+            assert app._clear_input_pending is True
+            assert chat_input.value == "a draft I regret"
+
+            app.action_interrupt()
+            await pilot.pause()
+            assert app._clear_input_pending is False
+            assert chat_input.value == ""
+
+            # The clear is undoable.
+            text_area.undo()
+            await pilot.pause()
+            assert chat_input.value == "a draft I regret"
+
+    async def test_second_escape_clears_edited_draft_not_a_snapshot(self) -> None:
+        """The second Esc clears whatever is in the draft now, not what was armed.
+
+        Arming does not snapshot the draft: editing between the two presses means
+        the second Esc clears the edited content (and undo restores that).
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.insert("draft A")
+            await pilot.pause()
+
+            app.action_interrupt()  # arm with "draft A"
+            await pilot.pause()
+            assert app._clear_input_pending is True
+
+            text_area.insert(" plus B")  # edit within the arm window
+            await pilot.pause()
+            assert chat_input.value == "draft A plus B"
+
+            app.action_interrupt()  # second Esc clears the edited draft
+            await pilot.pause()
+            assert app._clear_input_pending is False
+            assert chat_input.value == ""
+
+            text_area.undo()
+            await pilot.pause()
+            assert chat_input.value == "draft A plus B"
+
+    async def test_higher_priority_interrupt_disarms_pending_clear(self) -> None:
+        """An intervening interrupt breaks the sequence so the next Esc re-arms.
+
+        Without disarming, an Esc that (e.g.) cancels the agent would leave the
+        clear armed, and the very next Esc would wipe the draft on a single
+        press — surprising the user who only pressed clear-Esc once.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.insert("keep me")
+            await pilot.pause()
+
+            # First Esc arms the clear (nothing else to interrupt).
+            app.action_interrupt()
+            await pilot.pause()
+            assert app._clear_input_pending is True
+
+            # A higher-priority interrupt fires: the running agent is cancelled,
+            # which must also disarm the pending clear and leave the draft intact.
+            app._agent_running = True
+            app._agent_worker = MagicMock()
+            with patch.object(app, "_cancel_worker"):
+                app.action_interrupt()
+            await pilot.pause()
+            assert app._clear_input_pending is False
+            assert chat_input.value == "keep me"
+
+            # With the agent idle again, the next Esc re-arms instead of clearing
+            # on a single press.
+            app._agent_running = False
+            app._agent_worker = None
+            app.action_interrupt()
+            await pilot.pause()
+            assert app._clear_input_pending is True
+            assert chat_input.value == "keep me"
+
+
+class TestCopyFocusedInputText:
+    """Tests for the Ctrl+C copy-whole-input fallback (no active selection)."""
+
+    @staticmethod
+    def _make_app() -> DeepAgentsApp:
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app.notify = MagicMock()  # ty: ignore[invalid-assignment]
+        return app
+
+    def test_copies_whole_input_when_no_selection(self, monkeypatch) -> None:
+        """A focused, non-empty input with no selection is copied in full."""
+        from textual.widgets import TextArea
+
+        import deepagents_code.clipboard as clipboard_module
+
+        copied: list[str] = []
+
+        def fake_copy(_app: object, text: str) -> tuple[bool, str | None]:
+            copied.append(text)
+            return True, None
+
+        monkeypatch.setattr(clipboard_module, "copy_text_to_clipboard", fake_copy)
+
+        app = self._make_app()
+        text_area = TextArea()
+        text_area.text = "whole input draft"
+        monkeypatch.setattr(type(app), "focused", property(lambda _self: text_area))
+
+        assert app._copy_focused_input_text() is True
+        assert copied == ["whole input draft"]
+
+    def test_failed_input_copy_is_handled(self, monkeypatch) -> None:
+        """A focused input copy failure must not fall through to quit handling."""
+        from textual.widgets import TextArea
+
+        import deepagents_code.clipboard as clipboard_module
+
+        copied: list[str] = []
+
+        def fake_copy(_app: object, text: str) -> tuple[bool, str | None]:
+            copied.append(text)
+            return False, "no clipboard backend"
+
+        monkeypatch.setattr(clipboard_module, "copy_text_to_clipboard", fake_copy)
+
+        app = self._make_app()
+        notify = MagicMock()
+        app.notify = notify  # ty: ignore[invalid-assignment]
+        text_area = TextArea()
+        text_area.text = "whole input draft"
+        monkeypatch.setattr(type(app), "focused", property(lambda _self: text_area))
+
+        assert app._copy_focused_input_text() is True
+        assert copied == ["whole input draft"]
+        notify.assert_called_once()
+
+    def test_no_copy_when_input_empty(self, monkeypatch) -> None:
+        """An empty focused input is not copied."""
+        from textual.widgets import TextArea
+
+        import deepagents_code.clipboard as clipboard_module
+
+        copied: list[str] = []
+
+        def fake_copy(_app: object, text: str) -> tuple[bool, str | None]:
+            copied.append(text)
+            return True, None
+
+        monkeypatch.setattr(clipboard_module, "copy_text_to_clipboard", fake_copy)
+
+        app = self._make_app()
+        text_area = TextArea()
+        monkeypatch.setattr(type(app), "focused", property(lambda _self: text_area))
+
+        assert app._copy_focused_input_text() is False
+        assert copied == []
+
+    def test_no_copy_when_nothing_focused(self, monkeypatch) -> None:
+        """When the focused widget is not an input, nothing is copied."""
+        app = self._make_app()
+        monkeypatch.setattr(type(app), "focused", property(lambda _self: None))
+        assert app._copy_focused_input_text() is False
+
+    async def test_no_copy_from_password_input(self) -> None:
+        """A focused masked password Input is never copied by the whole-input path."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            password_input = Input(value="secret-api-key", password=True)
+            await app.mount(password_input)
+            password_input.focus()
+            await pilot.pause()
+
+            with patch(
+                "deepagents_code.clipboard.copy_text_to_clipboard",
+                return_value=(True, None),
+            ) as copy_mock:
+                assert app._copy_focused_input_text() is False
+
+            copy_mock.assert_not_called()

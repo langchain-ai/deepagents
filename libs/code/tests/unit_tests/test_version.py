@@ -138,7 +138,9 @@ async def test_version_slash_command_sdk_unavailable() -> None:
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        with patch("importlib.metadata.version", side_effect=patched_version):
+        with patch(
+            "deepagents_code.extras_info.pkg_version", side_effect=patched_version
+        ):
             await app._handle_command("/version")
         await pilot.pause()
 

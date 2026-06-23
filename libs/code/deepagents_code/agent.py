@@ -1231,7 +1231,7 @@ def create_cli_agent(
             `interpreter_ptc_acknowledge_unsafe=True`.
 
             Requires the `quickjs` optional extra
-            (`langchain-quickjs>=0.1.2,<0.2.0`).
+            (`langchain-quickjs>=0.3.1,<0.4.0`).
         checkpointer: Optional checkpointer for session persistence.
             When `None`, the graph is compiled without a checkpointer.
         mcp_server_info: MCP server metadata to surface in the system prompt.
@@ -1476,11 +1476,16 @@ def create_cli_agent(
         # ========== LOCAL MODE ==========
         root_dir = effective_cwd if effective_cwd is not None else Path.cwd()
         if enable_shell:
-            # Create environment for shell commands
-            # Restore user's original LANGSMITH_PROJECT so their code traces separately
+            # Create environment for shell commands.
+            # Restore the user's original LANGSMITH_PROJECT so their code traces
+            # separately. When they had none, drop the agent's override (the
+            # `deepagents-code` default applied at bootstrap) entirely so shell
+            # commands don't inherit it.
             shell_env = os.environ.copy()
-            if settings.user_langchain_project:
+            if settings.user_langchain_project is not None:
                 shell_env["LANGSMITH_PROJECT"] = settings.user_langchain_project
+            else:
+                shell_env.pop("LANGSMITH_PROJECT", None)
             # Re-apply a launch-time PYTHONPATH that was stripped from the server
             # interpreter but relayed for approval-gated `execute` commands.
             _apply_inherited_pythonpath(shell_env)

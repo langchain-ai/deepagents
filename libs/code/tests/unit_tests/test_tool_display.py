@@ -291,6 +291,27 @@ class TestFormatToolDisplay:
         result = format_tool_display("execute", {"command": "ls", "timeout": "abc"})
         assert "timeout" not in result
 
+    # --- js_eval ---
+
+    def test_js_eval_single_line_shows_full_snippet(self) -> None:
+        result = format_tool_display("js_eval", {"code": "1 + 1"})
+        assert result == f'{_PREFIX} js_eval("1 + 1")'
+
+    def test_js_eval_multiline_shows_first_line_with_ellipsis(self) -> None:
+        result = format_tool_display(
+            "js_eval", {"code": "const x = 1;\nconst y = 2;\nx + y"}
+        )
+        # First non-blank line only, with an ellipsis marking the elision.
+        assert result == f'{_PREFIX} js_eval("const x = 1;{ASCII_GLYPHS.ellipsis}")'
+
+    def test_js_eval_skips_leading_blank_lines(self) -> None:
+        result = format_tool_display("js_eval", {"code": "\n\nreal();\nmore();"})
+        assert result == f'{_PREFIX} js_eval("real();{ASCII_GLYPHS.ellipsis}")'
+
+    def test_js_eval_empty_code(self) -> None:
+        result = format_tool_display("js_eval", {"code": "   "})
+        assert result == f"{_PREFIX} js_eval()"
+
     # --- ls ---
 
     def test_ls_with_path(self) -> None:

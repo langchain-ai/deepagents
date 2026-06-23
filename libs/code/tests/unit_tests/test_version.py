@@ -889,12 +889,20 @@ async def test_update_already_current_prompts_and_refreshes_on_confirm() -> None
                 "deepagents_code.update_check.dependency_refresh_supported",
                 return_value=(True, None),
             ),
+            patch(
+                "deepagents_code.update_check.perform_dependency_refresh_dry_run",
+                new_callable=AsyncMock,
+                return_value=(
+                    True,
+                    " - langchain-openai==1.3.2\n + langchain-openai==1.5.0\n",
+                ),
+            ) as dry_run_mock,
             patch.object(
                 DeepAgentsApp,
                 "_confirm_refresh_dependencies",
                 new_callable=AsyncMock,
                 return_value=True,
-            ),
+            ) as confirm_mock,
             patch(
                 "deepagents_code.update_check.perform_dependency_refresh",
                 new_callable=AsyncMock,
@@ -907,6 +915,10 @@ async def test_update_already_current_prompts_and_refreshes_on_confirm() -> None
             await app._handle_command("/update")
             await pilot.pause()
 
+        dry_run_mock.assert_awaited_once_with(include_prereleases=None)
+        confirm_mock.assert_awaited_once_with(
+            planned_changes="  langchain-openai  1.3.2 -> 1.5.0",
+        )
         refresh_mock.assert_awaited_once_with(include_prereleases=None)
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         assert "Refreshed dependencies:" in str(app_msgs[-1]._content)
@@ -933,12 +945,20 @@ async def test_update_already_current_skips_refresh_on_decline() -> None:
                 "deepagents_code.update_check.dependency_refresh_supported",
                 return_value=(True, None),
             ),
+            patch(
+                "deepagents_code.update_check.perform_dependency_refresh_dry_run",
+                new_callable=AsyncMock,
+                return_value=(
+                    True,
+                    " - langchain-openai==1.3.2\n + langchain-openai==1.5.0\n",
+                ),
+            ) as dry_run_mock,
             patch.object(
                 DeepAgentsApp,
                 "_confirm_refresh_dependencies",
                 new_callable=AsyncMock,
                 return_value=False,
-            ),
+            ) as confirm_mock,
             patch(
                 "deepagents_code.update_check.perform_dependency_refresh",
                 new_callable=AsyncMock,
@@ -947,9 +967,106 @@ async def test_update_already_current_skips_refresh_on_decline() -> None:
             await app._handle_command("/update")
             await pilot.pause()
 
+        dry_run_mock.assert_awaited_once_with(include_prereleases=None)
+        confirm_mock.assert_awaited_once_with(
+            planned_changes="  langchain-openai  1.3.2 -> 1.5.0",
+        )
         refresh_mock.assert_not_awaited()
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
-        assert "Already on the latest version" in str(app_msgs[-1]._content)
+        assert "Dependency refresh skipped." in str(app_msgs[-1]._content)
+
+
+async def test_update_already_current_reports_no_dependency_changes() -> None:
+    """Plain `/update` skips the prompt when the dry run finds no changes."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(False, "1.0.0"),
+            ),
+            patch(
+                "deepagents_code.update_check.dependency_refresh_supported",
+                return_value=(True, None),
+            ),
+            patch(
+                "deepagents_code.update_check.perform_dependency_refresh_dry_run",
+                new_callable=AsyncMock,
+                return_value=(True, "Resolved 120 packages in 12ms\n"),
+            ) as dry_run_mock,
+            patch.object(
+                DeepAgentsApp,
+                "_confirm_refresh_dependencies",
+                new_callable=AsyncMock,
+            ) as confirm_mock,
+            patch(
+                "deepagents_code.update_check.perform_dependency_refresh",
+                new_callable=AsyncMock,
+            ) as refresh_mock,
+        ):
+            await app._handle_command("/update")
+            await pilot.pause()
+
+            dry_run_mock.assert_awaited_once_with(include_prereleases=None)
+            confirm_mock.assert_not_awaited()
+            refresh_mock.assert_not_awaited()
+            app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+            assert "Dependencies are already up to date." in str(app_msgs[-1]._content)
+
+
+async def test_update_already_current_reports_dependency_check_failure() -> None:
+    """A failed dry-run check reports the failure without refreshing."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(False, "1.0.0"),
+            ),
+            patch(
+                "deepagents_code.update_check.dependency_refresh_supported",
+                return_value=(True, None),
+            ),
+            patch(
+                "deepagents_code.update_check.perform_dependency_refresh_dry_run",
+                new_callable=AsyncMock,
+                return_value=(False, "No solution found"),
+            ),
+            patch.object(
+                DeepAgentsApp,
+                "_confirm_refresh_dependencies",
+                new_callable=AsyncMock,
+            ) as confirm_mock,
+            patch(
+                "deepagents_code.update_check.perform_dependency_refresh",
+                new_callable=AsyncMock,
+            ) as refresh_mock,
+        ):
+            await app._handle_command("/update")
+            await pilot.pause()
+
+            confirm_mock.assert_not_awaited()
+            refresh_mock.assert_not_awaited()
+            app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+            content = str(app_msgs[-1]._content)
+            assert "Could not check dependency updates" in content
+            assert "No solution found" in content
 
 
 async def test_update_already_current_skips_prompt_when_refresh_unsupported() -> None:

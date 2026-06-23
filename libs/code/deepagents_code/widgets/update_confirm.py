@@ -2,11 +2,10 @@
 
 When `deepagents-code` itself is already on the latest release, `/update` can
 still re-resolve its dependencies to the newest versions allowed by the pinned
-ranges (e.g. a new `langchain-openai`). That re-runs `uv tool install -U` to
-re-resolve dependencies without bumping the app version, and can pull in newer
-minor releases, so this non-blocking modal asks for explicit confirmation first.
-`/update --deps` skips that prompt, but asks before taking an available app
-update ahead of the dependency refresh for the current app version.
+ranges (e.g. a new `langchain-openai`). The already-current path dry-runs the
+resolution first, then asks for explicit confirmation only when dependencies can
+move. `/update --deps` skips that prompt, but asks before taking an available
+app update ahead of the dependency refresh for the current app version.
 """
 
 from __future__ import annotations
@@ -161,14 +160,25 @@ class RefreshDependenciesConfirmScreen(_DependencyConfirmScreen):
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
     ]
 
-    def __init__(self) -> None:
-        """Create the dependency-refresh confirmation dialog."""
-        super().__init__(
-            title="Refresh dependencies?",
-            body=(
+    def __init__(self, *, planned_changes: str | None = None) -> None:
+        """Create the dependency-refresh confirmation dialog.
+
+        Args:
+            planned_changes: Optional dry-run summary of dependency updates.
+        """
+        body = (
+            "deepagents-code is already up to date, but compatible dependency "
+            "updates are available. Refresh to apply these changes:\n\n"
+            f"{planned_changes}"
+            if planned_changes
+            else (
                 "deepagents-code is already up to date, but its dependencies "
                 "can be re-resolved to the newest compatible versions. This may "
                 "pull in newer minor releases of packages like langchain-openai."
-            ),
+            )
+        )
+        super().__init__(
+            title="Refresh dependencies?",
+            body=body,
             help_text="Enter to refresh, Esc to cancel",
         )

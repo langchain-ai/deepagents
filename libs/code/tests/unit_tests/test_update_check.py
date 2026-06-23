@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
+import sys
 import time
 import tomllib
 from collections.abc import Mapping, Sequence  # noqa: TC003
@@ -31,6 +33,7 @@ from deepagents_code.update_check import (
     clear_update_notified,
     create_update_log_path,
     dependency_refresh_command,
+    dependency_refresh_dry_run_command,
     dependency_refresh_supported,
     detect_install_method,
     editable_extra_hint,
@@ -61,6 +64,7 @@ from deepagents_code.update_check import (
     mark_version_seen,
     parse_dependency_changes,
     perform_dependency_refresh,
+    perform_dependency_refresh_dry_run,
     perform_install_extra,
     perform_install_package,
     perform_upgrade,
@@ -1265,6 +1269,65 @@ class TestUpdateLogs:
             ),
         ):
             dependency_refresh_command(version="1.2.3")
+
+    def test_dependency_refresh_dry_run_command_targets_current_python(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Dry-run planning resolves against the running tool environment."""
+        _write_uv_receipt(
+            tmp_path,
+            '{ name = "deepagents-code" }, { name = "langchain-custom" }',
+        )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        with patch(
+            "deepagents_code.extras_info.installed_extra_names",
+            return_value=frozenset({"quickjs"}),
+        ):
+            assert dependency_refresh_dry_run_command(
+                version="1.2.3",
+                include_prereleases=True,
+                python="/opt/Dcode Python/bin/python",
+            ) == (
+                "uv pip install --dry-run --python "
+                "'/opt/Dcode Python/bin/python' -U "
+                "'deepagents-code[quickjs]==1.2.3' langchain-custom "
+                "--prerelease allow"
+            )
+
+    async def test_perform_dependency_refresh_dry_run_uses_pinned_uv_pip_command(
+        self,
+    ) -> None:
+        """Dependency dry run shells out without mutating the tool environment."""
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch("shutil.which", return_value="/usr/bin/uv"),
+            patch(
+                "deepagents_code.extras_info.installed_extra_names",
+                return_value=frozenset(),
+            ),
+            patch(
+                "deepagents_code.update_check._uv_tool_with_packages",
+                return_value=(),
+            ),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as run_mock,
+        ):
+            success, _output = await perform_dependency_refresh_dry_run()
+
+        assert success is True
+        run_mock.assert_awaited_once()
+        await_args = run_mock.await_args
+        assert await_args is not None
+        assert await_args.args[0] == (
+            f"uv pip install --dry-run --python {shlex.quote(sys.executable)} "
+            f"-U deepagents-code=={__version__}"
+        )
 
     async def test_perform_dependency_refresh_uses_pinned_uv_command(self) -> None:
         """Dependency refresh shells out without allowing a dcode version bump."""

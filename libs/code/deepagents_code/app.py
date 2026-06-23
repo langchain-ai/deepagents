@@ -3913,6 +3913,7 @@ class DeepAgentsApp(App):
                 format_release_age_parenthetical,
                 is_update_available,
                 parse_dependency_changes,
+                perform_dependency_refresh_dry_run,
                 perform_upgrade,
                 prerelease_upgrade_supported,
                 upgrade_command,
@@ -3968,17 +3969,40 @@ class DeepAgentsApp(App):
                     ),
                 )
                 # dcode is current, but its dependencies may have newer in-range
-                # releases. Offer to re-resolve them rather than dead-ending —
-                # but only when the install method can actually perform a
-                # dependency-only refresh, so brew/other users aren't prompted to
-                # confirm an action that would immediately fail.
+                # releases. Compute a dry-run plan first so the confirmation only
+                # appears when there are concrete updates to apply. Keep the support
+                # gate before the check so brew/other users aren't asked about an
+                # action that cannot run for their install.
                 refresh_supported, _reason = await asyncio.to_thread(
                     dependency_refresh_supported,
                 )
-                if refresh_supported and await self._confirm_refresh_dependencies():
+                if not refresh_supported:
+                    return
+                await self._mount_message(
+                    AppMessage("Checking for dependency updates...")
+                )
+                success, output = await perform_dependency_refresh_dry_run(
+                    include_prereleases=include_prereleases,
+                )
+                if not success:
+                    detail = f": {output[:200]}" if output else ""
+                    await self._mount_message(
+                        AppMessage(f"Could not check dependency updates{detail}"),
+                    )
+                    return
+                dep_changes = parse_dependency_changes(output)
+                if not dep_changes:
+                    await self._mount_message(
+                        AppMessage("Dependencies are already up to date."),
+                    )
+                    return
+                planned = format_dependency_changes(dep_changes)
+                if await self._confirm_refresh_dependencies(planned_changes=planned):
                     await self._refresh_dependencies(
                         include_prereleases=include_prereleases,
                     )
+                else:
+                    await self._mount_message(AppMessage("Dependency refresh skipped."))
                 return
 
             if deps_only:
@@ -4207,11 +4231,18 @@ class DeepAgentsApp(App):
             return False
         return confirmed is True
 
-    async def _confirm_refresh_dependencies(self) -> bool:
+    async def _confirm_refresh_dependencies(
+        self,
+        *,
+        planned_changes: str | None = None,
+    ) -> bool:
         """Ask the user to confirm a dependency refresh via a modal.
 
         A watchdog bounds the wait so a modal that never resolves can't wedge
         command handling; a timeout or mount failure is treated as a cancel.
+
+        Args:
+            planned_changes: Optional preflight summary to show before confirming.
 
         Returns:
             `True` only when the user explicitly confirmed; `False` on cancel,
@@ -4223,7 +4254,9 @@ class DeepAgentsApp(App):
 
         try:
             confirmed = await asyncio.wait_for(
-                self._push_screen_wait(RefreshDependenciesConfirmScreen()),
+                self._push_screen_wait(
+                    RefreshDependenciesConfirmScreen(planned_changes=planned_changes),
+                ),
                 timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS,
             )
         except TimeoutError:

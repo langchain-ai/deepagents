@@ -1147,6 +1147,50 @@ async def perform_dependency_refresh(
     return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
 
 
+async def perform_dependency_refresh_dry_run(
+    *,
+    progress: UpgradeProgressCallback | None = None,
+    log_path: Path | None = None,
+    include_prereleases: bool | None = None,
+) -> tuple[bool, str]:
+    """Resolve a dependency refresh plan without mutating the tool environment.
+
+    `uv tool install` has no `--dry-run`, so this targets the running tool
+    environment with `uv pip install --dry-run --python <sys.executable>`. It
+    uses the same pinned `deepagents-code` requirement, installed extras, and
+    preserved `--with` packages as the real refresh command.
+
+    Args:
+        progress: Optional callback invoked for each output line.
+        log_path: Optional path to persist command output.
+        include_prereleases: Whether to include alpha/beta/rc releases. When
+            `None`, follows the installed version's channel.
+
+    Returns:
+        `(success, output)` — *output* is the combined stdout/stderr from uv, or
+            an explanatory message when the plan cannot be computed safely.
+    """
+    supported, reason = dependency_refresh_supported()
+    if not supported:
+        return False, reason or ""
+    if not shutil.which("uv"):
+        return False, "`uv` not found on PATH."
+
+    from deepagents_code.extras_info import ExtrasIntrospectionError
+
+    try:
+        cmd = dependency_refresh_dry_run_command(
+            include_prereleases=include_prereleases,
+        )
+    except (
+        ExtrasIntrospectionError,
+        ToolRequirementIntrospectionError,
+        ValueError,
+    ) as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
+
+
 class DependencyChange(NamedTuple):
     """A single package version change parsed from uv's environment-diff output.
 
@@ -1512,6 +1556,51 @@ def dependency_refresh_command(
     with_packages = _uv_tool_with_packages(distribution_name=distribution_name)
     for package in with_packages:
         cmd += f" --with {shlex.quote(package)}"
+    if _resolve_include_prereleases(include_prereleases):
+        cmd += " --prerelease allow"
+    return cmd
+
+
+def dependency_refresh_dry_run_command(
+    *,
+    version: str = __version__,
+    include_prereleases: bool | None = None,
+    distribution_name: str = "deepagents-code",
+    python: str | None = None,
+) -> str:
+    """Return the uv command that plans a dependency refresh without installing.
+
+    Args:
+        version: Exact `deepagents-code` version to keep installed.
+        include_prereleases: Whether to include alpha/beta/rc releases. When
+            `None`, follows the installed version's channel.
+        distribution_name: Name of the installed distribution to inspect for
+            already-installed extras and uv receipt requirements.
+        python: Python executable for the target environment. Defaults to the
+            running interpreter, which is the current dcode tool environment.
+
+    Returns:
+        Shell command string suitable for execution via the shell.
+
+    Raises:
+        ToolRequirementIntrospectionError: If the target Python or uv tool receipt
+            requirements cannot be determined safely.
+    """
+    from deepagents_code.extras_info import installed_extra_names
+
+    target_python = python or sys.executable
+    if not target_python:
+        msg = "Could not determine the running Python executable"
+        raise ToolRequirementIntrospectionError(msg)
+    extras = installed_extra_names(distribution_name, strict=True)
+    requirement = _dcode_extras_requirement(extras, version=version)
+    cmd = (
+        "uv pip install --dry-run --python "
+        f"{shlex.quote(target_python)} -U {requirement}"
+    )
+    with_packages = _uv_tool_with_packages(distribution_name=distribution_name)
+    for package in with_packages:
+        cmd += f" {shlex.quote(package)}"
     if _resolve_include_prereleases(include_prereleases):
         cmd += " --prerelease allow"
     return cmd

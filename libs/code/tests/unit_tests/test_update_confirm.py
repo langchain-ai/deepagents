@@ -53,6 +53,20 @@ class TestRefreshDependenciesConfirmScreen:
             await pilot.pause()
             assert outcomes == [False]
 
+    async def test_planned_changes_are_displayed(self) -> None:
+        """Dry-run dependency changes are shown before confirmation."""
+        app = _RefreshConfirmTestApp()
+        async with app.run_test() as pilot:
+            app.push_screen(
+                RefreshDependenciesConfirmScreen(
+                    planned_changes="  langchain-openai  1.3.2 -> 1.5.0",
+                ),
+            )
+            await pilot.pause()
+            text = "\n".join(str(widget.content) for widget in app.screen.query(Static))
+            assert "compatible dependency updates are available" in text
+            assert "langchain-openai  1.3.2 -> 1.5.0" in text
+
 
 class TestUpdateBeforeDependenciesConfirmScreen:
     """Behavior tests for `UpdateBeforeDependenciesConfirmScreen`."""

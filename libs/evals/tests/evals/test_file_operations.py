@@ -22,6 +22,7 @@ from tests.evals.utils import (
     file_absent,
     file_contains,
     file_equals,
+    file_excludes,
     final_text_contains,
     final_text_excludes,
     run_agent,
@@ -46,6 +47,90 @@ def test_read_file_seeded_state_backend_file(model: BaseChatModel) -> None:
         scorer=TrajectoryScorer()
         .expect(agent_steps=2, tool_call_requests=1)
         .success(final_text_contains("three", case_insensitive=True)),
+    )
+
+
+@pytest.mark.eval_tier("baseline")
+@pytest.mark.eval_category("file_operations")
+@pytest.mark.langsmith
+def test_write_file_overwrites_existing(model: BaseChatModel) -> None:
+    """Overwrites an existing file without reading it first."""
+    agent = create_deep_agent(model=model)
+    run_agent(
+        agent,
+        model=model,
+        initial_files={"/note.md": "old content\n"},
+        query='Rewrite /note.md so it contains only "new content". Reply with DONE only.',
+        # 1st step: write_file to /note.md (no read needed).
+        # 2nd step: reply DONE.
+        # 1 tool call request: write_file.
+        scorer=TrajectoryScorer()
+        .expect(
+            agent_steps=2,
+            tool_call_requests=1,
+            tool_calls=[
+                tool_call(name="write_file", step=1, args_contains={"file_path": "/note.md"}),
+            ],
+        )
+        .success(
+            final_text_contains("DONE"),
+            file_equals("/note.md", "new content"),
+        ),
+    )
+
+
+@pytest.mark.eval_tier("baseline")
+@pytest.mark.eval_category("file_operations")
+@pytest.mark.langsmith
+def test_write_file_overwrite_drops_old_content(model: BaseChatModel) -> None:
+    """Overwriting a file replaces it entirely, no trace of old content should remain."""
+    agent = create_deep_agent(model=model)
+    run_agent(
+        agent,
+        model=model,
+        initial_files={"/log.txt": "stale line\n"},
+        query='Write "fresh line" to /log.txt. Reply with DONE only.',
+        # 1st step: write_file to /log.txt.
+        # 2nd step: reply DONE.
+        # 1 tool call request: write_file.
+        scorer=TrajectoryScorer()
+        .expect(agent_steps=2, tool_call_requests=1)
+        .success(
+            final_text_contains("DONE"),
+            file_contains("/log.txt", "fresh line"),
+            file_excludes("/log.txt", "stale"),
+        ),
+    )
+
+
+
+@pytest.mark.eval_tier("baseline")
+@pytest.mark.eval_category("file_operations")
+@pytest.mark.langsmith
+def test_write_file_prefers_edit_for_targeted_change(model: BaseChatModel) -> None:
+    """Uses edit_file (not write_file) when only a targeted in-place change is needed."""
+    agent = create_deep_agent(model=model)
+    run_agent(
+        agent,
+        model=model,
+        initial_files={"/note.md": "cat dog bird\n"},
+        query="In /note.md, replace 'cat' with 'lion'. Reply with DONE only.",
+        # 1st step: edit_file on /note.md (targeted change, rest of file preserved).
+        # 2nd step: reply DONE.
+        # 1 tool call request: edit_file.
+        scorer=TrajectoryScorer()
+        .expect(
+            agent_steps=2,
+            tool_call_requests=1,
+            tool_calls=[
+                tool_call(name="edit_file", step=1, args_contains={"file_path": "/note.md"}),
+            ],
+        )
+        .success(
+            final_text_contains("DONE"),
+            file_contains("/note.md", "lion"),
+            file_excludes("/note.md", "cat"),
+        ),
     )
 
 

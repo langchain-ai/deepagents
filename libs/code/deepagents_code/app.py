@@ -3974,6 +3974,15 @@ class DeepAgentsApp(App):
                     )
                 return
 
+            if deps_only and not await self._confirm_update_before_dependency_refresh(
+                current=cli_version,
+                latest=latest,
+            ):
+                await self._refresh_dependencies(
+                    include_prereleases=include_prereleases,
+                )
+                return
+
             release_age = await asyncio.to_thread(
                 format_release_age_parenthetical,
                 latest,
@@ -4095,6 +4104,47 @@ class DeepAgentsApp(App):
                 "\n".join(message_parts) + "\nQuit and relaunch dcode to use them.",
             ),
         )
+
+    async def _confirm_update_before_dependency_refresh(
+        self,
+        *,
+        current: str,
+        latest: str,
+    ) -> bool:
+        """Ask whether `/update --deps` should take an app update first.
+
+        Args:
+            current: Currently running `deepagents-code` version.
+            latest: Latest available `deepagents-code` version.
+
+        Returns:
+            `True` only when the user explicitly chooses the app update; `False`
+                on cancel, timeout, or mount failure so `/update --deps` continues
+                with the requested dependency refresh.
+        """
+        from deepagents_code.widgets.update_confirm import (
+            UpdateBeforeDependenciesConfirmScreen,
+        )
+
+        try:
+            confirmed = await asyncio.wait_for(
+                self._push_screen_wait(
+                    UpdateBeforeDependenciesConfirmScreen(
+                        current=current,
+                        latest=latest,
+                    )
+                ),
+                timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning(
+                "App-update confirmation timed out; continuing dependency refresh",
+            )
+            return False
+        except Exception:
+            logger.exception("Failed to mount app-update confirmation")
+            return False
+        return bool(confirmed)
 
     async def _confirm_refresh_dependencies(self) -> bool:
         """Ask the user to confirm a dependency refresh via a modal.

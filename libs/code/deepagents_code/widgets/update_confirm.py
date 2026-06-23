@@ -1,10 +1,11 @@
-"""Confirmation modal for refreshing dependencies from `/update` in the TUI.
+"""Confirmation modals for `/update` dependency-refresh flows in the TUI.
 
 When `deepagents-code` itself is already on the latest release, `/update` can
 still re-resolve its dependencies to the newest versions allowed by the pinned
 ranges (e.g. a new `langchain-openai`). That runs `uv tool upgrade` and can pull
 in newer minor releases, so this non-blocking modal asks for explicit
-confirmation first. `/update --deps` skips the prompt.
+confirmation first. `/update --deps` skips that prompt, but asks before taking an
+available app update ahead of the dependency refresh.
 """
 
 from __future__ import annotations
@@ -18,6 +19,98 @@ from textual.widgets import Static
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
+
+
+class UpdateBeforeDependenciesConfirmScreen(ModalScreen[bool]):
+    """Confirmation overlay before `/update --deps` upgrades dcode itself.
+
+    Dismisses with `True` when the user chooses the app update first and `False`
+    when they prefer to continue with the dependency refresh.
+    """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter", "confirm", "Update", show=False, priority=True),
+        Binding("escape", "cancel", "Refresh deps", show=False, priority=True),
+    ]
+
+    CSS = """
+    UpdateBeforeDependenciesConfirmScreen {
+        align: center middle;
+    }
+
+    UpdateBeforeDependenciesConfirmScreen > Vertical {
+        width: 66;
+        max-width: 90%;
+        height: auto;
+        background: $surface;
+        border: solid $primary;
+        padding: 1 2;
+    }
+
+    UpdateBeforeDependenciesConfirmScreen .update-confirm-title {
+        text-style: bold;
+        color: $primary;
+        text-align: center;
+        margin-bottom: 1;
+    }
+
+    UpdateBeforeDependenciesConfirmScreen .update-confirm-body {
+        height: auto;
+        color: $text;
+        margin-bottom: 1;
+    }
+
+    UpdateBeforeDependenciesConfirmScreen .update-confirm-help {
+        height: 1;
+        color: $text-muted;
+        text-style: italic;
+        text-align: center;
+    }
+    """
+
+    def __init__(self, *, current: str, latest: str) -> None:
+        """Create the app-update confirmation dialog.
+
+        Args:
+            current: Currently running `deepagents-code` version.
+            latest: Latest available `deepagents-code` version.
+        """
+        super().__init__()
+        self._current = current
+        self._latest = latest
+
+    def compose(self) -> ComposeResult:
+        """Compose the app-update confirmation dialog.
+
+        Yields:
+            Title, body, and help-row widgets parented inside a `Vertical`.
+        """
+        with Vertical():
+            yield Static(
+                "Update dcode first?",
+                classes="update-confirm-title",
+                markup=False,
+            )
+            yield Static(
+                f"A newer deepagents-code version is available ({self._current} -> "
+                f"{self._latest}). Update dcode now, or continue with only the "
+                "dependency refresh you requested.",
+                classes="update-confirm-body",
+                markup=False,
+            )
+            yield Static(
+                "Enter to update dcode, Esc to refresh dependencies",
+                classes="update-confirm-help",
+                markup=False,
+            )
+
+    def action_confirm(self) -> None:
+        """Dismiss with `True`."""
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        """Dismiss with `False`."""
+        self.dismiss(False)
 
 
 class RefreshDependenciesConfirmScreen(ModalScreen[bool]):

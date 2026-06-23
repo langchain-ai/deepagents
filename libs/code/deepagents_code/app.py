@@ -9401,14 +9401,23 @@ class DeepAgentsApp(App):
         # install it first (with restart offer) before switching.
         extra = screen.pending_install_extra
         if extra:
-            from functools import partial
-
-            self.call_later(
-                partial(
-                    self._install_extra_then_switch,
-                    extra,
-                    model_spec,
-                    extra_kwargs=extra_kwargs,
+            # Run in a worker, not via `call_later`. `_install_extra_then_switch`
+            # awaits a credential modal (`AuthPromptScreen`); `call_later` would
+            # invoke the coroutine inline on the App message pump, blocking it
+            # for the modal's lifetime so no key/mouse input ever reaches the
+            # prompt. A worker is a separate task, so the pump stays free and
+            # the modal is interactive. `call_after_refresh` lets the dismissing
+            # selector unwind before the worker starts (mirrors the thread
+            # selector).
+            self.call_after_refresh(
+                lambda: self.run_worker(
+                    self._install_extra_then_switch(
+                        extra,
+                        model_spec,
+                        extra_kwargs=extra_kwargs,
+                    ),
+                    exclusive=False,
+                    group="model-install-switch",
                 ),
             )
         else:

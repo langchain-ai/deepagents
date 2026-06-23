@@ -7664,11 +7664,24 @@ class TestHandleModelSelection:
     """Tests for the model-selector result router."""
 
     async def test_install_extra_then_switch_when_pending_extra(self) -> None:
-        """A confirmed install routes through install-then-switch."""
+        """A confirmed install routes through install-then-switch in a worker.
+
+        Regression: scheduling via `call_later` runs the coroutine inline on the
+        App message pump, which blocks for the lifetime of the awaited
+        `AuthPromptScreen` so no input reaches the modal. The flow must run in a
+        worker (a separate task) instead, with `call_after_refresh` letting the
+        dismissing selector unwind first.
+        """
         app = DeepAgentsApp()
+        call_after_refresh = MagicMock()
+        app.call_after_refresh = call_after_refresh  # ty: ignore
         app.call_later = MagicMock()  # ty: ignore
+        run_worker = MagicMock()
+        app.run_worker = run_worker  # ty: ignore
         dispatch = MagicMock()
         app._dispatch_model_switch = dispatch  # ty: ignore
+        install = AsyncMock()
+        app._install_extra_then_switch = install  # ty: ignore
         screen = SimpleNamespace(pending_install_extra="baseten")
 
         app._handle_model_selection(
@@ -7678,38 +7691,50 @@ class TestHandleModelSelection:
         )
 
         dispatch.assert_not_called()
-        app.call_later.assert_called_once()  # ty: ignore
-        scheduled = app.call_later.call_args.args[0]  # ty: ignore
-        # Bound methods compare equal (same instance + function) but each
-        # attribute access yields a fresh object, so `==`, not `is`.
-        assert scheduled.func == app._install_extra_then_switch
-        assert scheduled.args == ("baseten", "baseten:moonshotai/Kimi-K2.6")
-        assert scheduled.keywords == {"extra_kwargs": {"temperature": 0}}
+        # The flow is never scheduled inline on the message pump.
+        app.call_later.assert_not_called()  # ty: ignore
+        call_after_refresh.assert_called_once()  # ty: ignore
+        # Running the deferred callback starts the worker.
+        run_worker.assert_not_called()
+        call_after_refresh.call_args.args[0]()
+        run_worker.assert_called_once()
+        assert run_worker.call_args.kwargs.get("group") == "model-install-switch"
+        # Close the unconsumed coroutine the worker would have awaited.
+        run_worker.call_args.args[0].close()
+        install.assert_called_once_with(
+            "baseten",
+            "baseten:moonshotai/Kimi-K2.6",
+            extra_kwargs={"temperature": 0},
+        )
 
     async def test_plain_switch_when_no_pending_extra(self) -> None:
         """No pending extra dispatches a normal model switch."""
         app = DeepAgentsApp()
-        app.call_later = MagicMock()  # ty: ignore
+        app.call_after_refresh = MagicMock()  # ty: ignore
+        app.run_worker = MagicMock()  # ty: ignore
         dispatch = MagicMock()
         app._dispatch_model_switch = dispatch  # ty: ignore
         screen = SimpleNamespace(pending_install_extra=None)
 
         app._handle_model_selection(screen, ("openai:gpt-5.5", "openai"))  # ty: ignore
 
-        app.call_later.assert_not_called()  # ty: ignore
+        app.call_after_refresh.assert_not_called()  # ty: ignore
+        app.run_worker.assert_not_called()  # ty: ignore
         dispatch.assert_called_once_with("openai:gpt-5.5", extra_kwargs=None)
 
     async def test_cancelled_selection_is_noop(self) -> None:
         """A `None` result neither switches nor installs."""
         app = DeepAgentsApp()
-        app.call_later = MagicMock()  # ty: ignore
+        app.call_after_refresh = MagicMock()  # ty: ignore
+        app.run_worker = MagicMock()  # ty: ignore
         dispatch = MagicMock()
         app._dispatch_model_switch = dispatch  # ty: ignore
         screen = SimpleNamespace(pending_install_extra="baseten")
 
         app._handle_model_selection(screen, None)  # ty: ignore
 
-        app.call_later.assert_not_called()  # ty: ignore
+        app.call_after_refresh.assert_not_called()  # ty: ignore
+        app.run_worker.assert_not_called()  # ty: ignore
         dispatch.assert_not_called()
 
 

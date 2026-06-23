@@ -1887,6 +1887,9 @@ class DeepAgentsApp(App):
         self._last_model_unchanged_message: str | None = None
         """Most recent same-model notice, used to suppress duplicates."""
 
+        self._model_install_switching = False
+        """True while a provider extra install-then-switch flow is active."""
+
         self._message_timestamps_visible = _load_message_timestamps_visible()
         """Whether message timestamp footers are shown in the chat surface.
 
@@ -9401,16 +9404,66 @@ class DeepAgentsApp(App):
         # install it first (with restart offer) before switching.
         extra = screen.pending_install_extra
         if extra:
-            from functools import partial
+            if self._model_install_switching:
+                self.notify(
+                    "A provider install is already in progress. Try again after "
+                    "it finishes.",
+                    severity="warning",
+                    timeout=5,
+                    markup=False,
+                )
+                return
 
-            self.call_later(
-                partial(
-                    self._install_extra_then_switch,
-                    extra,
-                    model_spec,
-                    extra_kwargs=extra_kwargs,
-                ),
-            )
+            # Set synchronously (before the worker is scheduled) so a second
+            # selection on the same message pump is rejected by the guard above
+            # before its own worker can start.
+            self._model_install_switching = True
+
+            async def install_then_switch() -> None:
+                try:
+                    await self._install_extra_then_switch(
+                        extra,
+                        model_spec,
+                        extra_kwargs=extra_kwargs,
+                    )
+                finally:
+                    # Sole reset path once the worker awaits this coroutine; runs
+                    # on success, exception, and cancellation alike.
+                    self._model_install_switching = False
+
+            def start_install_worker() -> None:
+                # Run in a worker, not via `call_later`. `_install_extra_then_switch`
+                # awaits a credential modal (`AuthPromptScreen`); `call_later` would
+                # invoke the coroutine inline on the App message pump, blocking it
+                # for the modal's lifetime so no key/mouse input ever reaches the
+                # prompt. A worker is a separate task, so the pump stays free and
+                # the modal is interactive.
+                #
+                # The guard is reset only by the coroutine's `finally`, which runs
+                # once the worker awaits it. If `run_worker` raises while
+                # scheduling, the coroutine never starts, so reset the guard here
+                # (and close the orphan coroutine) to keep a failed start from
+                # stranding the guard `True` and blocking every later install. A
+                # dropped `call_after_refresh` callback only happens at app
+                # teardown, where a stuck guard is harmless.
+                coro = install_then_switch()
+                try:
+                    self.run_worker(
+                        coro,
+                        exclusive=False,
+                        group="model-install-switch",
+                    )
+                except Exception:
+                    # Worker never started: close the orphan coroutine and
+                    # release the guard so the failed start can't strand it,
+                    # then re-raise (never swallow the scheduling error).
+                    coro.close()
+                    self._model_install_switching = False
+                    raise
+
+            # `call_after_refresh` lets the dismissing selector unwind before the
+            # worker starts (mirrors the thread selector).
+            self.call_after_refresh(start_install_worker)
         else:
             self._dispatch_model_switch(model_spec, extra_kwargs=extra_kwargs)
 

@@ -725,10 +725,17 @@ fix_install_log_owner
 # ---------------------------------------------------------------------------
 DCODE_BIN=""
 DCODE_NAME=""
+# Tracks whether the binary resolved via PATH (`command -v`) or only via the
+# ~/.local/bin fallback. A fresh `uv tool install` drops the binary in
+# ~/.local/bin, but the current shell won't have it on PATH until it's
+# restarted or the env file is sourced — so we can verify it directly yet still
+# need to tell the user it isn't callable as `dcode` yet.
+DCODE_ON_PATH=false
 for candidate in dcode deepagents-code; do
   if resolved=$(command -v "$candidate" 2>/dev/null) && [ -n "$resolved" ]; then
     DCODE_BIN="$resolved"
     DCODE_NAME="$candidate"
+    DCODE_ON_PATH=true
     break
   elif [ -x "${HOME}/.local/bin/${candidate}" ]; then
     DCODE_BIN="${HOME}/.local/bin/${candidate}"
@@ -803,6 +810,15 @@ elif [ -n "$DCODE_BIN" ]; then
 else
   log_warn "dcode (or deepagents-code) command not found in PATH. Restart your shell or run:"
   log_warn "  source ~/.zshrc   # (or ~/.bashrc)"
+fi
+
+# The binary verified via its absolute path but isn't on the current shell's
+# PATH (typical right after a fresh `uv tool install`): typing `dcode` won't
+# work until the shell picks up ~/.local/bin. Point the user at the fix so the
+# "Run: dcode" footer below isn't a dead end.
+if [ "$VERIFY_OK" = true ] && [ "$DCODE_ON_PATH" = false ]; then
+  log_warn "${DCODE_NAME} isn't on your PATH yet${DCODE_BIN_DISPLAY:+ (installed at ${DCODE_BIN_DISPLAY})}. Restart your shell, or run:"
+  log_warn "  source ~/.local/bin/env"
 fi
 
 # ---------------------------------------------------------------------------

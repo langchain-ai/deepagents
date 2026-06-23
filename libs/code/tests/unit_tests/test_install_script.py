@@ -1025,3 +1025,62 @@ def test_install_script_macos_without_clt_exits_early(tmp_path: Path) -> None:
     assert proc.returncode != 0
     assert "Xcode Command Line Tools" in proc.stderr
     assert "xcode-select --install" in proc.stderr
+
+
+def test_install_script_warns_when_dcode_installed_but_not_on_path(
+    tmp_path: Path,
+) -> None:
+    """A fresh install resolved only via ~/.local/bin warns it isn't on PATH.
+
+    Simulates `uv tool install` dropping the binary in ~/.local/bin without the
+    current shell having picked it up: `command -v dcode` misses, the fallback
+    path hits, and the script verifies it directly. The success path must still
+    tell the user the binary isn't callable as `dcode` yet and how to fix it,
+    rather than printing a "Run: dcode" footer that dead-ends.
+    """
+    bin_dir, home, uv = _write_fake_tools(tmp_path, installed_version=None)
+
+    # Place a working dcode in ~/.local/bin only — not on PATH (bin_dir).
+    local_bin = home / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    dcode = local_bin / "dcode"
+    dcode.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "${1:-}" = "-v" ]; then printf "deepagents-code 0.1.0\\n"; exit 0; fi\n'
+        "exit 0\n"
+    )
+    _make_executable(dcode)
+
+    # Curated PATH excluding any real dcode (e.g. the test venv's bin), so the
+    # only resolvable binary is the ~/.local/bin fallback — the case under test.
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+        "PATH": f"{bin_dir}{os.pathsep}/usr/bin{os.pathsep}/bin",
+        "UV_BIN": str(uv),
+        "DEEPAGENTS_CODE_SKIP_OPTIONAL": "1",
+    }
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    assert proc.returncode == 0
+    combined = proc.stdout + proc.stderr
+    assert "isn't on your PATH yet" in combined
+    assert "source ~/.local/bin/env" in combined
+
+
+def test_install_script_no_path_warning_when_dcode_on_path(tmp_path: Path) -> None:
+    """When `dcode` resolves via PATH, the not-on-PATH hint is suppressed."""
+    proc, _ = _invoke(tmp_path, {}, installed_version="0.1.0", latest_version="0.2.0")
+
+    assert proc.returncode == 0
+    combined = proc.stdout + proc.stderr
+    assert "isn't on your PATH yet" not in combined

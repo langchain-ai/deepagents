@@ -351,7 +351,9 @@ def _quiet_sdk_tracing_logging() -> None:
             sdk_logger.addHandler(logging.NullHandler())
 
 
-def _load_langsmith_profile_config() -> _LangSmithProfileConfig | None:
+def _load_langsmith_profile_config(
+    env: dict[str, str] | None = None,
+) -> _LangSmithProfileConfig | None:
     """Return the active LangSmith profile client config, if available."""
     try:
         client_module = importlib.import_module("langsmith.client")
@@ -362,12 +364,18 @@ def _load_langsmith_profile_config() -> _LangSmithProfileConfig | None:
     if profiles is None:
         return None
 
-    return profiles.load_profile_client_config()
+    if env is None:
+        return profiles.load_profile_client_config()
+
+    from unittest.mock import patch
+
+    with patch.dict(os.environ, env, clear=True):
+        return profiles.load_profile_client_config()
 
 
-def _has_langsmith_profile_credentials() -> bool:
+def _has_langsmith_profile_credentials(env: dict[str, str] | None = None) -> bool:
     """Return whether the LangSmith profile config has usable auth material."""
-    config = _load_langsmith_profile_config()
+    config = _load_langsmith_profile_config(env)
     if config is None:
         return False
 
@@ -376,9 +384,9 @@ def _has_langsmith_profile_credentials() -> bool:
     )
 
 
-def _has_langsmith_profile_custom_endpoint() -> bool:
+def _has_langsmith_profile_custom_endpoint(env: dict[str, str] | None = None) -> bool:
     """Return whether the LangSmith profile points at a custom endpoint."""
-    config = _load_langsmith_profile_config()
+    config = _load_langsmith_profile_config(env)
     if config is None:
         return False
 
@@ -2014,10 +2022,10 @@ class Settings:
 
     @property
     def user_deepagents_dir(self) -> Path:
-        """Get the base user-level .deepagents directory.
+        """Base user-level `.deepagents` directory.
 
         Returns:
-            Path to ~/.deepagents
+            Path to `~/.deepagents`
         """
         return Path.home() / ".deepagents"
 
@@ -2181,7 +2189,7 @@ class Settings:
 
     @property
     def user_agents_dir(self) -> Path:
-        """Get the base user-level `.agents` directory (`~/.agents`).
+        """Base user-level `.agents` directory (`~/.agents`).
 
         Returns:
             Path to `~/.agents`
@@ -2459,9 +2467,21 @@ def get_langsmith_replica_projects() -> list[str]:
     Returns:
         Project names, or `[]` when the env var is unset or empty.
     """
+    return _get_langsmith_replica_projects_from(dict(os.environ))
+
+
+def _get_langsmith_replica_projects_from(env: dict[str, str]) -> list[str]:
+    """Parse replica project names from an environment snapshot.
+
+    Args:
+        env: Environment mapping to read.
+
+    Returns:
+        Project names, or `[]` when the env var is unset or empty.
+    """
     from deepagents_code._env_vars import LANGSMITH_REPLICA_PROJECTS
 
-    raw = os.environ.get(LANGSMITH_REPLICA_PROJECTS)
+    raw = env.get(LANGSMITH_REPLICA_PROJECTS)
     if not raw:
         return []
     return list(dict.fromkeys(p.strip() for p in raw.split(",") if p.strip()))
@@ -2489,6 +2509,18 @@ def get_langsmith_replica_project() -> str | None:
         The first configured replica project name, or `None` when none are set.
     """
     extras = get_langsmith_replica_projects()
+    return _get_first_langsmith_replica_project(extras)
+
+
+def _get_first_langsmith_replica_project(extras: list[str]) -> str | None:
+    """Return the first configured LangSmith replica project, if any.
+
+    Args:
+        extras: Parsed replica project names.
+
+    Returns:
+        The first configured replica project name, or `None` when none are set.
+    """
     if not extras:
         return None
     if len(extras) > 1:
@@ -2501,6 +2533,167 @@ def get_langsmith_replica_project() -> str | None:
             extras[1:],
         )
     return extras[0]
+
+
+_TRACING_BRIDGED_ENABLE_ENV_VARS = ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2")
+"""Tracing flags bootstrap propagates from a `DEEPAGENTS_CODE_` prefix.
+
+`dcode doctor` runs before `_ensure_bootstrap` bridges these to their canonical
+names, so it must resolve them prefix-aware (via `resolve_env_var`) to predict
+the runtime's effective state. The remaining flags in `_TRACING_ENABLE_ENV_VARS`
+are not bridged, so only their canonical form takes effect.
+"""
+
+
+def _tracing_enabled_from(env: dict[str, str]) -> bool:
+    """Return whether tracing is (or will be) enabled, prefix-aware.
+
+    Mirrors the runtime: `DEEPAGENTS_CODE_`-prefixed forms of the bridged flags
+    count (bootstrap propagates them), while the non-bridged flags are honored
+    only in their canonical form.
+
+    Args:
+        env: Environment mapping to read.
+    """
+    from deepagents_code._env_vars import classify_env_bool
+
+    for var in _TRACING_BRIDGED_ENABLE_ENV_VARS:
+        raw = _resolve_env_var_from(env, var)
+        if raw is not None and classify_env_bool(raw):
+            return True
+    return any(
+        classify_env_bool(env[var])
+        for var in _TRACING_ENABLE_ENV_VARS
+        if var not in _TRACING_BRIDGED_ENABLE_ENV_VARS and var in env
+    )
+
+
+def _tracing_enabled() -> bool:
+    """Return whether tracing is (or will be) enabled, prefix-aware."""
+    return _tracing_enabled_from(dict(os.environ))
+
+
+def _tracing_has_credentials_from(env: dict[str, str]) -> bool:
+    """Return whether a LangSmith API key (env or active profile) is available.
+
+    Both API-key vars are bridged from a `DEEPAGENTS_CODE_` prefix at bootstrap,
+    so resolve them prefix-aware to match what the runtime will see.
+
+    Args:
+        env: Environment mapping to read.
+    """
+    has_key = any(_resolve_env_var_from(env, var) for var in _TRACING_API_KEY_ENV_VARS)
+    return has_key or _has_langsmith_profile_credentials(env)
+
+
+def _tracing_endpoint_from(env: dict[str, str]) -> str | None:
+    """Return a custom tracing endpoint (env or active profile), if configured.
+
+    The endpoint vars are not bridged from a `DEEPAGENTS_CODE_` prefix and the
+    LangSmith SDK reads them canonically, so only the canonical names (plus the
+    active profile's `api_url`) are consulted here.
+
+    Args:
+        env: Environment mapping to read.
+    """
+    for var in _TRACING_ENDPOINT_ENV_VARS:
+        value = (env.get(var) or "").strip()
+        if value:
+            return value
+    config = _load_langsmith_profile_config(env)
+    if config is not None:
+        api_url = (config.api_url or "").strip()
+        if api_url:
+            return api_url
+    return None
+
+
+def _resolve_tracing_project_from(env: dict[str, str]) -> str:
+    """Resolve the project agent traces would route to, without bootstrap.
+
+    The reported project matches the `tracing.langsmith_project` manifest
+    option's env precedence: the prefixed `DEEPAGENTS_CODE_LANGSMITH_PROJECT`
+    (skipped when empty), then bare `LANGSMITH_PROJECT`, then the default.
+    Unlike `resolve_env_var`, an empty prefixed value does not shadow a real
+    `LANGSMITH_PROJECT`.
+
+    Args:
+        env: Environment mapping to read.
+
+    Returns:
+        The resolved project name, or the default when none is configured.
+    """
+    from deepagents_code._env_vars import LANGSMITH_PROJECT
+    from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+    for name in (LANGSMITH_PROJECT, "LANGSMITH_PROJECT"):
+        value = env.get(name)
+        if value:
+            return value
+    return LANGSMITH_PROJECT_DEFAULT
+
+
+def _tracing_diagnostic_env() -> dict[str, str]:
+    """Return the dotenv-aware environment snapshot for tracing diagnostics.
+
+    Returns:
+        Environment mapping with project/global dotenv values applied using the
+        same precedence as bootstrap, without mutating `os.environ`.
+    """
+    from deepagents_code.project_utils import get_server_project_context
+
+    ctx = get_server_project_context()
+    return _preview_dotenv_environ(start_path=ctx.user_cwd if ctx else None)
+
+
+@dataclass
+class TracingStatus:
+    """Offline snapshot of LangSmith tracing configuration for diagnostics.
+
+    Carries only presence/identity facts — never API keys or other secret
+    values — so it is safe to render in `dcode doctor` output.
+    """
+
+    enabled: bool
+    """Whether a tracing flag is truthy in the environment."""
+
+    has_credentials: bool
+    """Whether an API key or profile credential is resolvable."""
+
+    endpoint: str | None
+    """Custom (self-hosted/proxied) endpoint URL, if one is configured."""
+
+    project: str | None
+    """Resolved configured project name, independent of active trace ingestion."""
+
+    replica_project: str | None
+    """Extra project agent runs are mirrored to, if configured."""
+
+
+def get_tracing_status() -> TracingStatus:
+    """Summarize LangSmith tracing configuration for diagnostics.
+
+    Reads only the local environment and the active LangSmith profile; never
+    contacts the network and never exposes secret values. All fields are
+    resolved prefix-/profile-aware so the report matches what the runtime does
+    after bootstrap, even though `dcode doctor` runs before it.
+
+    Returns:
+        A `TracingStatus` snapshot describing the current tracing setup.
+    """
+    env = _tracing_diagnostic_env()
+    enabled = _tracing_enabled_from(env)
+    has_credentials = _tracing_has_credentials_from(env)
+    endpoint = _tracing_endpoint_from(env)
+    return TracingStatus(
+        enabled=enabled,
+        has_credentials=has_credentials,
+        endpoint=endpoint,
+        project=_resolve_tracing_project_from(env),
+        replica_project=_get_first_langsmith_replica_project(
+            _get_langsmith_replica_projects_from(env)
+        ),
+    )
 
 
 class LangSmithLookupError(Exception):

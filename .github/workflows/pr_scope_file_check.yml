@@ -1,39 +1,29 @@
-# Pre-merge blocking check for release-please scope fan-out via lockfile churn.
+# Pre-merge blocking check for PR title package scopes vs touched package dirs.
 #
 # Why this exists:
-#   release-please scopes a commit to a package by the file PATHS it touches —
-#   it has no notion of "this file is just a lockfile." When a bump-worthy
-#   commit (a `feat:`/`fix:` in one package) also regenerates the `uv.lock` of
-#   every dependent package, release-please attributes the bump-worthy commit to
-#   those dependents and opens a release PR for each — even though their only
-#   change is a lockfile. This is the lockfile-churn sibling of the empty-commit
-#   fan-out that `guard-empty-commit` (release-please.yml) blocks; see the
-#   "Empty commit fan-out" entry in .github/RELEASING.md for the related case.
-#
-#   This check inspects the PR's title type and changed files at PR time. When a
-#   bump-worthy PR changes only a lockfile inside a managed package it posts a
-#   sticky comment naming the affected packages and FAILS the check, so the
-#   fan-out is fixed before merge. When the condition is resolved (or the title
-#   isn't bump-worthy) the comment is removed and the check passes.
+#   PR titles use Conventional Commit scopes, and those scopes drive release notes,
+#   package labels, and reviewer expectations. A title like `fix(cli): ...` should
+#   not describe a PR whose only package edits live under `libs/code/`. This check
+#   compares package scopes from the PR title with package directories from the
+#   changed-file list, posts a sticky warning when they disagree, and FAILS the
+#   check so the mismatch is fixed before merge.
 #
 # Escape hatch:
-#   Lockfile-only releases are occasionally legitimate (e.g. a leaf-package
-#   security bump). Apply the `allow-lockfile-release` label to acknowledge the
-#   fan-out and let the PR pass; the `labeled` trigger re-runs the check so the
-#   red clears without a new commit.
+#   Apply the `allow-scope-mismatch` label when the mismatch is intentional. The
+#   check re-runs on `labeled`/`unlabeled`, leaves an informational sticky note,
+#   and passes while the label is present.
 #
 # To actually gate merges, add this check to the branch's required status checks.
 #
-# How it stays faithful to release-please:
-#   - Package path -> component map and the bump-worthy type set are both read
-#     from release-please-config.json by the helper script — see
-#     .github/scripts/check_lockfile_release_scope.py for the rationale.
+# How it stays faithful to existing repo configuration:
+#   - Scope -> package and dir -> package mappings are read from
+#     .github/scripts/pr-labeler-config.json by the helper script — see
+#     .github/scripts/check_pr_scope_files.py.
 #
 # Trust model:
-#   - The detector and release-please-config.json run from the PR *base*
-#     revision, not the PR head, so a PR cannot edit *those* to self-bypass the
-#     gate. Only the PR title (event payload) and changed-file list (API) come
-#     from the PR.
+#   - The detector and labeler config run from the PR *base* revision, not the
+#     PR head, so a PR cannot edit *those* to self-bypass the gate. Only the PR
+#     title (event payload) and changed-file list (API) come from the PR.
 #   - This base checkout closes the detector/config edit vector but does not by
 #     itself make the gate un-bypassable: under `pull_request` the workflow file
 #     itself is taken from the PR head, so a PR that edits this workflow can
@@ -42,18 +32,18 @@
 #     `.github/workflows/` edits.
 #
 # Limitations:
-#   - Runs under `pull_request` (not `pull_request_target`), so PRs from forks
-#     get the read-only token and the comment is surfaced to the job summary
-#     instead (same fallback as release_please_parse_check.yml). No secrets are
-#     exposed to PR-author-controlled code.
+#   - Runs under `pull_request` (not `pull_request_target`), so PRs from forks get
+#     the read-only token and the comment is surfaced to the job summary instead.
+#     No secrets are exposed to PR-author-controlled code.
 #   - The detector and config run from base, so a PR that itself *adds* a new
-#     release-please package is checked against the base config that does not
-#     yet know that package: a lockfile-only fan-out into the just-added package
-#     path is not flagged until the package exists on base. Reading head config
-#     instead would reopen the self-bypass the base checkout closes, so this is
-#     the deliberate tradeoff; the next PR touching the package is gated normally.
+#     package directory (and its labeler `fileRules`/`scopeToLabel` entries) is
+#     checked against the base config that does not yet know that package: a
+#     scope/file mismatch for the just-added package dir is not flagged until the
+#     rule exists on base. Reading head config instead would reopen the
+#     self-bypass the base checkout closes, so this is the deliberate tradeoff;
+#     the next PR touching the package is gated normally.
 
-name: "🔍 Release-please scope check"
+name: "🔍 PR scope file check"
 
 on:
   pull_request:
@@ -66,18 +56,18 @@ permissions:
   pull-requests: write
 
 jobs:
-  scope-check:
-    name: "flag lockfile-only release fan-out"
+  scope-file-check:
+    name: "validate title scope covers package dirs"
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
       - name: "📋 Checkout base revision"
         # Check out the PR *base* (trusted), never the PR head. The detector and
-        # release-please-config.json are executed from this tree, so the PR under
-        # test cannot edit check_lockfile_release_scope.py or the config to print
-        # "[]" and self-bypass the gate. The PR title (event payload) and
-        # changed-file list (API) are fed in separately and are authoritative
-        # regardless of this checkout.
+        # labeler config are executed from this tree, so the PR under test cannot
+        # edit check_pr_scope_files.py or pr-labeler-config.json to print "[]" and
+        # self-bypass the gate — defeating it for the exact PRs it must block. The
+        # PR title (event payload) and changed-file list (API) are fed in
+        # separately and are authoritative regardless of this checkout.
         #
         # `persist-credentials: false` so the job token is not written into the
         # checkout's git config; the detector needs no git credentials, and the
@@ -106,10 +96,9 @@ jobs:
               per_page: 100,
             });
             // listFiles is hard-capped by GitHub at 3000 files regardless of
-            // pagination. A truncated list would make a package look
-            // lockfile-only when its real edits are past the cap (false block)
-            // or hide a lockfile past the cap (false pass). Fail closed if the
-            // collected count doesn't match the PR's reported total.
+            // pagination. A truncated list could hide a package dir mismatch or
+            // create a false one, so fail closed if the collected count doesn't
+            // match the PR's reported total.
             const expected = context.payload.pull_request.changed_files;
             // Without a numeric reported total we cannot verify completeness, so
             // fail closed rather than proceeding on a possibly-truncated list.
@@ -118,13 +107,13 @@ jobs:
               return;
             }
             if (files.length !== expected) {
-              core.setFailed(`Changed-file list is incomplete (${files.length} of ${expected}); cannot determine release scope reliably. Failing closed.`);
+              core.setFailed(`Changed-file list is incomplete (${files.length} of ${expected}); cannot determine PR scope/file alignment reliably. Failing closed.`);
               return;
             }
             fs.writeFileSync('changed_files.txt', files.map(f => f.filename).join('\n'));
             core.info(`Collected ${files.length} changed file(s).`);
 
-      - name: "Detect lockfile-only release scope"
+      - name: "Detect package scope/file mismatch"
         id: detect
         # PR title is passed via env (never interpolated into the script body)
         # to avoid shell injection from PR-author-controlled text.
@@ -132,7 +121,7 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
-          detector=".github/scripts/check_lockfile_release_scope.py"
+          detector=".github/scripts/check_pr_scope_files.py"
           if [[ ! -f "$detector" ]]; then
             # The detector does not exist on the base revision: the bootstrapping
             # PR that first introduces this check, or a branch cut from before it
@@ -147,7 +136,7 @@ jobs:
             # renamed/moved on base without updating the path above, this branch
             # silently disables the gate. Emit a *warning* (not a notice) so the
             # desync surfaces in the Checks UI rather than only the fold-out log.
-            echo "::warning::Detector '$detector' absent on base revision; scope check is NOT enforcing. Expected only on the bootstrapping PR or a pre-gate branch — otherwise the detector path here may be out of sync with the repo."
+            echo "::warning::Detector '$detector' absent on base revision; scope/file check is NOT enforcing. Expected only on the bootstrapping PR or a pre-gate branch — otherwise the detector path here may be out of sync with the repo."
             offenders="[]"
           else
             # A config-read error in the detector exits non-zero; under `set -e`
@@ -157,13 +146,13 @@ jobs:
           fi
           # Heredoc form so a multi-line value can never corrupt $GITHUB_OUTPUT.
           {
-            echo "offenders<<__SCOPE_EOF__"
+            echo "offenders<<__SCOPE_FILE_EOF__"
             echo "$offenders"
-            echo "__SCOPE_EOF__"
+            echo "__SCOPE_FILE_EOF__"
           } >> "$GITHUB_OUTPUT"
           echo "Detector offenders: $offenders"
 
-      - name: "Comment on lockfile-only fan-out"
+      - name: "Comment on package scope/file mismatch"
         # Offenders passed via env (not interpolated into the script body) for
         # the same injection-safety reason as the title above.
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -171,9 +160,9 @@ jobs:
           OFFENDERS: ${{ steps.detect.outputs.offenders }}
         with:
           script: |
-            const STICKY_MARKER = '<!-- release-please-scope-check -->';
-            const BYPASS_LABEL = 'allow-lockfile-release';
-            const { number, labels } = context.payload.pull_request;
+            const STICKY_MARKER = '<!-- pr-scope-file-check -->';
+            const BYPASS_LABEL = 'allow-scope-mismatch';
+            const { title, number, labels } = context.payload.pull_request;
 
             // Strict, fail-closed parse. The detector always prints a JSON array
             // ("[]" when clean), so empty or non-array output means the detector
@@ -181,7 +170,7 @@ jobs:
             // missing result into "no offenders → pass."
             const raw = process.env.OFFENDERS;
             if (raw === undefined || raw.trim() === '') {
-              core.setFailed('Detector produced no output; cannot determine release scope. Failing closed.');
+              core.setFailed('Detector produced no output; cannot determine PR scope/file alignment. Failing closed.');
               return;
             }
             let offenders;
@@ -195,10 +184,37 @@ jobs:
               core.setFailed(`Detector output was not a JSON array: ${JSON.stringify(raw)}`);
               return;
             }
+            for (const offender of offenders) {
+              if (!offender || typeof offender !== 'object' || typeof offender.package !== 'string' || !Array.isArray(offender.dirs) || offender.dirs.some(d => typeof d !== 'string')) {
+                core.setFailed(`Detector output contained an invalid offender object: ${JSON.stringify(offender)}`);
+                return;
+              }
+            }
 
             // Constant string comparison against the structured label payload —
             // no PR-author-controlled text reaches a code path.
             const bypassed = (labels || []).some(l => l.name === BYPASS_LABEL);
+
+            // Display-only: this re-parses the title solely to render the
+            // scope list in the sticky comment. The pass/fail decision comes
+            // entirely from the detector's JSON offenders, not from here. Keep
+            // this regex in sync with `_TITLE_RE` in check_pr_scope_files.py.
+            const titleScopes = (() => {
+              const match = title.match(/^[a-z]+(?:\(([^)]*)\))?!?:\s/);
+              if (!match || !match[1]) {
+                return [];
+              }
+              return match[1].split(',').map(s => s.trim()).filter(Boolean);
+            })();
+            const scopeList = titleScopes.length > 0
+              ? titleScopes.map(s => `\`${s}\``).join(', ')
+              : '_none parsed_';
+
+            const offenderLines = offenders.map(o => {
+              const dirs = o.dirs.map(d => `\`${d}\``).join(', ');
+              return `- package label \`${o.package}\` from ${dirs}`;
+            }).join('\n');
+            const offenderSummary = offenders.map(o => `${o.package} (${o.dirs.join(', ')})`).join(', ');
 
             async function findStickyComment() {
               const comments = await github.paginate(github.rest.issues.listComments, {
@@ -226,15 +242,15 @@ jobs:
                 }
               } catch (commentErr) {
                 // Fork PRs run with a restricted token; surface to the job
-                // summary so the fan-out is still visible alongside the red check.
+                // summary so the mismatch is still visible alongside the red check.
                 core.warning(`Could not post sticky comment (fork PR token, rate limit, or transient API error) [status=${commentErr.status ?? 'n/a'}]: ${commentErr.message}`);
                 // Guard the summary write too: if it throws (unwritable summary,
                 // size limit) it must not escape upsertSticky and preempt the
                 // caller's core.setFailed — the red check is the load-bearing signal.
                 try {
                   await core.summary
-                    .addHeading('Lockfile-only release fan-out')
-                    .addRaw(`Affected components: ${offenders.join(', ')}`)
+                    .addHeading('PR scope/file mismatch')
+                    .addRaw(body)
                     .write();
                 } catch (summaryErr) {
                   core.warning(`Could not write job summary fallback [status=${summaryErr.status ?? 'n/a'}]: ${summaryErr.message}`);
@@ -243,28 +259,30 @@ jobs:
             }
 
             if (offenders.length === 0) {
-              // Resolved (or title not bump-worthy): clear any stale comment and
-              // pass. Wrapped so a cleanup hiccup can't turn a clean result red.
+              // Resolved: clear any stale comment and pass. Wrapped so a cleanup
+              // hiccup can't turn a clean result red.
               try {
                 await deleteSticky();
               } catch (cleanupErr) {
-                core.warning(`Could not clean up prior scope-check comment (stale comment may persist on a now-passing PR) [status=${cleanupErr.status ?? 'n/a'}]: ${cleanupErr.message}`);
+                core.warning(`Could not clean up prior scope/file-check comment (stale comment may persist on a now-passing PR) [status=${cleanupErr.status ?? 'n/a'}]: ${cleanupErr.message}`);
               }
-              core.info('No lockfile-only release fan-out detected.');
+              core.info('No PR scope/file mismatch detected.');
               return;
             }
-
-            const list = offenders.map(c => `\`${c}\``).join(', ');
-            const singular = offenders.length === 1;
 
             if (bypassed) {
               // Acknowledged as intentional via the bypass label: leave an
               // informational note (not a failure) and pass.
               await upsertSticky([
                 STICKY_MARKER,
-                `ℹ️ **Lockfile-only release fan-out acknowledged** via the \`${BYPASS_LABEL}\` label.`,
+                `ℹ️ **PR scope/file mismatch acknowledged** via the \`${BYPASS_LABEL}\` label.`,
                 '',
-                `${singular ? 'This package' : 'These packages'} will get a release PR for a lockfile-only change: ${list}. Remove the label to re-enable the block.`,
+                `Title scope(s): ${scopeList}`,
+                '',
+                'Touched package dir(s) not covered by those scopes:',
+                offenderLines,
+                '',
+                'Remove the label to re-enable the block.',
               ].join('\n'));
               core.info(`Bypassed via ${BYPASS_LABEL} label.`);
               return;
@@ -272,20 +290,21 @@ jobs:
 
             await upsertSticky([
               STICKY_MARKER,
-              '⛔ **This PR changes only a lockfile inside one or more release-please-managed packages.**',
+              '⛔ **This PR title scope does not match the package directory it changes.**',
               '',
-              `Affected: ${list}`,
+              `Title scope(s): ${scopeList}`,
               '',
-              `Because the PR title is bump-worthy, release-please will open a **separate release PR** for ${singular ? 'this package' : 'each of these packages'} — even though ${singular ? 'its' : 'their'} only change is a regenerated lockfile. This check is **blocking**.`,
+              'Touched package dir(s) not covered by those scopes:',
+              offenderLines,
+              '',
+              'This check is **blocking** because the PR title declares one package scope while the changed files live in a different package directory.',
               '',
               '### To resolve',
               '',
-              'Move the lockfile regeneration into a separate `chore(deps):` commit/PR — `chore` is hidden and does not trigger a release — so only the package with real source changes is released.',
+              'Edit the PR title scope so it covers the changed package directory (for example, use `fix(code): ...` for `libs/code/**`), or move the files so they match the declared scope.',
               '',
               '### If intentional',
               '',
-              `Apply the \`${BYPASS_LABEL}\` label (e.g. a deliberate dependency bump shipping as a lockfile-only release). The check re-runs and passes.`,
-              '',
-              '📖 [Lockfile churn fan-out](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#lockfile-churn-fan-out)',
+              `Apply the \`${BYPASS_LABEL}\` label. The check re-runs and passes with an informational note.`,
             ].join('\n'));
-            core.setFailed(`Lockfile-only release fan-out for: ${offenders.join(', ')}. Resolve, or apply the '${BYPASS_LABEL}' label if intentional.`);
+            core.setFailed(`PR title scope(s) ${titleScopes.join(', ') || '(none)'} do not cover touched package dir(s): ${offenderSummary}. Fix the title scope/files, or apply the '${BYPASS_LABEL}' label if intentional.`);

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shlex
+import sys
 import time
 import tomllib
 from collections.abc import Mapping, Sequence  # noqa: TC003
@@ -21,17 +23,23 @@ from deepagents_code._version import __version__
 from deepagents_code.extras_info import ExtrasIntrospectionError, installed_extra_names
 from deepagents_code.update_check import (
     CACHE_TTL,
+    DependencyChange,
     InstallMethod,
+    ToolRequirementIntrospectionError,
     _extract_release_times,
     _latest_from_releases,
     _parse_version,
     cleanup_update_logs,
     clear_update_notified,
     create_update_log_path,
+    dependency_refresh_command,
+    dependency_refresh_dry_run_command,
+    dependency_refresh_supported,
     detect_install_method,
     editable_extra_hint,
     editable_package_hint,
     format_age_suffix,
+    format_dependency_changes,
     format_installed_age_suffix,
     format_release_age,
     format_release_age_parenthetical,
@@ -54,6 +62,9 @@ from deepagents_code.update_check import (
     mark_auto_update_default_acknowledged,
     mark_update_notified,
     mark_version_seen,
+    parse_dependency_changes,
+    perform_dependency_refresh,
+    perform_dependency_refresh_dry_run,
     perform_install_extra,
     perform_install_package,
     perform_upgrade,
@@ -120,6 +131,19 @@ def _write_dist_info(
     metadata = ["Metadata-Version: 2.1", f"Name: {name}", f"Version: {version}"]
     metadata.extend(f"Requires-Dist: {req}" for req in requires)
     dist_info.joinpath("METADATA").write_text("\n".join(metadata), encoding="utf-8")
+
+
+def _write_uv_receipt(
+    root: Path,
+    requirements: str,
+    *,
+    python: str | None = None,
+) -> None:
+    python_line = f'python = "{python}"\n' if python is not None else ""
+    root.joinpath("uv-receipt.toml").write_text(
+        f"[tool]\n{python_line}requirements = [{requirements}]\n",
+        encoding="utf-8",
+    )
 
 
 class TestParseVersion:
@@ -1106,6 +1130,335 @@ class TestUpdateLogs:
             == "uv tool upgrade deepagents-code --prerelease allow"
         )
 
+    def test_dependency_refresh_command_pins_current_version(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Dependency refresh keeps dcode on the running version."""
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        with patch(
+            "deepagents_code.extras_info.installed_extra_names",
+            return_value=frozenset(),
+        ):
+            assert (
+                dependency_refresh_command(version="1.2.3")
+                == "uv tool install -U deepagents-code==1.2.3"
+            )
+
+    def test_dependency_refresh_command_preserves_extras(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Dependency refresh must not drop already-installed extras."""
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        with patch(
+            "deepagents_code.extras_info.installed_extra_names",
+            return_value=frozenset({"quickjs", "nvidia"}),
+        ):
+            assert (
+                dependency_refresh_command(
+                    version="1.2.3",
+                    include_prereleases=True,
+                )
+                == "uv tool install -U "
+                "'deepagents-code[nvidia,quickjs]==1.2.3' --prerelease allow"
+            )
+
+    def test_dependency_refresh_command_preserves_with_packages(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Dependency refresh must not drop packages installed via `--with`."""
+        _write_uv_receipt(
+            tmp_path,
+            (
+                '{ name = "deepagents-code" }, '
+                '{ name = "langchain-custom" }, '
+                '{ name = "langchain.another_provider" }'
+            ),
+        )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+
+        with patch(
+            "deepagents_code.extras_info.installed_extra_names",
+            return_value=frozenset(),
+        ):
+            assert dependency_refresh_command(version="1.2.3") == (
+                "uv tool install -U deepagents-code==1.2.3 "
+                "--with langchain-custom --with langchain.another_provider"
+            )
+
+    def test_dependency_refresh_command_preserves_uv_python(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Dependency refresh must keep uv's recorded interpreter selection."""
+        _write_uv_receipt(
+            tmp_path,
+            '{ name = "deepagents-code" }',
+            python="3.13",
+        )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+
+        with patch(
+            "deepagents_code.extras_info.installed_extra_names",
+            return_value=frozenset(),
+        ):
+            assert dependency_refresh_command(version="1.2.3") == (
+                "uv tool install -U --python 3.13 deepagents-code==1.2.3"
+            )
+
+    def test_dependency_refresh_command_quotes_uv_python(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Recorded interpreter paths are shell-quoted before execution."""
+        _write_uv_receipt(
+            tmp_path,
+            '{ name = "deepagents-code" }, { name = "langchain-custom" }',
+            python="/opt/Python 3.13/bin/python",
+        )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+
+        with patch(
+            "deepagents_code.extras_info.installed_extra_names",
+            return_value=frozenset(),
+        ):
+            assert dependency_refresh_command(version="1.2.3") == (
+                "uv tool install -U --python '/opt/Python 3.13/bin/python' "
+                "deepagents-code==1.2.3 --with langchain-custom"
+            )
+
+    def test_dependency_refresh_command_refuses_malformed_receipt(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Malformed uv receipts must not silently drop `--with` packages."""
+        tmp_path.joinpath("uv-receipt.toml").write_text(
+            "[tool\nrequirements = []\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+
+        with (
+            patch(
+                "deepagents_code.extras_info.installed_extra_names",
+                return_value=frozenset(),
+            ),
+            pytest.raises(ToolRequirementIntrospectionError, match="Could not read"),
+        ):
+            dependency_refresh_command(version="1.2.3")
+
+    def test_dependency_refresh_command_refuses_unpreservable_with_requirement(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Unsupported receipt entries are refused instead of rewritten lossy."""
+        _write_uv_receipt(
+            tmp_path,
+            (
+                '{ name = "deepagents-code" }, '
+                '{ name = "langchain-custom", editable = "/tmp/pkg" }'
+            ),
+        )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+
+        with (
+            patch(
+                "deepagents_code.extras_info.installed_extra_names",
+                return_value=frozenset(),
+            ),
+            pytest.raises(
+                ToolRequirementIntrospectionError,
+                match="cannot be preserved automatically",
+            ),
+        ):
+            dependency_refresh_command(version="1.2.3")
+
+    def test_dependency_refresh_dry_run_command_targets_current_python(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Dry-run planning resolves against the running tool environment."""
+        _write_uv_receipt(
+            tmp_path,
+            '{ name = "deepagents-code" }, { name = "langchain-custom" }',
+        )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        with patch(
+            "deepagents_code.extras_info.installed_extra_names",
+            return_value=frozenset({"quickjs"}),
+        ):
+            assert dependency_refresh_dry_run_command(
+                version="1.2.3",
+                include_prereleases=True,
+                python="/opt/Dcode Python/bin/python",
+            ) == (
+                "uv pip install --dry-run --python "
+                "'/opt/Dcode Python/bin/python' -U "
+                "'deepagents-code[quickjs]==1.2.3' langchain-custom "
+                "--prerelease allow"
+            )
+
+    async def test_perform_dependency_refresh_dry_run_uses_pinned_uv_pip_command(
+        self,
+    ) -> None:
+        """Dependency dry run shells out without mutating the tool environment."""
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch("shutil.which", return_value="/usr/bin/uv"),
+            patch(
+                "deepagents_code.extras_info.installed_extra_names",
+                return_value=frozenset(),
+            ),
+            patch(
+                "deepagents_code.update_check._uv_tool_with_packages",
+                return_value=(),
+            ),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as run_mock,
+        ):
+            success, _output = await perform_dependency_refresh_dry_run()
+
+        assert success is True
+        run_mock.assert_awaited_once()
+        await_args = run_mock.await_args
+        assert await_args is not None
+        assert await_args.args[0] == (
+            f"uv pip install --dry-run --python {shlex.quote(sys.executable)} "
+            f"-U deepagents-code=={__version__}"
+        )
+
+    async def test_perform_dependency_refresh_uses_pinned_uv_command(self) -> None:
+        """Dependency refresh shells out without allowing a dcode version bump."""
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch("shutil.which", return_value="/usr/bin/uv"),
+            patch(
+                "deepagents_code.extras_info.installed_extra_names",
+                return_value=frozenset(),
+            ),
+            patch(
+                "deepagents_code.update_check._uv_tool_with_packages",
+                return_value=(),
+            ),
+            patch(
+                "deepagents_code.update_check._uv_tool_python",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as run_mock,
+        ):
+            success, _output = await perform_dependency_refresh()
+
+        assert success is True
+        run_mock.assert_awaited_once()
+        await_args = run_mock.await_args
+        assert await_args is not None
+        assert await_args.args[0] == (
+            f"uv tool install -U deepagents-code=={__version__}"
+        )
+
+    async def test_perform_dependency_refresh_reports_with_package_errors(
+        self,
+    ) -> None:
+        """Refresh refuses rather than dropping unknown `--with` packages."""
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch("shutil.which", return_value="/usr/bin/uv"),
+            patch(
+                "deepagents_code.update_check.dependency_refresh_command",
+                side_effect=ToolRequirementIntrospectionError("receipt broken"),
+            ),
+        ):
+            success, output = await perform_dependency_refresh()
+
+        assert success is False
+        assert "ToolRequirementIntrospectionError" in output
+        assert "receipt broken" in output
+
+    async def test_perform_dependency_refresh_refuses_brew(self) -> None:
+        """Brew cannot refresh deps without taking the app formula update."""
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="brew",
+            ),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+            ) as run_mock,
+        ):
+            success, output = await perform_dependency_refresh()
+
+        assert success is False
+        assert "dependency-only refresh is not supported" in output
+        run_mock.assert_not_awaited()
+
+    async def test_perform_dependency_refresh_refuses_editable(self) -> None:
+        """Editable installs can't be re-resolved as a tool environment."""
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="unknown",
+            ),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+            ) as run_mock,
+        ):
+            success, output = await perform_dependency_refresh()
+
+        assert success is False
+        assert "Editable install detected" in output
+        run_mock.assert_not_awaited()
+
+    async def test_perform_dependency_refresh_refuses_other(self) -> None:
+        """An unrecognized install method is refused, not guessed at."""
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="other",
+            ),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+            ) as run_mock,
+        ):
+            success, output = await perform_dependency_refresh()
+
+        assert success is False
+        assert "Unsupported install method detected" in output
+        run_mock.assert_not_awaited()
+
+    async def test_perform_dependency_refresh_refuses_when_uv_missing(self) -> None:
+        """A uv-managed install still needs `uv` on PATH to refresh."""
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch("shutil.which", return_value=None),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+            ) as run_mock,
+        ):
+            success, output = await perform_dependency_refresh()
+
+        assert success is False
+        assert "`uv` not found on PATH." in output
+        run_mock.assert_not_awaited()
+
     def test_prerelease_upgrade_supported_for_uv(self) -> None:
         """The uv install method can be steered onto the pre-release channel."""
         supported, reason = prerelease_upgrade_supported("uv")
@@ -1124,6 +1477,131 @@ class TestUpdateLogs:
         assert supported is False
         assert reason is not None
         assert "aren't supported for this install" in reason
+
+
+class TestParseDependencyChanges:
+    """`parse_dependency_changes` collapses uv's env diff into changes."""
+
+    def test_version_bump_pairs_removed_and_added(self) -> None:
+        """A `- old` / `+ new` pair for one package becomes one bump entry."""
+        output = (
+            "Resolved 120 packages in 12ms\n"
+            " - langchain-openai==1.3.2\n"
+            " + langchain-openai==1.5.0\n"
+            "Installed 1 executable: dcode\n"
+        )
+        assert parse_dependency_changes(output) == [
+            DependencyChange(name="langchain-openai", old="1.3.2", new="1.5.0"),
+        ]
+
+    def test_new_package_has_no_old(self) -> None:
+        """A lone `+` line is reported as a new package."""
+        assert parse_dependency_changes(" + httpx==0.28.1\n") == [
+            DependencyChange(name="httpx", old=None, new="0.28.1"),
+        ]
+
+    def test_removed_package_has_no_new(self) -> None:
+        """A lone `-` line is reported as a removed package."""
+        assert parse_dependency_changes(" - httpx==0.28.1\n") == [
+            DependencyChange(name="httpx", old="0.28.1", new=None),
+        ]
+
+    def test_preserves_first_seen_order(self) -> None:
+        """Packages keep the order uv first mentioned them in."""
+        output = " - b-pkg==1.0\n + b-pkg==2.0\n - a-pkg==1.0\n + a-pkg==2.0\n"
+        names = [change.name for change in parse_dependency_changes(output)]
+        assert names == ["b-pkg", "a-pkg"]
+
+    def test_ignores_non_diff_lines(self) -> None:
+        """Resolver chatter without `+`/`-` markers is skipped."""
+        assert parse_dependency_changes("Resolved 3 packages\nAudited 3\n") == []
+
+
+class TestFormatDependencyChanges:
+    """`format_dependency_changes` renders an aligned summary."""
+
+    def test_empty_returns_empty_string(self) -> None:
+        """No changes renders to an empty string."""
+        assert format_dependency_changes([]) == ""
+
+    def test_renders_bump_new_and_removed(self) -> None:
+        """Each change kind gets its own rendering, column-aligned."""
+        changes = [
+            DependencyChange(name="langchain-openai", old="1.3.2", new="1.5.0"),
+            DependencyChange(name="httpx", old=None, new="0.28.1"),
+            DependencyChange(name="old-pkg", old="1.0", new=None),
+        ]
+        rendered = format_dependency_changes(changes)
+        assert "langchain-openai  1.3.2 -> 1.5.0" in rendered
+        assert "0.28.1 (new)" in rendered
+        assert "1.0 (removed)" in rendered
+        assert "httpx             0.28.1 (new)" in rendered
+
+
+class TestDependencyChangeKind:
+    """`DependencyChange.kind` classifies the three legal shapes."""
+
+    def test_bumped_when_both_sides_present(self) -> None:
+        """Both `old` and `new` set is an in-place bump."""
+        assert DependencyChange(name="a", old="1.0", new="2.0").kind == "bumped"
+
+    def test_added_when_only_new(self) -> None:
+        """Only `new` set is a newly added package."""
+        assert DependencyChange(name="a", old=None, new="1.0").kind == "added"
+
+    def test_removed_when_only_old(self) -> None:
+        """Only `old` set is a removed package."""
+        assert DependencyChange(name="a", old="1.0", new=None).kind == "removed"
+
+    def test_empty_shape_is_rejected(self) -> None:
+        """`(None, None)` is meaningless and must raise rather than mis-render."""
+        with pytest.raises(ValueError, match="neither an old nor new version"):
+            _ = DependencyChange(name="a", old=None, new=None).kind
+
+
+class TestDependencyChangeAnnotations:
+    """`parse_dependency_changes` tolerates uv's source annotations."""
+
+    def test_source_annotation_suffix_is_parsed(self) -> None:
+        """A non-PyPI source suffix doesn't hide the version change."""
+        output = (
+            " - example==0.1.0 (from file:///old)\n"
+            " + example==0.2.0 (from file:///new)\n"
+        )
+        assert parse_dependency_changes(output) == [
+            DependencyChange(name="example", old="0.1.0", new="0.2.0"),
+        ]
+
+
+class TestDependencyRefreshSupported:
+    """`dependency_refresh_supported` gates the dependency-only refresh."""
+
+    def test_uv_is_supported(self) -> None:
+        """uv-managed installs can re-resolve dependencies in place."""
+        supported, reason = dependency_refresh_supported("uv")
+
+        assert supported is True
+        assert reason is None
+
+    @pytest.mark.parametrize(
+        ("method", "needle"),
+        [
+            ("unknown", "Editable install detected"),
+            ("brew", "Homebrew install detected"),
+            ("other", "Unsupported install method detected"),
+        ],
+    )
+    def test_non_uv_methods_are_refused_with_reason(
+        self,
+        method: InstallMethod,
+        needle: str,
+    ) -> None:
+        """Each non-uv method is refused with a distinct, user-facing reason."""
+        supported, reason = dependency_refresh_supported(method)
+
+        assert supported is False
+        assert reason is not None
+        assert needle in reason
 
 
 class TestInstallExtraCommand:

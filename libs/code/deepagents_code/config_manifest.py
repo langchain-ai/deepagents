@@ -840,7 +840,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=False,
         env_var=_env_vars.NO_TERMINAL_ESCAPE,
     ),
-    # --- Models / Tracing ----------------------------------------------
+    # --- Models --------------------------------------------------------
     ConfigOption(
         key="models.default",
         group="Models",
@@ -856,9 +856,10 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.STR,
         toml_keys=("models", "recent"),
     ),
+    # --- Tracing -------------------------------------------------------
     ConfigOption(
         key="tracing.langsmith_project",
-        group="Models",
+        group="Tracing",
         summary="LangSmith project name for deepagents agent traces.",
         kind=OptionKind.STR,
         default=LANGSMITH_PROJECT_DEFAULT,
@@ -868,14 +869,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ),
     ConfigOption(
         key="tracing.user_id",
-        group="Models",
+        group="Tracing",
         summary="User identifier attached to LangSmith trace metadata.",
         kind=OptionKind.STR,
         env_var=_env_vars.USER_ID,
     ),
     ConfigOption(
         key="tracing.langsmith_replica_projects",
-        group="Models",
+        group="Tracing",
         summary=(
             "Extra LangSmith project to also write agent traces to. "
             "Comma-separated for forward-compatibility, but only the first "

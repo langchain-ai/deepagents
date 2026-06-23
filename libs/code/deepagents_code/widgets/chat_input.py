@@ -2432,7 +2432,7 @@ class ChatInput(Vertical):
 
     @property
     def value(self) -> str:
-        """Get the current input value.
+        """Current input value.
 
         Returns:
             Current text in the input field.
@@ -2507,10 +2507,10 @@ class ChatInput(Vertical):
 
     @property
     def input_widget(self) -> ChatTextArea | None:
-        """Get the underlying TextArea widget.
+        """Underlying `TextArea` widget.
 
         Returns:
-            The ChatTextArea widget or None if not mounted.
+            The `ChatTextArea` widget or `None` if not mounted.
         """
         return self._text_area
 

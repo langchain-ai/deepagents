@@ -16,6 +16,7 @@ import platform
 import sys
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 from deepagents_code.output import write_json
 
@@ -186,6 +187,65 @@ def _collect_updates() -> DiagnosticSection:
     return DiagnosticSection(title="Updates", items=items)
 
 
+def _sanitize_endpoint(endpoint: str) -> str:
+    """Return a paste-safe custom endpoint identifier.
+
+    Args:
+        endpoint: Configured endpoint URL.
+
+    Returns:
+        The endpoint origin when parseable, otherwise a generic configured
+        marker that does not include user-controlled URL contents.
+    """
+    parsed = urlsplit(endpoint.strip())
+    if not parsed.scheme or not parsed.hostname:
+        return "(custom endpoint configured)"
+
+    host = parsed.hostname
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+
+    netloc = f"{host}:{port}" if port is not None else host
+    return f"{parsed.scheme}://{netloc}"
+
+
+def _collect_tracing() -> DiagnosticSection:
+    """Collect LangSmith tracing status from env and profile (offline).
+
+    Credentials are reported as configured/not configured only — the API key
+    value is never read or printed. The `Credentials` item is flagged as a
+    problem only when tracing is enabled without a key and without a custom
+    endpoint, mirroring the runtime's orphaned-tracing guard (a keyless
+    self-hosted endpoint is a valid, healthy setup).
+
+    Returns:
+        The `Tracing` section.
+    """
+    from deepagents_code.config import get_tracing_status
+
+    status = get_tracing_status()
+    creds_required = status.enabled and status.endpoint is None
+    items = [
+        DiagnosticItem("Tracing", "enabled" if status.enabled else "disabled"),
+        DiagnosticItem(
+            "Credentials",
+            "configured" if status.has_credentials else "not configured",
+            ok=status.has_credentials or not creds_required,
+        ),
+        DiagnosticItem("Project", status.project or "(unset)"),
+    ]
+    if status.endpoint:
+        items.append(DiagnosticItem("Endpoint", _sanitize_endpoint(status.endpoint)))
+    if status.replica_project:
+        items.append(DiagnosticItem("Replica project", status.replica_project))
+    return DiagnosticSection(title="Tracing", items=items)
+
+
 def _path_status(label: str, path: object) -> DiagnosticItem:
     """Build an item reporting a path and whether it exists on disk.
 
@@ -245,6 +305,7 @@ def collect_sections() -> list[DiagnosticSection]:
     return [
         _collect_diagnostics(),
         _collect_updates(),
+        _collect_tracing(),
         _collect_configuration(),
     ]
 
@@ -285,6 +346,19 @@ def _render_text(sections: list[DiagnosticSection]) -> None:
                 highlight=False,
             )
         console.print()
+
+    console.print(
+        "  Tip: Run `dcode config show` or `dcode config get <key>` "
+        "to drill into config details.",
+        style=theme.MUTED,
+        highlight=False,
+    )
+    console.print(
+        "       Run `dcode --version` (or `dcode -v`) for dependency versions.",
+        style=theme.MUTED,
+        highlight=False,
+    )
+    console.print()
 
 
 def run_doctor_command(args: argparse.Namespace) -> int:

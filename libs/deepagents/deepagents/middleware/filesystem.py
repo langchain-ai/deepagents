@@ -605,7 +605,7 @@ Usage:
 - **IMPORTANT for large files and codebase exploration**: Use pagination with offset and limit parameters to avoid context overflow
     - First scan: read_file(file_path="...", limit=100) to see file structure
     - Read more sections: read_file(file_path="...", offset=100, limit=200) for next 200 lines
-    - Only omit limit (read full file) when necessary for editing
+    - Omit `limit` to use the default window; increase it only when necessary for editing
 - Specify offset and limit: read_file(file_path="...", offset=0, limit=100) reads first 100 lines
 - Results are returned using cat -n format, with line numbers starting at 1
 - Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.). `limit` applies to source lines, so continuation rows do not consume the budget.
@@ -615,8 +615,8 @@ Usage:
 
 For multimodal reads (image, audio, video, PDF, etc.):
 - Use `read_file(file_path=...)`
-- Do NOT use `offset`/`limit` for images (pagination is text-only)
-- For videos, `offset`/`limit` are interpreted as seconds (default window 100 s).
+- For images and PDFs, pagination via `offset`/`limit` is text-only - supply `file_path` only
+- For videos, `offset`/`limit` are interpreted as seconds (default window 100 s; sampling rate configured on `FilesystemMiddleware`). Detailed semantics live in the deepagents docs.
 - If file details were compacted from history, call `read_file` again on the same path
 
 - You should ALWAYS make sure a file has been read before editing it."""

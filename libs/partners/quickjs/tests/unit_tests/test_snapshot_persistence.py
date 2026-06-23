@@ -133,13 +133,13 @@ async def test_repl_snapshot_persists_state_between_turns(
     ["invoke", "ainvoke"],
     ids=["sync_invoke", "async_ainvoke"],
 )
-async def test_repl_without_snapshots_resets_state_between_turns(
+async def test_repl_mode_turn_resets_state_between_turns(
     invoke_mode: InvokeMode,
 ) -> None:
-    """When snapshots are disabled, turn-2 eval starts with a fresh context."""
+    """In turn mode, turn-2 eval starts with a fresh context."""
     agent = create_deep_agent(
         model=FakeChatModel(messages=iter(_script_two_turns_without_snapshots())),
-        middleware=[CodeInterpreterMiddleware(snapshot_between_turns=False)],
+        middleware=[CodeInterpreterMiddleware(mode="turn")],
         checkpointer=InMemorySaver(),
     )
     config = {"configurable": {"thread_id": "quickjs-no-snapshot-thread"}}

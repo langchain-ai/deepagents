@@ -25,15 +25,14 @@ import tomllib
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import suppress
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Literal, TextIO
+from pathlib import Path
+from typing import Any, Literal, NamedTuple, TextIO
 
+from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
 from deepagents_code._version import PYPI_URL, SDK_PYPI_URL, USER_AGENT, __version__
 from deepagents_code.model_config import DEFAULT_CONFIG_PATH, DEFAULT_STATE_DIR
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -843,6 +842,46 @@ def prerelease_upgrade_supported(
     return True, None
 
 
+_DEPENDENCY_REFRESH_UNSUPPORTED: dict[InstallMethod, str] = {
+    "unknown": "Editable install detected — skipping dependency refresh.",
+    "brew": (
+        "Homebrew install detected — dependency-only refresh is not "
+        "supported without upgrading deepagents-code."
+    ),
+    "other": (
+        "Unsupported install method detected — cannot refresh dependencies "
+        "without knowing which environment provides `dcode`."
+    ),
+}
+"""Why each non-uv install method can't do a dependency-only refresh."""
+
+
+def dependency_refresh_supported(
+    method: InstallMethod | None = None,
+) -> tuple[bool, str | None]:
+    """Return whether a dependency-only refresh is possible for the install.
+
+    A dependency refresh reinstalls the *current* `deepagents-code` version with
+    upgraded dependency resolution (`uv tool install -U deepagents-code==<v>`).
+    Only uv-managed installs can express that without crossing to a newer app
+    version, so callers should refuse before prompting or shelling out. This is
+    the single source of truth for both the gate in the TUI and the refusal in
+    `perform_dependency_refresh`.
+
+    Args:
+        method: Install method override. Auto-detected if `None`.
+
+    Returns:
+        A `(supported, reason)` tuple. `reason` is `None` when supported, else a
+            user-facing explanation of why the refresh is refused.
+    """
+    if method is None:
+        method = detect_install_method()
+    if method == "uv":
+        return True, None
+    return False, _DEPENDENCY_REFRESH_UNSUPPORTED[method]
+
+
 def cleanup_update_logs(
     *,
     retention_days: int = UPDATE_LOG_RETENTION_DAYS,
@@ -1062,6 +1101,214 @@ async def perform_upgrade(
     return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
 
 
+async def perform_dependency_refresh(
+    *,
+    progress: UpgradeProgressCallback | None = None,
+    log_path: Path | None = None,
+    include_prereleases: bool | None = None,
+) -> tuple[bool, str]:
+    """Refresh dependencies while keeping `deepagents-code` on this version.
+
+    Runs `uv tool install -U deepagents-code==<current>` instead of
+    `uv tool upgrade deepagents-code`, so compatible dependency releases can be
+    picked up without crossing to a newer app version. Only uv-managed installs
+    are supported; other install methods cannot safely express this operation.
+
+    Args:
+        progress: Optional callback invoked for each output line.
+        log_path: Optional path to persist command output.
+        include_prereleases: Whether to include alpha/beta/rc releases. When
+            `None`, follows the installed version's channel.
+
+    Returns:
+        `(success, output)` — *output* is the combined stdout/stderr, or an
+            explanatory message when the install method is unsupported, `uv` is
+            unavailable, requirement introspection fails, or the subprocess
+            fails or times out.
+    """
+    supported, reason = dependency_refresh_supported()
+    if not supported:
+        return False, reason or ""
+    if not shutil.which("uv"):
+        return False, "`uv` not found on PATH."
+
+    from deepagents_code.extras_info import ExtrasIntrospectionError
+
+    try:
+        cmd = dependency_refresh_command(
+            include_prereleases=include_prereleases,
+        )
+    except (
+        ExtrasIntrospectionError,
+        ToolRequirementIntrospectionError,
+        ValueError,
+    ) as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
+
+
+async def perform_dependency_refresh_dry_run(
+    *,
+    progress: UpgradeProgressCallback | None = None,
+    log_path: Path | None = None,
+    include_prereleases: bool | None = None,
+) -> tuple[bool, str]:
+    """Resolve a dependency refresh plan without mutating the tool environment.
+
+    `uv tool install` has no `--dry-run`, so this targets the running tool
+    environment with `uv pip install --dry-run --python <sys.executable>`. It
+    uses the same pinned `deepagents-code` requirement, installed extras, and
+    preserved `--with` packages as the real refresh command.
+
+    Args:
+        progress: Optional callback invoked for each output line.
+        log_path: Optional path to persist command output.
+        include_prereleases: Whether to include alpha/beta/rc releases. When
+            `None`, follows the installed version's channel.
+
+    Returns:
+        `(success, output)` — *output* is the combined stdout/stderr from uv, or
+            an explanatory message when the plan cannot be computed safely.
+    """
+    supported, reason = dependency_refresh_supported()
+    if not supported:
+        return False, reason or ""
+    if not shutil.which("uv"):
+        return False, "`uv` not found on PATH."
+
+    from deepagents_code.extras_info import ExtrasIntrospectionError
+
+    try:
+        cmd = dependency_refresh_dry_run_command(
+            include_prereleases=include_prereleases,
+        )
+    except (
+        ExtrasIntrospectionError,
+        ToolRequirementIntrospectionError,
+        ValueError,
+    ) as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
+
+
+class DependencyChange(NamedTuple):
+    """A single package version change parsed from uv's environment-diff output.
+
+    Emitted by both `uv tool upgrade` and `uv tool install -U` (the
+    dependency-refresh path), so the wording stays command-agnostic. `old` is
+    `None` for a newly added package and `new` is `None` for a removed one; both
+    are set for an in-place version bump. The `(None, None)` state is invalid —
+    see `kind`.
+    """
+
+    name: str
+    """Package name exactly as uv reported it in the diff line."""
+
+    old: str | None
+    """Version before the change; `None` when the package was newly added."""
+
+    new: str | None
+    """Version after the change; `None` when the package was removed."""
+
+    @property
+    def kind(self) -> Literal["added", "removed", "bumped"]:
+        """Classify the change from which version sides are present.
+
+        Reading the case from here keeps consumers (e.g.
+        `format_dependency_changes`) from re-deriving it via field truthiness,
+        and turns the meaningless `(None, None)` shape into a hard error instead
+        of silently rendering as a removal.
+
+        Returns:
+            `"added"` when only `new` is set, `"removed"` when only `old` is set,
+                and `"bumped"` when both are set.
+
+        Raises:
+            ValueError: If neither `old` nor `new` is set.
+        """
+        if self.old is None and self.new is None:
+            msg = (
+                f"DependencyChange {self.name!r} records neither an old nor new version"
+            )
+            raise ValueError(msg)
+        if self.old is None:
+            return "added"
+        if self.new is None:
+            return "removed"
+        return "bumped"
+
+
+_DEP_CHANGE_RE = re.compile(
+    r"^\s*([+-])\s+([A-Za-z0-9._-]+)==([^\s(]+)(?:\s+\(.*\))?\s*$"
+)
+"""Matches uv's environment-diff lines, e.g. ` - langchain-openai==1.3.2`.
+
+The optional trailing group tolerates uv's source annotations for non-PyPI
+packages, e.g. ` + example==0.1.0 (from file:///path)`.
+"""
+
+
+def parse_dependency_changes(output: str) -> list[DependencyChange]:
+    """Parse package version changes from uv's environment-diff output.
+
+    uv reports environment changes as paired ` - pkg==old` / ` + pkg==new`
+    lines; this collapses them into one `DependencyChange` per package,
+    preserving first-seen order.
+
+    Args:
+        output: Combined stdout/stderr from a `uv tool install`/`upgrade`
+            subprocess.
+
+    Returns:
+        One entry per package whose version was added, removed, or bumped.
+    """
+    removed: dict[str, str] = {}
+    added: dict[str, str] = {}
+    order: list[str] = []
+    seen: set[str] = set()
+    for line in output.splitlines():
+        match = _DEP_CHANGE_RE.match(line)
+        if match is None:
+            continue
+        sign, name, version = match.group(1), match.group(2), match.group(3)
+        (removed if sign == "-" else added)[name] = version
+        if name not in seen:
+            seen.add(name)
+            order.append(name)
+    return [
+        DependencyChange(name=name, old=removed.get(name), new=added.get(name))
+        for name in order
+    ]
+
+
+def format_dependency_changes(changes: Sequence[DependencyChange]) -> str:
+    """Render dependency changes as an aligned, human-readable block.
+
+    Args:
+        changes: Parsed changes from `parse_dependency_changes`.
+
+    Returns:
+        A newline-joined, column-aligned summary, or `""` when empty.
+    """
+    if not changes:
+        return ""
+    width = max(len(change.name) for change in changes)
+    lines: list[str] = []
+    for change in changes:
+        name = change.name.ljust(width)
+        if change.kind == "bumped":
+            lines.append(f"  {name}  {change.old} -> {change.new}")
+        elif change.kind == "added":
+            lines.append(f"  {name}  {change.new} (new)")
+        else:  # removed
+            lines.append(f"  {name}  {change.old} (removed)")
+    return "\n".join(lines)
+
+
+class ToolRequirementIntrospectionError(RuntimeError):
+    """Raised when uv tool requested requirements cannot be preserved."""
+
+
 _EXTRA_NAME_RE = re.compile(r"^[A-Za-z0-9](?:[-_.A-Za-z0-9]*[A-Za-z0-9])?$")
 """Conservative package-extra name pattern used before shell command display."""
 
@@ -1094,14 +1341,142 @@ def is_valid_package_name(package: str) -> bool:
     return bool(_PACKAGE_NAME_RE.fullmatch(package))
 
 
-def _dcode_extras_requirement(extras: Iterable[str]) -> str:
+def _uv_tool_receipt_path(tool_root: Path | None = None) -> Path:
+    """Return the uv receipt path for the current tool environment.
+
+    Args:
+        tool_root: Optional uv tool environment root. Defaults to `sys.prefix`.
+
+    Returns:
+        The expected `uv-receipt.toml` path.
+    """
+    return (tool_root or Path(sys.prefix)) / "uv-receipt.toml"
+
+
+def _uv_tool_receipt_data(tool_root: Path | None = None) -> dict[str, Any]:
+    """Return parsed uv tool receipt data for the current tool environment.
+
+    Args:
+        tool_root: Optional uv tool environment root. Defaults to `sys.prefix`.
+
+    Returns:
+        Parsed TOML data from `uv-receipt.toml`.
+
+    Raises:
+        ToolRequirementIntrospectionError: If the receipt cannot be read or
+            parsed.
+    """
+    receipt_path = _uv_tool_receipt_path(tool_root)
+    try:
+        return tomllib.loads(receipt_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        msg = f"uv tool receipt not found at {receipt_path}"
+        raise ToolRequirementIntrospectionError(msg) from exc
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        msg = f"Could not read uv tool receipt at {receipt_path}: {exc}"
+        raise ToolRequirementIntrospectionError(msg) from exc
+
+
+def _uv_tool_python(tool_root: Path | None = None) -> str | None:
+    """Return the Python interpreter recorded in the uv tool receipt.
+
+    Args:
+        tool_root: Optional uv tool environment root. Defaults to `sys.prefix`.
+
+    Returns:
+        The recorded `[tool].python` value, or `None` when the receipt does not
+            pin an interpreter.
+
+    Raises:
+        ToolRequirementIntrospectionError: If the receipt cannot be read, parsed,
+            or safely re-expressed as a `--python` value.
+    """
+    data = _uv_tool_receipt_data(tool_root)
+    tool = data.get("tool")
+    if not isinstance(tool, dict):
+        msg = "uv tool receipt is missing `[tool]`"
+        raise ToolRequirementIntrospectionError(msg)
+    python = tool.get("python")
+    if python is None:
+        return None
+    if not isinstance(python, str) or not python:
+        msg = "uv tool receipt contains an invalid `[tool].python` value"
+        raise ToolRequirementIntrospectionError(msg)
+    return python
+
+
+def _uv_tool_with_packages(
+    *,
+    distribution_name: str = "deepagents-code",
+    tool_root: Path | None = None,
+) -> tuple[str, ...]:
+    """Return package names recorded as uv tool `--with` requirements.
+
+    uv records the tool's requested requirements in `uv-receipt.toml`. Reading
+    that receipt preserves only packages the user asked uv to keep, avoiding the
+    over-broad fallback of promoting every installed transitive dependency to a
+    top-level `--with` requirement.
+
+    Args:
+        distribution_name: Main tool distribution to exclude from `--with`.
+        tool_root: Optional uv tool environment root. Defaults to `sys.prefix`.
+
+    Returns:
+        A sorted tuple of validated package names to pass as `--with` values.
+
+    Raises:
+        ToolRequirementIntrospectionError: If the receipt cannot be read, parsed,
+            or safely re-expressed as package-name `--with` requirements.
+    """
+    data = _uv_tool_receipt_data(tool_root)
+    tool = data.get("tool")
+    requirements = tool.get("requirements") if isinstance(tool, dict) else None
+    if not isinstance(requirements, list):
+        msg = "uv tool receipt is missing `[tool].requirements`"
+        raise ToolRequirementIntrospectionError(msg)
+
+    main = canonicalize_name(distribution_name)
+    packages: set[str] = set()
+    for entry in requirements:
+        if not isinstance(entry, dict):
+            msg = "uv tool receipt contains a non-table requirement entry"
+            raise ToolRequirementIntrospectionError(msg)
+        name = entry.get("name")
+        if not isinstance(name, str) or not name:
+            msg = "uv tool receipt contains a requirement without a package name"
+            raise ToolRequirementIntrospectionError(msg)
+        if canonicalize_name(name) == main:
+            continue
+        unsupported_keys = sorted(set(entry) - {"name"})
+        if unsupported_keys:
+            msg = (
+                f"uv tool receipt requirement {name!r} cannot be preserved "
+                "automatically; reinstall it manually after refreshing "
+                "dependencies"
+            )
+            raise ToolRequirementIntrospectionError(msg)
+        if not is_valid_package_name(name):
+            msg = (
+                f"Invalid uv tool receipt package name {name!r}: must match "
+                f"PEP 508 ({_PACKAGE_NAME_RE.pattern})"
+            )
+            raise ToolRequirementIntrospectionError(msg)
+        packages.add(name)
+    return tuple(sorted(packages))
+
+
+def _dcode_extras_requirement(
+    extras: Iterable[str],
+    *,
+    version: str | None = None,
+) -> str:
     """Return the validated `deepagents-code[...]` requirement for a uv install.
 
     Shared by the extra- and package-install commands so already-installed
     extras survive a `uv tool install` reinstall — a bare `deepagents-code`
     request would replace the tool and drop them. Returns plain
-    `deepagents-code` when no extras are selected; otherwise the single-quoted
-    bracket form, which keeps zsh from globbing the brackets.
+    `deepagents-code` when no extras or version are selected; otherwise the
+    shell-quoted requirement form, which keeps zsh from globbing brackets.
 
     Args:
         extras: Extra names to encode. Each is validated against PEP 508
@@ -1109,10 +1484,11 @@ def _dcode_extras_requirement(extras: Iterable[str]) -> str:
             caller-supplied extras (`install_extras_command`) and a
             redundant re-check for extras read from distribution metadata
             (`install_package_command`).
+        version: Optional exact `deepagents-code` version pin.
 
     Returns:
         Shell-safe requirement token, e.g. `deepagents-code` or
-            `'deepagents-code[baseten,nvidia]'`.
+            `'deepagents-code[baseten,nvidia]==1.0.0'`.
 
     Raises:
         ValueError: If any extra fails PEP 508 validation.
@@ -1125,10 +1501,109 @@ def _dcode_extras_requirement(extras: Iterable[str]) -> str:
                 f"({_EXTRA_NAME_RE.pattern})"
             )
             raise ValueError(msg)
-    if not names:
-        return "deepagents-code"
-    extras_part = ",".join(names)
-    return f"'deepagents-code[{extras_part}]'"
+    version_suffix = ""
+    if version is not None:
+        try:
+            parsed = Version(version)
+        except InvalidVersion as exc:
+            msg = f"Invalid deepagents-code version {version!r}"
+            raise ValueError(msg) from exc
+        version_suffix = f"=={parsed}"
+    extras_part = f"[{','.join(names)}]" if names else ""
+    requirement = f"deepagents-code{extras_part}{version_suffix}"
+    if not names and version is None:
+        return requirement
+    return shlex.quote(requirement)
+
+
+def dependency_refresh_command(
+    *,
+    version: str = __version__,
+    include_prereleases: bool | None = None,
+    distribution_name: str = "deepagents-code",
+) -> str:
+    """Return the uv command that refreshes deps for the current dcode version.
+
+    Args:
+        version: Exact `deepagents-code` version to keep installed.
+        include_prereleases: Whether to include alpha/beta/rc releases. When
+            `None`, follows the installed version's channel.
+        distribution_name: Name of the installed distribution to inspect for
+            already-installed extras.
+
+    Returns:
+        Shell command string suitable for execution via the shell.
+
+    Propagates `ExtrasIntrospectionError` if installed extras cannot be
+    determined safely from distribution metadata, and
+    `ToolRequirementIntrospectionError` if the uv tool `--with` packages or
+    interpreter cannot be determined safely from the tool receipt.
+    `perform_dependency_refresh` converts both into a user-facing failure.
+    """
+    from deepagents_code.extras_info import installed_extra_names
+
+    # `installed_extra_names` raises `ExtrasIntrospectionError`; `_uv_tool_python`
+    # and `_uv_tool_with_packages` raise `ToolRequirementIntrospectionError`.
+    # Both propagate to `perform_dependency_refresh`, which converts them into a
+    # user-facing failure, so there's nothing to add by catching here.
+    extras = installed_extra_names(distribution_name, strict=True)
+    requirement = _dcode_extras_requirement(extras, version=version)
+    cmd = "uv tool install -U"
+    python = _uv_tool_python()
+    if python is not None:
+        cmd += f" --python {shlex.quote(python)}"
+    cmd += f" {requirement}"
+    with_packages = _uv_tool_with_packages(distribution_name=distribution_name)
+    for package in with_packages:
+        cmd += f" --with {shlex.quote(package)}"
+    if _resolve_include_prereleases(include_prereleases):
+        cmd += " --prerelease allow"
+    return cmd
+
+
+def dependency_refresh_dry_run_command(
+    *,
+    version: str = __version__,
+    include_prereleases: bool | None = None,
+    distribution_name: str = "deepagents-code",
+    python: str | None = None,
+) -> str:
+    """Return the uv command that plans a dependency refresh without installing.
+
+    Args:
+        version: Exact `deepagents-code` version to keep installed.
+        include_prereleases: Whether to include alpha/beta/rc releases. When
+            `None`, follows the installed version's channel.
+        distribution_name: Name of the installed distribution to inspect for
+            already-installed extras and uv receipt requirements.
+        python: Python executable for the target environment. Defaults to the
+            running interpreter, which is the current dcode tool environment.
+
+    Returns:
+        Shell command string suitable for execution via the shell.
+
+    Raises:
+        ToolRequirementIntrospectionError: If the target Python or uv tool receipt
+            requirements cannot be determined safely.
+    """
+    from deepagents_code.extras_info import installed_extra_names
+
+    target_python = python or sys.executable
+    if not target_python:
+        msg = "Could not determine the running Python executable"
+        raise ToolRequirementIntrospectionError(msg)
+    extras = installed_extra_names(distribution_name, strict=True)
+    requirement = _dcode_extras_requirement(extras, version=version)
+    cmd = (
+        "uv pip install --dry-run --python "
+        f"{shlex.quote(target_python)} -U {requirement}"
+    )
+    with_packages = _uv_tool_with_packages(distribution_name=distribution_name)
+    for package in with_packages:
+        cmd += f" {shlex.quote(package)}"
+    if _resolve_include_prereleases(include_prereleases):
+        cmd += " --prerelease allow"
+    return cmd
 
 
 def install_package_command(

@@ -264,9 +264,8 @@ def test_system_prompt_omits_subagent_guidance_when_disabled() -> None:
     assert "await task({" not in sys_text
 
 
-def test_system_prompt_mentions_single_turn_when_snapshots_disabled() -> None:
-    with pytest.warns(DeprecationWarning, match="snapshot_between_turns"):
-        mw = CodeInterpreterMiddleware(snapshot_between_turns=False)
+def test_system_prompt_mentions_single_turn_for_mode_turn() -> None:
+    mw = CodeInterpreterMiddleware(mode="turn")
     assert "DO NOT persist across multiple turns" in mw._base_prompt(ptc_attached=False)
 
 
@@ -277,47 +276,24 @@ def test_system_prompt_mentions_mode_call() -> None:
     assert "does not persist across tool calls" in base_prompt
 
 
-def test_mode_call_defaults_snapshot_between_turns_to_false() -> None:
-    mw = CodeInterpreterMiddleware(mode="call")
-    assert mw._snapshot_between_turns is False
+def test_default_mode_is_thread() -> None:
+    mw = CodeInterpreterMiddleware()
+    assert mw._mode == "thread"
 
 
-def test_mode_turn_defaults_snapshot_between_turns_to_false() -> None:
+def test_mode_turn_is_stored() -> None:
     mw = CodeInterpreterMiddleware(mode="turn")
-    assert mw._snapshot_between_turns is False
-
-
-def test_snapshot_between_turns_false_resolves_to_mode_turn() -> None:
-    with pytest.warns(DeprecationWarning, match="snapshot_between_turns"):
-        mw = CodeInterpreterMiddleware(snapshot_between_turns=False)
     assert mw._mode == "turn"
 
 
-def test_snapshot_between_turns_emits_deprecation_warning() -> None:
-    with pytest.warns(DeprecationWarning, match="snapshot_between_turns"):
-        CodeInterpreterMiddleware(snapshot_between_turns=True)
+def test_mode_call_is_stored() -> None:
+    mw = CodeInterpreterMiddleware(mode="call")
+    assert mw._mode == "call"
 
 
-def test_mode_call_with_snapshot_between_turns_true_raises() -> None:
-    with (
-        pytest.warns(DeprecationWarning, match="snapshot_between_turns"),
-        pytest.raises(ValueError, match="incompatible"),
-    ):
-        CodeInterpreterMiddleware(
-            mode="call",
-            snapshot_between_turns=True,
-        )
-
-
-def test_mode_thread_with_snapshot_between_turns_false_raises() -> None:
-    with (
-        pytest.warns(DeprecationWarning, match="snapshot_between_turns"),
-        pytest.raises(ValueError, match="incompatible"),
-    ):
-        CodeInterpreterMiddleware(
-            mode="thread",
-            snapshot_between_turns=False,
-        )
+def test_rejects_invalid_mode() -> None:
+    with pytest.raises(ValueError, match="must be one of"):
+        CodeInterpreterMiddleware(mode="session")  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------

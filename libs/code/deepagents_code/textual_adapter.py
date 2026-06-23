@@ -47,7 +47,7 @@ if TYPE_CHECKING:
 
 
 from deepagents_code._ask_user_types import AskUserRequest
-from deepagents_code._cli_context import CLIContext  # noqa: TC001
+from deepagents_code._cli_context import CLIContext
 from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
 from deepagents_code._session_stats import (
     ModelStats as ModelStats,
@@ -401,8 +401,11 @@ async def execute_task_textual(
         adapter: The TextualUIAdapter for UI operations
         backend: Optional backend for file operations
         image_tracker: Optional tracker for images
-        context: Optional `CLIContext` with model override and params, passed
-            to the graph via `context=`.
+        context: Optional `CLIContext` with model override and params. The
+            current approval mode (`session_state.auto_approve`) is written
+            into `context["auto_approve"]` on every stream iteration before it
+            is passed to the graph via `context=`, so the `interrupt_on` `when`
+            predicate can suppress interrupts at the source.
         sandbox_type: Sandbox provider name for trace metadata, or `None`
             if no sandbox is active.
         message_kwargs: Extra fields merged into the stream input message
@@ -519,6 +522,10 @@ async def execute_task_textual(
     user_msg: dict[str, Any] = {"role": "user", "content": message_content}
     if message_kwargs:
         user_msg.update(message_kwargs)
+    # Auto-approve is carried via run context (set per stream iteration below),
+    # not graph state — so the initial input is a plain dict. A first-turn
+    # `Command(update=...)` would be rebuilt with `goto=None` by the LangGraph
+    # API server and crash `_control_branch` on a fresh thread.
     stream_input: dict | Command = {"messages": [user_msg]}
 
     # Track summarization lifecycle so spinner status and notification stay in sync.
@@ -530,6 +537,14 @@ async def execute_task_textual(
             suppress_resumed_output = False
             pending_interrupts: dict[str, HITLRequest] = {}
             pending_ask_user: dict[str, AskUserRequest] = {}
+
+            # Carry the current approval mode into run context so the
+            # `interrupt_on` `when` predicate can suppress interrupts at the
+            # source. Refreshed each iteration so enabling "approve always"
+            # mid-turn propagates to the resuming stream.
+            if context is None:
+                context = CLIContext()
+            context["auto_approve"] = bool(session_state.auto_approve)
 
             # Show the Thinking spinner before each astream iteration so
             # both the first turn and HITL/ask_user resumes surface feedback
@@ -1253,6 +1268,12 @@ async def execute_task_textual(
 
                             if decision_type == "auto_approve_all":
                                 session_state.auto_approve = True
+                                # The resuming stream re-reads
+                                # `session_state.auto_approve` into run context
+                                # at the top of the loop, so the `interrupt_on`
+                                # `when` predicate suppresses interrupts on the
+                                # remaining tool calls in this turn — keeping it
+                                # a single run instead of resuming after each.
                                 if adapter._on_auto_approve_enabled:
                                     adapter._on_auto_approve_enabled()
                                 decisions = [

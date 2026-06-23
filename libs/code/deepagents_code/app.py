@@ -1008,6 +1008,20 @@ _DEFERRED_APPROVAL_TIMEOUT_SECONDS: float = 30.0
 """Maximum seconds the deferred-approval worker will wait for the user to stop
 typing before showing the approval widget regardless."""
 
+_RAPID_QUIT_CTRL_C_PRESSES: int = 2
+"""Consecutive rapid `Ctrl+C` presses that force the quit sequence.
+
+When a draft is present, a single `Ctrl+C` copies it (matching terminal copy
+semantics), which otherwise leaves no way to reach the quit arm by pressing
+`Ctrl+C`. Mashing `Ctrl+C` is the universal "get me out" reflex, so the second
+rapid press bypasses the copy branches and arms quit instead.
+"""
+
+_RAPID_QUIT_CTRL_C_WINDOW_SECONDS: float = 1.0
+"""Window within which repeated `Ctrl+C` presses count toward the rapid-quit
+escape hatch. Tight enough that a deliberate copy-then-interrupt sequence,
+which has much larger gaps, never trips it."""
+
 
 @dataclass(frozen=True, slots=True)
 class QueuedMessage:
@@ -2032,6 +2046,16 @@ class DeepAgentsApp(App):
 
         self._quit_pending = False
         """True after a first `Ctrl+C` so a second press within the window quits."""
+
+        self._ctrl_c_times: list[float] = []
+        """Monotonic timestamps of recent `Ctrl+C` presses, pruned to
+        `_RAPID_QUIT_CTRL_C_WINDOW_SECONDS`. Drives the rapid-quit escape hatch
+        so mashing `Ctrl+C` bypasses the clipboard-copy branches and reaches the
+        quit arm even when a draft is present."""
+
+        self._clear_input_pending = False
+        """True after a first `Esc` (with nothing else to interrupt) so a second
+        press within the window clears the chat input draft."""
 
         self._thread_switching = False
         """Re-entry guard for `/threads` switches; blocks message handling
@@ -3849,8 +3873,10 @@ class DeepAgentsApp(App):
     async def _handle_update_command(self, command: str = "/update") -> None:
         """Handle the `/update` slash command — check for and install updates.
 
-        Parses an optional `--prerelease` flag from the raw command line; any
-        other option is rejected with a usage message.
+        Parses optional `--prerelease` and `--deps` flags from the raw command
+        line; any other option is rejected with a usage message. `--deps`
+        re-resolves dependencies to their newest in-range versions even when
+        `deepagents-code` itself is already current.
 
         Args:
             command: The raw slash-command line as typed, including any options.
@@ -3861,16 +3887,18 @@ class DeepAgentsApp(App):
         # loudly instead of silently downgrading to a stable update — mirroring
         # the headless path, which also refuses unknown options rather than
         # silently ignoring them.
-        unknown = [opt for opt in parts[1:] if opt != "--prerelease"]
+        allowed_options = {"--prerelease", "--deps"}
+        unknown = [opt for opt in parts[1:] if opt not in allowed_options]
         if unknown:
             await self._mount_message(
                 AppMessage(
                     f"Unknown option(s) for /update: {' '.join(unknown)}. "
-                    "Usage: /update [--prerelease]",
+                    "Usage: /update [--deps] [--prerelease]",
                 ),
             )
             return
         prerelease_requested = "--prerelease" in parts[1:]
+        deps_only = "--deps" in parts[1:]
         include_prereleases = True if prerelease_requested else None
         try:
             from deepagents_code._env_vars import DEBUG_UPDATE
@@ -3878,10 +3906,14 @@ class DeepAgentsApp(App):
             from deepagents_code.config import _is_editable_install
             from deepagents_code.update_check import (
                 _PRERELEASE_UNSUPPORTED_MESSAGE,
+                dependency_refresh_supported,
                 format_age_suffix,
+                format_dependency_changes,
                 format_installed_age_suffix,
                 format_release_age_parenthetical,
                 is_update_available,
+                parse_dependency_changes,
+                perform_dependency_refresh_dry_run,
                 perform_upgrade,
                 prerelease_upgrade_supported,
                 upgrade_command,
@@ -3924,13 +3956,71 @@ class DeepAgentsApp(App):
                 )
                 return
             if not available:
+                if deps_only:
+                    await self._refresh_dependencies(
+                        include_prereleases=include_prereleases,
+                    )
+                    return
+
                 age_suffix = await asyncio.to_thread(format_age_suffix, cli_version)
                 await self._mount_message(
                     AppMessage(
                         f"Already on the latest version (v{cli_version}{age_suffix}).",
                     ),
                 )
+                # dcode is current, but its dependencies may have newer in-range
+                # releases. Compute a dry-run plan first so the confirmation only
+                # appears when there are concrete updates to apply. Keep the support
+                # gate before the check so brew/other users aren't asked about an
+                # action that cannot run for their install.
+                refresh_supported, _reason = await asyncio.to_thread(
+                    dependency_refresh_supported,
+                )
+                if not refresh_supported:
+                    return
+                await self._mount_message(
+                    AppMessage("Checking for dependency updates...")
+                )
+                success, output = await perform_dependency_refresh_dry_run(
+                    include_prereleases=include_prereleases,
+                )
+                if not success:
+                    detail = f": {output[:200]}" if output else ""
+                    await self._mount_message(
+                        AppMessage(f"Could not check dependency updates{detail}"),
+                    )
+                    return
+                dep_changes = parse_dependency_changes(output)
+                if not dep_changes:
+                    await self._mount_message(
+                        AppMessage("Dependencies are already up to date."),
+                    )
+                    return
+                planned = format_dependency_changes(dep_changes)
+                if await self._confirm_refresh_dependencies(planned_changes=planned):
+                    await self._refresh_dependencies(
+                        include_prereleases=include_prereleases,
+                    )
+                else:
+                    await self._mount_message(AppMessage("Dependency refresh skipped."))
                 return
+
+            if deps_only:
+                refresh_supported, _reason = await asyncio.to_thread(
+                    dependency_refresh_supported,
+                )
+                if (
+                    refresh_supported
+                    and not await self._confirm_update_before_dependency_refresh(
+                        current=cli_version,
+                        latest=latest,
+                    )
+                ):
+                    await self._refresh_dependencies(
+                        include_prereleases=include_prereleases,
+                        app_update_version=latest,
+                    )
+                    return
 
             release_age = await asyncio.to_thread(
                 format_release_age_parenthetical,
@@ -3964,6 +4054,20 @@ class DeepAgentsApp(App):
                         "not the CLI)."
                     ),
                 )
+                # The upgrade re-resolves the whole environment, so surface any
+                # dependency bumps that rode along with the dcode release.
+                dep_changes = [
+                    change
+                    for change in parse_dependency_changes(output)
+                    if change.name != "deepagents-code"
+                ]
+                if dep_changes:
+                    await self._mount_message(
+                        AppMessage(
+                            "Dependencies updated:\n"
+                            f"{format_dependency_changes(dep_changes)}",
+                        ),
+                    )
             else:
                 cmd = upgrade_command(include_prereleases=include_prereleases)
                 detail = f": {output[:200]}" if output else ""
@@ -3975,6 +4079,204 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 ErrorMessage(f"Update failed: {type(exc).__name__}: {exc}"),
             )
+
+    async def _refresh_dependencies(
+        self,
+        *,
+        include_prereleases: bool | None,
+        app_update_version: str | None = None,
+    ) -> None:
+        """Re-resolve dependencies to their newest in-range versions.
+
+        Reinstalls the current `deepagents-code` version with an upgraded
+        dependency resolution, then reports which dependencies actually moved.
+        Used by the `/update --deps` and already-current refresh flows. Editable
+        installs are rejected by the caller before this runs; the refresh is
+        uv-only by construction (other install methods are refused by
+        `perform_dependency_refresh`), so pre-release resolution is always
+        available here.
+
+        Args:
+            include_prereleases: Whether to include alpha/beta/rc releases;
+                `None` follows the installed version's channel.
+            app_update_version: Newer `deepagents-code` version discovered by
+                the caller, if dependency refresh is intentionally staying on
+                the current app version.
+        """
+        from deepagents_code._env_vars import DEBUG_UPDATE
+        from deepagents_code.update_check import (
+            format_dependency_changes,
+            parse_dependency_changes,
+            perform_dependency_refresh,
+        )
+
+        await self._mount_message(AppMessage("Refreshing dependencies..."))
+        if os.environ.get(DEBUG_UPDATE):
+            await self._mount_message(
+                AppMessage("Skipped dependency refresh (debug mode)."),
+            )
+            return
+        success, output = await perform_dependency_refresh(
+            include_prereleases=include_prereleases,
+        )
+        if not success:
+            # Lead with the start of the output for parity with the upgrade
+            # failure path; uv prints the actionable summary (e.g. "No solution
+            # found") first. The full output is persisted to the update log.
+            detail = f": {output[:200]}" if output else ""
+            await self._mount_message(
+                AppMessage(
+                    f"Dependency refresh failed{detail}",
+                ),
+            )
+            return
+        changes = parse_dependency_changes(output)
+        if output.strip() and not changes:
+            # The refresh succeeded but nothing parsed out of uv's diff. Either
+            # nothing moved, or uv's output format drifted past our parser. Leave
+            # a breadcrumb so the latter doesn't masquerade as "up to date"
+            # without a trace (the raw output is retained in the update log).
+            logger.warning(
+                "Dependency refresh produced no parseable changes; uv output "
+                "format may have drifted.",
+            )
+        self_changes = [
+            change for change in changes if change.name == "deepagents-code"
+        ]
+        dep_changes = [change for change in changes if change.name != "deepagents-code"]
+        if not dep_changes and not self_changes:
+            if app_update_version is not None:
+                await self._mount_message(
+                    AppMessage(
+                        "Dependencies are already up to date. "
+                        "A deepagents-code update is available: "
+                        f"v{app_update_version}.",
+                    ),
+                )
+                return
+            await self._mount_message(
+                AppMessage("Dependencies are already up to date."),
+            )
+            return
+
+        message_parts: list[str] = []
+        if self_changes:
+            message_parts.append(
+                f"Updated deepagents-code:\n{format_dependency_changes(self_changes)}"
+            )
+        if dep_changes:
+            message_parts.append(
+                f"Refreshed dependencies:\n{format_dependency_changes(dep_changes)}"
+            )
+        if app_update_version is not None:
+            message_parts.append(
+                f"A deepagents-code update is available: v{app_update_version}."
+            )
+        await self._mount_message(
+            AppMessage(
+                "\n".join(message_parts) + "\nQuit and relaunch dcode to use them.",
+            ),
+        )
+
+    async def _confirm_update_before_dependency_refresh(
+        self,
+        *,
+        current: str,
+        latest: str,
+    ) -> bool:
+        """Ask whether `/update --deps` should take an app update first.
+
+        Args:
+            current: Currently running `deepagents-code` version.
+            latest: Latest available `deepagents-code` version.
+
+        Returns:
+            `True` only when the user explicitly chooses the app update; `False`
+                on cancel, timeout, or mount failure so `/update --deps` continues
+                with the requested dependency refresh.
+        """
+        from deepagents_code.widgets.update_confirm import (
+            UpdateBeforeDependenciesConfirmScreen,
+        )
+
+        try:
+            confirmed = await asyncio.wait_for(
+                self._push_screen_wait(
+                    UpdateBeforeDependenciesConfirmScreen(
+                        current=current,
+                        latest=latest,
+                    )
+                ),
+                timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning(
+                "App-update confirmation timed out; continuing dependency refresh",
+            )
+            await self._mount_message(
+                AppMessage(
+                    "Update prompt timed out; refreshing dependencies for the "
+                    "current version instead.",
+                ),
+            )
+            return False
+        except Exception:
+            logger.exception("Failed to mount app-update confirmation")
+            await self._mount_message(
+                AppMessage(
+                    "Couldn't show the update prompt; refreshing dependencies "
+                    "for the current version instead.",
+                ),
+            )
+            return False
+        return confirmed is True
+
+    async def _confirm_refresh_dependencies(
+        self,
+        *,
+        planned_changes: str | None = None,
+    ) -> bool:
+        """Ask the user to confirm a dependency refresh via a modal.
+
+        A watchdog bounds the wait so a modal that never resolves can't wedge
+        command handling; a timeout or mount failure is treated as a cancel.
+
+        Args:
+            planned_changes: Optional preflight summary to show before confirming.
+
+        Returns:
+            `True` only when the user explicitly confirmed; `False` on cancel,
+                timeout, or mount failure.
+        """
+        from deepagents_code.widgets.update_confirm import (
+            RefreshDependenciesConfirmScreen,
+        )
+
+        try:
+            confirmed = await asyncio.wait_for(
+                self._push_screen_wait(
+                    RefreshDependenciesConfirmScreen(planned_changes=planned_changes),
+                ),
+                timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning(
+                "Dependency-refresh confirmation timed out; treating as cancel",
+            )
+            await self._mount_message(
+                AppMessage("Dependency-refresh prompt timed out; skipping."),
+            )
+            return False
+        except Exception:
+            logger.exception("Failed to mount dependency-refresh confirmation")
+            await self._mount_message(
+                AppMessage(
+                    "Couldn't show the dependency-refresh prompt; skipping. "
+                    "See logs for details.",
+                ),
+            )
+            return False
+        return confirmed is True
 
     async def _handle_install_command(self, command: str) -> None:
         """Handle the `/install <extra>` slash command.
@@ -4378,11 +4680,6 @@ class DeepAgentsApp(App):
         resolved versions of the core LangChain-ecosystem dependencies, which
         helps diagnose local checkouts.
         """
-        from importlib.metadata import (
-            PackageNotFoundError,
-            version as _pkg_version,
-        )
-
         lines: list[str] = []
         try:
             from deepagents_code._version import __version__ as cli_version
@@ -4397,17 +4694,15 @@ class DeepAgentsApp(App):
             logger.warning("Unexpected error looking up app version", exc_info=True)
             lines.append("deepagents-code version: unknown")
 
-        try:
+        from deepagents_code.extras_info import resolve_sdk_version
+
+        sdk_version, sdk_status = resolve_sdk_version()
+        if sdk_status == "resolved":
             from deepagents_code.update_check import format_sdk_age_suffix
 
-            sdk_version = _pkg_version("deepagents")
             sdk_age_suffix = await asyncio.to_thread(format_sdk_age_suffix, sdk_version)
             lines.append(f"deepagents (SDK) version: {sdk_version}{sdk_age_suffix}")
-        except PackageNotFoundError:
-            logger.debug("deepagents SDK package not found in environment")
-            lines.append("deepagents (SDK) version: unknown")
-        except Exception:
-            logger.warning("Unexpected error looking up SDK version", exc_info=True)
+        else:
             lines.append("deepagents (SDK) version: unknown")
 
         editable = False
@@ -6472,6 +6767,7 @@ class DeepAgentsApp(App):
             LangSmithApiError,
             LangSmithImportError,
             LangSmithLookupTimeoutError,
+            LangSmithProjectNotFoundError,
             _assemble_langsmith_thread_url,
             fetch_langsmith_project_url_or_raise,
             get_langsmith_project_name,
@@ -6532,6 +6828,22 @@ class DeepAgentsApp(App):
                 AppMessage(
                     "Could not reach LangSmith to resolve the thread URL. "
                     "Check your network connection and try again.",
+                ),
+            )
+            return
+        except LangSmithProjectNotFoundError:
+            logger.debug(
+                "LangSmith project %r not found yet for thread %s",
+                project_name,
+                thread_id,
+            )
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(
+                AppMessage(
+                    f"No traces have been recorded in LangSmith project "
+                    f"{project_name!r} yet. The project is created automatically "
+                    "the first time a run is traced — try `/trace` again after "
+                    "your first message.",
                 ),
             )
             return
@@ -7455,6 +7767,9 @@ class DeepAgentsApp(App):
                 image_tracker=self._image_tracker,
                 sandbox_type=self._sandbox_type,
                 message_kwargs=message_kwargs,
+                # `auto_approve` is intentionally omitted here: execute_task_textual
+                # writes it into this context from `session_state.auto_approve` at
+                # the top of every stream iteration, so seeding it would be dead.
                 context=CLIContext(
                     model=self._model_override,
                     model_params=self._model_params_override or {},
@@ -8368,11 +8683,26 @@ class DeepAgentsApp(App):
         4. If ask_user menu is active, cancel it
         5. If agent is running, interrupt it (preserve input)
         6. If double press (quit_pending), quit
-        7. Otherwise show quit hint
+        7. If a focused input has text, copy the whole draft (no selection)
+        8. Otherwise show quit hint
+
+        Rapid escape hatch: the clipboard-copy branches (1 and 7) are skipped
+        once `Ctrl+C` is pressed `_RAPID_QUIT_CTRL_C_PRESSES` times within
+        `_RAPID_QUIT_CTRL_C_WINDOW_SECONDS`. Without this, a non-empty draft
+        makes branch 7 copy on every press, so the quit arm is unreachable by
+        `Ctrl+C` alone. Mashing `Ctrl+C` then falls through to arm quit (and a
+        further press exits). The interrupt branches (2-5) stay unconditional so
+        a repeated press still cancels in-flight work rather than quitting.
         """
+        now = _monotonic()
+        window = _RAPID_QUIT_CTRL_C_WINDOW_SECONDS
+        self._ctrl_c_times = [t for t in self._ctrl_c_times if now - t <= window]
+        self._ctrl_c_times.append(now)
+        rapid = len(self._ctrl_c_times) >= _RAPID_QUIT_CTRL_C_PRESSES
+
         # If a focused input widget has selected text, copy it instead of
         # quitting/interrupting so Ctrl+C matches standard terminal behavior.
-        if self._copy_focused_selection():
+        if not rapid and self._copy_focused_selection():
             self._quit_pending = False
             return
 
@@ -8406,11 +8736,21 @@ class DeepAgentsApp(App):
             self._quit_pending = False
             return
 
-        # Double Ctrl+C to quit
+        # Double Ctrl+C to quit. Once the quit hint is visible, preserve the
+        # armed quit path before draft-copy handling gets another chance to
+        # consume Ctrl+C and clear `_quit_pending`.
         if self._quit_pending:
             self.exit()
-        else:
-            self._arm_quit_pending("Ctrl+C")
+            return
+
+        # No selection and nothing to interrupt: copy the whole input draft so
+        # Ctrl+C copies what was typed instead of arming quit. Skipped on a rapid
+        # repeat press so mashing Ctrl+C escapes the copy loop and reaches quit.
+        if not rapid and self._copy_focused_input_text():
+            self._quit_pending = False
+            return
+
+        self._arm_quit_pending("Ctrl+C")
 
     def _copy_focused_selection(self) -> bool:
         """Copy the focused input's selection to the clipboard, if any.
@@ -8435,19 +8775,43 @@ class DeepAgentsApp(App):
         if not selected_text:
             return False
 
-        from deepagents_code.clipboard import copy_text_to_clipboard
+        from deepagents_code.clipboard import copy_text_with_feedback
 
-        success, error = copy_text_to_clipboard(self, selected_text)
-        if not success:
-            self.notify(
-                f"Failed to copy selection: {error}"
-                if error
-                else "Failed to copy selection - no clipboard method available",
-                severity="warning",
-                timeout=3,
-                markup=False,
-            )
-        return success
+        return copy_text_with_feedback(self, selected_text, failure_noun="selection")
+
+    def _copy_focused_input_text(self) -> bool:
+        """Copy the focused input's full text to the clipboard, if non-empty.
+
+        Ctrl+C fallback used when there is no active selection, so the whole
+        draft is copied instead of arming quit.
+
+        Returns:
+            `True` when non-empty text was handled by a clipboard attempt.
+        """
+        from textual.widgets import Input, TextArea
+
+        widget = self.focused
+        if not isinstance(widget, (TextArea, Input)):
+            return False
+        if isinstance(widget, Input) and widget.password:
+            return False
+
+        text = widget.text if isinstance(widget, TextArea) else widget.value
+        if not text:
+            return False
+
+        from deepagents_code.clipboard import copy_text_with_feedback
+
+        # Return True regardless of copy success: the keypress is consumed
+        # either way (a failed copy already warned), so it never falls through
+        # to arming quit.
+        copy_text_with_feedback(
+            self,
+            text,
+            failure_noun="input",
+            success_message="Input copied to clipboard",
+        )
+        return True
 
     def _arm_quit_pending(self, shortcut: str) -> None:
         """Set the pending-quit flag and show a matching hint.
@@ -8476,8 +8840,18 @@ class DeepAgentsApp(App):
         6. If ask-user menu is active, cancel it
         7. If queued messages exist, pop the last one (LIFO)
         8. If agent is running, interrupt it
+        9. Otherwise, a second Esc clears the chat input draft (undoable)
         """
         from deepagents_code.widgets.thread_selector import ThreadSelectorScreen
+
+        # Any higher-priority Esc breaks the double-Esc clear sequence: only two
+        # consecutive Escs with nothing else to handle should clear the draft.
+        # Disarm up front and restore only at the terminal clear branch, so an
+        # intervening interrupt (agent cancel, popup dismiss, queued-message pop,
+        # ...) can't leave a stale flag that clears a later draft on a single
+        # press.
+        clear_was_pending = self._clear_input_pending
+        self._clear_input_pending = False
 
         if (
             isinstance(self.screen, ThreadSelectorScreen)
@@ -8536,6 +8910,52 @@ class DeepAgentsApp(App):
                 self._active_user_message.set_cancelled()
             self._cancel_worker(self._agent_worker)
             return
+
+        # Nothing left to interrupt: a double Esc clears the chat input draft.
+        # Restore the armed state captured above so a genuine consecutive Esc
+        # still confirms the clear.
+        self._clear_input_pending = clear_was_pending
+        self._handle_clear_input_escape()
+
+    def _handle_clear_input_escape(self) -> None:
+        """Clear the chat input draft on a double `Esc` press.
+
+        With nothing else to interrupt, the first `Esc` arms a pending flag and
+        shows a hint; a second `Esc` within the window clears the draft. The
+        clear is undoable via ctrl+z so a mistaken clear can be restored.
+
+        When the draft is empty there is nothing to clear, so no hint is shown
+        and any pending flag is reset.
+        """
+        chat_input = self._chat_input
+        if chat_input is None or not chat_input.value:
+            self._clear_input_pending = False
+            return
+        if self._clear_input_pending:
+            self._clear_input_pending = False
+            # The non-empty `value` guard above already implies a clear, so this
+            # is defensive: it only suppresses the toast if `discard_text` ever
+            # reports nothing cleared (e.g. a future `value` that diverges from
+            # the text area), keeping the confirmation honest.
+            if chat_input.discard_text():
+                self.notify(
+                    "Input cleared (ctrl+z to undo)",
+                    timeout=3,
+                    markup=False,
+                )
+            return
+        self._arm_clear_input_pending()
+
+    def _arm_clear_input_pending(self) -> None:
+        """Set the clear-input flag and show a matching hint."""
+        self._clear_input_pending = True
+        timeout = 3
+        self.notify(
+            "Press Esc again to clear input",
+            timeout=timeout,
+            markup=False,
+        )
+        self.set_timer(timeout, lambda: setattr(self, "_clear_input_pending", False))
 
     def action_quit_app(self) -> None:
         """Handle quit action (Ctrl+D)."""
@@ -8729,11 +9149,14 @@ class DeepAgentsApp(App):
         except NoMatches:
             tool_messages = []
         for tool_msg in reversed(tool_messages):
-            if tool_msg.has_output:
+            if tool_msg.has_output and tool_msg.has_expandable_output:
                 tool_msg.toggle_output()
                 return
             if tool_msg.has_expandable_args:
                 tool_msg.toggle_args()
+                return
+            if tool_msg.has_output:
+                tool_msg.toggle_output()
                 return
 
     # Approval menu action handlers (delegated from App-level bindings)

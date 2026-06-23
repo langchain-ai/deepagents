@@ -19,6 +19,7 @@ from deepagents_code.extras_info import (
     format_known_extras,
     get_extras_status,
     get_optional_dependency_status,
+    resolve_sdk_version,
     verify_interpreter_deps,
 )
 
@@ -355,3 +356,34 @@ def test_format_extras_status_renders_markdown_table() -> None:
     assert lines[3] == "| --- | --- | --- |"
     assert lines[4] == "| anthropic | langchain-anthropic | 1.4.0 |"
     assert lines[5] == "| daytona | langchain-daytona | 0.0.4 |"
+
+
+class TestResolveSdkVersion:
+    """Tests for the shared `deepagents` SDK version resolver."""
+
+    def test_resolved_returns_version(self) -> None:
+        """A successful lookup reports the version and `resolved` status."""
+        with patch(
+            "deepagents_code.extras_info.pkg_version", return_value="1.2.3"
+        ) as mock:
+            version, status = resolve_sdk_version()
+        mock.assert_called_once_with("deepagents")
+        assert (version, status) == ("1.2.3", "resolved")
+
+    def test_not_installed_distinguished_from_error(self) -> None:
+        """A missing package reports `not_installed`, never `error`."""
+        with patch(
+            "deepagents_code.extras_info.pkg_version",
+            side_effect=PackageNotFoundError("deepagents"),
+        ):
+            version, status = resolve_sdk_version()
+        assert (version, status) == (None, "not_installed")
+
+    def test_unexpected_error_reports_error_status(self) -> None:
+        """Any non-`PackageNotFoundError` failure reports `error`, not a crash."""
+        with patch(
+            "deepagents_code.extras_info.pkg_version",
+            side_effect=RuntimeError("corrupt metadata"),
+        ):
+            version, status = resolve_sdk_version()
+        assert (version, status) == (None, "error")

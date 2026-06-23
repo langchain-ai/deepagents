@@ -217,6 +217,10 @@ class TestRunDoctorCommand:
         assert "Tracing" in output
         assert "Configuration" in output
         assert "deepagents-code" in output
+        assert "dcode config show" in output
+        assert "dcode config get <key>" in output
+        assert "dcode --version" in output
+        assert "dcode -v" in output
 
     def test_json_output_envelope(self, capsys) -> None:
         """JSON output is a stable envelope with section data."""
@@ -303,3 +307,7 @@ class TestDoctorHelp:
         output = buf.getvalue()
         assert "dcode doctor [options]" in output
         assert "Usage:" in output
+        assert "dcode config show" in output
+        assert "dcode config get <key>" in output
+        assert "dcode --version" in output
+        assert "dcode -v" in output

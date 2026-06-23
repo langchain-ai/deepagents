@@ -347,6 +347,19 @@ def _render_text(sections: list[DiagnosticSection]) -> None:
             )
         console.print()
 
+    console.print(
+        "  Tip: Run `dcode config show` or `dcode config get <key>` "
+        "to drill into config details.",
+        style=theme.MUTED,
+        highlight=False,
+    )
+    console.print(
+        "       Run `dcode --version` (or `dcode -v`) for dependency versions.",
+        style=theme.MUTED,
+        highlight=False,
+    )
+    console.print()
+
 
 def run_doctor_command(args: argparse.Namespace) -> int:
     """Run `dcode doctor`, printing diagnostics as text or JSON.

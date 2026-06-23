@@ -2145,38 +2145,95 @@ class TestGetTracingStatus:
         assert status.project is None
         assert status.replica_project is None
 
-    def test_enabled_with_key_and_project(self) -> None:
-        """A tracing flag plus an API key resolves the active project."""
+    def test_prefixed_flag_and_key_are_detected(self) -> None:
+        """`DEEPAGENTS_CODE_`-prefixed tracing/key vars resolve like the runtime.
+
+        `dcode doctor` runs before bootstrap bridges these to canonical names,
+        so a user with only the supported prefixed vars must still read as
+        enabled/configured with the prefixed project resolved.
+        """
         from deepagents_code.config import get_tracing_status
 
         env = dict(self._CLEAN)
-        # Set the prefixed vars too: an empty `DEEPAGENTS_CODE_*` shadows the
-        # canonical name (see `resolve_env_var`), which would suppress these.
         env["DEEPAGENTS_CODE_LANGSMITH_TRACING"] = "true"
         env["DEEPAGENTS_CODE_LANGSMITH_API_KEY"] = "lsv2_test"
-        env["LANGSMITH_TRACING"] = "true"
-        env["LANGSMITH_API_KEY"] = "lsv2_test"
-        env["LANGSMITH_PROJECT"] = "my-proj"
-        with (
-            patch.dict("os.environ", env, clear=False),
-            patch("deepagents_code.config.settings") as mock_settings,
-        ):
-            mock_settings.deepagents_langchain_project = None
+        env["DEEPAGENTS_CODE_LANGSMITH_PROJECT"] = "prefixed-proj"
+        with patch.dict("os.environ", env, clear=False):
             status = get_tracing_status()
         assert status.enabled is True
         assert status.has_credentials is True
-        assert status.project == "my-proj"
+        assert status.project == "prefixed-proj"
 
-    def test_reports_custom_endpoint(self) -> None:
-        """A custom endpoint env var is surfaced without needing a key."""
+    def test_empty_prefixed_flag_shadows_canonical(self) -> None:
+        """An empty `DEEPAGENTS_CODE_` flag suppresses the canonical one.
+
+        Mirrors `resolve_env_var`/bootstrap: a present-but-empty prefixed var
+        disables tracing even when the canonical flag is truthy.
+        """
         from deepagents_code.config import get_tracing_status
 
         env = dict(self._CLEAN)
+        env["DEEPAGENTS_CODE_LANGSMITH_TRACING"] = ""
         env["LANGSMITH_TRACING"] = "true"
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.enabled is False
+
+    def test_canonical_non_bridged_flag_enables(self) -> None:
+        """A canonical, non-bridged flag (`LANGSMITH_TRACING_V2`) enables tracing."""
+        from deepagents_code.config import get_tracing_status
+
+        env = dict(self._CLEAN)
+        env["LANGSMITH_TRACING_V2"] = "true"
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.enabled is True
+
+    def test_keyless_custom_endpoint_resolves_project(self) -> None:
+        """A keyless custom endpoint counts as active and resolves the project."""
+        from deepagents_code.config import get_tracing_status
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+        env = dict(self._CLEAN)
+        env["DEEPAGENTS_CODE_LANGSMITH_TRACING"] = "true"
         env["LANGSMITH_ENDPOINT"] = "http://localhost:1984"
         with patch.dict("os.environ", env, clear=False):
             status = get_tracing_status()
+        assert status.enabled is True
+        assert status.has_credentials is False
         assert status.endpoint == "http://localhost:1984"
+        assert status.project == LANGSMITH_PROJECT_DEFAULT
+
+    def test_profile_credentials_are_detected(self, tmp_path: Path) -> None:
+        """A LangSmith profile API key counts as credentials (no env key needed)."""
+        from deepagents_code.config import get_tracing_status
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+        config = tmp_path / "config.json"
+        config.write_text(
+            '{"current_profile":"default","profiles":{"default":{"api_key":"lsv2_profile"}}}',
+            encoding="utf-8",
+        )
+        env = dict(self._CLEAN)
+        env["DEEPAGENTS_CODE_LANGSMITH_TRACING"] = "true"
+        env["LANGSMITH_CONFIG_FILE"] = str(config)
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.enabled is True
+        assert status.has_credentials is True
+        assert status.project == LANGSMITH_PROJECT_DEFAULT
+
+    def test_project_unset_when_enabled_without_auth(self) -> None:
+        """Tracing on but keyless and endpoint-less reports no project."""
+        from deepagents_code.config import get_tracing_status
+
+        env = dict(self._CLEAN)
+        env["DEEPAGENTS_CODE_LANGSMITH_TRACING"] = "true"
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.enabled is True
+        assert status.has_credentials is False
+        assert status.project is None
 
     def test_reports_first_replica_project(self) -> None:
         """Only the first replica project is reported (server mirrors one)."""

@@ -2503,27 +2503,56 @@ def get_langsmith_replica_project() -> str | None:
     return extras[0]
 
 
-def _tracing_enabled() -> bool:
-    """Return whether any LangSmith/LangChain tracing flag is truthy."""
-    from deepagents_code._env_vars import classify_env_bool
+_TRACING_BRIDGED_ENABLE_ENV_VARS = ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2")
+"""Tracing flags bootstrap propagates from a `DEEPAGENTS_CODE_` prefix.
 
+`dcode doctor` runs before `_ensure_bootstrap` bridges these to their canonical
+names, so it must resolve them prefix-aware (via `resolve_env_var`) to predict
+the runtime's effective state. The remaining flags in `_TRACING_ENABLE_ENV_VARS`
+are not bridged, so only their canonical form takes effect.
+"""
+
+
+def _tracing_enabled() -> bool:
+    """Return whether tracing is (or will be) enabled, prefix-aware.
+
+    Mirrors the runtime: `DEEPAGENTS_CODE_`-prefixed forms of the bridged flags
+    count (bootstrap propagates them), while the non-bridged flags are honored
+    only in their canonical form.
+    """
+    from deepagents_code._env_vars import classify_env_bool
+    from deepagents_code.model_config import resolve_env_var
+
+    for var in _TRACING_BRIDGED_ENABLE_ENV_VARS:
+        raw = resolve_env_var(var)
+        if raw is not None and classify_env_bool(raw):
+            return True
     return any(
         classify_env_bool(os.environ[var])
         for var in _TRACING_ENABLE_ENV_VARS
-        if var in os.environ
+        if var not in _TRACING_BRIDGED_ENABLE_ENV_VARS and var in os.environ
     )
 
 
 def _tracing_has_credentials() -> bool:
-    """Return whether a LangSmith API key (env or active profile) is available."""
-    has_key = any(
-        (os.environ.get(var) or "").strip() for var in _TRACING_API_KEY_ENV_VARS
-    )
+    """Return whether a LangSmith API key (env or active profile) is available.
+
+    Both API-key vars are bridged from a `DEEPAGENTS_CODE_` prefix at bootstrap,
+    so resolve them prefix-aware to match what the runtime will see.
+    """
+    from deepagents_code.model_config import resolve_env_var
+
+    has_key = any(resolve_env_var(var) for var in _TRACING_API_KEY_ENV_VARS)
     return has_key or _has_langsmith_profile_credentials()
 
 
 def _tracing_endpoint() -> str | None:
-    """Return a custom tracing endpoint (env or active profile), if configured."""
+    """Return a custom tracing endpoint (env or active profile), if configured.
+
+    The endpoint vars are not bridged from a `DEEPAGENTS_CODE_` prefix and the
+    LangSmith SDK reads them canonically, so only the canonical names (plus the
+    active profile's `api_url`) are consulted here.
+    """
     for var in _TRACING_ENDPOINT_ENV_VARS:
         value = (os.environ.get(var) or "").strip()
         if value:
@@ -2534,6 +2563,24 @@ def _tracing_endpoint() -> str | None:
         if api_url:
             return api_url
     return None
+
+
+def _resolve_tracing_project() -> str:
+    """Resolve the project agent traces would route to (prefix-aware, no bootstrap).
+
+    Mirrors the `tracing.langsmith_project` manifest option:
+    `DEEPAGENTS_CODE_LANGSMITH_PROJECT`, then `LANGSMITH_PROJECT`, then the
+    default. Unlike `get_langsmith_project_name`, this does not require an env
+    API key (so profile/custom-endpoint setups resolve correctly) and does not
+    touch `settings`, keeping `dcode doctor` off the bootstrap path.
+
+    Returns:
+        The resolved project name, or the default when none is configured.
+    """
+    from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+    from deepagents_code.model_config import resolve_env_var
+
+    return resolve_env_var("LANGSMITH_PROJECT") or LANGSMITH_PROJECT_DEFAULT
 
 
 @dataclass
@@ -2564,16 +2611,25 @@ def get_tracing_status() -> TracingStatus:
     """Summarize LangSmith tracing configuration for diagnostics.
 
     Reads only the local environment and the active LangSmith profile; never
-    contacts the network and never exposes secret values.
+    contacts the network and never exposes secret values. All fields are
+    resolved prefix-/profile-aware so the report matches what the runtime does
+    after bootstrap, even though `dcode doctor` runs before it.
 
     Returns:
         A `TracingStatus` snapshot describing the current tracing setup.
     """
+    enabled = _tracing_enabled()
+    has_credentials = _tracing_has_credentials()
+    endpoint = _tracing_endpoint()
+    # Tracing only reaches the server when enabled and able to authenticate: an
+    # API key (env or profile) or a trusted custom endpoint. This mirrors
+    # `_disable_orphaned_tracing`, which turns off a keyless, endpoint-less setup.
+    active = enabled and (has_credentials or endpoint is not None)
     return TracingStatus(
-        enabled=_tracing_enabled(),
-        has_credentials=_tracing_has_credentials(),
-        endpoint=_tracing_endpoint(),
-        project=get_langsmith_project_name(),
+        enabled=enabled,
+        has_credentials=has_credentials,
+        endpoint=endpoint,
+        project=_resolve_tracing_project() if active else None,
         replica_project=get_langsmith_replica_project(),
     )
 

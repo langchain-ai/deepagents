@@ -29,6 +29,12 @@
 #     from release-please-config.json by the helper script — see
 #     .github/scripts/check_lockfile_release_scope.py for the rationale.
 #
+# Trust model:
+#   - The detector and release-please-config.json run from the PR *base*
+#     revision, not the PR head, so a PR cannot edit them to self-bypass the
+#     gate. Only the PR title (event payload) and changed-file list (API) come
+#     from the PR.
+#
 # Limitations:
 #   - Runs under `pull_request` (not `pull_request_target`), so PRs from forks
 #     get the read-only token and the comment is surfaced to the job summary
@@ -53,8 +59,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: "📋 Checkout Code"
+      - name: "📋 Checkout base revision"
+        # Check out the PR *base* (trusted), never the PR head. The detector and
+        # release-please-config.json are executed from this tree, so the PR under
+        # test cannot edit check_lockfile_release_scope.py or the config to print
+        # "[]" and self-bypass the gate. The PR title (event payload) and
+        # changed-file list (API) are fed in separately and are authoritative
+        # regardless of this checkout.
+        #
+        # `persist-credentials: false` so the job token is not written into the
+        # checkout's git config; the detector needs no git credentials, and the
+        # github-script steps receive their own token directly.
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
 
       - name: "🐍 Setup Python 3.11"
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
@@ -80,7 +99,13 @@ jobs:
             // or hide a lockfile past the cap (false pass). Fail closed if the
             // collected count doesn't match the PR's reported total.
             const expected = context.payload.pull_request.changed_files;
-            if (typeof expected === 'number' && files.length !== expected) {
+            // Without a numeric reported total we cannot verify completeness, so
+            // fail closed rather than proceeding on a possibly-truncated list.
+            if (typeof expected !== 'number') {
+              core.setFailed(`PR payload missing numeric changed_files (got ${JSON.stringify(expected)}); cannot verify the changed-file list is complete. Failing closed.`);
+              return;
+            }
+            if (files.length !== expected) {
               core.setFailed(`Changed-file list is incomplete (${files.length} of ${expected}); cannot determine release scope reliably. Failing closed.`);
               return;
             }
@@ -95,10 +120,22 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
-          # A config-read error in the detector exits non-zero; under `set -e`
-          # the command substitution propagates it and this step fails, so the
-          # comment step (default `if: success()`) is skipped — fail closed.
-          offenders=$(python .github/scripts/check_lockfile_release_scope.py "$PR_TITLE" < changed_files.txt)
+          detector=".github/scripts/check_lockfile_release_scope.py"
+          if [[ ! -f "$detector" ]]; then
+            # The detector does not exist on the base revision yet: the PR that
+            # first introduces this check, or a branch cut from before it
+            # existed. There is no trusted gate to enforce, so treat as clean.
+            # A PR cannot reach this path deliberately — it can only change its
+            # own head, never what is present on base — so it is not a bypass.
+            # Once merged, base always carries the detector and it runs normally.
+            echo "::notice::Detector absent on base revision; nothing to enforce yet."
+            offenders="[]"
+          else
+            # A config-read error in the detector exits non-zero; under `set -e`
+            # the command substitution propagates it and this step fails, so the
+            # comment step (default `if: success()`) is skipped — fail closed.
+            offenders=$(python "$detector" "$PR_TITLE" < changed_files.txt)
+          fi
           # Heredoc form so a multi-line value can never corrupt $GITHUB_OUTPUT.
           {
             echo "offenders<<__SCOPE_EOF__"

@@ -1,0 +1,30 @@
+libs/code/Makefile
+  s_58220203127c46::t_8269cb144db0bd 110-111
+.github/scripts/test_check_extras_sync.py
+  s_58220203127c46::t_889742ef91fb70 1-51,58-62,66-67
+  s_58220203127c46::t_9b040e4dd655e4 52-57,63-65
+.github/scripts/check_extras_sync.py
+  s_58220203127c46::t_43755b34dd7b1f 116-127,132-136
+.github/scripts/check_sdk_pin.py
+  s_58220203127c46::t_6c217d46bd4920 7-17
+  s_58220203127c46::t_9f795a338b16cd 73-80
+.github/scripts/test_check_sdk_pin.py
+  s_58220203127c46::t_8aeabd66920892 41-85
+  s_58220203127c46::t_a172e0e70c49ea 5,10-17,20,25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.10",
+  "base_commit_sha": "413473278f5faf23046169dce7cc6e8031803b8c",
+  "prompts": {},
+  "sessions": {
+    "s_58220203127c46": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "60403f47-144f-4595-9d47-0bb2d80cbfe9",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

@@ -1,0 +1,31 @@
+.github/scripts/test_check_pr_scope_files.py
+  s_21d6270c8ac4b4::t_94a4a5af0a06f4 214-236
+.github/workflows/release_please_scope_check.yml
+  s_21d6270c8ac4b4::t_9389441be4221a 137-150
+  s_21d6270c8ac4b4::t_e8d32694c9c39f 240
+  s_21d6270c8ac4b4::t_804ae88c8e7fb6 34,37-42,49-54
+  s_21d6270c8ac4b4::t_a56aa410bdfd62 230
+  s_21d6270c8ac4b4::t_676b0408ebba55 251
+.github/workflows/pr_scope_file_check.yml
+  s_21d6270c8ac4b4::t_497cc275b72997 267
+  s_21d6270c8ac4b4::t_52b47e87b16cb4 256
+  s_21d6270c8ac4b4::t_b068936bd87c55 126-139
+  s_21d6270c8ac4b4::t_cf1376fa73f0f8 246
+  s_21d6270c8ac4b4::t_cda83bbc32e362 25,27-32,38-44
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.10",
+  "base_commit_sha": "57d98c6fbc6c787ca8235a5556481c3ceb66441f",
+  "prompts": {},
+  "sessions": {
+    "s_21d6270c8ac4b4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0cbf0f91-9bbb-4ea8-87cb-a1866766853d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

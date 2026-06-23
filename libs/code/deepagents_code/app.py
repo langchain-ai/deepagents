@@ -3980,6 +3980,7 @@ class DeepAgentsApp(App):
             ):
                 await self._refresh_dependencies(
                     include_prereleases=include_prereleases,
+                    app_update_version=latest,
                 )
                 return
 
@@ -4041,24 +4042,32 @@ class DeepAgentsApp(App):
                 ErrorMessage(f"Update failed: {type(exc).__name__}: {exc}"),
             )
 
-    async def _refresh_dependencies(self, *, include_prereleases: bool | None) -> None:
+    async def _refresh_dependencies(
+        self,
+        *,
+        include_prereleases: bool | None,
+        app_update_version: str | None = None,
+    ) -> None:
         """Re-resolve dependencies to their newest in-range versions.
 
-        Runs the same `uv tool upgrade` as a version bump, then reports which
-        dependencies actually moved. Used by `/update --deps` and the
-        already-current refresh prompt. Editable and pre-release eligibility
-        are validated by the caller before this runs.
+        Reinstalls the current `deepagents-code` version with an upgraded
+        dependency resolution, then reports which dependencies actually moved.
+        Used by `/update --deps` and the already-current refresh prompt.
+        Editable and pre-release eligibility are validated by the caller before
+        this runs.
 
         Args:
             include_prereleases: Whether to include alpha/beta/rc releases;
                 `None` follows the installed version's channel.
+            app_update_version: Newer `deepagents-code` version discovered by
+                the caller, if dependency refresh is intentionally staying on
+                the current app version.
         """
         from deepagents_code._env_vars import DEBUG_UPDATE
         from deepagents_code.update_check import (
             format_dependency_changes,
             parse_dependency_changes,
-            perform_upgrade,
-            upgrade_command,
+            perform_dependency_refresh,
         )
 
         await self._mount_message(AppMessage("Refreshing dependencies..."))
@@ -4067,15 +4076,14 @@ class DeepAgentsApp(App):
                 AppMessage("Skipped dependency refresh (debug mode)."),
             )
             return
-        success, output = await perform_upgrade(
+        success, output = await perform_dependency_refresh(
             include_prereleases=include_prereleases,
         )
         if not success:
-            cmd = upgrade_command(include_prereleases=include_prereleases)
             detail = f": {output[-200:]}" if output else ""
             await self._mount_message(
                 AppMessage(
-                    f"Dependency refresh failed{detail}\nRun manually: {cmd}",
+                    f"Dependency refresh failed{detail}",
                 ),
             )
             return
@@ -4085,6 +4093,15 @@ class DeepAgentsApp(App):
         ]
         dep_changes = [change for change in changes if change.name != "deepagents-code"]
         if not dep_changes and not self_changes:
+            if app_update_version is not None:
+                await self._mount_message(
+                    AppMessage(
+                        "Dependencies are already up to date. "
+                        "A deepagents-code update is available: "
+                        f"v{app_update_version}.",
+                    ),
+                )
+                return
             await self._mount_message(
                 AppMessage("Dependencies are already up to date."),
             )
@@ -4098,6 +4115,10 @@ class DeepAgentsApp(App):
         if dep_changes:
             message_parts.append(
                 f"Refreshed dependencies:\n{format_dependency_changes(dep_changes)}"
+            )
+        if app_update_version is not None:
+            message_parts.append(
+                f"A deepagents-code update is available: v{app_update_version}."
             )
         await self._mount_message(
             AppMessage(

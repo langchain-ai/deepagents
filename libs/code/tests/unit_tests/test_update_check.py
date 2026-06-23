@@ -29,6 +29,7 @@ from deepagents_code.update_check import (
     cleanup_update_logs,
     clear_update_notified,
     create_update_log_path,
+    dependency_refresh_command,
     detect_install_method,
     editable_extra_hint,
     editable_package_hint,
@@ -57,6 +58,7 @@ from deepagents_code.update_check import (
     mark_update_notified,
     mark_version_seen,
     parse_dependency_changes,
+    perform_dependency_refresh,
     perform_install_extra,
     perform_install_package,
     perform_upgrade,
@@ -1108,6 +1110,78 @@ class TestUpdateLogs:
             upgrade_command(include_prereleases=True)
             == "uv tool upgrade deepagents-code --prerelease allow"
         )
+
+    def test_dependency_refresh_command_pins_current_version(self) -> None:
+        """Dependency refresh keeps dcode on the running version."""
+        with patch(
+            "deepagents_code.extras_info.installed_extra_names",
+            return_value=frozenset(),
+        ):
+            assert (
+                dependency_refresh_command(version="1.2.3")
+                == "uv tool install -U deepagents-code==1.2.3"
+            )
+
+    def test_dependency_refresh_command_preserves_extras(self) -> None:
+        """Dependency refresh must not drop already-installed extras."""
+        with patch(
+            "deepagents_code.extras_info.installed_extra_names",
+            return_value=frozenset({"quickjs", "nvidia"}),
+        ):
+            assert (
+                dependency_refresh_command(
+                    version="1.2.3",
+                    include_prereleases=True,
+                )
+                == "uv tool install -U "
+                "'deepagents-code[nvidia,quickjs]==1.2.3' --prerelease allow"
+            )
+
+    async def test_perform_dependency_refresh_uses_pinned_uv_command(self) -> None:
+        """Dependency refresh shells out without allowing a dcode version bump."""
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch("shutil.which", return_value="/usr/bin/uv"),
+            patch(
+                "deepagents_code.extras_info.installed_extra_names",
+                return_value=frozenset(),
+            ),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as run_mock,
+        ):
+            success, _output = await perform_dependency_refresh()
+
+        assert success is True
+        run_mock.assert_awaited_once()
+        await_args = run_mock.await_args
+        assert await_args is not None
+        assert await_args.args[0] == (
+            f"uv tool install -U deepagents-code=={__version__}"
+        )
+
+    async def test_perform_dependency_refresh_refuses_brew(self) -> None:
+        """Brew cannot refresh deps without taking the app formula update."""
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="brew",
+            ),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+            ) as run_mock,
+        ):
+            success, output = await perform_dependency_refresh()
+
+        assert success is False
+        assert "dependency-only refresh is not supported" in output
+        run_mock.assert_not_awaited()
 
     def test_prerelease_upgrade_supported_for_uv(self) -> None:
         """The uv install method can be steered onto the pre-release channel."""

@@ -5,7 +5,10 @@ from __future__ import annotations
 from textual.app import App, ComposeResult
 from textual.widgets import Static
 
-from deepagents_code.widgets.update_confirm import RefreshDependenciesConfirmScreen
+from deepagents_code.widgets.update_confirm import (
+    RefreshDependenciesConfirmScreen,
+    UpdateBeforeDependenciesConfirmScreen,
+)
 
 
 class _RefreshConfirmTestApp(App[None]):
@@ -47,5 +50,43 @@ class TestRefreshDependenciesConfirmScreen:
             app.push_screen(screen, outcomes.append)
             await pilot.pause()
             screen.action_cancel()
+            await pilot.pause()
+            assert outcomes == [False]
+
+
+class TestUpdateBeforeDependenciesConfirmScreen:
+    """Behavior tests for `UpdateBeforeDependenciesConfirmScreen`."""
+
+    async def test_enter_dismisses_with_true(self) -> None:
+        """Pressing Enter chooses the app update first."""
+        app = _RefreshConfirmTestApp()
+        async with app.run_test() as pilot:
+            outcomes: list[bool | None] = []
+            app.push_screen(
+                UpdateBeforeDependenciesConfirmScreen(
+                    current="1.0.0",
+                    latest="1.1.0",
+                ),
+                outcomes.append,
+            )
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert outcomes == [True]
+
+    async def test_escape_dismisses_with_false(self) -> None:
+        """Pressing Esc keeps dcode current and refreshes dependencies."""
+        app = _RefreshConfirmTestApp()
+        async with app.run_test() as pilot:
+            outcomes: list[bool | None] = []
+            app.push_screen(
+                UpdateBeforeDependenciesConfirmScreen(
+                    current="1.0.0",
+                    latest="1.1.0",
+                ),
+                outcomes.append,
+            )
+            await pilot.pause()
+            await pilot.press("escape")
             await pilot.pause()
             assert outcomes == [False]

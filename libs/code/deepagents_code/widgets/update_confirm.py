@@ -5,7 +5,7 @@ still re-resolve its dependencies to the newest versions allowed by the pinned
 ranges (e.g. a new `langchain-openai`). That runs `uv tool upgrade` and can pull
 in newer minor releases, so this non-blocking modal asks for explicit
 confirmation first. `/update --deps` skips that prompt, but asks before taking an
-available app update ahead of the dependency refresh.
+available app update ahead of the dependency refresh for the current app version.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ class UpdateBeforeDependenciesConfirmScreen(ModalScreen[bool]):
     """Confirmation overlay before `/update --deps` upgrades dcode itself.
 
     Dismisses with `True` when the user chooses the app update first and `False`
-    when they prefer to continue with the dependency refresh.
+    when they prefer to refresh dependencies for the current app version.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -93,13 +93,13 @@ class UpdateBeforeDependenciesConfirmScreen(ModalScreen[bool]):
             )
             yield Static(
                 f"A newer deepagents-code version is available ({self._current} -> "
-                f"{self._latest}). Update dcode now, or continue with only the "
-                "dependency refresh you requested.",
+                f"{self._latest}). Update dcode now, or refresh dependencies for "
+                "the current version you already have.",
                 classes="update-confirm-body",
                 markup=False,
             )
             yield Static(
-                "Enter to update dcode, Esc to refresh dependencies",
+                "Enter to update dcode, Esc to refresh current dependencies",
                 classes="update-confirm-help",
                 markup=False,
             )

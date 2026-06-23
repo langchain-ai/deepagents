@@ -1062,6 +1062,56 @@ async def perform_upgrade(
     return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
 
 
+async def perform_dependency_refresh(
+    *,
+    progress: UpgradeProgressCallback | None = None,
+    log_path: Path | None = None,
+    include_prereleases: bool | None = None,
+) -> tuple[bool, str]:
+    """Refresh dependencies while keeping `deepagents-code` on this version.
+
+    Runs `uv tool install -U deepagents-code==<current>` instead of
+    `uv tool upgrade deepagents-code`, so compatible dependency releases can be
+    picked up without crossing to a newer app version. Only uv-managed installs
+    are supported; other install methods cannot safely express this operation.
+
+    Args:
+        progress: Optional callback invoked for each output line.
+        log_path: Optional path to persist command output.
+        include_prereleases: Whether to include alpha/beta/rc releases. When
+            `None`, follows the installed version's channel.
+
+    Returns:
+        `(success, output)` — *output* is the combined stdout/stderr, or an
+            explanatory error message when the install method is unsupported.
+    """
+    method = detect_install_method()
+    if method == "unknown":
+        return False, "Editable install detected — skipping dependency refresh."
+    if method == "brew":
+        return False, (
+            "Homebrew install detected — dependency-only refresh is not "
+            "supported without upgrading deepagents-code."
+        )
+    if method == "other":
+        return False, (
+            "Unsupported install method detected — cannot refresh dependencies "
+            "without knowing which environment provides `dcode`."
+        )
+    if not shutil.which("uv"):
+        return False, "`uv` not found on PATH."
+
+    from deepagents_code.extras_info import ExtrasIntrospectionError
+
+    try:
+        cmd = dependency_refresh_command(
+            include_prereleases=include_prereleases,
+        )
+    except (ExtrasIntrospectionError, ValueError) as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
+
+
 class DependencyChange(NamedTuple):
     """A single package version change reported by `uv tool upgrade`.
 
@@ -1166,14 +1216,18 @@ def is_valid_package_name(package: str) -> bool:
     return bool(_PACKAGE_NAME_RE.fullmatch(package))
 
 
-def _dcode_extras_requirement(extras: Iterable[str]) -> str:
+def _dcode_extras_requirement(
+    extras: Iterable[str],
+    *,
+    version: str | None = None,
+) -> str:
     """Return the validated `deepagents-code[...]` requirement for a uv install.
 
     Shared by the extra- and package-install commands so already-installed
     extras survive a `uv tool install` reinstall — a bare `deepagents-code`
     request would replace the tool and drop them. Returns plain
-    `deepagents-code` when no extras are selected; otherwise the single-quoted
-    bracket form, which keeps zsh from globbing the brackets.
+    `deepagents-code` when no extras or version are selected; otherwise the
+    shell-quoted requirement form, which keeps zsh from globbing brackets.
 
     Args:
         extras: Extra names to encode. Each is validated against PEP 508
@@ -1181,10 +1235,11 @@ def _dcode_extras_requirement(extras: Iterable[str]) -> str:
             caller-supplied extras (`install_extras_command`) and a
             redundant re-check for extras read from distribution metadata
             (`install_package_command`).
+        version: Optional exact `deepagents-code` version pin.
 
     Returns:
         Shell-safe requirement token, e.g. `deepagents-code` or
-            `'deepagents-code[baseten,nvidia]'`.
+            `'deepagents-code[baseten,nvidia]==1.0.0'`.
 
     Raises:
         ValueError: If any extra fails PEP 508 validation.
@@ -1197,10 +1252,58 @@ def _dcode_extras_requirement(extras: Iterable[str]) -> str:
                 f"({_EXTRA_NAME_RE.pattern})"
             )
             raise ValueError(msg)
-    if not names:
-        return "deepagents-code"
-    extras_part = ",".join(names)
-    return f"'deepagents-code[{extras_part}]'"
+    version_suffix = ""
+    if version is not None:
+        try:
+            parsed = Version(version)
+        except InvalidVersion as exc:
+            msg = f"Invalid deepagents-code version {version!r}"
+            raise ValueError(msg) from exc
+        version_suffix = f"=={parsed}"
+    extras_part = f"[{','.join(names)}]" if names else ""
+    requirement = f"deepagents-code{extras_part}{version_suffix}"
+    if not names and version is None:
+        return requirement
+    return shlex.quote(requirement)
+
+
+def dependency_refresh_command(
+    *,
+    version: str = __version__,
+    include_prereleases: bool | None = None,
+    distribution_name: str = "deepagents-code",
+) -> str:
+    """Return the uv command that refreshes deps for the current dcode version.
+
+    Args:
+        version: Exact `deepagents-code` version to keep installed.
+        include_prereleases: Whether to include alpha/beta/rc releases. When
+            `None`, follows the installed version's channel.
+        distribution_name: Name of the installed distribution to inspect for
+            already-installed extras.
+
+    Returns:
+        Shell command string suitable for execution via the shell.
+
+    Raises:
+        ExtrasIntrospectionError: If installed extras cannot be determined
+            safely from distribution metadata.
+    """
+    from deepagents_code.extras_info import (
+        ExtrasIntrospectionError,
+        installed_extra_names,
+    )
+
+    try:
+        extras = installed_extra_names(distribution_name, strict=True)
+    except ExtrasIntrospectionError as exc:
+        msg = str(exc)
+        raise ExtrasIntrospectionError(msg) from exc
+    requirement = _dcode_extras_requirement(extras, version=version)
+    cmd = f"uv tool install -U {requirement}"
+    if _resolve_include_prereleases(include_prereleases):
+        cmd += " --prerelease allow"
+    return cmd
 
 
 def install_package_command(

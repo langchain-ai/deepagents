@@ -1209,21 +1209,28 @@ class MCPViewerScreen(ModalScreen[str | None]):
     def _focus_filter_input(self) -> None:
         """Refocus the filter `Input` after an in-place body rebuild.
 
-        `refresh_server_info` removes the screen's focused widget when it
-        clears the body, leaving the freshly mounted `Input` unfocused — so
-        a viewer opened while the server is still connecting would silently
-        swallow keystrokes once tools load. Textual auto-focuses the `Input`
-        only on the first mount, so restore it explicitly here. Deferred via
-        `call_after_refresh` because `_mount_body` mounts without awaiting.
+        `refresh_server_info` clears the body via `remove_children`, which
+        blurs the screen (Textual resets focus to `None` when the focused
+        widget is pruned). The newly mounted filter `Input` is not
+        auto-focused on a re-mount — Textual auto-focuses only on the first
+        mount — so a viewer opened while the server is still connecting
+        would leave the rebuilt input unfocused once tools load, and
+        keystrokes would never reach it. Restore focus explicitly here,
+        deferred via `call_after_refresh` because `_mount_body` mounts
+        without awaiting.
+
+        The `Input` exists only when there are servers to filter (see
+        `_mount_body`); when the list is empty there is nothing to focus, so
+        return early. Gating on `_server_info` rather than swallowing a
+        missing-widget error keeps a genuinely-absent input (id drift, a
+        failed mount) visible instead of silently re-introducing the
+        keystroke-swallow this method exists to prevent.
         """
 
         def _focus() -> None:
-            from contextlib import suppress
-
-            from textual.css.query import NoMatches
-
-            with suppress(NoMatches):
-                self.query_one("#mcp-filter", Input).focus()
+            if not self._server_info:
+                return
+            self.query_one("#mcp-filter", Input).focus()
 
         self.call_after_refresh(_focus)
 

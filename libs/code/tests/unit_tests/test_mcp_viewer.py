@@ -134,7 +134,9 @@ class TestMCPViewerScreen:
         shows a placeholder with no filter input. When tools load,
         `refresh_server_info` rebuilds the body and mounts the filter
         `Input`, but Textual only auto-focuses on the first mount — so the
-        input was left unfocused and silently swallowed every keystroke.
+        input was left unfocused and keystrokes never reached it. The final
+        `press` + `value` assertion verifies the typed text actually lands
+        in the input, not just that focus was restored.
         """
         from textual.widgets import Input
 
@@ -450,8 +452,13 @@ class TestMCPViewerScreen:
         Guards the `new_server is None` branch in
         `apply_server_disable_toggle` — a regression that skipped the
         fallback would leave the viewer showing stale rows for the
-        missing server.
+        missing server. Also pins focus: the fallback routes through
+        `refresh_server_info`, which must refocus the filter `Input` (this
+        is a second live caller of `_focus_filter_input` alongside the
+        server-ready path).
         """
+        from textual.widgets import Input
+
         app = MCPViewerTestApp()
         async with app.run_test() as pilot:
 
@@ -480,6 +487,9 @@ class TestMCPViewerScreen:
             remaining = screen._row_widgets[0]
             assert isinstance(remaining, MCPServerHeaderItem)
             assert remaining.server.name == "remote-api"
+
+            # Fallback re-mounts the body; focus must land on the filter input.
+            assert app.focused is screen.query_one("#mcp-filter", Input)
 
     async def test_f2_renumbers_indices_so_clicks_resolve_correctly(self) -> None:
         """Every widget's `index` matches its `_row_widgets` position post-F2.

@@ -92,6 +92,14 @@ Prefer dedicated tools over raw shell: `read_file` over `cat`, `write_file` over
 `echo`/heredoc, `edit_file` over `sed`/`awk`, `grep`/`glob` over shell equivalents.
 Read large files with pagination. Make independent tool calls in parallel.
 
+## Keep durable notes
+
+Maintain a notes file e.g. `/app/Notes.md` of findings, decisions, and results of
+experiments, and the exact required output contract; update it as you learn. Re-read
+it when confused, when resuming, or after summarization events, when you feel you lack
+context about what you're solving.
+
+
 ## When you get stuck
 
 Read the full error output, not just the first line — the cause is often mid-trace.
@@ -99,13 +107,6 @@ Reproduce a failure before fixing it, and change one thing at a time. If the sam
 step fails repeatedly, stop and find the root cause instead of retrying the same
 approach. If you cannot fully converge before the run ends, write your best-effort
 artifact rather than leaving nothing.
-
-## Keep durable notes
-
-Maintain a notes file e.g. `/app/Notes.md` of findings, decisions, and results of
-experiments, and the exact required output contract; update it as you learn. Re-read
-it when confused, when resuming, or after summarization events, when you feel you lack
-context about what you're solving.
 
 ## Verify against the real check, not your own
 

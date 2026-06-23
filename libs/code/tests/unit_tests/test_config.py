@@ -100,6 +100,56 @@ class TestRuntimeDotenvReload:
         finally:
             config_mod._dotenv_loaded_values.clear()
 
+    def test_reload_redefaults_project_when_override_cleared_and_tracing_on(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Clearing the agent project on reload re-applies the default.
+
+        Regression: when a cwd switch unsets `DEEPAGENTS_CODE_LANGSMITH_PROJECT`
+        and the user has no original `LANGSMITH_PROJECT`, the reload must fall
+        back to `deepagents-code` (not leave the var unset) so trace ingestion
+        keeps matching the name `get_langsmith_project_name` displays.
+        """
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        config_mod._dotenv_loaded_values.clear()
+        original_ls = config_mod._original_langsmith_project
+
+        try:
+            # User never set LANGSMITH_PROJECT; tracing is active with a key.
+            config_mod._original_langsmith_project = None
+            monkeypatch.setenv("LANGSMITH_TRACING", "true")
+            monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_test")
+            monkeypatch.delenv("LANGSMITH_PROJECT", raising=False)
+            # Agent-project override is active before the reload, cleared after.
+            monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", "agent-project")
+
+            runtime = Settings.from_environment(start_path=current)
+            assert runtime.deepagents_langchain_project == "agent-project"
+
+            monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
+            runtime.reload_from_environment(start_path=target)
+
+            assert os.environ["LANGSMITH_PROJECT"] == LANGSMITH_PROJECT_DEFAULT
+        finally:
+            config_mod._original_langsmith_project = original_ls
+            config_mod._dotenv_loaded_values.clear()
+
 
 class TestProjectRootDetection:
     """Test project root detection via .git directory."""
@@ -3833,6 +3883,97 @@ class TestLazyModuleAttributes:
 
             # Empty string propagated — lets user explicitly disable tracing.
             assert os.environ["LANGSMITH_TRACING"] == ""
+        finally:
+            config_mod._bootstrap_done = original_done
+            config_mod._original_langsmith_project = original_ls
+
+    def test_bootstrap_defaults_project_when_tracing_and_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Tracing on with a key but no project defaults to deepagents-code.
+
+        Exercises `_apply_default_langsmith_project` wired into the real
+        `_ensure_bootstrap` flow (after the override and orphaned-tracing
+        steps) — coverage the helper-level tests cannot provide.
+        """
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code.config import _ensure_bootstrap
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+        original_done = config_mod._bootstrap_done
+        original_ls = config_mod._original_langsmith_project
+        config_mod._bootstrap_done = False
+
+        try:
+            monkeypatch.setenv("LANGSMITH_TRACING", "true")
+            monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_test")
+            monkeypatch.delenv("LANGSMITH_PROJECT", raising=False)
+            monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
+
+            with (
+                patch("deepagents_code.config._load_dotenv"),
+                patch(
+                    "deepagents_code.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            assert os.environ["LANGSMITH_PROJECT"] == LANGSMITH_PROJECT_DEFAULT
+        finally:
+            config_mod._bootstrap_done = original_done
+            config_mod._original_langsmith_project = original_ls
+
+    def test_bootstrap_keyless_tracing_leaves_project_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Keyless tracing is disabled first, so no default project is applied.
+
+        Regression guard for the ordering between `_disable_orphaned_tracing`
+        and `_apply_default_langsmith_project`: a tracing flag with no
+        resolvable key must be flipped off *before* the default runs, so
+        `LANGSMITH_PROJECT` is left unset (tracing never starts) rather than
+        pointed at `deepagents-code`.
+        """
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code.config import _ensure_bootstrap
+
+        original_done = config_mod._bootstrap_done
+        original_ls = config_mod._original_langsmith_project
+        config_mod._bootstrap_done = False
+
+        try:
+            monkeypatch.setenv("LANGSMITH_TRACING", "true")
+            monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+            monkeypatch.delenv("LANGCHAIN_API_KEY", raising=False)
+            monkeypatch.delenv("LANGSMITH_ENDPOINT", raising=False)
+            monkeypatch.delenv("LANGCHAIN_ENDPOINT", raising=False)
+            monkeypatch.delenv("LANGSMITH_PROJECT", raising=False)
+            monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
+
+            with (
+                patch("deepagents_code.config._load_dotenv"),
+                patch(
+                    "deepagents_code.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+                patch(
+                    "deepagents_code.config._has_langsmith_profile_credentials",
+                    return_value=False,
+                ),
+                patch(
+                    "deepagents_code.config._has_langsmith_profile_custom_endpoint",
+                    return_value=False,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            assert "LANGSMITH_PROJECT" not in os.environ
+            assert os.environ["LANGSMITH_TRACING"] == "false"
         finally:
             config_mod._bootstrap_done = original_done
             config_mod._original_langsmith_project = original_ls

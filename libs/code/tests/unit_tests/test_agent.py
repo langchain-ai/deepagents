@@ -1561,10 +1561,23 @@ class TestCreateCliAgentProjectContext:
         assert sources[0] == str(agent_dir / "AGENTS.md")
         assert sources[1:] == [str(deepagents_md), str(root_md)]
 
-    def test_project_context_sets_local_shell_root_dir(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """Shell backend root should follow the explicit user working directory."""
+    @staticmethod
+    def _build_shell_agent(
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        *,
+        user_langchain_project: str | None,
+    ) -> tuple[Mock, Path]:
+        """Build a shell-enabled CLI agent and return the `LocalShellBackend` mock.
+
+        The agent's `deepagents-code` override is placed in `os.environ` so the
+        returned `call_args` reflect how the user's original `LANGSMITH_PROJECT`
+        is restored or dropped for shell commands.
+
+        Returns:
+            The `LocalShellBackend` mock (for `call_args` assertions) and the
+            resolved user working directory.
+        """
         project_root = tmp_path / "project"
         project_root.mkdir()
         (project_root / ".git").mkdir()
@@ -1593,7 +1606,7 @@ class TestCreateCliAgentProjectContext:
         mock_settings.model_unsupported_modalities = frozenset()
         mock_settings.model_context_limit = None
         mock_settings.project_root = None
-        mock_settings.user_langchain_project = None
+        mock_settings.user_langchain_project = user_langchain_project
 
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
@@ -1620,8 +1633,40 @@ class TestCreateCliAgentProjectContext:
                 project_context=project_context,
             )
 
+        return mock_shell, user_cwd
+
+    def test_project_context_sets_local_shell_root_dir(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Shell backend root follows the cwd; agent override is dropped.
+
+        With no user `LANGSMITH_PROJECT` (`user_langchain_project is None`),
+        the agent's `deepagents-code` override must not leak into the shell
+        env — it is popped so the user's code does not trace into the agent's
+        project.
+        """
+        mock_shell, user_cwd = self._build_shell_agent(
+            monkeypatch, tmp_path, user_langchain_project=None
+        )
+
         assert mock_shell.call_args.kwargs["root_dir"] == user_cwd
         assert "LANGSMITH_PROJECT" not in mock_shell.call_args.kwargs["env"]
+
+    @pytest.mark.parametrize("user_project", ["user-project", ""])
+    def test_project_context_restores_user_shell_langchain_project(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, user_project: str
+    ) -> None:
+        """A non-None original project is restored into the shell env verbatim.
+
+        The guard is `is not None`, so an empty-string original is restored as
+        `""` (not popped) — the user explicitly cleared their project and that
+        intent is preserved for shell commands.
+        """
+        mock_shell, _ = self._build_shell_agent(
+            monkeypatch, tmp_path, user_langchain_project=user_project
+        )
+
+        assert mock_shell.call_args.kwargs["env"]["LANGSMITH_PROJECT"] == user_project
 
     def test_cwd_sets_local_filesystem_root_dir_without_shell(
         self, tmp_path: Path

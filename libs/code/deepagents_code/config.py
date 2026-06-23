@@ -408,6 +408,28 @@ def consume_orphaned_tracing_disabled_notice() -> str | None:
     return notice
 
 
+def _tracing_enabled() -> bool:
+    """Whether any LangSmith/LangChain tracing flag is truthy in the environment.
+
+    Reads the canonical tracing-enable vars (`_TRACING_ENABLE_ENV_VARS`) and
+    classifies each present value with `classify_env_bool`, mirroring how the
+    LangChain/LangSmith SDKs decide whether to start tracing. Shared by
+    `_disable_orphaned_tracing` and `_apply_default_langsmith_project` so both
+    read the flags identically.
+
+    Returns:
+        `True` if at least one tracing flag is set to a truthy value,
+            else `False`.
+    """
+    from deepagents_code._env_vars import classify_env_bool
+
+    return any(
+        classify_env_bool(os.environ[var])
+        for var in _TRACING_ENABLE_ENV_VARS
+        if var in os.environ
+    )
+
+
 def _disable_orphaned_tracing() -> None:
     """Disable LangSmith tracing when enabled without a usable API key.
 
@@ -426,14 +448,7 @@ def _disable_orphaned_tracing() -> None:
     """
     global _orphaned_tracing_disabled_notice  # noqa: PLW0603
 
-    from deepagents_code._env_vars import classify_env_bool
-
-    tracing_on = any(
-        classify_env_bool(os.environ[var])
-        for var in _TRACING_ENABLE_ENV_VARS
-        if var in os.environ
-    )
-    if not tracing_on:
+    if not _tracing_enabled():
         return
 
     has_custom_endpoint = any(
@@ -472,14 +487,7 @@ def _apply_default_langsmith_project() -> None:
     if os.environ.get("LANGSMITH_PROJECT"):
         return
 
-    from deepagents_code._env_vars import classify_env_bool
-
-    tracing_on = any(
-        classify_env_bool(os.environ[var])
-        for var in _TRACING_ENABLE_ENV_VARS
-        if var in os.environ
-    )
-    if not tracing_on:
+    if not _tracing_enabled():
         return
 
     from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
@@ -1966,11 +1974,16 @@ class Settings:
         if new_project:
             os.environ["LANGSMITH_PROJECT"] = str(new_project)
         elif previous["deepagents_langchain_project"]:
-            # Override was previously active but new value is unset; restore.
+            # Override was previously active but new value is unset; restore the
+            # user's original project. With no original, drop the override and
+            # re-apply the default so ingestion keeps matching the name
+            # `get_langsmith_project_name` displays (the default is a no-op when
+            # tracing is off, so a disabled setup is left unset).
             if _original_langsmith_project:
                 os.environ["LANGSMITH_PROJECT"] = _original_langsmith_project
             else:
                 os.environ.pop("LANGSMITH_PROJECT", None)
+                _apply_default_langsmith_project()
 
         return self._format_reload_changes(previous, refreshed)
 
@@ -2528,7 +2541,7 @@ def _is_langsmith_not_found(exc: Exception) -> bool:
     """Whether a LangSmith SDK error indicates the project does not exist.
 
     Returns:
-        True for a `LangSmithNotFoundError` (404), False otherwise.
+        `True` for a `LangSmithNotFoundError` (404), `False` otherwise.
     """
     try:
         from langsmith.utils import LangSmithNotFoundError

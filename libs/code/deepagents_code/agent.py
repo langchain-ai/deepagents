@@ -1435,8 +1435,11 @@ def create_cli_agent(
         # ========== LOCAL MODE ==========
         root_dir = effective_cwd if effective_cwd is not None else Path.cwd()
         if enable_shell:
-            # Create environment for shell commands
-            # Restore user's original LANGSMITH_PROJECT so their code traces separately
+            # Create environment for shell commands.
+            # Restore the user's original LANGSMITH_PROJECT so their code traces
+            # separately. When they had none, drop the agent's override (the
+            # `deepagents-code` default applied at bootstrap) entirely so shell
+            # commands don't inherit it.
             shell_env = os.environ.copy()
             if settings.user_langchain_project is not None:
                 shell_env["LANGSMITH_PROJECT"] = settings.user_langchain_project

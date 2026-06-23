@@ -458,6 +458,46 @@ jobs:
           echo "Release commit: $RELEASE_COMMIT"
           echo "release-commit=$RELEASE_COMMIT" >> "$GITHUB_OUTPUT"
 
+      # Resolve the human who shipped this release so release notes can credit
+      # them. Primary source is whoever merged the release PR (the release commit
+      # is that PR's squash-merge); manual `gh workflow run` dispatches fall back
+      # to the triggering actor. Bot accounts are dropped — there's no human to
+      # credit (the auto path's dispatcher is github-actions[bot]).
+      - name: Resolve releaser
+        id: resolve-releaser
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_COMMIT: ${{ steps.resolve-refs.outputs.release-commit }}
+          ACTOR: ${{ github.actor }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+
+          RELEASER=""
+
+          # Primary: the user who merged the release PR.
+          if [ -n "$RELEASE_COMMIT" ]; then
+            PR_NUM=$(gh api "/repos/$REPOSITORY/commits/$RELEASE_COMMIT/pulls" \
+              --jq '.[0].number // empty' 2>/dev/null || true)
+            if [ -n "$PR_NUM" ]; then
+              RELEASER=$(gh pr view "$PR_NUM" --repo "$REPOSITORY" \
+                --json mergedBy --jq '.mergedBy.login // empty' 2>/dev/null || true)
+            fi
+          fi
+
+          # Fallback: the actor who dispatched the workflow (manual releases).
+          if [ -z "$RELEASER" ]; then
+            RELEASER="$ACTOR"
+          fi
+
+          # Drop bot accounts (quoted patterns are literal, so "[bot]" is not a glob class).
+          case "$RELEASER" in
+            ""|*"[bot]"|github-actions) RELEASER="" ;;
+          esac
+
+          echo "Resolved releaser: ${RELEASER:-<none>}"
+          echo "releaser=$RELEASER" >> "$GITHUB_OUTPUT"
+
       - name: Generate release body
         id: generate-release-body
         env:
@@ -466,6 +506,7 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
           PREV_TAG: ${{ steps.resolve-refs.outputs.prev-tag }}
           RELEASE_COMMIT: ${{ steps.resolve-refs.outputs.release-commit }}
+          RELEASER: ${{ steps.resolve-releaser.outputs.releaser }}
           IS_PRERELEASE: ${{ needs.build.outputs.is-prerelease }}
           BASE_BRANCH: ${{ github.ref_name }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -675,8 +716,26 @@ jobs:
           if [ -n "$INTERNAL_LIST" ]; then
             if [ "$SEPARATOR_ADDED" = "false" ]; then
               RELEASE_BODY=$(printf "%s\n\n---" "$RELEASE_BODY")
+              SEPARATOR_ADDED=true
             fi
             RELEASE_BODY=$(printf "%s\n\nInternal maintainers: %s" "$RELEASE_BODY" "$INTERNAL_LIST")
+          fi
+
+          # Credit whoever shipped the release, unless they're already listed as a
+          # community contributor or internal maintainer (avoid crediting twice).
+          if [ -n "$RELEASER" ]; then
+            ALREADY_PRESENT=false
+            if printf '%s %s' "$CONTRIBUTOR_LIST" "$INTERNAL_LIST" \
+              | grep -qE "(^|[ ,])@${RELEASER}([ ,(]|\$)"; then
+              ALREADY_PRESENT=true
+            fi
+            if [ "$ALREADY_PRESENT" = "false" ]; then
+              if [ "$SEPARATOR_ADDED" = "false" ]; then
+                RELEASE_BODY=$(printf "%s\n\n---" "$RELEASE_BODY")
+                SEPARATOR_ADDED=true
+              fi
+              RELEASE_BODY=$(printf "%s\n\nReleased by: @%s" "$RELEASE_BODY" "$RELEASER")
+            fi
           fi
 
           # Output release body using heredoc for proper multiline handling

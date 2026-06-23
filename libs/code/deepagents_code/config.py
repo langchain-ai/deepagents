@@ -351,7 +351,9 @@ def _quiet_sdk_tracing_logging() -> None:
             sdk_logger.addHandler(logging.NullHandler())
 
 
-def _load_langsmith_profile_config() -> _LangSmithProfileConfig | None:
+def _load_langsmith_profile_config(
+    env: dict[str, str] | None = None,
+) -> _LangSmithProfileConfig | None:
     """Return the active LangSmith profile client config, if available."""
     try:
         client_module = importlib.import_module("langsmith.client")
@@ -362,12 +364,18 @@ def _load_langsmith_profile_config() -> _LangSmithProfileConfig | None:
     if profiles is None:
         return None
 
-    return profiles.load_profile_client_config()
+    if env is None:
+        return profiles.load_profile_client_config()
+
+    from unittest.mock import patch
+
+    with patch.dict(os.environ, env, clear=True):
+        return profiles.load_profile_client_config()
 
 
-def _has_langsmith_profile_credentials() -> bool:
+def _has_langsmith_profile_credentials(env: dict[str, str] | None = None) -> bool:
     """Return whether the LangSmith profile config has usable auth material."""
-    config = _load_langsmith_profile_config()
+    config = _load_langsmith_profile_config(env)
     if config is None:
         return False
 
@@ -376,9 +384,9 @@ def _has_langsmith_profile_credentials() -> bool:
     )
 
 
-def _has_langsmith_profile_custom_endpoint() -> bool:
+def _has_langsmith_profile_custom_endpoint(env: dict[str, str] | None = None) -> bool:
     """Return whether the LangSmith profile points at a custom endpoint."""
-    config = _load_langsmith_profile_config()
+    config = _load_langsmith_profile_config(env)
     if config is None:
         return False
 
@@ -2575,7 +2583,7 @@ def _tracing_has_credentials_from(env: dict[str, str]) -> bool:
         env: Environment mapping to read.
     """
     has_key = any(_resolve_env_var_from(env, var) for var in _TRACING_API_KEY_ENV_VARS)
-    return has_key or _has_langsmith_profile_credentials()
+    return has_key or _has_langsmith_profile_credentials(env)
 
 
 def _tracing_endpoint_from(env: dict[str, str]) -> str | None:
@@ -2592,7 +2600,7 @@ def _tracing_endpoint_from(env: dict[str, str]) -> str | None:
         value = (env.get(var) or "").strip()
         if value:
             return value
-    config = _load_langsmith_profile_config()
+    config = _load_langsmith_profile_config(env)
     if config is not None:
         api_url = (config.api_url or "").strip()
         if api_url:

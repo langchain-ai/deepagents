@@ -2196,6 +2196,46 @@ class TestGetTracingStatus:
         assert status.project == "dotenv-proj"
         assert status.replica_project == "replica"
 
+    def test_dotenv_profile_credentials_are_detected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Doctor tracing status uses dotenv profile selectors for credentials."""
+        import deepagents_code.config as config_mod
+
+        langsmith = tmp_path / "langsmith.json"
+        langsmith.write_text(
+            "{"
+            '"current_profile":"default",'
+            '"profiles":{'
+            '"default":{},'
+            '"dotenv":{"api_key":"lsv2_profile","api_url":"http://localhost:1984"}'
+            "}"
+            "}",
+            encoding="utf-8",
+        )
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text(
+            "DEEPAGENTS_CODE_LANGSMITH_TRACING=true\n"
+            f"LANGSMITH_CONFIG_FILE={langsmith}\n"
+            "LANGSMITH_PROFILE=dotenv\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(project)
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        config_mod._dotenv_loaded_values.clear()
+
+        with patch.dict("os.environ", {}, clear=True):
+            status = config_mod.get_tracing_status()
+
+        assert status.enabled is True
+        assert status.has_credentials is True
+        assert status.endpoint == "http://localhost:1984"
+
     def test_empty_prefixed_flag_shadows_canonical(self) -> None:
         """An empty `DEEPAGENTS_CODE_` flag suppresses the canonical one.
 

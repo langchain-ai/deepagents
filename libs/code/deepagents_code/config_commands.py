@@ -233,6 +233,10 @@ def _run_show(output_format: OutputFormat, *, verbose: bool, command_label: str)
     resolved = [(opt, *_resolve(opt, toml_data)) for opt in options]
 
     if output_format == "json":
+        # `config list --json` was the catalog endpoint; keep its catalog fields
+        # so existing consumers stay unbroken (now additive alongside effective
+        # values). `config show --json` stays effective-only unless `--verbose`.
+        include_catalog = verbose or command_label == "config list"
         write_json(
             command_label,
             [
@@ -253,7 +257,7 @@ def _run_show(output_format: OutputFormat, *, verbose: bool, command_label: str)
                             "toml_path": opt.toml_path,
                             "cli_flag": opt.cli_flag,
                         }
-                        if verbose
+                        if include_catalog
                         else {}
                     ),
                 }

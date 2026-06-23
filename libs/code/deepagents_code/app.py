@@ -8868,11 +8868,14 @@ class DeepAgentsApp(App):
         except NoMatches:
             tool_messages = []
         for tool_msg in reversed(tool_messages):
-            if tool_msg.has_output:
+            if tool_msg.has_output and tool_msg.has_expandable_output:
                 tool_msg.toggle_output()
                 return
             if tool_msg.has_expandable_args:
                 tool_msg.toggle_args()
+                return
+            if tool_msg.has_output:
+                tool_msg.toggle_output()
                 return
 
     # Approval menu action handlers (delegated from App-level bindings)

@@ -64,7 +64,11 @@ class JsonResponse:
         return json.dumps({"success": True}).encode()
 
 
-def test_config_from_talon_env_maps_exposure(tmp_path: Path) -> None:
+def test_config_from_talon_env_maps_exposure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
     config = TalonConfig.from_env(
         {
             "AGENT_ASSISTANT_ID": "assistant",
@@ -81,6 +85,7 @@ def test_config_from_talon_env_maps_exposure(tmp_path: Path) -> None:
 
     assert whatsapp.session_dir == tmp_path / "assistant" / "channels" / "whatsapp"
     assert whatsapp.inbound_media_dir == tmp_path / "assistant" / "media" / "inbound" / "whatsapp"
+    assert whatsapp.outbound_media_dir == tmp_path
     assert whatsapp.exposure == ChannelExposure(
         mode=ExposureMode.ALLOWLIST,
         operator_id="operator",

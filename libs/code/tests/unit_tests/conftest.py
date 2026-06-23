@@ -112,6 +112,24 @@ def _clear_update_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _disable_app_startup_update_checks(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep app startup tests from racing PyPI or user update config.
+
+    `test_config_manifest` and `test_main` patch `is_update_check_enabled` themselves.
+    """
+    module_name = request.module.__name__.rsplit(".", 1)[-1]
+    if module_name in {"test_config_manifest", "test_main"}:
+        return
+    monkeypatch.setattr(
+        "deepagents_code.update_check.is_update_check_enabled",
+        lambda: False,
+    )
+
+
+@pytest.fixture(autouse=True)
 def _clear_external_event_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent local alpha event-listener env vars from affecting tests."""
     monkeypatch.delenv("DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET", raising=False)
@@ -198,6 +216,20 @@ def _provide_app_context() -> Generator[None]:
         yield
     finally:
         active_app.reset(token)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Redirect app-managed state away from the developer's real data."""
+    state_dir = tmp_path / ".state"
+    monkeypatch.setattr("deepagents_code.model_config.DEFAULT_STATE_DIR", state_dir)
+
+    from deepagents_code import sessions
+
+    monkeypatch.setattr(sessions, "_db_path", None)
+    sessions._message_count_cache.clear()
+    sessions._initial_prompt_cache.clear()
+    sessions._recent_threads_cache.clear()
 
 
 @pytest.fixture(autouse=True)

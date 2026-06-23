@@ -52,8 +52,8 @@ DEFAULT_RECURSION_LIMIT = 150
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_MAX_CONTINUATIONS = 3
 DEFAULT_MAX_APPROVAL_ROUNDS = 50
-DEFAULT_WORKSPACE = "/workspace"
 CONTEXT_SIZE_ENV_KEY = "DEEPAGENTS_TALON_CONTEXT_SIZE"
+_WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
 _SAFE_BACKEND_PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 ModelContent = str | list[dict[str, object]]
 
@@ -779,7 +779,7 @@ def _decision_payload(
 
 def _default_backend(env: Mapping[str, str] | None) -> LocalShellBackend:
     values = os.environ if env is None else env
-    root = values.get("DEEPAGENTS_TALON_WORKSPACE", DEFAULT_WORKSPACE)
+    root = values.get(_WORKSPACE_ENV) or None
     return LocalShellBackend(
         root_dir=root,
         virtual_mode=False,

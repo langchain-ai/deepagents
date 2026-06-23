@@ -430,6 +430,22 @@ class ProviderConfig(TypedDict, total=False):
     creation.
     """
 
+    display_name: str
+    """Human-readable provider name shown in auth UI.
+
+    Useful for arbitrary providers whose config key is optimized for machine use
+    (e.g., `my_gateway`) but whose UI label should include spaces or brand
+    capitalization.
+    """
+
+    api_key_url: str
+    """Provider page where users can create or manage API keys.
+
+    Used by `/auth` as an acquisition link before the API-key input. The value is
+    a URL, not a credential. Must use an `http` or `https` scheme to render as a
+    clickable link; values with other schemes are ignored with a warning.
+    """
+
     base_url: str
     """Custom base URL."""
 
@@ -529,6 +545,17 @@ time.
 
 Providers not listed here fall through to the config-file check or the langchain
 registry fallback.
+"""
+
+SERVICE_API_KEY_ENV: dict[str, str] = {
+    "tavily": "TAVILY_API_KEY",
+}
+"""Non-model services configurable via `/auth`, mapped to their API-key env var.
+
+These are not LLM providers — they back features such as web search — but
+their credentials follow the same store-on-disk model as model providers, so
+they appear in the `/auth` manager and can be entered directly in the TUI
+instead of being exported as environment variables before launch.
 """
 
 CODEX_PROVIDER = "openai_codex"
@@ -1980,6 +2007,59 @@ def get_default_base_url_env(provider: str) -> str | None:
     return prefixed if os.environ.get(prefixed) else None
 
 
+def is_service(name: str) -> bool:
+    """Return whether `name` is a non-model service configurable via `/auth`."""
+    return name in SERVICE_API_KEY_ENV
+
+
+def get_service_auth_status(service: str) -> ProviderAuthStatus:
+    """Return credential readiness for a non-model service (e.g. `"tavily"`).
+
+    Mirrors `get_provider_auth_status` but is scoped to `SERVICE_API_KEY_ENV`,
+    so a stored key beats the env var and the `/auth` manager can render the
+    same `[stored]` / `[env: ...]` / `[missing]` badges.
+
+    Args:
+        service: Service name (e.g. `"tavily"`).
+
+    Returns:
+        `CONFIGURED` when a stored or env credential is set, else `MISSING`.
+    """
+    env_var = SERVICE_API_KEY_ENV[service]
+    configured = _resolve_configured(service, env_var)
+    if configured:
+        return configured
+    return ProviderAuthStatus(
+        state=ProviderAuthState.MISSING,
+        provider=service,
+        env_var=env_var,
+        detail=f"{env_var} is not set or is empty",
+    )
+
+
+def apply_stored_service_credentials() -> None:
+    """Export every stored service key into `os.environ`.
+
+    Services (e.g. web search via Tavily) have no base URL to reconcile, so
+    this is a plain key copy onto the canonical env var name the underlying
+    SDK reads. A stored key takes precedence over an existing env var, matching
+    `apply_stored_credentials`. Only the unprefixed canonical name is written,
+    so a `DEEPAGENTS_CODE_`-prefixed override still wins via `resolve_env_var`.
+    """
+    for service, env_var in SERVICE_API_KEY_ENV.items():
+        try:
+            stored = auth_store.get_stored_key(service)
+        except RuntimeError:
+            logger.warning(
+                "Could not read stored credentials for service %s; the credential "
+                "file may be corrupt. Re-add the key via /auth.",
+                service,
+            )
+            continue
+        if stored and os.environ.get(env_var) != stored:
+            os.environ[env_var] = stored
+
+
 def apply_stored_credentials(provider: str) -> bool:
     """Export this provider's stored key *and endpoint* into `os.environ`.
 
@@ -2239,6 +2319,27 @@ class ModelConfig:
                     enabled,
                 )
 
+            # `display_name`/`api_key_url` also originate from untyped TOML; cast
+            # to `object` so the runtime non-string checks stay reachable (the
+            # TypedDict types them as `str`).
+            display_name = cast("object", provider.get("display_name"))
+            if display_name is not None and not isinstance(display_name, str):
+                logger.warning(
+                    "Provider '%s' has non-string 'display_name' value %r "
+                    "(expected a string). Falling back to the default label.",
+                    name,
+                    display_name,
+                )
+
+            api_key_url = cast("object", provider.get("api_key_url"))
+            if api_key_url is not None and not isinstance(api_key_url, str):
+                logger.warning(
+                    "Provider '%s' has non-string 'api_key_url' value %r "
+                    "(expected a string). Ignoring it.",
+                    name,
+                    api_key_url,
+                )
+
             class_path = provider.get("class_path")
             if class_path and ":" not in class_path:
                 logger.warning(
@@ -2399,6 +2500,32 @@ class ModelConfig:
         """
         provider = self.providers.get(provider_name)
         return provider.get("api_key_env") if provider else None
+
+    def get_provider_display_name(self, provider_name: str) -> str | None:
+        """Get the configured display name for a provider.
+
+        Args:
+            provider_name: The provider to look up.
+
+        Returns:
+            Human-readable display name if configured, None otherwise.
+        """
+        provider = self.providers.get(provider_name)
+        name = provider.get("display_name") if provider else None
+        return name if isinstance(name, str) else None
+
+    def get_provider_api_key_url(self, provider_name: str) -> str | None:
+        """Get the configured API-key management URL for a provider.
+
+        Args:
+            provider_name: The provider to look up.
+
+        Returns:
+            API-key management URL if configured, None otherwise.
+        """
+        provider = self.providers.get(provider_name)
+        url = provider.get("api_key_url") if provider else None
+        return url if isinstance(url, str) else None
 
     def get_base_url_env(self, provider_name: str) -> str | None:
         """Get the environment variable name for a provider's base URL.

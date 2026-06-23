@@ -341,13 +341,37 @@ Alpha releases use a **throwaway branch** + [manual release](#manual-release). T
 
 ### Promoting a pre-release to GA
 
-After validating the alpha, merge the pending release PR (e.g., `release(deepagents-cli): 0.0.35`) as normal from `main` — release-please handles the GA version, changelog, and tag. No extra steps needed.
+After validating the alpha, merge the pending release PR (e.g., `release(deepagents-code): 0.0.35`) as normal from `main` — release-please handles the GA version, changelog, and tag. No extra steps needed.
 
-If no release PR exists yet (e.g., no releasable commits since the last GA, which is extremely rare), you can force one with a `Release-As` commit footer:
+If no release PR exists yet (e.g., no releasable commits since the last GA, which is rare), you can force one with a package-scoped `Release-As` override. Do **not** use an empty commit on `main`: release-please assigns commits to packages by the file paths they change, not by the commit scope string. A commit titled `chore(code): ...` is not enough on its own! It must also touch a file under `libs/code` so release-please knows the override belongs to `deepagents-code` (instead of another managed package).
+
+For example, after making a real edit under `libs/code`:
 
 ```bash
-git commit --allow-empty -m "feat(cli): release 0.0.35" -m "Release-As: 0.0.35"
+git add libs/code/<changed-file>
+git commit -m "chore(code): release 0.0.35" -m "Release-As: 0.0.35"
 ```
+
+If there is no meaningful package-file edit to make, use the config-file form instead: temporarily add `"release-as": "0.0.35"` to the `libs/code` package entry in `release-please-config.json`:
+
+```diff
+ "libs/code": {
+   "release-type": "python",
+   "package-name": "deepagents-code",
+   "component": "deepagents-code",
++  "release-as": "0.0.35",
+   "bump-minor-pre-major": true,
+   "bump-patch-for-minor-pre-major": true,
+   "extra-files": [
+     "pyproject.toml",
+     "deepagents_code/_version.py"
+   ],
+   "changelog-path": "CHANGELOG.md"
+ }
+```
+
+> [!IMPORTANT]
+> This is a temporary override, not permanent configuration. Let release-please open the release PR, then remove the `release-as` line in a follow-up `hotfix(code): remove release-as override` PR (so the next release-please run does not keep forcing `0.0.35`).
 
 ### Multiple pre-release iterations
 
@@ -458,7 +482,7 @@ The `release_please_scope_check.yml` workflow ([`.github/scripts/check_lockfile_
 
 ### Overriding a Merged Commit's Changelog Entry
 
-Append a `BEGIN_COMMIT_OVERRIDE` block to the **merged PR's body** when release-please needs to use a different message than the actual squash-merge commit. release-please reads merged PR bodies on every run within its lookback window and uses the override in place of the original commit message — no history rewrite, no force-push.
+Append a `BEGIN_COMMIT_OVERRIDE` block (shown below) to the **merged PR's body** when release-please needs to use a different message than the actual squash-merge commit. release-please reads merged PR bodies on every run within its lookback window and uses the override in place of the original commit message — no history rewrite, no force-push.
 
 Two situations call for this:
 

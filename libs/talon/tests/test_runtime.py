@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -23,6 +22,8 @@ from deepagents_talon.runtime import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from langgraph.types import Command
 
 
@@ -144,6 +145,7 @@ async def test_runtime_wires_backend_checkpointer_tools_skills_and_memory(
     monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
     monkeypatch.setattr("deepagents_talon.runtime.fetch_url", fetch_url)
     monkeypatch.setattr("deepagents_talon.runtime.web_search", web_search)
+    monkeypatch.chdir(tmp_path)
 
     runtime = DeepAgentRuntime(
         model="test:model",
@@ -160,7 +162,7 @@ async def test_runtime_wires_backend_checkpointer_tools_skills_and_memory(
     assert captured["skills"] == [str(assistant_dir / "skills")]
     assert captured["memory"] == [str(assistant_dir / "memory" / "AGENTS.md")]
     assert (assistant_dir / "memory" / "AGENTS.md").is_file()
-    assert captured["backend"].cwd == Path("/workspace")
+    assert captured["backend"].cwd == tmp_path.resolve()
 
     tool_names = {_tool_name(tool) for tool in captured["tools"]}
     assert {

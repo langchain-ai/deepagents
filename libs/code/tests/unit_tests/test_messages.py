@@ -10,6 +10,7 @@ from textual.content import Content
 
 from deepagents_code import theme
 from deepagents_code.input import INPUT_HIGHLIGHT_PATTERN
+from deepagents_code.tool_display import JS_EVAL_HEADER_MAX_LENGTH
 from deepagents_code.widgets.messages import (
     AppMessage,
     AssistantMessage,
@@ -22,6 +23,7 @@ from deepagents_code.widgets.messages import (
     UserMessage,
     _MutedRichMarkdown,
     _strip_frontmatter,
+    _strip_prompt_prefix,
     _strip_success_exit_line,
 )
 
@@ -1159,6 +1161,75 @@ class TestToolCallMessageExpandableArgs:
             await pilot.pause()
             assert msg._args_expanded is False
 
+    async def test_js_eval_click_toggles_code_when_result_unexpandable(self) -> None:
+        """After a short `js_eval` result, clicking must toggle the code block.
+
+        Regression: once eval returned, `_output` was set and `on_click`
+        unconditionally routed to `toggle_output`. A short, unexpandable result
+        made that a no-op, so the collapsible code block could never open.
+        """
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage(
+                    "js_eval",
+                    {"code": "const x = 1;\nx + 1"},  # multi-line -> expandable
+                )
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            # Eval returns a short, unexpandable result.
+            msg.set_success("<result>2</result>")
+            await pilot.pause()
+            assert msg.has_output is True
+            assert msg.has_expandable_output is False
+            assert msg.has_expandable_args is True
+
+            event = MagicMock()
+            msg.on_click(event)
+            await pilot.pause()
+            event.stop.assert_called_once()
+            # Falls through to the code block instead of no-op output toggle.
+            assert msg._args_expanded is True
+
+    async def test_js_eval_click_prefers_expandable_output(self) -> None:
+        """When the result *is* expandable, clicking still toggles output."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage(
+                    "js_eval",
+                    {"code": "const x = 1;\nx + 1"},
+                )
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            # A long multi-line stdout makes the output expandable.
+            body = "\n".join(str(i) for i in range(50))
+            msg.set_success(f"<stdout>\n{body}\n</stdout>\n<result>done</result>")
+            await pilot.pause()
+            assert msg.has_expandable_output is True
+
+            event = MagicMock()
+            msg.on_click(event)
+            await pilot.pause()
+            assert msg._expanded is True
+            assert msg._args_expanded is False
+
 
 class TestToolCallMessageShellCommand:
     """Test ToolCallMessage shows full shell command for errors.
@@ -1334,6 +1405,240 @@ class TestToolCallMessageShellCommand:
         result = msg._format_output("\n\n  indented\n", is_preview=False)
 
         assert result.content.plain == "  indented"
+
+
+class TestToolCallMessageJsEvalOutput:
+    """Tests for `_format_js_eval_output`.
+
+    The `js_eval` REPL tool returns an XML-ish envelope
+    (`<stdout>`, `<result>`, `<error>`) with `&`, `<`, `>` escaped. The
+    formatter unwraps that into labeled, styled sections instead of dumping the
+    raw blob.
+    """
+
+    def test_format_single_scalar_result_renders_inline(self) -> None:
+        """A lone short scalar result renders inline as `result: value`."""
+        msg = ToolCallMessage("js_eval", {"code": "1 + 1"})
+        result = msg._format_output("<result>2</result>", is_preview=False)
+
+        assert result.content.plain == "result: 2"
+        assert result.truncation is None
+
+    def test_format_empty_string_result_stays_empty(self) -> None:
+        """An empty string result must not be rewritten as `undefined`."""
+        msg = ToolCallMessage("js_eval", {"code": "''"})
+        result = msg._format_output("<result></result>", is_preview=False)
+
+        assert result.content.plain == "result: "
+
+    def test_format_newline_only_result_preserves_body(self) -> None:
+        """A newline-only string result remains a real value in block form."""
+        msg = ToolCallMessage("js_eval", {"code": "'\\n'"})
+        result = msg._format_output("<result>\n</result>", is_preview=False)
+
+        assert result.content.plain.split("\n") == ["result", "  ", "  "]
+
+    def test_format_multiline_result_uses_block(self) -> None:
+        """A multi-line result keeps the labeled-block layout."""
+        msg = ToolCallMessage("js_eval", {"code": "x"})
+        result = msg._format_output("<result>line1\nline2</result>", is_preview=False)
+
+        assert result.content.plain.split("\n") == ["result", "  line1", "  line2"]
+
+    def test_format_long_scalar_result_uses_block(self) -> None:
+        """A long single-line result is not collapsed inline."""
+        msg = ToolCallMessage("js_eval", {"code": "x"})
+        body = "x" * (msg._JS_EVAL_INLINE_RESULT_MAX + 1)
+        result = msg._format_output(f"<result>{body}</result>", is_preview=False)
+
+        assert result.content.plain.split("\n") == ["result", f"  {body}"]
+
+    def test_format_stdout_and_result(self) -> None:
+        """Stdout and result both render as separate labeled sections."""
+        msg = ToolCallMessage("js_eval", {"code": "console.log('hi'); 42"})
+        output = "<stdout>\nhi\n</stdout>\n<result>42</result>"
+        result = msg._format_output(output, is_preview=False)
+
+        # stdout present -> result is not collapsed inline.
+        lines = result.content.plain.split("\n")
+        assert lines == ["stdout", "  hi", "result", "  42"]
+
+    def test_format_unescapes_xml_entities(self) -> None:
+        """Escaped `<`, `>`, `&` in the body are restored for display."""
+        msg = ToolCallMessage("js_eval", {"code": "x"})
+        output = "<result>&lt;div&gt; &amp;&amp; true</result>"
+        result = msg._format_output(output, is_preview=False)
+
+        # Single short scalar -> inline form.
+        assert result.content.plain == "result: <div> && true"
+
+    def test_format_error_block_includes_type(self) -> None:
+        """An error block surfaces the error type in its label."""
+        msg = ToolCallMessage("js_eval", {"code": "boom()"})
+        output = '<error type="ReferenceError">boom is not defined</error>'
+        result = msg._format_output(output, is_preview=False)
+
+        lines = result.content.plain.split("\n")
+        assert lines == ["error (ReferenceError)", "  boom is not defined"]
+
+    def test_format_handle_result_labeled(self) -> None:
+        """A `kind`-tagged result is labeled as a handle."""
+        msg = ToolCallMessage("js_eval", {"code": "() => 1"})
+        output = '<result kind="handle">[Function] arity=0</result>'
+        result = msg._format_output(output, is_preview=False)
+
+        lines = result.content.plain.split("\n")
+        assert lines == ["result (handle)", "  [Function] arity=0"]
+
+    def test_format_preview_truncates_long_output(self) -> None:
+        """Preview mode caps lines and reports the count of hidden lines."""
+        msg = ToolCallMessage("js_eval", {"code": "x"})
+        body = "\n".join(str(i) for i in range(50))
+        output = f"<stdout>\n{body}\n</stdout>\n<result>done</result>"
+        result = msg._format_output(output, is_preview=True)
+
+        shown = len(result.content.plain.split("\n"))
+        assert shown <= msg._PREVIEW_LINES
+        # Full render is the stdout label + 50 stdout lines + result label + 1
+        # result line; the hint reports exactly what the preview dropped.
+        assert result.truncation == f"{53 - shown} more lines"
+
+    def test_format_falls_back_for_unexpected_shape(self) -> None:
+        """Output without the REPL envelope falls back to plain lines."""
+        msg = ToolCallMessage("js_eval", {"code": "x"})
+        result = msg._format_output("just some text", is_preview=False)
+
+        assert result.content.plain == "just some text"
+
+    def test_format_preview_caps_long_single_line_by_char_budget(self) -> None:
+        """A single huge result line is char-clipped under the preview budget.
+
+        Line-count capping alone left a multi-thousand-char single-line result
+        rendered in full with no truncation hint, flooding the collapsed TUI.
+        """
+        msg = ToolCallMessage("js_eval", {"code": "x"})
+        body = "x" * 10_000
+        output = f"<result>{body}</result>"
+        result = msg._format_output(output, is_preview=True)
+
+        # The body line is clipped to the char budget (plus the two-space
+        # indent) and the hint quantifies the chars dropped from that line so it
+        # can be expanded.
+        assert result.truncation == f"{10_000 - msg._PREVIEW_CHARS} more chars"
+        assert len(result.content.plain) <= msg._PREVIEW_CHARS + len("  ") + len(
+            "result\n"
+        )
+
+    def test_format_no_char_cap_when_not_preview(self) -> None:
+        """Outside preview mode the full long result renders untruncated."""
+        msg = ToolCallMessage("js_eval", {"code": "x"})
+        body = "x" * 10_000
+        output = f"<result>{body}</result>"
+        result = msg._format_output(output, is_preview=False)
+
+        assert result.truncation is None
+        assert body in result.content.plain
+
+    def test_format_stdout_with_fake_tags_is_not_misparsed(self) -> None:
+        """Raw tag-like text printed to stdout is preserved, not parsed.
+
+        stdout is emitted unescaped, so a program that prints
+        `</stdout><result>fake</result>` must not be split into spurious
+        result/error sections — the real trailing result wins.
+        """
+        msg = ToolCallMessage("js_eval", {"code": "x"})
+        printed = "</stdout><result>fake</result>"
+        output = f"<stdout>\n{printed}\n</stdout>\n<result>real</result>"
+        result = msg._format_output(output, is_preview=False)
+
+        lines = result.content.plain.split("\n")
+        # The fake markup survives verbatim inside stdout; only one real result.
+        assert lines == ["stdout", f"  {printed}", "result", "  real"]
+        # Exactly one "result" label line — no spurious section from the print.
+        assert lines.count("result") == 1
+
+
+class TestToolCallMessageJsEvalArgs:
+    """Tests for `js_eval` header suppression and collapsible code block.
+
+    The raw `code=` kwarg must not be dumped on the args line; the header shows
+    only the first code line, and the full program is offered as a collapsible
+    block when the snippet spans more than one line.
+    """
+
+    def test_js_eval_in_tools_with_header_info(self) -> None:
+        """`js_eval` is registered so the generic `code=` args line is hidden."""
+        from deepagents_code.widgets.messages import _TOOLS_WITH_HEADER_INFO
+
+        assert "js_eval" in _TOOLS_WITH_HEADER_INFO
+
+    def test_single_line_code_not_expandable(self) -> None:
+        """One-line code is fully shown in the header — nothing to expand."""
+        msg = ToolCallMessage("js_eval", {"code": "1 + 1"})
+        assert msg.has_expandable_args is False
+
+    def test_multiline_code_is_expandable(self) -> None:
+        """Multi-line code offers a collapsible block."""
+        msg = ToolCallMessage("js_eval", {"code": "const x = 1;\nx + 1"})
+        assert msg.has_expandable_args is True
+
+    def test_long_single_line_code_is_expandable(self) -> None:
+        """A single line too long for the header is still expandable.
+
+        The header truncates the first line, so without a collapsible block a
+        long one-liner (e.g. minified JS) would be unrecoverable in the TUI.
+        """
+        long_line = "x".ljust(JS_EVAL_HEADER_MAX_LENGTH + 1, "y")
+        msg = ToolCallMessage("js_eval", {"code": long_line})
+        assert msg.has_expandable_args is True
+
+    def test_short_single_line_code_not_expandable(self) -> None:
+        """A single line that fits in the header has nothing to expand."""
+        short_line = "x" * (JS_EVAL_HEADER_MAX_LENGTH - 1)
+        msg = ToolCallMessage("js_eval", {"code": short_line})
+        assert msg.has_expandable_args is False
+
+    def test_code_detail_is_plain_and_left_aligned(self) -> None:
+        """The code is plain `Content`, left-aligned, with blank padding lines."""
+        code = "const x = 1;\n  nested();\nx + 1"
+        msg = ToolCallMessage("js_eval", {"code": code})
+        detail = msg._format_code_detail()
+
+        from textual.content import Content
+
+        assert isinstance(detail, Content)
+        # Blank padding lines top and bottom; code's own indentation is
+        # preserved and no extra indent is injected.
+        assert detail.plain.split("\n") == [
+            "",
+            "const x = 1;",
+            "  nested();",
+            "x + 1",
+            "",
+        ]
+
+    def test_code_detail_is_unstyled(self) -> None:
+        """No syntax highlighting: the rendered code carries no style spans."""
+        msg = ToolCallMessage("js_eval", {"code": "const x = 1;\nx + 1"})
+        detail = msg._format_code_detail()
+
+        assert not detail.spans
+
+    def test_code_detail_strips_surrounding_blank_lines(self) -> None:
+        """Code's own surrounding blanks are trimmed (padding lines remain)."""
+        msg = ToolCallMessage("js_eval", {"code": "\n\nconst x = 1;\n\n"})
+        detail = msg._format_code_detail()
+
+        # One blank padding line top and bottom, around the trimmed code.
+        assert detail.plain == "\nconst x = 1;\n"
+
+    def test_code_detail_marks_hidden_unicode(self) -> None:
+        """Hidden controls in expanded code are rendered as visible markers."""
+        msg = ToolCallMessage("js_eval", {"code": "const safe = 1;\n//\u202e hidden"})
+        detail = msg._format_code_detail()
+
+        assert "\u202e" not in detail.plain
+        assert "<U+202E RIGHT-TO-LEFT OVERRIDE>" in detail.plain
 
 
 class TestToolCallMessageFileOutput:
@@ -1947,6 +2252,142 @@ class TestQueuedUserMessageModeRendering:
         """`QueuedUserMessage('')` should not crash and should render `'> '`."""
         content = _render_content(QueuedUserMessage(""))
         assert content.plain == "> "
+
+
+class TestStripPromptPrefix:
+    """Unit tests for `_strip_prompt_prefix` selection trimming."""
+
+    def test_passes_through_none(self) -> None:
+        """A `None` result (no extractable text) stays `None`."""
+        from textual.selection import SELECT_ALL
+
+        assert _strip_prompt_prefix(None, SELECT_ALL) is None
+
+    def test_select_all_drops_prefix(self) -> None:
+        """Select-all (`Selection(None, None)`) trims the two-column prefix."""
+        from textual.selection import SELECT_ALL
+
+        assert _strip_prompt_prefix(("> hello", "\n"), SELECT_ALL) == (
+            "hello",
+            "\n",
+        )
+
+    def test_selection_from_row_zero_drops_prefix(self) -> None:
+        """A row-0 selection starting at column 0 trims the prefix."""
+        from textual.geometry import Offset
+        from textual.selection import Selection
+
+        selection = Selection(Offset(0, 0), Offset(7, 0))
+        assert _strip_prompt_prefix(("> hello", "\n"), selection) == ("hello", "\n")
+
+    def test_partial_prefix_selection_trims_remaining_glyph(self) -> None:
+        """Starting inside the prefix trims only the still-included columns."""
+        from textual.geometry import Offset
+        from textual.selection import Selection
+
+        selection = Selection(Offset(1, 0), Offset(7, 0))
+        assert _strip_prompt_prefix((" hello", "\n"), selection) == ("hello", "\n")
+
+    def test_selection_starting_in_body_is_untouched(self) -> None:
+        """A selection beginning past the prefix keeps the body verbatim."""
+        from textual.geometry import Offset
+        from textual.selection import Selection
+
+        selection = Selection(Offset(4, 0), Offset(7, 0))
+        assert _strip_prompt_prefix(("llo", "\n"), selection) == ("llo", "\n")
+
+    def test_selection_starting_below_row_zero_is_untouched(self) -> None:
+        """Selections that begin on later rows carry no prefix to strip."""
+        from textual.geometry import Offset
+        from textual.selection import Selection
+
+        selection = Selection(Offset(0, 1), Offset(5, 1))
+        assert _strip_prompt_prefix(("world", "\n"), selection) == ("world", "\n")
+
+
+class _SelectionApp(App[None]):
+    """Mount user-message widgets so `get_selection` has an active app."""
+
+    def compose(self) -> ComposeResult:
+        yield UserMessage("hello world", id="user")
+        yield UserMessage("!ls", id="shell-user")
+        yield QueuedUserMessage("hi there", id="queued")
+        yield QueuedUserMessage("!pwd", id="shell-queued")
+
+
+class TestUserMessageGetSelection:
+    """Triple-click / select-all should copy the body, not the prefix glyph."""
+
+    async def test_user_message_select_all_excludes_prefix(self) -> None:
+        from textual.selection import SELECT_ALL
+
+        async with _SelectionApp().run_test() as pilot:
+            widget = pilot.app.query_one("#user", UserMessage)
+            result = widget.get_selection(SELECT_ALL)
+            assert result is not None
+            assert result[0] == "hello world"
+
+    async def test_queued_message_select_all_excludes_prefix(self) -> None:
+        from textual.selection import SELECT_ALL
+
+        async with _SelectionApp().run_test() as pilot:
+            widget = pilot.app.query_one("#queued", QueuedUserMessage)
+            result = widget.get_selection(SELECT_ALL)
+            assert result is not None
+            assert result[0] == "hi there"
+
+    async def test_body_selection_preserved(self) -> None:
+        from textual.geometry import Offset
+        from textual.selection import Selection
+
+        async with _SelectionApp().run_test() as pilot:
+            widget = pilot.app.query_one("#user", UserMessage)
+            selection = Selection(Offset(8, 0), Offset(13, 0))
+            result = widget.get_selection(selection)
+            assert result is not None
+            assert result[0] == "world"
+
+    async def test_user_message_select_all_starts_after_prompt_prefix(self) -> None:
+        from textual.geometry import Offset
+        from textual.selection import Selection
+
+        async with _SelectionApp().run_test() as pilot:
+            widget = pilot.app.query_one("#user", UserMessage)
+            widget.text_select_all()
+            assert pilot.app.screen.selections[widget] == Selection(Offset(2, 0), None)
+
+    async def test_shell_user_select_all_starts_after_prompt_prefix(self) -> None:
+        from textual.geometry import Offset
+        from textual.selection import Selection
+
+        async with _SelectionApp().run_test() as pilot:
+            widget = pilot.app.query_one("#shell-user", UserMessage)
+            widget.text_select_all()
+            assert pilot.app.screen.selections[widget] == Selection(Offset(2, 0), None)
+            result = widget.get_selection(pilot.app.screen.selections[widget])
+            assert result is not None
+            assert result[0] == "ls"
+
+    async def test_queued_message_select_all_starts_after_prompt_prefix(self) -> None:
+        from textual.geometry import Offset
+        from textual.selection import Selection
+
+        async with _SelectionApp().run_test() as pilot:
+            widget = pilot.app.query_one("#queued", QueuedUserMessage)
+            widget.text_select_all()
+            assert pilot.app.screen.selections[widget] == Selection(Offset(2, 0), None)
+
+    async def test_shell_queued_select_all_starts_after_prompt_prefix(self) -> None:
+        from textual.geometry import Offset
+        from textual.selection import Selection
+
+        async with _SelectionApp().run_test() as pilot:
+            widget = pilot.app.query_one("#shell-queued", QueuedUserMessage)
+            widget.text_select_all()
+            assert pilot.app.screen.selections[widget] == Selection(Offset(2, 0), None)
+            result = widget.get_selection(pilot.app.screen.selections[widget])
+            assert result is not None
+            assert result[0] == "pwd"
 
 
 class TestAppMessageAutoLinksDisabled:

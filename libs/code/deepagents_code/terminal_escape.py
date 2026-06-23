@@ -123,7 +123,7 @@ def write_osc(command: str, payload: str = "", *, st: bool = False) -> bool:
     r"""Write an `OSC <command>;<payload>` sequence.
 
     Args:
-        command: The numeric OSC command (e.g. ``"9;4"`` for taskbar progress).
+        command: The numeric OSC command (e.g. `"9;4"` for taskbar progress).
         payload: Optional semicolon-joined payload appended after the command.
         st: When `True`, terminate with String Terminator (`ESC \`) instead of
             the default BEL (`\a`).

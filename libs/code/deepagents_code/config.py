@@ -9,13 +9,14 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import sys
 import threading
 from dataclasses import dataclass
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution, version
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import unquote, urlparse
 
 from deepagents_code._env_vars import HIDE_SPLASH_VERSION, is_env_truthy
@@ -62,6 +63,9 @@ Captured inside `_ensure_bootstrap()` after dotenv loading but before the
 
 _dotenv_loaded_values: dict[str, str] = {}
 """Environment values injected by our dotenv loader and safe to refresh later."""
+
+_orphaned_tracing_disabled_notice: str | None = None
+"""One-shot TUI notice populated when bootstrap disables orphaned tracing."""
 
 _INHERITED_PYTHONPATH_ENV = "DEEPAGENTS_INHERITED_PYTHONPATH"
 """Carrier var that relays a launch-time `PYTHONPATH` to agent `execute` commands.
@@ -298,6 +302,164 @@ def _load_dotenv(
     return loaded
 
 
+_TRACING_ENABLE_ENV_VARS = (
+    "LANGSMITH_TRACING_V2",
+    "LANGCHAIN_TRACING_V2",
+    "LANGSMITH_TRACING",
+    "LANGCHAIN_TRACING",
+)
+"""Env vars LangChain/LangSmith read to decide whether tracing is enabled."""
+
+_TRACING_API_KEY_ENV_VARS = ("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY")
+"""Env vars that hold the LangSmith API key used for trace ingestion."""
+
+_TRACING_ENDPOINT_ENV_VARS = ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT")
+"""Env vars that point tracing at a non-default (self-hosted/proxied) endpoint."""
+
+
+class _LangSmithProfileConfig(Protocol):
+    """Subset of LangSmith profile client config fields used at bootstrap."""
+
+    api_url: str | None
+    """Base URL for a custom self-hosted or proxied LangSmith endpoint."""
+
+    api_key: str | None
+    """API key from the active LangSmith profile."""
+
+    oauth_access_token: str | None
+    """OAuth access token from the active LangSmith profile."""
+
+    oauth_refresh_token: str | None
+    """OAuth refresh token from the active LangSmith profile."""
+
+
+def _quiet_sdk_tracing_logging() -> None:
+    """Keep LangSmith/LangChain SDK logging from corrupting the TUI.
+
+    These SDK loggers emit ingestion/auth errors (e.g. repeated 401s) on their
+    own loggers. With no handler attached they reach Python's last-resort stderr
+    handler and bleed onto the alternate-screen TUI. Route them to the debug log
+    when `DEEPAGENTS_CODE_DEBUG` is set, otherwise attach a `NullHandler` so they
+    stay off the terminal.
+    """
+    from deepagents_code._debug import configure_debug_logging
+
+    for name in ("langsmith", "langchain"):
+        sdk_logger = logging.getLogger(name)
+        configure_debug_logging(sdk_logger)
+        if not sdk_logger.handlers:
+            sdk_logger.addHandler(logging.NullHandler())
+
+
+def _load_langsmith_profile_config() -> _LangSmithProfileConfig | None:
+    """Return the active LangSmith profile client config, if available."""
+    try:
+        client_module = importlib.import_module("langsmith.client")
+    except ImportError:
+        return None
+
+    profiles = getattr(client_module, "_profiles", None)
+    if profiles is None:
+        return None
+
+    return profiles.load_profile_client_config()
+
+
+def _has_langsmith_profile_credentials() -> bool:
+    """Return whether the LangSmith profile config has usable auth material."""
+    config = _load_langsmith_profile_config()
+    if config is None:
+        return False
+
+    return bool(
+        config.api_key or config.oauth_access_token or config.oauth_refresh_token
+    )
+
+
+def _has_langsmith_profile_custom_endpoint() -> bool:
+    """Return whether the LangSmith profile points at a custom endpoint."""
+    config = _load_langsmith_profile_config()
+    if config is None:
+        return False
+
+    return bool((config.api_url or "").strip())
+
+
+def _build_orphaned_tracing_disabled_notice() -> str:
+    """Return the user-facing notice for disabled orphaned tracing."""
+    base = (
+        "LangSmith tracing was disabled because tracing is enabled but no "
+        "credentials were found."
+    )
+    if shutil.which("langsmith"):
+        return (
+            f"{base} Set LANGSMITH_API_KEY or run `langsmith auth login`, "
+            "then restart Deep Agents Code."
+        )
+    return f"{base} Set LANGSMITH_API_KEY, then restart Deep Agents Code."
+
+
+def consume_orphaned_tracing_disabled_notice() -> str | None:
+    """Return and clear the pending orphaned-tracing notice, if any."""
+    global _orphaned_tracing_disabled_notice  # noqa: PLW0603
+
+    notice = _orphaned_tracing_disabled_notice
+    _orphaned_tracing_disabled_notice = None
+    return notice
+
+
+def _disable_orphaned_tracing() -> None:
+    """Disable LangSmith tracing when enabled without a usable API key.
+
+    LangChain enables tracing whenever a tracing flag is truthy, regardless of
+    credentials. With no env or profile key the background tracer retries
+    ingestion and floods `langsmith.client` 401 errors into the TUI (most visibly
+    at the atexit flush). When a tracing flag is set but no credentials are
+    resolvable, unset the flags so tracing never starts.
+
+    A custom endpoint (`LANGSMITH_ENDPOINT`/`LANGCHAIN_ENDPOINT`, or a profile
+    `api_url`) signals a self-hosted or proxied LangSmith that may ingest without
+    an API key, so an explicitly configured endpoint is trusted and left alone
+    rather than risk disabling a working keyless setup. The SDK loggers are
+    quieted separately by `_quiet_sdk_tracing_logging`, so any residual ingest
+    errors stay off the TUI.
+    """
+    global _orphaned_tracing_disabled_notice  # noqa: PLW0603
+
+    from deepagents_code._env_vars import classify_env_bool
+
+    tracing_on = any(
+        classify_env_bool(os.environ[var])
+        for var in _TRACING_ENABLE_ENV_VARS
+        if var in os.environ
+    )
+    if not tracing_on:
+        return
+
+    has_custom_endpoint = any(
+        (os.environ.get(var) or "").strip() for var in _TRACING_ENDPOINT_ENV_VARS
+    )
+    if has_custom_endpoint or _has_langsmith_profile_custom_endpoint():
+        return
+
+    has_key = any(
+        (os.environ.get(var) or "").strip() for var in _TRACING_API_KEY_ENV_VARS
+    )
+    if has_key or _has_langsmith_profile_credentials():
+        return
+
+    disabled = [var for var in _TRACING_ENABLE_ENV_VARS if var in os.environ]
+    for var in disabled:
+        os.environ[var] = "false"
+    _orphaned_tracing_disabled_notice = _build_orphaned_tracing_disabled_notice()
+    logger.warning(
+        "LangSmith tracing is enabled (%s) but no API key is set; disabling "
+        "tracing to avoid repeated authentication failures. Set LANGSMITH_API_KEY "
+        "to enable tracing, or unset the tracing flag to silence this warning.",
+        ", ".join(disabled),
+    )
+
+
 def _ensure_bootstrap() -> None:
     """Run one-time bootstrap: dotenv loading and `LANGSMITH_PROJECT` override.
 
@@ -334,6 +496,10 @@ def _ensure_bootstrap() -> None:
             from deepagents_code._debug import configure_debug_logging
 
             configure_debug_logging(logging.getLogger("deepagents_code"))
+
+            # Keep LangSmith/LangChain SDK logging off the TUI (route to the
+            # debug log when enabled, else swallow via NullHandler).
+            _quiet_sdk_tracing_logging()
 
             # Capture AFTER dotenv loading so .env-only values are visible,
             # but BEFORE the override below replaces it.
@@ -379,6 +545,17 @@ def _ensure_bootstrap() -> None:
                         prefixed,
                         canonical,
                     )
+
+            # Tracing enabled without a key floods the TUI with 401 ingest
+            # errors; disable it before any traced run starts.
+            _disable_orphaned_tracing()
+
+            # Bridge stored service keys (e.g. Tavily web search, entered via
+            # `/auth`) onto their canonical env vars before settings detection,
+            # so a stored key activates the feature without exporting the var.
+            from deepagents_code.model_config import apply_stored_service_credentials
+
+            apply_stored_service_credentials()
         except Exception:
             logger.exception(
                 "Bootstrap failed; .env values and LANGSMITH_PROJECT override "
@@ -484,6 +661,8 @@ class Glyphs:
     arrow_down: str  # down arrow vs v
     bullet: str  # bullet vs -
     cursor: str  # cursor vs >
+    disclosure_collapsed: str  # ▸ vs >
+    disclosure_expanded: str  # ▾ vs v
 
     # Box-drawing characters
     box_vertical: str  # │ vs |
@@ -514,6 +693,8 @@ UNICODE_GLYPHS = Glyphs(
     arrow_down="↓",
     bullet="•",
     cursor="›",  # noqa: RUF001  # Intentional Unicode glyph
+    disclosure_collapsed="▸",
+    disclosure_expanded="▾",
     # Box-drawing characters
     box_vertical="│",
     box_horizontal="─",
@@ -540,6 +721,8 @@ ASCII_GLYPHS = Glyphs(
     arrow_down="v",
     bullet="-",
     cursor=">",
+    disclosure_collapsed=">",
+    disclosure_expanded="v",
     # Box-drawing characters
     box_vertical="|",
     box_horizontal="-",
@@ -571,17 +754,17 @@ Kept short so tracing metadata can never stall app flows.
 def _get_deepagents_version() -> str | None:
     """Read the installed Deep Agents SDK version from package metadata.
 
+    This intentionally calls `importlib.metadata.version` directly instead of
+    `resolve_sdk_version`: `config` is on the startup hot path, while
+    `resolve_sdk_version` lives in `extras_info` and imports `packaging`.
+
     Returns:
         The installed Deep Agents SDK version, or `None` when package metadata
-        is unavailable.
+            is unavailable.
     """
     try:
         return version("deepagents")
     except PackageNotFoundError:
-        logger.debug(
-            "Failed to read deepagents version from package metadata",
-            exc_info=True,
-        )
         return None
 
 
@@ -2202,6 +2385,7 @@ def get_langsmith_project_name() -> str | None:
     Returns:
         Project name string when LangSmith tracing is active, None otherwise.
     """
+    from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
     from deepagents_code.model_config import resolve_env_var
 
     langsmith_key = resolve_env_var("LANGSMITH_API_KEY") or resolve_env_var(
@@ -2216,8 +2400,61 @@ def get_langsmith_project_name() -> str | None:
     return (
         _get_settings().deepagents_langchain_project
         or os.environ.get("LANGSMITH_PROJECT")
-        or "deepagents-code"
+        or LANGSMITH_PROJECT_DEFAULT
     )
+
+
+def get_langsmith_replica_projects() -> list[str]:
+    """Extra LangSmith project names to dual-write agent traces to.
+
+    Parses `DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS` (comma-separated) into a
+    de-duplicated, order-preserving list.
+
+    Returns:
+        Project names, or `[]` when the env var is unset or empty.
+    """
+    from deepagents_code._env_vars import LANGSMITH_REPLICA_PROJECTS
+
+    raw = os.environ.get(LANGSMITH_REPLICA_PROJECTS)
+    if not raw:
+        return []
+    return list(dict.fromkeys(p.strip() for p in raw.split(",") if p.strip()))
+
+
+def get_langsmith_replica_project() -> str | None:
+    """The single extra LangSmith project to mirror agent runs to, if configured.
+
+    dcode agent runs execute inside the LangGraph server subprocess, so the only
+    way to mirror them to another project is the server's own replica path: the
+    SDK forwards a `langsmith_tracing` project in the run-create request, and the
+    server wraps the run in a `tracing_context` whose write replicas are that
+    project plus the server's primary project. Client-side callbacks and
+    `tracing_context(replicas=...)` cannot reach the run because it is created
+    server-side, not in the app process.
+
+    Implementation detail (subject to change): as of `langgraph-api` 0.10.0 this
+    happens in `langgraph_api.stream` and `langgraph_api.models.run`.
+
+    The server mirrors to exactly one extra project, so when
+    `DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS` lists several, only the first is
+    used and the rest are dropped with a warning.
+
+    Returns:
+        The first configured replica project name, or `None` when none are set.
+    """
+    extras = get_langsmith_replica_projects()
+    if not extras:
+        return None
+    if len(extras) > 1:
+        logger.warning(
+            "DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS lists %d projects, but the "
+            "LangGraph server mirrors runs to only one extra project; tracing to "
+            "%r and ignoring %s.",
+            len(extras),
+            extras[0],
+            extras[1:],
+        )
+    return extras[0]
 
 
 class LangSmithLookupError(Exception):

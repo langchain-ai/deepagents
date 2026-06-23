@@ -52,7 +52,6 @@ logger = logging.getLogger(__name__)
 _STOP_COMMAND = "/stop"
 _APPROVE_REPLIES = frozenset({"approve", "approved", "yes", "y"})
 _DENY_REPLIES = frozenset({"deny", "denied", "reject", "rejected", "no", "n"})
-_DEFAULT_WORKSPACE = "/workspace"
 _OUTBOUND_MEDIA_DIR_ENV = "DEEPAGENTS_TALON_OUTBOUND_MEDIA_DIR"
 _WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
 
@@ -484,12 +483,10 @@ def _outbound_media_from_refs(
 
 
 def _outbound_media_root(config: TalonConfig) -> Path:
-    raw = (
-        config.env.get(_OUTBOUND_MEDIA_DIR_ENV)
-        or config.env.get(_WORKSPACE_ENV)
-        or _DEFAULT_WORKSPACE
-    )
-    return Path(raw).expanduser()
+    raw = config.env.get(_OUTBOUND_MEDIA_DIR_ENV) or config.env.get(_WORKSPACE_ENV)
+    if raw:
+        return Path(raw).expanduser()
+    return Path.cwd()
 
 
 def _with_failed_attachment_text(text: str, failed: list[str]) -> str:

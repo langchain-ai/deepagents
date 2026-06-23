@@ -55,19 +55,10 @@ def build_version_text() -> str:
     Returns:
         Multi-line version string suitable for stdout.
     """
-    from importlib.metadata import (
-        PackageNotFoundError,
-        version as _pkg_version,
-    )
+    from deepagents_code.extras_info import resolve_sdk_version
 
-    try:
-        sdk_version = _pkg_version("deepagents")
-    except PackageNotFoundError:
-        logger.debug("deepagents SDK package not found in environment")
-        sdk_version = "unknown"
-    except Exception:  # Best-effort SDK version lookup
-        logger.warning("Unexpected error looking up SDK version", exc_info=True)
-        sdk_version = "unknown"
+    sdk_version_value, status = resolve_sdk_version()
+    sdk_version = sdk_version_value if status == "resolved" else "unknown"
 
     text = f"deepagents-code {__version__}\ndeepagents (SDK) {sdk_version}"
 
@@ -129,6 +120,62 @@ def _restart_current_process() -> NoReturn:
     raise RuntimeError(msg)
 
 
+def _terminal_row_count(console: "Console", text: str) -> int:
+    """Return how many terminal rows Rich renders for `text`.
+
+    Args:
+        console: The Rich console whose current width determines wrapping.
+        text: The string to measure, rendered with no markup.
+
+    Returns:
+        The number of visual rows Rich wraps `text` into, at least 1.
+    """
+    from rich.text import Text
+
+    return max(1, len(console.render_lines(Text(text), console.options)))
+
+
+def _confirm_launch_after_restart(console: "Console", version: str) -> None:
+    """Rewrite the pre-restart `Launching...` line as `Launched.` in-place.
+
+    The `Updated to v{version}. Launching...` line is printed by the previous
+    generation right before `os.execv`; this runs in the re-exec'd process to
+    retroactively confirm the launch once the new version is actually running.
+
+    The in-place rewrite is attempted only on a real terminal: `os.execv` does
+    nothing between that print and this process's first output, so the cursor
+    is parked on the line directly below it. On non-terminals the escape codes
+    would corrupt redirected output, so the line is left as-is.
+
+    The row count is recomputed against the current terminal width, so a resize
+    during the upgrade/re-exec window could make the erase loop clear the wrong
+    number of wrapped rows. This is a benign visual glitch (no exception), and
+    is rare enough not to warrant defending against here.
+
+    Args:
+        console: The Rich console used for startup output.
+        version: The version now running, used in the confirmation line.
+    """
+    if not console.is_terminal:
+        return
+    from rich.control import Control
+    from rich.segment import ControlType
+
+    launch_status = f"Updated to v{version}. Launching..."
+    launch_rows = _terminal_row_count(console, launch_status)
+    # Move up to the bottom row of the old status and erase each rendered row.
+    # This preserves the rewrite when Rich wrapped the status in a narrow pane.
+    for _ in range(launch_rows):
+        console.control(
+            Control(
+                (ControlType.CURSOR_UP, 1),
+                (ControlType.CURSOR_MOVE_TO_COLUMN, 0),
+                (ControlType.ERASE_IN_LINE, 2),
+            )
+        )
+    console.print(f"[green]Updated to v{version}. Launched.[/green]", highlight=False)
+
+
 def _run_startup_auto_update(console: "Console") -> None:
     """Apply enabled auto-updates before the TUI and server start.
 
@@ -168,6 +215,18 @@ def _run_startup_auto_update(console: "Console") -> None:
             return
         # Consume the re-exec sentinel recorded before the previous restart.
         restarted_for = os.environ.pop(RESTARTED_AFTER_UPDATE, None)
+        if restarted_for is not None and is_installed_version_at_least(restarted_for):
+            # The re-exec landed on the upgraded version, so the prior
+            # "Launching..." line is now accurate as "Launched.".
+            try:
+                _confirm_launch_after_restart(console, restarted_for)
+            except Exception:
+                # The upgrade already succeeded; this rewrite is purely
+                # cosmetic. Swallow rendering glitches with their own guard so
+                # the outer fail-soft handler does not misreport a successful
+                # upgrade as "Auto-update failed". The prior "Launching..."
+                # line simply stays.
+                logger.debug("Post-restart launch confirmation failed", exc_info=True)
         available, latest = get_cached_update_available()
         if not available or latest is None:
             return
@@ -236,7 +295,10 @@ def _run_startup_auto_update(console: "Console") -> None:
         )
         success, output = asyncio.run(perform_upgrade(log_path=log_path))
         if success:
-            console.print(f"[green]Updated to v{latest}. Launching...[/green]")
+            console.print(
+                f"[green]Updated to v{latest}. Launching...[/green]",
+                highlight=False,
+            )
             # Record the target version so the re-exec'd process can detect a
             # no-op upgrade and break the loop (see the `restarted_for` guard).
             os.environ[RESTARTED_AFTER_UPDATE] = latest
@@ -704,13 +766,15 @@ def build_missing_tool_notification(tool: str) -> "PendingNotification":
             key="dep:tavily",
             title="Web search disabled",
             body=(
-                "TAVILY_API_KEY is not set, so web search is disabled.\n\n"
-                "Get a key at https://tavily.com"
+                "No Tavily API key is set, so web search is disabled.\n\n"
+                "Enter a key to store it (takes effect next launch), or get one "
+                "at https://tavily.com"
             ),
             actions=(
                 NotificationAction(
-                    ActionId.OPEN_WEBSITE, "Open tavily.com", primary=True
+                    ActionId.ENTER_API_KEY, "Enter API key", primary=True
                 ),
+                NotificationAction(ActionId.OPEN_WEBSITE, "Open tavily.com"),
                 suppress_action,
             ),
             payload=MissingDepPayload(tool="tavily", url="https://tavily.com"),
@@ -1112,6 +1176,14 @@ def parse_args() -> argparse.Namespace:
         help="Include alpha/beta/rc releases when checking for updates",
     )
     add_json_output_arg(update_parser)
+
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="Print install health and diagnostics",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_doctor_help")),
+    )
+    add_json_output_arg(doctor_parser)
 
     # Default interactive mode — argument order here determines the
     # usage line printed by argparse; keep in sync with ui.show_help().
@@ -2171,6 +2243,29 @@ def cli_main() -> None:
         if _show_bare_command_group_help(args):
             return
 
+        # Keep self-contained commands that do not need global settings here, before
+        # state migration and settings bootstrap. If a future command only reads
+        # local files or delegates bootstrap to specific subcommands, dispatch it here
+        # so lightweight diagnostic paths stay fast.
+        # Use `getattr` because this fast-path block is for optional top-level
+        # subcommands only. ACP/root-mode invocations may not define `command`,
+        # and should fall through to the later handlers instead of raising here.
+        command = getattr(args, "command", None)
+        if command == "config":
+            from deepagents_code.config_commands import run_config_command
+
+            sys.exit(run_config_command(args))
+
+        if command == "auth" and getattr(args, "auth_command", None) == "path":
+            from deepagents_code.auth_commands import run_auth_command
+
+            sys.exit(run_auth_command(args))
+
+        if command == "doctor":
+            from deepagents_code.doctor import run_doctor_command
+
+            sys.exit(run_doctor_command(args))
+
         # Best-effort, idempotent migration. Placed after parse_args and the
         # bare-help fast path so --help / --version / `deepagents <group>`
         # exit before any I/O. Wrapped broadly so an unexpected non-OSError
@@ -2191,6 +2286,11 @@ def cli_main() -> None:
         # fast path so neither argparse's `--help`/`-h` exit nor
         # `deepagents <group>` pays the settings bootstrap cost.
         from deepagents_code.config import console, settings
+
+        if command == "auth":
+            from deepagents_code.auth_commands import run_auth_command
+
+            sys.exit(run_auth_command(args))
 
         model_params: dict[str, Any] | None = None
         raw_kwargs = getattr(args, "model_params", None)
@@ -2277,16 +2377,6 @@ def cli_main() -> None:
                 )
             )
             sys.exit(exit_code)
-
-        if args.command == "config":
-            from deepagents_code.config_commands import run_config_command
-
-            sys.exit(run_config_command(args))
-
-        if args.command == "auth":
-            from deepagents_code.auth_commands import run_auth_command
-
-            sys.exit(run_auth_command(args))
 
         # Apply shell-allow-list from command line if provided (overrides env var)
         if args.shell_allow_list:

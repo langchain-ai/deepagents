@@ -1008,6 +1008,20 @@ _DEFERRED_APPROVAL_TIMEOUT_SECONDS: float = 30.0
 """Maximum seconds the deferred-approval worker will wait for the user to stop
 typing before showing the approval widget regardless."""
 
+_RAPID_QUIT_CTRL_C_PRESSES: int = 2
+"""Consecutive rapid `Ctrl+C` presses that force the quit sequence.
+
+When a draft is present, a single `Ctrl+C` copies it (matching terminal copy
+semantics), which otherwise leaves no way to reach the quit arm by pressing
+`Ctrl+C`. Mashing `Ctrl+C` is the universal "get me out" reflex, so the second
+rapid press bypasses the copy branches and arms quit instead.
+"""
+
+_RAPID_QUIT_CTRL_C_WINDOW_SECONDS: float = 1.0
+"""Window within which repeated `Ctrl+C` presses count toward the rapid-quit
+escape hatch. Tight enough that a deliberate copy-then-interrupt sequence,
+which has much larger gaps, never trips it."""
+
 
 @dataclass(frozen=True, slots=True)
 class QueuedMessage:
@@ -2032,6 +2046,16 @@ class DeepAgentsApp(App):
 
         self._quit_pending = False
         """True after a first `Ctrl+C` so a second press within the window quits."""
+
+        self._ctrl_c_times: list[float] = []
+        """Monotonic timestamps of recent `Ctrl+C` presses, pruned to
+        `_RAPID_QUIT_CTRL_C_WINDOW_SECONDS`. Drives the rapid-quit escape hatch
+        so mashing `Ctrl+C` bypasses the clipboard-copy branches and reaches the
+        quit arm even when a draft is present."""
+
+        self._clear_input_pending = False
+        """True after a first `Esc` (with nothing else to interrupt) so a second
+        press within the window clears the chat input draft."""
 
         self._thread_switching = False
         """Re-entry guard for `/threads` switches; blocks message handling
@@ -8361,11 +8385,26 @@ class DeepAgentsApp(App):
         4. If ask_user menu is active, cancel it
         5. If agent is running, interrupt it (preserve input)
         6. If double press (quit_pending), quit
-        7. Otherwise show quit hint
+        7. If a focused input has text, copy the whole draft (no selection)
+        8. Otherwise show quit hint
+
+        Rapid escape hatch: the clipboard-copy branches (1 and 7) are skipped
+        once `Ctrl+C` is pressed `_RAPID_QUIT_CTRL_C_PRESSES` times within
+        `_RAPID_QUIT_CTRL_C_WINDOW_SECONDS`. Without this, a non-empty draft
+        makes branch 7 copy on every press, so the quit arm is unreachable by
+        `Ctrl+C` alone. Mashing `Ctrl+C` then falls through to arm quit (and a
+        further press exits). The interrupt branches (2-5) stay unconditional so
+        a repeated press still cancels in-flight work rather than quitting.
         """
+        now = _monotonic()
+        window = _RAPID_QUIT_CTRL_C_WINDOW_SECONDS
+        self._ctrl_c_times = [t for t in self._ctrl_c_times if now - t <= window]
+        self._ctrl_c_times.append(now)
+        rapid = len(self._ctrl_c_times) >= _RAPID_QUIT_CTRL_C_PRESSES
+
         # If a focused input widget has selected text, copy it instead of
         # quitting/interrupting so Ctrl+C matches standard terminal behavior.
-        if self._copy_focused_selection():
+        if not rapid and self._copy_focused_selection():
             self._quit_pending = False
             return
 
@@ -8399,11 +8438,21 @@ class DeepAgentsApp(App):
             self._quit_pending = False
             return
 
-        # Double Ctrl+C to quit
+        # Double Ctrl+C to quit. Once the quit hint is visible, preserve the
+        # armed quit path before draft-copy handling gets another chance to
+        # consume Ctrl+C and clear `_quit_pending`.
         if self._quit_pending:
             self.exit()
-        else:
-            self._arm_quit_pending("Ctrl+C")
+            return
+
+        # No selection and nothing to interrupt: copy the whole input draft so
+        # Ctrl+C copies what was typed instead of arming quit. Skipped on a rapid
+        # repeat press so mashing Ctrl+C escapes the copy loop and reaches quit.
+        if not rapid and self._copy_focused_input_text():
+            self._quit_pending = False
+            return
+
+        self._arm_quit_pending("Ctrl+C")
 
     def _copy_focused_selection(self) -> bool:
         """Copy the focused input's selection to the clipboard, if any.
@@ -8428,19 +8477,43 @@ class DeepAgentsApp(App):
         if not selected_text:
             return False
 
-        from deepagents_code.clipboard import copy_text_to_clipboard
+        from deepagents_code.clipboard import copy_text_with_feedback
 
-        success, error = copy_text_to_clipboard(self, selected_text)
-        if not success:
-            self.notify(
-                f"Failed to copy selection: {error}"
-                if error
-                else "Failed to copy selection - no clipboard method available",
-                severity="warning",
-                timeout=3,
-                markup=False,
-            )
-        return success
+        return copy_text_with_feedback(self, selected_text, failure_noun="selection")
+
+    def _copy_focused_input_text(self) -> bool:
+        """Copy the focused input's full text to the clipboard, if non-empty.
+
+        Ctrl+C fallback used when there is no active selection, so the whole
+        draft is copied instead of arming quit.
+
+        Returns:
+            `True` when non-empty text was handled by a clipboard attempt.
+        """
+        from textual.widgets import Input, TextArea
+
+        widget = self.focused
+        if not isinstance(widget, (TextArea, Input)):
+            return False
+        if isinstance(widget, Input) and widget.password:
+            return False
+
+        text = widget.text if isinstance(widget, TextArea) else widget.value
+        if not text:
+            return False
+
+        from deepagents_code.clipboard import copy_text_with_feedback
+
+        # Return True regardless of copy success: the keypress is consumed
+        # either way (a failed copy already warned), so it never falls through
+        # to arming quit.
+        copy_text_with_feedback(
+            self,
+            text,
+            failure_noun="input",
+            success_message="Input copied to clipboard",
+        )
+        return True
 
     def _arm_quit_pending(self, shortcut: str) -> None:
         """Set the pending-quit flag and show a matching hint.
@@ -8469,8 +8542,18 @@ class DeepAgentsApp(App):
         6. If ask-user menu is active, cancel it
         7. If queued messages exist, pop the last one (LIFO)
         8. If agent is running, interrupt it
+        9. Otherwise, a second Esc clears the chat input draft (undoable)
         """
         from deepagents_code.widgets.thread_selector import ThreadSelectorScreen
+
+        # Any higher-priority Esc breaks the double-Esc clear sequence: only two
+        # consecutive Escs with nothing else to handle should clear the draft.
+        # Disarm up front and restore only at the terminal clear branch, so an
+        # intervening interrupt (agent cancel, popup dismiss, queued-message pop,
+        # ...) can't leave a stale flag that clears a later draft on a single
+        # press.
+        clear_was_pending = self._clear_input_pending
+        self._clear_input_pending = False
 
         if (
             isinstance(self.screen, ThreadSelectorScreen)
@@ -8529,6 +8612,52 @@ class DeepAgentsApp(App):
                 self._active_user_message.set_cancelled()
             self._cancel_worker(self._agent_worker)
             return
+
+        # Nothing left to interrupt: a double Esc clears the chat input draft.
+        # Restore the armed state captured above so a genuine consecutive Esc
+        # still confirms the clear.
+        self._clear_input_pending = clear_was_pending
+        self._handle_clear_input_escape()
+
+    def _handle_clear_input_escape(self) -> None:
+        """Clear the chat input draft on a double `Esc` press.
+
+        With nothing else to interrupt, the first `Esc` arms a pending flag and
+        shows a hint; a second `Esc` within the window clears the draft. The
+        clear is undoable via ctrl+z so a mistaken clear can be restored.
+
+        When the draft is empty there is nothing to clear, so no hint is shown
+        and any pending flag is reset.
+        """
+        chat_input = self._chat_input
+        if chat_input is None or not chat_input.value:
+            self._clear_input_pending = False
+            return
+        if self._clear_input_pending:
+            self._clear_input_pending = False
+            # The non-empty `value` guard above already implies a clear, so this
+            # is defensive: it only suppresses the toast if `discard_text` ever
+            # reports nothing cleared (e.g. a future `value` that diverges from
+            # the text area), keeping the confirmation honest.
+            if chat_input.discard_text():
+                self.notify(
+                    "Input cleared (ctrl+z to undo)",
+                    timeout=3,
+                    markup=False,
+                )
+            return
+        self._arm_clear_input_pending()
+
+    def _arm_clear_input_pending(self) -> None:
+        """Set the clear-input flag and show a matching hint."""
+        self._clear_input_pending = True
+        timeout = 3
+        self.notify(
+            "Press Esc again to clear input",
+            timeout=timeout,
+            markup=False,
+        )
+        self.set_timer(timeout, lambda: setattr(self, "_clear_input_pending", False))
 
     def action_quit_app(self) -> None:
         """Handle quit action (Ctrl+D)."""

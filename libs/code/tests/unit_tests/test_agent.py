@@ -1,5 +1,8 @@
 """Unit tests for agent formatting functions."""
 
+import warnings
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import fields
 from pathlib import Path
 from types import SimpleNamespace
@@ -45,6 +48,18 @@ def _make_fake_chat_model() -> GenericFakeChatModel:
     model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
     model.profile = {"max_input_tokens": 200000}
     return model
+
+
+@contextmanager
+def _ignore_interpreter_beta_warning() -> Iterator[None]:
+    """Suppress the dependency's expected beta middleware warning."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="The class `CodeInterpreterMiddleware` is in beta",
+            category=Warning,
+        )
+        yield
 
 
 def test_add_interrupt_on_gates_async_task_tools() -> None:
@@ -2989,6 +3004,7 @@ class TestCreateCliAgentInterpreterWiring:
                 "deepagents._models.init_chat_model",
                 return_value=fake_model,
             ),
+            _ignore_interpreter_beta_warning(),
         ):
             create_cli_agent(
                 model="fake-model",
@@ -3094,6 +3110,7 @@ class TestCreateCliAgentInterpreterWiring:
                 "deepagents._models.init_chat_model",
                 return_value=fake_model,
             ),
+            _ignore_interpreter_beta_warning(),
         ):
             create_cli_agent(
                 model="fake-model",
@@ -3186,6 +3203,7 @@ class TestCreateCliAgentInterpreterWiring:
                 "deepagents._models.init_chat_model",
                 return_value=fake_model,
             ),
+            _ignore_interpreter_beta_warning(),
         ):
             create_cli_agent(
                 model="fake-model",

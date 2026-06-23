@@ -163,7 +163,6 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
     CSS = """
     NotificationCenterScreen {
         align: center middle;
-        background: transparent;
     }
 
     NotificationCenterScreen > Vertical {

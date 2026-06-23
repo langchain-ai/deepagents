@@ -593,6 +593,15 @@ class TestMaxTurnsArgument:
         assert exc_info.value.code == 2
 
 
+async def _raise_timeout_and_close(awaitable: object, **_kwargs: object) -> None:
+    """Close the mocked awaitable before simulating a timeout."""
+    close = getattr(awaitable, "close", None)
+    if callable(close):
+        close()
+    await asyncio.sleep(0)
+    raise TimeoutError
+
+
 def _wait_for_timeout(mock_wait_for: MagicMock) -> object:
     """Extract the `timeout` arg from a mocked `asyncio.wait_for` call.
 
@@ -732,7 +741,7 @@ class TestTimeoutArgument:
             ),
             patch(
                 "asyncio.wait_for",
-                side_effect=asyncio.TimeoutError,
+                side_effect=_raise_timeout_and_close,
             ),
             pytest.raises(SystemExit) as exc_info,
         ):

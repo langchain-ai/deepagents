@@ -5,7 +5,7 @@ import contextlib
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
 
 from deepagents.middleware._utils import append_to_system_message
 from langchain.agents.middleware.types import (
@@ -358,7 +358,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
 
     def _slot_id(
         self,
-        state: dict[str, Any] | None,
+        state: REPLState,
     ) -> str:
         """Return the private interpreter slot initialized by `before_agent`."""
         slot_id = state.get("_quickjs_slot_id") if isinstance(state, dict) else None
@@ -500,7 +500,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             self_tool_name=self._tool_name,
         )
         prompt = self._base_prompt(ptc_attached=bool(exposed)) + subagent_section
-        slot_id = self._slot_id(getattr(request, "state", None))
+        slot_id = self._slot_id(cast("REPLState", getattr(request, "state", {})))
         repl = self._registry.get(slot_id)
         repl.install_tools(exposed)
         self._ptc_tools_by_slot[slot_id] = tuple(exposed)

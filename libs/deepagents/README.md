@@ -16,25 +16,6 @@ LangSmith is a unified developer platform for building, testing, and monitoring 
 uv add deepagents
 ```
 
-### Optional: video frame extraction
-
-`read_file` can sample video files into image content blocks (`.mp4`, `.mov`, `.webm`, `.mkv`, etc.).
-The agent uses `offset` to skip seconds into the source and `limit` to control how many
-seconds of source to sample; the frames-per-second is a deploy-time knob. Video reads
-are bounded by fixed input size, decode time, frame count, frame size, and emitted-byte
-budgets.
-Install with:
-
-```bash
-uv add "deepagents[video]"
-```
-
-The extra pulls in [PyAV](https://pyav.basswood-io.com/) and Pillow. Without it, video
-reads surface a clear "install `deepagents[video]`" error instead of failing silently.
-
-Sandbox-backed video reads currently inherit the backend's binary preview size cap.
-Support for larger sandbox videos is deferred to follow-up backend work.
-
 ## 🤔 What is this?
 
 Deep Agents is an open source agent harness — an opinionated agent that runs out of the box. Extend, override, or replace any piece.

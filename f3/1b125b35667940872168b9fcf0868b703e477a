@@ -1,0 +1,22 @@
+libs/code/CHANGELOG.md
+  h_9f69767fa5fabf 9-14,18-24
+libs/code/deepagents_code/widgets/chat_input.py
+  h_9f69767fa5fabf 2435,2510,2513
+libs/partners/quickjs/CHANGELOG.md
+  h_9f69767fa5fabf 9-10
+libs/code/pyproject.toml
+  h_9f69767fa5fabf 29,35,40,42,56,68,81,86,88,96,100-101,142-143,145
+libs/code/deepagents_code/config.py
+  h_9f69767fa5fabf 2025,2028,2192
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.10",
+  "base_commit_sha": "f31b125b35667940872168b9fcf0868b703e477a",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

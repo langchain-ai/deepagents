@@ -2,6 +2,29 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.21](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.20...deepagents-code==0.1.21) (2026-06-23)
+
+
+### Features
+
+* **code:** `dcode doctor` diagnostics command ([#4148](https://github.com/langchain-ai/deepagents/issues/4148)) ([8179731](https://github.com/langchain-ai/deepagents/commit/81797312c7d857e7d94d03c9c695cd3c8d88799a))
+* **code:** add structured TUI display for `js_eval` ([#4151](https://github.com/langchain-ai/deepagents/issues/4151)) ([91c0dae](https://github.com/langchain-ai/deepagents/commit/91c0dae3fe0253f02a5926fcd3c6f796cd8d11fe))
+* **code:** allow dependency updates without requiring release ([#4157](https://github.com/langchain-ai/deepagents/issues/4157)) ([7beb97a](https://github.com/langchain-ai/deepagents/commit/7beb97a2b02e2fd238baf3b6f05d43a4accf3f42))
+* **code:** clear chat input via `esc+esc`, add `[ X ]/[ COPY ]` buttons ([#4000](https://github.com/langchain-ai/deepagents/issues/4000)) ([c20546f](https://github.com/langchain-ai/deepagents/commit/c20546feac7876786e6816776d1ccfa5fcd4b2c8))
+* **code:** confirm "Launched" after auto-update restart ([#4098](https://github.com/langchain-ai/deepagents/issues/4098)) ([df8db8a](https://github.com/langchain-ai/deepagents/commit/df8db8af6a7cbfc2ab535020b951d73759da73dd))
+* **code:** surface tracing in `doctor` and `config show` ([#4163](https://github.com/langchain-ai/deepagents/issues/4163)) ([2bb3e44](https://github.com/langchain-ai/deepagents/commit/2bb3e44243553a5f2954a0f3ec42364563842a87))
+
+
+### Bug Fixes
+
+* **code:** handle LangSmith project-not-found and default tracing project ([#4153](https://github.com/langchain-ai/deepagents/issues/4153)) ([e303ce9](https://github.com/langchain-ai/deepagents/commit/e303ce986a3595f0cf458e796d857f7c8f5f8b5c))
+* **code:** make `/timestamps` toggle instant via per-footer class ([#4095](https://github.com/langchain-ai/deepagents/issues/4095)) ([7ae32b0](https://github.com/langchain-ai/deepagents/commit/7ae32b0a606cc200d4311e11036a65f17e8282b3))
+* **code:** refocus `/mcp` filter input after in-place refresh ([#4080](https://github.com/langchain-ai/deepagents/issues/4080)) ([d79cd74](https://github.com/langchain-ai/deepagents/commit/d79cd74cb8a44c300c3bbad712fe77e709f9221a))
+* **code:** report same-version dependency updates ([#4146](https://github.com/langchain-ai/deepagents/issues/4146)) ([156e118](https://github.com/langchain-ai/deepagents/commit/156e1185242a19746f8c268904637c73f07b9a10))
+* **code:** show "Loading..." in `/threads` agent dropdown while loading ([#4101](https://github.com/langchain-ai/deepagents/issues/4101)) ([c2d949e](https://github.com/langchain-ai/deepagents/commit/c2d949e8765fbbbdb81e5a70125932842358099f))
+* **code:** skip tool interrupts once auto-approve is set ([#4092](https://github.com/langchain-ai/deepagents/issues/4092)) ([9e21c34](https://github.com/langchain-ai/deepagents/commit/9e21c346a6eb8ad25b9cc671f24527b07732e2b7))
+* **code:** word-delete backspace parity in ask-user text area ([#4079](https://github.com/langchain-ai/deepagents/issues/4079)) ([ed3c499](https://github.com/langchain-ai/deepagents/commit/ed3c499354467bc5e8476e5c7cdf0cd5f8b6aec1))
+
 ## [0.1.20](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.19...deepagents-code==0.1.20) (2026-06-17)
 
 ### Features

@@ -1,6 +1,8 @@
 """Unit tests for agent formatting functions."""
 
+from dataclasses import fields
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import Mock, patch
 
@@ -11,9 +13,10 @@ from langchain_core.messages import AIMessage
 if TYPE_CHECKING:
     from langchain.agents.middleware.types import AgentState
     from langchain.messages import ToolCall
+    from langgraph.prebuilt.tool_node import ToolCallRequest
     from langgraph.runtime import Runtime
 
-from deepagents_code._cli_context import CLIContextSchema
+from deepagents_code._cli_context import CLIContext, CLIContextSchema
 from deepagents_code.agent import (
     DEFAULT_AGENT_NAME,
     _add_interrupt_on,
@@ -25,6 +28,7 @@ from deepagents_code.agent import (
     _format_web_search_description,
     _format_write_file_description,
     _sanitize_agent_message_name,
+    _should_interrupt_tool_call,
     build_model_identity_section,
     create_cli_agent,
     get_available_agent_names,
@@ -49,6 +53,100 @@ def test_add_interrupt_on_gates_async_task_tools() -> None:
 
     for tool_name in ("start_async_task", "update_async_task", "cancel_async_task"):
         assert tool_name in interrupt_on
+
+
+def test_add_interrupt_on_attaches_auto_approve_predicate() -> None:
+    """Every gated tool carries the `when` predicate that honors auto-approve."""
+    interrupt_on = _add_interrupt_on()
+
+    assert interrupt_on
+    for config in interrupt_on.values():
+        assert config.get("when") is _should_interrupt_tool_call
+
+
+def _request_with_context(context: object) -> "ToolCallRequest":
+    return cast(
+        "ToolCallRequest",
+        SimpleNamespace(runtime=SimpleNamespace(context=context)),
+    )
+
+
+def test_should_interrupt_tool_call_respects_auto_approve_context() -> None:
+    """The predicate suppresses interrupts once auto-approve is in run context."""
+    # Dataclass-shaped context (in-process path).
+    assert _should_interrupt_tool_call(
+        _request_with_context(CLIContextSchema(auto_approve=False))
+    )
+    assert not _should_interrupt_tool_call(
+        _request_with_context(CLIContextSchema(auto_approve=True))
+    )
+    # Dict-shaped context (LangGraph API / RemoteGraph path).
+    assert _should_interrupt_tool_call(_request_with_context({"auto_approve": False}))
+    assert not _should_interrupt_tool_call(
+        _request_with_context({"auto_approve": True})
+    )
+
+
+def test_should_interrupt_tool_call_defaults_to_interrupting() -> None:
+    """Missing or malformed context must not auto-approve."""
+    assert _should_interrupt_tool_call(_request_with_context({}))
+    assert _should_interrupt_tool_call(_request_with_context(None))
+    assert _should_interrupt_tool_call(
+        cast("ToolCallRequest", SimpleNamespace(runtime=None))
+    )
+    assert _should_interrupt_tool_call(cast("ToolCallRequest", SimpleNamespace()))
+
+
+def test_should_interrupt_tool_call_truthy_non_bool_fails_closed() -> None:
+    """A truthy non-bool context value must interrupt, not auto-approve.
+
+    Context can arrive as a dataclass after in-process `context_schema`
+    coercion, or as a dict from the JSON/RemoteGraph boundary. A malformed
+    value in either shape must not slip past the gate on mere truthiness.
+    """
+    assert _should_interrupt_tool_call(
+        _request_with_context(CLIContextSchema(auto_approve=cast("Any", 1)))
+    )
+    assert _should_interrupt_tool_call(
+        _request_with_context(CLIContextSchema(auto_approve=cast("Any", "yes")))
+    )
+    assert _should_interrupt_tool_call(_request_with_context({"auto_approve": 1}))
+    assert _should_interrupt_tool_call(_request_with_context({"auto_approve": "yes"}))
+
+
+def test_should_interrupt_tool_call_warns_on_unexpected_context_shape(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A non-None context that is neither shape interrupts and logs a warning.
+
+    Reaching this branch means the `context_schema` coercion contract broke
+    (likely an SDK change); fail closed but surface it so a silently-degraded
+    auto-approve is observable instead of looking like a feature that "broke".
+    """
+    with caplog.at_level("WARNING", logger="deepagents_code.agent"):
+        assert _should_interrupt_tool_call(_request_with_context("garbage"))
+        assert _should_interrupt_tool_call(
+            _request_with_context(SimpleNamespace(auto_approve=True))
+        )
+
+    assert "unexpected context type" in caplog.text
+    # A legitimate absent context must stay silent — not every default is an anomaly.
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="deepagents_code.agent"):
+        assert _should_interrupt_tool_call(_request_with_context(None))
+    assert "unexpected context type" not in caplog.text
+
+
+def test_cli_context_field_parity() -> None:
+    """`CLIContext` and `CLIContextSchema` must declare the same field set.
+
+    The two types model the same run-context payload on opposite sides of the
+    API boundary; the docstrings note "fields mirror" but nothing structural
+    enforces it. This locks in parity so a field added to one is added to both.
+    """
+    typed_dict_keys = set(CLIContext.__annotations__)
+    dataclass_keys = {f.name for f in fields(CLIContextSchema)}
+    assert typed_dict_keys == dataclass_keys
 
 
 def test_sanitize_agent_message_name_replaces_provider_unsafe_chars() -> None:

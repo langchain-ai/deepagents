@@ -4,11 +4,17 @@
 that pin to the version declared in `libs/deepagents/pyproject.toml` and
 reports drift so it surfaces locally instead of only at release time.
 
-Advisory by design: the release workflow is the hard gate (see
-`.github/workflows/check_sdk_pin.yml` and `release.yml`). During normal
-development the editable workspace source means you always run against the
-local SDK regardless of the pin, so a mismatch mid-feature is expected until
-you bump the pin.
+Advisory by design: the hard gate is the release workflow's pin-verification
+step (the "Verify package pins latest SDK version" step in `release.yml`,
+which fails the publish job on mismatch). The `check_sdk_pin.yml` workflow is
+a complementary advisory check that only comments on release PRs — it does
+not block merge. During normal development the editable workspace source
+means you always run against the local SDK regardless of the pin, so a
+mismatch mid-feature is expected until you bump the pin.
+
+Exit codes when run as a script: 0 = pin in sync, 1 = drift (advisory —
+callers may treat as non-fatal), 2 = could not determine (malformed or
+missing pin/version). Callers must not treat exit 2 as a pass.
 """
 
 import re
@@ -64,4 +70,11 @@ def main(repo_root: Path | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except ValueError as e:
+        # Exit 2 (distinct from drift's 1) so a "couldn't determine" failure is
+        # not laundered into an in-sync pass by callers that treat drift as
+        # advisory. See the `check` target in libs/code/Makefile.
+        print(f"Could not determine SDK pin status: {e}")
+        raise SystemExit(2) from None

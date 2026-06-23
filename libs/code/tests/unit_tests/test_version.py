@@ -601,6 +601,144 @@ async def test_update_slash_command_rejects_unknown_option() -> None:
         )
 
 
+async def test_update_deps_refreshes_without_version_check() -> None:
+    """`/update --deps` re-resolves deps and skips the dcode version check."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+            ) as is_update_mock,
+            patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+                return_value=(
+                    True,
+                    " - langchain-openai==1.3.2\n + langchain-openai==1.5.0\n",
+                ),
+            ) as perform_upgrade_mock,
+        ):
+            await app._handle_command("/update --deps")
+            await pilot.pause()
+
+        is_update_mock.assert_not_called()
+        perform_upgrade_mock.assert_awaited_once_with(include_prereleases=None)
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        content = str(app_msgs[-1]._content)
+        assert "Refreshed dependencies:" in content
+        assert "langchain-openai  1.3.2 -> 1.5.0" in content
+
+
+async def test_update_deps_reports_when_already_current() -> None:
+    """`/update --deps` reports when nothing changed."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+                return_value=(True, "Resolved 120 packages in 12ms\n"),
+            ),
+        ):
+            await app._handle_command("/update --deps")
+            await pilot.pause()
+
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        assert "Dependencies are already up to date." in str(app_msgs[-1]._content)
+
+
+async def test_update_already_current_prompts_and_refreshes_on_confirm() -> None:
+    """Plain `/update` offers a dep refresh when dcode is already current."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(False, "1.0.0"),
+            ),
+            patch.object(
+                DeepAgentsApp,
+                "_confirm_refresh_dependencies",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+                return_value=(
+                    True,
+                    " - langchain-openai==1.3.2\n + langchain-openai==1.5.0\n",
+                ),
+            ) as perform_upgrade_mock,
+        ):
+            await app._handle_command("/update")
+            await pilot.pause()
+
+        perform_upgrade_mock.assert_awaited_once_with(include_prereleases=None)
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        assert "Refreshed dependencies:" in str(app_msgs[-1]._content)
+
+
+async def test_update_already_current_skips_refresh_on_decline() -> None:
+    """Declining the prompt leaves the install untouched."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(False, "1.0.0"),
+            ),
+            patch.object(
+                DeepAgentsApp,
+                "_confirm_refresh_dependencies",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+            ) as perform_upgrade_mock,
+        ):
+            await app._handle_command("/update")
+            await pilot.pause()
+
+        perform_upgrade_mock.assert_not_awaited()
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        assert "Already on the latest version" in str(app_msgs[-1]._content)
+
+
 def test_help_mentions_version_flag() -> None:
     """Verify that the CLI help text mentions `--version` and SDK."""
     result = subprocess.run(

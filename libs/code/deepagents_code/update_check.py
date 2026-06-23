@@ -25,7 +25,7 @@ import tomllib
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import suppress
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Literal, TextIO
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TextIO
 
 from packaging.version import InvalidVersion, Version
 
@@ -1060,6 +1060,78 @@ async def perform_upgrade(
         return False, "brew not found on PATH."
 
     return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
+
+
+class DependencyChange(NamedTuple):
+    """A single package version change reported by `uv tool upgrade`.
+
+    `old` is `None` for a newly added package and `new` is `None` for a removed
+    one; both are set for an in-place version bump.
+    """
+
+    name: str
+    old: str | None
+    new: str | None
+
+
+_DEP_CHANGE_RE = re.compile(r"^\s*([+-])\s+([A-Za-z0-9._-]+)==(\S+)\s*$")
+"""Matches uv's environment-diff lines, e.g. ` - langchain-openai==1.3.2`."""
+
+
+def parse_dependency_changes(output: str) -> list[DependencyChange]:
+    """Parse package version changes from `uv tool upgrade` output.
+
+    uv reports environment changes as paired ` - pkg==old` / ` + pkg==new`
+    lines; this collapses them into one `DependencyChange` per package,
+    preserving first-seen order.
+
+    Args:
+        output: Combined stdout/stderr from the upgrade subprocess.
+
+    Returns:
+        One entry per package whose version was added, removed, or bumped.
+    """
+    removed: dict[str, str] = {}
+    added: dict[str, str] = {}
+    order: list[str] = []
+    seen: set[str] = set()
+    for line in output.splitlines():
+        match = _DEP_CHANGE_RE.match(line)
+        if match is None:
+            continue
+        sign, name, version = match.group(1), match.group(2), match.group(3)
+        (removed if sign == "-" else added)[name] = version
+        if name not in seen:
+            seen.add(name)
+            order.append(name)
+    return [
+        DependencyChange(name=name, old=removed.get(name), new=added.get(name))
+        for name in order
+    ]
+
+
+def format_dependency_changes(changes: Sequence[DependencyChange]) -> str:
+    """Render dependency changes as an aligned, human-readable block.
+
+    Args:
+        changes: Parsed changes from `parse_dependency_changes`.
+
+    Returns:
+        A newline-joined, column-aligned summary, or `""` when empty.
+    """
+    if not changes:
+        return ""
+    width = max(len(change.name) for change in changes)
+    lines: list[str] = []
+    for change in changes:
+        name = change.name.ljust(width)
+        if change.old and change.new:
+            lines.append(f"  {name}  {change.old} -> {change.new}")
+        elif change.new:
+            lines.append(f"  {name}  {change.new} (new)")
+        else:
+            lines.append(f"  {name}  {change.old} (removed)")
+    return "\n".join(lines)
 
 
 _EXTRA_NAME_RE = re.compile(r"^[A-Za-z0-9](?:[-_.A-Za-z0-9]*[A-Za-z0-9])?$")

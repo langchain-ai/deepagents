@@ -3849,8 +3849,10 @@ class DeepAgentsApp(App):
     async def _handle_update_command(self, command: str = "/update") -> None:
         """Handle the `/update` slash command — check for and install updates.
 
-        Parses an optional `--prerelease` flag from the raw command line; any
-        other option is rejected with a usage message.
+        Parses optional `--prerelease` and `--deps` flags from the raw command
+        line; any other option is rejected with a usage message. `--deps`
+        re-resolves dependencies to their newest in-range versions even when
+        `deepagents-code` itself is already current.
 
         Args:
             command: The raw slash-command line as typed, including any options.
@@ -3861,16 +3863,18 @@ class DeepAgentsApp(App):
         # loudly instead of silently downgrading to a stable update — mirroring
         # the headless path, which also refuses unknown options rather than
         # silently ignoring them.
-        unknown = [opt for opt in parts[1:] if opt != "--prerelease"]
+        allowed_options = {"--prerelease", "--deps"}
+        unknown = [opt for opt in parts[1:] if opt not in allowed_options]
         if unknown:
             await self._mount_message(
                 AppMessage(
                     f"Unknown option(s) for /update: {' '.join(unknown)}. "
-                    "Usage: /update [--prerelease]",
+                    "Usage: /update [--deps] [--prerelease]",
                 ),
             )
             return
         prerelease_requested = "--prerelease" in parts[1:]
+        deps_only = "--deps" in parts[1:]
         include_prereleases = True if prerelease_requested else None
         try:
             from deepagents_code._env_vars import DEBUG_UPDATE
@@ -3879,9 +3883,11 @@ class DeepAgentsApp(App):
             from deepagents_code.update_check import (
                 _PRERELEASE_UNSUPPORTED_MESSAGE,
                 format_age_suffix,
+                format_dependency_changes,
                 format_installed_age_suffix,
                 format_release_age_parenthetical,
                 is_update_available,
+                parse_dependency_changes,
                 perform_upgrade,
                 prerelease_upgrade_supported,
                 upgrade_command,
@@ -3909,6 +3915,15 @@ class DeepAgentsApp(App):
                     )
                     return
 
+            # `--deps` is an explicit dependency refresh: skip the dcode version
+            # check entirely and re-resolve the environment so new in-range
+            # releases of dependencies are pulled in without a dcode release.
+            if deps_only:
+                await self._refresh_dependencies(
+                    include_prereleases=include_prereleases,
+                )
+                return
+
             await self._mount_message(AppMessage("Checking for updates..."))
             available, latest = await asyncio.to_thread(
                 is_update_available,
@@ -3930,6 +3945,12 @@ class DeepAgentsApp(App):
                         f"Already on the latest version (v{cli_version}{age_suffix}).",
                     ),
                 )
+                # dcode is current, but its dependencies may have newer in-range
+                # releases. Offer to re-resolve them rather than dead-ending.
+                if await self._confirm_refresh_dependencies():
+                    await self._refresh_dependencies(
+                        include_prereleases=include_prereleases,
+                    )
                 return
 
             release_age = await asyncio.to_thread(
@@ -3964,6 +3985,20 @@ class DeepAgentsApp(App):
                         "not the CLI)."
                     ),
                 )
+                # The upgrade re-resolves the whole environment, so surface any
+                # dependency bumps that rode along with the dcode release.
+                dep_changes = [
+                    change
+                    for change in parse_dependency_changes(output)
+                    if change.name != "deepagents-code"
+                ]
+                if dep_changes:
+                    await self._mount_message(
+                        AppMessage(
+                            "Dependencies updated:\n"
+                            f"{format_dependency_changes(dep_changes)}",
+                        ),
+                    )
             else:
                 cmd = upgrade_command(include_prereleases=include_prereleases)
                 detail = f": {output[:200]}" if output else ""
@@ -3975,6 +4010,91 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 ErrorMessage(f"Update failed: {type(exc).__name__}: {exc}"),
             )
+
+    async def _refresh_dependencies(self, *, include_prereleases: bool | None) -> None:
+        """Re-resolve dependencies to their newest in-range versions.
+
+        Runs the same `uv tool upgrade` as a version bump, then reports which
+        dependencies actually moved. Used by `/update --deps` and the
+        already-current refresh prompt. Editable and pre-release eligibility
+        are validated by the caller before this runs.
+
+        Args:
+            include_prereleases: Whether to include alpha/beta/rc releases;
+                `None` follows the installed version's channel.
+        """
+        from deepagents_code._env_vars import DEBUG_UPDATE
+        from deepagents_code.update_check import (
+            format_dependency_changes,
+            parse_dependency_changes,
+            perform_upgrade,
+            upgrade_command,
+        )
+
+        await self._mount_message(AppMessage("Refreshing dependencies..."))
+        if os.environ.get(DEBUG_UPDATE):
+            await self._mount_message(
+                AppMessage("Skipped dependency refresh (debug mode)."),
+            )
+            return
+        success, output = await perform_upgrade(
+            include_prereleases=include_prereleases,
+        )
+        if not success:
+            cmd = upgrade_command(include_prereleases=include_prereleases)
+            detail = f": {output[-200:]}" if output else ""
+            await self._mount_message(
+                AppMessage(
+                    f"Dependency refresh failed{detail}\nRun manually: {cmd}",
+                ),
+            )
+            return
+        dep_changes = [
+            change
+            for change in parse_dependency_changes(output)
+            if change.name != "deepagents-code"
+        ]
+        if not dep_changes:
+            await self._mount_message(
+                AppMessage("Dependencies are already up to date."),
+            )
+            return
+        await self._mount_message(
+            AppMessage(
+                "Refreshed dependencies:\n"
+                f"{format_dependency_changes(dep_changes)}\n"
+                "Quit and relaunch dcode to use them.",
+            ),
+        )
+
+    async def _confirm_refresh_dependencies(self) -> bool:
+        """Ask the user to confirm a dependency refresh via a modal.
+
+        A watchdog bounds the wait so a modal that never resolves can't wedge
+        command handling; a timeout or mount failure is treated as a cancel.
+
+        Returns:
+            `True` only when the user explicitly confirmed; `False` on cancel,
+                timeout, or mount failure.
+        """
+        from deepagents_code.widgets.update_confirm import (
+            RefreshDependenciesConfirmScreen,
+        )
+
+        try:
+            confirmed = await asyncio.wait_for(
+                self._push_screen_wait(RefreshDependenciesConfirmScreen()),
+                timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            logger.warning(
+                "Dependency-refresh confirmation timed out; treating as cancel",
+            )
+            return False
+        except Exception:
+            logger.exception("Failed to mount dependency-refresh confirmation")
+            return False
+        return confirmed is True
 
     async def _handle_install_command(self, command: str) -> None:
         """Handle the `/install <extra>` slash command.

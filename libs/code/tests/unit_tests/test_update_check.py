@@ -21,6 +21,7 @@ from deepagents_code._version import __version__
 from deepagents_code.extras_info import ExtrasIntrospectionError, installed_extra_names
 from deepagents_code.update_check import (
     CACHE_TTL,
+    DependencyChange,
     InstallMethod,
     _extract_release_times,
     _latest_from_releases,
@@ -32,6 +33,7 @@ from deepagents_code.update_check import (
     editable_extra_hint,
     editable_package_hint,
     format_age_suffix,
+    format_dependency_changes,
     format_installed_age_suffix,
     format_release_age,
     format_release_age_parenthetical,
@@ -54,6 +56,7 @@ from deepagents_code.update_check import (
     mark_auto_update_default_acknowledged,
     mark_update_notified,
     mark_version_seen,
+    parse_dependency_changes,
     perform_install_extra,
     perform_install_package,
     perform_upgrade,
@@ -1124,6 +1127,65 @@ class TestUpdateLogs:
         assert supported is False
         assert reason is not None
         assert "aren't supported for this install" in reason
+
+
+class TestParseDependencyChanges:
+    """`parse_dependency_changes` collapses uv's env diff into changes."""
+
+    def test_version_bump_pairs_removed_and_added(self) -> None:
+        """A `- old` / `+ new` pair for one package becomes one bump entry."""
+        output = (
+            "Resolved 120 packages in 12ms\n"
+            " - langchain-openai==1.3.2\n"
+            " + langchain-openai==1.5.0\n"
+            "Installed 1 executable: dcode\n"
+        )
+        assert parse_dependency_changes(output) == [
+            DependencyChange(name="langchain-openai", old="1.3.2", new="1.5.0"),
+        ]
+
+    def test_new_package_has_no_old(self) -> None:
+        """A lone `+` line is reported as a new package."""
+        assert parse_dependency_changes(" + httpx==0.28.1\n") == [
+            DependencyChange(name="httpx", old=None, new="0.28.1"),
+        ]
+
+    def test_removed_package_has_no_new(self) -> None:
+        """A lone `-` line is reported as a removed package."""
+        assert parse_dependency_changes(" - httpx==0.28.1\n") == [
+            DependencyChange(name="httpx", old="0.28.1", new=None),
+        ]
+
+    def test_preserves_first_seen_order(self) -> None:
+        """Packages keep the order uv first mentioned them in."""
+        output = " - b-pkg==1.0\n + b-pkg==2.0\n - a-pkg==1.0\n + a-pkg==2.0\n"
+        names = [change.name for change in parse_dependency_changes(output)]
+        assert names == ["b-pkg", "a-pkg"]
+
+    def test_ignores_non_diff_lines(self) -> None:
+        """Resolver chatter without `+`/`-` markers is skipped."""
+        assert parse_dependency_changes("Resolved 3 packages\nAudited 3\n") == []
+
+
+class TestFormatDependencyChanges:
+    """`format_dependency_changes` renders an aligned summary."""
+
+    def test_empty_returns_empty_string(self) -> None:
+        """No changes renders to an empty string."""
+        assert format_dependency_changes([]) == ""
+
+    def test_renders_bump_new_and_removed(self) -> None:
+        """Each change kind gets its own rendering, column-aligned."""
+        changes = [
+            DependencyChange(name="langchain-openai", old="1.3.2", new="1.5.0"),
+            DependencyChange(name="httpx", old=None, new="0.28.1"),
+            DependencyChange(name="old-pkg", old="1.0", new=None),
+        ]
+        rendered = format_dependency_changes(changes)
+        assert "langchain-openai  1.3.2 -> 1.5.0" in rendered
+        assert "0.28.1 (new)" in rendered
+        assert "1.0 (removed)" in rendered
+        assert "httpx             0.28.1 (new)" in rendered
 
 
 class TestInstallExtraCommand:

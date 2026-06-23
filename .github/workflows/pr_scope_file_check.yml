@@ -22,13 +22,26 @@
 #
 # Trust model:
 #   - The detector and labeler config run from the PR *base* revision, not the
-#     PR head, so a PR cannot edit them to self-bypass the gate. Only the PR
+#     PR head, so a PR cannot edit *those* to self-bypass the gate. Only the PR
 #     title (event payload) and changed-file list (API) come from the PR.
+#   - This base checkout closes the detector/config edit vector but does not by
+#     itself make the gate un-bypassable: under `pull_request` the workflow file
+#     itself is taken from the PR head, so a PR that edits this workflow can
+#     still neuter the check. Gate integrity therefore also relies on branch
+#     protection (this job as a required status check) and review of
+#     `.github/workflows/` edits.
 #
 # Limitations:
 #   - Runs under `pull_request` (not `pull_request_target`), so PRs from forks get
 #     the read-only token and the comment is surfaced to the job summary instead.
 #     No secrets are exposed to PR-author-controlled code.
+#   - The detector and config run from base, so a PR that itself *adds* a new
+#     package directory (and its labeler `fileRules`/`scopeToLabel` entries) is
+#     checked against the base config that does not yet know that package: a
+#     scope/file mismatch for the just-added package dir is not flagged until the
+#     rule exists on base. Reading head config instead would reopen the
+#     self-bypass the base checkout closes, so this is the deliberate tradeoff;
+#     the next PR touching the package is gated normally.
 
 name: "🔍 PR scope file check"
 
@@ -110,13 +123,20 @@ jobs:
           set -euo pipefail
           detector=".github/scripts/check_pr_scope_files.py"
           if [[ ! -f "$detector" ]]; then
-            # The detector does not exist on the base revision yet: the PR that
-            # first introduces this check, or a branch cut from before it
-            # existed. There is no trusted gate to enforce, so treat as clean.
-            # A PR cannot reach this path deliberately — it can only change its
-            # own head, never what is present on base — so it is not a bypass.
-            # Once merged, base always carries the detector and it runs normally.
-            echo "::notice::Detector absent on base revision; nothing to enforce yet."
+            # The detector does not exist on the base revision: the bootstrapping
+            # PR that first introduces this check, or a branch cut from before it
+            # existed. There is no trusted gate on base to enforce, so treat as
+            # clean. This is not a self-bypass vector: presence is read from
+            # trusted base, and an author cannot strip the detector from a base
+            # that has it (head edits never change base). An author *can* target
+            # an old base that never had it, but gains nothing — that base never
+            # gated anything, so there is nothing to evade.
+            #
+            # The residual risk is operator error, not attack: if the detector is
+            # renamed/moved on base without updating the path above, this branch
+            # silently disables the gate. Emit a *warning* (not a notice) so the
+            # desync surfaces in the Checks UI rather than only the fold-out log.
+            echo "::warning::Detector '$detector' absent on base revision; scope/file check is NOT enforcing. Expected only on the bootstrapping PR or a pre-gate branch — otherwise the detector path here may be out of sync with the repo."
             offenders="[]"
           else
             # A config-read error in the detector exits non-zero; under `set -e`
@@ -223,7 +243,7 @@ jobs:
               } catch (commentErr) {
                 // Fork PRs run with a restricted token; surface to the job
                 // summary so the mismatch is still visible alongside the red check.
-                core.warning(`Could not post sticky comment (fork PR token, rate limit, or transient API error): ${commentErr.message}`);
+                core.warning(`Could not post sticky comment (fork PR token, rate limit, or transient API error) [status=${commentErr.status ?? 'n/a'}]: ${commentErr.message}`);
                 // Guard the summary write too: if it throws (unwritable summary,
                 // size limit) it must not escape upsertSticky and preempt the
                 // caller's core.setFailed — the red check is the load-bearing signal.
@@ -233,7 +253,7 @@ jobs:
                     .addRaw(body)
                     .write();
                 } catch (summaryErr) {
-                  core.warning(`Could not write job summary fallback: ${summaryErr.message}`);
+                  core.warning(`Could not write job summary fallback [status=${summaryErr.status ?? 'n/a'}]: ${summaryErr.message}`);
                 }
               }
             }
@@ -244,7 +264,7 @@ jobs:
               try {
                 await deleteSticky();
               } catch (cleanupErr) {
-                core.warning(`Could not clean up prior scope/file-check comment: ${cleanupErr.message}`);
+                core.warning(`Could not clean up prior scope/file-check comment (stale comment may persist on a now-passing PR) [status=${cleanupErr.status ?? 'n/a'}]: ${cleanupErr.message}`);
               }
               core.info('No PR scope/file mismatch detected.');
               return;

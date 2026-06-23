@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import re
@@ -438,12 +439,14 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
     return agents
 
 
+@functools.lru_cache(maxsize=1)
 def _reserved_agent_dir_names() -> frozenset[str]:
     """Return non-agent directory names reserved by the app under `~/.deepagents/`.
 
     `bin/` holds the managed `rg` binary (`managed_tools.BIN_DIR`) and must
-    never appear in the agent picker. Imported lazily to keep the name a
-    single source of truth without a module-level dependency.
+    never appear in the agent picker. The name is derived from `BIN_DIR` so it
+    stays a single source of truth rather than being hardcoded here. The result
+    is cached since the reserved set is constant for the process.
     """
     from deepagents_code.managed_tools import BIN_DIR
 

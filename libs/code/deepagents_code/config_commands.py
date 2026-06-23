@@ -1,10 +1,11 @@
 """CLI commands for the `config` group: inspect the configuration surface.
 
-`config list` prints the static manifest (every tunable option, its type,
-default, and where it can be set). `config show` resolves each option against
-the live environment and `config.toml`, reporting the effective value and which
-source provided it. `config get <key>` does the same for a single option.
-`config path` prints the on-disk config locations.
+`config show` (aliased as `config list`/`ls`) resolves each option against the
+live environment and `config.toml`, reporting the effective value and which
+source provided it, matching what `git config --list` / `aws configure list`
+users expect. Adding `--verbose`/`--all` folds in each option's description and
+where it can be set (the static catalog). `config get <key>` does the same for a
+single option. `config path` prints the on-disk config locations.
 
 Secret-flagged options (API keys and other credentials) are never printed by
 value — `config show`/`config get` report only whether they are set and from
@@ -28,7 +29,7 @@ from deepagents_code.output import write_json
 
 if TYPE_CHECKING:
     import argparse
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from deepagents_code.config_manifest import ConfigOption
     from deepagents_code.output import OutputFormat
@@ -76,8 +77,19 @@ def setup_config_parser(
     add_output_args(config_parser)
     config_sub = config_parser.add_subparsers(dest="config_command")
 
+    def _add_verbose_arg(parser: Any) -> None:  # noqa: ANN401
+        parser.add_argument(
+            "-v",
+            "--verbose",
+            "--all",
+            dest="verbose",
+            action="store_true",
+            help="Also show each option's description and where to set it",
+        )
+
     show_parser = config_sub.add_parser(
         "show",
+        aliases=["list", "ls"],
         help="Show effective config values and their source",
         add_help=False,
     )
@@ -86,20 +98,8 @@ def setup_config_parser(
         "--help",
         action=make_help_action(_lazy_ui_help("show_config_help")),
     )
+    _add_verbose_arg(show_parser)
     add_output_args(show_parser)
-
-    list_parser = config_sub.add_parser(
-        "list",
-        aliases=["ls"],
-        help="List all available config options",
-        add_help=False,
-    )
-    list_parser.add_argument(
-        "-h",
-        "--help",
-        action=make_help_action(_lazy_ui_help("show_config_help")),
-    )
-    add_output_args(list_parser)
 
     get_parser = config_sub.add_parser(
         "get",
@@ -212,8 +212,11 @@ def _missing_extra_hint(option: ConfigOption) -> bool:
 # --- Commands ---------------------------------------------------------------
 
 
-def _run_show(output_format: OutputFormat) -> int:
+def _run_show(output_format: OutputFormat, *, verbose: bool, command_label: str) -> int:
     """Resolve every option and print its effective value and source.
+
+    With `verbose`, each option also lists its description and where it can be
+    set (the catalog detail formerly served by `config list`).
 
     Returns:
         Process exit code (`0` on success).
@@ -231,7 +234,7 @@ def _run_show(output_format: OutputFormat) -> int:
 
     if output_format == "json":
         write_json(
-            "config show",
+            command_label,
             [
                 {
                     "key": opt.key,
@@ -241,12 +244,69 @@ def _run_show(output_format: OutputFormat) -> int:
                     "redacted": opt.redacted,
                     # Redact secret values: report presence only.
                     "value": None if opt.redacted else value,
+                    **(
+                        {
+                            "summary": opt.summary,
+                            "type": opt.type,
+                            "default": opt.default,
+                            "env_var": opt.env_var,
+                            "toml_path": opt.toml_path,
+                            "cli_flag": opt.cli_flag,
+                        }
+                        if verbose
+                        else {}
+                    ),
                 }
                 for opt, is_set, source, value in resolved
             ],
         )
         return 0
 
+    if verbose:
+        _print_show_verbose(resolved, options)
+    else:
+        _print_show_table(resolved, options)
+    return 0
+
+
+def _print_show_table(
+    resolved: Sequence[tuple[ConfigOption, bool, str, Any]],
+    options: Sequence[ConfigOption],
+) -> None:
+    """Render the compact effective-value table, grouped by section."""
+    from rich.table import Table
+    from rich.text import Text
+
+    from deepagents_code.config import console
+    from deepagents_code.config_manifest import iter_groups
+
+    console.print()
+    for group in iter_groups(options):
+        console.print(f"[bold]{group}[/bold]")
+        table = Table.grid(padding=(0, 2))
+        table.add_column()
+        table.add_column()
+        table.add_column(style="dim")
+        for opt, is_set, source, value in resolved:
+            if opt.group != group:
+                continue
+            display = _display_value(opt, is_set=is_set, value=value)
+            # `display`/`source` may contain markup from env/TOML; `Text` cells
+            # render literally, so values can't break the table.
+            table.add_row(
+                Text(f"  {opt.key}"),
+                Text(display),
+                Text(_source_label(source)),
+            )
+        console.print(table, highlight=False)
+        console.print()
+
+
+def _print_show_verbose(
+    resolved: Sequence[tuple[ConfigOption, bool, str, Any]],
+    options: Sequence[ConfigOption],
+) -> None:
+    """Render the effective value plus description and how-to-set per option."""
     from rich.markup import escape
 
     from deepagents_code.config import console
@@ -259,62 +319,15 @@ def _run_show(output_format: OutputFormat) -> int:
             if opt.group != group:
                 continue
             display = _display_value(opt, is_set=is_set, value=value)
-            source_label = _source_label(source)
-            # `display` and `source_label` may contain Rich markup from env/TOML
-            # or terminal metadata; escape them so values can't break rendering.
-            display_text = escape(display)
-            source_text = escape(source_label)
+            # `display`/`source` may carry markup from env/TOML; escape them.
             console.print(
-                f"  {opt.key:<34} {display_text:<22} [dim]{source_text}[/dim]",
+                f"  [cyan]{opt.key}[/cyan]  {escape(display)}  "
+                f"[dim]{escape(_source_label(source))}[/dim]",
                 highlight=False,
             )
-        console.print()
-    return 0
-
-
-def _run_list(output_format: OutputFormat) -> int:
-    """Print the static catalog of available options (no resolution).
-
-    Returns:
-        Process exit code (`0` on success).
-    """
-    from deepagents_code.config_manifest import get_config_options
-
-    options = get_config_options()
-    if output_format == "json":
-        write_json(
-            "config list",
-            [
-                {
-                    "key": opt.key,
-                    "group": opt.group,
-                    "summary": opt.summary,
-                    "type": opt.type,
-                    "default": opt.default,
-                    "redacted": opt.redacted,
-                    "env_var": opt.env_var,
-                    "toml_path": opt.toml_path,
-                    "cli_flag": opt.cli_flag,
-                }
-                for opt in options
-            ],
-        )
-        return 0
-
-    from deepagents_code.config import console
-    from deepagents_code.config_manifest import iter_groups
-
-    console.print()
-    for group in iter_groups(options):
-        console.print(f"[bold]{group}[/bold]")
-        for opt in options:
-            if opt.group != group:
-                continue
-            console.print(f"  [cyan]{opt.key}[/cyan]  [dim]({opt.type})[/dim]")
-            console.print(f"    {opt.summary}", highlight=False)
+            console.print(f"    {opt.summary}", highlight=False, style="dim")
             console.print(f"    {_sources_line(opt)}", highlight=False, style="dim")
         console.print()
-    return 0
 
 
 def _run_get(key: str, output_format: OutputFormat) -> int:
@@ -407,11 +420,11 @@ def run_config_command(args: argparse.Namespace) -> int:
     """
     output_format: OutputFormat = getattr(args, "output_format", "text")
     command = getattr(args, "config_command", None)
+    verbose: bool = getattr(args, "verbose", False)
 
-    if command == "show":
-        return _run_show(output_format)
-    if command in {"list", "ls"}:
-        return _run_list(output_format)
+    if command in {"show", "list", "ls"}:
+        label = "config list" if command in {"list", "ls"} else "config show"
+        return _run_show(output_format, verbose=verbose, command_label=label)
     if command == "get":
         return _run_get(args.key, output_format)
     if command == "path":

@@ -15,6 +15,7 @@ from langchain_core.messages import (
     ToolCall,
     ToolMessage,
 )
+from langchain_core.messages.utils import convert_to_openai_messages
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
@@ -1468,22 +1469,6 @@ class TestFilesystemMiddleware:
 
         assert result == tool_message
 
-    def test_init_video_sampling_rate_default(self):
-        """Default sampling rate is 0.5 fps."""
-        middleware = FilesystemMiddleware()
-        assert middleware._video_sampling_rate == 0.5
-
-    def test_init_video_sampling_rate_override(self):
-        """Constructor value is honored verbatim."""
-        middleware = FilesystemMiddleware(video_sampling_rate=2.0)
-        assert middleware._video_sampling_rate == 2.0
-
-    @pytest.mark.parametrize("bad", [0, -0.5, -1])
-    def test_init_video_sampling_rate_rejects_non_positive(self, bad: float) -> None:
-        """Constructor rejects zero and negative sampling rates up front."""
-        with pytest.raises(ValueError, match="video_sampling_rate must be > 0"):
-            FilesystemMiddleware(video_sampling_rate=bad)
-
     def test_read_file_video_routes_to_frame_extractor(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Video reads route through `_video.extract_video_frames`, not the generic base64 branch.
 
@@ -1516,10 +1501,7 @@ class TestFilesystemMiddleware:
 
         monkeypatch.setattr(filesystem_middleware, "extract_video_frames", fake_extract)
 
-        middleware = FilesystemMiddleware(
-            backend=_video_backend(raw_bytes),
-            video_sampling_rate=0.5,
-        )
+        middleware = FilesystemMiddleware(backend=_video_backend(raw_bytes))
         state = FilesystemState(messages=[], files={})
         runtime = _build_runtime(state, "video-read-1")
         read_file_tool = next(t for t in middleware.tools if t.name == "read_file")
@@ -1554,8 +1536,23 @@ class TestFilesystemMiddleware:
         ]
         assert b"\x00\x01\x02" not in str(media_message.content).encode()
 
-        # The middleware must convert offset/limit to seconds with the
-        # constructor-defined sampling rate forwarded verbatim.
+        openai_messages = convert_to_openai_messages(
+            [
+                HumanMessage(content="read video"),
+                AIMessage(content="", tool_calls=[{"id": "video-read-1", "name": "read_file", "args": {"file_path": "/clips/intro.mkv"}}]),
+                *messages,
+            ]
+        )
+        openai_tool_message = next(message for message in openai_messages if message["role"] == "tool")
+        assert isinstance(openai_tool_message["content"], str)
+        assert all(
+            block.get("type") != "video"
+            for message in openai_messages
+            for block in (message["content"] if isinstance(message.get("content"), list) else [])
+        )
+
+        # The middleware must convert offset/limit to seconds and use the
+        # internal sampling rate.
         assert len(fake_extract.calls) == 1
         call = fake_extract.calls[0]
         assert call["offset_seconds"] == 0

@@ -70,6 +70,7 @@ async def call_subagent_task_tool(
     parse_json_output = response_schema is not None
     if response_schema is not None:
         _validate_response_schema(response_schema)
+        response_schema = _ensure_schema_title(response_schema)
         runtime = _runtime_with_response_format(runtime, response_schema)
 
     runtime = _runtime_with_tool_call_id(
@@ -119,6 +120,23 @@ def _validate_response_schema(schema: dict[str, Any]) -> None:
             _check(items, depth + 1, prop_count)
 
     _check(schema, 0, [0])
+
+
+_DEFAULT_SCHEMA_TITLE = "subagent_response"
+
+
+def _ensure_schema_title(schema: dict[str, Any]) -> dict[str, Any]:
+    """Ensure the response schema carries a non-empty top-level ``title``.
+
+    Structured output backends that treat a JSON schema as a function (for
+    example, the OpenAI function-calling path) require a top-level ``title`` to
+    use as the function name. Agent-generated ``response_schema`` values often
+    omit it, so inject a default when it is missing or blank.
+    """
+    existing = schema.get("title")
+    if isinstance(existing, str) and existing.strip():
+        return schema
+    return {**schema, "title": _DEFAULT_SCHEMA_TITLE}
 
 
 def _runtime_with_response_format(

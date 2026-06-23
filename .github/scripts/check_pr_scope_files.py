@@ -5,8 +5,10 @@ The PR labeler config already defines both sides of this relationship:
 `fileRules` maps package directories to the same labels. This helper reads that
 config directly so the CI gate cannot drift from the labeler.
 
-The script only reports offenders and exits 0 after successful analysis. The
-workflow that calls it decides whether to fail, bypass, or comment.
+On successful analysis the script reports offenders on stdout and exits 0; the
+workflow that calls it decides whether to fail, bypass, or comment. If the
+labeler config cannot be read or validated, the script exits 2 so CI fails
+closed.
 """
 
 import json
@@ -57,11 +59,23 @@ def _package_rules(config: dict[str, Any]) -> list[dict[str, str]]:
     package_rules: list[dict[str, str]] = []
     for rule in rules:
         if not isinstance(rule, dict):
-            continue
+            msg = f"pr-labeler fileRules entry is not an object: {rule!r}"
+            raise ValueError(msg)
         label = rule.get("label")
         prefix = rule.get("prefix")
-        if not isinstance(label, str) or not isinstance(prefix, str):
+        # Rules without a 'prefix' (suffix/exact/pattern rules) are not package
+        # directory rules and are legitimately skipped.
+        if prefix is None:
             continue
+        # A rule that *has* a 'prefix' but with a malformed type is config
+        # corruption, not a non-package rule. Fail closed rather than silently
+        # dropping it: a single dropped package rule would let a real
+        # scope/file mismatch pass unnoticed (the gate's worst outcome).
+        if not isinstance(label, str) or not isinstance(prefix, str):
+            msg = f"pr-labeler fileRules entry has non-string label/prefix: {rule!r}"
+            raise ValueError(msg)
+        # A non-`libs/` prefix (e.g. `.github/workflows/`) is a legitimate
+        # non-package rule.
         if not prefix.startswith("libs/"):
             continue
         package_rules.append({"label": label, "prefix": prefix.rstrip("/") + "/"})

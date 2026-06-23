@@ -2,6 +2,7 @@
 
 import json
 
+import pytest
 from check_pr_scope_files import (
     DEFAULT_CONFIG,
     changed_packages,
@@ -120,6 +121,77 @@ def test_changed_packages_returns_touched_package_dirs_only() -> None:
     assert changed_packages(
         ["libs/code/deepagents_code/app.py", ".github/workflows/ci.yml"], CONFIG
     ) == {"dcode": ["libs/code/"]}
+
+
+def test_changed_packages_matches_bare_package_dir() -> None:
+    """A path equal to the package dir (no trailing slash) still matches."""
+    assert changed_packages(["libs/code"], CONFIG) == {"dcode": ["libs/code/"]}
+
+
+def test_changed_packages_ignores_prefix_collision() -> None:
+    """A sibling dir sharing a name prefix is not treated as the package."""
+    assert changed_packages(["libs/codex/app.py"], CONFIG) == {}
+
+
+def test_breaking_change_title_still_detects_offender() -> None:
+    """A breaking-change `!` title parses its scope for offender detection."""
+    assert find_offenders(
+        "feat(cli)!: drop option", ["libs/code/deepagents_code/app.py"], CONFIG
+    ) == [{"package": "dcode", "dirs": ["libs/code/"]}]
+
+
+def test_partner_package_dir_detected_with_real_config() -> None:
+    """Partner packages under `libs/partners/` are package dirs too."""
+    config = json.loads(DEFAULT_CONFIG.read_text(encoding="utf-8"))
+    assert find_offenders(
+        "fix(cli): repair startup",
+        ["libs/partners/daytona/langchain_daytona/sandbox.py"],
+        config,
+    ) == [{"package": "daytona", "dirs": ["libs/partners/daytona/"]}]
+
+
+def test_partner_scope_aliases_resolve_with_real_config() -> None:
+    """`langchain-*` scope aliases map to the same partner package labels."""
+    config = json.loads(DEFAULT_CONFIG.read_text(encoding="utf-8"))
+    assert declared_packages("fix(langchain-quickjs): x", config) == {"quickjs"}
+    assert declared_packages("fix(quickjs): x", config) == {"quickjs"}
+
+
+def test_non_dict_file_rule_raises() -> None:
+    """A non-object `fileRules` entry is config corruption, not a skip."""
+    config = {"scopeToLabel": CONFIG["scopeToLabel"], "fileRules": ["libs/code/"]}
+    with pytest.raises(ValueError, match="not an object"):
+        find_offenders("fix(cli): x", ["libs/code/file.py"], config)
+
+
+def test_non_string_prefix_file_rule_raises() -> None:
+    """A package rule with a malformed `prefix` type fails closed."""
+    config = {
+        "scopeToLabel": CONFIG["scopeToLabel"],
+        "fileRules": [{"label": "dcode", "prefix": 123}],
+    }
+    with pytest.raises(ValueError, match="non-string label/prefix"):
+        find_offenders("fix(cli): x", ["libs/code/file.py"], config)
+
+
+def test_main_partially_malformed_file_rules_returns_2(capsys, tmp_path) -> None:
+    """A single malformed package rule fails closed instead of being dropped."""
+    config_path = tmp_path / "pr-labeler-config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "scopeToLabel": CONFIG["scopeToLabel"],
+                "fileRules": [
+                    {"label": "dcode", "prefix": 123},
+                    {"label": "cli", "prefix": "libs/cli/"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    rc = main("fix(cli): x", ["libs/code/file.py"], config_path=config_path)
+    assert rc == 2
+    assert "::error::" in capsys.readouterr().err
 
 
 def test_main_stdout_is_json_array(capsys, tmp_path) -> None:

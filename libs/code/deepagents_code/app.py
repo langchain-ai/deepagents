@@ -9676,11 +9676,65 @@ class DeepAgentsApp(App):
                     partial(self._install_provider_then_reopen_auth, extra),
                 )
                 return
-            task = asyncio.create_task(self._maybe_start_deferred_server_from_default())
+            task = asyncio.create_task(self._resume_server_after_auth_change())
             task.add_done_callback(_log_task_exception)
 
         screen = AuthManagerScreen()
         self.push_screen(screen, handle_result)
+
+    async def _resume_server_after_auth_change(self) -> None:
+        """Bring the server up after `/auth` if a credential now unblocks it.
+
+        Two cases close on the same key entry: a deferred first launch (no
+        credentials at startup) and a startup that failed with
+        `MissingCredentialsError`. Try the deferred path first; if it doesn't
+        apply, retry a credentials-blocked startup.
+        """
+        if await self._maybe_start_deferred_server_from_default():
+            return
+        await self._maybe_retry_startup_after_auth_change()
+
+    async def _maybe_retry_startup_after_auth_change(self) -> bool:
+        """Retry a credentials-blocked startup once `/auth` adds the key.
+
+        After the server fails to start with `MissingCredentialsError`, `/auth`
+        is the natural place to supply the missing key. Rather than make the
+        user type `/restart` afterward, retry startup automatically once the
+        blocking provider's credentials resolve.
+
+        Returns:
+            `True` when a startup retry was kicked off, otherwise `False`.
+        """
+        provider = self._server_startup_missing_credentials_provider
+        if (
+            self._server_startup_error is None
+            or provider is None
+            or self._server_kwargs is None
+        ):
+            return False
+
+        from deepagents_code.model_config import get_provider_auth_status
+
+        auth_status = get_provider_auth_status(provider)
+        if auth_status.blocks_start:
+            # Key still missing/invalid — don't loop back into the same failure.
+            return False
+
+        model_spec = self._server_kwargs.get("model_name")
+        if not model_spec:
+            from deepagents_code.config import _get_default_model_spec
+            from deepagents_code.model_config import (
+                ModelConfigError,
+                NoCredentialsConfiguredError,
+            )
+
+            try:
+                model_spec = _get_default_model_spec()
+            except (ModelConfigError, NoCredentialsConfiguredError):
+                return False
+
+        await self._retry_startup_with_model(model_spec)
+        return True
 
     async def _install_provider_then_reopen_auth(self, extra: str) -> None:
         """Install a provider's extra from `/auth`, then reopen the manager.

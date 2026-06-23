@@ -8544,6 +8544,83 @@ class TestDeferredActions:
             assert app._server_startup_missing_provider_package is None
             assert app._server_startup_missing_credentials_provider == "openai"
 
+    async def test_auth_change_retries_credentials_blocked_startup(self) -> None:
+        """Adding the missing key via `/auth` auto-retries a failed startup.
+
+        The user shouldn't have to type `/restart` after entering credentials
+        for the provider that blocked startup.
+        """
+        from deepagents_code.model_config import (
+            ProviderAuthSource,
+            ProviderAuthState,
+            ProviderAuthStatus,
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": "anthropic:claude-opus-4-7"}
+            app._server_startup_error = "missing ANTHROPIC_API_KEY"
+            app._server_startup_missing_credentials_provider = "anthropic"
+            app._retry_startup_with_model = AsyncMock()  # ty: ignore
+
+            with patch(
+                "deepagents_code.model_config.get_provider_auth_status",
+                return_value=ProviderAuthStatus(
+                    state=ProviderAuthState.CONFIGURED,
+                    provider="anthropic",
+                    source=ProviderAuthSource.STORED,
+                ),
+            ):
+                retried = await app._maybe_retry_startup_after_auth_change()
+
+            assert retried is True
+            app._retry_startup_with_model.assert_awaited_once_with(  # ty: ignore
+                "anthropic:claude-opus-4-7"
+            )
+
+    async def test_auth_change_does_not_retry_when_key_still_missing(self) -> None:
+        """A still-missing key must not loop back into the same failure."""
+        from deepagents_code.model_config import (
+            ProviderAuthState,
+            ProviderAuthStatus,
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": "anthropic:claude-opus-4-7"}
+            app._server_startup_error = "missing ANTHROPIC_API_KEY"
+            app._server_startup_missing_credentials_provider = "anthropic"
+            app._retry_startup_with_model = AsyncMock()  # ty: ignore
+
+            with patch(
+                "deepagents_code.model_config.get_provider_auth_status",
+                return_value=ProviderAuthStatus(
+                    state=ProviderAuthState.MISSING,
+                    provider="anthropic",
+                ),
+            ):
+                retried = await app._maybe_retry_startup_after_auth_change()
+
+            assert retried is False
+            app._retry_startup_with_model.assert_not_awaited()  # ty: ignore
+
+    async def test_auth_change_no_retry_without_startup_failure(self) -> None:
+        """No credentials-blocked failure means nothing to retry."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": "anthropic:claude-opus-4-7"}
+            app._server_startup_error = None
+            app._server_startup_missing_credentials_provider = None
+            app._retry_startup_with_model = AsyncMock()  # ty: ignore
+
+            retried = await app._maybe_retry_startup_after_auth_change()
+
+            assert retried is False
+            app._retry_startup_with_model.assert_not_awaited()  # ty: ignore
+
     async def test_failing_deferred_action_does_not_block_others(self) -> None:
         """A failing deferred action should not prevent subsequent ones."""
         app = DeepAgentsApp()

@@ -7736,6 +7736,42 @@ class TestHandleModelSelection:
             await run_worker.call_args.args[0]
         assert app._model_install_switching is False
 
+    async def test_install_then_switch_resets_guard_on_scheduling_failure(
+        self,
+    ) -> None:
+        """The guard resets when `run_worker` raises while scheduling.
+
+        This is the third leg of the guard lifecycle: if the worker never
+        starts, the coroutine's `finally` never runs, so `start_install_worker`
+        must close the orphan coroutine, release the guard, and re-raise. A
+        failed start that stranded the guard `True` would block every later
+        install behind the "already in progress" notice.
+        """
+        app = DeepAgentsApp()
+        app.call_after_refresh = MagicMock()  # ty: ignore
+        app.run_worker = MagicMock(  # ty: ignore
+            side_effect=RuntimeError("schedule boom"),
+        )
+        install = AsyncMock()
+        app._install_extra_then_switch = install  # ty: ignore
+        screen = SimpleNamespace(pending_install_extra="baseten")
+
+        app._handle_model_selection(
+            screen,  # ty: ignore
+            ("baseten:moonshotai/Kimi-K2.6", "baseten"),
+        )
+
+        assert app._model_install_switching is True
+        # The deferred callback schedules the worker; `run_worker` raises, so
+        # the scheduling error must propagate (never be swallowed).
+        with pytest.raises(RuntimeError, match="schedule boom"):
+            app.call_after_refresh.call_args.args[0]()  # ty: ignore
+        # Guard released so a later install can proceed.
+        assert app._model_install_switching is False
+        # The orphan coroutine was closed, never awaited, so the install body
+        # never ran.
+        install.assert_not_awaited()
+
     async def test_pending_install_extra_does_not_start_concurrent_install(
         self,
     ) -> None:
@@ -7756,8 +7792,9 @@ class TestHandleModelSelection:
 
         app.notify.assert_called_once()
         assert app.notify.call_args.kwargs.get("severity") == "warning"
-        # `markup=False` keeps a provider/extra name with `[...]` from being
-        # parsed as console markup.
+        # `markup=False` matches the `notify()` convention used for these
+        # operational notices: the text is shown literally rather than parsed
+        # as Textual console markup.
         assert app.notify.call_args.kwargs.get("markup") is False
         app.call_after_refresh.assert_not_called()  # ty: ignore
         app.run_worker.assert_not_called()  # ty: ignore

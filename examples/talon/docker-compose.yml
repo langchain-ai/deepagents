@@ -17,6 +17,6 @@ services:
     command: >
       bash -c "
       mkdir -p /workspace/.deepagents/$${AGENT_ASSISTANT_ID}/agent &&
-      cp /opt/deepagents-talon/AGENTS.md /workspace/.deepagents/$${AGENT_ASSISTANT_ID}/agent/AGENTS.md &&
+      cp -n /opt/deepagents-talon/AGENTS.md /workspace/.deepagents/$${AGENT_ASSISTANT_ID}/agent/AGENTS.md &&
       /opt/deepagents-talon-venv/bin/deepagents-talon
       "

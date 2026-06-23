@@ -173,7 +173,7 @@ class ExtraDependencyStatus:
 
     @property
     def ready(self) -> bool:
-        """Return whether all declared packages for this extra are installed."""
+        """Whether all declared packages for this extra are installed."""
         return bool(self.installed) and not self.missing
 
 

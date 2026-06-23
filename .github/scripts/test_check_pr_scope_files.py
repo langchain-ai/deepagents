@@ -211,6 +211,29 @@ def test_main_stdout_is_json_array(capsys, tmp_path) -> None:
     assert "PR title scope does not cover" in captured.err
 
 
+def test_main_clean_stdout_is_empty_json_array(capsys, tmp_path) -> None:
+    """A clean PR prints exactly `[]` and nothing on stderr.
+
+    The calling workflow consumes raw stdout: its fail-closed JSON parse blocks
+    on empty or non-array output, and its detector-absent branch hard-codes the
+    same `[]` sentinel. Pin the exact wire contract here so a future change to
+    the clean-path output can't silently desync the gate from the script.
+    """
+    config_path = tmp_path / "pr-labeler-config.json"
+    config_path.write_text(json.dumps(CONFIG), encoding="utf-8")
+
+    rc = main(
+        "fix(cli): repair startup",
+        ["libs/cli/deepagents_cli/main.py"],
+        config_path=config_path,
+    )
+    captured = capsys.readouterr()
+
+    assert rc == 0
+    assert captured.out.strip() == "[]"
+    assert captured.err == ""
+
+
 def test_main_missing_config_returns_2(capsys, tmp_path) -> None:
     """A missing config fails closed instead of silently passing."""
     rc = main("fix(cli): x", ["libs/code/file.py"], config_path=tmp_path / "nope.json")

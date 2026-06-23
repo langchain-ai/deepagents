@@ -74,7 +74,7 @@
           },
           "offset": {
             "default": 0,
-            "description": "Line number to start reading from (0-indexed). Use for pagination of large files.",
+            "description": "Line number to start reading from for text files (0-indexed). For videos, seconds into the source to start sampling.",
             "type": "integer"
           }
         },

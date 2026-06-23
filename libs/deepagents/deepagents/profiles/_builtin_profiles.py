@@ -31,6 +31,7 @@ from deepagents.profiles.harness import (
     _anthropic_opus_4_7,
     _anthropic_sonnet_4_6,
     _fireworks_glm_5p2,
+    _nvidia_nemotron_3_ultra,
     _openai_codex,
 )
 from deepagents.profiles.harness.harness_profiles import _HARNESS_PROFILES
@@ -152,6 +153,7 @@ def _ensure_builtin_profiles_loaded() -> None:
         _anthropic_sonnet_4_6.register()
         _anthropic_haiku_4_5.register()
         _fireworks_glm_5p2.register()
+        _nvidia_nemotron_3_ultra.register()
         _openai_codex.register()
         _invoke_profile_plugins(_PROVIDER_PROFILE_GROUP)
         _invoke_profile_plugins(_HARNESS_PROFILE_GROUP)

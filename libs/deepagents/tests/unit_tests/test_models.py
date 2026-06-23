@@ -1198,6 +1198,73 @@ class TestBuiltInProfiles:
         assert "shell commands or scripts" in profile.system_prompt_suffix
 
 
+class TestNemotronUltraProfile:
+    """Tests for the built-in NVIDIA Nemotron 3 Ultra harness profile."""
+
+    @pytest.mark.parametrize(
+        "model_key",
+        [
+            "NVIDIA:nvidia/nemotron-3-ultra-550b-a55b",
+            "nvidia:nvidia/nemotron-3-ultra-550b-a55b",
+        ],
+    )
+    def test_nemotron_ultra_has_harness_profile(self, model_key: str) -> None:
+        """Both provider casings resolve to a non-empty Nemotron 3 Ultra profile."""
+        profile = _get_harness_profile(model_key)
+        assert profile is not None
+        assert profile.system_prompt_suffix
+        assert "<approach>" in profile.system_prompt_suffix
+        assert "<final_answer_completeness>" in profile.system_prompt_suffix
+
+    def test_nemotron_ultra_bundles_middleware(self) -> None:
+        """The profile ships its three middleware in order (suffix + middleware bundle)."""
+        profile = _get_harness_profile("NVIDIA:nvidia/nemotron-3-ultra-550b-a55b")
+        assert profile is not None
+        names = [type(m).__name__ for m in profile.materialize_extra_middleware()]
+        assert names == [
+            "ReadFileContinuationNoticeMiddleware",
+            "ToolRetryMiddleware",
+            "NemotronToolMessageShim",
+        ]
+
+    def test_nemotron_ultra_does_not_apply_to_other_nvidia_models(self) -> None:
+        """Per-model keys keep other NVIDIA-catalog models unchanged."""
+        assert _get_harness_profile("NVIDIA:nvidia/llama-3.1-nemotron-nano-8b") is None
+
+    def test_tool_message_shim_fills_empty_content(self) -> None:
+        """The shim replaces empty tool content; non-empty content is untouched."""
+        from langchain_core.messages import ToolMessage  # noqa: PLC0415
+
+        from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
+            NemotronToolMessageShim,
+        )
+
+        shim = NemotronToolMessageShim()
+        empty = shim._normalize(ToolMessage(content="", tool_call_id="t1"))
+        assert empty.content == "(empty tool result)"
+        kept = shim._normalize(ToolMessage(content="ok", tool_call_id="t2"))
+        assert kept.content == "ok"
+
+    def test_read_file_continuation_notice(self) -> None:
+        """A full-page read_file result gets a continuation notice; a short read does not."""
+        from types import SimpleNamespace  # noqa: PLC0415
+
+        from langchain_core.messages import ToolMessage  # noqa: PLC0415
+
+        from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
+            ReadFileContinuationNoticeMiddleware,
+        )
+
+        mw = ReadFileContinuationNoticeMiddleware()
+        req = SimpleNamespace(tool_call={"name": "read_file", "args": {"offset": 0, "limit": 100}})
+        full_page = "\n".join(str(i) for i in range(100))
+        annotated = mw._annotate(req, ToolMessage(content=full_page, tool_call_id="t3"))
+        assert "[read_file returned 100 lines" in annotated.content
+        short = "\n".join(str(i) for i in range(5))
+        untouched = mw._annotate(req, ToolMessage(content=short, tool_call_id="t4"))
+        assert "[read_file returned" not in untouched.content
+
+
 class TestProfilePluginLoader:
     """Tests for the `importlib.metadata` entry-point loader."""
 

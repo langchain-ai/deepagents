@@ -418,6 +418,31 @@ class TestInputActionButtons:
             await pilot.pause()
             assert actions.display is False
 
+    async def test_history_navigation_hides_buttons_in_same_frame(self) -> None:
+        """Emptying the draft via history/clear hides the buttons synchronously."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            actions = chat_input.query_one("#input-actions")
+
+            # Recalling content shows the buttons in the same frame (no pause).
+            text_area.set_text_from_history("recalled", cursor_at_end=True)
+            assert actions.display is True
+
+            # Tabbing forward to an empty draft hides them in the same frame,
+            # before the suppressed Changed event would otherwise process.
+            text_area.set_text_from_history("", cursor_at_end=True)
+            assert actions.display is False
+
+            # clear_text empties the draft and hides them synchronously too.
+            text_area.set_text_from_history("recalled", cursor_at_end=True)
+            assert actions.display is True
+            text_area.clear_text()
+            assert actions.display is False
+
     async def test_copy_button_double_click_does_not_select_label(self) -> None:
         """Double-clicking `[ COPY ]` should not trigger Textual word selection."""
         app = _ChatInputTestApp()

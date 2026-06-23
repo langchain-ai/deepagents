@@ -1232,6 +1232,10 @@ class ChatTextArea(TextArea):
         self._reset_paste_burst_state()
         self._skip_history_change_events += 1
         self.text = text
+        # The suppressed Changed event (see above) is what would normally toggle
+        # the clear/copy buttons, so sync them now to hide/show in the same frame
+        # the text swaps — otherwise an emptied draft keeps the buttons for a frame.
+        self._sync_owner_action_buttons(text)
         if cursor_at_end:
             self.move_cursor_to_end()
         else:
@@ -1251,7 +1255,21 @@ class ChatTextArea(TextArea):
         self._skip_history_change_events += 1
         self._reset_paste_burst_state()
         self.text = ""
+        # Hide the clear/copy buttons in the same frame the draft empties; the
+        # suppressed Changed event would otherwise leave them for an extra frame.
+        self._sync_owner_action_buttons("")
         self.move_cursor((0, 0))
+
+    def _sync_owner_action_buttons(self, text: str) -> None:
+        """Match the owner's clear/copy buttons to programmatically set text.
+
+        History/clear text swaps suppress the `Changed` event that normally
+        drives button visibility, so the owner is updated directly to keep the
+        buttons in lockstep with the draft (matching the `Changed`-path gate).
+        """
+        owner = self._chat_input_owner
+        if owner is not None:
+            owner._set_action_buttons_visible(visible=bool(text.strip()))
 
     def discard_text(self) -> bool:
         """Clear the draft via an undoable edit (restorable with ctrl+z).

@@ -8384,8 +8384,8 @@ class DeepAgentsApp(App):
         3. If approval menu is active, reject it
         4. If ask_user menu is active, cancel it
         5. If agent is running, interrupt it (preserve input)
-        6. If a focused input has text, copy the whole draft (no selection)
-        7. If double press (quit_pending), quit
+        6. If double press (quit_pending), quit
+        7. If a focused input has text, copy the whole draft (no selection)
         8. Otherwise show quit hint
 
         Rapid escape hatch: the clipboard-copy branches (1 and 6) are skipped
@@ -8438,6 +8438,13 @@ class DeepAgentsApp(App):
             self._quit_pending = False
             return
 
+        # Double Ctrl+C to quit. Once the quit hint is visible, preserve the
+        # armed quit path before draft-copy handling gets another chance to
+        # consume Ctrl+C and clear `_quit_pending`.
+        if self._quit_pending:
+            self.exit()
+            return
+
         # No selection and nothing to interrupt: copy the whole input draft so
         # Ctrl+C copies what was typed instead of arming quit. Skipped on a rapid
         # repeat press so mashing Ctrl+C escapes the copy loop and reaches quit.
@@ -8445,11 +8452,7 @@ class DeepAgentsApp(App):
             self._quit_pending = False
             return
 
-        # Double Ctrl+C to quit
-        if self._quit_pending:
-            self.exit()
-        else:
-            self._arm_quit_pending("Ctrl+C")
+        self._arm_quit_pending("Ctrl+C")
 
     def _copy_focused_selection(self) -> bool:
         """Copy the focused input's selection to the clipboard, if any.

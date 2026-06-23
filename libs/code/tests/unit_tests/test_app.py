@@ -1528,6 +1528,46 @@ class TestCtrlCCopySelection:
                 app.action_quit_or_interrupt()
                 exit_mock.assert_called_once()
 
+    async def test_ctrl_c_quit_pending_beats_draft_copy(self) -> None:
+        """Once the quit prompt is shown, the next Ctrl+C exits before copying."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.text = "draft text"
+            await pilot.pause()
+            text_area.focus()
+            await pilot.pause()
+
+            with (
+                patch(
+                    "deepagents_code.clipboard.copy_text_to_clipboard",
+                    return_value=(True, None),
+                ) as copy_mock,
+                patch.object(app, "notify"),
+                patch.object(app, "exit") as exit_mock,
+                patch(
+                    "deepagents_code.app._monotonic",
+                    side_effect=[0.0, 0.2, 1.4],
+                ),
+            ):
+                app.action_quit_or_interrupt()
+                assert app._quit_pending is False
+                copy_mock.assert_called_once()
+                exit_mock.assert_not_called()
+
+                app.action_quit_or_interrupt()
+                assert app._quit_pending is True
+                copy_mock.assert_called_once()
+                exit_mock.assert_not_called()
+
+                app.action_quit_or_interrupt()
+                exit_mock.assert_called_once()
+                copy_mock.assert_called_once()
+
     async def test_ctrl_c_slow_presses_keep_copying_draft(self) -> None:
         """Ctrl+C presses spaced beyond the rapid window keep copying, never quit."""
         app = DeepAgentsApp()

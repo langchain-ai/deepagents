@@ -739,16 +739,18 @@ def format_grep_matches(
     return _format_grep_results(build_grep_results_dict(matches), output_mode)
 
 
-# Strong signals that a pattern was written as a regex rather than literal text.
-# Deliberately conservative: bare `.`, `(`, `)`, `[`, `]`, `?`, `^`, `$` are
-# omitted because they appear routinely in literal code searches (e.g.
-# `self.tools`, `def __init__(self):`, `arr[0]`), which would cause false hints.
 _REGEX_SIGNAL_RE = re.compile(
     r"\|"  # alternation
     r"|\.\*"  # `.*` wildcard
     r"|\.\+"  # `.+` wildcard
     r"|\\[.wWdDsSbB(){}\[\]|+*?^$]"  # escaped regex metacharacters / classes
 )
+"""Strong signals that a pattern was written as a regex rather than literal text.
+
+Deliberately conservative: bare `.`, `(`, `)`, `[`, `]`, `?`, `^`, `$` are
+omitted because they appear routinely in literal code searches (e.g.
+`self.tools`, `def __init__(self):`, `arr[0]`), which would cause false hints.
+"""
 
 
 def looks_like_regex(pattern: str) -> bool:
@@ -760,7 +762,9 @@ def regex_literal_hint(pattern: str) -> str | None:
     """Return a hint when a no-match pattern looks like an (unsupported) regex.
 
     `grep` matches literal text, so regex metacharacters are searched verbatim
-    and silently miss. Returns `None` when the pattern has no regex signals.
+    and silently miss.
+
+    Returns `None` when the pattern has no regex signals.
     """
     if not looks_like_regex(pattern):
         return None

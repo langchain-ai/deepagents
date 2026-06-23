@@ -477,8 +477,7 @@ Examples:
 GREP_TOOL_DESCRIPTION = """Search for a LITERAL text pattern across files (NOT regex).
 
 Returns matching files or content based on output_mode. The pattern is matched
-verbatim: regex metacharacters such as `|`, `.*`, `.+`, `\\.`, `\\w`, `[...]`,
-`^`, and `$` are treated as ordinary characters, NOT operators.
+verbatim: regex metacharacters are treated as ordinary characters, NOT operators.
 
 Do NOT pass a regex. In particular:
 - To match any of several strings, run a SEPARATE grep for each one. There is no

@@ -1345,6 +1345,95 @@ class TestSummaryMessageFormat:
         # Should have lc_source marker
         assert summary_msg.additional_kwargs.get("lc_source") == "summarization"
 
+    def test_summary_includes_active_todos(self) -> None:
+        """Active todos are re-attached to the summary so the plan survives compaction.
+
+        The todo list lives in state but reaches the model only through the
+        `write_todos` tool message, which compaction can summarize away. The summary
+        message must carry the current plan forward so the model does not lose it.
+        """
+        backend = MockBackend()
+        mock_model = make_mock_model(summary_response="Test summary content")
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        todos = [
+            {"content": "Read the source code", "status": "completed"},
+            {"content": "Write the patch", "status": "in_progress"},
+            {"content": "Add unit tests", "status": "pending"},
+        ]
+        state = cast("AgentState[Any]", {"messages": messages, "todos": todos})
+        runtime = make_mock_runtime()
+
+        result, modified_request = call_wrap_model_call(middleware, state, runtime)
+
+        assert isinstance(result, ExtendedModelResponse)
+        assert modified_request is not None
+        summary_msg = modified_request.messages[0]
+
+        # The active plan header and each todo item should be visible to the model.
+        assert "Active todo list" in summary_msg.content
+        assert "Write the patch" in summary_msg.content
+        assert "Add unit tests" in summary_msg.content
+
+    def test_summary_omits_todos_when_absent(self) -> None:
+        """Summaries are unchanged when state carries no todos."""
+        backend = MockBackend()
+        mock_model = make_mock_model(summary_response="Test summary content")
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        result, modified_request = call_wrap_model_call(middleware, state, runtime)
+
+        assert isinstance(result, ExtendedModelResponse)
+        assert modified_request is not None
+        summary_msg = modified_request.messages[0]
+
+        assert "Active todo list" not in summary_msg.content
+        assert "Test summary content" in summary_msg.content
+
+    async def test_summary_includes_active_todos_async(self) -> None:
+        """Active todos are re-attached on the async summarization path as well."""
+        backend = MockBackend()
+        mock_model = make_mock_model(summary_response="Test summary content")
+        mock_model.ainvoke = MagicMock(return_value=MagicMock(text="Async summary"))
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 5),
+            keep=("messages", 2),
+        )
+
+        messages = make_conversation_messages(num_old=6, num_recent=2)
+        todos = [{"content": "Write the patch", "status": "in_progress"}]
+        state = cast("AgentState[Any]", {"messages": messages, "todos": todos})
+        runtime = make_mock_runtime()
+
+        result, modified_request = await call_awrap_model_call(middleware, state, runtime)
+
+        assert isinstance(result, ExtendedModelResponse)
+        assert modified_request is not None
+        summary_msg = modified_request.messages[0]
+
+        assert "Active todo list" in summary_msg.content
+        assert "Write the patch" in summary_msg.content
+
 
 class TestNoSummarizationTriggered:
     """Tests for when summarization threshold is not met."""

@@ -800,6 +800,30 @@ A condensed summary follows:
             )
         ]
 
+    def _append_active_todos(self, summary: str, state: AgentState[Any]) -> str:
+        """Append the active todo list to the summary so the plan survives compaction.
+
+        The authoritative todo list lives in agent state, but the model only sees it
+        through the `write_todos` tool message in the conversation history. When that
+        message is old enough to be summarized away, the model loses sight of the active
+        plan even though state still holds it. Re-attaching the current todos to the
+        summary keeps the plan visible after compaction without depending on the original
+        tool message surviving, and without coupling to the cutoff selection logic.
+
+        Args:
+            summary: The generated conversation summary.
+            state: The current agent state, which may carry a `todos` list when the
+                agent uses `TodoListMiddleware`.
+
+        Returns:
+            The summary, with the active todo list appended when one is present;
+                otherwise the summary unchanged.
+        """
+        todos = state.get("todos")
+        if not todos:
+            return summary
+        return f"{summary}\n\n## Active todo list\n{todos}"
+
     def _get_effective_messages(self, request: ModelRequest) -> list[AnyMessage]:
         """Generate effective messages for model call based on summarization event.
 
@@ -1481,6 +1505,9 @@ A condensed summary follows:
         # Generate summary
         summary = self._create_summary(offloaded_media_messages)
 
+        # Re-attach the active todo list so the plan survives compaction
+        summary = self._append_active_todos(summary, request.state)
+
         # Build summary message with file path reference
         new_messages = self._build_new_messages_with_path(summary, file_path)
 
@@ -1615,6 +1642,9 @@ A condensed summary follows:
             )
             logger.warning(msg)
             warnings.warn(msg, stacklevel=2)
+
+        # Re-attach the active todo list so the plan survives compaction
+        summary = self._append_active_todos(summary, request.state)
 
         # Build summary message with file path reference
         new_messages = self._build_new_messages_with_path(summary, file_path)

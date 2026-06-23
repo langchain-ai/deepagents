@@ -2566,21 +2566,31 @@ def _tracing_endpoint() -> str | None:
 
 
 def _resolve_tracing_project() -> str:
-    """Resolve the project agent traces would route to (prefix-aware, no bootstrap).
+    """Resolve the project agent traces would route to, without bootstrap.
 
-    Mirrors the `tracing.langsmith_project` manifest option:
-    `DEEPAGENTS_CODE_LANGSMITH_PROJECT`, then `LANGSMITH_PROJECT`, then the
-    default. Unlike `get_langsmith_project_name`, this does not require an env
-    API key (so profile/custom-endpoint setups resolve correctly) and does not
-    touch `settings`, keeping `dcode doctor` off the bootstrap path.
+    Delegates to the shared manifest resolver for `tracing.langsmith_project`
+    so the reported project exactly matches `config show` and the runtime: the
+    prefixed `DEEPAGENTS_CODE_LANGSMITH_PROJECT` (skipped when empty), then bare
+    `LANGSMITH_PROJECT`, then the default. Unlike `resolve_env_var`, an empty
+    prefixed value does not shadow a real `LANGSMITH_PROJECT`. Unlike
+    `get_langsmith_project_name`, this needs no env API key (so profile/
+    custom-endpoint setups resolve) and never touches `settings`, keeping
+    `dcode doctor` off the bootstrap path.
 
     Returns:
         The resolved project name, or the default when none is configured.
     """
-    from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
-    from deepagents_code.model_config import resolve_env_var
+    from deepagents_code.config_manifest import (
+        LANGSMITH_PROJECT_DEFAULT,
+        get_option,
+        resolve_scalar,
+    )
 
-    return resolve_env_var("LANGSMITH_PROJECT") or LANGSMITH_PROJECT_DEFAULT
+    option = get_option("tracing.langsmith_project")
+    if option is None:  # defensive: the option is always defined in the manifest
+        return LANGSMITH_PROJECT_DEFAULT
+    value, _ = resolve_scalar(option, toml_data={})
+    return value or LANGSMITH_PROJECT_DEFAULT
 
 
 @dataclass

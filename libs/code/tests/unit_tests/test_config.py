@@ -2235,6 +2235,24 @@ class TestGetTracingStatus:
         assert status.has_credentials is False
         assert status.project is None
 
+    def test_empty_prefixed_project_falls_through_to_canonical(self) -> None:
+        """An empty prefixed project must not shadow a real `LANGSMITH_PROJECT`.
+
+        Mirrors the manifest/runtime contract: `resolve_scalar` skips an empty
+        `DEEPAGENTS_CODE_LANGSMITH_PROJECT` and uses bare `LANGSMITH_PROJECT`,
+        unlike `resolve_env_var`, which would shadow it and report the default.
+        """
+        from deepagents_code.config import get_tracing_status
+
+        env = dict(self._CLEAN)
+        env["DEEPAGENTS_CODE_LANGSMITH_TRACING"] = "true"
+        env["DEEPAGENTS_CODE_LANGSMITH_API_KEY"] = "lsv2_test"
+        env["DEEPAGENTS_CODE_LANGSMITH_PROJECT"] = ""
+        env["LANGSMITH_PROJECT"] = "prod"
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.project == "prod"
+
     def test_reports_first_replica_project(self) -> None:
         """Only the first replica project is reported (server mirrors one)."""
         from deepagents_code.config import get_tracing_status

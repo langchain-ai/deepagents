@@ -6490,6 +6490,7 @@ class DeepAgentsApp(App):
             LangSmithApiError,
             LangSmithImportError,
             LangSmithLookupTimeoutError,
+            LangSmithProjectNotFoundError,
             _assemble_langsmith_thread_url,
             fetch_langsmith_project_url_or_raise,
             get_langsmith_project_name,
@@ -6550,6 +6551,22 @@ class DeepAgentsApp(App):
                 AppMessage(
                     "Could not reach LangSmith to resolve the thread URL. "
                     "Check your network connection and try again.",
+                ),
+            )
+            return
+        except LangSmithProjectNotFoundError:
+            logger.debug(
+                "LangSmith project %r not found yet for thread %s",
+                project_name,
+                thread_id,
+            )
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(
+                AppMessage(
+                    f"No traces have been recorded in LangSmith project "
+                    f"{project_name!r} yet. The project is created automatically "
+                    "the first time a run is traced — try `/trace` again after "
+                    "your first message.",
                 ),
             )
             return

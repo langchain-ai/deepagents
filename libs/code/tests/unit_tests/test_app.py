@@ -3514,6 +3514,36 @@ class TestTraceCommand:
             assert "LANGSMITH_API_KEY" in rendered
             assert "Check your network" not in rendered
 
+    async def test_trace_shows_friendly_message_when_project_not_found(self) -> None:
+        """A not-found project shows a 'created on first trace' hint, not an error."""
+        from deepagents_code.config import LangSmithProjectNotFoundError
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+
+            with (
+                patch(
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value="deepagents-code",
+                ),
+                patch(
+                    "deepagents_code.config.fetch_langsmith_project_url_or_raise",
+                    side_effect=LangSmithProjectNotFoundError(
+                        "Project deepagents-code not found"
+                    ),
+                ),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            rendered = " ".join(str(w._content) for w in app_msgs)
+            assert "No traces have been recorded" in rendered
+            assert "first time a run is traced" in rendered
+            assert "rejected the project lookup" not in rendered
+
     async def test_trace_shows_error_when_project_name_raises(self) -> None:
         """Should surface a friendly error if `get_langsmith_project_name` raises."""
         app = DeepAgentsApp()

@@ -393,6 +393,14 @@ class CompletionPopup(VerticalScroll):
             self.hide()
             return
 
+        # The DOM mutations above can await, during which a hide() (or a newer
+        # rebuild) bumps the generation to cancel this one. The top-of-function
+        # guard ran before that await, so re-check here: without it a stale
+        # rebuild would re-show a popup that was dismissed mid-flight (e.g. when
+        # a completion is applied and the popup hidden in the same key press).
+        if generation != self._rebuild_generation:
+            return
+
         self.show()
 
         if 0 <= selected_index < len(self._options):

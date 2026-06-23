@@ -692,7 +692,9 @@ jobs:
             fi
           done
 
-          echo "Found community contributors: $CONTRIBUTOR_LIST"
+          if [ -n "$CONTRIBUTOR_LIST" ]; then
+            echo "Found community contributors: $CONTRIBUTOR_LIST"
+          fi
 
           # Build internal maintainers list: @ghuser, @ghuser, ...
           INTERNAL_LIST=""
@@ -704,7 +706,13 @@ jobs:
             fi
           done
 
-          echo "Found internal maintainers: $INTERNAL_LIST"
+          if [ -n "$INTERNAL_LIST" ]; then
+            echo "Found internal maintainers: $INTERNAL_LIST"
+          fi
+
+          if [ -n "$RELEASER" ]; then
+            echo "Found releaser: @$RELEASER"
+          fi
 
           # Prepend pre-release banner
           if [ "$IS_PRERELEASE" = "true" ]; then

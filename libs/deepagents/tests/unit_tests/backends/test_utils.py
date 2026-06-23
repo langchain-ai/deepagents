@@ -11,11 +11,55 @@ from deepagents.backends.utils import (
     _EXTENSION_TO_FILE_TYPE,
     _get_file_type,
     _glob_search_files,
+    looks_like_regex,
     perform_string_replacement,
+    regex_literal_hint,
     slice_read_response,
     to_posix_path,
     validate_path,
 )
+
+
+class TestLooksLikeRegex:
+    """`looks_like_regex` flags regex syntax in patterns meant for literal grep."""
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            "foo|bar",
+            "def .*model",
+            "self\\.tools",
+            "a.+b",
+            "\\bword\\b",
+            "\\d+",
+            "\\w",
+        ],
+    )
+    def test_detects_regex(self, pattern: str) -> None:
+        assert looks_like_regex(pattern) is True
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            "def __init__(self):",
+            "self.tools",
+            "arr[0]",
+            "plain text",
+            "TODO",
+            "a == b",
+            "",
+        ],
+    )
+    def test_ignores_literal(self, pattern: str) -> None:
+        assert looks_like_regex(pattern) is False
+
+    def test_hint_present_for_regex(self) -> None:
+        hint = regex_literal_hint("foo|bar")
+        assert hint is not None
+        assert "literal text, not regex" in hint
+
+    def test_hint_absent_for_literal(self) -> None:
+        assert regex_literal_hint("plain text") is None
 
 
 class TestToPosixPath:

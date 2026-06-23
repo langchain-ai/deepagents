@@ -3013,7 +3013,9 @@ class DeepAgentsApp(App):
         """Resolve a `-r` resume intent into a concrete thread ID.
 
         Consumes `self._resume_thread_intent` and resolves it into a concrete
-        thread ID. Mutates `self._lc_thread_id` and optionally
+        thread ID. When the intent resolves to an existing thread, the user is
+        first offered an abort prompt (`_confirm_resume`); declining starts a
+        fresh thread instead. Mutates `self._lc_thread_id` and optionally
         `self._assistant_id` / `self._server_kwargs`. Does NOT touch
         `self._default_assistant_id` — a one-off resume should not redefine
         the user's persisted default agent. Falls back to a fresh thread on
@@ -3037,37 +3039,24 @@ class DeepAgentsApp(App):
 
             default_agent = DEFAULT_ASSISTANT_ID
 
-            if resume == "__MOST_RECENT__":
+            # Resolve the candidate thread without mutating session state, so
+            # an aborted confirmation needs no rollback.
+            via_most_recent = resume == "__MOST_RECENT__"
+            if via_most_recent:
                 agent_filter = (
                     self._assistant_id if self._assistant_id != default_agent else None
                 )
-                thread_id = await get_most_recent(agent_filter)
-                if thread_id:
-                    agent_name = await get_thread_agent(thread_id)
-                    if agent_name:
-                        self._assistant_id = agent_name
-                        if self._server_kwargs:
-                            self._server_kwargs["assistant_id"] = agent_name
-                    self._lc_thread_id = thread_id
-                    resumed_thread_id = thread_id
-                    self._should_adopt_resumed_model = not self._model_explicitly_set
-                else:
+                candidate = await get_most_recent(agent_filter)
+                if not candidate:
                     self._lc_thread_id = generate_thread_id()
                     if agent_filter:
                         msg = f"No previous threads for '{agent_filter}', starting new."
                     else:
                         msg = "No previous threads, starting new."
                     self.notify(msg, severity="warning", markup=False)
+                    return
             elif await thread_exists(resume):
-                self._lc_thread_id = resume
-                resumed_thread_id = resume
-                self._should_adopt_resumed_model = not self._model_explicitly_set
-                if self._assistant_id == default_agent:
-                    agent_name = await get_thread_agent(resume)
-                    if agent_name:
-                        self._assistant_id = agent_name
-                        if self._server_kwargs:
-                            self._server_kwargs["assistant_id"] = agent_name
+                candidate = resume
             else:
                 # Thread not found — notify + fall back to new thread
                 self._lc_thread_id = generate_thread_id()
@@ -3076,27 +3065,49 @@ class DeepAgentsApp(App):
                 if similar:
                     hint += f" Did you mean: {', '.join(str(t) for t in similar)}?"
                 self.notify(hint, severity="warning", timeout=6, markup=False)
-            if resumed_thread_id is not None:
-                # The cwd-switch offer is a post-resolution convenience. Isolate
-                # its failures so they can't fall into the resume-resolution
-                # handler below, which would discard the already-resolved thread
-                # and misleadingly report "Could not look up thread history."
-                try:
-                    await self._offer_thread_cwd_switch(
-                        resumed_thread_id,
-                        restart_server=False,
-                    )
-                except Exception:
-                    logger.exception(
-                        "cwd switch offer failed for resumed thread %s",
-                        resumed_thread_id,
-                    )
-                    self.notify(
-                        "Resumed the thread, but could not check its working "
-                        "directory. Local context may be stale.",
-                        severity="warning",
-                        markup=False,
-                    )
+                return
+
+            # Offer an abort path before committing to the resume.
+            if not await self._confirm_resume(candidate):
+                self._lc_thread_id = generate_thread_id()
+                self.notify(
+                    "Starting a new session.", severity="information", markup=False
+                )
+                return
+
+            # Confirmed: apply the resume mutations. A one-off resume adopts the
+            # thread's agent for this session (always for `-r`, and for an
+            # explicit id only when the user hasn't pinned a non-default agent).
+            self._lc_thread_id = candidate
+            resumed_thread_id = candidate
+            self._should_adopt_resumed_model = not self._model_explicitly_set
+            if via_most_recent or self._assistant_id == default_agent:
+                agent_name = await get_thread_agent(candidate)
+                if agent_name:
+                    self._assistant_id = agent_name
+                    if self._server_kwargs:
+                        self._server_kwargs["assistant_id"] = agent_name
+
+            # The cwd-switch offer is a post-resolution convenience. Isolate
+            # its failures so they can't fall into the resume-resolution
+            # handler below, which would discard the already-resolved thread
+            # and misleadingly report "Could not look up thread history."
+            try:
+                await self._offer_thread_cwd_switch(
+                    resumed_thread_id,
+                    restart_server=False,
+                )
+            except Exception:
+                logger.exception(
+                    "cwd switch offer failed for resumed thread %s",
+                    resumed_thread_id,
+                )
+                self.notify(
+                    "Resumed the thread, but could not check its working "
+                    "directory. Local context may be stale.",
+                    severity="warning",
+                    markup=False,
+                )
         except Exception:
             logger.exception("Failed to resolve resume thread %r", resume)
             self._lc_thread_id = generate_thread_id()
@@ -12336,6 +12347,43 @@ class DeepAgentsApp(App):
             )
             return False
         return bool(changes)
+
+    async def _confirm_resume(self, thread_id: str) -> bool:
+        """Offer to abort a `-r` resume before committing to it.
+
+        Args:
+            thread_id: The thread that `-r` resolved to.
+
+        Returns:
+            `True` to resume the thread, `False` to start a new session.
+                Preview metadata lookups are best-effort; failures degrade to
+                a prompt without those details. An unexpected dismissal
+                (no explicit choice) defaults to resuming, preserving the
+                historical no-prompt behavior.
+        """
+        from deepagents_code.sessions import get_thread_agent, get_thread_cwd
+        from deepagents_code.widgets.resume_confirm import ResumeConfirmPromptScreen
+
+        agent_name: str | None = None
+        thread_cwd: str | None = None
+        try:
+            agent_name = await get_thread_agent(thread_id)
+            thread_cwd = await get_thread_cwd(thread_id)
+        except Exception:
+            logger.debug(
+                "Could not load preview metadata for resume confirm of %s",
+                thread_id,
+                exc_info=True,
+            )
+
+        choice = await self._push_screen_wait(
+            ResumeConfirmPromptScreen(
+                thread_id=thread_id,
+                agent_name=agent_name,
+                thread_cwd=thread_cwd,
+            )
+        )
+        return choice is not False
 
     async def _offer_thread_cwd_switch(
         self,

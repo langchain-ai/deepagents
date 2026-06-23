@@ -9398,6 +9398,7 @@ class TestResolveResumeThread:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._resume_thread_intent = "thread-from-coder"
+            app._confirm_resume = AsyncMock(return_value=True)  # ty: ignore[invalid-assignment]
             with (
                 patch(
                     "deepagents_code.sessions.thread_exists",
@@ -9429,6 +9430,7 @@ class TestResolveResumeThread:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._resume_thread_intent = "thread-from-researcher"
+            app._confirm_resume = AsyncMock(return_value=True)  # ty: ignore[invalid-assignment]
             get_thread_agent_mock = AsyncMock(return_value="researcher")
             with (
                 patch(
@@ -9453,6 +9455,7 @@ class TestResolveResumeThread:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._resume_thread_intent = "__MOST_RECENT__"
+            app._confirm_resume = AsyncMock(return_value=True)  # ty: ignore[invalid-assignment]
             with (
                 patch(
                     "deepagents_code.sessions.get_most_recent",
@@ -9476,6 +9479,7 @@ class TestResolveResumeThread:
             await pilot.pause()
             assert app._should_adopt_resumed_model is False
             app._resume_thread_intent = "some-thread"
+            app._confirm_resume = AsyncMock(return_value=True)  # ty: ignore[invalid-assignment]
             with (
                 patch(
                     "deepagents_code.sessions.thread_exists",
@@ -9503,6 +9507,7 @@ class TestResolveResumeThread:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._resume_thread_intent = "some-thread"
+            app._confirm_resume = AsyncMock(return_value=True)  # ty: ignore[invalid-assignment]
             with (
                 patch(
                     "deepagents_code.sessions.thread_exists",
@@ -9524,6 +9529,7 @@ class TestResolveResumeThread:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._resume_thread_intent = "__MOST_RECENT__"
+            app._confirm_resume = AsyncMock(return_value=True)  # ty: ignore[invalid-assignment]
             with patch(
                 "deepagents_code.sessions.get_most_recent",
                 AsyncMock(return_value=None),
@@ -9543,6 +9549,7 @@ class TestResolveResumeThread:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._resume_thread_intent = "__MOST_RECENT__"
+            app._confirm_resume = AsyncMock(return_value=True)  # ty: ignore[invalid-assignment]
             with (
                 patch(
                     "deepagents_code.sessions.get_most_recent",
@@ -9556,6 +9563,78 @@ class TestResolveResumeThread:
                 await app._resolve_resume_thread()
 
             assert app._should_adopt_resumed_model is True
+
+    async def test_confirm_is_offered_for_existing_thread(self) -> None:
+        """An existing resume target prompts before resuming."""
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._resume_thread_intent = "some-thread"
+            confirm = AsyncMock(return_value=True)
+            app._confirm_resume = confirm  # ty: ignore[invalid-assignment]
+            with (
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value=None),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            confirm.assert_awaited_once_with("some-thread")
+            assert app._lc_thread_id == "some-thread"
+
+    async def test_abort_starts_new_thread(self) -> None:
+        """Declining the prompt starts a fresh thread without resume mutations."""
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._resume_thread_intent = "some-thread"
+            app._confirm_resume = AsyncMock(  # ty: ignore[invalid-assignment]
+                return_value=False
+            )
+            offer = AsyncMock()
+            app._offer_thread_cwd_switch = offer  # ty: ignore[invalid-assignment]
+            with (
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value="coder"),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._lc_thread_id != "some-thread"
+            assert app._assistant_id == "agent"
+            assert app._should_adopt_resumed_model is False
+            offer.assert_not_awaited()
+
+    async def test_abort_most_recent_starts_new_thread(self) -> None:
+        """Declining a bare `-r` prompt also starts a fresh thread."""
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._resume_thread_intent = "__MOST_RECENT__"
+            app._confirm_resume = AsyncMock(  # ty: ignore[invalid-assignment]
+                return_value=False
+            )
+            with patch(
+                "deepagents_code.sessions.get_most_recent",
+                AsyncMock(return_value="recent-thread"),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._lc_thread_id != "recent-thread"
+            assert app._should_adopt_resumed_model is False
 
 
 def _missing_dep_entry(
@@ -15196,6 +15275,7 @@ class TestResumeThreadCwdSwitch:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._resume_thread_intent = "thread-x"
+            app._confirm_resume = AsyncMock(return_value=True)  # ty: ignore[invalid-assignment]
             notify = MagicMock()
             app.notify = notify  # ty: ignore[invalid-assignment]
             monkeypatch.setattr(

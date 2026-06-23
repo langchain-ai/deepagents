@@ -8,6 +8,7 @@ lightweight.
 """
 
 import base64
+import io
 from collections.abc import Iterator
 
 import pytest
@@ -255,6 +256,25 @@ def test_encode_jpeg_rejects_oversized_dimensions_before_conversion() -> None:
     with pytest.raises(video_module.VideoExtractionError, match="dimensions"):
         video_module._encode_jpeg(frame)
     assert not frame.converted
+
+
+def test_encode_jpeg_downscales_high_resolution_frames() -> None:
+    """Normal high-resolution video frames are resized instead of rejected."""
+
+    class HighResolutionFrame(_FakeFrame):
+        def __init__(self) -> None:
+            super().__init__(0, width=2218, height=1440)
+
+        def to_image(self):  # type: ignore[no-untyped-def]
+            return Image.new("RGB", (2218, 1440), "black")
+
+    jpeg = video_module._encode_jpeg(HighResolutionFrame())
+    with Image.open(io.BytesIO(jpeg)) as img:
+        width, height = img.size
+
+    assert width <= video_module.MAX_VIDEO_OUTPUT_WIDTH
+    assert height <= video_module.MAX_VIDEO_OUTPUT_HEIGHT
+    assert width * height <= video_module.MAX_VIDEO_FRAME_PIXELS
 
 
 def test_sample_frames_enforces_decode_deadline() -> None:

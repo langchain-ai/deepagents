@@ -19,7 +19,7 @@ from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMatch as _GrepMatch, GrepResult, ReadResult
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
-MAX_VIDEO_INPUT_BYTES: Final = 50 * 1024 * 1024
+MAX_VIDEO_INPUT_BYTES: Final = 1024 * 1024 * 1024
 """Maximum raw video payload size accepted by `read_file` frame extraction."""
 
 FileType = Literal["text", "image", "audio", "video", "file"]

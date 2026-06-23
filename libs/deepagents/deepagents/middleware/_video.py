@@ -32,6 +32,8 @@ MISSING_VIDEO_HINT = "Reading video files requires the optional video dependenci
 MAX_VIDEO_SAMPLED_FRAMES: Final = 64
 MAX_VIDEO_FRAME_PIXELS: Final = 1920 * 1080
 MAX_VIDEO_FRAME_SIDE: Final = 4096
+MAX_VIDEO_OUTPUT_WIDTH: Final = 1920
+MAX_VIDEO_OUTPUT_HEIGHT: Final = 1080
 MAX_VIDEO_EMITTED_BYTES: Final = 4 * 1024 * 1024
 MAX_VIDEO_DECODE_SECONDS: Final = 10.0
 _JPEG_QUALITY: Final = 85
@@ -230,12 +232,11 @@ def _frame_dimensions(frame: Any) -> tuple[int, int] | None:  # noqa: ANN401
 
 
 def _validate_dimensions(width: int, height: int) -> None:
-    """Reject frames that exceed the fixed decode/encode budget."""
+    """Reject frame dimensions that are too large to safely convert."""
     if width <= 0 or height <= 0:
         return
-    pixels = width * height
-    if width > MAX_VIDEO_FRAME_SIDE or height > MAX_VIDEO_FRAME_SIDE or pixels > MAX_VIDEO_FRAME_PIXELS:
-        msg = f"Video frame dimensions {width}x{height} exceed the maximum {MAX_VIDEO_FRAME_PIXELS} pixels / {MAX_VIDEO_FRAME_SIDE}px side"
+    if width > MAX_VIDEO_FRAME_SIDE or height > MAX_VIDEO_FRAME_SIDE:
+        msg = f"Video frame dimensions {width}x{height} exceed the maximum {MAX_VIDEO_FRAME_SIDE}px side"
         raise VideoExtractionError(msg)
 
 
@@ -326,6 +327,10 @@ def _encode_jpeg(frame: Any) -> bytes:  # noqa: ANN401
 
     img = frame.to_image() if hasattr(frame, "to_image") else Image.fromarray(frame.to_ndarray(format="rgb24"))
     _validate_dimensions(*img.size)
+    width, height = img.size
+    if width * height > MAX_VIDEO_FRAME_PIXELS or width > MAX_VIDEO_OUTPUT_WIDTH or height > MAX_VIDEO_OUTPUT_HEIGHT:
+        img = img.copy()
+        img.thumbnail((MAX_VIDEO_OUTPUT_WIDTH, MAX_VIDEO_OUTPUT_HEIGHT), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=_JPEG_QUALITY)
     return buf.getvalue()

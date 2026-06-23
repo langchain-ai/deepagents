@@ -1,0 +1,48 @@
+libs/evals/tests/evals/test_oolong_rlm_vs_subagents.py
+  s_1f4aad2fdaeb2f::t_baa6ca8d0a3733 74-82
+  s_1f4aad2fdaeb2f::t_abb0814dda5538 64
+  s_1f4aad2fdaeb2f::t_c10ddbbe8f366f 56-57
+  s_1f4aad2fdaeb2f::t_00cbba2f5c9e20 23
+  s_1f4aad2fdaeb2f::t_75c72e8784267c 51-54,59-62,83
+  s_1f4aad2fdaeb2f::t_8c55480beba8f7 58
+  s_1f4aad2fdaeb2f::t_2dedaad28db829 65
+libs/evals/tests/evals/oolong_benchmarks.py
+  s_1f4aad2fdaeb2f::t_1be44e804f546a 402
+  s_1f4aad2fdaeb2f::t_bc446dfb1e5065 103-116,118-121,128-131
+  s_1f4aad2fdaeb2f::t_d4b78a0bc55c65 1-12
+  s_1f4aad2fdaeb2f::t_bb102fd6b1a22f 65-71
+  s_1f4aad2fdaeb2f::t_b91249dff95c88 138
+  s_1f4aad2fdaeb2f::t_88723b2072413e 403
+  s_1f4aad2fdaeb2f::t_8b84919ddcc946 168
+  s_1f4aad2fdaeb2f::t_e90f415349d07c 117
+  s_1f4aad2fdaeb2f::t_5b0e1d718aba21 176
+  s_1f4aad2fdaeb2f::t_7b7eb7ed49dbd0 206-251,253
+  s_1f4aad2fdaeb2f::t_a32e1a66845939 299,301,308-309
+  s_1f4aad2fdaeb2f::t_45ca68eb033149 302-307,320,352
+  s_1f4aad2fdaeb2f::t_8c7d0d2ac8bbf9 317,321-330,336-344,353-377
+  s_1f4aad2fdaeb2f::t_b445ee17b12bc9 151-163
+  s_1f4aad2fdaeb2f::t_33cb68c7f4eaac 90
+  s_1f4aad2fdaeb2f::t_6780da4a4b6e82 319,346
+  s_1f4aad2fdaeb2f::t_58003818152bcb 76-82
+  s_1f4aad2fdaeb2f::t_8d007bf53c4412 287-294,300
+  s_1f4aad2fdaeb2f::t_e669e8a0b7ac01 126
+  s_1f4aad2fdaeb2f::t_eaa4019840a084 331-335
+libs/evals/tests/evals/pytest_reporter.py
+  s_1f4aad2fdaeb2f::t_d27187c3e1322a 151-153,155-156,160-174
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "5de937b7fb23c4215679269d25d22f6f4ede395e",
+  "prompts": {},
+  "sessions": {
+    "s_1f4aad2fdaeb2f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e57c1405-d566-4f7e-96c7-ce43b7e79127",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

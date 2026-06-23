@@ -104,13 +104,13 @@ class TestCollectTracing:
 
     def test_disabled_is_healthy(self) -> None:
         """A disabled, keyless setup is informational, not a failure."""
-        section = self._section(enabled=False)
+        section = self._section(enabled=False, project="deepagents-code")
         assert section.title == "Tracing"
         assert section.ok is True
         labels = {item.label: item.value for item in section.items}
         assert labels["Tracing"] == "disabled"
         assert labels["Credentials"] == "not configured"
-        assert labels["Project"] == "(unset)"
+        assert labels["Project"] == "deepagents-code"
 
     def test_enabled_without_credentials_is_unhealthy(self) -> None:
         """Tracing on with no key and no endpoint is a genuine problem."""
@@ -138,6 +138,20 @@ class TestCollectTracing:
         assert section.ok is True
         labels = {item.label: item.value for item in section.items}
         assert labels["Endpoint"] == "http://localhost:1984"
+
+    def test_endpoint_is_sanitized(self) -> None:
+        """Endpoint diagnostics redact userinfo, path, query, and fragment."""
+        section = self._section(
+            enabled=True,
+            has_credentials=False,
+            endpoint=(
+                "https://user:secret@example.com:8443/trace?api_key=secret-token#frag"
+            ),
+        )
+        labels = {item.label: item.value for item in section.items}
+        assert labels["Endpoint"] == "https://example.com:8443"
+        assert "secret" not in labels["Endpoint"]
+        assert "api_key" not in labels["Endpoint"]
 
     def test_replica_project_listed_when_set(self) -> None:
         """A configured replica project is surfaced as its own item."""

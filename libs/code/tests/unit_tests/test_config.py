@@ -2134,15 +2134,16 @@ class TestGetTracingStatus:
     }
 
     def test_disabled_when_no_flags(self) -> None:
-        """A clean environment reports tracing off with no credentials."""
+        """A clean environment reports tracing off with configured project metadata."""
         from deepagents_code.config import get_tracing_status
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
 
         with patch.dict("os.environ", self._CLEAN, clear=False):
             status = get_tracing_status()
         assert status.enabled is False
         assert status.has_credentials is False
         assert status.endpoint is None
-        assert status.project is None
+        assert status.project == LANGSMITH_PROJECT_DEFAULT
         assert status.replica_project is None
 
     def test_prefixed_flag_and_key_are_detected(self) -> None:
@@ -2163,6 +2164,37 @@ class TestGetTracingStatus:
         assert status.enabled is True
         assert status.has_credentials is True
         assert status.project == "prefixed-proj"
+
+    def test_dotenv_values_are_detected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Doctor tracing status sees the same dotenv values as bootstrap."""
+        import deepagents_code.config as config_mod
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text(
+            "DEEPAGENTS_CODE_LANGSMITH_TRACING=true\n"
+            "DEEPAGENTS_CODE_LANGSMITH_API_KEY=lsv2_dotenv\n"
+            "DEEPAGENTS_CODE_LANGSMITH_PROJECT=dotenv-proj\n"
+            "DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS=replica\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(project)
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        config_mod._dotenv_loaded_values.clear()
+
+        with patch.dict("os.environ", {}, clear=True):
+            status = config_mod.get_tracing_status()
+
+        assert status.enabled is True
+        assert status.has_credentials is True
+        assert status.project == "dotenv-proj"
+        assert status.replica_project == "replica"
 
     def test_empty_prefixed_flag_shadows_canonical(self) -> None:
         """An empty `DEEPAGENTS_CODE_` flag suppresses the canonical one.
@@ -2223,9 +2255,10 @@ class TestGetTracingStatus:
         assert status.has_credentials is True
         assert status.project == LANGSMITH_PROJECT_DEFAULT
 
-    def test_project_unset_when_enabled_without_auth(self) -> None:
-        """Tracing on but keyless and endpoint-less reports no project."""
+    def test_project_resolved_when_enabled_without_auth(self) -> None:
+        """Tracing auth state does not hide configured project metadata."""
         from deepagents_code.config import get_tracing_status
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
 
         env = dict(self._CLEAN)
         env["DEEPAGENTS_CODE_LANGSMITH_TRACING"] = "true"
@@ -2233,7 +2266,7 @@ class TestGetTracingStatus:
             status = get_tracing_status()
         assert status.enabled is True
         assert status.has_credentials is False
-        assert status.project is None
+        assert status.project == LANGSMITH_PROJECT_DEFAULT
 
     def test_empty_prefixed_project_falls_through_to_canonical(self) -> None:
         """An empty prefixed project must not shadow a real `LANGSMITH_PROJECT`.

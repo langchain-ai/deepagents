@@ -16,6 +16,7 @@ import platform
 import sys
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 from deepagents_code.output import write_json
 
@@ -186,6 +187,33 @@ def _collect_updates() -> DiagnosticSection:
     return DiagnosticSection(title="Updates", items=items)
 
 
+def _sanitize_endpoint(endpoint: str) -> str:
+    """Return a paste-safe custom endpoint identifier.
+
+    Args:
+        endpoint: Configured endpoint URL.
+
+    Returns:
+        The endpoint origin when parseable, otherwise a generic configured
+        marker that does not include user-controlled URL contents.
+    """
+    parsed = urlsplit(endpoint.strip())
+    if not parsed.scheme or not parsed.hostname:
+        return "(custom endpoint configured)"
+
+    host = parsed.hostname
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+
+    netloc = f"{host}:{port}" if port is not None else host
+    return f"{parsed.scheme}://{netloc}"
+
+
 def _collect_tracing() -> DiagnosticSection:
     """Collect LangSmith tracing status from env and profile (offline).
 
@@ -212,7 +240,7 @@ def _collect_tracing() -> DiagnosticSection:
         DiagnosticItem("Project", status.project or "(unset)"),
     ]
     if status.endpoint:
-        items.append(DiagnosticItem("Endpoint", status.endpoint))
+        items.append(DiagnosticItem("Endpoint", _sanitize_endpoint(status.endpoint)))
     if status.replica_project:
         items.append(DiagnosticItem("Replica project", status.replica_project))
     return DiagnosticSection(title="Tracing", items=items)

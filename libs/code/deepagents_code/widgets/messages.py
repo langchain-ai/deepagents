@@ -31,9 +31,18 @@ from deepagents_code.config import (
 )
 from deepagents_code.formatting import format_duration
 from deepagents_code.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
-from deepagents_code.tool_display import format_tool_display
+from deepagents_code.tool_display import (
+    JS_EVAL_HEADER_MAX_LENGTH,
+    format_tool_display,
+)
 from deepagents_code.unicode_security import render_with_unicode_markers
-from deepagents_code.widgets._js_eval_display import parse_js_eval_blocks
+from deepagents_code.widgets._js_eval_display import (
+    JsEvalBlock,
+    JsEvalError,
+    JsEvalResult,
+    JsEvalStdout,
+    parse_js_eval_blocks,
+)
 from deepagents_code.widgets._links import open_style_link
 from deepagents_code.widgets.diff import compose_diff_lines
 
@@ -928,15 +937,6 @@ class ToolCallMessage(Vertical):
     """Maximum single-line `js_eval` result length rendered inline.
 
     Inline rendering uses `result: value` rather than a standalone labeled block.
-    """
-
-    _JS_EVAL_HEADER_MAX = 120
-    """Width where `js_eval` headers truncate the first code line.
-
-    This mirrors the `max_length` passed to `_sanitize_display_value` in
-    `tool_display.py`. Single-line code longer than this is truncated in the
-    header, so it must still offer a collapsible block to reveal the full
-    program.
     """
 
     def __init__(
@@ -1971,8 +1971,8 @@ class ToolCallMessage(Vertical):
         if len(blocks) == 1:
             block = blocks[0]
             if (
-                block.tag == "result"
-                and not block.attr
+                isinstance(block, JsEvalResult)
+                and not block.kind
                 and "\n" not in block.body
                 and len(block.body) <= self._JS_EVAL_INLINE_RESULT_MAX
             ):
@@ -1988,48 +1988,95 @@ class ToolCallMessage(Vertical):
         # line (e.g. a 10k-char result) is clipped instead of flooding the
         # collapsed preview. `None` outside preview means no char cap.
         remaining_chars = self._PREVIEW_CHARS if is_preview else None
-        truncated_block = False
+        # Chars hidden when a single over-budget body line is clipped. Only
+        # meaningful for the hint when no whole lines were dropped (line counts
+        # take precedence below, matching `_build_truncation_hint`).
+        clipped_chars = 0
 
         def add_section(label: Content, body: str) -> None:
-            nonlocal total_lines, truncated_block, remaining_chars
+            nonlocal total_lines, remaining_chars, clipped_chars
             if max_lines is not None and total_lines >= max_lines:
-                truncated_block = True
+                return
+            if remaining_chars is not None and remaining_chars <= 0:
                 return
             lines.append(label)
             total_lines += 1
             body_lines = body.split("\n") if body else [""]
             for body_line in body_lines:
                 if max_lines is not None and total_lines >= max_lines:
-                    truncated_block = True
                     break
                 if remaining_chars is not None:
                     if remaining_chars <= 0:
-                        truncated_block = True
                         break
                     if len(body_line) > remaining_chars:
                         # Clip the over-budget line and stop adding more.
                         lines.append(Content(f"  {body_line[:remaining_chars]}"))
                         total_lines += 1
+                        clipped_chars = len(body_line) - remaining_chars
                         remaining_chars = 0
-                        truncated_block = True
                         break
                     remaining_chars -= len(body_line)
                 lines.append(Content(f"  {body_line}"))
                 total_lines += 1
 
         for block in blocks:
-            if block.tag == "stdout":
+            if isinstance(block, JsEvalStdout):
                 add_section(Content.styled("stdout", "dim"), block.body)
-            elif block.tag == "error":
-                header = f"error ({block.attr})" if block.attr else "error"
+            elif isinstance(block, JsEvalError):
+                header = f"error ({block.error_type})" if block.error_type else "error"
                 add_section(Content.styled(header, colors.error), block.body)
-            else:  # result
-                label = "result (handle)" if block.attr else "result"
+            else:  # JsEvalResult
+                label = "result (handle)" if block.kind else "result"
                 add_section(Content.styled(label, colors.success), block.body)
 
         content = Content("\n").join(lines) if lines else Content("")
-        truncation = "more output" if is_preview and truncated_block else None
+        truncation = self._build_js_eval_truncation_hint(
+            blocks=blocks,
+            shown_lines=total_lines,
+            clipped_chars=clipped_chars,
+            is_preview=is_preview,
+        )
         return FormattedOutput(content=content, truncation=truncation)
+
+    @staticmethod
+    def _build_js_eval_truncation_hint(
+        *,
+        blocks: list[JsEvalBlock],
+        shown_lines: int,
+        clipped_chars: int,
+        is_preview: bool,
+    ) -> str | None:
+        """Quantify how much `js_eval` preview content was hidden.
+
+        Prefers a hidden-line count over a hidden-char count (mirroring
+        `_build_truncation_hint`): when whole sections were dropped, "N more
+        lines" is the more useful signal; a lone clipped body line reports the
+        chars it lost.
+
+        Args:
+            blocks: The parsed blocks, used to compute the full (untruncated)
+                display-line count.
+            shown_lines: Display lines actually emitted into the preview.
+            clipped_chars: Chars dropped from a single clipped body line, if any.
+            is_preview: Whether this is preview rendering; full renders never
+                truncate.
+
+        Returns:
+            A hint string for the UI, or `None` when nothing was hidden.
+        """
+        if not is_preview:
+            return None
+        # Each block renders as one label line plus its body lines; an empty
+        # body still occupies one (blank) line.
+        full_lines = sum(
+            1 + (len(block.body.split("\n")) if block.body else 1) for block in blocks
+        )
+        hidden_lines = full_lines - shown_lines
+        if hidden_lines > 0:
+            return f"{hidden_lines} more lines"
+        if clipped_chars > 0:
+            return f"{clipped_chars} more chars"
+        return None
 
     def _format_web_output(
         self, output: str, *, is_preview: bool = False
@@ -2251,7 +2298,7 @@ class ToolCallMessage(Vertical):
 
         - `ask_user`: its `questions` payload is too noisy to render inline.
         - `js_eval`: the header shows only the first code line (truncated at
-            `_JS_EVAL_HEADER_MAX`), so the full program is offered as a
+            `JS_EVAL_HEADER_MAX_LENGTH`), so the full program is offered as a
             collapsible block whenever it spans more than one non-blank line *or*
             a single line is long enough to be truncated in the header.
         """
@@ -2261,7 +2308,7 @@ class ToolCallMessage(Vertical):
             code = self._args.get("code")
             if isinstance(code, str) and code.strip():
                 non_blank = sum(1 for line in code.splitlines() if line.strip())
-                return non_blank > 1 or len(code.strip()) > self._JS_EVAL_HEADER_MAX
+                return non_blank > 1 or len(code.strip()) > JS_EVAL_HEADER_MAX_LENGTH
         return False
 
     def _format_code_detail(self) -> Content:

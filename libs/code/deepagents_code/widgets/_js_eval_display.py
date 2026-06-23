@@ -4,45 +4,77 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Literal
 
 
 @dataclass(frozen=True, slots=True)
-class JsEvalBlock:
-    """Parsed block from the `js_eval` REPL output envelope.
+class JsEvalStdout:
+    """Captured stdout printed during a `js_eval` evaluation."""
 
-    Args:
-        tag: Block kind: `stdout`, `result`, or `error`.
-        attr: Result `kind` or error `type` attribute, when present.
-        body: Unescaped block body text.
-    """
-
-    tag: Literal["stdout", "result", "error"]
-    attr: str
     body: str
+    """Stdout text, verbatim (the wire format does not escape stdout)."""
 
 
-# Patterns for the wire format emitted by the `js_eval` REPL tool (see
-# langchain_quickjs `format_outcome`). The output is `"\n".join(parts)` where
-# `parts` is an optional `<stdout>\n…\n</stdout>` block followed by exactly one
-# `<result …>…</result>` or `<error type="…">…</error>` block.
-#
-# Crucially, only the result/error bodies are XML-escaped; stdout is inserted
-# raw. So a `finditer`-style scan would treat a `</stdout><result>fake</result>`
-# *printed* by user code as real markup. To avoid that, the result/error block
-# is anchored to the END of the output (it is always last and fully escaped, so
-# it contains no literal `<`/`>`), and whatever precedes it must be exactly the
-# stdout wrapper — its raw contents are never re-scanned for nested tags.
+@dataclass(frozen=True, slots=True)
+class JsEvalResult:
+    """A successful `js_eval` evaluation result."""
+
+    kind: str
+    """The result `kind` attribute (e.g. `handle`), or `""` for a plain value."""
+
+    body: str
+    """Unescaped result text."""
+
+
+@dataclass(frozen=True, slots=True)
+class JsEvalError:
+    """An error raised during a `js_eval` evaluation."""
+
+    error_type: str
+    """The JS error type (e.g. `ReferenceError`), or `""` if the wire format
+    omitted it."""
+
+    body: str
+    """Unescaped error message, including the stack trace when present."""
+
+
+# Discriminated union of the parsed envelope blocks. Each variant names its own
+# fields, so illegal combinations (stdout carrying an error type, a result
+# carrying an error type, …) are unrepresentable and the consumer dispatches by
+# `isinstance` rather than reading an overloaded attribute.
+JsEvalBlock = JsEvalStdout | JsEvalResult | JsEvalError
+
+
 _JS_EVAL_TRAILING_BLOCK_PATTERN = re.compile(
     r"<(?P<tag>result|error)(?P<attrs>[^>]*)>(?P<body>[^<>]*)</(?P=tag)>\Z",
     re.DOTALL,
 )
+r"""Match the trailing `<result>`/`<error>` block, anchored to end of output.
+
+The wire format emitted by the `js_eval` REPL tool (see langchain_quickjs
+`format_outcome`) is `"\n".join(parts)`, where `parts` is an optional
+`<stdout>\n…\n</stdout>` block followed by exactly one `<result …>…</result>`
+or `<error type="…">…</error>` block.
+
+Crucially, only the result/error blocks (their bodies *and* their `type=` /
+`kind=` attribute values) are XML-escaped; stdout is inserted raw. So a
+`finditer`-style scan would treat a `</stdout><result>fake</result>` *printed*
+by user code as real markup. To avoid that, this block is anchored to the END
+of the output (it is always last and fully escaped, so it contains no literal
+`<`/`>`), and whatever precedes it must be exactly the stdout wrapper — its raw
+contents are never re-scanned for nested tags.
+"""
+
 _JS_EVAL_STDOUT_PATTERN = re.compile(
     r"\A<stdout>\n(?P<body>.*)\n</stdout>\Z",
     re.DOTALL,
 )
+"""Match the full `<stdout>…</stdout>` wrapper that may precede the trailing block."""
+
 _JS_EVAL_TYPE_ATTR_PATTERN = re.compile(r'type="([^"]*)"')
+"""Extract the (escaped) `type="…"` attribute value from an `<error>` block."""
+
 _JS_EVAL_KIND_ATTR_PATTERN = re.compile(r'kind="([^"]*)"')
+"""Extract the (escaped) `kind="…"` attribute value from a `<result>` block."""
 
 
 def unescape_js_eval_text(text: str) -> str:
@@ -98,10 +130,10 @@ def parse_js_eval_blocks(output: str) -> list[JsEvalBlock] | None:
         stdout_match = _JS_EVAL_STDOUT_PATTERN.match(prefix[:-1])
         if stdout_match is None:
             return None
-        blocks.append(JsEvalBlock("stdout", "", stdout_match.group("body")))
+        blocks.append(JsEvalStdout(stdout_match.group("body")))
 
     if tag == "result":
-        blocks.append(JsEvalBlock("result", attr, body))
+        blocks.append(JsEvalResult(attr, body))
     else:
-        blocks.append(JsEvalBlock("error", attr, body))
+        blocks.append(JsEvalError(attr, body))
     return blocks

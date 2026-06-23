@@ -10,6 +10,7 @@ from textual.content import Content
 
 from deepagents_code import theme
 from deepagents_code.input import INPUT_HIGHLIGHT_PATTERN
+from deepagents_code.tool_display import JS_EVAL_HEADER_MAX_LENGTH
 from deepagents_code.widgets.messages import (
     AppMessage,
     AssistantMessage,
@@ -1490,14 +1491,17 @@ class TestToolCallMessageJsEvalOutput:
         assert lines == ["result (handle)", "  [Function] arity=0"]
 
     def test_format_preview_truncates_long_output(self) -> None:
-        """Preview mode caps lines and reports more output is hidden."""
+        """Preview mode caps lines and reports the count of hidden lines."""
         msg = ToolCallMessage("js_eval", {"code": "x"})
         body = "\n".join(str(i) for i in range(50))
         output = f"<stdout>\n{body}\n</stdout>\n<result>done</result>"
         result = msg._format_output(output, is_preview=True)
 
-        assert result.truncation == "more output"
-        assert len(result.content.plain.split("\n")) <= msg._PREVIEW_LINES
+        shown = len(result.content.plain.split("\n"))
+        assert shown <= msg._PREVIEW_LINES
+        # Full render is the stdout label + 50 stdout lines + result label + 1
+        # result line; the hint reports exactly what the preview dropped.
+        assert result.truncation == f"{53 - shown} more lines"
 
     def test_format_falls_back_for_unexpected_shape(self) -> None:
         """Output without the REPL envelope falls back to plain lines."""
@@ -1518,8 +1522,9 @@ class TestToolCallMessageJsEvalOutput:
         result = msg._format_output(output, is_preview=True)
 
         # The body line is clipped to the char budget (plus the two-space
-        # indent) and a truncation hint is surfaced so it can be expanded.
-        assert result.truncation == "more output"
+        # indent) and the hint quantifies the chars dropped from that line so it
+        # can be expanded.
+        assert result.truncation == f"{10_000 - msg._PREVIEW_CHARS} more chars"
         assert len(result.content.plain) <= msg._PREVIEW_CHARS + len("  ") + len(
             "result\n"
         )
@@ -1583,13 +1588,13 @@ class TestToolCallMessageJsEvalArgs:
         The header truncates the first line, so without a collapsible block a
         long one-liner (e.g. minified JS) would be unrecoverable in the TUI.
         """
-        long_line = "x".ljust(ToolCallMessage._JS_EVAL_HEADER_MAX + 1, "y")
+        long_line = "x".ljust(JS_EVAL_HEADER_MAX_LENGTH + 1, "y")
         msg = ToolCallMessage("js_eval", {"code": long_line})
         assert msg.has_expandable_args is True
 
     def test_short_single_line_code_not_expandable(self) -> None:
         """A single line that fits in the header has nothing to expand."""
-        short_line = "x" * (ToolCallMessage._JS_EVAL_HEADER_MAX - 1)
+        short_line = "x" * (JS_EVAL_HEADER_MAX_LENGTH - 1)
         msg = ToolCallMessage("js_eval", {"code": short_line})
         assert msg.has_expandable_args is False
 

@@ -19,6 +19,14 @@ _HIDDEN_CHAR_MARKER = " [hidden chars removed]"
 """Marker appended to display values that had dangerous Unicode stripped, so
 users know the value was modified for safety."""
 
+JS_EVAL_HEADER_MAX_LENGTH = 120
+"""Width at which the `js_eval` header truncates the first code line.
+
+Shared with `messages.py` so the "header truncates the first line" cutoff and
+the "offer a collapsible code block" threshold stay in lock-step from a single
+source of truth.
+"""
+
 
 def _format_timeout(seconds: int) -> str:
     """Format timeout in human-readable units (e.g., 300 -> '5m', 3600 -> '1h').
@@ -228,7 +236,9 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
                 (line for line in code.splitlines() if line.strip()), ""
             ).strip()
             multiline = sum(1 for line in code.splitlines() if line.strip()) > 1
-            snippet = _sanitize_display_value(first_line, max_length=120)
+            snippet = _sanitize_display_value(
+                first_line, max_length=JS_EVAL_HEADER_MAX_LENGTH
+            )
             ellipsis = get_glyphs().ellipsis if multiline else ""
             return f'{prefix} {tool_name}("{snippet}{ellipsis}")'
         return f"{prefix} {tool_name}()"

@@ -328,7 +328,7 @@ jobs:
         working-directory: libs/evals
         run: |
           git clone --depth 1 https://github.com/datacurve-ai/deep-swe.git "$DEEPSWE_DIR"
-          python ../.github/scripts/patch_deepswe_tasks.py "$DEEPSWE_DIR/tasks"
+          python ../../.github/scripts/patch_deepswe_tasks.py "$DEEPSWE_DIR/tasks"
 
       - name: "⚓ Run Harbor"
         env:

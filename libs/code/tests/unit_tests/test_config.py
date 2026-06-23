@@ -4,7 +4,7 @@ import logging
 import time
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import Mock, patch
 
 import pytest
@@ -2107,6 +2107,86 @@ class TestDisableOrphanedTracing:
 
             assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
             assert os.environ["LANGSMITH_TRACING"] == "false"
+
+
+class TestGetTracingStatus:
+    """Tests for get_tracing_status()."""
+
+    _CLEAN: ClassVar[dict[str, str]] = {
+        "LANGSMITH_TRACING_V2": "",
+        "LANGCHAIN_TRACING_V2": "",
+        "LANGSMITH_TRACING": "",
+        "LANGCHAIN_TRACING": "",
+        "LANGSMITH_API_KEY": "",
+        "LANGCHAIN_API_KEY": "",
+        "LANGSMITH_ENDPOINT": "",
+        "LANGCHAIN_ENDPOINT": "",
+        "LANGSMITH_PROJECT": "",
+        "DEEPAGENTS_CODE_LANGSMITH_PROJECT": "",
+        "DEEPAGENTS_CODE_LANGSMITH_TRACING": "",
+        "DEEPAGENTS_CODE_LANGCHAIN_TRACING_V2": "",
+        "DEEPAGENTS_CODE_LANGSMITH_API_KEY": "",
+        "DEEPAGENTS_CODE_LANGCHAIN_API_KEY": "",
+        "LANGSMITH_REPLICA_PROJECTS": "",
+        "DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS": "",
+        "LANGSMITH_PROFILE": "",
+        "LANGSMITH_CONFIG_FILE": "/__deepagents_missing_langsmith_config__.json",
+    }
+
+    def test_disabled_when_no_flags(self) -> None:
+        """A clean environment reports tracing off with no credentials."""
+        from deepagents_code.config import get_tracing_status
+
+        with patch.dict("os.environ", self._CLEAN, clear=False):
+            status = get_tracing_status()
+        assert status.enabled is False
+        assert status.has_credentials is False
+        assert status.endpoint is None
+        assert status.project is None
+        assert status.replica_project is None
+
+    def test_enabled_with_key_and_project(self) -> None:
+        """A tracing flag plus an API key resolves the active project."""
+        from deepagents_code.config import get_tracing_status
+
+        env = dict(self._CLEAN)
+        # Set the prefixed vars too: an empty `DEEPAGENTS_CODE_*` shadows the
+        # canonical name (see `resolve_env_var`), which would suppress these.
+        env["DEEPAGENTS_CODE_LANGSMITH_TRACING"] = "true"
+        env["DEEPAGENTS_CODE_LANGSMITH_API_KEY"] = "lsv2_test"
+        env["LANGSMITH_TRACING"] = "true"
+        env["LANGSMITH_API_KEY"] = "lsv2_test"
+        env["LANGSMITH_PROJECT"] = "my-proj"
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("deepagents_code.config.settings") as mock_settings,
+        ):
+            mock_settings.deepagents_langchain_project = None
+            status = get_tracing_status()
+        assert status.enabled is True
+        assert status.has_credentials is True
+        assert status.project == "my-proj"
+
+    def test_reports_custom_endpoint(self) -> None:
+        """A custom endpoint env var is surfaced without needing a key."""
+        from deepagents_code.config import get_tracing_status
+
+        env = dict(self._CLEAN)
+        env["LANGSMITH_TRACING"] = "true"
+        env["LANGSMITH_ENDPOINT"] = "http://localhost:1984"
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.endpoint == "http://localhost:1984"
+
+    def test_reports_first_replica_project(self) -> None:
+        """Only the first replica project is reported (server mirrors one)."""
+        from deepagents_code.config import get_tracing_status
+
+        env = dict(self._CLEAN)
+        env["DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS"] = "replica-a, replica-b"
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.replica_project == "replica-a"
 
 
 class TestQuietSdkTracingLogging:

@@ -61,11 +61,12 @@ class TestCollectSections:
     """Tests for the diagnostic data collection."""
 
     def test_section_titles(self) -> None:
-        """All three sections are collected in display order."""
+        """All sections are collected in display order."""
         sections = collect_sections()
         assert [s.title for s in sections] == [
             "Diagnostics",
             "Updates",
+            "Tracing",
             "Configuration",
         ]
 
@@ -80,6 +81,73 @@ class TestCollectSections:
         assert labels["Commit hash"]
         assert "Platform" in labels
         assert "Install method" in labels
+
+
+class TestCollectTracing:
+    """Tests for the Tracing diagnostic section."""
+
+    def _section(self, **kwargs: object) -> DiagnosticSection:
+        from deepagents_code.config import TracingStatus
+        from deepagents_code.doctor import _collect_tracing
+
+        defaults: dict[str, object] = {
+            "enabled": False,
+            "has_credentials": False,
+            "endpoint": None,
+            "project": None,
+            "replica_project": None,
+        }
+        defaults.update(kwargs)
+        status = TracingStatus(**defaults)  # type: ignore[arg-type]
+        with patch("deepagents_code.config.get_tracing_status", return_value=status):
+            return _collect_tracing()
+
+    def test_disabled_is_healthy(self) -> None:
+        """A disabled, keyless setup is informational, not a failure."""
+        section = self._section(enabled=False)
+        assert section.title == "Tracing"
+        assert section.ok is True
+        labels = {item.label: item.value for item in section.items}
+        assert labels["Tracing"] == "disabled"
+        assert labels["Credentials"] == "not configured"
+        assert labels["Project"] == "(unset)"
+
+    def test_enabled_without_credentials_is_unhealthy(self) -> None:
+        """Tracing on with no key and no endpoint is a genuine problem."""
+        section = self._section(enabled=True, has_credentials=False)
+        assert section.ok is False
+        creds = next(i for i in section.items if i.label == "Credentials")
+        assert creds.ok is False
+
+    def test_enabled_with_credentials_is_healthy(self) -> None:
+        """A configured key keeps the section healthy and reports the project."""
+        section = self._section(enabled=True, has_credentials=True, project="my-proj")
+        assert section.ok is True
+        labels = {item.label: item.value for item in section.items}
+        assert labels["Tracing"] == "enabled"
+        assert labels["Credentials"] == "configured"
+        assert labels["Project"] == "my-proj"
+
+    def test_keyless_custom_endpoint_is_healthy(self) -> None:
+        """A custom endpoint is a valid keyless setup, so it stays healthy."""
+        section = self._section(
+            enabled=True,
+            has_credentials=False,
+            endpoint="http://localhost:1984",
+        )
+        assert section.ok is True
+        labels = {item.label: item.value for item in section.items}
+        assert labels["Endpoint"] == "http://localhost:1984"
+
+    def test_replica_project_listed_when_set(self) -> None:
+        """A configured replica project is surfaced as its own item."""
+        section = self._section(
+            enabled=True,
+            has_credentials=True,
+            replica_project="replica",
+        )
+        labels = {item.label: item.value for item in section.items}
+        assert labels["Replica project"] == "replica"
 
 
 class TestCommitHash:
@@ -132,6 +200,7 @@ class TestRunDoctorCommand:
         assert code == 0
         assert "Diagnostics" in output
         assert "Updates" in output
+        assert "Tracing" in output
         assert "Configuration" in output
         assert "deepagents-code" in output
 
@@ -148,7 +217,7 @@ class TestRunDoctorCommand:
         data = envelope["data"]
         assert data["healthy"] is True
         titles = [section["title"] for section in data["sections"]]
-        assert titles == ["Diagnostics", "Updates", "Configuration"]
+        assert titles == ["Diagnostics", "Updates", "Tracing", "Configuration"]
 
     def test_unhealthy_returns_nonzero(self) -> None:
         """An unhealthy section yields a non-zero exit code."""

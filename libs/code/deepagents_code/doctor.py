@@ -186,6 +186,38 @@ def _collect_updates() -> DiagnosticSection:
     return DiagnosticSection(title="Updates", items=items)
 
 
+def _collect_tracing() -> DiagnosticSection:
+    """Collect LangSmith tracing status from env and profile (offline).
+
+    Credentials are reported as configured/not configured only — the API key
+    value is never read or printed. The `Credentials` item is flagged as a
+    problem only when tracing is enabled without a key and without a custom
+    endpoint, mirroring the runtime's orphaned-tracing guard (a keyless
+    self-hosted endpoint is a valid, healthy setup).
+
+    Returns:
+        The `Tracing` section.
+    """
+    from deepagents_code.config import get_tracing_status
+
+    status = get_tracing_status()
+    creds_required = status.enabled and status.endpoint is None
+    items = [
+        DiagnosticItem("Tracing", "enabled" if status.enabled else "disabled"),
+        DiagnosticItem(
+            "Credentials",
+            "configured" if status.has_credentials else "not configured",
+            ok=status.has_credentials or not creds_required,
+        ),
+        DiagnosticItem("Project", status.project or "(unset)"),
+    ]
+    if status.endpoint:
+        items.append(DiagnosticItem("Endpoint", status.endpoint))
+    if status.replica_project:
+        items.append(DiagnosticItem("Replica project", status.replica_project))
+    return DiagnosticSection(title="Tracing", items=items)
+
+
 def _path_status(label: str, path: object) -> DiagnosticItem:
     """Build an item reporting a path and whether it exists on disk.
 
@@ -245,6 +277,7 @@ def collect_sections() -> list[DiagnosticSection]:
     return [
         _collect_diagnostics(),
         _collect_updates(),
+        _collect_tracing(),
         _collect_configuration(),
     ]
 

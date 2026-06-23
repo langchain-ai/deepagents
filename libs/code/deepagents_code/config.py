@@ -2503,6 +2503,81 @@ def get_langsmith_replica_project() -> str | None:
     return extras[0]
 
 
+def _tracing_enabled() -> bool:
+    """Return whether any LangSmith/LangChain tracing flag is truthy."""
+    from deepagents_code._env_vars import classify_env_bool
+
+    return any(
+        classify_env_bool(os.environ[var])
+        for var in _TRACING_ENABLE_ENV_VARS
+        if var in os.environ
+    )
+
+
+def _tracing_has_credentials() -> bool:
+    """Return whether a LangSmith API key (env or active profile) is available."""
+    has_key = any(
+        (os.environ.get(var) or "").strip() for var in _TRACING_API_KEY_ENV_VARS
+    )
+    return has_key or _has_langsmith_profile_credentials()
+
+
+def _tracing_endpoint() -> str | None:
+    """Return a custom tracing endpoint (env or active profile), if configured."""
+    for var in _TRACING_ENDPOINT_ENV_VARS:
+        value = (os.environ.get(var) or "").strip()
+        if value:
+            return value
+    config = _load_langsmith_profile_config()
+    if config is not None:
+        api_url = (config.api_url or "").strip()
+        if api_url:
+            return api_url
+    return None
+
+
+@dataclass
+class TracingStatus:
+    """Offline snapshot of LangSmith tracing configuration for diagnostics.
+
+    Carries only presence/identity facts — never API keys or other secret
+    values — so it is safe to render in `dcode doctor` output.
+    """
+
+    enabled: bool
+    """Whether a tracing flag is truthy in the environment."""
+
+    has_credentials: bool
+    """Whether an API key or profile credential is resolvable."""
+
+    endpoint: str | None
+    """Custom (self-hosted/proxied) endpoint URL, if one is configured."""
+
+    project: str | None
+    """Resolved project name when tracing is active, else `None`."""
+
+    replica_project: str | None
+    """Extra project agent runs are mirrored to, if configured."""
+
+
+def get_tracing_status() -> TracingStatus:
+    """Summarize LangSmith tracing configuration for diagnostics.
+
+    Reads only the local environment and the active LangSmith profile; never
+    contacts the network and never exposes secret values.
+
+    Returns:
+        A `TracingStatus` snapshot describing the current tracing setup.
+    """
+    return TracingStatus(
+        enabled=_tracing_enabled(),
+        has_credentials=_tracing_has_credentials(),
+        endpoint=_tracing_endpoint(),
+        project=get_langsmith_project_name(),
+        replica_project=get_langsmith_replica_project(),
+    )
+
+
 class LangSmithLookupError(Exception):
     """Base class for typed LangSmith project URL lookup failures.
 

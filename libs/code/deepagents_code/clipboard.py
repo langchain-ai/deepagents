@@ -6,7 +6,7 @@ import base64
 import logging
 import os
 import pathlib
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from textual.dom import NoScreen
 
@@ -80,10 +80,11 @@ def copy_text_to_clipboard(app: App, text: str) -> tuple[bool, str | None]:
     for copy_fn in copy_methods:
         try:
             copy_fn(text)
-        # ValueError covers UnicodeEncodeError from `_copy_osc52`'s
-        # `text.encode("utf-8")` on draft text containing lone surrogates, so a
-        # bad code point degrades to the next backend instead of escaping the
-        # (success, error) contract and crashing the caller.
+        # ValueError covers UnicodeEncodeError from the `text.encode("utf-8")`
+        # done by both `_copy_osc52` and `App.copy_to_clipboard` on draft text
+        # containing lone surrogates, so a bad code point degrades to the next
+        # backend instead of escaping the (success, error) contract and crashing
+        # the caller.
         except (OSError, RuntimeError, TypeError, ValueError) as e:
             last_error = str(e) or type(e).__name__
             logger.debug(
@@ -103,7 +104,7 @@ def copy_text_with_feedback(
     app: App,
     text: str,
     *,
-    failure_noun: str,
+    failure_noun: Literal["input", "selection"],
     success_message: str | None = None,
 ) -> bool:
     """Copy text to the clipboard and surface the outcome as a toast.

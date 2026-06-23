@@ -1335,9 +1335,9 @@ class ChatInput(Vertical):
     }
 
     /* Action buttons float on their own z-layer over the top border line, so
-       they cost no content row and never overlap the draft text. The docked
-       row spans the full width (dock collapses an auto width to zero) but is
-       transparent except for the right-aligned buttons. */
+       they cost no content row and never overlap the draft text. The row docks
+       to the right edge and sizes to its buttons (`width: auto`), overlaying
+       only the right portion of the border line and leaving the rest clear. */
     ChatInput #input-actions {
         layer: actions;
         dock: right;
@@ -1634,6 +1634,9 @@ class ChatInput(Vertical):
         # Whitespace-only input (e.g. stray spaces or newlines) has nothing
         # worth clearing or copying, so it stays hidden too. Done before the
         # early returns below so recalled-history text shows them as well.
+        # NOTE: this `strip()` gate is deliberately stricter than the keyboard
+        # paths (esc+esc clear, Ctrl+C copy), which act on the raw value so a
+        # whitespace-only draft is still clearable/copyable without the buttons.
         self._set_action_buttons_visible(visible=bool(text.strip()))
         # Drag-drop / bracketed paste arrive as one Changed event with a
         # multi-character inserted span. Normal typing arrives one character at

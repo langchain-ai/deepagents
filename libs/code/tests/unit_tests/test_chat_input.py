@@ -273,12 +273,16 @@ class TestDiscardText:
             assert chat_input.value == ""
 
     async def test_discard_text_no_op_when_empty(self) -> None:
-        """`discard_text` returns False when there is nothing to clear."""
+        """`discard_text` returns False and leaves the media-skip counter alone."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat_input = app.query_one(ChatInput)
             await pilot.pause()
+            before = chat_input._skip_media_sync_events
             assert chat_input.discard_text() is False
+            # An empty no-op must not bump the skip counter: a stray increment
+            # would later swallow a legitimate media sync, desyncing placeholders.
+            assert chat_input._skip_media_sync_events == before
 
     async def test_discard_text_is_undoable(self) -> None:
         """The cleared draft is restorable via the TextArea undo (ctrl+z)."""

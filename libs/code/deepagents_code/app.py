@@ -8388,10 +8388,10 @@ class DeepAgentsApp(App):
         7. If a focused input has text, copy the whole draft (no selection)
         8. Otherwise show quit hint
 
-        Rapid escape hatch: the clipboard-copy branches (1 and 6) are skipped
+        Rapid escape hatch: the clipboard-copy branches (1 and 7) are skipped
         once `Ctrl+C` is pressed `_RAPID_QUIT_CTRL_C_PRESSES` times within
         `_RAPID_QUIT_CTRL_C_WINDOW_SECONDS`. Without this, a non-empty draft
-        makes branch 6 copy on every press, so the quit arm is unreachable by
+        makes branch 7 copy on every press, so the quit arm is unreachable by
         `Ctrl+C` alone. Mashing `Ctrl+C` then falls through to arm quit (and a
         further press exits). The interrupt branches (2-5) stay unconditional so
         a repeated press still cancels in-flight work rather than quitting.
@@ -8546,6 +8546,15 @@ class DeepAgentsApp(App):
         """
         from deepagents_code.widgets.thread_selector import ThreadSelectorScreen
 
+        # Any higher-priority Esc breaks the double-Esc clear sequence: only two
+        # consecutive Escs with nothing else to handle should clear the draft.
+        # Disarm up front and restore only at the terminal clear branch, so an
+        # intervening interrupt (agent cancel, popup dismiss, queued-message pop,
+        # ...) can't leave a stale flag that clears a later draft on a single
+        # press.
+        clear_was_pending = self._clear_input_pending
+        self._clear_input_pending = False
+
         if (
             isinstance(self.screen, ThreadSelectorScreen)
             and self.screen.is_delete_confirmation_open
@@ -8605,6 +8614,9 @@ class DeepAgentsApp(App):
             return
 
         # Nothing left to interrupt: a double Esc clears the chat input draft.
+        # Restore the armed state captured above so a genuine consecutive Esc
+        # still confirms the clear.
+        self._clear_input_pending = clear_was_pending
         self._handle_clear_input_escape()
 
     def _handle_clear_input_escape(self) -> None:
@@ -8623,6 +8635,10 @@ class DeepAgentsApp(App):
             return
         if self._clear_input_pending:
             self._clear_input_pending = False
+            # The non-empty `value` guard above already implies a clear, so this
+            # is defensive: it only suppresses the toast if `discard_text` ever
+            # reports nothing cleared (e.g. a future `value` that diverges from
+            # the text area), keeping the confirmation honest.
             if chat_input.discard_text():
                 self.notify(
                     "Input cleared (ctrl+z to undo)",

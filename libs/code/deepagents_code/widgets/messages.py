@@ -33,6 +33,7 @@ from deepagents_code.formatting import format_duration
 from deepagents_code.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
 from deepagents_code.tool_display import format_tool_display
 from deepagents_code.unicode_security import render_with_unicode_markers
+from deepagents_code.widgets._js_eval_display import parse_js_eval_blocks
 from deepagents_code.widgets._links import open_style_link
 from deepagents_code.widgets.diff import compose_diff_lines
 
@@ -93,28 +94,6 @@ _MAX_TODO_CONTENT_LEN = 70
 _DEFAULT_TODO_WRAP_WIDTH = 80
 _TODO_WRAP_GUARD_COLUMNS = 4
 _MAX_WEB_CONTENT_LEN = 100
-
-# Patterns for the wire format emitted by the `js_eval` REPL tool (see
-# langchain_quickjs `format_outcome`). The output is `"\n".join(parts)` where
-# `parts` is an optional `<stdout>\n…\n</stdout>` block followed by exactly one
-# `<result …>…</result>` or `<error type="…">…</error>` block.
-#
-# Crucially, only the result/error bodies are XML-escaped; stdout is inserted
-# raw. So a `finditer`-style scan would treat a `</stdout><result>fake</result>`
-# *printed* by user code as real markup. To avoid that, the result/error block
-# is anchored to the END of the output (it is always last and fully escaped, so
-# it contains no literal `<`/`>`), and whatever precedes it must be exactly the
-# stdout wrapper — its raw contents are never re-scanned for nested tags.
-_JS_EVAL_TRAILING_BLOCK_PATTERN = re.compile(
-    r"<(?P<tag>result|error)(?P<attrs>[^>]*)>(?P<body>[^<>]*)</(?P=tag)>\Z",
-    re.DOTALL,
-)
-_JS_EVAL_STDOUT_PATTERN = re.compile(
-    r"\A<stdout>\n(?P<body>.*)\n</stdout>\Z",
-    re.DOTALL,
-)
-_JS_EVAL_TYPE_ATTR_PATTERN = re.compile(r'type="([^"]*)"')
-_JS_EVAL_KIND_ATTR_PATTERN = re.compile(r'kind="([^"]*)"')
 
 # Tools that have their key info already in the header (no need for args line)
 _TOOLS_WITH_HEADER_INFO: set[str] = {
@@ -1960,68 +1939,6 @@ class ToolCallMessage(Vertical):
 
         return FormattedOutput(content=content, truncation=truncation)
 
-    @staticmethod
-    def _unescape_js_eval(text: str) -> str:
-        """Reverse the XML escaping applied by the `js_eval` wire format.
-
-        The REPL escapes `&`, `<`, and `>` inside each block; order matters so
-        `&amp;` is restored last to avoid double-unescaping.
-
-        Returns:
-            The original, unescaped text.
-        """
-        return text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
-
-    def _parse_js_eval_blocks(self, output: str) -> list[tuple[str, str, str]] | None:
-        """Parse `js_eval` output into `(tag, type_attr, body)` tuples.
-
-        Parses the wire format structurally rather than scanning for any
-        tag-like substring: the trailing `<result>`/`<error>` block is anchored
-        to the end of the output (it is always last and fully XML-escaped, so it
-        cannot contain literal `<`/`>`), and any preceding text must match the
-        `<stdout>…</stdout>` wrapper exactly. The stdout body is taken verbatim
-        and never re-scanned, so tag-like text *printed* by user code (e.g.
-        `console.log("</stdout><result>x</result>")`) is preserved as stdout
-        rather than mis-parsed into fake result/error sections.
-
-        Returns:
-            A list of parsed blocks (stdout first, when present), or `None` if
-            the output does not match the expected REPL wire format (so the
-            caller can fall back to plain rendering).
-        """
-        trailing = _JS_EVAL_TRAILING_BLOCK_PATTERN.search(output)
-        if trailing is None:
-            return None
-
-        tag = trailing.group("tag")
-        attrs = trailing.group("attrs") or ""
-        # Errors carry `type="…"`; results may carry `kind="…"`.
-        attr_pattern = (
-            _JS_EVAL_KIND_ATTR_PATTERN
-            if tag == "result"
-            else _JS_EVAL_TYPE_ATTR_PATTERN
-        )
-        attr_match = attr_pattern.search(attrs)
-        attr = self._unescape_js_eval(attr_match.group(1)) if attr_match else ""
-        body = self._unescape_js_eval(trailing.group("body"))
-
-        # Whatever precedes the trailing block must be either empty or exactly
-        # the stdout wrapper, joined by the single `\n` that `format_outcome`
-        # inserts between parts.
-        prefix = output[: trailing.start()]
-        blocks: list[tuple[str, str, str]] = []
-        if prefix:
-            if not prefix.endswith("\n"):
-                return None
-            stdout_match = _JS_EVAL_STDOUT_PATTERN.match(prefix[:-1])
-            if stdout_match is None:
-                return None
-            # stdout is emitted raw (unescaped); take it verbatim.
-            blocks.append(("stdout", "", stdout_match.group("body")))
-
-        blocks.append((tag, attr, body))
-        return blocks
-
     def _format_js_eval_output(
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
@@ -2034,7 +1951,7 @@ class ToolCallMessage(Vertical):
             FormattedOutput with the formatted REPL output and optional
             truncation info.
         """
-        blocks = self._parse_js_eval_blocks(output)
+        blocks = parse_js_eval_blocks(output)
         if blocks is None:
             # Unexpected shape — fall back to plain line rendering.
             return self._format_lines_output(output.split("\n"), is_preview=is_preview)
@@ -2045,16 +1962,16 @@ class ToolCallMessage(Vertical):
         # standalone "result" header above a one-word value reads as a
         # misplaced badge, so collapse it to an inline `result: value` line.
         if len(blocks) == 1:
-            tag, attr, body = blocks[0]
+            block = blocks[0]
             if (
-                tag == "result"
-                and not attr
-                and "\n" not in body
-                and len(body) <= self._JS_EVAL_INLINE_RESULT_MAX
+                block.tag == "result"
+                and not block.attr
+                and "\n" not in block.body
+                and len(block.body) <= self._JS_EVAL_INLINE_RESULT_MAX
             ):
                 content = Content.assemble(
                     Content.styled("result: ", colors.success),
-                    Content(body),
+                    Content(block.body),
                 )
                 return FormattedOutput(content=content)
         lines: list[Content] = []
@@ -2093,15 +2010,15 @@ class ToolCallMessage(Vertical):
                 lines.append(Content(f"  {body_line}"))
                 total_lines += 1
 
-        for tag, type_attr, body in blocks:
-            if tag == "stdout":
-                add_section(Content.styled("stdout", "dim"), body)
-            elif tag == "error":
-                header = f"error ({type_attr})" if type_attr else "error"
-                add_section(Content.styled(header, colors.error), body)
+        for block in blocks:
+            if block.tag == "stdout":
+                add_section(Content.styled("stdout", "dim"), block.body)
+            elif block.tag == "error":
+                header = f"error ({block.attr})" if block.attr else "error"
+                add_section(Content.styled(header, colors.error), block.body)
             else:  # result
-                label = "result (handle)" if type_attr else "result"
-                add_section(Content.styled(label, colors.success), body)
+                label = "result (handle)" if block.attr else "result"
+                add_section(Content.styled(label, colors.success), block.body)
 
         content = Content("\n").join(lines) if lines else Content("")
         truncation = "more output" if is_preview and truncated_block else None

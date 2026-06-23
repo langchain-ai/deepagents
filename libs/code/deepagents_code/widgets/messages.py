@@ -918,19 +918,26 @@ class ToolCallMessage(Vertical):
     """
     """Left border tracks tool lifecycle; hover brightens for interactivity."""
 
-    # Max lines/chars to show in preview mode
     _PREVIEW_LINES = 6
+    """Maximum number of lines to show in preview mode."""
+
     _PREVIEW_CHARS = 400
+    """Maximum number of characters to show in preview mode."""
 
-    # Max length of a single-line `js_eval` result rendered inline as
-    # `result: value` rather than as a standalone labeled block.
     _JS_EVAL_INLINE_RESULT_MAX = 80
+    """Maximum single-line `js_eval` result length rendered inline.
 
-    # `js_eval` headers truncate the first code line at this width (mirrors the
-    # `max_length` passed to `_sanitize_display_value` in `tool_display.py`).
-    # Single-line code longer than this is truncated in the header, so it must
-    # still offer a collapsible block to reveal the full program.
+    Inline rendering uses `result: value` rather than a standalone labeled block.
+    """
+
     _JS_EVAL_HEADER_MAX = 120
+    """Width where `js_eval` headers truncate the first code line.
+
+    This mirrors the `max_length` passed to `_sanitize_display_value` in
+    `tool_display.py`. Single-line code longer than this is truncated in the
+    header, so it must still offer a collapsible block to reveal the full
+    program.
+    """
 
     def __init__(
         self,

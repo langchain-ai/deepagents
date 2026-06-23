@@ -408,6 +408,28 @@ def consume_orphaned_tracing_disabled_notice() -> str | None:
     return notice
 
 
+def _tracing_enabled() -> bool:
+    """Whether any LangSmith/LangChain tracing flag is truthy in the environment.
+
+    Reads the canonical tracing-enable vars (`_TRACING_ENABLE_ENV_VARS`) and
+    classifies each present value with `classify_env_bool`, mirroring how the
+    LangChain/LangSmith SDKs decide whether to start tracing. Shared by
+    `_disable_orphaned_tracing` and `_apply_default_langsmith_project` so both
+    read the flags identically.
+
+    Returns:
+        `True` if at least one tracing flag is set to a truthy value,
+            else `False`.
+    """
+    from deepagents_code._env_vars import classify_env_bool
+
+    return any(
+        classify_env_bool(os.environ[var])
+        for var in _TRACING_ENABLE_ENV_VARS
+        if var in os.environ
+    )
+
+
 def _disable_orphaned_tracing() -> None:
     """Disable LangSmith tracing when enabled without a usable API key.
 
@@ -426,14 +448,7 @@ def _disable_orphaned_tracing() -> None:
     """
     global _orphaned_tracing_disabled_notice  # noqa: PLW0603
 
-    from deepagents_code._env_vars import classify_env_bool
-
-    tracing_on = any(
-        classify_env_bool(os.environ[var])
-        for var in _TRACING_ENABLE_ENV_VARS
-        if var in os.environ
-    )
-    if not tracing_on:
+    if not _tracing_enabled():
         return
 
     has_custom_endpoint = any(
@@ -458,6 +473,26 @@ def _disable_orphaned_tracing() -> None:
         "to enable tracing, or unset the tracing flag to silence this warning.",
         ", ".join(disabled),
     )
+
+
+def _apply_default_langsmith_project() -> None:
+    """Route agent traces to the default project when none is configured.
+
+    When tracing is active but neither the prefixed override nor a base
+    `LANGSMITH_PROJECT` is set, ingestion would land in the SDK's `default`
+    project while `get_langsmith_project_name` advertises `deepagents-code`.
+    Set the default explicitly so the displayed/looked-up name matches where
+    traces are actually ingested (and `/trace` resolves once a run flushes).
+    """
+    if os.environ.get("LANGSMITH_PROJECT"):
+        return
+
+    if not _tracing_enabled():
+        return
+
+    from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+    os.environ["LANGSMITH_PROJECT"] = LANGSMITH_PROJECT_DEFAULT
 
 
 def _ensure_bootstrap() -> None:
@@ -549,6 +584,12 @@ def _ensure_bootstrap() -> None:
             # Tracing enabled without a key floods the TUI with 401 ingest
             # errors; disable it before any traced run starts.
             _disable_orphaned_tracing()
+
+            # If tracing is still active but no project is configured, default
+            # to `deepagents-code` so ingestion matches the name we display and
+            # look up. Runs after `_disable_orphaned_tracing` so a keyless setup
+            # (tracing already turned off) is left untouched.
+            _apply_default_langsmith_project()
 
             # Bridge stored service keys (e.g. Tavily web search, entered via
             # `/auth`) onto their canonical env vars before settings detection,
@@ -1933,11 +1974,16 @@ class Settings:
         if new_project:
             os.environ["LANGSMITH_PROJECT"] = str(new_project)
         elif previous["deepagents_langchain_project"]:
-            # Override was previously active but new value is unset; restore.
+            # Override was previously active but new value is unset; restore the
+            # user's original project. With no original, drop the override and
+            # re-apply the default so ingestion keeps matching the name
+            # `get_langsmith_project_name` displays (the default is a no-op when
+            # tracing is off, so a disabled setup is left unset).
             if _original_langsmith_project:
                 os.environ["LANGSMITH_PROJECT"] = _original_langsmith_project
             else:
                 os.environ.pop("LANGSMITH_PROJECT", None)
+                _apply_default_langsmith_project()
 
         return self._format_reload_changes(previous, refreshed)
 
@@ -2482,6 +2528,28 @@ class LangSmithApiError(LangSmithLookupError):
     """
 
 
+class LangSmithProjectNotFoundError(LangSmithApiError):
+    """The LangSmith project does not exist yet (lookup returned 404).
+
+    Projects are created lazily on the first ingested trace, so this is
+    expected before any run has flushed and should be surfaced as an
+    informational message rather than an error.
+    """
+
+
+def _is_langsmith_not_found(exc: Exception) -> bool:
+    """Whether a LangSmith SDK error indicates the project does not exist.
+
+    Returns:
+        `True` for a `LangSmithNotFoundError` (404), `False` otherwise.
+    """
+    try:
+        from langsmith.utils import LangSmithNotFoundError
+    except ImportError:
+        return False
+    return isinstance(exc, LangSmithNotFoundError)
+
+
 def _assemble_langsmith_thread_url(project_url: str, thread_id: str) -> str:
     """Format a LangSmith thread URL from a project URL prefix.
 
@@ -2515,7 +2583,8 @@ def fetch_langsmith_project_url_or_raise(project_name: str) -> str:
     Raises:
         LangSmithImportError: `langsmith` is not installed.
         LangSmithLookupTimeoutError: lookup exceeded the hard timeout.
-        LangSmithApiError: the SDK call raised (auth, 404, network, etc.);
+        LangSmithProjectNotFoundError: the project does not exist yet (404).
+        LangSmithApiError: the SDK call raised (auth, network, etc.);
             wraps the original exception in `__cause__`.
     """
     global _langsmith_url_cache  # noqa: PLW0603  # Module-level cache requires global statement
@@ -2584,6 +2653,8 @@ def fetch_langsmith_project_url_or_raise(project_name: str) -> str:
             ),
         )
         msg = str(lookup_error) or repr(lookup_error)
+        if _is_langsmith_not_found(lookup_error):
+            raise LangSmithProjectNotFoundError(msg) from lookup_error
         raise LangSmithApiError(msg) from lookup_error
 
     if not result:

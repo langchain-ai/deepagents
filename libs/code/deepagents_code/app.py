@@ -3981,15 +3981,22 @@ class DeepAgentsApp(App):
                     )
                 return
 
-            if deps_only and not await self._confirm_update_before_dependency_refresh(
-                current=cli_version,
-                latest=latest,
-            ):
-                await self._refresh_dependencies(
-                    include_prereleases=include_prereleases,
-                    app_update_version=latest,
+            if deps_only:
+                refresh_supported, _reason = await asyncio.to_thread(
+                    dependency_refresh_supported,
                 )
-                return
+                if (
+                    refresh_supported
+                    and not await self._confirm_update_before_dependency_refresh(
+                        current=cli_version,
+                        latest=latest,
+                    )
+                ):
+                    await self._refresh_dependencies(
+                        include_prereleases=include_prereleases,
+                        app_update_version=latest,
+                    )
+                    return
 
             release_age = await asyncio.to_thread(
                 format_release_age_parenthetical,

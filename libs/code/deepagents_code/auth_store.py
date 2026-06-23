@@ -101,8 +101,8 @@ class WriteOutcome:
     """User-visible warning strings (e.g., chmod failures). Empty on success."""
 
 
-def _auth_path() -> Path:
-    """Return `~/.deepagents/.state/auth.json`.
+def auth_path() -> Path:
+    """Return the resolved path to the credential store (`auth.json`).
 
     Resolved at call time (not import time) so tests can redirect storage by
     monkeypatching `deepagents_code.model_config.DEFAULT_STATE_DIR` — same
@@ -123,7 +123,7 @@ def _read_raw() -> dict | None:
         RuntimeError: If the file exists but cannot be parsed or has an
             unsupported schema version.
     """
-    path = _auth_path()
+    path = auth_path()
     try:
         raw = path.read_text(encoding="utf-8")
         data = json.loads(raw)
@@ -173,7 +173,7 @@ def _write_raw(data: dict) -> tuple[str, ...]:
         surface to the user. Empty when permissions were locked down
         successfully (or on Windows where POSIX modes don't apply).
     """
-    path = _auth_path()
+    path = auth_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     warnings: list[str] = []
     if hasattr(os, "chmod"):
@@ -223,6 +223,33 @@ def _write_raw(data: dict) -> tuple[str, ...]:
     for warning in warnings:
         logger.warning("%s", warning)
     return tuple(warnings)
+
+
+def _write_raw_or_raise(data: dict) -> tuple[str, ...]:
+    """Write `data` via `_write_raw`, converting write failures to `RuntimeError`.
+
+    `_write_raw` lets `OSError` from the atomic write (no disk space, an
+    unwritable state directory, a cross-device rename of the temp file)
+    propagate. The public writers document `RuntimeError` for unrecoverable
+    store failures, so translate here with a remediation hint instead of
+    leaking a raw traceback to the caller (CLI or TUI). The message never
+    includes the credential value.
+
+    Returns:
+        The chmod-warning tuple from `_write_raw` on success.
+
+    Raises:
+        RuntimeError: If the underlying write fails with an `OSError`.
+    """
+    try:
+        return _write_raw(data)
+    except OSError as exc:
+        msg = (
+            f"Failed to write credential file {auth_path()}: {exc}. "
+            "Check available disk space and the permissions on the parent "
+            "directory."
+        )
+        raise RuntimeError(msg) from exc
 
 
 def load_credentials() -> dict[str, StoredCredential]:
@@ -348,8 +375,10 @@ def set_stored_key(
 
     Raises:
         ValueError: If `provider` or the stripped `key` is empty.
-        RuntimeError: If the credential file is corrupt and cannot be read.
-    """  # noqa: DOC502 - `RuntimeError` is re-raised from `_read_raw`
+        RuntimeError: If the credential file is corrupt and cannot be read, or
+            the new file cannot be written (e.g. no disk space or an
+            unwritable state directory).
+    """  # noqa: DOC502 - `RuntimeError` re-raised from `_read_raw`/`_write_raw_or_raise`
     if not provider:
         msg = "Provider name cannot be empty"
         raise ValueError(msg)
@@ -372,7 +401,7 @@ def set_stored_key(
     creds[provider] = entry
     data["version"] = _STORAGE_VERSION
     data["credentials"] = creds
-    warnings = _write_raw(data)
+    warnings = _write_raw_or_raise(data)
     logger.debug("Stored credential for provider %s", provider)
     return WriteOutcome(warnings=warnings)
 
@@ -387,8 +416,10 @@ def delete_stored_key(provider: str) -> bool:
         `True` if a credential was removed, `False` if none was stored.
 
     Raises:
-        RuntimeError: If the credential file is corrupt and cannot be read.
-    """  # noqa: DOC502 - re-raised from `_read_raw`
+        RuntimeError: If the credential file is corrupt and cannot be read, or
+            the rewrite cannot be written (e.g. no disk space or an unwritable
+            state directory).
+    """  # noqa: DOC502 - re-raised from `_read_raw`/`_write_raw_or_raise`
     data = _read_raw()
     if data is None:
         return False
@@ -398,7 +429,7 @@ def delete_stored_key(provider: str) -> bool:
     del creds[provider]
     data["version"] = _STORAGE_VERSION
     data["credentials"] = creds
-    _write_raw(data)
+    _write_raw_or_raise(data)
     logger.debug("Deleted credential for provider %s", provider)
     return True
 

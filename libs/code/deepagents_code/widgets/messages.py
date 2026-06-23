@@ -16,8 +16,10 @@ from textual import on
 from textual.containers import Horizontal, Vertical
 from textual.content import Content
 from textual.events import Click
+from textual.geometry import Offset
 from textual.message_pump import NoActiveAppError
 from textual.reactive import var
+from textual.selection import Selection
 from textual.widgets import Static
 
 from deepagents_code import theme
@@ -125,6 +127,50 @@ def _strip_success_exit_line(text: str) -> str:
     return _SUCCESS_EXIT_RE.sub("", text)
 
 
+# Visual width of the prompt prefix (glyph + trailing space, e.g. "> ", "$ ").
+# Glyphs are single characters, so the prefix is always two columns wide.
+_PROMPT_PREFIX_WIDTH = 2
+
+
+def _strip_prompt_prefix(
+    result: tuple[str, str] | None,
+    selection: Selection,
+) -> tuple[str, str] | None:
+    """Drop the leading prompt prefix glyph from a selected range.
+
+    The prefix is only rendered on the first row, so it is stripped only when
+    the selection begins there. This keeps triple-click / select-all copies to
+    the message body instead of the decorative `"> "` (or mode glyph) prefix.
+
+    Args:
+        result: The `(text, ending)` tuple returned by `Static.get_selection`.
+        selection: The active selection geometry.
+
+    Returns:
+        The selection with the prefix removed from row 0, or `result` unchanged.
+    """
+    if result is None:
+        return None
+    text, ending = result
+    start = selection.start
+    if start is not None and start.y != 0:
+        return result
+    start_x = 0 if start is None else start.x
+    prefix_chars = max(0, _PROMPT_PREFIX_WIDTH - start_x)
+    return text[prefix_chars:], ending
+
+
+def _select_prompt_body(widget: Static) -> None:
+    """Select the user message body without its decorative prompt glyph.
+
+    Args:
+        widget: User message widget whose body should be selected.
+    """
+    widget.screen.selections = {  # ty: ignore[invalid-assignment]  # Textual reactive descriptor assignment updates selection watchers; `set_reactive` would skip them.
+        widget: Selection(Offset(_PROMPT_PREFIX_WIDTH, 0), None),
+    }
+
+
 class UserMessage(Static):
     """Widget displaying a user message."""
 
@@ -137,7 +183,12 @@ class UserMessage(Static):
         border-left: wide $primary;
         pointer: text;
     }
+
+    UserMessage.-cancelled {
+        opacity: 0.6;
+    }
     """
+    """`-cancelled` dims a prompt whose turn was interrupted by the user."""
 
     def __init__(self, content: str, **kwargs: Any) -> None:
         """Initialize a user message.
@@ -148,6 +199,25 @@ class UserMessage(Static):
         """
         super().__init__(**kwargs)
         self._content = content
+
+    def set_cancelled(self) -> None:
+        """Dim the message to mark its turn as interrupted by the user."""
+        self.add_class("-cancelled")
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        """Exclude the prompt prefix glyph from copied text.
+
+        Args:
+            selection: The active selection geometry.
+
+        Returns:
+            The `(text, ending)` selection with the prefix removed, or `None`.
+        """
+        return _strip_prompt_prefix(super().get_selection(selection), selection)
+
+    def text_select_all(self) -> None:
+        """Select the message body without the prompt prefix glyph."""
+        _select_prompt_body(self)
 
     def on_mount(self) -> None:
         """Add CSS classes for mode-specific border and ASCII border type."""
@@ -245,6 +315,21 @@ class QueuedUserMessage(Static):
         """Add ASCII border class when in ASCII mode."""
         if is_ascii_mode():
             self.add_class("-ascii")
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        """Exclude the prompt prefix glyph from copied text.
+
+        Args:
+            selection: The active selection geometry.
+
+        Returns:
+            The `(text, ending)` selection with the prefix removed, or `None`.
+        """
+        return _strip_prompt_prefix(super().get_selection(selection), selection)
+
+    def text_select_all(self) -> None:
+        """Select the message body without the prompt prefix glyph."""
+        _select_prompt_body(self)
 
     def render(self) -> Content:
         """Render the queued user message (greyed out).

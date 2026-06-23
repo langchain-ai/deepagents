@@ -16,11 +16,45 @@ from importlib.metadata import (
     distribution,
     version as pkg_version,
 )
+from typing import Literal
 
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 
 logger = logging.getLogger(__name__)
+
+SdkVersionStatus = Literal["resolved", "not_installed", "error"]
+"""Outcome of an SDK version lookup.
+
+`"not_installed"` means the package metadata is genuinely absent;
+`"error"` means an unexpected failure occurred while reading it. Callers
+that don't care which kind of failure happened can treat both the same.
+"""
+
+
+def resolve_sdk_version() -> tuple[str | None, SdkVersionStatus]:
+    """Resolve the installed `deepagents` SDK version from package metadata.
+
+    Single source of truth for the lookup that `--version`, `/version`, and
+    `doctor` each used to reimplement. Distinguishes a genuinely missing
+    package from an unexpected metadata error so diagnostic callers can report
+    the two differently, while collapse-friendly callers can ignore the split.
+
+    Returns:
+        `(version, status)`. `version` is the resolved version string when
+            `status` is `"resolved"`, otherwise `None`.
+    """
+    try:
+        return pkg_version("deepagents"), "resolved"
+    except PackageNotFoundError:
+        logger.debug("deepagents SDK package not found in environment")
+        return None, "not_installed"
+    except Exception:  # Best-effort lookup; never propagate to the caller
+        logger.warning(
+            "Unexpected error looking up deepagents SDK version", exc_info=True
+        )
+        return None, "error"
+
 
 _EXTRA_MARKER_RE = re.compile(r"""extra\s*==\s*["']([^"']+)["']""")
 
@@ -66,7 +100,9 @@ MODEL_PROVIDER_EXTRAS: frozenset[str] = frozenset(
 Keep in sync with `[project.optional-dependencies]` in `pyproject.toml`.
 """
 
-SANDBOX_EXTRAS: frozenset[str] = frozenset({"agentcore", "daytona", "modal", "runloop"})
+SANDBOX_EXTRAS: frozenset[str] = frozenset(
+    {"agentcore", "daytona", "modal", "runloop", "vercel"}
+)
 """Optional extras that add sandbox integrations."""
 
 STANDALONE_EXTRAS: frozenset[str] = frozenset({"quickjs"})

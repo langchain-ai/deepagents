@@ -4,6 +4,7 @@ import logging
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
@@ -18,11 +19,14 @@ from deepagents_code.config import (
     Settings,
     _create_model_from_class,
     _create_model_via_init,
+    _disable_orphaned_tracing,
     _get_provider_kwargs,
+    _quiet_sdk_tracing_logging,
     _read_config_toml_retries,
     _resolve_retry_kwargs,
     _resolve_retry_param_name,
     build_langsmith_thread_url,
+    consume_orphaned_tracing_disabled_notice,
     create_model,
     detect_mode_prefix,
     detect_provider,
@@ -1781,7 +1785,9 @@ class TestGetLangsmithProjectName:
             assert get_langsmith_project_name() == "env-project"
 
     def test_falls_back_to_default(self) -> None:
-        """Should fall back to 'deepagents-code' when no project name configured."""
+        """Should fall back to the default project when none is configured."""
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
         env = {
             "LANGSMITH_API_KEY": "lsv2_test",
             "LANGSMITH_TRACING": "true",
@@ -1791,10 +1797,12 @@ class TestGetLangsmithProjectName:
             patch("deepagents_code.config.settings") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
-            assert get_langsmith_project_name() == "deepagents-code"
+            assert get_langsmith_project_name() == LANGSMITH_PROJECT_DEFAULT
 
     def test_accepts_langchain_api_key(self) -> None:
         """Should accept LANGCHAIN_API_KEY as alternative to LANGSMITH_API_KEY."""
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
         env = {
             "LANGSMITH_API_KEY": "",
             "LANGCHAIN_API_KEY": "lsv2_test",
@@ -1805,7 +1813,281 @@ class TestGetLangsmithProjectName:
             patch("deepagents_code.config.settings") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
-            assert get_langsmith_project_name() == "deepagents-code"
+            assert get_langsmith_project_name() == LANGSMITH_PROJECT_DEFAULT
+
+    def test_agrees_with_config_manifest_resolution(self) -> None:
+        """`get_langsmith_project_name` and `resolve_scalar` agree on the project.
+
+        The `fallback_env_vars` mechanism exists so `config show`/`get` report
+        the project agent traces actually route to. This pins that parity for
+        the bare-env and unset cases, catching future drift between the two
+        resolution paths.
+        """
+        from deepagents_code.config_manifest import (
+            LANGSMITH_PROJECT_DEFAULT,
+            get_option,
+            resolve_scalar,
+        )
+
+        opt = get_option("tracing.langsmith_project")
+        assert opt is not None
+
+        # Bare `LANGSMITH_PROJECT` set, no prefixed override, no settings value.
+        bare_env = {
+            "LANGSMITH_API_KEY": "lsv2_test",
+            "LANGSMITH_TRACING": "true",
+            "LANGSMITH_PROJECT": "parity-bare",
+            "DEEPAGENTS_CODE_LANGSMITH_PROJECT": "",
+        }
+        with (
+            patch.dict("os.environ", bare_env, clear=False),
+            patch("deepagents_code.config.settings") as mock_settings,
+        ):
+            mock_settings.deepagents_langchain_project = None
+            manifest_value, _ = resolve_scalar(opt, toml_data={})
+            assert get_langsmith_project_name() == manifest_value == "parity-bare"
+
+        # Nothing configured: both fall back to the shared default.
+        default_env = {
+            "LANGSMITH_API_KEY": "lsv2_test",
+            "LANGSMITH_TRACING": "true",
+            "LANGSMITH_PROJECT": "",
+            "DEEPAGENTS_CODE_LANGSMITH_PROJECT": "",
+        }
+        with (
+            patch.dict("os.environ", default_env, clear=False),
+            patch("deepagents_code.config.settings") as mock_settings,
+        ):
+            mock_settings.deepagents_langchain_project = None
+            manifest_value, _ = resolve_scalar(opt, toml_data={})
+            assert (
+                get_langsmith_project_name()
+                == manifest_value
+                == LANGSMITH_PROJECT_DEFAULT
+            )
+
+
+class TestDisableOrphanedTracing:
+    """Tests for _disable_orphaned_tracing()."""
+
+    _ALL_TRACING_VARS = (
+        "LANGSMITH_TRACING_V2",
+        "LANGCHAIN_TRACING_V2",
+        "LANGSMITH_TRACING",
+        "LANGCHAIN_TRACING",
+        "LANGSMITH_API_KEY",
+        "LANGCHAIN_API_KEY",
+        "LANGSMITH_ENDPOINT",
+        "LANGCHAIN_ENDPOINT",
+        "LANGSMITH_CONFIG_FILE",
+        "LANGSMITH_PROFILE",
+    )
+
+    def _clean_env(self) -> dict[str, str]:
+        consume_orphaned_tracing_disabled_notice()
+        env = dict.fromkeys(self._ALL_TRACING_VARS, "")
+        env["LANGSMITH_CONFIG_FILE"] = "/__deepagents_missing_langsmith_config__.json"
+        return env
+
+    def test_disables_tracing_when_no_key(self) -> None:
+        """Tracing flag on with empty key should be turned off."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
+            assert consume_orphaned_tracing_disabled_notice() is not None
+            # One-shot: the notice clears on read, so a second read is empty.
+            assert consume_orphaned_tracing_disabled_notice() is None
+
+    def test_notice_mentions_langsmith_auth_login_when_cli_available(self) -> None:
+        """The startup notice gives the CLI login command only when available."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("deepagents_code.config.shutil.which", return_value="/bin/langsmith"),
+        ):
+            _disable_orphaned_tracing()
+
+        notice = consume_orphaned_tracing_disabled_notice()
+        assert notice is not None
+        assert "langsmith auth login" in notice
+
+    def test_notice_omits_langsmith_auth_login_when_cli_unavailable(self) -> None:
+        """The startup notice avoids unavailable CLI commands."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("deepagents_code.config.shutil.which", return_value=None),
+        ):
+            _disable_orphaned_tracing()
+
+        notice = consume_orphaned_tracing_disabled_notice()
+        assert notice is not None
+        assert "langsmith auth login" not in notice
+        assert "LANGSMITH_API_KEY" in notice
+
+    def test_preserves_tracing_when_custom_endpoint_set(self) -> None:
+        """A custom endpoint (self-hosted/proxied) is trusted even without a key.
+
+        Keyless ingestion is valid against a self-hosted LangSmith, so an
+        explicitly configured endpoint must not trip the orphaned-tracing guard.
+        """
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_ENDPOINT"] = "http://localhost:1984"
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
+            # Nothing was disabled, so no startup notice should be staged.
+            assert consume_orphaned_tracing_disabled_notice() is None
+
+    def test_preserves_tracing_when_profile_custom_endpoint_set(
+        self, tmp_path: Path
+    ) -> None:
+        """Profile api_url is a custom endpoint and is trusted without a key."""
+        config = tmp_path / "config.json"
+        config.write_text(
+            "{"
+            '"current_profile":"default",'
+            '"profiles":{"default":{"api_url":"http://localhost:1984"}}'
+            "}",
+            encoding="utf-8",
+        )
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_CONFIG_FILE"] = str(config)
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
+            # Nothing was disabled, so no startup notice should be staged.
+            assert consume_orphaned_tracing_disabled_notice() is None
+
+    def test_preserves_tracing_when_key_present(self) -> None:
+        """Tracing stays enabled when a usable API key is set."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_API_KEY"] = "lsv2_test"
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
+            # No tracing was disabled, so no startup notice should be staged.
+            assert consume_orphaned_tracing_disabled_notice() is None
+
+    def test_accepts_langchain_api_key(self) -> None:
+        """LANGCHAIN_API_KEY also counts as a usable key."""
+        env = self._clean_env()
+        env["LANGSMITH_TRACING"] = "true"
+        env["LANGCHAIN_API_KEY"] = "lsv2_test"
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGSMITH_TRACING"] == "true"
+
+    def test_preserves_tracing_when_profile_api_key_present(
+        self, tmp_path: Path
+    ) -> None:
+        """LangSmith profile API keys count as usable credentials."""
+        config = tmp_path / "config.json"
+        config.write_text(
+            '{"current_profile":"default","profiles":{"default":{"api_key":"lsv2_profile"}}}',
+            encoding="utf-8",
+        )
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_CONFIG_FILE"] = str(config)
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
+
+    def test_preserves_tracing_when_profile_oauth_present(self, tmp_path: Path) -> None:
+        """LangSmith profile OAuth credentials count as usable credentials."""
+        config = tmp_path / "config.json"
+        config.write_text(
+            "{"
+            '"current_profile":"default",'
+            '"profiles":{"default":{"oauth":{"refresh_token":"refresh"}}}'
+            "}",
+            encoding="utf-8",
+        )
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_CONFIG_FILE"] = str(config)
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
+
+    def test_noop_when_tracing_disabled(self) -> None:
+        """Does nothing when no tracing flag is enabled."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "false"
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
+
+    def test_disables_all_set_tracing_flags(self) -> None:
+        """Every set tracing flag is turned off, not just one."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_TRACING"] = "1"
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
+            assert os.environ["LANGSMITH_TRACING"] == "false"
+
+
+class TestQuietSdkTracingLogging:
+    """Tests for _quiet_sdk_tracing_logging()."""
+
+    def test_attaches_null_handler_without_debug(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without debug, SDK loggers get a NullHandler so logs stay off stderr."""
+        from deepagents_code._env_vars import DEBUG
+
+        monkeypatch.delenv(DEBUG, raising=False)
+        for name in ("langsmith", "langchain"):
+            logging.getLogger(name).handlers.clear()
+
+        _quiet_sdk_tracing_logging()
+
+        for name in ("langsmith", "langchain"):
+            handlers = logging.getLogger(name).handlers
+            assert any(isinstance(h, logging.NullHandler) for h in handlers)
+
+    def test_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Repeated calls do not stack duplicate handlers."""
+        from deepagents_code._env_vars import DEBUG
+
+        monkeypatch.delenv(DEBUG, raising=False)
+        for name in ("langsmith", "langchain"):
+            logging.getLogger(name).handlers.clear()
+
+        _quiet_sdk_tracing_logging()
+        _quiet_sdk_tracing_logging()
+
+        for name in ("langsmith", "langchain"):
+            handlers = logging.getLogger(name).handlers
+            assert len(handlers) == 1
 
 
 class TestFetchLangsmithProjectUrl:
@@ -3723,3 +4005,151 @@ ptc = ["all", "task"]
             settings_obj = Settings.from_environment(start_path=tmp_path)
 
         assert settings_obj.interpreter_ptc is False
+
+
+class TestCreateModelCodex:
+    """`create_model` dispatch for the ChatGPT-OAuth `openai_codex` provider.
+
+    Covers the runtime path that turns a stored token into a working model —
+    untested before this suite. All cases isolate the token store to a temp
+    path and never touch the network.
+    """
+
+    def _plant_token(self, path: Path) -> None:
+        """Write a valid (unexpired) token bundle at `path` with 0600 perms."""
+        import json as _json
+        from datetime import UTC, datetime, timedelta
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            _json.dumps(
+                {
+                    "access_token": "fake_access",
+                    "refresh_token": "fake_refresh",
+                    "expires_at": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
+                    "account_id": "acct_abc",
+                    "plan_type": "pro",
+                    "user_id": "user_xyz",
+                    "id_token": None,
+                }
+            ),
+            encoding="utf-8",
+        )
+        path.chmod(0o600)
+
+    def test_missing_token_raises_missing_credentials(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No stored token → `MissingCredentialsError` pointing at `/auth`."""
+        from deepagents_code.integrations import openai_codex
+        from deepagents_code.model_config import MissingCredentialsError
+
+        monkeypatch.setattr(
+            openai_codex, "default_store_path", lambda: tmp_path / "missing.json"
+        )
+        clear_caches()
+        with pytest.raises(MissingCredentialsError) as exc_info:
+            create_model("openai_codex:gpt-5.2-codex")
+        # No env var to set; the recovery hint must route through `/auth`.
+        assert exc_info.value.env_var is None
+        assert "ChatGPT" in str(exc_info.value)
+
+    def test_success_builds_codex_model(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stored token → a `_ChatOpenAICodex` under the codex provider."""
+        from langchain_openai.chat_models.codex import _ChatOpenAICodex
+
+        from deepagents_code.integrations import openai_codex
+
+        path = tmp_path / "auth.json"
+        self._plant_token(path)
+        monkeypatch.setattr(openai_codex, "default_store_path", lambda: path)
+        clear_caches()
+        result = create_model("openai_codex:gpt-5.2-codex")
+        assert isinstance(result.model, _ChatOpenAICodex)
+        assert result.provider == "openai_codex"
+        assert result.model_name == "gpt-5.2-codex"
+
+    def test_api_key_kwarg_is_stripped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A passed `api_key` must not reach the model; bearer is OAuth-only.
+
+        `_ChatOpenAICodex` wires the OAuth token into `openai_api_key` as a
+        callable, so the cleanest check is that the codex branch drops the
+        `api_key` kwarg before it reaches `build_chat_model`.
+        """
+        from deepagents_code.integrations import openai_codex as codex_mod
+
+        path = tmp_path / "auth.json"
+        self._plant_token(path)
+        monkeypatch.setattr(codex_mod, "default_store_path", lambda: path)
+
+        captured: dict[str, Any] = {}
+        real_build = codex_mod.build_chat_model
+
+        def _capture(model_name: str, /, **kwargs: Any) -> Any:  # noqa: ANN401  # passthrough capture
+            captured.update(kwargs)
+            return real_build(model_name, **kwargs)
+
+        monkeypatch.setattr(codex_mod, "build_chat_model", _capture)
+        clear_caches()
+        create_model(
+            "openai_codex:gpt-5.2-codex",
+            extra_kwargs={"api_key": "sk-should-be-stripped"},
+        )
+        assert "api_key" not in captured
+
+    def test_expired_session_routes_to_auth(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A revoked refresh token → `MissingCredentialsError`, not generic.
+
+        The codex branch must route `CodexAuthExpiredError` to the same
+        sign-in recovery path as a missing token so the retry flow offers
+        `/auth`, rather than wrapping it in a generic `ModelConfigError`.
+        """
+        from deepagents_code.integrations import openai_codex as codex_mod
+        from deepagents_code.model_config import MissingCredentialsError
+
+        path = tmp_path / "auth.json"
+        self._plant_token(path)
+        monkeypatch.setattr(codex_mod, "default_store_path", lambda: path)
+
+        def _raise_expired(_model_name: str, /, **_kwargs: Any) -> Any:  # noqa: ANN401  # passthrough stub
+            msg = "session expired"
+            raise codex_mod.CodexAuthExpiredError(msg)
+
+        monkeypatch.setattr(codex_mod, "build_chat_model", _raise_expired)
+        clear_caches()
+        with pytest.raises(MissingCredentialsError) as exc_info:
+            create_model("openai_codex:gpt-5.2-codex")
+        assert exc_info.value.env_var is None
+        assert "expired" in str(exc_info.value).lower()
+
+    def test_unexpected_build_error_wraps_as_model_config_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A genuinely unexpected build failure → `ModelConfigError` with spec.
+
+        The broad catch-all is the last resort for construction failures that
+        are neither missing nor expired credentials; it must name the spec
+        rather than leak a raw traceback.
+        """
+        from deepagents_code.integrations import openai_codex as codex_mod
+        from deepagents_code.model_config import ModelConfigError
+
+        path = tmp_path / "auth.json"
+        self._plant_token(path)
+        monkeypatch.setattr(codex_mod, "default_store_path", lambda: path)
+
+        def _boom(_model_name: str, /, **_kwargs: Any) -> Any:  # noqa: ANN401  # passthrough stub
+            msg = "unexpected constructor failure"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(codex_mod, "build_chat_model", _boom)
+        clear_caches()
+        with pytest.raises(ModelConfigError) as exc_info:
+            create_model("openai_codex:gpt-5.2-codex")
+        assert "openai_codex:gpt-5.2-codex" in str(exc_info.value)

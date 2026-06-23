@@ -180,6 +180,42 @@ class TestStartServerAndGetAgent:
         assert kwargs["graph_ref"] == "./server_graph.py:graph"
         assert kwargs["checkpointer_path"] == "./checkpointer.py:create_checkpointer"
 
+    async def test_passes_scaffold_hook_to_server_process(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """ServerProcess should receive the scaffold hook for restart recovery."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        monkeypatch.chdir(project_root)
+
+        work_dir = tmp_path / "runtime"
+        work_dir.mkdir()
+
+        mock_server = MagicMock()
+        mock_server.start = AsyncMock()
+        mock_server.url = "http://127.0.0.1:2024"
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch(
+                "deepagents_code.server_manager.tempfile.mkdtemp",
+                return_value=str(work_dir),
+            ),
+            patch(
+                "deepagents_code.server_manager._scaffold_workspace"
+            ) as mock_scaffold,
+            patch(
+                "deepagents_code.server.ServerProcess", return_value=mock_server
+            ) as mock_server_process,
+            patch("deepagents_code.remote_client.RemoteAgent", return_value=object()),
+        ):
+            await start_server_and_get_agent(
+                assistant_id="agent",
+                mcp_config_path=None,
+            )
+
+        assert mock_server_process.call_args.kwargs["scaffold"] is mock_scaffold
+
     def test_relative_paths_written_verbatim_to_langgraph_json(
         self, tmp_path: Path
     ) -> None:

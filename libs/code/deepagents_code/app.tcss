@@ -22,11 +22,21 @@ Screen {
 /* Main content goes on base layer by default */
 
 .message-timestamp-footer {
+    display: none;
     height: auto;
     color: $text-muted;
     text-style: dim;
     margin: -1 0 1 0;
     padding: 0;
+}
+
+/*
+ * Visibility is toggled per-footer (not via a class on #messages) so a
+ * `/timestamps` toggle restyles only the footer leaves instead of forcing a
+ * re-cascade across every message subtree.
+ */
+.message-timestamp-footer.message-timestamp-footer-visible {
+    display: block;
 }
 
 /* Chat area - main scrollable messages area */

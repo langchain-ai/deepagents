@@ -94,6 +94,20 @@ upgraded with a different package manager, because that can update a separate
 environment from the one currently providing `dcode`.
 """
 
+_UV_PRERELEASE_UPGRADE_COMMAND = "uv tool upgrade deepagents-code --prerelease allow"
+"""uv upgrade command that opts into alpha/beta/rc release resolution."""
+
+_PRERELEASE_UNSUPPORTED_MESSAGE = (
+    "Pre-release updates aren't supported for this install. Reinstall with "
+    "pre-releases enabled:\n"
+    '  curl -LsSf https://langch.in/dcode | DEEPAGENTS_CODE_PRERELEASE="allow" bash'
+)
+"""User-facing reason a pre-release upgrade is refused on non-uv installs.
+
+Points at the install script (uv under the hood) rather than raw uv commands,
+since that one-liner is the path we promote.
+"""
+
 _UPGRADE_TIMEOUT = 120  # seconds
 """Wall-clock cap for `perform_upgrade` and `perform_install_extra`."""
 
@@ -584,12 +598,17 @@ def _read_update_state() -> dict[str, object]:
 
 def _write_update_state(
     patch: dict[str, object], *, remove_keys: tuple[str, ...] = ()
-) -> None:
+) -> bool:
     """Merge *patch* into the shared update state file and drop *remove_keys*.
 
     Args:
         patch: Keys to merge into the existing state.
         remove_keys: Keys to drop from the existing state before writing.
+
+    Returns:
+        `True` if the state was persisted, `False` if the write failed (the
+            error is logged, not raised, so callers stay fail-soft but can surface
+            the miss when a stale state has user-visible consequences).
     """
     data = _read_update_state()
     for key in remove_keys:
@@ -604,6 +623,8 @@ def _write_update_state(
             UPDATE_STATE_FILE,
             exc_info=True,
         )
+        return False
+    return True
 
 
 def should_notify_update(latest: str) -> bool:
@@ -650,16 +671,23 @@ def clear_update_notified() -> None:
     _write_update_state({}, remove_keys=("notified_at", "notified_version"))
 
 
-def is_update_available(*, bypass_cache: bool = False) -> tuple[bool, str | None]:
+def is_update_available(
+    *,
+    bypass_cache: bool = False,
+    include_prereleases: bool | None = None,
+) -> tuple[bool, str | None]:
     """Check whether a newer version of deepagents-code is available.
 
     When the installed version is a pre-release (e.g. `0.0.35a1`),
     pre-release versions on PyPI are included in the comparison so alpha
     testers are notified of newer alphas and the eventual stable release.
-    Stable installs only compare against stable PyPI releases.
+    Stable installs only compare against stable PyPI releases unless
+    `include_prereleases` is explicitly set.
 
     Args:
         bypass_cache: Skip the cache and always hit PyPI.
+        include_prereleases: Override whether alpha/beta/rc releases are
+            considered. When `None`, this follows the installed version.
 
     Returns:
         A `(available, latest)` tuple.
@@ -682,7 +710,10 @@ def is_update_available(*, bypass_cache: bool = False) -> tuple[bool, str | None
         )
         return False, None
 
-    include_prereleases = installed.is_prerelease
+    include_prereleases = _resolve_include_prereleases(
+        include_prereleases,
+        installed=installed,
+    )
     latest = get_latest_version(
         bypass_cache=bypass_cache,
         include_prereleases=include_prereleases,
@@ -700,6 +731,37 @@ def is_update_available(*, bypass_cache: bool = False) -> tuple[bool, str | None
 # ---------------------------------------------------------------------------
 # Install method detection
 # ---------------------------------------------------------------------------
+
+
+def _resolve_include_prereleases(
+    include_prereleases: bool | None,
+    *,
+    installed: Version | None = None,
+) -> bool:
+    """Resolve update channel preference from the requested or installed channel.
+
+    Args:
+        include_prereleases: Explicit channel preference, or `None` to infer
+            from the installed version.
+        installed: Parsed installed version to reuse when the caller already
+            has one.
+
+    Returns:
+        `True` when pre-release versions should be considered.
+    """
+    if include_prereleases is not None:
+        return include_prereleases
+    if installed is None:
+        try:
+            installed = _parse_version(__version__)
+        except InvalidVersion:
+            logger.warning(
+                "Installed version %r is not PEP 440 compliant; "
+                "defaulting to stable-only upgrades",
+                __version__,
+            )
+            return False
+    return installed.is_prerelease
 
 
 def detect_install_method() -> InstallMethod:
@@ -729,7 +791,11 @@ def detect_install_method() -> InstallMethod:
     return "other"
 
 
-def upgrade_command(method: InstallMethod | None = None) -> str:
+def upgrade_command(
+    method: InstallMethod | None = None,
+    *,
+    include_prereleases: bool | None = None,
+) -> str:
     """Return the shell command to upgrade `deepagents-code`.
 
     Falls back to the documented uv command for display-only guidance.
@@ -738,10 +804,43 @@ def upgrade_command(method: InstallMethod | None = None) -> str:
         method: Install method override.
 
             Auto-detected if `None`.
+        include_prereleases: Whether to include alpha/beta/rc releases. When
+            `None`, follows the installed version's channel. When `True`,
+            returns the uv pre-release command regardless of `method`, since
+            only uv can be steered onto the pre-release channel.
     """
+    include_prereleases = _resolve_include_prereleases(include_prereleases)
+    if include_prereleases:
+        return _UV_PRERELEASE_UPGRADE_COMMAND
     if method is None:
         method = detect_install_method()
     return _UPGRADE_COMMANDS.get(method, FALLBACK_UPGRADE_COMMAND)
+
+
+def prerelease_upgrade_supported(
+    method: InstallMethod | None = None,
+) -> tuple[bool, str | None]:
+    """Return whether pre-release upgrades are supported for the install method.
+
+    Pre-release channel switching is only safe for `uv tool` installs, where
+    `uv tool upgrade --prerelease allow` re-resolves against the pre-release
+    feed. Other package managers can't be steered onto that channel, so callers
+    should refuse before promising an upgrade.
+
+    Args:
+        method: Install method override.
+
+            Auto-detected if `None`.
+
+    Returns:
+        A `(supported, reason)` tuple. `reason` is `None` when supported, else a
+        user-facing explanation of why the pre-release upgrade is refused.
+    """
+    if method is None:
+        method = detect_install_method()
+    if method != "uv":
+        return False, _PRERELEASE_UNSUPPORTED_MESSAGE
+    return True, None
 
 
 def cleanup_update_logs(
@@ -921,6 +1020,7 @@ async def perform_upgrade(
     *,
     progress: UpgradeProgressCallback | None = None,
     log_path: Path | None = None,
+    include_prereleases: bool | None = None,
 ) -> tuple[bool, str]:
     """Attempt to upgrade `deepagents-code` using the detected install method.
 
@@ -930,6 +1030,9 @@ async def perform_upgrade(
     Args:
         progress: Optional callback invoked for each output line.
         log_path: Optional path to persist command output.
+        include_prereleases: Whether to include alpha/beta/rc releases. When
+            `None`, follows the installed version's channel. Pre-release
+            upgrades require the uv install method; returns failure otherwise.
 
     Returns:
         `(success, output)` — *output* is the combined stdout/stderr.
@@ -944,10 +1047,13 @@ async def perform_upgrade(
             "`uv tool install -U deepagents-code` or upgrade with the package "
             "manager originally used for this install."
         )
+    resolved_include_prereleases = _resolve_include_prereleases(include_prereleases)
+    if resolved_include_prereleases:
+        supported, reason = prerelease_upgrade_supported(method)
+        if not supported:
+            return False, reason or _PRERELEASE_UNSUPPORTED_MESSAGE
 
-    cmd = _UPGRADE_COMMANDS.get(method)
-    if cmd is None:
-        return False, f"No upgrade command for install method: {method}"
+    cmd = upgrade_command(method, include_prereleases=resolved_include_prereleases)
 
     # Skip brew if binary not on PATH
     if method == "brew" and not shutil.which("brew"):
@@ -1341,21 +1447,52 @@ def is_update_check_enabled() -> bool:
 def is_auto_update_enabled() -> bool:
     """Return whether auto-update is enabled.
 
-    Opt-in via `DEEPAGENTS_CODE_AUTO_UPDATE=1` env var or
-    `[update].auto_update = true` in `config.toml`.
+    Opt-out via `DEEPAGENTS_CODE_AUTO_UPDATE=0` env var or
+    `[update].auto_update = false` in `config.toml`.
 
-    Defaults to `False`.
+    Defaults to `True`.
+
+    Unrecognized env values (neither truthy nor falsy) are ignored with a
+    warning and fall through to the config read below.
+
+    If `config.toml` exists but cannot be parsed, returns `False` (fail-closed):
+    a corrupt file may hold an explicit opt-out, so it is not treated as the
+    permissive default. A genuinely absent config falls through to `True`.
 
     Always disabled for editable installs.
     """
-    from deepagents_code._env_vars import AUTO_UPDATE
+    from deepagents_code._env_vars import AUTO_UPDATE, classify_env_bool
     from deepagents_code.config import _is_editable_install
 
     if _is_editable_install():
         return False
-    if os.environ.get(AUTO_UPDATE, "").lower() in {"1", "true", "yes"}:
-        return True
-    return _read_update_config().get("auto_update", False)
+    if AUTO_UPDATE in os.environ:
+        raw = os.environ[AUTO_UPDATE]
+        classified = classify_env_bool(raw)
+        if classified is not None:
+            return classified
+        # Unrecognized boolean token: warn and fall through to the config read
+        # below (which itself fails closed on a corrupt config), mirroring
+        # `config_manifest._coerce_env`. With the opt-out default an absent or
+        # default config leaves auto-update on, so an ignored disable attempt
+        # (e.g. a typo like `ture`) must be surfaced rather than swallowed.
+        logger.warning("Ignoring %s=%r (expected bool)", AUTO_UPDATE, raw)
+    try:
+        config = _read_update_config_strict()
+    except _ConfigReadError:
+        # The config exists but cannot be parsed. Fail *closed* here even though
+        # the default is opt-out: a corrupt file may hold an explicit
+        # `auto_update = false`, and silently re-enabling auto-update (which
+        # upgrades and re-execs the process) against an unreadable opt-out is
+        # worse than skipping the upgrade. A genuinely absent config still
+        # falls through to the opt-out default below.
+        logger.warning(
+            "Could not read [update] config; disabling auto-update until it is "
+            "readable",
+            exc_info=True,
+        )
+        return False
+    return config.get("auto_update", True)
 
 
 def set_auto_update(enabled: bool) -> None:
@@ -1394,6 +1531,35 @@ def set_auto_update(enabled: bool) -> None:
         raise
 
 
+class _ConfigReadError(Exception):
+    """Internal: `config.toml` exists but could not be read or parsed.
+
+    Lets callers that care about the difference (e.g. `is_auto_update_enabled`,
+    which fails closed) distinguish a corrupt config from a genuinely absent
+    one. A missing file is *not* an error and returns an empty config.
+    """
+
+
+def _read_update_config_strict() -> dict[str, bool]:
+    """Read `[update]` section from `config.toml`, surfacing read errors.
+
+    Returns:
+        A dict of boolean config values; empty when the file is absent.
+
+    Raises:
+        _ConfigReadError: When the file exists but cannot be opened or parsed.
+    """
+    if not DEFAULT_CONFIG_PATH.exists():
+        return {}
+    try:
+        with DEFAULT_CONFIG_PATH.open("rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise _ConfigReadError from exc
+    section = data.get("update", {})
+    return {k: v for k, v in section.items() if isinstance(v, bool)}
+
+
 def _read_update_config() -> dict[str, bool]:
     """Read `[update]` section from `config.toml`.
 
@@ -1401,15 +1567,53 @@ def _read_update_config() -> dict[str, bool]:
         A dict of boolean config values, empty on missing/unreadable file.
     """
     try:
-        if not DEFAULT_CONFIG_PATH.exists():
-            return {}
-        with DEFAULT_CONFIG_PATH.open("rb") as f:
-            data = tomllib.load(f)
-        section = data.get("update", {})
-        return {k: v for k, v in section.items() if isinstance(v, bool)}
-    except (OSError, tomllib.TOMLDecodeError):
+        return _read_update_config_strict()
+    except _ConfigReadError:
         logger.warning("Could not read [update] config — using defaults", exc_info=True)
         return {}
+
+
+def is_auto_update_explicitly_set() -> bool:
+    """Return whether the user explicitly chose an auto-update preference.
+
+    `True` when `DEEPAGENTS_CODE_AUTO_UPDATE` holds a recognized boolean or
+    `[update].auto_update` is present in `config.toml`. Distinguishes a
+    deliberate opt-in/out from the implicit opt-out default.
+    """
+    from deepagents_code._env_vars import AUTO_UPDATE, classify_env_bool
+
+    if (
+        AUTO_UPDATE in os.environ
+        and classify_env_bool(os.environ[AUTO_UPDATE]) is not None
+    ):
+        return True
+    return "auto_update" in _read_update_config()
+
+
+def should_announce_auto_update_default() -> bool:
+    """Return whether to show the one-time auto-update default migration notice.
+
+    `True` when no explicit env/config preference is set (so auto-update is on
+    only *implicitly*, via the opt-out default) and the notice has not been
+    acknowledged yet. This does not itself verify that auto-update is enabled;
+    callers must gate on `is_auto_update_enabled` first (e.g. an editable
+    install has no explicit preference but never auto-updates).
+    """
+    if is_auto_update_explicitly_set():
+        return False
+    return not _read_update_state().get("auto_update_default_acknowledged", False)
+
+
+def mark_auto_update_default_acknowledged() -> bool:
+    """Record that the one-time auto-update default migration notice was shown.
+
+    Returns:
+        `True` if the acknowledgement was persisted. `False` means the state
+            write failed, so the notice will fire again on the next launch;
+            callers should surface that rather than letting the repeat
+            look like a bug.
+    """
+    return _write_update_state({"auto_update_default_acknowledged": True})
 
 
 # ---------------------------------------------------------------------------

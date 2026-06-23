@@ -9,7 +9,7 @@ import time
 import tomllib
 from collections.abc import Mapping, Sequence  # noqa: TC003
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 
 import pytest
 from packaging.version import InvalidVersion, Version
@@ -21,6 +21,7 @@ from deepagents_code._version import __version__
 from deepagents_code.extras_info import ExtrasIntrospectionError, installed_extra_names
 from deepagents_code.update_check import (
     CACHE_TTL,
+    InstallMethod,
     _extract_release_times,
     _latest_from_releases,
     _parse_version,
@@ -45,17 +46,22 @@ from deepagents_code.update_check import (
     install_extras_command,
     install_package_command,
     is_auto_update_enabled,
+    is_auto_update_explicitly_set,
     is_installed_version_at_least,
     is_update_available,
     is_valid_extra_name,
     is_valid_package_name,
+    mark_auto_update_default_acknowledged,
     mark_update_notified,
     mark_version_seen,
     perform_install_extra,
     perform_install_package,
     perform_upgrade,
+    prerelease_upgrade_supported,
     set_auto_update,
+    should_announce_auto_update_default,
     should_notify_update,
+    upgrade_command,
 )
 
 
@@ -568,6 +574,32 @@ class TestIsUpdateAvailable:
 
         mock_get.assert_called_once_with(bypass_cache=False, include_prereleases=False)
 
+    def test_explicit_include_prereleases_overrides_stable_install(self) -> None:
+        """Explicit `include_prereleases=True` beats a stable installed version."""
+        with (
+            patch(
+                "deepagents_code.update_check.get_latest_version",
+                return_value=None,
+            ) as mock_get,
+            patch("deepagents_code.update_check.__version__", "1.0.0"),
+        ):
+            is_update_available(include_prereleases=True)
+
+        mock_get.assert_called_once_with(bypass_cache=False, include_prereleases=True)
+
+    def test_explicit_exclude_prereleases_overrides_prerelease_install(self) -> None:
+        """Explicit `include_prereleases=False` beats a pre-release install."""
+        with (
+            patch(
+                "deepagents_code.update_check.get_latest_version",
+                return_value=None,
+            ) as mock_get,
+            patch("deepagents_code.update_check.__version__", "1.0.0a1"),
+        ):
+            is_update_available(include_prereleases=False)
+
+        mock_get.assert_called_once_with(bypass_cache=False, include_prereleases=False)
+
     def test_invalid_installed_version(self) -> None:
         """Non-PEP 440 installed version disables update check gracefully."""
         with patch("deepagents_code.update_check.__version__", "not-a-version"):
@@ -973,6 +1005,125 @@ class TestUpdateLogs:
 
         assert success is False
         assert "Unsupported install method" in output
+
+    async def test_perform_upgrade_uses_uv_prerelease_command(self) -> None:
+        """Pre-release upgrades pass uv's explicit pre-release strategy."""
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as run_mock,
+        ):
+            success, _output = await perform_upgrade(include_prereleases=True)
+
+        assert success is True
+        run_mock.assert_awaited_once()
+        await_args = run_mock.await_args
+        assert await_args is not None
+        assert await_args.args[0] == (
+            "uv tool upgrade deepagents-code --prerelease allow"
+        )
+
+    async def test_perform_upgrade_follows_installed_prerelease_channel(self) -> None:
+        """Omitted pre-release preference follows an installed pre-release."""
+        with (
+            patch("deepagents_code.update_check.__version__", "1.0.0rc1"),
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as run_mock,
+        ):
+            success, _output = await perform_upgrade()
+
+        assert success is True
+        run_mock.assert_awaited_once()
+        await_args = run_mock.await_args
+        assert await_args is not None
+        assert await_args.args[0] == (
+            "uv tool upgrade deepagents-code --prerelease allow"
+        )
+
+    async def test_perform_upgrade_uses_plain_uv_command_by_default(self) -> None:
+        """Stable upgrades shell out to uv without the pre-release strategy.
+
+        `perform_upgrade` routes through `upgrade_command(method, ...)`, so a
+        regression that always opted into the pre-release channel would slip
+        past the default-path tests that override `_UPGRADE_COMMANDS`.
+        """
+        with (
+            patch("deepagents_code.update_check.__version__", "1.0.0"),
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as run_mock,
+        ):
+            success, _output = await perform_upgrade()
+
+        assert success is True
+        run_mock.assert_awaited_once()
+        await_args = run_mock.await_args
+        assert await_args is not None
+        assert await_args.args[0] == "uv tool upgrade deepagents-code"
+
+    async def test_perform_upgrade_refuses_prerelease_for_brew(self) -> None:
+        """Pre-release channel switching is only safe for uv tool installs."""
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="brew",
+            ),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+            ) as run_mock,
+        ):
+            success, output = await perform_upgrade(include_prereleases=True)
+
+        assert success is False
+        assert "Pre-release updates aren't supported for this install" in output
+        # The refusal must short-circuit before shelling out to `brew`.
+        run_mock.assert_not_awaited()
+
+    def test_upgrade_command_prerelease(self) -> None:
+        """Manual fallback command includes uv's pre-release strategy."""
+        assert (
+            upgrade_command(include_prereleases=True)
+            == "uv tool upgrade deepagents-code --prerelease allow"
+        )
+
+    def test_prerelease_upgrade_supported_for_uv(self) -> None:
+        """The uv install method can be steered onto the pre-release channel."""
+        supported, reason = prerelease_upgrade_supported("uv")
+
+        assert supported is True
+        assert reason is None
+
+    @pytest.mark.parametrize("method", ["brew", "other", "unknown"])
+    def test_prerelease_upgrade_unsupported_for_non_uv(
+        self,
+        method: InstallMethod,
+    ) -> None:
+        """Non-uv installs are refused with a user-facing reason."""
+        supported, reason = prerelease_upgrade_supported(method)
+
+        assert supported is False
+        assert reason is not None
+        assert "aren't supported for this install" in reason
 
 
 class TestInstallExtraCommand:
@@ -1830,8 +1981,8 @@ class TestIsAutoUpdateEnabled:
         with patch("deepagents_code.update_check.DEFAULT_CONFIG_PATH", path):
             yield path
 
-    def test_default_is_false(self, config_path) -> None:  # noqa: ARG002
-        """Auto-update defaults to disabled."""
+    def test_default_is_true(self, config_path) -> None:  # noqa: ARG002
+        """Auto-update defaults to enabled (opt-out)."""
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
             patch.dict("os.environ", {}, clear=False),
@@ -1839,7 +1990,7 @@ class TestIsAutoUpdateEnabled:
             import os
 
             os.environ.pop("DEEPAGENTS_CODE_AUTO_UPDATE", None)
-            assert is_auto_update_enabled() is False
+            assert is_auto_update_enabled() is True
 
     def test_env_var_enables(self, config_path) -> None:  # noqa: ARG002
         """DEEPAGENTS_CODE_AUTO_UPDATE=1 enables auto-update."""
@@ -1849,12 +2000,193 @@ class TestIsAutoUpdateEnabled:
         ):
             assert is_auto_update_enabled() is True
 
+    def test_env_var_disables(self, config_path) -> None:  # noqa: ARG002
+        """DEEPAGENTS_CODE_AUTO_UPDATE=0 opts out of auto-update."""
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch.dict("os.environ", {"DEEPAGENTS_CODE_AUTO_UPDATE": "0"}),
+        ):
+            assert is_auto_update_enabled() is False
+
+    def test_config_disables(self, config_path) -> None:
+        """`[update].auto_update = false` opts out of auto-update."""
+        set_auto_update(False)
+        assert config_path.exists()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch.dict("os.environ", {}, clear=False),
+        ):
+            import os
+
+            os.environ.pop("DEEPAGENTS_CODE_AUTO_UPDATE", None)
+            assert is_auto_update_enabled() is False
+
+    def test_empty_env_disables(self, config_path, monkeypatch) -> None:  # noqa: ARG002
+        """An explicitly-empty env value is treated as falsy (opt-out)."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_AUTO_UPDATE", "")
+        with patch("deepagents_code.config._is_editable_install", return_value=False):
+            assert is_auto_update_enabled() is False
+
+    def test_unrecognized_env_falls_through_to_default(
+        self, config_path, monkeypatch, caplog
+    ) -> None:
+        """A garbage env value is ignored (with a warning) and uses the default.
+
+        Guards the `classify_env_bool(...) is None` branch: a typo'd disable
+        attempt must not be mistaken for a real value. With no config written
+        it falls through to the opt-out default of `True`.
+        """
+        assert not config_path.exists()  # no config backs the result
+        monkeypatch.setenv("DEEPAGENTS_CODE_AUTO_UPDATE", "ture")
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
+        ):
+            assert is_auto_update_enabled() is True
+        assert "expected bool" in caplog.text
+
+    def test_unrecognized_env_falls_through_to_config(
+        self, config_path, monkeypatch
+    ) -> None:
+        """A garbage env value yields to `config.toml` rather than overriding it."""
+        set_auto_update(False)
+        assert config_path.exists()
+        monkeypatch.setenv("DEEPAGENTS_CODE_AUTO_UPDATE", "maybe")
+        with patch("deepagents_code.config._is_editable_install", return_value=False):
+            assert is_auto_update_enabled() is False
+
+    def test_env_overrides_config_to_disable(self, config_path, monkeypatch) -> None:  # noqa: ARG002
+        """A falsy env var wins over `[update].auto_update = true`."""
+        set_auto_update(True)
+        monkeypatch.setenv("DEEPAGENTS_CODE_AUTO_UPDATE", "0")
+        with patch("deepagents_code.config._is_editable_install", return_value=False):
+            assert is_auto_update_enabled() is False
+
+    def test_env_overrides_config_to_enable(self, config_path, monkeypatch) -> None:  # noqa: ARG002
+        """A truthy env var wins over `[update].auto_update = false`."""
+        set_auto_update(False)
+        monkeypatch.setenv("DEEPAGENTS_CODE_AUTO_UPDATE", "1")
+        with patch("deepagents_code.config._is_editable_install", return_value=False):
+            assert is_auto_update_enabled() is True
+
     def test_editable_install_always_disabled(self, config_path) -> None:
         """Editable installs never auto-update, even with config set."""
         set_auto_update(True)
         assert config_path.exists()
         with patch("deepagents_code.config._is_editable_install", return_value=True):
             assert is_auto_update_enabled() is False
+
+    def test_corrupt_config_fails_closed(
+        self, config_path, monkeypatch, caplog
+    ) -> None:
+        """A present-but-corrupt config disables auto-update despite the default.
+
+        The opt-out default is `True`, but a corrupt `config.toml` may hold an
+        explicit `auto_update = false`. Silently re-enabling auto-update (which
+        upgrades and re-execs) over an unreadable opt-out would be worse than
+        skipping, so a parse error must fail closed rather than fall through to
+        the default.
+        """
+        config_path.write_text("this = is not [valid toml", encoding="utf-8")
+        monkeypatch.delenv("DEEPAGENTS_CODE_AUTO_UPDATE", raising=False)
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
+        ):
+            assert is_auto_update_enabled() is False
+        assert "disabling auto-update" in caplog.text
+
+
+class TestAutoUpdateDefaultMigration:
+    @pytest.fixture
+    def config_path(self, tmp_path):
+        """Override DEFAULT_CONFIG_PATH to use a temporary file."""
+        path = tmp_path / "config.toml"
+        with patch("deepagents_code.update_check.DEFAULT_CONFIG_PATH", path):
+            yield path
+
+    @pytest.fixture
+    def state_file(self, tmp_path):
+        """Override UPDATE_STATE_FILE to use a temporary file."""
+        path = tmp_path / "update_state.json"
+        with patch("deepagents_code.update_check.UPDATE_STATE_FILE", path):
+            yield path
+
+    def test_explicit_config_is_not_default(self, config_path, state_file) -> None:  # noqa: ARG002
+        """An explicit config choice counts as explicitly set."""
+        set_auto_update(True)
+        import os
+
+        os.environ.pop("DEEPAGENTS_CODE_AUTO_UPDATE", None)
+        assert is_auto_update_explicitly_set() is True
+        assert should_announce_auto_update_default() is False
+
+    def test_explicit_env_is_not_default(self, config_path, state_file) -> None:  # noqa: ARG002
+        """A recognized env value counts as explicitly set."""
+        with patch.dict("os.environ", {"DEEPAGENTS_CODE_AUTO_UPDATE": "1"}):
+            assert is_auto_update_explicitly_set() is True
+            assert should_announce_auto_update_default() is False
+
+    def test_implicit_default_announces_once(self, config_path, state_file) -> None:  # noqa: ARG002
+        """With no explicit choice, the migration notice fires exactly once."""
+        import os
+
+        os.environ.pop("DEEPAGENTS_CODE_AUTO_UPDATE", None)
+        assert is_auto_update_explicitly_set() is False
+        assert should_announce_auto_update_default() is True
+        mark_auto_update_default_acknowledged()
+        assert should_announce_auto_update_default() is False
+
+    def test_unrecognized_env_is_not_explicit(self, config_path, state_file) -> None:  # noqa: ARG002
+        """A garbage env token does not count as an explicit choice."""
+        import os
+
+        os.environ.pop("DEEPAGENTS_CODE_AUTO_UPDATE", None)
+        with patch.dict("os.environ", {"DEEPAGENTS_CODE_AUTO_UPDATE": "ture"}):
+            assert is_auto_update_explicitly_set() is False
+            assert should_announce_auto_update_default() is True
+
+    def test_corrupt_state_refires_notice(self, config_path, state_file) -> None:  # noqa: ARG002
+        """A corrupt state file fails open: the one-time notice fires again.
+
+        `_read_update_state` returns `{}` on unreadable JSON, so the
+        acknowledgement reads as absent. Re-showing the notice is the safe
+        direction (versus silently auto-updating as if it had been seen).
+        """
+        import os
+
+        os.environ.pop("DEEPAGENTS_CODE_AUTO_UPDATE", None)
+        state_file.write_text("{ not valid json", encoding="utf-8")
+        assert should_announce_auto_update_default() is True
+
+    def test_corrupt_config_is_not_explicit(self, config_path, state_file) -> None:  # noqa: ARG002
+        """A corrupt config reads as 'no explicit choice' for the notice gate.
+
+        `is_auto_update_enabled` fails closed on a corrupt config, so the notice
+        gate never re-enables an unreadable opt-out; this documents that
+        `is_auto_update_explicitly_set` itself treats an unparseable file as
+        absent rather than raising.
+        """
+        import os
+
+        os.environ.pop("DEEPAGENTS_CODE_AUTO_UPDATE", None)
+        config_path.write_text("not [ valid toml", encoding="utf-8")
+        assert is_auto_update_explicitly_set() is False
+
+    def test_mark_tolerates_write_failure(self, config_path, tmp_path) -> None:  # noqa: ARG002
+        """A failed acknowledgement write returns `False` without raising.
+
+        The notice will re-fire next launch (surfaced to the user), but startup
+        must not crash because the state directory is unwritable.
+        """
+        # Point the state file beneath an existing *file* so the parent
+        # `mkdir`/write raises `OSError`, simulating an unwritable state dir.
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a directory", encoding="utf-8")
+        with patch(
+            "deepagents_code.update_check.UPDATE_STATE_FILE", blocker / "state.json"
+        ):
+            assert mark_auto_update_default_acknowledged() is False
 
 
 class TestShouldNotifyUpdate:

@@ -402,19 +402,44 @@ export ANTHROPIC_API_KEY="sk-ant-..."  # Required: For Claude model
 export LANGSMITH_API_KEY="lsv2_..."    # Required: For tracing
 export LANGSMITH_TRACING=true          # Required: Enable LangSmith tracing
 export LANGSMITH_ENDPOINT="https://api.smith.langchain.com"  # Optional: Default shown
-# export DAYTONA_API_KEY="..."  # Optional: Only if using --env daytona
 ```
 
 ### Running benchmarks
 
 ```bash
-# Run via Docker (sequential, all tasks)
-uv run harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper \
-  --dataset terminal-bench@2.0 -n 1 --jobs-dir jobs/terminal-bench --env docker
+# Stage checked-out Deep Agents packages for LangGraph's sandbox install
+make stage-harbor-local-deps
 
-# Run via Daytona (10 concurrent trials)
-uv run harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper \
-  --dataset terminal-bench@2.0 -n 10 --jobs-dir jobs/terminal-bench --env daytona
+# Run via Docker (sequential, all tasks)
+uv run harbor run \
+  --agent langgraph \
+  --agent-kwarg project_path=deepagents_harbor/langgraph_project \
+  --agent-kwarg config=langgraph.json \
+  --agent-kwarg graph=deepagent \
+  --agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}' \
+  --dataset terminal-bench/terminal-bench-2 \
+  --model "$MODEL" \
+  -n 1 \
+  --jobs-dir harbor-jobs/terminal-bench \
+  --env docker
+
+# Run via LangSmith sandboxes with tracing
+uv run harbor run \
+  --agent langgraph \
+  --agent-kwarg project_path=deepagents_harbor/langgraph_project \
+  --agent-kwarg config=langgraph.json \
+  --agent-kwarg graph=deepagent \
+  --agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}' \
+  --agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}' \
+  --agent-env 'LANGSMITH_TRACING=true' \
+  --dataset terminal-bench/terminal-bench-2 \
+  --model "$MODEL" \
+  -n 1 \
+  --jobs-dir harbor-jobs/terminal-bench \
+  --env langsmith \
+  --plugin langsmith \
+  --plugin-kwarg dataset_name=terminal-bench/terminal-bench-2 \
+  --plugin-kwarg experiment_name=deepagents-baseline-v1
 ```
 
 ### Available environments
@@ -422,6 +447,7 @@ uv run harbor run --agent-import-path deepagents_harbor:DeepAgentsWrapper \
 Harbor supports multiple sandbox environments. Use the `--env` flag to select:
 
 - `docker` - Local Docker containers (good for testing)
+- `langsmith` - LangSmith sandboxes with hosted tracing
 - `daytona` - Daytona cloud sandboxes (requires `DAYTONA_API_KEY`)
 - `modal` - Modal cloud compute
 - `runloop` - Runloop sandboxes
@@ -429,6 +455,7 @@ Harbor supports multiple sandbox environments. Use the `--env` flag to select:
 Makefile shortcuts are available for common workflows:
 
 - `make run-terminal-bench-docker` - Run on Docker (sequential)
+- `make run-terminal-bench-langsmith` - Run on LangSmith sandboxes with tracing (sequential)
 - `make run-terminal-bench-daytona` - Run on Daytona (40 concurrent)
 - `make run-terminal-bench-modal` - Run on Modal (4 concurrent)
 - `make run-terminal-bench-runloop` - Run on Runloop (10 concurrent)
@@ -441,48 +468,39 @@ LangSmith provides tracing and observability for agent runs. The workflow:
 Deep Agents -> Harbor (evaluate) -> LangSmith (analyze) -> Improve -> Repeat
 ```
 
-#### Step 1: Create dataset and experiment
+#### Run benchmark with tracing
 
 ```bash
-# Create dataset from Harbor tasks
-python scripts/harbor_langsmith.py create-dataset terminal-bench --version 2.0
+# Makefile shortcut using the Harbor LangSmith plugin
+MODEL="$MODEL" HARBOR_LANGSMITH_EXPERIMENT=deepagents-baseline-v1 make run-terminal-bench-langsmith
 
-# Create experiment session (outputs session ID and URL)
-python scripts/harbor_langsmith.py create-experiment terminal-bench --name deepagents-baseline-v1
-```
-
-#### Step 2: Run benchmark with tracing
-
-```bash
-# Option 1: For experiments (enables side-by-side comparison in LangSmith)
-export LANGSMITH_EXPERIMENT="deepagents-baseline-v1"
-make run-terminal-bench-daytona  # 40 concurrent trials on Daytona
-
-# Option 2: For development (simpler project view in LangSmith)
-export LANGSMITH_PROJECT="deepagents-development"
-make run-terminal-bench-daytona
-
-# Option 3: Run harbor directly (-n = concurrency; add -l N to limit tasks)
-export LANGSMITH_EXPERIMENT="deepagents-baseline-v1"
+# Run Harbor directly (-n = concurrency; add -l N to limit tasks)
+make stage-harbor-local-deps
 uv run harbor run \
-  --agent-import-path deepagents_harbor:DeepAgentsWrapper \
-  --dataset terminal-bench@2.0 -n 10 --jobs-dir jobs/terminal-bench --env daytona
+  --agent langgraph \
+  --agent-kwarg project_path=deepagents_harbor/langgraph_project \
+  --agent-kwarg config=langgraph.json \
+  --agent-kwarg graph=deepagent \
+  --agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}' \
+  --agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}' \
+  --agent-env 'LANGSMITH_TRACING=true' \
+  --dataset terminal-bench/terminal-bench-2 \
+  --model "$MODEL" \
+  -n 10 \
+  --jobs-dir harbor-jobs/terminal-bench \
+  --env langsmith \
+  --plugin langsmith \
+  --plugin-kwarg dataset_name=terminal-bench/terminal-bench-2 \
+  --plugin-kwarg experiment_name=deepagents-baseline-v1
 ```
 
-#### Step 3: Add feedback scores
-
-After the benchmark completes, push reward scores to LangSmith for filtering and analysis:
-
-```bash
-python scripts/harbor_langsmith.py add-feedback jobs/terminal-bench/2025-12-02__16-25-40 \
-  --project-name deepagents-baseline-v1
-```
-
-This matches trials to traces and adds `harbor_reward` feedback (0.0-1.0) from Harbor's test results.
+The Harbor LangSmith plugin syncs dataset examples, creates the experiment,
+nests the Deep Agents LangGraph trace under the Harbor trial run, and writes
+verifier rewards as LangSmith feedback.
 
 ### Analyzing results
 
-LangSmith captures every LLM call, tool invocation, and performance metric. Combined with Harbor reward scores (added via Step 3), you can filter runs by performance and identify patterns in successful vs. failed runs.
+LangSmith captures every LLM call, tool invocation, and performance metric. Combined with Harbor reward scores from the plugin, you can filter runs by performance and identify patterns in successful vs. failed runs.
 
 #### Common failure patterns
 

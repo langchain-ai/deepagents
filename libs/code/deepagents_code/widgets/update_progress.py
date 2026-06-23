@@ -197,7 +197,8 @@ class UpdateProgressScreen(ModalScreen[None]):
         """Render the completed-success state."""
         self._done = True
         self._status = (
-            f"Update complete. Restart Deep Agents Code to use v{self._latest}."
+            f"Update complete. Quit and relaunch Deep Agents Code to use "
+            f"v{self._latest}."
         )
         self._stop_spinner_timer()
         self._refresh_status()

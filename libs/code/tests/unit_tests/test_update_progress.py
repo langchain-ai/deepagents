@@ -182,3 +182,42 @@ async def test_update_progress_screen_warning_stays_visible(
         await pilot.pause()
 
         assert copied == [fix_command]
+
+
+async def test_update_progress_screen_warning_without_copy_text_copies_log_path(
+    tmp_path, monkeypatch
+) -> None:
+    """`mark_warning` without `copy_text` falls back to copying the log path.
+
+    The production call site always supplies `copy_text`, but the parameter is
+    optional, so this pins the documented fallback: with no fix command the
+    help line reverts to "c copy log path" and `c` copies the log path rather
+    than silently doing nothing.
+    """
+    log_path = tmp_path / "update.log"
+    screen = UpdateProgressScreen(
+        latest="2.0.0",
+        command="uv tool install -U deepagents-code",
+        log_path=log_path,
+    )
+
+    copied: list[str] = []
+    app = App()
+    monkeypatch.setattr(app, "copy_to_clipboard", copied.append)
+    async with app.run_test() as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+
+        screen.mark_warning("Another `dcode` is earlier on your PATH.")
+        await pilot.pause()
+
+        spinner = screen.query(Static).filter(".up-spinner").first()
+        help_text = screen.query(Static).filter(".up-help").first()
+        assert str(spinner.render()) == get_glyphs().warning
+        assert "c copy log path" in str(help_text.render())
+        assert "c copy fix command" not in str(help_text.render())
+
+        await pilot.press("c")
+        await pilot.pause()
+
+        assert copied == [str(log_path)]

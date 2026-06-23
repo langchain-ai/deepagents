@@ -24,6 +24,7 @@ import time
 import tomllib
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, TextIO
@@ -70,15 +71,18 @@ _SDK_RELEASE_TIMES_KEY = "sdk_release_times"
 
 InstallMethod = Literal["uv", "brew", "other", "unknown"]
 
-FALLBACK_UPGRADE_COMMAND = "uv tool upgrade deepagents-code"
+FALLBACK_UPGRADE_COMMAND = "uv tool install -U deepagents-code"
 """Generic upgrade hint used when install-method detection fails.
 
 Callers that surface an upgrade command in user-facing text should prefer
 `upgrade_command()`; this constant exists so those callers have something
 to render when detection raises unexpectedly. The documented install path
 is `uv tool install` (see `scripts/install.sh`), so the uv command is the
-right display fallback. Execution paths still refuse unrecognized installs
-instead of updating a separate environment.
+right display fallback. Uses `uv tool install -U` rather than `uv tool
+upgrade` for the same receipt-pin reason documented on `_UPGRADE_COMMANDS`:
+showing a user the `upgrade` form would hand them a command that silently
+stays on the old version for a pinned install. Execution paths still refuse
+unrecognized installs instead of updating a separate environment.
 """
 
 _UPGRADE_COMMANDS: dict[InstallMethod, str] = {
@@ -897,13 +901,20 @@ def dependency_refresh_supported(
     return False, _DEPENDENCY_REFRESH_UNSUPPORTED[method]
 
 
-class ShadowedDcode(NamedTuple):
+@dataclass(frozen=True)
+class ShadowedDcode:
     """A different dcode entry point is winning on PATH than the one we upgraded.
 
     Returned by `detect_shadowed_dcode` after a successful upgrade so the TUI can
     warn the user that re-launching will pick up the wrong binary. The most
     common cause is a pre-uv install (e.g. a leftover from a previous
     `pipx`/`pip`-based install) earlier on `PATH` than the uv tool shims.
+
+    A frozen dataclass rather than a `NamedTuple` (unlike the sibling
+    `DependencyChange`) so `__post_init__` can enforce the conflict invariant
+    the type's name promises: an instance only exists when there genuinely is
+    a shadow. The producer already guarantees this, so the check is defensive
+    against future direct construction, not a runtime gate on the hot path.
     """
 
     shadowing_bin: Path
@@ -921,6 +932,24 @@ class ShadowedDcode(NamedTuple):
     Resolved via uv's documented executable-directory precedence (see
     `_uv_tool_bin_dir`).
     """
+
+    def __post_init__(self) -> None:
+        """Reject a non-conflict instance — the type's namesake invariant.
+
+        If the shadowing binary already lives in the upgraded bin dir there is
+        no shadow, and a warning built from it would tell the user a binary
+        shadows itself. `detect_shadowed_dcode` returns `None` in that case, so
+        this only fires on a misconstructed instance.
+
+        Raises:
+            ValueError: If `shadowing_bin` already resides in `upgraded_bin_dir`.
+        """
+        if self.shadowing_bin.parent == self.upgraded_bin_dir:
+            msg = (
+                f"ShadowedDcode requires a real shadow, but {self.shadowing_bin} "
+                f"already resides in the upgraded bin dir {self.upgraded_bin_dir}"
+            )
+            raise ValueError(msg)
 
     @property
     def upgraded_bin(self) -> Path:
@@ -940,10 +969,12 @@ def _uv_tool_bin_dir() -> Path | None:
     directory uv would install into. Following uv's reference at
     https://docs.astral.sh/uv/reference/storage/#executable-directory:
 
-    - Unix: `UV_TOOL_BIN_DIR` → `XDG_BIN_HOME` → `$XDG_DATA_HOME/../bin` →
-        `$HOME/.local/bin`.
-    - Windows: same env-var chain, with `%USERPROFILE%/.local/bin` as the
-        final fallback (uv normalizes path separators).
+    The precedence (single, unbranched code path): `UV_TOOL_BIN_DIR` →
+    `XDG_BIN_HOME` → `$XDG_DATA_HOME/../bin` → the final `.local/bin` under
+    the home directory. The last candidate is `Path.home() / ".local" / "bin"`,
+    which `pathlib` resolves per-platform — `$HOME/.local/bin` on Unix and
+    `%USERPROFILE%/.local/bin` on Windows — so one expression satisfies uv's
+    documented fallback on both without an `os.name` branch here.
 
     The first candidate that exists as a directory wins; an existing but
     unusable candidate (read failures, race) is skipped so a transient
@@ -1120,7 +1151,7 @@ def format_shadowed_dcode_warning(shadow: ShadowedDcode) -> str:
         "After closing dcode, run this to make the upgraded shim win in this "
         "terminal:\n"
         f"  {indented_command}\n"
-        "Then relaunch dcode. To make the fix permanent, add that export line "
+        "Then relaunch dcode. To make the fix permanent, add the PATH change "
         "to your shell profile, or uninstall the older dcode if you no longer "
         "need it."
     )
@@ -1129,16 +1160,29 @@ def format_shadowed_dcode_warning(shadow: ShadowedDcode) -> str:
 def format_shadowed_dcode_fix_command(shadow: ShadowedDcode) -> str:
     """Return a session-scoped shell command to prefer the upgraded shim.
 
+    The command targets the shell that matches the current platform: PowerShell
+    on Windows (where `_uv_tool_bin_dir` can resolve `%USERPROFILE%/.local/bin`
+    and `export`/`hash` are not valid), and POSIX `sh`/`bash`/`zsh` elsewhere.
+
     Args:
         shadow: The shadowing-binary description returned by
             `detect_shadowed_dcode`.
 
     Returns:
         A copy-pasteable shell command that updates only the current terminal
-            session and clears common shell command caches.
+            session and, on POSIX, clears the shell's command-path cache.
     """
-    bin_dir = shlex.quote(str(shadow.upgraded_bin_dir))
-    return f"export PATH={bin_dir}:$PATH\nhash -r 2>/dev/null || true"
+    bin_dir = str(shadow.upgraded_bin_dir)
+    if os.name == "nt":
+        # PowerShell, the default Windows shell. Wrap the directory in double
+        # quotes (escaping any literal `"`) so a path with spaces survives, and
+        # prepend it to the session PATH. No cache flush is needed — PowerShell
+        # resolves executables per invocation rather than caching like POSIX
+        # shells' `hash`.
+        quoted = bin_dir.replace('"', '""')
+        return f'$env:PATH = "{quoted};$env:PATH"'
+    quoted = shlex.quote(bin_dir)
+    return f"export PATH={quoted}:$PATH\nhash -r 2>/dev/null || true"
 
 
 def cleanup_update_logs(
@@ -1351,6 +1395,7 @@ async def perform_upgrade(
         if not supported:
             return False, reason or _PRERELEASE_UNSUPPORTED_MESSAGE
 
+    fell_back_to_bare_command = False
     if method == "uv":
         # Prefer the receipt-aware `uv tool install -U` builder so installed
         # extras / `--with` packages survive the upgrade and any stale
@@ -1365,11 +1410,7 @@ async def perform_upgrade(
             cmd = upgrade_install_command(
                 include_prereleases=resolved_include_prereleases,
             )
-        except (
-            ExtrasIntrospectionError,
-            ToolRequirementIntrospectionError,
-            ValueError,
-        ) as exc:
+        except (ExtrasIntrospectionError, ToolRequirementIntrospectionError) as exc:
             logger.warning(
                 "Could not build receipt-aware uv upgrade command (%s: %s); "
                 "falling back to the bare command. Installed extras may be "
@@ -1377,16 +1418,7 @@ async def perform_upgrade(
                 type(exc).__name__,
                 exc,
             )
-            # The bare fallback only knows the distribution name, so the log
-            # line above is invisible to the user — surface the same caveat in
-            # the progress stream so they know to re-add extras / `--with`
-            # packages if a feature stops working after the upgrade.
-            await _emit_progress(
-                progress,
-                "Note: couldn't read your full install configuration; "
-                "installed extras or extra packages may not carry over. "
-                "Re-add them if a feature stops working after relaunch.",
-            )
+            fell_back_to_bare_command = True
             cmd = upgrade_command(
                 method,
                 include_prereleases=resolved_include_prereleases,
@@ -1401,7 +1433,23 @@ async def perform_upgrade(
     if method == "brew" and not shutil.which("brew"):
         return False, "brew not found on PATH."
 
-    return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
+    success, output = await _run_install_subprocess(
+        cmd, progress=progress, log_path=log_path
+    )
+    if success and fell_back_to_bare_command:
+        # Surface the dropped-extras caveat only now that the bare upgrade has
+        # actually succeeded. Emitting it before `_run_install_subprocess` ran
+        # would misfire on a failed upgrade — telling the user to re-add extras
+        # for an install that was left untouched. The log line above is
+        # invisible in the TUI, so the progress stream is the user's only window
+        # into this.
+        await _emit_progress(
+            progress,
+            "Note: couldn't read your full install configuration; "
+            "installed extras or extra packages may not carry over. "
+            "Re-add them if a feature stops working after relaunch.",
+        )
+    return success, output
 
 
 async def perform_dependency_refresh(
@@ -1846,17 +1894,34 @@ def upgrade_install_command(
     Returns:
         Shell command string suitable for execution via the shell.
 
-    Propagates `ExtrasIntrospectionError` if installed extras cannot be
-    determined safely from distribution metadata, and
-    `ToolRequirementIntrospectionError` if the uv tool `--with` packages or
-    interpreter cannot be determined safely from the tool receipt. Callers choose
-    whether to treat those errors as failures or fall back to a simpler unpinned
-    upgrade command with a user-facing warning.
+    Raises:
+        ExtrasIntrospectionError: If installed extras cannot be determined
+            safely from distribution metadata, or a metadata-sourced extra name
+            fails PEP 508 validation (re-raised from the underlying `ValueError`
+            so callers need not catch a broad built-in).
+
+    Also propagates `ToolRequirementIntrospectionError` if the uv tool `--with`
+    packages or interpreter cannot be determined safely from the tool receipt.
+    Callers choose whether to treat those errors as failures or fall back to a
+    simpler unpinned upgrade command with a user-facing warning.
     """
-    from deepagents_code.extras_info import installed_extra_names
+    from deepagents_code.extras_info import (
+        ExtrasIntrospectionError,
+        installed_extra_names,
+    )
 
     extras = installed_extra_names(distribution_name, strict=True)
-    requirement = _dcode_extras_requirement(extras, version=None)
+    try:
+        requirement = _dcode_extras_requirement(extras, version=None)
+    except ValueError as exc:
+        # `extras` come from the distribution's own optional-dependency
+        # metadata, so a PEP 508 validation failure here means that metadata is
+        # malformed. Translate to the typed introspection error so callers
+        # (`perform_upgrade`) handle it like any other unreadable-config case
+        # instead of relying on a broad `ValueError` catch that could also
+        # swallow an unrelated future bug in this builder.
+        msg = f"Distribution metadata yielded an invalid extra name: {exc}"
+        raise ExtrasIntrospectionError(msg) from exc
     cmd = "uv tool install -U"
     python = _uv_tool_python()
     if python is not None:

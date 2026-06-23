@@ -10384,6 +10384,78 @@ class TestNotificationCenterIntegration:
             for m in notified
         )
 
+    async def test_install_success_with_shadow_toast_only_when_modal_hidden(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A shadow with no progress modal still reaches the user as a toast.
+
+        When a modal is already on screen the install runs without pushing the
+        `UpdateProgressScreen`, so `progress_modal_visible` is `False` and
+        `mark_warning` is skipped. The shadow warning must still fire as a
+        `notify(severity="warning")` toast — this is the less-common leg of the
+        shadow branch, and the exact "user silently keeps the old version"
+        failure mode this PR exists to prevent. A regression that nested the
+        `self.notify(warning, ...)` inside `if progress_modal_visible:` would
+        drop the warning entirely here and pass the modal-visible test.
+        """
+        from textual.screen import ModalScreen
+
+        from deepagents_code.notifications import ActionId
+        from deepagents_code.update_check import ShadowedDcode
+        from deepagents_code.widgets.update_progress import UpdateProgressScreen
+
+        shadow = ShadowedDcode(
+            shadowing_bin=Path("/opt/stale/bin/dcode"),
+            upgraded_bin_dir=Path("/home/user/.local/bin"),
+        )
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _update_entry()
+        app._notice_registry.add(entry)
+
+        notified: list[str] = []
+        original_notify = app.notify
+
+        def capture_notify(message: str, **kwargs: Any) -> None:
+            notified.append(message)
+            original_notify(message, **kwargs)
+
+        monkeypatch.setattr(app, "notify", capture_notify)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # A modal already owns the screen, so the install path takes the
+            # toast-only branch (`progress_modal_visible` is False).
+            await app.push_screen(ModalScreen())
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.update_check.perform_upgrade",
+                    new=AsyncMock(return_value=(True, "Updated deepagents-code")),
+                ),
+                patch(
+                    "deepagents_code.update_check.detect_shadowed_dcode",
+                    return_value=shadow,
+                ),
+            ):
+                await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
+                await pilot.pause()
+
+            # The progress modal was never pushed, so the warning could only
+            # have reached the user as a toast.
+            assert not isinstance(app.screen, UpdateProgressScreen)
+
+        assert app._notice_registry.get("update:available") is None
+        # The success line must not appear — relaunch would keep the old binary.
+        assert not any(
+            "Updated to v" in m and "Quit and relaunch" in m for m in notified
+        )
+        # The warning toast names both paths so the user can act on it.
+        assert any(
+            "/opt/stale/bin/dcode" in m and "/home/user/.local/bin" in m
+            for m in notified
+        )
+
     async def test_debug_update_install_does_not_run_upgrade(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

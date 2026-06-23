@@ -2286,6 +2286,29 @@ class TestUpgradeInstallCommand:
         ):
             upgrade_install_command()
 
+    def test_invalid_metadata_extra_reraised_as_introspection_error(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A malformed extra name from metadata surfaces as the typed error.
+
+        `_dcode_extras_requirement` raises a bare `ValueError` on a PEP
+        508-invalid extra name. Since the extras here come from the
+        distribution's own metadata, such a name signals malformed metadata —
+        the builder re-raises it as `ExtrasIntrospectionError` so `perform_upgrade`
+        handles it through its typed fallback rather than relying on a broad
+        `ValueError` catch that could also mask an unrelated builder bug.
+        """
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        with (
+            patch(
+                "deepagents_code.extras_info.installed_extra_names",
+                return_value=frozenset({"not a valid extra"}),
+            ),
+            pytest.raises(ExtrasIntrospectionError),
+        ):
+            upgrade_install_command()
+
 
 class TestParseDependencyChanges:
     """`parse_dependency_changes` collapses uv's env diff into changes."""

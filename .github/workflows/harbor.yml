@@ -153,6 +153,11 @@ on:
         required: true
         default: "1"
         type: string
+      agent_env:
+        description: "Extra agent env vars, space-separated KEY=VALUE (e.g. DEEPAGENTS_SUMMARIZE_TRIGGER_TOKENS=170000). Empty = harness defaults."
+        required: false
+        default: ""
+        type: string
 permissions:
   contents: read
 
@@ -236,6 +241,7 @@ jobs:
       HARBOR_N_TASKS: ${{ inputs.n_tasks }}
       HARBOR_INCLUDE_TASKS: ${{ inputs.include_tasks }}
       HARBOR_ROLLOUTS_PER_TASK: ${{ inputs.rollouts_per_task }}
+      HARBOR_AGENT_ENV: ${{ inputs.agent_env }}
       HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
       HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}
       HARBOR_MODEL: ${{ matrix.model }}
@@ -425,6 +431,14 @@ jobs:
             xai)          agent_env_args+=(--agent-env 'XAI_API_KEY=${XAI_API_KEY}') ;;
             nvidia)       agent_env_args+=(--agent-env 'NVIDIA_API_KEY=${NVIDIA_API_KEY}') ;;
           esac
+
+          # Extra agent env vars from the `agent_env` input (space-separated KEY=VALUE).
+          if [ -n "$HARBOR_AGENT_ENV" ]; then
+            read -r -a extra_agent_env <<< "$HARBOR_AGENT_ENV"
+            for kv in "${extra_agent_env[@]}"; do
+              agent_env_args+=(--agent-env "$kv")
+            done
+          fi
 
           echo "LangSmith plugin experiment base: $HARBOR_LANGSMITH_EXPERIMENT"
           echo "Agent implementation: $HARBOR_AGENT_LABEL ($HARBOR_AGENT_GRAPH)"

@@ -3939,15 +3939,6 @@ class DeepAgentsApp(App):
                     )
                     return
 
-            # `--deps` is an explicit dependency refresh: skip the dcode version
-            # check entirely and re-resolve the environment so new in-range
-            # releases of dependencies are pulled in without a dcode release.
-            if deps_only:
-                await self._refresh_dependencies(
-                    include_prereleases=include_prereleases,
-                )
-                return
-
             await self._mount_message(AppMessage("Checking for updates..."))
             available, latest = await asyncio.to_thread(
                 is_update_available,
@@ -3963,6 +3954,12 @@ class DeepAgentsApp(App):
                 )
                 return
             if not available:
+                if deps_only:
+                    await self._refresh_dependencies(
+                        include_prereleases=include_prereleases,
+                    )
+                    return
+
                 age_suffix = await asyncio.to_thread(format_age_suffix, cli_version)
                 await self._mount_message(
                     AppMessage(
@@ -4073,21 +4070,29 @@ class DeepAgentsApp(App):
                 ),
             )
             return
-        dep_changes = [
-            change
-            for change in parse_dependency_changes(output)
-            if change.name != "deepagents-code"
+        changes = parse_dependency_changes(output)
+        self_changes = [
+            change for change in changes if change.name == "deepagents-code"
         ]
-        if not dep_changes:
+        dep_changes = [change for change in changes if change.name != "deepagents-code"]
+        if not dep_changes and not self_changes:
             await self._mount_message(
                 AppMessage("Dependencies are already up to date."),
             )
             return
+
+        message_parts: list[str] = []
+        if self_changes:
+            message_parts.append(
+                f"Updated deepagents-code:\n{format_dependency_changes(self_changes)}"
+            )
+        if dep_changes:
+            message_parts.append(
+                f"Refreshed dependencies:\n{format_dependency_changes(dep_changes)}"
+            )
         await self._mount_message(
             AppMessage(
-                "Refreshed dependencies:\n"
-                f"{format_dependency_changes(dep_changes)}\n"
-                "Quit and relaunch dcode to use them.",
+                "\n".join(message_parts) + "\nQuit and relaunch dcode to use them.",
             ),
         )
 

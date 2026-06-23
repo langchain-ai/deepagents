@@ -601,8 +601,8 @@ async def test_update_slash_command_rejects_unknown_option() -> None:
         )
 
 
-async def test_update_deps_refreshes_without_version_check() -> None:
-    """`/update --deps` re-resolves deps and skips the dcode version check."""
+async def test_update_deps_refreshes_when_dcode_current() -> None:
+    """`/update --deps` re-resolves deps after confirming dcode is current."""
     from deepagents_code.app import DeepAgentsApp
     from deepagents_code.widgets.messages import AppMessage
 
@@ -616,6 +616,7 @@ async def test_update_deps_refreshes_without_version_check() -> None:
             ),
             patch(
                 "deepagents_code.update_check.is_update_available",
+                return_value=(False, "1.0.0"),
             ) as is_update_mock,
             patch(
                 "deepagents_code.update_check.perform_upgrade",
@@ -629,7 +630,10 @@ async def test_update_deps_refreshes_without_version_check() -> None:
             await app._handle_command("/update --deps")
             await pilot.pause()
 
-        is_update_mock.assert_not_called()
+        is_update_mock.assert_called_once_with(
+            bypass_cache=True,
+            include_prereleases=None,
+        )
         perform_upgrade_mock.assert_awaited_once_with(include_prereleases=None)
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         content = str(app_msgs[-1]._content)
@@ -651,6 +655,10 @@ async def test_update_deps_reports_when_already_current() -> None:
                 return_value=False,
             ),
             patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(False, "1.0.0"),
+            ),
+            patch(
                 "deepagents_code.update_check.perform_upgrade",
                 new_callable=AsyncMock,
                 return_value=(True, "Resolved 120 packages in 12ms\n"),
@@ -661,6 +669,43 @@ async def test_update_deps_reports_when_already_current() -> None:
 
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         assert "Dependencies are already up to date." in str(app_msgs[-1]._content)
+
+
+async def test_update_deps_routes_outdated_dcode_through_regular_update() -> None:
+    """`/update --deps` runs the normal update flow when dcode is outdated."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(True, "1.1.0"),
+            ),
+            patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+                return_value=(
+                    True,
+                    " - deepagents-code==1.0.0\n + deepagents-code==1.1.0\n",
+                ),
+            ),
+        ):
+            await app._handle_command("/update --deps")
+            await pilot.pause()
+
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        content = str(app_msgs[-1]._content)
+        assert "Updated to v1.1.0" in content
+        assert "Quit and relaunch dcode to use the new version" in content
+        assert "Updated deepagents-code:" not in content
+        assert "Dependencies are already up to date." not in content
 
 
 async def test_update_already_current_prompts_and_refreshes_on_confirm() -> None:

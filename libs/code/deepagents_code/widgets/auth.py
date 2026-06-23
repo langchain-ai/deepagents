@@ -18,8 +18,10 @@ Security notes:
 from __future__ import annotations
 
 import logging
+import os
 from enum import StrEnum
 from typing import TYPE_CHECKING, ClassVar
+from urllib.parse import urlsplit
 
 from textual.binding import Binding, BindingType
 from textual.color import Color as TColor
@@ -32,7 +34,7 @@ from textual.widgets.option_list import Option
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
-    from textual.events import Click
+    from textual.events import Click, MouseMove
 
     from deepagents_code.widgets.codex_auth import CodexSignedInAction
 
@@ -43,17 +45,110 @@ from deepagents_code.model_config import (
     CODEX_PROVIDER,
     PROVIDER_API_KEY_ENV,
     PROVIDERS_DOCS_URL as _PROVIDERS_DOCS_URL,
+    SERVICE_API_KEY_ENV,
     ModelConfig,
+    ProviderAuthSource,
+    ProviderAuthState,
+    ProviderAuthStatus,
     clear_caches,
     get_available_models,
     get_base_url_env_var,
     get_credential_env_var,
     get_default_base_url_env,
     get_provider_auth_status,
+    get_service_auth_status,
+    is_service,
+    resolved_env_var_name,
 )
 from deepagents_code.widgets._links import open_style_link
 
 logger = logging.getLogger(__name__)
+
+
+CONFIGURATION_DOCS_URL = (
+    "https://docs.langchain.com/oss/python/deepagents/code/configuration"
+)
+
+
+PROVIDER_DISPLAY_NAMES: dict[str, str] = {
+    "anthropic": "Anthropic",
+    "azure_openai": "Azure OpenAI",
+    "baseten": "Baseten",
+    "cohere": "Cohere",
+    "deepseek": "DeepSeek",
+    "fireworks": "Fireworks",
+    "google_genai": "Google Gemini",
+    "google_vertexai": "Google Vertex AI",
+    "groq": "Groq",
+    "huggingface": "Hugging Face",
+    "ibm": "IBM watsonx",
+    "litellm": "LiteLLM",
+    "mistralai": "Mistral AI",
+    "nvidia": "NVIDIA",
+    "openai": "OpenAI",
+    "openai_codex": "OpenAI Codex (ChatGPT login)",
+    "openrouter": "OpenRouter",
+    "perplexity": "Perplexity",
+    "together": "Together AI",
+    "xai": "xAI",
+}
+
+
+PROVIDER_API_KEY_URLS: dict[str, str] = {
+    "anthropic": "https://platform.claude.com/login?returnTo=%2Fsettings%2Fkeys",
+    "baseten": "https://docs.baseten.co/organization/api-keys",
+    "cohere": "https://dashboard.cohere.com/welcome/login?redirect_uri=%2Fapi-keys",
+    "deepseek": "https://platform.deepseek.com/api_keys",
+    "fireworks": "https://app.fireworks.ai/settings/users/api-keys",
+    "google_genai": "https://aistudio.google.com/api-keys",
+    "groq": "https://console.groq.com/keys",
+    "huggingface": "https://huggingface.co/login?next=%2Fsettings%2Ftokens",
+    "ibm": "https://cloud.ibm.com/iam/apikeys",
+    "litellm": "https://docs.litellm.ai/docs/proxy/virtual_keys",
+    "mistralai": "https://console.mistral.ai/api-keys",
+    "nvidia": "https://build.nvidia.com/settings/api-keys",
+    "openai": "https://platform.openai.com/api-keys",
+    "openrouter": "https://openrouter.ai/workspaces/default/keys",
+    "perplexity": "https://www.perplexity.ai/settings/api",
+    "tavily": "https://app.tavily.com",
+    "together": "https://api.together.ai/settings/api-keys",
+    "xai": "https://console.x.ai/team/default/api-keys",
+}
+
+
+def _is_safe_acquisition_url(url: str) -> bool:
+    """Return whether `url` is safe to render as a clickable link.
+
+    Built-in links are trusted, but `api_key_url` can come from user-owned
+    config; restricting to `http`/`https` keeps a malformed or
+    `javascript:`-scheme value from becoming a live hyperlink.
+
+    Args:
+        url: Candidate link target.
+
+    Returns:
+        `True` if the URL uses an `http` or `https` scheme.
+    """
+    return urlsplit(url).scheme in {"http", "https"}
+
+
+def _provider_display_name(provider: str, config: ModelConfig | None = None) -> str:
+    """Return a human-readable provider label for auth UI.
+
+    Resolution order: a configured `display_name`, then the built-in
+    `PROVIDER_DISPLAY_NAMES` map, then a title-cased form of the provider key.
+
+    Args:
+        provider: Provider config key.
+        config: Parsed model config, if already loaded by the caller.
+
+    Returns:
+        Configured display name, built-in display name, or title-cased provider key.
+    """
+    model_config = config or ModelConfig.load()
+    return model_config.get_provider_display_name(
+        provider
+    ) or PROVIDER_DISPLAY_NAMES.get(provider, provider.replace("_", " ").title())
 
 
 class AuthResult(StrEnum):
@@ -273,6 +368,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
+        Binding("f2", "toggle_advanced", "Advanced", show=False, priority=True),
         Binding("ctrl+d", "delete_stored", "Delete stored", show=False, priority=True),
     ]
 
@@ -301,6 +397,30 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         height: auto;
         color: $text;
         margin-bottom: 1;
+    }
+
+    AuthPromptScreen .auth-prompt-status {
+        height: auto;
+        color: $text;
+        background: $background;
+        padding: 0 1;
+        margin-bottom: 1;
+    }
+
+    AuthPromptScreen .auth-prompt-instructions {
+        height: auto;
+        color: $text;
+        margin-bottom: 1;
+    }
+
+    AuthPromptScreen .auth-prompt-advanced-toggle {
+        height: auto;
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+
+    AuthPromptScreen #auth-prompt-base-url-label {
+        text-align: center;
     }
 
     AuthPromptScreen .auth-prompt-meta {
@@ -355,17 +475,36 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         self._provider = provider
         self._env_var = env_var
         self._reason = reason
-        # Probe the store, but never let a corrupt `auth.json` crash the
-        # screen at construction time — Textual would propagate the
-        # exception before the modal mounts. Treat unreadable as
-        # "no existing key" and surface a one-line warning at compose time.
+        # Resolve the current credential source and probe the store, but never
+        # let a corrupt `auth.json`/config crash the screen at construction
+        # time — Textual would propagate the exception before the modal mounts.
+        # Treat unreadable as "no env source" / "no existing key" and surface a
+        # one-line warning at compose time. The status is consumed only
+        # cosmetically (title prefix, env note), so a MISSING fallback is safe.
+        # The config is loaded once here so compose-time helpers can read the
+        # cached instance instead of reloading outside this crash-safety guard.
         try:
+            self._config = ModelConfig.load()
+            self._auth_status = (
+                get_service_auth_status(provider)
+                if is_service(provider)
+                else get_provider_auth_status(provider)
+            )
             self._has_existing = auth_store.get_stored_key(provider) is not None
             self._existing_base_url = auth_store.get_stored_base_url(provider) or ""
+            self._advanced_visible = bool(self._existing_base_url)
             self._store_warning: str | None = None
         except RuntimeError as exc:
+            logger.warning(
+                "Could not read stored credentials for %s: %s", provider, exc
+            )
+            self._config = ModelConfig()
+            self._auth_status = ProviderAuthStatus(
+                state=ProviderAuthState.MISSING, provider=provider
+            )
             self._has_existing = False
             self._existing_base_url = ""
+            self._advanced_visible = False
             self._store_warning = (
                 f"Credential file is unreadable ({exc}). Saving here will overwrite it."
             )
@@ -377,38 +516,89 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             Widgets that make up the auth prompt modal.
         """
         glyphs = get_glyphs()
+        provider_label = _provider_display_name(self._provider, self._config)
         with Vertical():
             # Tag the title with `(stored)` so the user knows a replacement
             # (or the `Ctrl+D delete` affordance shown in the help line) is
             # what's about to happen — both are gated on `_has_existing`.
+            resolved_from_env = self._auth_status.source is ProviderAuthSource.ENV
+            scoped_env_var = None
+            if self._auth_status.env_var:
+                candidate = resolved_env_var_name(self._auth_status.env_var)
+                if candidate.startswith("DEEPAGENTS_CODE_") and os.environ.get(
+                    candidate
+                ):
+                    scoped_env_var = candidate
+            active_env_var = scoped_env_var or (
+                resolved_env_var_name(self._auth_status.env_var)
+                if resolved_from_env and self._auth_status.env_var
+                else None
+            )
+            if active_env_var and active_env_var.startswith("DEEPAGENTS_CODE_"):
+                title_prefix = f"{glyphs.warning} "
+            else:
+                title_prefix = f"{glyphs.checkmark} " if resolved_from_env else ""
             if self._has_existing:
-                title = Content.from_markup(
-                    "API key for [bold]$provider[/bold] [dim](stored)[/dim]",
-                    provider=self._provider,
+                title = Content.assemble(
+                    title_prefix,
+                    Content.from_markup(
+                        "Replace key for [bold]$provider[/bold] [dim](stored)[/dim]",
+                        provider=provider_label,
+                    ),
+                )
+            elif resolved_from_env:
+                title = Content.assemble(
+                    title_prefix,
+                    Content.from_markup(
+                        "Replace key for [bold]$provider[/bold]",
+                        provider=provider_label,
+                    ),
                 )
             else:
-                title = Content.from_markup(
-                    "API key for [bold]$provider[/bold]",
-                    provider=self._provider,
+                title = Content.assemble(
+                    title_prefix,
+                    Content.from_markup(
+                        "API key for [bold]$provider[/bold]",
+                        provider=provider_label,
+                    ),
                 )
             yield Static(title, classes="auth-prompt-title")
+            if active_env_var:
+                env_var = active_env_var
+                is_scoped_env = env_var.startswith("DEEPAGENTS_CODE_")
+                env_status_style = "$warning" if is_scoped_env else "$success"
+                env_note = (
+                    "This scoped env var takes priority. A saved key will be used "
+                    f"only when {env_var} is unset."
+                    if is_scoped_env
+                    else (
+                        "Paste a key below to use a different key for Deep Agents Code."
+                    )
+                )
+                yield Static(
+                    Content.assemble(
+                        (
+                            "Current key is set from environment variable ",
+                            env_status_style,
+                        ),
+                        (env_var, f"bold {env_status_style}"),
+                        (".", env_status_style),
+                        "\n",
+                        (env_note, "italic $text-muted"),
+                    ),
+                    classes="auth-prompt-status",
+                    id="auth-prompt-env-status",
+                )
             if self._reason:
                 yield Static(
                     Content.from_markup("$reason", reason=self._reason),
                     classes="auth-prompt-copy",
                 )
-            if self._env_var:
-                yield Static(
-                    Content.from_markup(
-                        "Saved here and used automatically — no need to set "
-                        "[bold]$plain[/bold] in your shell. If "
-                        "[bold]$prefixed[/bold] is set, it takes priority.",
-                        plain=self._env_var,
-                        prefixed=f"DEEPAGENTS_CODE_{self._env_var}",
-                    ),
-                    classes="auth-prompt-meta",
-                    id="auth-prompt-key-meta",
-                )
+            yield Static(
+                self._build_key_instructions(),
+                classes="auth-prompt-instructions",
+                id="auth-prompt-key-instructions",
+            )
             if self._store_warning:
                 yield Static(
                     Content.from_markup("$msg", msg=self._store_warning),
@@ -423,48 +613,236 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                 password=True,
                 id="auth-prompt-input",
             )
-            yield Input(
+            yield Static(
+                Content.from_markup(
+                    "Deep Agents Code stores the above key locally and uses it "
+                    "when you select [bold]$provider[/bold] models.",
+                    provider=provider_label,
+                ),
+                classes="auth-prompt-meta",
+                id="auth-prompt-storage-note",
+            )
+            yield Static(
+                self._build_advanced_toggle_label(),
+                classes="auth-prompt-advanced-toggle",
+                id="auth-prompt-advanced-toggle",
+            )
+            if self._env_var:
+                key_meta = Static(
+                    Content.assemble(
+                        "Alternatively, environment variables can be used in place "
+                        "of the key stored above. Set ",
+                        (f"DEEPAGENTS_CODE_{self._env_var}", TStyle(bold=True)),
+                        " for a Deep Agents Code-only key; it has the highest "
+                        "priority. Set ",
+                        (self._env_var, TStyle(bold=True)),
+                        " to share a key with other provider SDK tools; it is used "
+                        "only when no scoped or stored key exists. ",
+                        (
+                            "Configuration docs",
+                            self._link_style(CONFIGURATION_DOCS_URL),
+                        ),
+                        ".",
+                    ),
+                    classes="auth-prompt-meta",
+                    id="auth-prompt-key-meta",
+                )
+                key_meta.display = self._advanced_visible
+                yield key_meta
+            base_url_label = Static(
+                Content.from_markup("[bold]Base URL override[/bold]"),
+                classes="auth-prompt-meta",
+                id="auth-prompt-base-url-label",
+            )
+            base_url_label.display = self._advanced_visible
+            yield base_url_label
+            base_url_input = Input(
                 value=self._existing_base_url,
-                placeholder="Optional base URL",
+                placeholder="Base URL",
                 id="auth-prompt-base-url",
             )
-            # The hint lives on its own wrapping line, not in the Input
-            # placeholder (which clips to one line and can't show the full var
-            # name). Three tiers: the prefixed var that actually survives a
-            # blank save (what blank uses), else the provider's known endpoint
-            # var as a discoverability hint, else a generic line for providers
-            # with no base-URL env var at all.
-            surviving_base_url_env = get_default_base_url_env(self._provider)
-            endpoint_env = get_base_url_env_var(self._provider)
-            if surviving_base_url_env:
-                base_url_hint = Content.from_markup(
-                    "Leave blank to use [bold]$var[/bold].",
-                    var=surviving_base_url_env,
-                )
-            elif endpoint_env:
-                base_url_hint = Content.from_markup(
-                    "Leave blank for the provider default "
-                    "(endpoint var: [bold]$var[/bold]).",
-                    var=endpoint_env,
-                )
-            else:
-                base_url_hint = Content.from_markup(
-                    "Leave blank to use the provider's default endpoint."
-                )
-            yield Static(
-                base_url_hint,
+            base_url_input.display = self._advanced_visible
+            yield base_url_input
+            base_url_hint_widget = Static(
+                self._build_base_url_hint(),
                 classes="auth-prompt-meta",
                 id="auth-prompt-base-url-hint",
             )
+            base_url_hint_widget.display = self._advanced_visible
+            yield base_url_hint_widget
             yield Static("", classes="auth-prompt-error", id="auth-prompt-error")
             save_label = "Enter replace" if self._has_existing else "Enter save"
-            help_parts = [f"{save_label} {glyphs.bullet} Esc cancel"]
+            help_parts = [f"{save_label} {glyphs.bullet} Esc cancel", "F2 advanced"]
             if self._has_existing:
                 help_parts.append("Ctrl+D delete stored")
             yield Static(
                 f" {glyphs.bullet} ".join(help_parts),
                 classes="auth-prompt-help",
             )
+
+    def _link_style(self, url: str) -> TStyle:
+        """Return a theme-aware style for inline modal links.
+
+        Args:
+            url: Link target.
+
+        Returns:
+            Textual style that opens `url` when clicked.
+        """
+        colors = theme.get_theme_colors(self)
+        if self.app.theme in {"ansi-dark", "ansi-light"}:
+            return TStyle(bold=True, underline=True, link=url)
+        return TStyle(foreground=TColor.parse(colors.primary), underline=True, link=url)
+
+    def _build_key_instructions(self) -> Content:
+        """Build provider-specific API-key acquisition guidance.
+
+        Returns:
+            Content shown before the API-key input. Appends a muted notice when
+                a user-configured `api_key_url` was rejected for using an
+                unsupported URL scheme.
+        """
+        config = self._config
+        configured_url = config.get_provider_api_key_url(self._provider)
+        rejected_url = False
+        if configured_url and not _is_safe_acquisition_url(configured_url):
+            logger.warning(
+                "Ignoring api_key_url for %s: unsupported URL scheme", self._provider
+            )
+            configured_url = None
+            rejected_url = True
+        url = configured_url or PROVIDER_API_KEY_URLS.get(
+            self._provider, _PROVIDERS_DOCS_URL
+        )
+        label = (
+            "Provider key page"
+            if configured_url or self._provider in PROVIDER_API_KEY_URLS
+            else "Provider setup docs"
+        )
+        provider = _provider_display_name(self._provider, config)
+        if self._provider == "azure_openai":
+            instructions = Content.assemble(
+                "Find your key in your Azure OpenAI resource's "
+                "Keys and Endpoint page, then paste it below. ",
+                (label, self._link_style(url)),
+            )
+        elif self._provider == "openai":
+            instructions = Content.assemble(
+                f"Sign in to {provider}, create or copy an API key, then "
+                "paste it below. Minimum permissions needed: "
+                "under Model capabilities, grant Write access to Responses "
+                "(/v1/responses). For older models, you may also need "
+                "Request access to Chat completions (/v1/chat/completions). ",
+                (label, self._link_style(url)),
+            )
+        else:
+            instructions = Content.assemble(
+                f"Sign in to {provider}, create or copy an API key, "
+                "then paste it below. ",
+                (label, self._link_style(url)),
+            )
+        if rejected_url:
+            notice = (
+                "Your configured api_key_url was ignored (unsupported URL "
+                "scheme); showing the default link instead."
+            )
+            instructions = Content.assemble(
+                instructions,
+                "\n",
+                (notice, "italic $text-muted"),
+            )
+        return instructions
+
+    def _build_advanced_toggle_label(self) -> str:
+        """Build the disclosure-row label for advanced settings.
+
+        Returns:
+            Toggle label reflecting the current expanded state.
+        """
+        glyphs = get_glyphs()
+        marker = (
+            glyphs.disclosure_expanded
+            if self._advanced_visible
+            else glyphs.disclosure_collapsed
+        )
+        return f"{marker} Advanced (F2)"
+
+    def _build_base_url_hint(self) -> Content:
+        """Build the optional base-URL hint shown inside Advanced.
+
+        Returns:
+            Content describing blank behavior and env-var precedence.
+        """
+        surviving_base_url_env = get_default_base_url_env(self._provider)
+        endpoint_env = get_base_url_env_var(self._provider)
+        if surviving_base_url_env and endpoint_env:
+            return Content.from_markup(
+                "Override the provider endpoint for this stored key. "
+                "Leave blank to use [bold]$prefixed[/bold].\n"
+                "Env override order: [bold]$prefixed[/bold], then [bold]$plain[/bold].",
+                prefixed=surviving_base_url_env,
+                plain=endpoint_env,
+            )
+        if endpoint_env:
+            return Content.from_markup(
+                "Override the provider endpoint for this stored key. "
+                "Leave blank to use the provider default.\n"
+                "Env override order: [bold]$prefixed[/bold], then [bold]$plain[/bold].",
+                prefixed=f"DEEPAGENTS_CODE_{endpoint_env}",
+                plain=endpoint_env,
+            )
+        return Content.from_markup(
+            "Override the provider endpoint for this stored key. "
+            "Leave blank to use the provider default."
+        )
+
+    def action_toggle_advanced(self) -> None:
+        """Show or hide optional endpoint and env-var details.
+
+        Restores focus to the key input when collapsing so keyboard entry
+        resumes on the field the user most likely wants.
+        """
+        self._advanced_visible = not self._advanced_visible
+        for selector in (
+            "#auth-prompt-key-meta",
+            "#auth-prompt-base-url-label",
+            "#auth-prompt-base-url",
+            "#auth-prompt-base-url-hint",
+        ):
+            for widget in self.query(selector):
+                widget.display = self._advanced_visible
+        self.query_one("#auth-prompt-advanced-toggle", Static).update(
+            self._build_advanced_toggle_label()
+        )
+        if not self._advanced_visible:
+            self.query_one("#auth-prompt-input", Input).focus()
+
+    def on_click(self, event: Click) -> None:
+        """Open style-embedded hyperlinks or toggle Advanced."""
+        widget = event.widget
+        if (
+            widget is not None
+            and widget.id == "auth-prompt-advanced-toggle"
+            and not event.style.link
+        ):
+            self.action_toggle_advanced()
+            event.stop()
+            return
+        open_style_link(event)
+
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Show a pointer over links and the clickable Advanced row."""
+        widget = event.widget
+        self.styles.pointer = (
+            "pointer"
+            if event.style.link
+            or (widget is not None and widget.id == "auth-prompt-advanced-toggle")
+            else "default"
+        )
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the prompt."""
+        self.styles.pointer = "default"
 
     def on_mount(self) -> None:
         """Apply ASCII border when needed."""
@@ -573,6 +951,12 @@ class AuthManagerScreen(ModalScreen[None]):
     state changes are persisted by `AuthPromptScreen` and reflected by
     re-rendering the option list when this screen is reopened or after a
     save/delete completes.
+
+    Well-known providers whose integration package isn't installed yet are
+    surfaced greyed-out so they stay discoverable. Selecting one routes
+    through an install confirmation: on confirm the screen records the extra on
+    `pending_install_extra` and dismisses so the app can install it (mirroring
+    the model selector's install-on-select flow) and reopen the manager.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -632,6 +1016,17 @@ class AuthManagerScreen(ModalScreen[None]):
     }
     """
 
+    def __init__(self) -> None:
+        """Initialize the manager with an empty install-on-select registry."""
+        super().__init__()
+        # Uninstalled known providers mapped to the extra that installs them,
+        # populated each time the option list is built. Selecting one routes
+        # to the install confirmation instead of the key prompt.
+        self._install_extras: dict[str, str] = {}
+        # Set when the user confirms installing a provider's extra; the app
+        # reads this off the screen after dismissal to install then reopen.
+        self.pending_install_extra: str | None = None
+
     def compose(self) -> ComposeResult:
         """Compose the manager.
 
@@ -654,7 +1049,7 @@ class AuthManagerScreen(ModalScreen[None]):
             yield OptionList(*options, id="auth-manager-options")
             yield Static(
                 f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab/Shift+Tab "
-                f"navigate {glyphs.bullet} Enter add/replace/delete "
+                f"navigate {glyphs.bullet} Enter add/replace/delete/install "
                 f"{glyphs.bullet} Esc close",
                 classes="auth-manager-help",
             )
@@ -679,9 +1074,9 @@ class AuthManagerScreen(ModalScreen[None]):
             )
         )
         return Content.assemble(
-            "Lists installed providers and any you've configured in "
-            "~/.deepagents/config.toml. Install more via "
-            "`/install <provider>`. ",
+            "Lists installed model providers, services like web search, and any "
+            "providers you've configured in ~/.deepagents/config.toml. Greyed-out "
+            "providers aren't installed yet — select one to install it. ",
             ("Docs", link_style),
         )
 
@@ -696,10 +1091,27 @@ class AuthManagerScreen(ModalScreen[None]):
         """Open style-embedded hyperlinks (the title `Docs` link)."""
         open_style_link(event)
 
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Show a pointer over inline docs links."""
+        self.styles.pointer = "pointer" if event.style.link else "default"
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the manager."""
+        self.styles.pointer = "default"
+
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        """Open the prompt for the selected provider."""
+        """Open the prompt for the selected provider.
+
+        Greyed-out (uninstalled) providers route to an install confirmation
+        instead of the key prompt, since their package must be installed before
+        a credential is useful.
+        """
         provider = event.option.id
         if not provider:
+            return
+        extra = self._install_extras.get(provider)
+        if extra is not None:
+            self._prompt_install_provider(provider, extra)
             return
         if provider == CODEX_PROVIDER:
             # ChatGPT auth uses an OAuth browser flow, not an API key. The
@@ -709,10 +1121,47 @@ class AuthManagerScreen(ModalScreen[None]):
             # callback wait on a worker.
             self._open_codex_screen()
             return
+        if is_service(provider):
+            # Services (e.g. Tavily web search) use a plain API key, stored the
+            # same way as a model-provider key.
+            self.app.push_screen(
+                AuthPromptScreen(provider, SERVICE_API_KEY_ENV[provider]),
+                self._on_prompt_closed,
+            )
+            return
         env_var = get_credential_env_var(provider)
         self.app.push_screen(
             AuthPromptScreen(provider, env_var),
             self._on_prompt_closed,
+        )
+
+    def _prompt_install_provider(self, provider: str, extra: str) -> None:
+        """Confirm installing an uninstalled provider's extra, then dismiss.
+
+        On confirm, record the extra on `pending_install_extra` and dismiss so
+        the app can install it (with a server restart) and reopen the manager
+        with the provider now installed. On cancel, stay on the manager.
+
+        Args:
+            provider: The uninstalled provider the user selected.
+            extra: The `deepagents-code` extra that installs `provider`.
+        """
+        from deepagents_code.widgets.install_confirm import (
+            InstallProviderConfirmScreen,
+        )
+
+        def _on_confirm(proceed: bool | None) -> None:
+            if proceed:
+                self.pending_install_extra = extra
+                self.dismiss(None)
+            else:
+                # Declined or dismissed: clear any pending extra so a reused
+                # screen never carries a stale install request, and stay put.
+                self.pending_install_extra = None
+
+        self.app.push_screen(
+            InstallProviderConfirmScreen(provider, extra),
+            _on_confirm,
         )
 
     def _open_codex_screen(self) -> None:
@@ -832,25 +1281,90 @@ class AuthManagerScreen(ModalScreen[None]):
         # `PROVIDER_API_KEY_ENV`, since it has no env var of its own.
         codex_installed = {CODEX_PROVIDER} if "openai" in installed else set()
 
-        providers = sorted(
-            well_known_installed | codex_installed | stored | config_providers
-        )
+        shown = well_known_installed | codex_installed | stored | config_providers
+        # Surface well-known providers whose package isn't installed yet as
+        # greyed-out, install-on-select entries so they stay
+        # discoverable (mirrors the model selector). Disabled providers and
+        # ones already shown above are skipped.
+        self._install_extras = self._uninstalled_known_providers(config, shown)
+
+        providers = sorted(shown | set(self._install_extras))
         options = [
-            Option(self._format_label(provider), id=provider) for provider in providers
+            Option(
+                self._format_label(
+                    provider, installed=provider not in self._install_extras
+                ),
+                id=provider,
+            )
+            for provider in providers
         ]
+        # Append non-model services (e.g. Tavily web search) after the model
+        # providers. These are always shown — their key is configurable here
+        # regardless of whether the backing package is installed — so users can
+        # enter it the same way they enter a model-provider key.
+        options.extend(
+            Option(self._format_label(service), id=service)
+            for service in sorted(set(SERVICE_API_KEY_ENV) - set(providers))
+        )
         return options, warning
 
     @staticmethod
-    def _format_label(provider: str) -> Content:
-        """Build a `Content` label for `provider` showing its credential source.
+    def _uninstalled_known_providers(
+        config: ModelConfig, shown: set[str]
+    ) -> dict[str, str]:
+        """Map known providers missing their package to the installing extra.
+
+        Args:
+            config: Loaded model config, used to skip disabled providers.
+            shown: Providers already listed (installed/stored/config) to skip.
 
         Returns:
-            A composed `Content` with the provider name and a status badge.
+            `{provider: extra}` for each well-known, enabled provider whose
+                integration package is not installed and has a curated extra.
         """
-        status = get_provider_auth_status(provider)
+        from deepagents_code.config_manifest import (
+            is_provider_package_installed,
+            provider_install_extra,
+        )
+
+        uninstalled: dict[str, str] = {}
+        for provider in PROVIDER_API_KEY_ENV:
+            if provider in shown or not config.is_provider_enabled(provider):
+                continue
+            extra = provider_install_extra(provider)
+            if extra is None or is_provider_package_installed(provider):
+                continue
+            uninstalled[provider] = extra
+        return uninstalled
+
+    @staticmethod
+    def _format_label(provider: str, *, installed: bool = True) -> Content:
+        """Build a `Content` label for `provider` showing its credential source.
+
+        Args:
+            provider: Provider config key.
+            installed: Whether the provider's integration package is installed.
+                Uninstalled providers render dimmed with a `[not installed]`
+                marker since selecting them prompts an install, not a key.
+
+        Returns:
+            A composed `Content` with the provider label and a status badge.
+        """
+        name = _provider_display_name(provider)
+        if not installed:
+            return Content.assemble(
+                Content.styled(name, "dim"),
+                "  ",
+                Content.styled("[not installed]", "dim"),
+            )
+        status = (
+            get_service_auth_status(provider)
+            if is_service(provider)
+            else get_provider_auth_status(provider)
+        )
         badge = format_auth_badge(status)
         return Content.assemble(
-            Content.from_markup("$provider", provider=provider),
+            Content.from_markup("$provider", provider=name),
             "  ",
             badge,
         )

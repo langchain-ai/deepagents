@@ -108,7 +108,13 @@ def show_help() -> None:
     console.print("  dcode mcp <login>                         Manage MCP servers")
     console.print("  dcode config <show|list|get|path>         Inspect configuration")
     console.print(
+        "  dcode auth <list|set|remove|status|path>  Manage provider credentials"
+    )
+    console.print(
         "  dcode update                              Check for and install updates"
+    )
+    console.print(
+        "  dcode doctor                              Print install diagnostics"
     )
     console.print()
 
@@ -449,6 +455,42 @@ def show_update_help() -> None:
     console.print()
 
 
+def show_doctor_help() -> None:
+    """Show help information for the `doctor` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode doctor [options]", markup=False)
+    console.print()
+    console.print(
+        "Print install health and diagnostics (versions, platform, install",
+    )
+    console.print(
+        "method, update status, and config locations). Runs offline and is",
+    )
+    console.print(
+        "safe to paste into a bug report.",
+    )
+    console.print()
+    _print_option_section()
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode doctor")
+    console.print("  dcode doctor --json")
+    console.print()
+    console.print(
+        "Tip: Run `dcode config show` or `dcode config get <key>` "
+        "to drill into config details.",
+        style=theme.MUTED,
+        highlight=False,
+    )
+    console.print(
+        "     Run `dcode --version` (or `dcode -v`) for dependency versions.",
+        style=theme.MUTED,
+        highlight=False,
+    )
+    console.print()
+
+
 def _print_mcp_discovery_paths() -> None:
     """Print the auto-discovered MCP config paths in precedence order."""
     from deepagents_code.mcp_tools import MCP_CONFIG_DISCOVERY_PATHS
@@ -570,6 +612,45 @@ def show_config_help() -> None:
     console.print("  dcode config list --json")
     console.print("  dcode config get interpreter.memory_limit_mb")
     console.print("  dcode config path")
+    console.print()
+
+
+def show_auth_help() -> None:
+    """Show help information for the `auth` subcommand.
+
+    Invoked via the `-h` argparse action, the startup fast-path, or
+    `run_auth_command` when no auth subcommand is given. Kept import-light so
+    it stays on the startup fast path.
+    """
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode auth <command> [options]")
+    console.print()
+    console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
+    console.print("  list|ls               List providers and their status")
+    console.print("  set <provider>        Store an API key (read from stdin)")
+    console.print("  remove <provider>     Remove a stored credential (rm|delete)")
+    console.print("  status <provider>     Show resolution source for one provider")
+    console.print("  path                  Print the resolved auth.json path")
+    console.print()
+    console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
+    console.print("  --from-env VAR        With `set`, copy the key from env var VAR")
+    console.print("  -h, --help            Show this help message")
+    console.print()
+    console.print(
+        "  Keys are read from stdin by default so they never land in shell"
+        " history or argv. An interactive terminal is rejected; pipe the key"
+        " or use --from-env.",
+        style=theme.MUTED,
+    )
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode auth list")
+    console.print("  echo $ANTHROPIC_API_KEY | dcode auth set anthropic")
+    console.print("  dcode auth set openai --from-env OPENAI_API_KEY")
+    console.print("  dcode auth status anthropic")
+    console.print("  dcode auth remove anthropic")
+    console.print("  dcode auth path")
     console.print()
 
 

@@ -22,6 +22,7 @@ from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
 from textual.events import (
     Click,  # noqa: TC002 - needed at runtime for Textual event dispatch
+    MouseMove,  # noqa: TC002 - needed at runtime for Textual event dispatch
 )
 from textual.screen import ModalScreen
 from textual.style import Style as TStyle
@@ -234,6 +235,18 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
             event.stop()
             return
         open_style_link(event)
+
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Show a pointer over links and the manual URL disclosure row."""
+        self.styles.pointer = (
+            "pointer"
+            if event.style.link or event.widget is self._link_widget
+            else "default"
+        )
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the modal."""
+        self.styles.pointer = "default"
 
     # ------------------------------------------------------------------
     # OAuthInteraction implementation.

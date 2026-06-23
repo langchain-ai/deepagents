@@ -7,7 +7,7 @@ import contextlib
 import logging
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, assert_never
 
 from rich.cells import cell_len
 from rich.segment import Segment
@@ -227,6 +227,69 @@ class CompletionOption(Static):
         self.post_message(self.Clicked(self._index))
 
 
+InputAction = Literal["clear", "copy"]
+"""Closed set of actions an `InputActionButton` can dispatch."""
+
+
+class InputActionButton(Static):
+    """Small clickable button shown at the right edge of the chat input row.
+
+    Provides discoverable mouse alternatives to keyboard shortcuts for
+    clearing (`[ X ]`) and copying (`[ COPY ]`) the current draft.
+    """
+
+    DEFAULT_CSS = """
+    InputActionButton {
+        height: 1;
+        margin: 0 0 0 1;
+        text-style: bold;
+    }
+
+    InputActionButton.input-action-clear {
+        width: 5;
+        color: $error;
+    }
+
+    InputActionButton.input-action-copy {
+        width: 8;
+        color: $primary;
+    }
+
+    InputActionButton.input-action-clear:hover {
+        background: $error;
+        color: auto;
+    }
+
+    InputActionButton.input-action-copy:hover {
+        background: $primary;
+        color: auto;
+    }
+    """
+
+    class Clicked(Message):
+        """Message sent when an input action button is clicked."""
+
+        def __init__(self, action: InputAction) -> None:
+            """Initialize with the action identifier (`clear` or `copy`)."""
+            super().__init__()
+            self.action = action
+
+    @property
+    def allow_select(self) -> bool:
+        """Disable terminal text selection for the action label."""
+        return False
+
+    def __init__(self, label: str, action: InputAction, **kwargs: Any) -> None:
+        """Initialize the button with a label and an action identifier."""
+        super().__init__(label, markup=False, **kwargs)
+        self._action = action
+
+    def on_click(self, event: Click) -> None:
+        """Relay the click as a typed `Clicked` message."""
+        event.stop()
+        self.post_message(self.Clicked(self._action))
+
+
 class CompletionPopup(VerticalScroll):
     """Popup widget that displays completion suggestions as clickable options."""
 
@@ -328,6 +391,14 @@ class CompletionPopup(VerticalScroll):
             with contextlib.suppress(Exception):
                 await self.remove_children()
             self.hide()
+            return
+
+        # The DOM mutations above can await, during which a hide() (or a newer
+        # rebuild) bumps the generation to cancel this one. The top-of-function
+        # guard ran before that await, so re-check here: without it a stale
+        # rebuild would re-show a popup that was dismissed mid-flight (e.g. when
+        # a completion is applied and the popup hidden in the same key press).
+        if generation != self._rebuild_generation:
             return
 
         self.show()
@@ -784,6 +855,20 @@ class ChatTextArea(TextArea):
         self._paste_burst_last_key_time = None
         self._paste_burst_last_suppressed_enter_time = None
 
+    def _reset_paste_burst_state(self) -> None:
+        """Reset all paste-burst and backslash tracking to a clean slate.
+
+        Shared by the text-replacing entry points (`set_text_from_history`,
+        `clear_text`, `discard_text`) so a wholesale text swap never leaves
+        stale burst/backslash timing that would misclassify the next keystroke.
+        """
+        self._paste_burst_buffer = ""
+        self._paste_burst_last_char_time = None
+        self._paste_burst_window_until = None
+        self._reset_paste_burst_run()
+        self._cancel_paste_burst_timer()
+        self._backslash_pending_time = None
+
     def _enter_inserts_newline_during_burst(self, now: float) -> bool:
         """Return whether `enter` should insert a newline rather than submit.
 
@@ -1144,12 +1229,7 @@ class ChatTextArea(TextArea):
                 to preserve historical cursor-at-end behavior for callers
                 that don't specify a direction.
         """
-        self._paste_burst_buffer = ""
-        self._paste_burst_last_char_time = None
-        self._paste_burst_window_until = None
-        self._reset_paste_burst_run()
-        self._cancel_paste_burst_timer()
-        self._backslash_pending_time = None
+        self._reset_paste_burst_state()
         self._skip_history_change_events += 1
         self.text = text
         if cursor_at_end:
@@ -1169,14 +1249,25 @@ class ChatTextArea(TextArea):
         # set_text_from_history is still suppressed, plus one for the
         # self.text = "" assignment below.
         self._skip_history_change_events += 1
-        self._paste_burst_buffer = ""
-        self._paste_burst_last_char_time = None
-        self._paste_burst_window_until = None
-        self._reset_paste_burst_run()
-        self._cancel_paste_burst_timer()
-        self._backslash_pending_time = None
+        self._reset_paste_burst_state()
         self.text = ""
         self.move_cursor((0, 0))
+
+    def discard_text(self) -> bool:
+        """Clear the draft via an undoable edit (restorable with ctrl+z).
+
+        Unlike `clear_text`, the deletion is recorded in the undo history and
+        the resulting `Changed` event is allowed to propagate, so completion
+        and argument-hint state stay in sync.
+
+        Returns:
+            `True` when there was text to clear.
+        """
+        if not self.text:
+            return False
+        self._reset_paste_burst_state()
+        self.clear()
+        return True
 
 
 class _CompletionViewAdapter:
@@ -1225,6 +1316,11 @@ class ChatInput(Vertical):
     DEFAULT_CSS = """
     ChatInput {
         height: auto;
+        layers: base actions;
+    }
+
+    ChatInput #input-box {
+        height: auto;
         min-height: 3;
         max-height: 25;
         padding: 0;
@@ -1232,18 +1328,31 @@ class ChatInput(Vertical):
         border: solid $primary;
     }
 
-    ChatInput.mode-shell {
+    ChatInput.mode-shell #input-box {
         border: solid $mode-bash;
     }
 
-    ChatInput.mode-command {
+    ChatInput.mode-command #input-box {
         border: solid $mode-command;
     }
 
-    ChatInput.mode-shell-incognito {
+    ChatInput.mode-shell-incognito #input-box {
         border: solid $mode-incognito;
         border-title-color: $mode-incognito;
         border-title-style: bold;
+    }
+
+    /* Action buttons float on their own z-layer over the top border line, so
+       they cost no content row and never overlap the draft text. The row docks
+       to the right edge and sizes to its buttons (`width: auto`), overlaying
+       only the right portion of the border line and leaving the rest clear. */
+    ChatInput #input-actions {
+        layer: actions;
+        dock: right;
+        width: auto;
+        height: 1;
+        margin-right: 1;
+        display: none;
     }
 
     ChatInput .input-row {
@@ -1333,6 +1442,8 @@ class ChatInput(Vertical):
         super().__init__(**kwargs)
         self._cwd = Path(cwd) if cwd else Path.cwd()
         self._image_tracker = image_tracker
+        self._input_box: Vertical | None = None
+        self._action_buttons: Horizontal | None = None
         self._text_area: ChatTextArea | None = None
         self._popup: CompletionPopup | None = None
         self._completion_manager: MultiCompletionManager | None = None
@@ -1384,17 +1495,38 @@ class ChatInput(Vertical):
         Yields:
             Widgets for the input row and completion popup.
         """
-        with Horizontal(classes="input-row"):
-            yield Static(">", classes="input-prompt", id="prompt")
-            yield ChatTextArea(id="chat-input")
+        # The bordered box owns the prompt, text area, and completion popup so
+        # the action buttons (a sibling) can float on its top border line; a
+        # widget can only render on its sibling's border, not its parent's.
+        with Vertical(id="input-box"):
+            with Horizontal(classes="input-row"):
+                yield Static(">", classes="input-prompt", id="prompt")
+                yield ChatTextArea(id="chat-input")
+            yield CompletionPopup(id="completion-popup")
 
-        yield CompletionPopup(id="completion-popup")
+        # Action buttons float on their own z-layer over the top border line so
+        # they cost no content row and never overlap the draft text.
+        with Horizontal(id="input-actions"):
+            yield InputActionButton(
+                "[ X ]",
+                "clear",
+                id="clear-button",
+                classes="input-action input-action-clear",
+            )
+            yield InputActionButton(
+                "[ COPY ]",
+                "copy",
+                id="copy-button",
+                classes="input-action input-action-copy",
+            )
 
     def on_mount(self) -> None:
         """Initialize components after mount."""
+        self._input_box = self.query_one("#input-box", Vertical)
+        self._action_buttons = self.query_one("#input-actions", Horizontal)
         if is_ascii_mode():
             colors = theme.get_theme_colors(self)
-            self.styles.border = ("ascii", colors.primary)
+            self._input_box.styles.border = ("ascii", colors.primary)
 
         self._text_area = self.query_one("#chat-input", ChatTextArea)
         self._popup = self.query_one("#completion-popup", CompletionPopup)
@@ -1492,9 +1624,28 @@ class ChatInput(Vertical):
 
         self._text_area.argument_hint = ""
 
+    def _set_action_buttons_visible(self, *, visible: bool) -> None:
+        """Show or hide the clear/copy action buttons on the input border.
+
+        Only writes `display` when it actually changes. Mutating it on every
+        keystroke would trigger a layout reflow each time, which perturbs the
+        completion popup's deferred (`call_after_refresh`) show/hide ordering.
+        """
+        if self._action_buttons is not None and self._action_buttons.display != visible:
+            self._action_buttons.display = visible
+
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """Detect input mode and update completions."""
         text = event.text_area.text
+        # Reveal the clear/copy buttons only when there is a meaningful draft to
+        # act on, so an empty input keeps a clean, uncluttered border.
+        # Whitespace-only input (e.g. stray spaces or newlines) has nothing
+        # worth clearing or copying, so it stays hidden too. Done before the
+        # early returns below so recalled-history text shows them as well.
+        # NOTE: this `strip()` gate is deliberately stricter than the keyboard
+        # paths (esc+esc clear, Ctrl+C copy), which act on the raw value so a
+        # whitespace-only draft is still clearable/copyable without the buttons.
+        self._set_action_buttons_visible(visible=bool(text.strip()))
         # Drag-drop / bracketed paste arrive as one Changed event with a
         # multi-character inserted span. Normal typing arrives one character at
         # a time. Checking the changed span (rather than net length delta)
@@ -2266,10 +2417,10 @@ class ChatInput(Vertical):
                     self.mode = "normal"
                 return
             prompt.update(glyph or ">")
-            if mode == "shell_incognito":
-                self.border_title = "incognito"
-            else:
-                self.border_title = None
+            if self._input_box is not None:
+                self._input_box.border_title = (
+                    "incognito" if mode == "shell_incognito" else None
+                )
 
         self.call_after_refresh(_apply)
         self.post_message(self.ModeChanged(mode))
@@ -2281,7 +2432,7 @@ class ChatInput(Vertical):
 
     @property
     def value(self) -> str:
-        """Get the current input value.
+        """Current input value.
 
         Returns:
             Current text in the input field.
@@ -2303,12 +2454,63 @@ class ChatInput(Vertical):
         self._text_area.text = val
         self._text_area.move_cursor_to_end()
 
-    @property
-    def input_widget(self) -> ChatTextArea | None:
-        """Get the underlying TextArea widget.
+    def discard_text(self) -> bool:
+        """Clear the draft, keeping it restorable via undo (ctrl+z).
 
         Returns:
-            The ChatTextArea widget or None if not mounted.
+            `True` when there was text to clear.
+        """
+        if self._text_area is None:
+            return False
+        if self._text_area.text:
+            self._skip_media_sync_events += 1
+        return self._text_area.discard_text()
+
+    def on_input_action_button_clicked(self, event: InputActionButton.Clicked) -> None:
+        """Handle clicks on the `[ X ]` / `[ COPY ]` input buttons."""
+        event.stop()
+        if event.action == "clear":
+            self._clear_via_button()
+        elif event.action == "copy":
+            self._copy_via_button()
+        else:
+            assert_never(event.action)
+
+    def _clear_via_button(self) -> None:
+        """Clear the draft from the `[ X ]` button (undoable with ctrl+z).
+
+        Also exits any active slash/shell mode, unlike the Esc-driven clear.
+        """
+        cleared = self.discard_text()
+        self.exit_mode()
+        if cleared:
+            self.app.notify("Input cleared (ctrl+z to undo)", timeout=3, markup=False)
+        if self._text_area is not None:
+            self._text_area.focus()
+
+    def _copy_via_button(self) -> None:
+        """Copy the current draft to the clipboard from the `[ COPY ]` button."""
+        from deepagents_code.clipboard import copy_text_with_feedback
+
+        text = self.value
+        if text:
+            copy_text_with_feedback(
+                self.app,
+                text,
+                failure_noun="input",
+                success_message="Input copied to clipboard",
+            )
+        # Refocus the input so clicking the button never strands focus on the
+        # (non-focusable) button.
+        if self._text_area is not None:
+            self._text_area.focus()
+
+    @property
+    def input_widget(self) -> ChatTextArea | None:
+        """Underlying `TextArea` widget.
+
+        Returns:
+            The `ChatTextArea` widget or `None` if not mounted.
         """
         return self._text_area
 

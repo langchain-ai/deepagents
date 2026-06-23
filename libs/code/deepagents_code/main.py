@@ -55,19 +55,10 @@ def build_version_text() -> str:
     Returns:
         Multi-line version string suitable for stdout.
     """
-    from importlib.metadata import (
-        PackageNotFoundError,
-        version as _pkg_version,
-    )
+    from deepagents_code.extras_info import resolve_sdk_version
 
-    try:
-        sdk_version = _pkg_version("deepagents")
-    except PackageNotFoundError:
-        logger.debug("deepagents SDK package not found in environment")
-        sdk_version = "unknown"
-    except Exception:  # Best-effort SDK version lookup
-        logger.warning("Unexpected error looking up SDK version", exc_info=True)
-        sdk_version = "unknown"
+    sdk_version_value, status = resolve_sdk_version()
+    sdk_version = sdk_version_value if status == "resolved" else "unknown"
 
     text = f"deepagents-code {__version__}\ndeepagents (SDK) {sdk_version}"
 
@@ -129,6 +120,62 @@ def _restart_current_process() -> NoReturn:
     raise RuntimeError(msg)
 
 
+def _terminal_row_count(console: "Console", text: str) -> int:
+    """Return how many terminal rows Rich renders for `text`.
+
+    Args:
+        console: The Rich console whose current width determines wrapping.
+        text: The string to measure, rendered with no markup.
+
+    Returns:
+        The number of visual rows Rich wraps `text` into, at least 1.
+    """
+    from rich.text import Text
+
+    return max(1, len(console.render_lines(Text(text), console.options)))
+
+
+def _confirm_launch_after_restart(console: "Console", version: str) -> None:
+    """Rewrite the pre-restart `Launching...` line as `Launched.` in-place.
+
+    The `Updated to v{version}. Launching...` line is printed by the previous
+    generation right before `os.execv`; this runs in the re-exec'd process to
+    retroactively confirm the launch once the new version is actually running.
+
+    The in-place rewrite is attempted only on a real terminal: `os.execv` does
+    nothing between that print and this process's first output, so the cursor
+    is parked on the line directly below it. On non-terminals the escape codes
+    would corrupt redirected output, so the line is left as-is.
+
+    The row count is recomputed against the current terminal width, so a resize
+    during the upgrade/re-exec window could make the erase loop clear the wrong
+    number of wrapped rows. This is a benign visual glitch (no exception), and
+    is rare enough not to warrant defending against here.
+
+    Args:
+        console: The Rich console used for startup output.
+        version: The version now running, used in the confirmation line.
+    """
+    if not console.is_terminal:
+        return
+    from rich.control import Control
+    from rich.segment import ControlType
+
+    launch_status = f"Updated to v{version}. Launching..."
+    launch_rows = _terminal_row_count(console, launch_status)
+    # Move up to the bottom row of the old status and erase each rendered row.
+    # This preserves the rewrite when Rich wrapped the status in a narrow pane.
+    for _ in range(launch_rows):
+        console.control(
+            Control(
+                (ControlType.CURSOR_UP, 1),
+                (ControlType.CURSOR_MOVE_TO_COLUMN, 0),
+                (ControlType.ERASE_IN_LINE, 2),
+            )
+        )
+    console.print(f"[green]Updated to v{version}. Launched.[/green]", highlight=False)
+
+
 def _run_startup_auto_update(console: "Console") -> None:
     """Apply enabled auto-updates before the TUI and server start.
 
@@ -152,15 +199,34 @@ def _run_startup_auto_update(console: "Console") -> None:
         get_cached_update_available,
         is_auto_update_enabled,
         is_installed_version_at_least,
+        is_update_check_enabled,
+        mark_auto_update_default_acknowledged,
         perform_upgrade,
+        should_announce_auto_update_default,
         upgrade_command,
     )
 
     try:
-        if _is_editable_install() or not is_auto_update_enabled():
+        if (
+            _is_editable_install()
+            or not is_update_check_enabled()
+            or not is_auto_update_enabled()
+        ):
             return
         # Consume the re-exec sentinel recorded before the previous restart.
         restarted_for = os.environ.pop(RESTARTED_AFTER_UPDATE, None)
+        if restarted_for is not None and is_installed_version_at_least(restarted_for):
+            # The re-exec landed on the upgraded version, so the prior
+            # "Launching..." line is now accurate as "Launched.".
+            try:
+                _confirm_launch_after_restart(console, restarted_for)
+            except Exception:
+                # The upgrade already succeeded; this rewrite is purely
+                # cosmetic. Swallow rendering glitches with their own guard so
+                # the outer fail-soft handler does not misreport a successful
+                # upgrade as "Auto-update failed". The prior "Launching..."
+                # line simply stays.
+                logger.debug("Post-restart launch confirmation failed", exc_info=True)
         available, latest = get_cached_update_available()
         if not available or latest is None:
             return
@@ -184,6 +250,35 @@ def _run_startup_auto_update(console: "Console") -> None:
                 highlight=False,
             )
             return
+        if should_announce_auto_update_default():
+            # First-run consent/migration: auto-update is on only because of the
+            # opt-out default, not an explicit choice. Announce it once and skip
+            # this install so the user can opt out before anything runs.
+            #
+            # Mark *before* printing so a `console.print` failure cannot leave
+            # the notice un-acknowledged and re-firing forever. The inverse risk
+            # (mark succeeds, print fails, user never sees it) requires a broken
+            # console and is the lesser evil versus an unbounded re-nag.
+            acknowledged = mark_auto_update_default_acknowledged()
+            message = (
+                "[bold]dcode now updates automatically by default.[/bold] "
+                f"v{latest} will be installed on the next launch.\n"
+                "To opt out, set [cyan][update].auto_update = false[/cyan] in "
+                "config.toml or [cyan]DEEPAGENTS_CODE_AUTO_UPDATE=0[/cyan] "
+                "(or run [cyan]dcode --auto-update[/cyan] to toggle it off now).\n"
+                f"Continuing with v{cli_version} for now."
+            )
+            if not acknowledged:
+                # The acknowledgement could not be persisted (e.g. a read-only
+                # state dir). Without this note the identical notice would
+                # reappear every launch with no explanation.
+                message += (
+                    "\n[yellow]Note:[/yellow] this acknowledgement could not be "
+                    "saved, so this message may appear again until you opt out "
+                    "or the state directory becomes writable."
+                )
+            console.print(message, highlight=False)
+            return
         release_age = format_release_age_parenthetical(latest)
         console.print(
             f"Updating dcode from v{cli_version} to v{latest}{release_age}..."
@@ -200,7 +295,10 @@ def _run_startup_auto_update(console: "Console") -> None:
         )
         success, output = asyncio.run(perform_upgrade(log_path=log_path))
         if success:
-            console.print(f"[green]Updated to v{latest}. Launching...[/green]")
+            console.print(
+                f"[green]Updated to v{latest}. Launching...[/green]",
+                highlight=False,
+            )
             # Record the target version so the re-exec'd process can detect a
             # no-op upgrade and break the loop (see the `restarted_for` guard).
             os.environ[RESTARTED_AFTER_UPDATE] = latest
@@ -364,6 +462,35 @@ def _parse_interpreter_tools_flag(
         )
         sys.exit(2)
     return names
+
+
+def _warn_if_interpreter_tools_without_interpreter(args: argparse.Namespace) -> None:
+    """Warn that `--interpreter-tools` is a no-op without `--interpreter`.
+
+    The PTC allowlist applies only when the interpreter middleware is enabled,
+    and on the CLI that gate is the `--interpreter` flag alone (`args.interpreter`).
+    `[interpreter]` config is not consulted: `config.toml`'s `enable_interpreter`
+    does not currently enable the middleware on this path, so a missing
+    `--interpreter` always means the flag has no effect. If that ever changes,
+    this check must consider config to avoid a false-positive warning.
+
+    This drives the non-interactive (`-n`) path and prints to stderr. The
+    interactive TUI surfaces the same advisory as a startup notification (see
+    `DeepAgentsApp._notify_interpreter_tools_without_interpreter`).
+
+    Attributes are accessed directly (not via `getattr` defaults) so an argparse
+    `dest` rename fails loudly in tests rather than silently disabling the warning.
+    """
+    if args.interpreter_tools is None:
+        return
+    if args.interpreter:
+        return
+    from rich.console import Console as _Console
+
+    _Console(stderr=True).print(
+        "[yellow]Warning:[/yellow] --interpreter-tools has no effect "
+        "unless --interpreter is set."
+    )
 
 
 def _recent_agent_is_valid(name: str) -> bool:
@@ -639,13 +766,15 @@ def build_missing_tool_notification(tool: str) -> "PendingNotification":
             key="dep:tavily",
             title="Web search disabled",
             body=(
-                "TAVILY_API_KEY is not set, so web search is disabled.\n\n"
-                "Get a key at https://tavily.com"
+                "No Tavily API key is set, so web search is disabled.\n\n"
+                "Enter a key to store it (takes effect next launch), or get one "
+                "at https://tavily.com"
             ),
             actions=(
                 NotificationAction(
-                    ActionId.OPEN_WEBSITE, "Open tavily.com", primary=True
+                    ActionId.ENTER_API_KEY, "Enter API key", primary=True
                 ),
+                NotificationAction(ActionId.OPEN_WEBSITE, "Open tavily.com"),
                 suppress_action,
             ),
             payload=MissingDepPayload(tool="tavily", url="https://tavily.com"),
@@ -753,6 +882,7 @@ _HELP_SPECS: dict[str, tuple[str | None, str]] = {
     "threads": ("threads_command", "show_threads_help"),
     "mcp": ("mcp_command", "show_mcp_help"),
     "config": ("config_command", "show_config_help"),
+    "auth": ("auth_command", "show_auth_help"),
 }
 """Maps top-level command names to their startup-fast-path help dispatch.
 
@@ -776,8 +906,8 @@ def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
 
     Short-circuits before `console`/`settings` are imported so help-only
     invocations stay snappy. Mirrors the dispatch in `cli_main` for the
-    `help`, `agents`, `skills`, `threads`, `mcp`, and `config` commands when no
-    subcommand was given.
+    `help`, `agents`, `skills`, `threads`, `mcp`, `config`, and `auth` commands
+    when no subcommand was given.
 
     Args:
         args: Namespace from `parse_args()`. Only `command` and the per-group
@@ -814,6 +944,7 @@ def parse_args() -> argparse.Namespace:
         Parsed arguments namespace.
     """
     from deepagents_code._constants import DEFAULT_AGENT_NAME
+    from deepagents_code.auth_commands import setup_auth_parser
     from deepagents_code.config_commands import setup_config_parser
     from deepagents_code.mcp_commands import setup_mcp_parsers
     from deepagents_code.output import add_json_output_arg
@@ -951,6 +1082,11 @@ def parse_args() -> argparse.Namespace:
         add_output_args=add_json_output_arg,
     )
 
+    setup_auth_parser(
+        subparsers,
+        make_help_action=_make_help_action,
+    )
+
     threads_parser = subparsers.add_parser(
         "threads",
         help="Manage conversation threads",
@@ -1040,6 +1176,14 @@ def parse_args() -> argparse.Namespace:
         help="Include alpha/beta/rc releases when checking for updates",
     )
     add_json_output_arg(update_parser)
+
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="Print install health and diagnostics",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_doctor_help")),
+    )
+    add_json_output_arg(doctor_parser)
 
     # Default interactive mode — argument order here determines the
     # usage line printed by argparse; keep in sync with ui.show_help().
@@ -2099,6 +2243,29 @@ def cli_main() -> None:
         if _show_bare_command_group_help(args):
             return
 
+        # Keep self-contained commands that do not need global settings here, before
+        # state migration and settings bootstrap. If a future command only reads
+        # local files or delegates bootstrap to specific subcommands, dispatch it here
+        # so lightweight diagnostic paths stay fast.
+        # Use `getattr` because this fast-path block is for optional top-level
+        # subcommands only. ACP/root-mode invocations may not define `command`,
+        # and should fall through to the later handlers instead of raising here.
+        command = getattr(args, "command", None)
+        if command == "config":
+            from deepagents_code.config_commands import run_config_command
+
+            sys.exit(run_config_command(args))
+
+        if command == "auth" and getattr(args, "auth_command", None) == "path":
+            from deepagents_code.auth_commands import run_auth_command
+
+            sys.exit(run_auth_command(args))
+
+        if command == "doctor":
+            from deepagents_code.doctor import run_doctor_command
+
+            sys.exit(run_doctor_command(args))
+
         # Best-effort, idempotent migration. Placed after parse_args and the
         # bare-help fast path so --help / --version / `deepagents <group>`
         # exit before any I/O. Wrapped broadly so an unexpected non-OSError
@@ -2119,6 +2286,11 @@ def cli_main() -> None:
         # fast path so neither argparse's `--help`/`-h` exit nor
         # `deepagents <group>` pays the settings bootstrap cost.
         from deepagents_code.config import console, settings
+
+        if command == "auth":
+            from deepagents_code.auth_commands import run_auth_command
+
+            sys.exit(run_auth_command(args))
 
         model_params: dict[str, Any] | None = None
         raw_kwargs = getattr(args, "model_params", None)
@@ -2205,11 +2377,6 @@ def cli_main() -> None:
                 )
             )
             sys.exit(exit_code)
-
-        if args.command == "config":
-            from deepagents_code.config_commands import run_config_command
-
-            sys.exit(run_config_command(args))
 
         # Apply shell-allow-list from command line if provided (overrides env var)
         if args.shell_allow_list:
@@ -2876,6 +3043,7 @@ def cli_main() -> None:
             interpreter_ptc = _parse_interpreter_tools_flag(
                 getattr(args, "interpreter_tools", None)
             )
+            _warn_if_interpreter_tools_without_interpreter(args)
 
             timeout = getattr(args, "timeout", None)
             try:
@@ -2976,6 +3144,10 @@ def cli_main() -> None:
                 interpreter_ptc = _parse_interpreter_tools_flag(
                     getattr(args, "interpreter_tools", None)
                 )
+                # A stderr warning here would be clobbered by the alternate
+                # screen the moment the TUI launches; the app surfaces the
+                # advisory as a startup notification instead (see
+                # `DeepAgentsApp._notify_interpreter_tools_without_interpreter`).
 
                 result = asyncio.run(
                     run_textual_cli_async(

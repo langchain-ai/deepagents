@@ -13,6 +13,14 @@
 # DEEPAGENTS_CODE_VERSION and DEEPAGENTS_CODE_PRERELEASE are mutually exclusive:
 # an exact pin already selects a single version, so setting both is an error.
 #
+# Already installed?
+#   Safe to re-run. If a newer version exists, it asks before upgrading — or
+#   upgrades on its own when run unattended (cron/CI/Docker). If you're already
+#   on the latest, it does nothing. To skip the prompt:
+#     - DEEPAGENTS_CODE_YES=1                     accept the upgrade
+#     - DEEPAGENTS_CODE_VERSION / _PRERELEASE     install that exact selection
+#     - DEEPAGENTS_CODE_EXTRAS / _PYTHON          rebuild with those options
+#
 # Uninstall:
 #   This script installs deepagents-code as a uv tool. To remove it:
 #     uv tool uninstall deepagents-code
@@ -25,24 +33,33 @@
 #   ~/Library/Caches/uv on macOS) — only if no other uv tools rely on it.
 #
 # Environment variables:
-#   DEEPAGENTS_CODE_EXTRAS  — comma-separated pip extras, e.g. "ollama",
-#                             "ollama,groq", or "daytona"
-#                             (see pyproject.toml for available extras)
-#   DEEPAGENTS_CODE_VERSION — exact package version to install, e.g. "0.1.0rc1"
-#                             (mutually exclusive with DEEPAGENTS_CODE_PRERELEASE)
-#   DEEPAGENTS_CODE_PRERELEASE — uv pre-release strategy applied when resolving
-#                                the latest version: disallow, allow,
-#                                if-necessary, explicit, or
-#                                if-necessary-or-explicit
-#                                (mutually exclusive with DEEPAGENTS_CODE_VERSION)
-#   DEEPAGENTS_CODE_PYTHON  — Python version to use (default: 3.13)
+#   DEEPAGENTS_CODE_EXTRAS — comma-separated pip extras, e.g. "ollama",
+#     "ollama,groq", or "daytona". Valid extras (see pyproject.toml for the
+#     authoritative list):
+#       Model providers: anthropic, baseten, bedrock, cohere, deepseek,
+#         fireworks, google-genai, groq, huggingface, ibm, litellm, mistralai,
+#         nvidia, ollama, openai, openrouter, perplexity, together, vertex, xai,
+#         all-providers
+#       Sandbox providers: agentcore, daytona, modal, runloop, vercel,
+#         all-sandboxes
+#       Standalone integrations: quickjs
+#   DEEPAGENTS_CODE_VERSION — exact version to install, e.g. "0.1.0rc1"
+#     (mutually exclusive with DEEPAGENTS_CODE_PRERELEASE)
+#   DEEPAGENTS_CODE_PRERELEASE — uv pre-release strategy applied when
+#     resolving the latest version: disallow, allow, if-necessary, explicit,
+#     or if-necessary-or-explicit (mutually exclusive with
+#     DEEPAGENTS_CODE_VERSION)
+#   DEEPAGENTS_CODE_PYTHON — Python version to use (default: 3.13)
+#   DEEPAGENTS_CODE_YES — set to 1 to accept an available update without
+#     prompting (assume "yes"). Exists so automated runs that still attach a
+#     terminal (CI, wrapper scripts) update instead of stalling at the y/n
+#     prompt.
 #   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
-#   DEEPAGENTS_CODE_VERBOSE — set to 1 to show uv's raw stderr (timing
-#                             lines, unfiltered package diff) and the
-#                             quiet-by-default status lines (optional-tool
-#                             checks, post-install footer); useful when
-#                             debugging
-#   UV_BIN                  — path to uv binary (auto-detected if unset)
+#   DEEPAGENTS_CODE_VERBOSE — set to 1 to show uv's raw stderr (timing lines,
+#     unfiltered package diff) and the quiet-by-default status lines
+#     (optional-tool checks, post-install footer); useful when debugging. A
+#     fresh install otherwise hides the full list of installed dependencies.
+#   UV_BIN — path to uv binary (auto-detected if unset)
 #
 # Credits:
 #   Interactive mode detection, color logging, and optional tool install
@@ -213,15 +230,100 @@ prompt_yn() {
   return 1
 }
 
+# Whether an interactive y/n prompt can actually be answered. IS_INTERACTIVE
+# trusts `[ -r /dev/tty ]`, which only access-checks the device — opening it
+# still fails when there is no controlling terminal (cron, systemd, some CI).
+# Confirm the channel is usable so callers can fall back instead of blocking
+# or silently treating an unanswerable prompt as "no".
+can_prompt() {
+  [ "$IS_INTERACTIVE" = true ] || return 1
+  [ -t 0 ] && return 0
+  { : < /dev/tty; } 2>/dev/null
+}
+
+path_is_under_home() {
+  local path="$1"
+  local home_real=""
+  local path_real=""
+  [ -n "${HOME:-}" ] || return 1
+  [ -d "$path" ] || return 1
+  home_real=$(cd "$HOME" 2>/dev/null && pwd -P) || return 1
+  path_real=$(cd "$path" 2>/dev/null && pwd -P) || return 1
+  case "$path_real" in
+    "$home_real"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+prepare_install_log_dir() {
+  local cache_root="$1"
+  local dir="${cache_root}/deepagents-code"
+  [ -n "$cache_root" ] || return 1
+  [ ! -L "$cache_root" ] || return 1
+  [ ! -L "$dir" ] || return 1
+  if [ ! -d "$cache_root" ]; then
+    mkdir -m 700 -p "$cache_root" 2>/dev/null || return 1
+  fi
+  [ -d "$cache_root" ] && [ ! -L "$cache_root" ] || return 1
+  if [ -e "$dir" ]; then
+    [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+  else
+    mkdir -m 700 "$dir" 2>/dev/null || return 1
+  fi
+  if [ "$(id -u)" -eq 0 ]; then
+    path_is_under_home "$dir" || return 1
+  fi
+  printf '%s\n' "$dir"
+}
+
+fix_install_log_owner() {
+  [ -n "${INSTALL_LOG:-}" ] || return 0
+  [ "$(id -u)" -eq 0 ] || return 0
+  [ -n "${TARGET_USER:-}" ] && [ "$TARGET_USER" != "root" ] || return 0
+  [ -d "$install_log_dir" ] && [ ! -L "$install_log_dir" ] || return 0
+  path_is_under_home "$install_log_dir" || return 0
+  if ! chown -h "$TARGET_USER" "$install_log_dir" 2>&1; then
+    log_warn "Could not fix ownership of $install_log_dir for user ${TARGET_USER}."
+  fi
+  if [ -f "$INSTALL_LOG" ] && [ ! -L "$INSTALL_LOG" ]; then
+    if ! chown -h "$TARGET_USER" "$INSTALL_LOG" 2>&1; then
+      log_warn "Could not fix ownership of $INSTALL_LOG for user ${TARGET_USER}."
+    fi
+  fi
+}
+
+copy_install_log() {
+  [ -n "${INSTALL_LOG:-}" ] || return 1
+  [ -n "${install_log_dir:-}" ] || return 1
+  [ -d "$install_log_dir" ] && [ ! -L "$install_log_dir" ] || return 1
+  if [ "$(id -u)" -eq 0 ]; then
+    path_is_under_home "$install_log_dir" || return 1
+  fi
+  [ ! -L "$INSTALL_LOG" ] || return 1
+  rm -f "$INSTALL_LOG" 2>/dev/null || return 1
+  # Publish the already-captured stderr without opening the destination for
+  # writing. `ln` fails if an attacker wins the race by creating install.log.
+  ln "$uv_stderr" "$INSTALL_LOG" 2>/dev/null
+}
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 EXTRAS="${DEEPAGENTS_CODE_EXTRAS:-}"
 VERSION="${DEEPAGENTS_CODE_VERSION:-}"
 PRERELEASE="${DEEPAGENTS_CODE_PRERELEASE:-}"
+PYTHON_REQUESTED=false
+if [[ -n "${DEEPAGENTS_CODE_PYTHON:-}" ]]; then
+  PYTHON_REQUESTED=true
+fi
 PYTHON_VERSION="${DEEPAGENTS_CODE_PYTHON:-3.13}"
 SKIP_OPTIONAL="${DEEPAGENTS_CODE_SKIP_OPTIONAL:-0}"
 VERBOSE="${DEEPAGENTS_CODE_VERBOSE:-0}"
+ASSUME_YES="${DEEPAGENTS_CODE_YES:-0}"
+
+# PyPI JSON endpoint used to discover the latest published release so we can
+# tell whether an existing install is out of date before upgrading it.
+PYPI_JSON_URL="https://pypi.org/pypi/deepagents-code/json"
 
 # Validate and normalize extras: accept bare CSV, wrap in brackets for pip
 if [[ -n "$EXTRAS" ]]; then
@@ -318,6 +420,35 @@ if [ -z "${UV_BIN:-}" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Latest-version lookup
+# ---------------------------------------------------------------------------
+# Print the latest published deepagents-code version from PyPI, or nothing on
+# any failure (offline, transient error, missing downloader). PyPI nests the
+# latest release at "info.version"; that key appears first in the response (the
+# "info" object leads), so taking the first "version" match selects it without
+# depending on a JSON parser. The pattern tolerates whitespace around the colon
+# so a switch to pretty-printed JSON wouldn't silently break the probe.
+# This relies on PyPI's current (not contractually guaranteed) key ordering; if
+# it ever changed, the worst case is a wrong/empty match, which the caller
+# already treats as "unknown latest" and recovers from — never a bad install.
+fetch_latest_version() {
+  local json="" ua="deepagents-code-install"
+  if command -v curl >/dev/null 2>&1; then
+    json=$(curl -fsSL -H "User-Agent: ${ua}" "$PYPI_JSON_URL" 2>/dev/null) || return 0
+  elif command -v wget >/dev/null 2>&1; then
+    json=$(wget -qO- --header="User-Agent: ${ua}" "$PYPI_JSON_URL" 2>/dev/null) || return 0
+  else
+    return 0
+  fi
+  # `|| true` keeps a no-match (grep exit 1 under `pipefail`) from aborting the
+  # script; an empty result is handled by the caller as "unknown latest".
+  printf '%s' "$json" \
+    | grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]*"' \
+    | head -1 \
+    | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/' || true
+}
+
+# ---------------------------------------------------------------------------
 # Install deepagents-code
 # ---------------------------------------------------------------------------
 PACKAGE="deepagents-code${EXTRAS}${VERSION_SPEC}"
@@ -364,6 +495,48 @@ if [ "$IS_EDITABLE" = true ]; then
     log_info "deepagents-code ${pre_label} found (editable install from local source)."
   fi
   log_info "  Replacing with a standard install from PyPI — the existing environment will be rebuilt."
+elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE" ]; then
+  # Default path with an existing install: probe PyPI and prompt before
+  # upgrading, rather than silently pulling the latest version every run.
+  # A pinned version or pre-release strategy (handled by the branches above and
+  # below) expresses explicit intent, so those install directly.
+  #
+  # The up-to-date check below is plain string equality, so it relies on
+  # PRE_VERSION (the raw `dcode -v` literal) and LATEST_VERSION (PyPI's
+  # PEP 440-normalized `info.version`) being identically canonical. release-please
+  # keeps `_version.py` to clean `X.Y.Z`, so they match today; a non-canonical
+  # release literal would merely re-prompt an up-to-date user, never silently
+  # skip a real upgrade. A shell installer can't import `packaging` to compare
+  # semantically the way `update_check.py` does.
+  log_info "deepagents-code ${PRE_VERSION} found — checking for updates..."
+  LATEST_VERSION=$(fetch_latest_version)
+  if [ -z "$LATEST_VERSION" ]; then
+    log_warn "Could not determine the latest version from PyPI — continuing with an upgrade attempt."
+  elif [ -n "$EXTRAS" ] || [ "$PYTHON_REQUESTED" = true ]; then
+    if [ "$LATEST_VERSION" = "$PRE_VERSION" ]; then
+      log_info "deepagents-code ${PRE_VERSION} is already up to date — rebuilding with requested options."
+    else
+      log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION} with requested options..."
+    fi
+  elif [ "$LATEST_VERSION" = "$PRE_VERSION" ]; then
+    log_success "deepagents-code ${PRE_VERSION} is already up to date."
+    exit 0
+  elif [ "$ASSUME_YES" = "1" ]; then
+    log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."
+  elif can_prompt; then
+    if prompt_yn "Update deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}?"; then
+      log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."
+    else
+      log_info "Keeping deepagents-code ${PRE_VERSION}. Re-run this installer anytime to update."
+      exit 0
+    fi
+  else
+    # No TTY to prompt (cron, CI, Dockerfile RUN, systemd): there is no human to
+    # ask, and an installer's job is to make the current version present, so
+    # complete the upgrade rather than silently no-op. Callers that want a fixed
+    # version pin DEEPAGENTS_CODE_VERSION, which skips this path entirely.
+    log_info "deepagents-code ${LATEST_VERSION} available — updating (no TTY to prompt)."
+  fi
 elif [ -n "$PRE_VERSION" ]; then
   log_info "deepagents-code ${PRE_VERSION} found — checking for updates..."
 else
@@ -380,10 +553,45 @@ fi
 #      a Verified line with the binary name and version.
 #   3. Reformat the `- pkg==X` / `+ pkg==Y` diff into an aligned
 #      "pkg  X → Y" table under a single header.
+#   4. Detect whether uv actually moved any packages (those same
+#      `- pkg==X` / `+ pkg==Y` lines). A same-version reinstall that still
+#      bumps dependencies must report differently from a true no-op, so a
+#      later grep over this raw tempfile sets UV_REPORTED_PACKAGE_CHANGES.
+#   5. Persist the raw output to a log file (see INSTALL_LOG below) so a
+#      same-version dependency bump — or a failed install — can point the
+#      user at the full details after the terminal scrolls away.
 # Using a tempfile (vs. process substitution) ensures we see uv's full exit
-# status and don't race the warning past later log lines.
+# status, don't race the warning past later log lines, and can re-scan the
+# raw output for (4) after the awk pass above has already reformatted it.
 uv_stderr=$(mktemp 2>/dev/null) || uv_stderr="/tmp/deepagents-install.$$.err"
 uv_rc=0
+UV_REPORTED_PACKAGE_CHANGES=false
+# Mirror uv's raw output to a persistent log under the XDG cache dir. A
+# same-version dependency bump prints only a one-line summary and a failed
+# install scrolls past, so the log preserves the full diff/errors for later.
+# Prefer $XDG_CACHE_HOME, falling back to ~/.cache. INSTALL_LOG is the real
+# path used for writes; INSTALL_LOG_DISPLAY is the tilde-collapsed form shown
+# to the user. Both stay empty when the dir can't be created, which every
+# consumer treats as "feature disabled" so messages degrade cleanly.
+INSTALL_LOG=""
+INSTALL_LOG_DISPLAY=""
+cache_root="${XDG_CACHE_HOME:-}"
+if [ "$(id -u)" -eq 0 ] && [ -n "${HOME:-}" ]; then
+  cache_root="${HOME}/.cache"
+elif [ -z "$cache_root" ] && [ -n "${HOME:-}" ]; then
+  cache_root="${HOME}/.cache"
+fi
+if [ -n "$cache_root" ]; then
+  if install_log_dir=$(prepare_install_log_dir "$cache_root"); then
+    INSTALL_LOG="${install_log_dir}/install.log"
+    INSTALL_LOG_DISPLAY="$INSTALL_LOG"
+    if [ -n "${HOME:-}" ]; then
+      case "$INSTALL_LOG" in
+        "$HOME"/*) INSTALL_LOG_DISPLAY="~${INSTALL_LOG#"$HOME"}" ;;
+      esac
+    fi
+  fi
+fi
 if [[ -n "$PRERELEASE" ]]; then
   "$UV_BIN" tool install -U --python "$PYTHON_VERSION" \
     --prerelease "$PRERELEASE" "$PACKAGE" 2>"$uv_stderr" || uv_rc=$?
@@ -425,14 +633,26 @@ if [ "$VERBOSE" != "1" ] && command -v awk >/dev/null 2>&1; then
     { print }
     END {
       if (cnt == 0) exit
-      maxw = 0
       any_removed = 0
+      for (i = 1; i <= cnt; i++) {
+        if (order[i] in removed) any_removed = 1
+      }
+      if (!any_removed) {
+        # No upgrades or removals — every touched package is a brand-new
+        # addition (a fresh install, or new extras pulled into an existing
+        # env). Listing the full transitive set is noise; verbose mode keeps
+        # the output available for debugging.
+        exit
+      }
+      maxw = 0
       for (i = 1; i <= cnt; i++) {
         p = order[i]
         if (length(p) > maxw) maxw = length(p)
-        if (p in removed) any_removed = 1
       }
-      print (any_removed ? "Updated packages:" : "Installed packages:")
+      # Upgrades touch only a handful of packages, so the diff stays compact and
+      # genuinely useful — keep printing it. "(new)" disambiguates added rows
+      # from upgraded/removed ones within this mixed list.
+      print "Updated packages:"
       for (i = 1; i <= cnt; i++) {
         p = order[i]
         pad = ""
@@ -440,11 +660,7 @@ if [ "$VERBOSE" != "1" ] && command -v awk >/dev/null 2>&1; then
         if ((p in removed) && (p in added)) {
           printf "  %s%s  %s → %s\n", p, pad, removed[p], added[p]
         } else if (p in added) {
-          # "(new)" only disambiguates within an Updated list (mixed with
-          # upgraded/removed rows). Under "Installed packages:" every row is
-          # new, so the header already says it — drop the suffix.
-          if (any_removed) printf "  %s%s  %s (new)\n", p, pad, added[p]
-          else             printf "  %s%s  %s\n", p, pad, added[p]
+          printf "  %s%s  %s (new)\n", p, pad, added[p]
         } else {
           printf "  %s%s  %s (removed)\n", p, pad, removed[p]
         }
@@ -454,9 +670,21 @@ if [ "$VERBOSE" != "1" ] && command -v awk >/dev/null 2>&1; then
 else
   cat "$uv_stderr" >&2
 fi
+if grep -Eq '^[[:space:]]+[-+][[:space:]]+[^=]+==' "$uv_stderr"; then
+  UV_REPORTED_PACKAGE_CHANGES=true
+fi
+if [ -n "$INSTALL_LOG" ]; then
+  copy_install_log || { INSTALL_LOG=""; INSTALL_LOG_DISPLAY=""; }
+fi
 rm -f "$uv_stderr"
 if [ "$uv_rc" -ne 0 ]; then
   log_error "Failed to install ${PACKAGE}. See errors above."
+  # The log captured uv's full stderr (copied just above, before this exit), so
+  # point the user at it — non-verbose mode trims uv's lines from the terminal
+  # and piped `curl | bash` runs lose scrollback.
+  if [ -n "$INSTALL_LOG" ]; then
+    log_error "Full install log: ${INSTALL_LOG_DISPLAY}"
+  fi
   log_error "Common fixes: check your network, try a different Python version (DEEPAGENTS_CODE_PYTHON=3.12), or install manually."
   exit 1
 fi
@@ -466,6 +694,9 @@ if [ "$OS" = "macos" ] && [ -d "${HOME}/Library/Caches/uv" ]; then
 elif [ -d "${HOME}/.cache/uv" ]; then
   fix_owner "${HOME}/.cache/uv"
 fi
+# Restore ownership for the log path without recursively chowning a cache path
+# that could have been swapped after creation.
+fix_install_log_owner
 # ---------------------------------------------------------------------------
 # Post-install verification + contextual status
 # ---------------------------------------------------------------------------
@@ -507,7 +738,19 @@ if [ "$IS_EDITABLE" = true ]; then
 elif [ -z "$PRE_VERSION" ]; then
   log_success "deepagents-code${NEW_VERSION:+ ${NEW_VERSION}} installed."
 elif [ -n "$NEW_VERSION" ] && [ "$PRE_VERSION" = "$NEW_VERSION" ]; then
-  log_success "deepagents-code ${NEW_VERSION} already up to date."
+  # Same app version, but uv may have refreshed transitive deps (security or
+  # compat bumps). The final status line is the user-facing summary, so a flat
+  # "already up to date" would contradict the package diff printed just above
+  # (and, in non-verbose mode where an addition-only diff is suppressed, hide
+  # the dep move entirely). UV_REPORTED_PACKAGE_CHANGES (set far above) is the
+  # signal that the reinstall actually moved packages.
+  if [ "$UV_REPORTED_PACKAGE_CHANGES" = true ]; then
+    # INSTALL_LOG_DISPLAY is empty exactly when no log was written, so the
+    # `:+` suffix appends the pointer only when there's a log to point at.
+    log_success "deepagents-code ${NEW_VERSION} was already up to date; dependencies were updated.${INSTALL_LOG_DISPLAY:+ Details: ${INSTALL_LOG_DISPLAY}}"
+  else
+    log_success "deepagents-code ${NEW_VERSION} already up to date."
+  fi
 elif [ -n "$NEW_VERSION" ]; then
   log_success "deepagents-code updated: ${PRE_VERSION} → ${NEW_VERSION}."
 else
@@ -667,11 +910,15 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Done — footer wording depends on whether anything changed:
-#   - already up to date  → "Already installed"
+# Done — footer wording depends on what changed:
+#   - same app version + dependency changes → "Dependencies updated"
+#   - already up to date                    → "Already installed"
 #   - fresh install / upgrade / editable→PyPI swap → "Setup complete"
 # ---------------------------------------------------------------------------
 if [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] \
+  && [ "$PRE_VERSION" = "$NEW_VERSION" ] && [ "$UV_REPORTED_PACKAGE_CHANGES" = true ]; then
+  footer_msg="Dependencies updated."
+elif [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] \
   && [ "$PRE_VERSION" = "$NEW_VERSION" ]; then
   footer_msg="Already installed."
 else

@@ -458,6 +458,64 @@ jobs:
           echo "Release commit: $RELEASE_COMMIT"
           echo "release-commit=$RELEASE_COMMIT" >> "$GITHUB_OUTPUT"
 
+      # Resolve the human who shipped this release so release notes can credit
+      # them. Primary source is whoever merged the release PR (the release commit
+      # is that PR's squash-merge); when the release commit has no associated
+      # merged PR (initial release, or a direct push / manual recovery), fall back
+      # to the actor who triggered the workflow. Bot accounts are dropped — there's
+      # no human to credit (e.g. the auto path's dispatcher is github-actions[bot]).
+      - name: Resolve releaser
+        id: resolve-releaser
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_COMMIT: ${{ steps.resolve-refs.outputs.release-commit }}
+          ACTOR: ${{ github.actor }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+
+          RELEASER=""
+
+          # Primary: the user who merged the release PR. Distinguish "commit has no
+          # associated merged PR" (initial release, direct push, manual recovery, or
+          # eventual-consistency on a fresh squash-merge) from a real API failure.
+          # The latter must warn rather than silently fall through to the actor —
+          # on a manual release that would credit the dispatcher instead of the
+          # merger, with no breadcrumb. Mirrors the lookup pattern used below for
+          # release-label resolution.
+          if [ -n "$RELEASE_COMMIT" ]; then
+            if PULLS=$(gh api "/repos/$REPOSITORY/commits/$RELEASE_COMMIT/pulls" 2>&1); then
+              PR_NUM=$(printf '%s' "$PULLS" | jq -r '.[0].number // empty')
+            else
+              echo "::warning::releaser lookup: commit-pulls API failed: $PULLS — falling back to actor"
+              PR_NUM=""
+            fi
+            if [ -n "$PR_NUM" ]; then
+              if MERGED_BY=$(gh pr view "$PR_NUM" --repo "$REPOSITORY" \
+                --json mergedBy --jq '.mergedBy.login // empty' 2>&1); then
+                RELEASER="$MERGED_BY"
+              else
+                echo "::warning::releaser lookup: gh pr view #$PR_NUM failed: $MERGED_BY — falling back to actor"
+              fi
+            fi
+          fi
+
+          # Fallback: the actor who dispatched the workflow (manual releases).
+          if [ -z "$RELEASER" ]; then
+            RELEASER="$ACTOR"
+          fi
+
+          # Drop bot accounts. Quoted patterns are literal, so "[bot]" matches as a
+          # literal suffix, not a glob char class — "*[bot]" matches any login ending
+          # in "[bot]". The bare "github-actions" arm covers github.actor surfacing
+          # without the "[bot]" suffix, which "*[bot]" would not catch.
+          case "$RELEASER" in
+            ""|*"[bot]"|github-actions) RELEASER="" ;;
+          esac
+
+          echo "Resolved releaser: ${RELEASER:-<none>}"
+          echo "releaser=$RELEASER" >> "$GITHUB_OUTPUT"
+
       - name: Generate release body
         id: generate-release-body
         env:
@@ -466,7 +524,11 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
           PREV_TAG: ${{ steps.resolve-refs.outputs.prev-tag }}
           RELEASE_COMMIT: ${{ steps.resolve-refs.outputs.release-commit }}
+          RELEASER: ${{ steps.resolve-releaser.outputs.releaser }}
           IS_PRERELEASE: ${{ needs.build.outputs.is-prerelease }}
+          BASE_BRANCH: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           if [ -z "$RELEASE_COMMIT" ]; then
             echo "::error::RELEASE_COMMIT is empty — resolve-refs step may have failed"
@@ -630,7 +692,9 @@ jobs:
             fi
           done
 
-          echo "Found community contributors: $CONTRIBUTOR_LIST"
+          if [ -n "$CONTRIBUTOR_LIST" ]; then
+            echo "Found community contributors: $CONTRIBUTOR_LIST"
+          fi
 
           # Build internal maintainers list: @ghuser, @ghuser, ...
           INTERNAL_LIST=""
@@ -642,11 +706,30 @@ jobs:
             fi
           done
 
-          echo "Found internal maintainers: $INTERNAL_LIST"
+          if [ -n "$INTERNAL_LIST" ]; then
+            echo "Found internal maintainers: $INTERNAL_LIST"
+          fi
+
+          if [ -n "$RELEASER" ]; then
+            echo "Found releaser: @$RELEASER"
+          fi
 
           # Prepend pre-release banner
           if [ "$IS_PRERELEASE" = "true" ]; then
             RELEASE_BODY=$(printf "> [!WARNING]\n> This is a pre-release version. Install with: \`pip install %s==%s\`\n\n%s" "$PKG_NAME" "$VERSION" "$RELEASE_BODY")
+          fi
+
+          # Annotate releases cut from a non-default branch (a vX.Y version line
+          # or an alpha/* throwaway branch) with the originating branch and the
+          # immutable release commit. Skipped for normal default-branch releases,
+          # where the branch carries no signal. The branch is rendered as plain
+          # text and the link targets the commit SHA, never tree/<branch>: alpha
+          # branches are deleted after release, so a branch link would 404, and
+          # the commit is the exact code that shipped even when release-sha points
+          # somewhere other than the branch tip.
+          DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
+          if [ -n "$BASE_BRANCH" ] && [ "$BASE_BRANCH" != "$DEFAULT_BRANCH" ]; then
+            RELEASE_BODY=$(printf "%s\n\nReleased from \`%s\` at commit [\`%s\`](https://github.com/%s/commit/%s)" "$RELEASE_BODY" "$BASE_BRANCH" "${RELEASE_COMMIT:0:7}" "$REPOSITORY" "$RELEASE_COMMIT")
           fi
 
           # Append contributor shoutouts
@@ -659,8 +742,20 @@ jobs:
           if [ -n "$INTERNAL_LIST" ]; then
             if [ "$SEPARATOR_ADDED" = "false" ]; then
               RELEASE_BODY=$(printf "%s\n\n---" "$RELEASE_BODY")
+              SEPARATOR_ADDED=true
             fi
             RELEASE_BODY=$(printf "%s\n\nInternal maintainers: %s" "$RELEASE_BODY" "$INTERNAL_LIST")
+          fi
+
+          # Credit whoever shipped the release. This is a distinct role from
+          # contributing release changes, so show it even when the same user also
+          # appears as a community contributor or internal maintainer.
+          if [ -n "$RELEASER" ]; then
+            if [ "$SEPARATOR_ADDED" = "false" ]; then
+              RELEASE_BODY=$(printf "%s\n\n---" "$RELEASE_BODY")
+              SEPARATOR_ADDED=true
+            fi
+            RELEASE_BODY=$(printf "%s\n\nReleased by: @%s" "$RELEASE_BODY" "$RELEASER")
           fi
 
           # Output release body using heredoc for proper multiline handling

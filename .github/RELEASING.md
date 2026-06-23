@@ -296,14 +296,16 @@ release-please is SemVer-only internally. Its `prerelease` versioning strategy p
 
 Alpha releases use a **throwaway branch** + [manual release](#manual-release). This keeps `main`, the release-please manifest, and any pending release PR completely untouched.
 
-1. **Create a branch from `main`:**
+1. **Create a branch from the version line you are releasing:**
 
    ```bash
-   git checkout main && git pull
+   git checkout <BASE_BRANCH> && git pull
    git checkout -b alpha/<PACKAGE>-<VERSION>
    ```
 
-   Replace `<PACKAGE>` with the PyPI name (e.g., `deepagents-cli`) and `<VERSION>` with the alpha version using hyphens instead of periods (e.g., `0-0-35a1`).
+   Replace `<BASE_BRANCH>` with `main` for normal pre-releases, or the relevant `vX.Y` branch when staging or maintaining a separate version line. Replace `<PACKAGE>` with the PyPI name (e.g., `deepagents-cli`) and `<VERSION>` with the alpha version using hyphens instead of periods (e.g., `0-0-35a1`).
+
+   For example, when staging `deepagents` `0.7.0` on `v0.7` while `main` still tracks `0.6.x` and you need an installable alpha for validation, branch from `v0.7`, not `main`, so the artifact contains the staged `0.7` work — the PEP 440 version `0.7.0a1` becomes `alpha/deepagents-0-7-0a1` (hyphens instead of periods) as the branch name.
 
 2. **Bump the version** in both files to a [PEP 440 pre-release](https://peps.python.org/pep-0440/#pre-releases) (e.g., `0.0.35a1`):
 
@@ -327,7 +329,7 @@ Alpha releases use a **throwaway branch** + [manual release](#manual-release). T
    - Enable `dangerous-nonmain-release` ✓
    - For `deepagents-code`: leave `dangerous-skip-sdk-pin-check` unchecked (unless the SDK pin is intentionally behind)
 
-5. **Verify the GitHub release** — the workflow automatically detects PEP 440 pre-release versions (`a`, `b`, `rc`, `.dev`) and marks the GitHub release as a **pre-release**. Pre-releases are never set as the repository's "Latest" release. The release body will contain a warning banner and contributor shoutouts (no changelog or git log).
+5. **Verify the GitHub release** — the workflow automatically detects PEP 440 pre-release versions (`a`, `b`, `rc`, `.dev`) and marks the GitHub release as a **pre-release**. Pre-releases are never set as the repository's "Latest" release. The release body will contain a warning banner, contributor shoutouts (no changelog or git log), and — because the branch is not `main` — a "Released from" line linking the originating branch and the release commit.
 
 6. **Clean up** — delete the branch after the workflow succeeds:
 
@@ -339,13 +341,37 @@ Alpha releases use a **throwaway branch** + [manual release](#manual-release). T
 
 ### Promoting a pre-release to GA
 
-After validating the alpha, merge the pending release PR (e.g., `release(deepagents-cli): 0.0.35`) as normal from `main` — release-please handles the GA version, changelog, and tag. No extra steps needed.
+After validating the alpha, merge the pending release PR (e.g., `release(deepagents-code): 0.0.35`) as normal from `main` — release-please handles the GA version, changelog, and tag. No extra steps needed.
 
-If no release PR exists yet (e.g., no releasable commits since the last GA, which is extremely rare), you can force one with a `Release-As` commit footer:
+If no release PR exists yet (e.g., no releasable commits since the last GA, which is rare), you can force one with a package-scoped `Release-As` override. Do **not** use an empty commit on `main`: release-please assigns commits to packages by the file paths they change, not by the commit scope string. A commit titled `chore(code): ...` is not enough on its own! It must also touch a file under `libs/code` so release-please knows the override belongs to `deepagents-code` (instead of another managed package).
+
+For example, after making a real edit under `libs/code`:
 
 ```bash
-git commit --allow-empty -m "feat(cli): release 0.0.35" -m "Release-As: 0.0.35"
+git add libs/code/<changed-file>
+git commit -m "chore(code): release 0.0.35" -m "Release-As: 0.0.35"
 ```
+
+If there is no meaningful package-file edit to make, use the config-file form instead: temporarily add `"release-as": "0.0.35"` to the `libs/code` package entry in `release-please-config.json`:
+
+```diff
+ "libs/code": {
+   "release-type": "python",
+   "package-name": "deepagents-code",
+   "component": "deepagents-code",
++  "release-as": "0.0.35",
+   "bump-minor-pre-major": true,
+   "bump-patch-for-minor-pre-major": true,
+   "extra-files": [
+     "pyproject.toml",
+     "deepagents_code/_version.py"
+   ],
+   "changelog-path": "CHANGELOG.md"
+ }
+```
+
+> [!IMPORTANT]
+> This is a temporary override, not permanent configuration. Let release-please open the release PR, then remove the `release-as` line in a follow-up `hotfix(code): remove release-as override` PR (so the next release-please run does not keep forcing `0.0.35`).
 
 ### Multiple pre-release iterations
 
@@ -456,7 +482,7 @@ The `release_please_scope_check.yml` workflow ([`.github/scripts/check_lockfile_
 
 ### Overriding a Merged Commit's Changelog Entry
 
-Append a `BEGIN_COMMIT_OVERRIDE` block to the **merged PR's body** when release-please needs to use a different message than the actual squash-merge commit. release-please reads merged PR bodies on every run within its lookback window and uses the override in place of the original commit message — no history rewrite, no force-push.
+Append a `BEGIN_COMMIT_OVERRIDE` block (shown below) to the **merged PR's body** when release-please needs to use a different message than the actual squash-merge commit. release-please reads merged PR bodies on every run within its lookback window and uses the override in place of the original commit message — no history rewrite, no force-push.
 
 Two situations call for this:
 

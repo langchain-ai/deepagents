@@ -593,6 +593,15 @@ class TestMaxTurnsArgument:
         assert exc_info.value.code == 2
 
 
+async def _raise_timeout_and_close(awaitable: object, **_kwargs: object) -> None:
+    """Close the mocked awaitable before simulating a timeout."""
+    close = getattr(awaitable, "close", None)
+    if callable(close):
+        close()
+    await asyncio.sleep(0)
+    raise TimeoutError
+
+
 def _wait_for_timeout(mock_wait_for: MagicMock) -> object:
     """Extract the `timeout` arg from a mocked `asyncio.wait_for` call.
 
@@ -732,7 +741,7 @@ class TestTimeoutArgument:
             ),
             patch(
                 "asyncio.wait_for",
-                side_effect=asyncio.TimeoutError,
+                side_effect=_raise_timeout_and_close,
             ),
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -2124,3 +2133,86 @@ class TestParseInterpreterToolsFlag:
         with pytest.raises(SystemExit) as exc_info:
             _parse_interpreter_tools_flag("   ")
         assert exc_info.value.code == 2
+
+
+class TestWarnInterpreterToolsWithoutInterpreter:
+    """Tests for `_warn_if_interpreter_tools_without_interpreter`."""
+
+    def test_warns_without_interpreter(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """--interpreter-tools without --interpreter warns and does not exit."""
+        from deepagents_code.main import (
+            _warn_if_interpreter_tools_without_interpreter,
+        )
+
+        with mock_argv("-n", "task", "--interpreter-tools", "safe"):
+            args = parse_args()
+        _warn_if_interpreter_tools_without_interpreter(args)
+        assert (
+            "--interpreter-tools has no effect unless --interpreter is set"
+            in capsys.readouterr().err
+        )
+
+    def test_no_warning_with_interpreter(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """--interpreter --interpreter-tools does not warn."""
+        from deepagents_code.main import (
+            _warn_if_interpreter_tools_without_interpreter,
+        )
+
+        with mock_argv("-n", "task", "--interpreter", "--interpreter-tools", "safe"):
+            args = parse_args()
+        _warn_if_interpreter_tools_without_interpreter(args)
+        assert capsys.readouterr().err == ""
+
+    def test_no_warning_without_flag(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Absent --interpreter-tools does not warn."""
+        from deepagents_code.main import (
+            _warn_if_interpreter_tools_without_interpreter,
+        )
+
+        with mock_argv("-n", "task"):
+            args = parse_args()
+        _warn_if_interpreter_tools_without_interpreter(args)
+        assert capsys.readouterr().err == ""
+
+    def test_cli_main_emits_warning_on_non_interactive_path(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """End-to-end: `-n --interpreter-tools` without `--interpreter` warns.
+
+        Guards the wiring (not just the helper): a dropped or misplaced call
+        site, or an earlier `sys.exit` swallowing the warning, fails here.
+        """
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys, "argv", ["deepagents", "-n", "task", "--interpreter-tools", "safe"]
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        assert (
+            "--interpreter-tools has no effect unless --interpreter is set"
+            in capsys.readouterr().err
+        )

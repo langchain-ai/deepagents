@@ -227,6 +227,27 @@ def _merge_fs_interrupt_on(
     return merged
 
 
+def _apply_user_middleware(
+    base: list[AgentMiddleware[Any, Any, Any]],
+    custom: Sequence[AgentMiddleware[Any, Any, Any]],
+) -> list[AgentMiddleware[Any, Any, Any]]:
+    """Merge custom middleware into the base stack by name.
+
+    For each custom entry whose ``.name`` matches a base entry, the base entry
+    is replaced in-place (preserving stack order). Custom entries that don't
+    match any base entry are appended at the end in their original order.
+    """
+    if not custom:
+        return base
+    custom_by_name: dict[str, AgentMiddleware[Any, Any, Any]] = {m.name: m for m in custom}
+    result = list(base)
+    for i, m in enumerate(result):
+        if m.name in custom_by_name:
+            result[i] = custom_by_name.pop(m.name)
+    result.extend(custom_by_name.values())
+    return result
+
+
 _REQUIRED_MIDDLEWARE: tuple[tuple[type[AgentMiddleware[Any, Any, Any]], tuple[str, ...]], ...] = (
     (FilesystemMiddleware, ()),
     (SubAgentMiddleware, ()),
@@ -658,7 +679,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             subagent_skills = spec.get("skills")
             if subagent_skills:
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
-            subagent_middleware.extend(spec.get("middleware", []))
+            subagent_middleware = _apply_user_middleware(subagent_middleware, spec.get("middleware", []))
 
             # Harness-profile middleware for this subagent's model
             subagent_middleware.extend(_subagent_profile.materialize_extra_middleware())
@@ -815,8 +836,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # Currently this supports agents deployed via LangSmith deployments.
         deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
 
-    if middleware:
-        deepagent_middleware.extend(middleware)
+    deepagent_middleware = _apply_user_middleware(deepagent_middleware, middleware or [])
     # Harness-profile middleware goes between user middleware and memory so
     # that memory updates (which change the system prompt) don't invalidate the
     # Anthropic prompt cache prefix.

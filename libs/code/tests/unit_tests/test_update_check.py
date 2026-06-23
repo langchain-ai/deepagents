@@ -1977,6 +1977,21 @@ class TestUpdateLogs:
         ):
             dependency_refresh_command(version="1.2.3")
 
+    def test_dependency_refresh_command_invalid_metadata_extra_reraised(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Malformed metadata extras surface through the typed error contract."""
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        with (
+            patch(
+                "deepagents_code.extras_info.installed_extra_names",
+                return_value=frozenset({"not a valid extra"}),
+            ),
+            pytest.raises(ExtrasIntrospectionError),
+        ):
+            dependency_refresh_command(version="1.2.3")
+
     def test_dependency_refresh_dry_run_command_targets_current_python(
         self, tmp_path, monkeypatch
     ) -> None:

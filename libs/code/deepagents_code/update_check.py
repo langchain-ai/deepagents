@@ -71,7 +71,10 @@ _SDK_RELEASE_TIMES_KEY = "sdk_release_times"
 
 InstallMethod = Literal["uv", "brew", "other", "unknown"]
 
-FALLBACK_UPGRADE_COMMAND = "uv tool install -U deepagents-code"
+_UV_TOOL_INSTALL_UPGRADE_BASE = "uv tool install -U deepagents-code"
+"""Base uv reinstall command that clears uv tool receipt pins."""
+
+FALLBACK_UPGRADE_COMMAND = _UV_TOOL_INSTALL_UPGRADE_BASE
 """Generic upgrade hint used when install-method detection fails.
 
 Callers that surface an upgrade command in user-facing text should prefer
@@ -97,7 +100,7 @@ _UPGRADE_COMMANDS: dict[InstallMethod, str] = {
     # release, which is what users running `/update` actually want.
     # `dependency_refresh_command` builds the inverse command for the
     # explicit "stay on this version, refresh deps" flow.
-    "uv": "uv tool install -U deepagents-code",
+    "uv": _UV_TOOL_INSTALL_UPGRADE_BASE,
     "brew": "brew upgrade deepagents-code",
 }
 """Upgrade commands keyed by install method.
@@ -108,7 +111,7 @@ upgraded with a different package manager, because that can update a separate
 environment from the one currently providing `dcode`.
 """
 
-_UV_PRERELEASE_UPGRADE_COMMAND = "uv tool install -U deepagents-code --prerelease allow"
+_UV_PRERELEASE_UPGRADE_COMMAND = f"{_UV_TOOL_INSTALL_UPGRADE_BASE} --prerelease allow"
 """uv upgrade command that opts into alpha/beta/rc release resolution.
 
 Uses `uv tool install -U` (not `uv tool upgrade`) for the same receipt-pin
@@ -1867,6 +1870,42 @@ def _dcode_extras_requirement(
     return shlex.quote(requirement)
 
 
+def _uv_tool_install_command(
+    *,
+    version: str | None,
+    include_prereleases: bool | None,
+    distribution_name: str,
+) -> str:
+    """Return the receipt-preserving `uv tool install -U` command.
+
+    Raises:
+        ExtrasIntrospectionError: If a metadata-sourced extra name fails PEP 508
+            validation.
+    """
+    from deepagents_code.extras_info import (
+        ExtrasIntrospectionError,
+        installed_extra_names,
+    )
+
+    extras = installed_extra_names(distribution_name, strict=True)
+    try:
+        requirement = _dcode_extras_requirement(extras, version=version)
+    except ValueError as exc:
+        msg = f"Distribution metadata yielded an invalid extra name: {exc}"
+        raise ExtrasIntrospectionError(msg) from exc
+    cmd = "uv tool install -U"
+    python = _uv_tool_python()
+    if python is not None:
+        cmd += f" --python {shlex.quote(python)}"
+    cmd += f" {requirement}"
+    with_packages = _uv_tool_with_packages(distribution_name=distribution_name)
+    for package in with_packages:
+        cmd += f" --with {shlex.quote(package)}"
+    if _resolve_include_prereleases(include_prereleases):
+        cmd += " --prerelease allow"
+    return cmd
+
+
 def upgrade_install_command(
     *,
     include_prereleases: bool | None = None,
@@ -1894,45 +1933,19 @@ def upgrade_install_command(
     Returns:
         Shell command string suitable for execution via the shell.
 
-    Raises:
-        ExtrasIntrospectionError: If installed extras cannot be determined
-            safely from distribution metadata, or a metadata-sourced extra name
-            fails PEP 508 validation (re-raised from the underlying `ValueError`
-            so callers need not catch a broad built-in).
-
-    Also propagates `ToolRequirementIntrospectionError` if the uv tool `--with`
-    packages or interpreter cannot be determined safely from the tool receipt.
-    Callers choose whether to treat those errors as failures or fall back to a
-    simpler unpinned upgrade command with a user-facing warning.
+    Propagates `ExtrasIntrospectionError` if installed extras cannot be
+    determined safely from distribution metadata, or a metadata-sourced extra name
+    fails PEP 508 validation. Also propagates `ToolRequirementIntrospectionError`
+    if the uv tool `--with` packages or interpreter cannot be determined safely
+    from the tool receipt. Callers choose whether to treat those errors as
+    failures or fall back to a simpler unpinned upgrade command with a
+    user-facing warning.
     """
-    from deepagents_code.extras_info import (
-        ExtrasIntrospectionError,
-        installed_extra_names,
+    return _uv_tool_install_command(
+        version=None,
+        include_prereleases=include_prereleases,
+        distribution_name=distribution_name,
     )
-
-    extras = installed_extra_names(distribution_name, strict=True)
-    try:
-        requirement = _dcode_extras_requirement(extras, version=None)
-    except ValueError as exc:
-        # `extras` come from the distribution's own optional-dependency
-        # metadata, so a PEP 508 validation failure here means that metadata is
-        # malformed. Translate to the typed introspection error so callers
-        # (`perform_upgrade`) handle it like any other unreadable-config case
-        # instead of relying on a broad `ValueError` catch that could also
-        # swallow an unrelated future bug in this builder.
-        msg = f"Distribution metadata yielded an invalid extra name: {exc}"
-        raise ExtrasIntrospectionError(msg) from exc
-    cmd = "uv tool install -U"
-    python = _uv_tool_python()
-    if python is not None:
-        cmd += f" --python {shlex.quote(python)}"
-    cmd += f" {requirement}"
-    with_packages = _uv_tool_with_packages(distribution_name=distribution_name)
-    for package in with_packages:
-        cmd += f" --with {shlex.quote(package)}"
-    if _resolve_include_prereleases(include_prereleases):
-        cmd += " --prerelease allow"
-    return cmd
 
 
 def dependency_refresh_command(
@@ -1954,30 +1967,17 @@ def dependency_refresh_command(
         Shell command string suitable for execution via the shell.
 
     Propagates `ExtrasIntrospectionError` if installed extras cannot be
-    determined safely from distribution metadata, and
-    `ToolRequirementIntrospectionError` if the uv tool `--with` packages or
-    interpreter cannot be determined safely from the tool receipt.
-    `perform_dependency_refresh` converts both into a user-facing failure.
+    determined safely from distribution metadata, or a metadata-sourced extra name
+    fails PEP 508 validation, and `ToolRequirementIntrospectionError` if the uv
+    tool `--with` packages or interpreter cannot be determined safely from the
+    tool receipt. `perform_dependency_refresh` converts both into a user-facing
+    failure.
     """
-    from deepagents_code.extras_info import installed_extra_names
-
-    # `installed_extra_names` raises `ExtrasIntrospectionError`; `_uv_tool_python`
-    # and `_uv_tool_with_packages` raise `ToolRequirementIntrospectionError`.
-    # Both propagate to `perform_dependency_refresh`, which converts them into a
-    # user-facing failure, so there's nothing to add by catching here.
-    extras = installed_extra_names(distribution_name, strict=True)
-    requirement = _dcode_extras_requirement(extras, version=version)
-    cmd = "uv tool install -U"
-    python = _uv_tool_python()
-    if python is not None:
-        cmd += f" --python {shlex.quote(python)}"
-    cmd += f" {requirement}"
-    with_packages = _uv_tool_with_packages(distribution_name=distribution_name)
-    for package in with_packages:
-        cmd += f" --with {shlex.quote(package)}"
-    if _resolve_include_prereleases(include_prereleases):
-        cmd += " --prerelease allow"
-    return cmd
+    return _uv_tool_install_command(
+        version=version,
+        include_prereleases=include_prereleases,
+        distribution_name=distribution_name,
+    )
 
 
 def dependency_refresh_dry_run_command(

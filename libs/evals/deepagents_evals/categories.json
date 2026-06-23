@@ -7,7 +7,8 @@
     "conversation",
     "summarization",
     "unit_test",
-    "langchain/middleware"
+    "langchain/middleware",
+    "long_context_aggregation"
   ],
   "radar_categories": [
     "file_operations",
@@ -25,6 +26,7 @@
     "conversation": "Conversation",
     "summarization": "Summarization",
     "unit_test": "Unit Test",
-    "langchain/middleware": "Upstream Middleware"
+    "langchain/middleware": "Upstream Middleware",
+    "long_context_aggregation": "Long-Context Aggregation"
   }
 }

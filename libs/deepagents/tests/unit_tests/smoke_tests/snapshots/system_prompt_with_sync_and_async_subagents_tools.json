@@ -191,11 +191,11 @@
               }
             ],
             "default": null,
-            "description": "Glob pattern to filter which files to search (e.g., '*.py')."
+            "description": "Glob pattern (NOT regex) limiting which files are searched, matched against the file name (e.g. '*.py', '*.{ts,tsx}'). This is an in-tool file filter, not a call to the separate glob tool."
           },
           "output_mode": {
             "default": "files_with_matches",
-            "description": "Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
+            "description": "Shape of the returned text. 'files_with_matches' (default): newline-separated matching file paths. 'content': matching lines grouped by file, each formatted '<line_number>: <line text>' (only the matched line, no surrounding context). 'count': one '<path>: <match_count>' line per file.",
             "enum": [
               "files_with_matches",
               "content",

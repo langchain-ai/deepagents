@@ -340,6 +340,20 @@ class FilesystemState(AgentState):
     """Files in the filesystem. Uses DeltaChannel with snapshots every ~50 pregel steps to bound read depth."""
 
 
+GREP_GLOB_DESCRIPTION = (
+    "Glob pattern (NOT regex) limiting which files are searched, matched against "
+    "the file name (e.g. '*.py', '*.{ts,tsx}'). This is an in-tool file filter, "
+    "not a call to the separate glob tool."
+)
+
+GREP_OUTPUT_MODE_DESCRIPTION = (
+    "Shape of the returned text. 'files_with_matches' (default): newline-separated "
+    "matching file paths. 'content': matching lines grouped by file, each formatted "
+    "'<line_number>: <line text>' (only the matched line, no surrounding context). "
+    "'count': one '<path>: <match_count>' line per file."
+)
+
+
 class LsSchema(BaseModel):
     """Input schema for the `ls` tool."""
 
@@ -400,11 +414,11 @@ class GrepSchema(BaseModel):
 
     path: str | None = Field(default=None, description="Directory to search in. Defaults to current working directory.")
 
-    glob: str | None = Field(default=None, description="Glob pattern to filter which files to search (e.g., '*.py').")
+    glob: str | None = Field(default=None, description=GREP_GLOB_DESCRIPTION)
 
     output_mode: Literal["files_with_matches", "content", "count"] = Field(
         default="files_with_matches",
-        description="Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
+        description=GREP_OUTPUT_MODE_DESCRIPTION,
     )
 
 
@@ -1590,10 +1604,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             pattern: Annotated[str, "Text pattern to search for (literal string, not regex)."],
             runtime: ToolRuntime[None, FilesystemState],
             path: Annotated[str | None, "Directory to search in. Defaults to current working directory."] = None,
-            glob: Annotated[str | None, "Glob pattern to filter which files to search (e.g., '*.py')."] = None,
+            glob: Annotated[str | None, GREP_GLOB_DESCRIPTION] = None,
             output_mode: Annotated[
                 Literal["files_with_matches", "content", "count"],
-                "Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
+                GREP_OUTPUT_MODE_DESCRIPTION,
             ] = "files_with_matches",
         ) -> ToolMessage:
             """Synchronous wrapper for grep tool."""
@@ -1634,10 +1648,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             pattern: Annotated[str, "Text pattern to search for (literal string, not regex)."],
             runtime: ToolRuntime[None, FilesystemState],
             path: Annotated[str | None, "Directory to search in. Defaults to current working directory."] = None,
-            glob: Annotated[str | None, "Glob pattern to filter which files to search (e.g., '*.py')."] = None,
+            glob: Annotated[str | None, GREP_GLOB_DESCRIPTION] = None,
             output_mode: Annotated[
                 Literal["files_with_matches", "content", "count"],
-                "Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
+                GREP_OUTPUT_MODE_DESCRIPTION,
             ] = "files_with_matches",
         ) -> ToolMessage:
             """Asynchronous wrapper for grep tool."""

@@ -3906,6 +3906,7 @@ class DeepAgentsApp(App):
             from deepagents_code.config import _is_editable_install
             from deepagents_code.update_check import (
                 _PRERELEASE_UNSUPPORTED_MESSAGE,
+                dependency_refresh_supported,
                 format_age_suffix,
                 format_dependency_changes,
                 format_installed_age_suffix,
@@ -3967,8 +3968,14 @@ class DeepAgentsApp(App):
                     ),
                 )
                 # dcode is current, but its dependencies may have newer in-range
-                # releases. Offer to re-resolve them rather than dead-ending.
-                if await self._confirm_refresh_dependencies():
+                # releases. Offer to re-resolve them rather than dead-ending —
+                # but only when the install method can actually perform a
+                # dependency-only refresh, so brew/other users aren't prompted to
+                # confirm an action that would immediately fail.
+                refresh_supported, _reason = await asyncio.to_thread(
+                    dependency_refresh_supported,
+                )
+                if refresh_supported and await self._confirm_refresh_dependencies():
                     await self._refresh_dependencies(
                         include_prereleases=include_prereleases,
                     )
@@ -4052,9 +4059,11 @@ class DeepAgentsApp(App):
 
         Reinstalls the current `deepagents-code` version with an upgraded
         dependency resolution, then reports which dependencies actually moved.
-        Used by `/update --deps` and the already-current refresh prompt.
-        Editable and pre-release eligibility are validated by the caller before
-        this runs.
+        Used by the `/update --deps` and already-current refresh flows. Editable
+        installs are rejected by the caller before this runs; the refresh is
+        uv-only by construction (other install methods are refused by
+        `perform_dependency_refresh`), so pre-release resolution is always
+        available here.
 
         Args:
             include_prereleases: Whether to include alpha/beta/rc releases;
@@ -4080,7 +4089,10 @@ class DeepAgentsApp(App):
             include_prereleases=include_prereleases,
         )
         if not success:
-            detail = f": {output[-200:]}" if output else ""
+            # Lead with the start of the output for parity with the upgrade
+            # failure path; uv prints the actionable summary (e.g. "No solution
+            # found") first. The full output is persisted to the update log.
+            detail = f": {output[:200]}" if output else ""
             await self._mount_message(
                 AppMessage(
                     f"Dependency refresh failed{detail}",
@@ -4088,6 +4100,15 @@ class DeepAgentsApp(App):
             )
             return
         changes = parse_dependency_changes(output)
+        if output.strip() and not changes:
+            # The refresh succeeded but nothing parsed out of uv's diff. Either
+            # nothing moved, or uv's output format drifted past our parser. Leave
+            # a breadcrumb so the latter doesn't masquerade as "up to date"
+            # without a trace (the raw output is retained in the update log).
+            logger.warning(
+                "Dependency refresh produced no parseable changes; uv output "
+                "format may have drifted.",
+            )
         self_changes = [
             change for change in changes if change.name == "deepagents-code"
         ]
@@ -4161,11 +4182,23 @@ class DeepAgentsApp(App):
             logger.warning(
                 "App-update confirmation timed out; continuing dependency refresh",
             )
+            await self._mount_message(
+                AppMessage(
+                    "Update prompt timed out; refreshing dependencies for the "
+                    "current version instead.",
+                ),
+            )
             return False
         except Exception:
             logger.exception("Failed to mount app-update confirmation")
+            await self._mount_message(
+                AppMessage(
+                    "Couldn't show the update prompt; refreshing dependencies "
+                    "for the current version instead.",
+                ),
+            )
             return False
-        return bool(confirmed)
+        return confirmed is True
 
     async def _confirm_refresh_dependencies(self) -> bool:
         """Ask the user to confirm a dependency refresh via a modal.
@@ -4190,9 +4223,18 @@ class DeepAgentsApp(App):
             logger.warning(
                 "Dependency-refresh confirmation timed out; treating as cancel",
             )
+            await self._mount_message(
+                AppMessage("Dependency-refresh prompt timed out; skipping."),
+            )
             return False
         except Exception:
             logger.exception("Failed to mount dependency-refresh confirmation")
+            await self._mount_message(
+                AppMessage(
+                    "Couldn't show the dependency-refresh prompt; skipping. "
+                    "See logs for details.",
+                ),
+            )
             return False
         return confirmed is True
 

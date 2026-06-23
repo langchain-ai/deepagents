@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import sys
 import tomllib
 from importlib.metadata import version as pkg_version
 from pathlib import Path
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -824,6 +825,10 @@ async def test_update_already_current_prompts_and_refreshes_on_confirm() -> None
                 "deepagents_code.update_check.is_update_available",
                 return_value=(False, "1.0.0"),
             ),
+            patch(
+                "deepagents_code.update_check.dependency_refresh_supported",
+                return_value=(True, None),
+            ),
             patch.object(
                 DeepAgentsApp,
                 "_confirm_refresh_dependencies",
@@ -864,6 +869,10 @@ async def test_update_already_current_skips_refresh_on_decline() -> None:
                 "deepagents_code.update_check.is_update_available",
                 return_value=(False, "1.0.0"),
             ),
+            patch(
+                "deepagents_code.update_check.dependency_refresh_supported",
+                return_value=(True, None),
+            ),
             patch.object(
                 DeepAgentsApp,
                 "_confirm_refresh_dependencies",
@@ -881,6 +890,188 @@ async def test_update_already_current_skips_refresh_on_decline() -> None:
         refresh_mock.assert_not_awaited()
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         assert "Already on the latest version" in str(app_msgs[-1]._content)
+
+
+async def test_update_already_current_skips_prompt_when_refresh_unsupported() -> None:
+    """brew/other installs aren't prompted for a refresh that can't run."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(False, "1.0.0"),
+            ),
+            patch(
+                "deepagents_code.update_check.dependency_refresh_supported",
+                return_value=(False, "Homebrew install detected — ..."),
+            ),
+            patch.object(
+                DeepAgentsApp,
+                "_confirm_refresh_dependencies",
+                new_callable=AsyncMock,
+            ) as confirm_mock,
+            patch(
+                "deepagents_code.update_check.perform_dependency_refresh",
+                new_callable=AsyncMock,
+            ) as refresh_mock,
+        ):
+            await app._handle_command("/update")
+            await pilot.pause()
+
+        confirm_mock.assert_not_awaited()
+        refresh_mock.assert_not_awaited()
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        assert "Already on the latest version" in str(app_msgs[-1]._content)
+
+
+async def test_refresh_dependencies_surfaces_failure() -> None:
+    """A failed refresh reports the start of uv's output, not silence."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with patch(
+            "deepagents_code.update_check.perform_dependency_refresh",
+            new_callable=AsyncMock,
+            return_value=(False, "No solution found for langchain-openai" + "x" * 400),
+        ):
+            await app._refresh_dependencies(include_prereleases=None)
+            await pilot.pause()
+
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        content = str(app_msgs[-1]._content)
+        assert "Dependency refresh failed" in content
+        assert "No solution found" in content
+
+
+async def test_refresh_dependencies_renders_self_changes() -> None:
+    """A `deepagents-code` line in the diff renders under its own heading."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with patch(
+            "deepagents_code.update_check.perform_dependency_refresh",
+            new_callable=AsyncMock,
+            return_value=(
+                True,
+                (
+                    " - deepagents-code==1.0.0\n + deepagents-code==1.0.1\n"
+                    " - langchain-openai==1.3.2\n + langchain-openai==1.5.0\n"
+                ),
+            ),
+        ):
+            await app._refresh_dependencies(include_prereleases=None)
+            await pilot.pause()
+
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        content = str(app_msgs[-1]._content)
+        assert "Updated deepagents-code:" in content
+        assert "Refreshed dependencies:" in content
+        assert "langchain-openai  1.3.2 -> 1.5.0" in content
+
+
+async def test_refresh_dependencies_skips_in_debug_mode(monkeypatch) -> None:
+    """`DEBUG_UPDATE` short-circuits before shelling out to uv."""
+    from deepagents_code._env_vars import DEBUG_UPDATE
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.widgets.messages import AppMessage
+
+    monkeypatch.setenv(DEBUG_UPDATE, "1")
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with patch(
+            "deepagents_code.update_check.perform_dependency_refresh",
+            new_callable=AsyncMock,
+        ) as refresh_mock:
+            await app._refresh_dependencies(include_prereleases=None)
+            await pilot.pause()
+
+        refresh_mock.assert_not_awaited()
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        assert "Skipped dependency refresh (debug mode)." in str(app_msgs[-1]._content)
+
+
+async def test_confirm_refresh_dependencies_reports_mount_failure() -> None:
+    """A modal that fails to mount is surfaced, not silently swallowed."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with patch.object(
+            DeepAgentsApp,
+            "_push_screen_wait",
+            Mock(side_effect=RuntimeError("boom")),
+        ):
+            result = await app._confirm_refresh_dependencies()
+            await pilot.pause()
+
+        assert result is False
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        assert "Couldn't show the dependency-refresh prompt" in str(
+            app_msgs[-1]._content
+        )
+
+
+async def test_confirm_refresh_dependencies_reports_timeout(monkeypatch) -> None:
+    """A modal that never resolves is bounded by the watchdog and surfaced."""
+    from deepagents_code import app as app_module
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.widgets.messages import AppMessage
+
+    async def _never(_self: object, _screen: object) -> None:
+        await asyncio.sleep(10)
+
+    monkeypatch.setattr(app_module, "_MODAL_WATCHDOG_TIMEOUT_SECONDS", 0.01)
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with patch.object(DeepAgentsApp, "_push_screen_wait", _never):
+            result = await app._confirm_refresh_dependencies()
+            await pilot.pause()
+
+        assert result is False
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        assert "timed out" in str(app_msgs[-1]._content)
+
+
+async def test_confirm_update_before_dependency_refresh_reports_mount_failure() -> None:
+    """A failed app-update prompt falls back to refreshing current deps."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with patch.object(
+            DeepAgentsApp,
+            "_push_screen_wait",
+            Mock(side_effect=RuntimeError("boom")),
+        ):
+            result = await app._confirm_update_before_dependency_refresh(
+                current="1.0.0",
+                latest="1.1.0",
+            )
+            await pilot.pause()
+
+        assert result is False
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        assert "Couldn't show the update prompt" in str(app_msgs[-1]._content)
 
 
 def test_help_mentions_version_flag() -> None:

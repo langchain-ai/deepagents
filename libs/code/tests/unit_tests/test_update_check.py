@@ -31,6 +31,7 @@ from deepagents_code.update_check import (
     clear_update_notified,
     create_update_log_path,
     dependency_refresh_command,
+    dependency_refresh_supported,
     detect_install_method,
     editable_extra_hint,
     editable_package_hint,
@@ -1340,6 +1341,61 @@ class TestUpdateLogs:
         assert "dependency-only refresh is not supported" in output
         run_mock.assert_not_awaited()
 
+    async def test_perform_dependency_refresh_refuses_editable(self) -> None:
+        """Editable installs can't be re-resolved as a tool environment."""
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="unknown",
+            ),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+            ) as run_mock,
+        ):
+            success, output = await perform_dependency_refresh()
+
+        assert success is False
+        assert "Editable install detected" in output
+        run_mock.assert_not_awaited()
+
+    async def test_perform_dependency_refresh_refuses_other(self) -> None:
+        """An unrecognized install method is refused, not guessed at."""
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="other",
+            ),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+            ) as run_mock,
+        ):
+            success, output = await perform_dependency_refresh()
+
+        assert success is False
+        assert "Unsupported install method detected" in output
+        run_mock.assert_not_awaited()
+
+    async def test_perform_dependency_refresh_refuses_when_uv_missing(self) -> None:
+        """A uv-managed install still needs `uv` on PATH to refresh."""
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch("shutil.which", return_value=None),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+            ) as run_mock,
+        ):
+            success, output = await perform_dependency_refresh()
+
+        assert success is False
+        assert "`uv` not found on PATH." in output
+        run_mock.assert_not_awaited()
+
     def test_prerelease_upgrade_supported_for_uv(self) -> None:
         """The uv install method can be steered onto the pre-release channel."""
         supported, reason = prerelease_upgrade_supported("uv")
@@ -1417,6 +1473,72 @@ class TestFormatDependencyChanges:
         assert "0.28.1 (new)" in rendered
         assert "1.0 (removed)" in rendered
         assert "httpx             0.28.1 (new)" in rendered
+
+
+class TestDependencyChangeKind:
+    """`DependencyChange.kind` classifies the three legal shapes."""
+
+    def test_bumped_when_both_sides_present(self) -> None:
+        """Both `old` and `new` set is an in-place bump."""
+        assert DependencyChange(name="a", old="1.0", new="2.0").kind == "bumped"
+
+    def test_added_when_only_new(self) -> None:
+        """Only `new` set is a newly added package."""
+        assert DependencyChange(name="a", old=None, new="1.0").kind == "added"
+
+    def test_removed_when_only_old(self) -> None:
+        """Only `old` set is a removed package."""
+        assert DependencyChange(name="a", old="1.0", new=None).kind == "removed"
+
+    def test_empty_shape_is_rejected(self) -> None:
+        """`(None, None)` is meaningless and must raise rather than mis-render."""
+        with pytest.raises(ValueError, match="neither an old nor new version"):
+            _ = DependencyChange(name="a", old=None, new=None).kind
+
+
+class TestDependencyChangeAnnotations:
+    """`parse_dependency_changes` tolerates uv's source annotations."""
+
+    def test_source_annotation_suffix_is_parsed(self) -> None:
+        """A non-PyPI source suffix doesn't hide the version change."""
+        output = (
+            " - example==0.1.0 (from file:///old)\n"
+            " + example==0.2.0 (from file:///new)\n"
+        )
+        assert parse_dependency_changes(output) == [
+            DependencyChange(name="example", old="0.1.0", new="0.2.0"),
+        ]
+
+
+class TestDependencyRefreshSupported:
+    """`dependency_refresh_supported` gates the dependency-only refresh."""
+
+    def test_uv_is_supported(self) -> None:
+        """uv-managed installs can re-resolve dependencies in place."""
+        supported, reason = dependency_refresh_supported("uv")
+
+        assert supported is True
+        assert reason is None
+
+    @pytest.mark.parametrize(
+        ("method", "needle"),
+        [
+            ("unknown", "Editable install detected"),
+            ("brew", "Homebrew install detected"),
+            ("other", "Unsupported install method detected"),
+        ],
+    )
+    def test_non_uv_methods_are_refused_with_reason(
+        self,
+        method: InstallMethod,
+        needle: str,
+    ) -> None:
+        """Each non-uv method is refused with a distinct, user-facing reason."""
+        supported, reason = dependency_refresh_supported(method)
+
+        assert supported is False
+        assert reason is not None
+        assert needle in reason
 
 
 class TestInstallExtraCommand:

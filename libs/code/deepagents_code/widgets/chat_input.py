@@ -1308,34 +1308,43 @@ class ChatInput(Vertical):
     DEFAULT_CSS = """
     ChatInput {
         height: auto;
+        layers: base actions;
+    }
+
+    ChatInput #input-box {
+        height: auto;
         min-height: 3;
         max-height: 25;
         padding: 0;
         background: $surface;
         border: solid $primary;
-        layers: base actions;
     }
 
+    ChatInput.mode-shell #input-box {
+        border: solid $mode-bash;
+    }
+
+    ChatInput.mode-command #input-box {
+        border: solid $mode-command;
+    }
+
+    ChatInput.mode-shell-incognito #input-box {
+        border: solid $mode-incognito;
+        border-title-color: $mode-incognito;
+        border-title-style: bold;
+    }
+
+    /* Action buttons float on their own z-layer over the top border line, so
+       they cost no content row and never overlap the draft text. The docked
+       row spans the full width (dock collapses an auto width to zero) but is
+       transparent except for the right-aligned buttons. */
     ChatInput #input-actions {
         layer: actions;
         dock: right;
         width: auto;
         height: 1;
-        padding-right: 1;
-    }
-
-    ChatInput.mode-shell {
-        border: solid $mode-bash;
-    }
-
-    ChatInput.mode-command {
-        border: solid $mode-command;
-    }
-
-    ChatInput.mode-shell-incognito {
-        border: solid $mode-incognito;
-        border-title-color: $mode-incognito;
-        border-title-style: bold;
+        margin-right: 1;
+        display: none;
     }
 
     ChatInput .input-row {
@@ -1425,6 +1434,8 @@ class ChatInput(Vertical):
         super().__init__(**kwargs)
         self._cwd = Path(cwd) if cwd else Path.cwd()
         self._image_tracker = image_tracker
+        self._input_box: Vertical | None = None
+        self._action_buttons: Horizontal | None = None
         self._text_area: ChatTextArea | None = None
         self._popup: CompletionPopup | None = None
         self._completion_manager: MultiCompletionManager | None = None
@@ -1476,13 +1487,17 @@ class ChatInput(Vertical):
         Yields:
             Widgets for the input row and completion popup.
         """
-        with Horizontal(classes="input-row"):
-            yield Static(">", classes="input-prompt", id="prompt")
-            yield ChatTextArea(id="chat-input")
+        # The bordered box owns the prompt, text area, and completion popup so
+        # the action buttons (a sibling) can float on its top border line; a
+        # widget can only render on its sibling's border, not its parent's.
+        with Vertical(id="input-box"):
+            with Horizontal(classes="input-row"):
+                yield Static(">", classes="input-prompt", id="prompt")
+                yield ChatTextArea(id="chat-input")
+            yield CompletionPopup(id="completion-popup")
 
-        # Action buttons float on their own z-layer over the top-right corner so
-        # the text area can use the full width; a long top line slides under
-        # them rather than the buttons reserving a column on every row.
+        # Action buttons float on their own z-layer over the top border line so
+        # they cost no content row and never overlap the draft text.
         with Horizontal(id="input-actions"):
             yield InputActionButton(
                 "[ X ]",
@@ -1497,13 +1512,13 @@ class ChatInput(Vertical):
                 classes="input-action input-action-copy",
             )
 
-        yield CompletionPopup(id="completion-popup")
-
     def on_mount(self) -> None:
         """Initialize components after mount."""
+        self._input_box = self.query_one("#input-box", Vertical)
+        self._action_buttons = self.query_one("#input-actions", Horizontal)
         if is_ascii_mode():
             colors = theme.get_theme_colors(self)
-            self.styles.border = ("ascii", colors.primary)
+            self._input_box.styles.border = ("ascii", colors.primary)
 
         self._text_area = self.query_one("#chat-input", ChatTextArea)
         self._popup = self.query_one("#completion-popup", CompletionPopup)
@@ -1601,9 +1616,18 @@ class ChatInput(Vertical):
 
         self._text_area.argument_hint = ""
 
+    def _set_action_buttons_visible(self, *, visible: bool) -> None:
+        """Show or hide the clear/copy action buttons on the input border."""
+        if self._action_buttons is not None:
+            self._action_buttons.display = visible
+
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """Detect input mode and update completions."""
         text = event.text_area.text
+        # Reveal the clear/copy buttons only when there is a draft to act on, so
+        # an empty input keeps a clean, uncluttered border. Done before the
+        # early returns below so recalled-history text shows them too.
+        self._set_action_buttons_visible(visible=bool(text))
         # Drag-drop / bracketed paste arrive as one Changed event with a
         # multi-character inserted span. Normal typing arrives one character at
         # a time. Checking the changed span (rather than net length delta)
@@ -2375,10 +2399,10 @@ class ChatInput(Vertical):
                     self.mode = "normal"
                 return
             prompt.update(glyph or ">")
-            if mode == "shell_incognito":
-                self.border_title = "incognito"
-            else:
-                self.border_title = None
+            if self._input_box is not None:
+                self._input_box.border_title = (
+                    "incognito" if mode == "shell_incognito" else None
+                )
 
         self.call_after_refresh(_apply)
         self.post_message(self.ModeChanged(mode))

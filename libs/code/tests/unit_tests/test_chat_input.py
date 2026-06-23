@@ -331,18 +331,24 @@ class TestInputActionButtons:
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             await pilot.pause()
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            # Buttons only appear once a draft exists.
+            text_area.insert("draft")
+            await pilot.pause()
             rendered = html.unescape(app.export_screenshot()).replace("\xa0", " ")
 
         assert "[ X ]" in rendered
         assert "[ COPY ]" in rendered
 
-    async def test_buttons_float_over_full_width_text_area(self) -> None:
-        """Buttons overlay the top-right corner without reserving a column.
+    async def test_buttons_render_on_input_border(self) -> None:
+        """Buttons sit on the box's top border line, above full-width text.
 
-        The text area must span the full content width (so wrapped lines use
-        every column), and both buttons must sit on the text area's first row
-        within its horizontal span — proving they float on a higher z-layer
-        rather than carving a fixed column out of every row.
+        They render on the border row (not a content row), so the text area
+        keeps the full width and the draft is never overlapped. The top-right
+        corner stays visible, a first-row text click still reaches the text
+        area, and a button click hits the button.
         """
         app = _ChatInputTestApp()
         async with app.run_test(size=(60, 24)) as pilot:
@@ -354,23 +360,23 @@ class TestInputActionButtons:
             text_area.insert("Z" * 200)
             await pilot.pause()
 
+            box = chat_input.query_one("#input-box")
             clear = chat_input.query_one("#clear-button", Static)
             copy = chat_input.query_one("#copy-button", Static)
 
-            # Text area reclaims the full width up to the box's right edge.
-            assert text_area.region.right == chat_input.content_region.right
+            # Text area spans the full width inside the border.
+            assert text_area.region.right == box.content_region.right
 
-            # Buttons overlay the text area's first visual row (same top y) and
-            # land within its horizontal span rather than to the right of it.
-            assert clear.region.y == text_area.region.y
-            assert copy.region.y == text_area.region.y
-            assert text_area.region.x < clear.region.x < text_area.region.right
-            assert copy.region.right <= text_area.region.right
+            # Buttons render on the top border row, above the first text row.
+            assert clear.region.y == box.region.y
+            assert copy.region.y == box.region.y
+            assert text_area.region.y > box.region.y
 
-            # The floating layer must only cover the buttons themselves: a
-            # first-row click left of them still reaches the text area (so the
-            # cursor can be placed on the first line), while a click on a button
-            # hits the button.
+            # The top-right corner stays visible (buttons stop short of the edge).
+            assert copy.region.right < box.region.right
+
+            # No overlap: a first-row click reaches the text area, and a click on
+            # a button hits the button.
             left_widget, _ = app.screen.get_widget_at(
                 text_area.region.x + 1, text_area.region.y
             )
@@ -380,10 +386,38 @@ class TestInputActionButtons:
             )
             assert button_widget is copy
 
+    async def test_buttons_hidden_until_draft_entered(self) -> None:
+        """The action buttons appear only while the draft is non-empty."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            actions = chat_input.query_one("#input-actions")
+
+            # Empty draft: nothing to clear or copy, so the buttons stay hidden.
+            assert actions.display is False
+
+            text_area.insert("draft")
+            await pilot.pause()
+            assert actions.display is True
+
+            # Clearing the draft hides them again.
+            chat_input.discard_text()
+            await pilot.pause()
+            assert actions.display is False
+
     async def test_copy_button_double_click_does_not_select_label(self) -> None:
         """Double-clicking `[ COPY ]` should not trigger Textual word selection."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.insert("draft")  # buttons only render with a draft
+            await pilot.pause()
+
             await pilot.double_click("#copy-button", offset=(3, 0))
             await pilot.pause()
 

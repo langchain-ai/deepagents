@@ -7,6 +7,7 @@ import io
 import os
 import subprocess
 import tarfile
+import warnings
 import zipfile
 from pathlib import Path
 from unittest import mock
@@ -230,7 +231,13 @@ def _patch_legacy_tar_extractall(monkeypatch: pytest.MonkeyPatch) -> None:
         if "filter" in kwargs:
             msg = "TarFile.extractall() got an unexpected keyword argument 'filter'"
             raise TypeError(msg)
-        original(self, path, members=members, numeric_owner=numeric_owner)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="Python 3.14 will, by default, filter extracted tar archives",
+                category=DeprecationWarning,
+            )
+            original(self, path, members=members, numeric_owner=numeric_owner)
 
     monkeypatch.setattr(tarfile.TarFile, "extractall", _legacy_extractall)
 

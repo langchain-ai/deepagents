@@ -32,6 +32,7 @@ from deepagents_code.config import (
 from deepagents_code.formatting import format_duration
 from deepagents_code.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
 from deepagents_code.tool_display import format_tool_display
+from deepagents_code.unicode_security import render_with_unicode_markers
 from deepagents_code.widgets._links import open_style_link
 from deepagents_code.widgets.diff import compose_diff_lines
 
@@ -2002,7 +2003,7 @@ class ToolCallMessage(Vertical):
         )
         attr_match = attr_pattern.search(attrs)
         attr = self._unescape_js_eval(attr_match.group(1)) if attr_match else ""
-        body = self._unescape_js_eval(trailing.group("body").strip("\n"))
+        body = self._unescape_js_eval(trailing.group("body"))
 
         # Whatever precedes the trailing block must be either empty or exactly
         # the stdout wrapper, joined by the single `\n` that `format_outcome`
@@ -2016,7 +2017,7 @@ class ToolCallMessage(Vertical):
             if stdout_match is None:
                 return None
             # stdout is emitted raw (unescaped); take it verbatim.
-            blocks.append(("stdout", "", stdout_match.group("body").strip("\n")))
+            blocks.append(("stdout", "", stdout_match.group("body")))
 
         blocks.append((tag, attr, body))
         return blocks
@@ -2053,7 +2054,7 @@ class ToolCallMessage(Vertical):
             ):
                 content = Content.assemble(
                     Content.styled("result: ", colors.success),
-                    Content(body) if body else Content.styled("undefined", "dim"),
+                    Content(body),
                 )
                 return FormattedOutput(content=content)
         lines: list[Content] = []
@@ -2353,6 +2354,7 @@ class ToolCallMessage(Vertical):
         """
         code = self._args.get("code")
         code_str = code.strip("\n") if isinstance(code, str) else str(code)
+        code_str = render_with_unicode_markers(code_str)
 
         # Blank lines of top/bottom padding separate the block from the header
         # line above and the "show/hide code" hint below.

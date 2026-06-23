@@ -1423,6 +1423,20 @@ class TestToolCallMessageJsEvalOutput:
         assert result.content.plain == "result: 2"
         assert result.truncation is None
 
+    def test_format_empty_string_result_stays_empty(self) -> None:
+        """An empty string result must not be rewritten as `undefined`."""
+        msg = ToolCallMessage("js_eval", {"code": "''"})
+        result = msg._format_output("<result></result>", is_preview=False)
+
+        assert result.content.plain == "result: "
+
+    def test_format_newline_only_result_preserves_body(self) -> None:
+        """A newline-only string result remains a real value in block form."""
+        msg = ToolCallMessage("js_eval", {"code": "'\\n'"})
+        result = msg._format_output("<result>\n</result>", is_preview=False)
+
+        assert result.content.plain.split("\n") == ["result", "  ", "  "]
+
     def test_format_multiline_result_uses_block(self) -> None:
         """A multi-line result keeps the labeled-block layout."""
         msg = ToolCallMessage("js_eval", {"code": "x"})
@@ -1612,6 +1626,14 @@ class TestToolCallMessageJsEvalArgs:
 
         # One blank padding line top and bottom, around the trimmed code.
         assert detail.plain == "\nconst x = 1;\n"
+
+    def test_code_detail_marks_hidden_unicode(self) -> None:
+        """Hidden controls in expanded code are rendered as visible markers."""
+        msg = ToolCallMessage("js_eval", {"code": "const safe = 1;\n//\u202e hidden"})
+        detail = msg._format_code_detail()
+
+        assert "\u202e" not in detail.plain
+        assert "<U+202E RIGHT-TO-LEFT OVERRIDE>" in detail.plain
 
 
 class TestToolCallMessageFileOutput:

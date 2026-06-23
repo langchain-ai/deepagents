@@ -9633,6 +9633,39 @@ class TestResolveResumeThread:
             assert offer.await_args.kwargs["allow_abort"] is True
             assert app._lc_thread_id == "some-thread"
 
+    async def test_abort_syncs_session_state_to_fresh_thread(self) -> None:
+        """Aborting points session state at the fresh id, not the declined thread.
+
+        Guards the race where `_init_session_state` captures the candidate
+        thread into `session_state.thread_id` while the cwd prompt is open: the
+        finally-block sync must overwrite it with the fresh id on abort.
+        """
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            # Simulate session state having captured the candidate mid-prompt.
+            app._session_state.thread_id = "some-thread"
+            app._resume_thread_intent = "some-thread"
+            app._offer_thread_cwd_switch = AsyncMock(  # ty: ignore[invalid-assignment]
+                return_value="abort"
+            )
+            with (
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value="coder"),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._lc_thread_id != "some-thread"
+            assert app._session_state.thread_id == app._lc_thread_id
+
 
 def _missing_dep_entry(
     tool: str = "ripgrep",

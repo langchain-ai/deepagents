@@ -3127,12 +3127,16 @@ class DeepAgentsApp(App):
                 severity="warning",
             )
         finally:
+            # Sync the resolved (or fresh) thread id into session state before
+            # signaling completion. This must run in `finally` so an early
+            # return — a fallback to a new thread, or the user aborting the
+            # resume — can't leave `session_state.thread_id` pointing at a
+            # thread that was never adopted. `_init_session_state` may run
+            # concurrently and capture a not-yet-final id mid-prompt; this is
+            # the authoritative final write.
+            if self._session_state:
+                self._session_state.thread_id = self._lc_thread_id
             self._resume_thread_resolved_event.set()
-
-        # Update session state if ready (may still be initializing in a
-        # concurrent worker)
-        if self._session_state:
-            self._session_state.thread_id = self._lc_thread_id
 
     async def _start_server_background(self) -> None:
         """Background worker: resolve resume-thread intent, start server + MCP preload.

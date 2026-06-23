@@ -28,8 +28,8 @@ parameterizes over (arm, example) pairs.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
+from datetime import UTC
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -44,6 +44,7 @@ from tests.evals.utils import (
 )
 
 if TYPE_CHECKING:
+    from deepagents.middleware.subagents import SubAgent
     from langchain_core.language_models import BaseChatModel
     from langgraph.graph.state import CompiledStateGraph
 
@@ -186,97 +187,118 @@ def _coerce_gold(raw: Any) -> tuple[str, ...]:  # noqa: ANN401
 
 
 # ---------------------------------------------------------------------------
-# Scoring
+# Scoring — adapted from abertsch72/oolong src/eval/eval_helpers.py
 # ---------------------------------------------------------------------------
 
-# Labels in OOLONG can contain `/` (e.g. agnews "Sci/Tech") and digits
-# (rare). Capture everything up to a comma, period, newline, or end of
-# string to avoid truncating multi-token labels.
-_LABEL_RE = re.compile(r"Label\s*:\s*([^\n.,;]+?)\s*(?:[.,;\n]|$)", re.IGNORECASE)
-_USER_RE = re.compile(r"User\s*:\s*\[?(\d+)\]?", re.IGNORECASE)
-_NUMBER_RE = re.compile(r"Answer\s*:\s*\[?(-?\d+(?:\.\d+)?)\]?", re.IGNORECASE)
-_MONTH_YEAR_RE = re.compile(
-    r"Answer\s*:\s*([A-Za-z]+\s+\d{4})",
-    re.IGNORECASE,
-)
-# COMPARISON: extract the direction phrase regardless of how many words the
-# subject has (e.g. "numeric value is less common than entity").
-_COMPARISON_RE = re.compile(
-    r"\b((?:more|less)\s+common\s+than|equally\s+common)\b",
-    re.IGNORECASE,
-)
-# DATE: match MM/DD/YYYY or YYYY-MM-DD in the model's answer
-_DATE_MDY_RE = re.compile(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b")
-_DATE_ISO_RE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
-# Gold DATE is stored as e.g. "datetime.date(2023, 2, 6)"
-_GOLD_DATE_RE = re.compile(r"datetime\.date\((\d+),\s*(\d+),\s*(\d+)\)")
+
+def _parse_answer(text: str) -> str:
+    """Extract the candidate answer from a model response.
+
+    Mirrors ``synth_attempt_answer_parse`` from the official OOLONG harness:
+    split on ``:``, take the last segment, strip markdown decorators.
+    """
+    if ":" not in text:
+        return (text if len(text) < 20 else text.rsplit(maxsplit=1)[-1]).strip()
+    candidate = text.rsplit(":", maxsplit=1)[-1].strip()
+    candidate = candidate.replace("*", "").replace("[", "").replace("]", "")
+    return candidate.strip()
 
 
-def _extract_answer(text: str, answer_type: str) -> str | None:
-    """Pull the formatted answer out of the model's free-form response."""
+def _parse_gold(gold: str, answer_type: str) -> object:
+    """Parse the dataset's gold answer into a comparable Python value."""
+    import ast  # noqa: PLC0415
+
     upper = answer_type.upper()
-    if upper.endswith("LABEL"):
-        m = _LABEL_RE.search(text)
-        return m.group(1).lower() if m else None
-    if upper.endswith("USER"):
-        m = _USER_RE.search(text)
-        return m.group(1) if m else None
-    if upper.endswith("NUMERIC"):
-        m = _NUMBER_RE.search(text)
-        return m.group(1) if m else None
-    if upper.endswith("MONTH_YEAR"):
-        m = _MONTH_YEAR_RE.search(text)
-        return m.group(1).strip().lower() if m else None
-    if upper.endswith("COMPARISON"):
-        m = _COMPARISON_RE.search(text)
-        return m.group(1).strip().lower() if m else None
     if upper.endswith("DATE"):
-        m = _DATE_MDY_RE.search(text)
-        if m:
-            return f"{int(m.group(1)):02d}/{int(m.group(2)):02d}/{m.group(3)}"
-        m = _DATE_ISO_RE.search(text)
-        if m:
-            return f"{int(m.group(2)):02d}/{int(m.group(3)):02d}/{m.group(1)}"
-        return None
-    return None
+        from datetime import datetime  # noqa: PLC0415
+
+        try:
+            return datetime.strptime(gold, "[datetime.date(%Y, %m, %d)]").replace(tzinfo=UTC)
+        except ValueError:
+            return gold
+    try:
+        parsed = ast.literal_eval(gold)
+        return parsed[0] if isinstance(parsed, list) else parsed
+    except (ValueError, SyntaxError):
+        return gold
 
 
-def _normalize_gold(gold: str, answer_type: str) -> str:
-    """Mirror the normalization applied to the extracted answer."""
+def _oolong_score(text: str, gold_answers: tuple[str, ...], answer_type: str) -> float:
+    """Score a model response against gold, returning 0.0-1.0.
+
+    Follows the official OOLONG scoring from ``synth_process_response``:
+    - Exact string match for most types.
+    - COMPARISON: substring check for "more common"/"less common"/"same frequency".
+    - NUMERIC: partial credit ``0.75 ** abs(gold - pred)``.
+    - DATE: flexible parse via ``dateutil`` then exact equality.
+    """
+    import dateutil.parser  # noqa: PLC0415
+
+    candidate = _parse_answer(text)
     upper = answer_type.upper()
-    g = gold.strip()
-    if upper.endswith("DATE"):
-        # Gold is stored as "datetime.date(YYYY, M, D)" or "[datetime.date(...)]"
-        m = _GOLD_DATE_RE.search(g)
-        if m:
-            return f"{int(m.group(2)):02d}/{int(m.group(3)):02d}/{m.group(1)}"
-        return g.lower()
-    if upper.endswith(("LABEL", "MONTH_YEAR", "COMPARISON")):
-        return g.lower()
-    return g
+
+    for raw_gold in gold_answers:
+        gold = _parse_gold(raw_gold, upper)
+
+        if upper.endswith("COMPARISON"):
+            for phrase in ("more common", "less common", "same frequency"):
+                if phrase in candidate.lower():
+                    normalized = phrase
+                    break
+            else:
+                normalized = candidate.lower()
+            if normalized in str(gold).lower() or str(gold).lower() in normalized:
+                return 1.0
+            continue
+
+        if upper.endswith("DATE"):
+            try:
+                parsed_dt = dateutil.parser.parse(candidate)
+                if parsed_dt == gold:
+                    return 1.0
+            except (ValueError, OverflowError):
+                pass
+            continue
+
+        if upper.endswith("NUMERIC"):
+            if str(candidate) == str(gold):
+                return 1.0
+            try:
+                return 0.75 ** abs(int(str(gold)) - int(candidate))
+            except (ValueError, TypeError):
+                pass
+            continue
+
+        if str(candidate).lower() == str(gold).lower():
+            return 1.0
+
+    return 0.0
 
 
 @dataclass(frozen=True)
 class _OolongAnswerMatches(SuccessAssertion):
-    """Fail unless the trajectory's final answer matches any gold answer."""
+    """Fail unless the trajectory's final answer exactly matches any gold answer.
+
+    Also computes a partial score (0.0-1.0) stored on ``self`` so callers can
+    log it as metadata without re-running the scorer.
+    """
 
     gold_answers: tuple[str, ...]
     answer_type: str
 
+    def score(self, trajectory: AgentTrajectory) -> float:
+        return _oolong_score(trajectory.answer, self.gold_answers, self.answer_type)
+
     def check(self, trajectory: AgentTrajectory) -> bool:
-        extracted = _extract_answer(trajectory.answer, self.answer_type)
-        if extracted is None:
-            return False
-        normalized = extracted.strip().lower()
-        return any(
-            normalized == _normalize_gold(gold, self.answer_type) for gold in self.gold_answers
-        )
+        return self.score(trajectory) >= 1.0
 
     def describe_failure(self, trajectory: AgentTrajectory) -> str:
-        extracted = _extract_answer(trajectory.answer, self.answer_type)
+        s = self.score(trajectory)
+        candidate = _parse_answer(trajectory.answer)
         return (
-            f"OOLONG answer mismatch (answer_type={self.answer_type!r}). "
-            f"Extracted={extracted!r}, "
+            f"OOLONG answer mismatch (answer_type={self.answer_type!r}, "
+            f"partial_score={s:.3f}). "
+            f"Parsed={candidate!r}, "
             f"gold={list(self.gold_answers)!r}, "
             f"final_text={trajectory.answer[:300]!r}"
         )
@@ -309,7 +331,7 @@ def build_agent(
     """Build a deep agent configured for the given arm."""
     # Both arms spawn task subagents — configure them to use the sub-model
     # (GPT-5-mini in paper setup) so sub-calls are cheaper and match paper specs.
-    subagent_cfg = [
+    subagent_cfg: list[SubAgent] = [
         {
             "name": "general-purpose",
             "description": "Reads a range of /context.txt and extracts facts as directed.",

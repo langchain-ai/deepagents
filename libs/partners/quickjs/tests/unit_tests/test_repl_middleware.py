@@ -28,7 +28,10 @@ from quickjs_rs import Runtime, ThreadWorker
 from langchain_quickjs import CodeInterpreterMiddleware
 from langchain_quickjs._format import format_outcome
 from langchain_quickjs._repl import _clear_exception_references, _Registry, _ThreadREPL
-from langchain_quickjs._subagent import _runtime_with_response_format
+from langchain_quickjs._subagent import (
+    _ensure_schema_title,
+    _runtime_with_response_format,
+)
 
 if TYPE_CHECKING:
     from langchain_core.callbacks import CallbackManagerForLLMRun
@@ -910,6 +913,44 @@ def test_runtime_with_response_format_uses_configurable() -> None:
     strategy = updated.config["configurable"][SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY]
     assert isinstance(strategy, AutoStrategy)
     assert strategy.schema == schema
+
+
+def test_ensure_schema_title_injects_default_when_missing() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"word": {"type": "string"}},
+        "required": ["word"],
+    }
+
+    updated = _ensure_schema_title(schema)
+
+    assert updated["title"] == "subagent_response"
+    # Original schema is not mutated.
+    assert "title" not in schema
+    # Other keys are preserved unchanged.
+    assert updated["properties"] == schema["properties"]
+    assert updated["required"] == schema["required"]
+
+
+def test_ensure_schema_title_preserves_existing_non_empty_title() -> None:
+    schema = {"title": "MyWord", "type": "object"}
+
+    updated = _ensure_schema_title(schema)
+
+    assert updated is schema
+    assert updated["title"] == "MyWord"
+
+
+@pytest.mark.parametrize(
+    "title",
+    ["", "   ", 0, None],
+)
+def test_ensure_schema_title_replaces_blank_or_invalid_title(title: Any) -> None:
+    schema = {"title": title, "type": "object"}
+
+    updated = _ensure_schema_title(schema)
+
+    assert updated["title"] == "subagent_response"
 
 
 class _StructuredSubagentModel(GenericFakeChatModel):

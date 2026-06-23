@@ -71,10 +71,7 @@ _SDK_RELEASE_TIMES_KEY = "sdk_release_times"
 
 InstallMethod = Literal["uv", "brew", "other", "unknown"]
 
-_UV_TOOL_INSTALL_UPGRADE_BASE = "uv tool install -U deepagents-code"
-"""Base uv reinstall command that clears uv tool receipt pins."""
-
-FALLBACK_UPGRADE_COMMAND = _UV_TOOL_INSTALL_UPGRADE_BASE
+FALLBACK_UPGRADE_COMMAND = "uv tool install -U deepagents-code"
 """Generic upgrade hint used when install-method detection fails.
 
 Callers that surface an upgrade command in user-facing text should prefer
@@ -100,7 +97,7 @@ _UPGRADE_COMMANDS: dict[InstallMethod, str] = {
     # release, which is what users running `/update` actually want.
     # `dependency_refresh_command` builds the inverse command for the
     # explicit "stay on this version, refresh deps" flow.
-    "uv": _UV_TOOL_INSTALL_UPGRADE_BASE,
+    "uv": FALLBACK_UPGRADE_COMMAND,
     "brew": "brew upgrade deepagents-code",
 }
 """Upgrade commands keyed by install method.
@@ -111,7 +108,7 @@ upgraded with a different package manager, because that can update a separate
 environment from the one currently providing `dcode`.
 """
 
-_UV_PRERELEASE_UPGRADE_COMMAND = f"{_UV_TOOL_INSTALL_UPGRADE_BASE} --prerelease allow"
+_UV_PRERELEASE_UPGRADE_COMMAND = f"{FALLBACK_UPGRADE_COMMAND} --prerelease allow"
 """uv upgrade command that opts into alpha/beta/rc release resolution.
 
 Uses `uv tool install -U` (not `uv tool upgrade`) for the same receipt-pin
@@ -1177,13 +1174,13 @@ def format_shadowed_dcode_fix_command(shadow: ShadowedDcode) -> str:
     """
     bin_dir = str(shadow.upgraded_bin_dir)
     if os.name == "nt":
-        # PowerShell, the default Windows shell. Wrap the directory in double
-        # quotes (escaping any literal `"`) so a path with spaces survives, and
-        # prepend it to the session PATH. No cache flush is needed — PowerShell
-        # resolves executables per invocation rather than caching like POSIX
-        # shells' `hash`.
-        quoted = bin_dir.replace('"', '""')
-        return f'$env:PATH = "{quoted};$env:PATH"'
+        # PowerShell, the default Windows shell. Single-quote the literal path so
+        # `$`, `$()`, and backticks in directory names are not expanded, then
+        # concatenate the live session PATH outside the literal. No cache flush is
+        # needed — PowerShell resolves executables per invocation rather than
+        # caching like POSIX shells' `hash`.
+        quoted = bin_dir.replace("'", "''")
+        return f"$env:PATH = '{quoted};' + $env:PATH"
     quoted = shlex.quote(bin_dir)
     return f"export PATH={quoted}:$PATH\nhash -r 2>/dev/null || true"
 

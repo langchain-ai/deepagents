@@ -1383,6 +1383,19 @@ class TestDetectShadowedDcode:
         )
         assert command.replace("\n", "\n  ") in rendered
 
+    def test_windows_fix_command_uses_powershell_literal_path(self, tmp_path) -> None:
+        """PowerShell paths must not expand `$` or evaluate subexpressions."""
+        shadow = ShadowedDcode(
+            shadowing_bin=tmp_path / "old-bin" / "dcode",
+            upgraded_bin_dir=tmp_path / "uv $dcode's $(bin)",
+        )
+
+        with patch("deepagents_code.update_check.os.name", "nt"):
+            command = format_shadowed_dcode_fix_command(shadow)
+
+        quoted_bin_dir = str(shadow.upgraded_bin_dir).replace("'", "''")
+        assert command == f"$env:PATH = '{quoted_bin_dir};' + $env:PATH"
+
     def test_canonicalize_failure_continues_to_deepagents_code_name(
         self, tmp_path
     ) -> None:

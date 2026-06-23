@@ -2,6 +2,7 @@
 
 import logging
 import time
+import warnings
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, ClassVar
@@ -4502,7 +4503,16 @@ class TestCreateModelCodex:
         self._plant_token(path)
         monkeypatch.setattr(openai_codex, "default_store_path", lambda: path)
         clear_caches()
-        result = create_model("openai_codex:gpt-5.2-codex")
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="`_ChatOpenAICodex` is experimental",
+                category=UserWarning,
+            )
+            result = create_model(
+                "openai_codex:gpt-5.2-codex",
+                extra_kwargs={"http_socket_options": []},
+            )
         assert isinstance(result.model, _ChatOpenAICodex)
         assert result.provider == "openai_codex"
         assert result.model_name == "gpt-5.2-codex"
@@ -4531,10 +4541,19 @@ class TestCreateModelCodex:
 
         monkeypatch.setattr(codex_mod, "build_chat_model", _capture)
         clear_caches()
-        create_model(
-            "openai_codex:gpt-5.2-codex",
-            extra_kwargs={"api_key": "sk-should-be-stripped"},
-        )
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="`_ChatOpenAICodex` is experimental",
+                category=UserWarning,
+            )
+            create_model(
+                "openai_codex:gpt-5.2-codex",
+                extra_kwargs={
+                    "api_key": "sk-should-be-stripped",
+                    "http_socket_options": [],
+                },
+            )
         assert "api_key" not in captured
 
     def test_expired_session_routes_to_auth(

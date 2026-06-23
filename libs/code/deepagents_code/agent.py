@@ -1518,6 +1518,7 @@ def create_cli_agent(
             # and resurrect the popped carrier var, leaking it into `execute`.
             backend = LocalShellBackend(
                 root_dir=root_dir,
+                virtual_mode=False,
                 inherit_env=False,
                 env=shell_env,
             )

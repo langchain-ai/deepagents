@@ -25,15 +25,14 @@ import tomllib
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import suppress
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TextIO
+from pathlib import Path
+from typing import Any, Literal, NamedTuple, TextIO
 
+from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
 from deepagents_code._version import PYPI_URL, SDK_PYPI_URL, USER_AGENT, __version__
 from deepagents_code.model_config import DEFAULT_CONFIG_PATH, DEFAULT_STATE_DIR
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -1107,7 +1106,11 @@ async def perform_dependency_refresh(
         cmd = dependency_refresh_command(
             include_prereleases=include_prereleases,
         )
-    except (ExtrasIntrospectionError, ValueError) as exc:
+    except (
+        ExtrasIntrospectionError,
+        ToolRequirementIntrospectionError,
+        ValueError,
+    ) as exc:
         return False, f"{type(exc).__name__}: {exc}"
     return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
 
@@ -1184,6 +1187,10 @@ def format_dependency_changes(changes: Sequence[DependencyChange]) -> str:
     return "\n".join(lines)
 
 
+class ToolRequirementIntrospectionError(RuntimeError):
+    """Raised when uv tool requested requirements cannot be preserved."""
+
+
 _EXTRA_NAME_RE = re.compile(r"^[A-Za-z0-9](?:[-_.A-Za-z0-9]*[A-Za-z0-9])?$")
 """Conservative package-extra name pattern used before shell command display."""
 
@@ -1214,6 +1221,87 @@ def is_valid_package_name(package: str) -> bool:
         `True` when the value is a conservative PEP 508-style package name.
     """
     return bool(_PACKAGE_NAME_RE.fullmatch(package))
+
+
+def _uv_tool_receipt_path(tool_root: Path | None = None) -> Path:
+    """Return the uv receipt path for the current tool environment.
+
+    Args:
+        tool_root: Optional uv tool environment root. Defaults to `sys.prefix`.
+
+    Returns:
+        The expected `uv-receipt.toml` path.
+    """
+    return (tool_root or Path(sys.prefix)) / "uv-receipt.toml"
+
+
+def _uv_tool_with_packages(
+    *,
+    distribution_name: str = "deepagents-code",
+    tool_root: Path | None = None,
+) -> tuple[str, ...]:
+    """Return package names recorded as uv tool `--with` requirements.
+
+    uv records the tool's requested requirements in `uv-receipt.toml`. Reading
+    that receipt preserves only packages the user asked uv to keep, avoiding the
+    over-broad fallback of promoting every installed transitive dependency to a
+    top-level `--with` requirement.
+
+    Args:
+        distribution_name: Main tool distribution to exclude from `--with`.
+        tool_root: Optional uv tool environment root. Defaults to `sys.prefix`.
+
+    Returns:
+        A sorted tuple of validated package names to pass as `--with` values.
+
+    Raises:
+        ToolRequirementIntrospectionError: If the receipt cannot be read, parsed,
+            or safely re-expressed as package-name `--with` requirements.
+    """
+    receipt_path = _uv_tool_receipt_path(tool_root)
+    try:
+        data = tomllib.loads(receipt_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        msg = f"uv tool receipt not found at {receipt_path}"
+        raise ToolRequirementIntrospectionError(msg) from exc
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        msg = f"Could not read uv tool receipt at {receipt_path}: {exc}"
+        raise ToolRequirementIntrospectionError(msg) from exc
+
+    tool = data.get("tool")
+    requirements = tool.get("requirements") if isinstance(tool, dict) else None
+    if not isinstance(requirements, list):
+        msg = "uv tool receipt is missing `[tool].requirements`"
+        raise ToolRequirementIntrospectionError(msg)
+
+    main = canonicalize_name(distribution_name)
+    packages: set[str] = set()
+    for entry in requirements:
+        if not isinstance(entry, dict):
+            msg = "uv tool receipt contains a non-table requirement entry"
+            raise ToolRequirementIntrospectionError(msg)
+        name = entry.get("name")
+        if not isinstance(name, str) or not name:
+            msg = "uv tool receipt contains a requirement without a package name"
+            raise ToolRequirementIntrospectionError(msg)
+        if canonicalize_name(name) == main:
+            continue
+        unsupported_keys = sorted(set(entry) - {"name"})
+        if unsupported_keys:
+            msg = (
+                f"uv tool receipt requirement {name!r} cannot be preserved "
+                "automatically; reinstall it manually after refreshing "
+                "dependencies"
+            )
+            raise ToolRequirementIntrospectionError(msg)
+        if not is_valid_package_name(name):
+            msg = (
+                f"Invalid uv tool receipt package name {name!r}: must match "
+                f"PEP 508 ({_PACKAGE_NAME_RE.pattern})"
+            )
+            raise ToolRequirementIntrospectionError(msg)
+        packages.add(name)
+    return tuple(sorted(packages))
 
 
 def _dcode_extras_requirement(
@@ -1288,6 +1376,8 @@ def dependency_refresh_command(
     Raises:
         ExtrasIntrospectionError: If installed extras cannot be determined
             safely from distribution metadata.
+        ToolRequirementIntrospectionError: If uv tool `--with` packages cannot
+            be determined safely from the tool receipt.
     """
     from deepagents_code.extras_info import (
         ExtrasIntrospectionError,
@@ -1301,6 +1391,13 @@ def dependency_refresh_command(
         raise ExtrasIntrospectionError(msg) from exc
     requirement = _dcode_extras_requirement(extras, version=version)
     cmd = f"uv tool install -U {requirement}"
+    try:
+        with_packages = _uv_tool_with_packages(distribution_name=distribution_name)
+    except ToolRequirementIntrospectionError as exc:
+        msg = str(exc)
+        raise ToolRequirementIntrospectionError(msg) from exc
+    for package in with_packages:
+        cmd += f" --with {shlex.quote(package)}"
     if _resolve_include_prereleases(include_prereleases):
         cmd += " --prerelease allow"
     return cmd

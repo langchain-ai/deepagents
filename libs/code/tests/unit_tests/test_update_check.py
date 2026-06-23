@@ -23,6 +23,7 @@ from deepagents_code.update_check import (
     CACHE_TTL,
     DependencyChange,
     InstallMethod,
+    ToolRequirementIntrospectionError,
     _extract_release_times,
     _latest_from_releases,
     _parse_version,
@@ -125,6 +126,13 @@ def _write_dist_info(
     metadata = ["Metadata-Version: 2.1", f"Name: {name}", f"Version: {version}"]
     metadata.extend(f"Requires-Dist: {req}" for req in requires)
     dist_info.joinpath("METADATA").write_text("\n".join(metadata), encoding="utf-8")
+
+
+def _write_uv_receipt(root: Path, requirements: str) -> None:
+    root.joinpath("uv-receipt.toml").write_text(
+        f"[tool]\nrequirements = [{requirements}]\n",
+        encoding="utf-8",
+    )
 
 
 class TestParseVersion:
@@ -1111,8 +1119,12 @@ class TestUpdateLogs:
             == "uv tool upgrade deepagents-code --prerelease allow"
         )
 
-    def test_dependency_refresh_command_pins_current_version(self) -> None:
+    def test_dependency_refresh_command_pins_current_version(
+        self, tmp_path, monkeypatch
+    ) -> None:
         """Dependency refresh keeps dcode on the running version."""
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
         with patch(
             "deepagents_code.extras_info.installed_extra_names",
             return_value=frozenset(),
@@ -1122,8 +1134,12 @@ class TestUpdateLogs:
                 == "uv tool install -U deepagents-code==1.2.3"
             )
 
-    def test_dependency_refresh_command_preserves_extras(self) -> None:
+    def test_dependency_refresh_command_preserves_extras(
+        self, tmp_path, monkeypatch
+    ) -> None:
         """Dependency refresh must not drop already-installed extras."""
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
         with patch(
             "deepagents_code.extras_info.installed_extra_names",
             return_value=frozenset({"quickjs", "nvidia"}),
@@ -1137,6 +1153,73 @@ class TestUpdateLogs:
                 "'deepagents-code[nvidia,quickjs]==1.2.3' --prerelease allow"
             )
 
+    def test_dependency_refresh_command_preserves_with_packages(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Dependency refresh must not drop packages installed via `--with`."""
+        _write_uv_receipt(
+            tmp_path,
+            (
+                '{ name = "deepagents-code" }, '
+                '{ name = "langchain-custom" }, '
+                '{ name = "langchain.another_provider" }'
+            ),
+        )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+
+        with patch(
+            "deepagents_code.extras_info.installed_extra_names",
+            return_value=frozenset(),
+        ):
+            assert dependency_refresh_command(version="1.2.3") == (
+                "uv tool install -U deepagents-code==1.2.3 "
+                "--with langchain-custom --with langchain.another_provider"
+            )
+
+    def test_dependency_refresh_command_refuses_malformed_receipt(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Malformed uv receipts must not silently drop `--with` packages."""
+        tmp_path.joinpath("uv-receipt.toml").write_text(
+            "[tool\nrequirements = []\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+
+        with (
+            patch(
+                "deepagents_code.extras_info.installed_extra_names",
+                return_value=frozenset(),
+            ),
+            pytest.raises(ToolRequirementIntrospectionError, match="Could not read"),
+        ):
+            dependency_refresh_command(version="1.2.3")
+
+    def test_dependency_refresh_command_refuses_unpreservable_with_requirement(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Unsupported receipt entries are refused instead of rewritten lossy."""
+        _write_uv_receipt(
+            tmp_path,
+            (
+                '{ name = "deepagents-code" }, '
+                '{ name = "langchain-custom", editable = "/tmp/pkg" }'
+            ),
+        )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+
+        with (
+            patch(
+                "deepagents_code.extras_info.installed_extra_names",
+                return_value=frozenset(),
+            ),
+            pytest.raises(
+                ToolRequirementIntrospectionError,
+                match="cannot be preserved automatically",
+            ),
+        ):
+            dependency_refresh_command(version="1.2.3")
+
     async def test_perform_dependency_refresh_uses_pinned_uv_command(self) -> None:
         """Dependency refresh shells out without allowing a dcode version bump."""
         with (
@@ -1148,6 +1231,10 @@ class TestUpdateLogs:
             patch(
                 "deepagents_code.extras_info.installed_extra_names",
                 return_value=frozenset(),
+            ),
+            patch(
+                "deepagents_code.update_check._uv_tool_with_packages",
+                return_value=(),
             ),
             patch(
                 "deepagents_code.update_check._run_install_subprocess",
@@ -1164,6 +1251,27 @@ class TestUpdateLogs:
         assert await_args.args[0] == (
             f"uv tool install -U deepagents-code=={__version__}"
         )
+
+    async def test_perform_dependency_refresh_reports_with_package_errors(
+        self,
+    ) -> None:
+        """Refresh refuses rather than dropping unknown `--with` packages."""
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch("shutil.which", return_value="/usr/bin/uv"),
+            patch(
+                "deepagents_code.update_check.dependency_refresh_command",
+                side_effect=ToolRequirementIntrospectionError("receipt broken"),
+            ),
+        ):
+            success, output = await perform_dependency_refresh()
+
+        assert success is False
+        assert "ToolRequirementIntrospectionError" in output
+        assert "receipt broken" in output
 
     async def test_perform_dependency_refresh_refuses_brew(self) -> None:
         """Brew cannot refresh deps without taking the app formula update."""

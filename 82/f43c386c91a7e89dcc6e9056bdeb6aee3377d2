@@ -1,0 +1,19 @@
+.github/workflows/harbor.yml
+  s_12d8a59ce4e8d1::t_96053e5ceb49b2 164,201-203,322-324
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "82f43c386c91a7e89dcc6e9056bdeb6aee3377d2",
+  "prompts": {},
+  "sessions": {
+    "s_12d8a59ce4e8d1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ef463-0e84-7962-9e93-4fd45ec2737c",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

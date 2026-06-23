@@ -241,9 +241,9 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
         with Vertical():
             yield Static("Installed Integrations", classes="launch-init-title")
             yield Static(
-                "Model providers and sandboxes work through optional add-on "
-                "packages. The ones you've already installed are ready to use "
-                "now; the rest can be added anytime with `/install`.",
+                "Model providers and sandboxes are enabled by optional add-on "
+                "packages. The ones already present in your environment are "
+                "ready to use now; you can add others anytime with `/install`.",
                 classes="launch-init-copy",
             )
             if self._statuses:

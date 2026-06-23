@@ -1033,7 +1033,22 @@ def _should_interrupt_tool_call(request: ToolCallRequest) -> bool:
     if isinstance(ctx, CLIContextSchema):
         return not ctx.auto_approve
     if isinstance(ctx, dict):
-        return not bool(ctx.get("auto_approve", False))
+        # Identity (not truthiness) check: over the JSON/RemoteGraph boundary a
+        # malformed payload (e.g. "yes", 1) must fail closed and interrupt, not
+        # silently auto-approve. Only a genuine boolean `True` suppresses.
+        return ctx.get("auto_approve") is not True
+    if ctx is not None:
+        # Context is present but neither expected shape. The registered
+        # `context_schema=CLIContextSchema` guarantees in-process coercion to
+        # that dataclass, and RemoteGraph delivers a dict — so this means the
+        # context-plumbing contract broke (likely an SDK change). Fail closed
+        # (interrupt), but surface it: otherwise auto-approve silently stops
+        # working with no error, looking like a feature that just "broke".
+        logger.warning(
+            "auto-approve predicate received unexpected context type %s; "
+            "interrupting for safety",
+            type(ctx).__name__,
+        )
     return True
 
 
@@ -1046,8 +1061,8 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
     is enabled.
 
     Each config carries a `when` predicate so that enabling "approve always"
-    mid-session (recorded in graph state) suppresses the interrupt itself
-    instead of relying on the client to auto-resolve it.
+    mid-session (carried in run-scoped context, not graph state) suppresses
+    the interrupt itself instead of relying on the client to auto-resolve it.
 
     Returns:
         Dictionary mapping tool names to their interrupt configuration.

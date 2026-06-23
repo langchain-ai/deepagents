@@ -1,5 +1,6 @@
 """Unit tests for agent formatting functions."""
 
+from dataclasses import fields
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -15,7 +16,7 @@ if TYPE_CHECKING:
     from langgraph.prebuilt.tool_node import ToolCallRequest
     from langgraph.runtime import Runtime
 
-from deepagents_code._cli_context import CLIContextSchema
+from deepagents_code._cli_context import CLIContext, CLIContextSchema
 from deepagents_code.agent import (
     DEFAULT_AGENT_NAME,
     _add_interrupt_on,
@@ -94,6 +95,52 @@ def test_should_interrupt_tool_call_defaults_to_interrupting() -> None:
         cast("ToolCallRequest", SimpleNamespace(runtime=None))
     )
     assert _should_interrupt_tool_call(cast("ToolCallRequest", SimpleNamespace()))
+
+
+def test_should_interrupt_tool_call_truthy_non_bool_fails_closed() -> None:
+    """A truthy non-bool over the dict path must interrupt, not auto-approve.
+
+    The dict branch arrives from the JSON/RemoteGraph boundary, so a malformed
+    payload must not slip past the gate on mere truthiness — only a genuine
+    boolean `True` suppresses the interrupt.
+    """
+    assert _should_interrupt_tool_call(_request_with_context({"auto_approve": 1}))
+    assert _should_interrupt_tool_call(_request_with_context({"auto_approve": "yes"}))
+
+
+def test_should_interrupt_tool_call_warns_on_unexpected_context_shape(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A non-None context that is neither shape interrupts and logs a warning.
+
+    Reaching this branch means the `context_schema` coercion contract broke
+    (likely an SDK change); fail closed but surface it so a silently-degraded
+    auto-approve is observable instead of looking like a feature that "broke".
+    """
+    with caplog.at_level("WARNING", logger="deepagents_code.agent"):
+        assert _should_interrupt_tool_call(_request_with_context("garbage"))
+        assert _should_interrupt_tool_call(
+            _request_with_context(SimpleNamespace(auto_approve=True))
+        )
+
+    assert "unexpected context type" in caplog.text
+    # A legitimate absent context must stay silent — not every default is an anomaly.
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="deepagents_code.agent"):
+        assert _should_interrupt_tool_call(_request_with_context(None))
+    assert "unexpected context type" not in caplog.text
+
+
+def test_cli_context_field_parity() -> None:
+    """`CLIContext` and `CLIContextSchema` must declare the same field set.
+
+    The two types model the same run-context payload on opposite sides of the
+    API boundary; the docstrings note "fields mirror" but nothing structural
+    enforces it. This locks in parity so a field added to one is added to both.
+    """
+    typed_dict_keys = set(CLIContext.__annotations__)
+    dataclass_keys = {f.name for f in fields(CLIContextSchema)}
+    assert typed_dict_keys == dataclass_keys
 
 
 def test_sanitize_agent_message_name_replaces_provider_unsafe_chars() -> None:

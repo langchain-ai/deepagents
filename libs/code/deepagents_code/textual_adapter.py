@@ -401,8 +401,11 @@ async def execute_task_textual(
         adapter: The TextualUIAdapter for UI operations
         backend: Optional backend for file operations
         image_tracker: Optional tracker for images
-        context: Optional `CLIContext` with model override and params, passed
-            to the graph via `context=`.
+        context: Optional `CLIContext` with model override and params. The
+            current approval mode (`session_state.auto_approve`) is written
+            into `context["auto_approve"]` on every stream iteration before it
+            is passed to the graph via `context=`, so the `interrupt_on` `when`
+            predicate can suppress interrupts at the source.
         sandbox_type: Sandbox provider name for trace metadata, or `None`
             if no sandbox is active.
         message_kwargs: Extra fields merged into the stream input message

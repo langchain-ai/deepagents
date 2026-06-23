@@ -24,7 +24,7 @@ class CLIContextSchema:
     differently on each side of the API boundary: in-process it is coerced to
     this dataclass, but over the LangGraph API server (RemoteGraph) it is
     serialized to JSON and arrives as a plain dict. Consumers
-    (`ConfigurableModelMiddleware._get_context`, `_should_interrupt_tool_call`)
+    (`configurable_model._get_context`, `_should_interrupt_tool_call`)
     therefore accept both shapes. `CLIContext` is the client-facing builder for
     constructing that payload.
 

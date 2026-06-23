@@ -780,9 +780,15 @@ class _SequencedAgent:
         context: object = None,
         **__: Any,
     ) -> AsyncIterator[tuple[Any, ...]]:
-        """Yield chunks for this invocation and record stream inputs/context."""
+        """Yield chunks for this invocation and record stream inputs/context.
+
+        `execute_task_textual` mutates a single `context` dict in place across
+        stream iterations (production reads the value at each call), so snapshot
+        a copy here to capture the per-iteration state rather than aliasing the
+        final mutation.
+        """
         self.stream_inputs.append(stream_input)
-        self.contexts.append(context)
+        self.contexts.append(dict(context) if isinstance(context, dict) else context)
         chunks = self._streams_by_call.pop(0) if self._streams_by_call else []
         for chunk in chunks:
             yield chunk
@@ -817,6 +823,79 @@ class TestExecuteTaskTextualAutoApproveInput:
         assert not isinstance(stream_input, Command)
         assert stream_input == {"messages": [{"role": "user", "content": "hi"}]}
         assert agent.contexts[0]["auto_approve"] is True
+
+    async def test_mid_turn_auto_approve_all_propagates_to_resume_context(
+        self,
+    ) -> None:
+        """Choosing "auto-approve all" mid-turn flips the resuming stream's context.
+
+        The PR's headline behavior: iteration 1 interrupts for approval, the
+        user picks `auto_approve_all`, and the per-iteration context refresh
+        re-reads `session_state.auto_approve` so iteration 2 (the resume)
+        carries `auto_approve=True`. Guards against hoisting the refresh out of
+        the stream loop (which would leave the first-iteration value frozen and
+        keep interrupting the rest of the turn).
+        """
+        action_requests = [{"name": "execute", "args": {"command": "echo hi"}}]
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            _tool_call_message(
+                                "execute", {"command": "echo hi"}, "tool-1"
+                            ),
+                            {},
+                        ),
+                    ),
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": action_requests,
+                            "review_configs": [
+                                {
+                                    "action_name": "execute",
+                                    "allowed_decisions": ["approve", "reject"],
+                                }
+                            ],
+                        }
+                    ),
+                ],
+                [],
+            ]
+        )
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            future: asyncio.Future[object] = asyncio.Future()
+            future.set_result({"type": "auto_approve_all"})
+            return future
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+        session_state = SimpleNamespace(thread_id="thread-1", auto_approve=False)
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=session_state,
+            adapter=adapter,
+        )
+
+        # Two stream iterations: the initial turn and the resume after the
+        # decision. The flag must flip between them, not stay frozen.
+        assert len(agent.contexts) == 2
+        assert agent.contexts[0]["auto_approve"] is False
+        assert agent.contexts[1]["auto_approve"] is True
+        assert session_state.auto_approve is True
 
 
 def _ask_user_interrupt_chunk(payload: dict[str, Any]) -> tuple[Any, ...]:

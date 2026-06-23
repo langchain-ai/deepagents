@@ -1,0 +1,23 @@
+.github/scripts/patch_deepswe_tasks.py
+  s_82899181f7060d::t_33d08c35d0cc96 86-127
+  s_82899181f7060d::t_445218bb4f5791 13-27,30
+  s_82899181f7060d::t_c970b02c9be1d8 154-166
+.github/scripts/test_patch_deepswe_tasks.py
+  s_82899181f7060d::t_3b84cef2b5ca98 1-132
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "e58d8f25a9c0d4a86761b6a9d54e7365a3a27b43",
+  "prompts": {},
+  "sessions": {
+    "s_82899181f7060d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aa9ce3b1-b1ec-486e-ad1a-f8f1aad0824f",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

@@ -128,9 +128,15 @@ def _write_dist_info(
     dist_info.joinpath("METADATA").write_text("\n".join(metadata), encoding="utf-8")
 
 
-def _write_uv_receipt(root: Path, requirements: str) -> None:
+def _write_uv_receipt(
+    root: Path,
+    requirements: str,
+    *,
+    python: str | None = None,
+) -> None:
+    python_line = f'python = "{python}"\n' if python is not None else ""
     root.joinpath("uv-receipt.toml").write_text(
-        f"[tool]\nrequirements = [{requirements}]\n",
+        f"[tool]\n{python_line}requirements = [{requirements}]\n",
         encoding="utf-8",
     )
 
@@ -1176,6 +1182,45 @@ class TestUpdateLogs:
                 "--with langchain-custom --with langchain.another_provider"
             )
 
+    def test_dependency_refresh_command_preserves_uv_python(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Dependency refresh must keep uv's recorded interpreter selection."""
+        _write_uv_receipt(
+            tmp_path,
+            '{ name = "deepagents-code" }',
+            python="3.13",
+        )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+
+        with patch(
+            "deepagents_code.extras_info.installed_extra_names",
+            return_value=frozenset(),
+        ):
+            assert dependency_refresh_command(version="1.2.3") == (
+                "uv tool install -U --python 3.13 deepagents-code==1.2.3"
+            )
+
+    def test_dependency_refresh_command_quotes_uv_python(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Recorded interpreter paths are shell-quoted before execution."""
+        _write_uv_receipt(
+            tmp_path,
+            '{ name = "deepagents-code" }, { name = "langchain-custom" }',
+            python="/opt/Python 3.13/bin/python",
+        )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+
+        with patch(
+            "deepagents_code.extras_info.installed_extra_names",
+            return_value=frozenset(),
+        ):
+            assert dependency_refresh_command(version="1.2.3") == (
+                "uv tool install -U --python '/opt/Python 3.13/bin/python' "
+                "deepagents-code==1.2.3 --with langchain-custom"
+            )
+
     def test_dependency_refresh_command_refuses_malformed_receipt(
         self, tmp_path, monkeypatch
     ) -> None:
@@ -1235,6 +1280,10 @@ class TestUpdateLogs:
             patch(
                 "deepagents_code.update_check._uv_tool_with_packages",
                 return_value=(),
+            ),
+            patch(
+                "deepagents_code.update_check._uv_tool_python",
+                return_value=None,
             ),
             patch(
                 "deepagents_code.update_check._run_install_subprocess",

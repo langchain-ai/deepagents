@@ -1235,6 +1235,58 @@ def _uv_tool_receipt_path(tool_root: Path | None = None) -> Path:
     return (tool_root or Path(sys.prefix)) / "uv-receipt.toml"
 
 
+def _uv_tool_receipt_data(tool_root: Path | None = None) -> dict[str, Any]:
+    """Return parsed uv tool receipt data for the current tool environment.
+
+    Args:
+        tool_root: Optional uv tool environment root. Defaults to `sys.prefix`.
+
+    Returns:
+        Parsed TOML data from `uv-receipt.toml`.
+
+    Raises:
+        ToolRequirementIntrospectionError: If the receipt cannot be read or
+            parsed.
+    """
+    receipt_path = _uv_tool_receipt_path(tool_root)
+    try:
+        return tomllib.loads(receipt_path.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        msg = f"uv tool receipt not found at {receipt_path}"
+        raise ToolRequirementIntrospectionError(msg) from exc
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        msg = f"Could not read uv tool receipt at {receipt_path}: {exc}"
+        raise ToolRequirementIntrospectionError(msg) from exc
+
+
+def _uv_tool_python(tool_root: Path | None = None) -> str | None:
+    """Return the Python interpreter recorded in the uv tool receipt.
+
+    Args:
+        tool_root: Optional uv tool environment root. Defaults to `sys.prefix`.
+
+    Returns:
+        The recorded `[tool].python` value, or `None` when the receipt does not
+            pin an interpreter.
+
+    Raises:
+        ToolRequirementIntrospectionError: If the receipt cannot be read, parsed,
+            or safely re-expressed as a `--python` value.
+    """
+    data = _uv_tool_receipt_data(tool_root)
+    tool = data.get("tool")
+    if not isinstance(tool, dict):
+        msg = "uv tool receipt is missing `[tool]`"
+        raise ToolRequirementIntrospectionError(msg)
+    python = tool.get("python")
+    if python is None:
+        return None
+    if not isinstance(python, str) or not python:
+        msg = "uv tool receipt contains an invalid `[tool].python` value"
+        raise ToolRequirementIntrospectionError(msg)
+    return python
+
+
 def _uv_tool_with_packages(
     *,
     distribution_name: str = "deepagents-code",
@@ -1258,16 +1310,7 @@ def _uv_tool_with_packages(
         ToolRequirementIntrospectionError: If the receipt cannot be read, parsed,
             or safely re-expressed as package-name `--with` requirements.
     """
-    receipt_path = _uv_tool_receipt_path(tool_root)
-    try:
-        data = tomllib.loads(receipt_path.read_text(encoding="utf-8"))
-    except FileNotFoundError as exc:
-        msg = f"uv tool receipt not found at {receipt_path}"
-        raise ToolRequirementIntrospectionError(msg) from exc
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        msg = f"Could not read uv tool receipt at {receipt_path}: {exc}"
-        raise ToolRequirementIntrospectionError(msg) from exc
-
+    data = _uv_tool_receipt_data(tool_root)
     tool = data.get("tool")
     requirements = tool.get("requirements") if isinstance(tool, dict) else None
     if not isinstance(requirements, list):
@@ -1390,7 +1433,15 @@ def dependency_refresh_command(
         msg = str(exc)
         raise ExtrasIntrospectionError(msg) from exc
     requirement = _dcode_extras_requirement(extras, version=version)
-    cmd = f"uv tool install -U {requirement}"
+    cmd = "uv tool install -U"
+    try:
+        python = _uv_tool_python()
+    except ToolRequirementIntrospectionError as exc:
+        msg = str(exc)
+        raise ToolRequirementIntrospectionError(msg) from exc
+    if python is not None:
+        cmd += f" --python {shlex.quote(python)}"
+    cmd += f" {requirement}"
     try:
         with_packages = _uv_tool_with_packages(distribution_name=distribution_name)
     except ToolRequirementIntrospectionError as exc:

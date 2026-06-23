@@ -935,3 +935,93 @@ def test_install_script_interactive_empty_answer_keeps_current(tmp_path: Path) -
     assert code == 0
     assert not args_path.exists()
     assert "Keeping deepagents-code 0.1.0" in output
+
+
+def _run_install_uv(
+    tmp_path: Path, *, verbose: bool
+) -> subprocess.CompletedProcess[str]:
+    """Run the real `install_uv` from `install.sh` against a fake uv installer.
+
+    A fake `curl` emits a trivial "installer" that just prints a noise line; the
+    function pipes it to `sh`, so the noise lands in its captured output. Returns
+    the completed process so callers can assert on whether that noise reached the
+    terminal (it should only do so under verbose mode).
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    curl = bin_dir / "curl"
+    curl.write_text("#!/usr/bin/env bash\nprintf '%s\\n' 'echo UV_INSTALLER_NOISE'\n")
+    _make_executable(curl)
+
+    script = tmp_path / "install_uv_harness.sh"
+    script.write_text(
+        "set -euo pipefail\n"
+        "log_info() { :; }\n"
+        'log_error() { printf "%s\\n" "$*" >&2; }\n'
+        f"VERBOSE={'1' if verbose else '0'}\n"
+        f"{_extract_shell_function('install_uv')}\n"
+        "install_uv\n",
+        encoding="utf-8",
+    )
+    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    return subprocess.run(
+        ["bash", str(script)],
+        env=env,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+
+
+def test_install_uv_hides_installer_output_by_default(tmp_path: Path) -> None:
+    """The chatty upstream uv installer output is suppressed on a normal run."""
+    proc = _run_install_uv(tmp_path, verbose=False)
+
+    assert proc.returncode == 0
+    assert "UV_INSTALLER_NOISE" not in proc.stdout
+    assert "UV_INSTALLER_NOISE" not in proc.stderr
+
+
+def test_install_uv_verbose_shows_installer_output(tmp_path: Path) -> None:
+    """`DEEPAGENTS_CODE_VERBOSE=1` opts back in to the uv installer's output."""
+    proc = _run_install_uv(tmp_path, verbose=True)
+
+    assert proc.returncode == 0
+    assert "UV_INSTALLER_NOISE" in proc.stderr
+
+
+def test_install_script_macos_without_clt_exits_early(tmp_path: Path) -> None:
+    """On macOS, missing Xcode Command Line Tools fails fast before uv runs.
+
+    Fakes `uname` so the script detects macOS and a failing `xcode-select -p`
+    so the pre-flight check trips. The script must exit non-zero with an
+    actionable message instead of letting a downstream tool trigger the macOS
+    "install developer tools" GUI popup.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    uname = bin_dir / "uname"
+    uname.write_text("#!/usr/bin/env bash\necho Darwin\n")
+    _make_executable(uname)
+    xcode_select = bin_dir / "xcode-select"
+    xcode_select.write_text("#!/usr/bin/env bash\nexit 2\n")
+    _make_executable(xcode_select)
+
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "HOME": str(tmp_path),
+    }
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=env,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+
+    assert proc.returncode != 0
+    assert "Xcode Command Line Tools" in proc.stderr
+    assert "xcode-select --install" in proc.stderr

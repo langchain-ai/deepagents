@@ -56,7 +56,8 @@
 #     prompt.
 #   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
 #   DEEPAGENTS_CODE_VERBOSE — set to 1 to show uv's raw stderr (timing lines,
-#     unfiltered package diff) and the quiet-by-default status lines
+#     unfiltered package diff), the uv installer's own output (shown only when
+#     uv isn't already installed), and the quiet-by-default status lines
 #     (optional-tool checks, post-install footer); useful when debugging. A
 #     fresh install otherwise hides the full list of installed dependencies.
 #   UV_BIN — path to uv binary (auto-detected if unset)
@@ -131,6 +132,22 @@ detect_os() {
   esac
 }
 detect_os
+
+# ---------------------------------------------------------------------------
+# macOS: require Xcode Command Line Tools
+# ---------------------------------------------------------------------------
+# On a fresh Mac the /usr/bin shims for git, python3, etc. are stubs that pop a
+# blocking GUI dialog ("…requires the command line developer tools") the first
+# time they run. uv's interpreter discovery and dcode's own git usage hit those
+# stubs, so fail fast here with a clear instruction instead of leaving the user
+# staring at a confusing popup mid-install. `xcode-select -p` only reports the
+# active developer dir — it never triggers the install dialog itself.
+if [ "$OS" = "macos" ] && ! xcode-select -p >/dev/null 2>&1; then
+  log_error "Xcode Command Line Tools are required but not installed."
+  log_error "  Install them with:  xcode-select --install"
+  log_error "  Then re-run this installer."
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Root / MDM support (macOS — Kandji, Jamf, etc.)
@@ -375,20 +392,26 @@ fi
 # uv installation
 # ---------------------------------------------------------------------------
 install_uv() {
+  # The upstream uv installer is chatty (download progress, install paths,
+  # PATH-setup hints). Capture it and surface the output only when debugging
+  # or when the install fails — by default it's noise the user doesn't need.
+  local uv_install_out uv_install_rc=0
+  uv_install_out=$(mktemp 2>/dev/null) || uv_install_out="/tmp/deepagents-uv-install.$$.out"
   if command -v curl >/dev/null 2>&1; then
-    log_info "Downloading uv installer..."
-    if ! curl -fsSL https://astral.sh/uv/install.sh | sh; then
-      log_error "uv installation failed. See errors above."
-      exit 1
-    fi
+    curl -fsSL https://astral.sh/uv/install.sh | sh >"$uv_install_out" 2>&1 || uv_install_rc=$?
   elif command -v wget >/dev/null 2>&1; then
-    log_info "Downloading uv installer..."
-    if ! wget -qO- https://astral.sh/uv/install.sh | sh; then
-      log_error "uv installation failed. See errors above."
-      exit 1
-    fi
+    wget -qO- https://astral.sh/uv/install.sh | sh >"$uv_install_out" 2>&1 || uv_install_rc=$?
   else
+    rm -f "$uv_install_out"
     log_error "curl or wget is required to install uv."
+    exit 1
+  fi
+  if [ "$VERBOSE" = "1" ] || [ "$uv_install_rc" -ne 0 ]; then
+    cat "$uv_install_out" >&2
+  fi
+  rm -f "$uv_install_out"
+  if [ "$uv_install_rc" -ne 0 ]; then
+    log_error "uv installation failed. See errors above."
     exit 1
   fi
 }

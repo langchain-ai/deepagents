@@ -117,3 +117,46 @@ async def test_update_progress_screen_close_waits_until_done(tmp_path) -> None:
         await pilot.press("escape")
         await pilot.pause()
         assert app.screen is app.screen_stack[0]
+
+
+async def test_update_progress_screen_warning_stays_visible(
+    tmp_path, monkeypatch
+) -> None:
+    """Warning completion keeps the user action visible in the modal."""
+    screen = UpdateProgressScreen(
+        latest="2.0.0",
+        command="uv tool upgrade deepagents-code",
+        log_path=tmp_path / "update.log",
+    )
+
+    copied: list[str] = []
+    app = App()
+    monkeypatch.setattr(app, "copy_to_clipboard", copied.append)
+    async with app.run_test() as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+
+        fix_command = "export PATH=/home/user/.local/bin:$PATH\nhash -r"
+        screen.mark_warning(
+            "Update installed, but another `dcode` is earlier on your PATH.\n"
+            "Remove the shadowing binary, or put /home/user/.local/bin earlier "
+            "on your PATH, then relaunch.",
+            copy_text=fix_command,
+        )
+        await pilot.pause()
+
+        status = screen.query(Static).filter(".up-status").first()
+        details = screen.query(Static).filter(".up-details").first()
+        spinner = screen.query(Static).filter(".up-spinner").first()
+        help_text = screen.query(Static).filter(".up-help").first()
+        assert "Update complete" not in str(status.render())
+        assert "another `dcode` is earlier on your PATH" in str(status.render())
+        assert "Remove the shadowing binary" in str(status.render())
+        assert details.display is True
+        assert str(spinner.render()) == get_glyphs().warning
+        assert "c copy fix command" in str(help_text.render())
+
+        await pilot.press("c")
+        await pilot.pause()
+
+        assert copied == [fix_command]

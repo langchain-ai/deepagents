@@ -82,7 +82,18 @@ instead of updating a separate environment.
 """
 
 _UPGRADE_COMMANDS: dict[InstallMethod, str] = {
-    "uv": "uv tool upgrade deepagents-code",
+    # Use `uv tool install -U` instead of `uv tool upgrade`: the latter
+    # *respects* the requirement string baked into the uv tool receipt by the
+    # original install (or by any prior `dependency_refresh_command` that
+    # wrote `deepagents-code==<old_version>` into the receipt). When that
+    # requirement is pinned, `uv tool upgrade` "succeeds" but re-installs the
+    # same pinned version, silently leaving the user behind latest. A bare
+    # `uv tool install -U deepagents-code` rewrites the receipt's requirement
+    # to an unpinned `deepagents-code` and re-resolves to the latest stable
+    # release, which is what users running `/update` actually want.
+    # `dependency_refresh_command` builds the inverse command for the
+    # explicit "stay on this version, refresh deps" flow.
+    "uv": "uv tool install -U deepagents-code",
     "brew": "brew upgrade deepagents-code",
 }
 """Upgrade commands keyed by install method.
@@ -93,8 +104,12 @@ upgraded with a different package manager, because that can update a separate
 environment from the one currently providing `dcode`.
 """
 
-_UV_PRERELEASE_UPGRADE_COMMAND = "uv tool upgrade deepagents-code --prerelease allow"
-"""uv upgrade command that opts into alpha/beta/rc release resolution."""
+_UV_PRERELEASE_UPGRADE_COMMAND = "uv tool install -U deepagents-code --prerelease allow"
+"""uv upgrade command that opts into alpha/beta/rc release resolution.
+
+Uses `uv tool install -U` (not `uv tool upgrade`) for the same receipt-pin
+reason documented on `_UPGRADE_COMMANDS`.
+"""
 
 _PRERELEASE_UNSUPPORTED_MESSAGE = (
     "Pre-release updates aren't supported for this install. Reinstall with "
@@ -882,6 +897,249 @@ def dependency_refresh_supported(
     return False, _DEPENDENCY_REFRESH_UNSUPPORTED[method]
 
 
+class ShadowedDcode(NamedTuple):
+    """A different `dcode` is winning on the user's PATH than the one we upgraded.
+
+    Returned by `detect_shadowed_dcode` after a successful upgrade so the TUI can
+    warn the user that re-launching will pick up the wrong binary. The most
+    common cause is a pre-uv install of `dcode` (e.g. a leftover from a previous
+    `pipx`/`pip`-based install) earlier on `PATH` than the uv tool shim.
+    """
+
+    shadowing_bin: Path
+    """Absolute path to the `dcode` (or `deepagents-code`) binary the user's
+    `PATH` currently resolves first — the file their next `dcode` will run.
+
+    Reported as the un-followed `shutil.which` result rather than its symlink
+    target, since that's the file the user needs to either delete or demote
+    on `PATH`.
+    """
+
+    upgraded_bin_dir: Path
+    """Absolute path to the bin directory uv installed the upgraded shim into.
+
+    Resolved via uv's documented executable-directory precedence (see
+    `_uv_tool_bin_dir`).
+    """
+
+    @property
+    def upgraded_bin(self) -> Path:
+        """Absolute path to the upgraded `dcode` shim uv installed.
+
+        Keeps the `dcode` entry-point name owned by the type rather than
+        re-derived at each call site (mirrors `DependencyChange.kind`).
+        """
+        return self.upgraded_bin_dir / "dcode"
+
+
+def _uv_tool_bin_dir() -> Path | None:
+    """Return the bin directory uv installed the running `dcode` shim into.
+
+    Mirrors uv's documented executable-directory precedence so a custom
+    layout (e.g. `XDG_BIN_HOME` set on Linux) is compared against the same
+    directory uv would install into. Following uv's reference at
+    https://docs.astral.sh/uv/reference/storage/#executable-directory:
+
+    - Unix: `UV_TOOL_BIN_DIR` → `XDG_BIN_HOME` → `$XDG_DATA_HOME/../bin` →
+        `$HOME/.local/bin`.
+    - Windows: same env-var chain, with `%USERPROFILE%/.local/bin` as the
+        final fallback (uv normalizes path separators).
+
+    The first candidate that exists as a directory wins; an existing but
+    unusable candidate (read failures, race) is skipped so a transient
+    glitch doesn't downgrade the answer to a less-preferred path.
+
+    Returns:
+        The absolute, resolved bin directory, or `None` when no candidate
+            exists (e.g. a CI install that never created `~/.local/bin`).
+    """
+
+    def _from_env(name: str) -> Path | None:
+        raw = os.environ.get(name)
+        return Path(raw).expanduser() if raw else None
+
+    home = Path.home()
+    xdg_data_home_str = os.environ.get("XDG_DATA_HOME")
+    xdg_data_home = (
+        Path(xdg_data_home_str).expanduser()
+        if xdg_data_home_str
+        else home / ".local" / "share"
+    )
+
+    # Build candidates in uv's documented precedence order. None entries
+    # (env var unset) are filtered out before iteration so each remaining
+    # candidate is a real path.
+    candidates: list[Path | None] = [
+        _from_env("UV_TOOL_BIN_DIR"),
+        _from_env("XDG_BIN_HOME"),
+        # `$XDG_DATA_HOME/../bin` — uv's documented intermediate fallback.
+        # Falls back to the spec default (`~/.local/share`) when the env
+        # var is unset; the resulting `~/.local/share/../bin` = `~/.local/bin`
+        # matches the final fallback below, which is fine — only the first
+        # match wins.
+        xdg_data_home.parent / "bin",
+        home / ".local" / "bin",
+    ]
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            logger.debug(
+                "Could not resolve uv tool bin dir candidate %s",
+                candidate,
+                exc_info=True,
+            )
+            continue
+        if resolved.is_dir():
+            return resolved
+    return None
+
+
+def detect_shadowed_dcode() -> ShadowedDcode | None:
+    """Return the shadowing `dcode` on the user's PATH, if any.
+
+    After a successful `uv tool upgrade`, the upgraded binary only takes effect
+    on the next launch if the user's `PATH` resolves to uv's tool bin dir for
+    `dcode` (and `deepagents-code`). A pre-uv install earlier on `PATH` will
+    silently win and report the old version, which looks like "the upgrade
+    didn't work" to the user.
+
+    This compares `shutil.which("dcode")` against uv's tool bin dir. A mismatch
+    means a different binary will run next launch.
+
+    Caveat: a `dcode` symlink that lives in some unrelated bin dir but
+    points *into* the upgraded tool venv (e.g. a manually-created
+    convenience symlink) is reported as shadowing even though the next
+    launch would actually run the upgraded entry point. Comparing
+    directories rather than resolved targets is intentional — see the
+    inline note below for why — and this edge is rare enough that we
+    accept a benign false positive over a class of false negatives.
+
+    Returns:
+        A `ShadowedDcode` describing the conflict, or `None` when there is no
+            shadowing binary (the common case) or when detection is not
+            applicable (non-uv install, uv bin dir unknown, no `dcode` on
+            `PATH` at all).
+    """
+    if detect_install_method() != "uv":
+        return None
+    upgraded_bin_dir = _uv_tool_bin_dir()
+    if upgraded_bin_dir is None:
+        return None
+    # Prefer `dcode` (the documented entry point) and fall back to the legacy
+    # `deepagents-code` name, mirroring how the install script verifies the
+    # post-install binary.
+    for name in ("dcode", "deepagents-code"):
+        resolved = shutil.which(name)
+        if resolved is None:
+            continue
+        # Compare the *PATH-entry directory* against uv's bin dir, NOT the
+        # symlink target. uv exposes its tool entry points as symlinks under
+        # the user's bin dir (e.g. `~/.local/bin/dcode` -> the tool venv at
+        # `~/.local/share/uv/tools/deepagents-code/bin/dcode`). Following the
+        # link would make every healthy uv install look shadowed, because the
+        # resolved parent is the tool venv's bin dir rather than the
+        # PATH-visible one. Take the parent of the un-followed `which`
+        # result so we answer the question we actually care about: "is uv's
+        # bin dir what PATH resolves to?" `Path(...).parent` does not follow
+        # the file's symlink. Only the directory is canonicalized, so
+        # benign filesystem aliases (case folding, /private/var vs /var on
+        # macOS, mount-point synonyms) still compare equal.
+        path_dir = Path(resolved).parent
+        try:
+            canonical_path_dir = path_dir.resolve()
+        except OSError:
+            # Couldn't canonicalize the PATH-entry directory (e.g. a stale
+            # symlink, a vanished mount). Returning `None` here would
+            # silently hide a real shadow, so continue to the next candidate
+            # name if any; if this was the last (`deepagents-code`), the loop
+            # falls through to `None` — an indeterminate result we'd rather
+            # surface to a developer than mask, hence `warning`, not `debug`.
+            logger.warning(
+                "Could not resolve PATH directory for %s at %s",
+                name,
+                path_dir,
+                exc_info=True,
+            )
+            continue
+        if canonical_path_dir == upgraded_bin_dir:
+            # PATH resolves to the directory uv just wrote into — no shadow.
+            return None
+        return ShadowedDcode(
+            shadowing_bin=Path(resolved),
+            upgraded_bin_dir=upgraded_bin_dir,
+        )
+    return None
+
+
+def detect_shadowed_dcode_safe() -> ShadowedDcode | None:
+    """Best-effort `detect_shadowed_dcode` that never raises.
+
+    The shadow check only ever runs to decorate an already-successful upgrade,
+    so a defect in detection — or an unexpected error escaping the narrow
+    `OSError` guards inside `detect_shadowed_dcode` — must not turn a working
+    upgrade into a user-facing failure. Any unexpected exception is logged and
+    treated as "no shadow detected", matching the fail-open bias the detector
+    already applies internally.
+
+    Returns:
+        Whatever `detect_shadowed_dcode` returns, or `None` if it raised.
+    """
+    try:
+        return detect_shadowed_dcode()
+    except Exception:
+        logger.warning("Shadow detection failed after upgrade", exc_info=True)
+        return None
+
+
+def format_shadowed_dcode_warning(shadow: ShadowedDcode) -> str:
+    """Render a user-facing warning for a shadowed-dcode situation.
+
+    Shared by the `/update` slash command, the update-notification "Install
+    now" action, and the pre-launch auto-update path so the wording stays
+    consistent.
+
+    Args:
+        shadow: The shadowing-binary description returned by
+            `detect_shadowed_dcode`.
+
+    Returns:
+        A plain-text, multi-line warning suitable for either the TUI message
+            stream or a Rich `console.print`.
+    """
+    fix_command = format_shadowed_dcode_fix_command(shadow)
+    indented_command = fix_command.replace("\n", "\n  ")
+    return (
+        "Update installed, but another `dcode` is earlier on your PATH and "
+        "will keep running the old version on relaunch:\n"
+        f"  Shadowing binary: {shadow.shadowing_bin}\n"
+        f"  Upgraded shim:    {shadow.upgraded_bin}\n"
+        "After closing dcode, run this to make the upgraded shim win in this "
+        "terminal:\n"
+        f"  {indented_command}\n"
+        "Then relaunch dcode. To make the fix permanent, add that export line "
+        "to your shell profile, or uninstall the older dcode if you no longer "
+        "need it."
+    )
+
+
+def format_shadowed_dcode_fix_command(shadow: ShadowedDcode) -> str:
+    """Return a session-scoped shell command to prefer the upgraded shim.
+
+    Args:
+        shadow: The shadowing-binary description returned by
+            `detect_shadowed_dcode`.
+
+    Returns:
+        A copy-pasteable shell command that updates only the current terminal
+            session and clears common shell command caches.
+    """
+    bin_dir = shlex.quote(str(shadow.upgraded_bin_dir))
+    return f"export PATH={bin_dir}:$PATH\nhash -r 2>/dev/null || true"
+
+
 def cleanup_update_logs(
     *,
     retention_days: int = UPDATE_LOG_RETENTION_DAYS,
@@ -1092,7 +1350,51 @@ async def perform_upgrade(
         if not supported:
             return False, reason or _PRERELEASE_UNSUPPORTED_MESSAGE
 
-    cmd = upgrade_command(method, include_prereleases=resolved_include_prereleases)
+    if method == "uv":
+        # Prefer the receipt-aware `uv tool install -U` builder so installed
+        # extras / `--with` packages survive the upgrade and any stale
+        # `==<version>` pin in the receipt is cleared. Fall back to the bare
+        # display command when extras or receipt introspection fails — the
+        # fallback might drop extras, but a successful unpinned upgrade is
+        # still strictly better than a pinned "upgrade" that quietly stays
+        # on the old version.
+        from deepagents_code.extras_info import ExtrasIntrospectionError
+
+        try:
+            cmd = upgrade_install_command(
+                include_prereleases=resolved_include_prereleases,
+            )
+        except (
+            ExtrasIntrospectionError,
+            ToolRequirementIntrospectionError,
+            ValueError,
+        ) as exc:
+            logger.warning(
+                "Could not build receipt-aware uv upgrade command (%s: %s); "
+                "falling back to the bare command. Installed extras may be "
+                "dropped.",
+                type(exc).__name__,
+                exc,
+            )
+            # The bare fallback only knows the distribution name, so the log
+            # line above is invisible to the user — surface the same caveat in
+            # the progress stream so they know to re-add extras / `--with`
+            # packages if a feature stops working after the upgrade.
+            await _emit_progress(
+                progress,
+                "Note: couldn't read your full install configuration; "
+                "installed extras or extra packages may not carry over. "
+                "Re-add them if a feature stops working after relaunch.",
+            )
+            cmd = upgrade_command(
+                method,
+                include_prereleases=resolved_include_prereleases,
+            )
+    else:
+        cmd = upgrade_command(
+            method,
+            include_prereleases=resolved_include_prereleases,
+        )
 
     # Skip brew if binary not on PATH
     if method == "brew" and not shutil.which("brew"):
@@ -1514,6 +1816,56 @@ def _dcode_extras_requirement(
     if not names and version is None:
         return requirement
     return shlex.quote(requirement)
+
+
+def upgrade_install_command(
+    *,
+    include_prereleases: bool | None = None,
+    distribution_name: str = "deepagents-code",
+) -> str:
+    """Return the uv command that upgrades dcode while clearing any version pin.
+
+    Built specifically to avoid the `uv tool upgrade` receipt-pin trap: when
+    the tool was originally installed via `uv tool install deepagents-code==X.Y.Z`
+    — or when a prior `dependency_refresh_command` rewrote the receipt with a
+    version-pinned requirement — `uv tool upgrade deepagents-code` will only
+    re-resolve *within* that pin and silently keep the user on the same
+    version. Re-running `uv tool install -U deepagents-code[<extras>]` (no
+    version pin) rewrites the receipt's requirement to unpinned so the next
+    upgrade can actually move forward. Installed extras and `--with`
+    packages are preserved to mirror `dependency_refresh_command`; only the
+    version pin is intentionally stripped.
+
+    Args:
+        include_prereleases: Whether to include alpha/beta/rc releases. When
+            `None`, follows the installed version's channel.
+        distribution_name: Name of the installed distribution to inspect for
+            already-installed extras.
+
+    Returns:
+        Shell command string suitable for execution via the shell.
+
+    Propagates `ExtrasIntrospectionError` if installed extras cannot be
+    determined safely from distribution metadata, and
+    `ToolRequirementIntrospectionError` if the uv tool `--with` packages or
+    interpreter cannot be determined safely from the tool receipt.
+    `perform_upgrade` converts both into a user-facing failure.
+    """
+    from deepagents_code.extras_info import installed_extra_names
+
+    extras = installed_extra_names(distribution_name, strict=True)
+    requirement = _dcode_extras_requirement(extras, version=None)
+    cmd = "uv tool install -U"
+    python = _uv_tool_python()
+    if python is not None:
+        cmd += f" --python {shlex.quote(python)}"
+    cmd += f" {requirement}"
+    with_packages = _uv_tool_with_packages(distribution_name=distribution_name)
+    for package in with_packages:
+        cmd += f" --with {shlex.quote(package)}"
+    if _resolve_include_prereleases(include_prereleases):
+        cmd += " --prerelease allow"
+    return cmd
 
 
 def dependency_refresh_command(

@@ -3907,10 +3907,12 @@ class DeepAgentsApp(App):
             from deepagents_code.update_check import (
                 _PRERELEASE_UNSUPPORTED_MESSAGE,
                 dependency_refresh_supported,
+                detect_shadowed_dcode_safe,
                 format_age_suffix,
                 format_dependency_changes,
                 format_installed_age_suffix,
                 format_release_age_parenthetical,
+                format_shadowed_dcode_warning,
                 is_update_available,
                 parse_dependency_changes,
                 perform_dependency_refresh_dry_run,
@@ -4047,13 +4049,27 @@ class DeepAgentsApp(App):
             )
             if success:
                 self._update_available = (False, None)
-                await self._mount_message(
-                    AppMessage(
-                        f"Updated to v{latest}. Quit and relaunch dcode to use "
-                        "the new version (`/restart` only restarts the server, "
-                        "not the CLI)."
-                    ),
-                )
+                # uv may have installed the upgraded shim into a directory that
+                # isn't first on the user's PATH (e.g. a leftover pre-uv
+                # `dcode` from a former `pipx` install). Detect that before
+                # mounting the success line so we don't follow a green
+                # "relaunch to use the new version" with a warning that
+                # relaunching will keep the old version. Use the
+                # never-raises wrapper so a detector defect can't turn a
+                # successful upgrade into a "/update failed" message.
+                shadow = await asyncio.to_thread(detect_shadowed_dcode_safe)
+                if shadow is None:
+                    await self._mount_message(
+                        AppMessage(
+                            f"Updated to v{latest}. Quit and relaunch dcode "
+                            "to use the new version (`/restart` only restarts "
+                            "the server, not the CLI)."
+                        ),
+                    )
+                else:
+                    await self._mount_message(
+                        ErrorMessage(format_shadowed_dcode_warning(shadow)),
+                    )
                 # The upgrade re-resolves the whole environment, so surface any
                 # dependency bumps that rode along with the dcode release.
                 dep_changes = [
@@ -10564,6 +10580,9 @@ class DeepAgentsApp(App):
         from deepagents_code.update_check import (
             clear_update_notified,
             create_update_log_path,
+            detect_shadowed_dcode_safe,
+            format_shadowed_dcode_fix_command,
+            format_shadowed_dcode_warning,
             mark_update_notified,
             perform_upgrade,
             upgrade_command,
@@ -10617,16 +10636,38 @@ class DeepAgentsApp(App):
                 )
                 if success:
                     self._notice_registry.remove(entry.key)
-                    screen.mark_success()
-                    if not progress_modal_visible:
+                    # Same shadowing risk as `/update`: if a stale `dcode` is
+                    # earlier on PATH, the user's next launch will silently
+                    # run the old version. Surface that loudly even when only
+                    # a toast is visible. Keep the modal itself out of the
+                    # success state when relaunching would keep using the old
+                    # binary.
+                    shadow = await asyncio.to_thread(detect_shadowed_dcode_safe)
+                    if shadow is not None:
+                        warning = format_shadowed_dcode_warning(shadow)
+                        if progress_modal_visible:
+                            screen.mark_warning(
+                                warning,
+                                copy_text=format_shadowed_dcode_fix_command(shadow),
+                            )
                         self.notify(
-                            f"Updated to v{payload.latest}. "
-                            "Quit and relaunch dcode to use the new version "
-                            "(/restart only restarts the server, not the CLI).",
-                            severity="information",
-                            timeout=10,
+                            warning,
+                            severity="warning",
+                            timeout=20,
                             markup=False,
                         )
+                        return
+                    screen.mark_success()
+                    if progress_modal_visible:
+                        return
+                    self.notify(
+                        f"Updated to v{payload.latest}. "
+                        "Quit and relaunch dcode to use the new version "
+                        "(/restart only restarts the server, not the CLI).",
+                        severity="information",
+                        timeout=10,
+                        markup=False,
+                    )
                     return
                 logger.warning(
                     "Auto-upgrade failed for v%s. Output:\n%s",

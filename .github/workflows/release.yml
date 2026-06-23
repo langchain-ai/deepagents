@@ -460,9 +460,10 @@ jobs:
 
       # Resolve the human who shipped this release so release notes can credit
       # them. Primary source is whoever merged the release PR (the release commit
-      # is that PR's squash-merge); manual `gh workflow run` dispatches fall back
-      # to the triggering actor. Bot accounts are dropped — there's no human to
-      # credit (the auto path's dispatcher is github-actions[bot]).
+      # is that PR's squash-merge); when the release commit has no associated
+      # merged PR (initial release, or a direct push / manual recovery), fall back
+      # to the actor who triggered the workflow. Bot accounts are dropped — there's
+      # no human to credit (the auto path's dispatcher is github-actions[bot]).
       - name: Resolve releaser
         id: resolve-releaser
         env:

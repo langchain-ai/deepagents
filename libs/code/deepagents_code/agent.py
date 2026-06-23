@@ -1008,6 +1008,11 @@ def _format_execute_description(
     return "\n".join(lines)
 
 
+def _is_auto_approve_enabled(value: object) -> bool:
+    """Return whether a context value explicitly enables auto-approve."""
+    return isinstance(value, bool) and value
+
+
 def _should_interrupt_tool_call(request: ToolCallRequest) -> bool:
     """Decide whether a gated tool call should pause for human approval.
 
@@ -1031,12 +1036,12 @@ def _should_interrupt_tool_call(request: ToolCallRequest) -> bool:
     runtime = getattr(request, "runtime", None)
     ctx = getattr(runtime, "context", None)
     if isinstance(ctx, CLIContextSchema):
-        return not ctx.auto_approve
+        return not _is_auto_approve_enabled(ctx.auto_approve)
     if isinstance(ctx, dict):
-        # Identity (not truthiness) check: over the JSON/RemoteGraph boundary a
+        # Type-checked (not truthiness) check: over the JSON/RemoteGraph boundary a
         # malformed payload (e.g. "yes", 1) must fail closed and interrupt, not
         # silently auto-approve. Only a genuine boolean `True` suppresses.
-        return ctx.get("auto_approve") is not True
+        return not _is_auto_approve_enabled(ctx.get("auto_approve"))
     if ctx is not None:
         # Context is present but neither expected shape. The registered
         # `context_schema=CLIContextSchema` guarantees in-process coercion to

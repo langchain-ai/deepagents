@@ -98,12 +98,18 @@ def test_should_interrupt_tool_call_defaults_to_interrupting() -> None:
 
 
 def test_should_interrupt_tool_call_truthy_non_bool_fails_closed() -> None:
-    """A truthy non-bool over the dict path must interrupt, not auto-approve.
+    """A truthy non-bool context value must interrupt, not auto-approve.
 
-    The dict branch arrives from the JSON/RemoteGraph boundary, so a malformed
-    payload must not slip past the gate on mere truthiness — only a genuine
-    boolean `True` suppresses the interrupt.
+    Context can arrive as a dataclass after in-process `context_schema`
+    coercion, or as a dict from the JSON/RemoteGraph boundary. A malformed
+    value in either shape must not slip past the gate on mere truthiness.
     """
+    assert _should_interrupt_tool_call(
+        _request_with_context(CLIContextSchema(auto_approve=cast("Any", 1)))
+    )
+    assert _should_interrupt_tool_call(
+        _request_with_context(CLIContextSchema(auto_approve=cast("Any", "yes")))
+    )
     assert _should_interrupt_tool_call(_request_with_context({"auto_approve": 1}))
     assert _should_interrupt_tool_call(_request_with_context({"auto_approve": "yes"}))
 

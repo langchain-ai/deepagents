@@ -7,10 +7,10 @@ Source of truth: [`tests/evals/`](tests/evals/).
 Categories (for `--eval-category` filtering):
 
 ```txt
-file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test,langchain/middleware
+file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test,langchain/middleware,long_context_aggregation
 ```
 
-**118 evals** across **8 categories**
+**119 evals** across **9 categories**
 
 ## File Ops (`file_operations`) (13 evals)
 
@@ -153,3 +153,7 @@ file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test,l
 - [`test_design_api_lands_in_final_message`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_langchain_middleware_todo.py#L283) — `tests/evals/test_langchain_middleware_todo.py:283`
 - [`test_density_cairo_lands_in_final_message`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_langchain_middleware_todo.py#L321) — `tests/evals/test_langchain_middleware_todo.py:321`
 - [`test_trivial_plan_skips_write_todos`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_langchain_middleware_todo.py#L355) — `tests/evals/test_langchain_middleware_todo.py:355`
+
+## Long-Context Aggregation (`long_context_aggregation`) (1 eval)
+
+- [`test_oolong_synth`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_oolong_rlm_vs_subagents.py#L70) — `tests/evals/test_oolong_rlm_vs_subagents.py:70`

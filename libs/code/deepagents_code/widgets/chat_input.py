@@ -7,7 +7,7 @@ import contextlib
 import logging
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, assert_never
 
 from rich.cells import cell_len
 from rich.segment import Segment
@@ -227,8 +227,12 @@ class CompletionOption(Static):
         self.post_message(self.Clicked(self._index))
 
 
+InputAction = Literal["clear", "copy"]
+"""Closed set of actions an `InputActionButton` can dispatch."""
+
+
 class InputActionButton(Static):
-    """Small clickable button shown at the top-right of the chat input.
+    """Small clickable button shown at the right edge of the chat input row.
 
     Provides discoverable mouse alternatives to keyboard shortcuts for
     clearing (`[ X ]`) and copying (`[ COPY ]`) the current draft.
@@ -265,7 +269,7 @@ class InputActionButton(Static):
     class Clicked(Message):
         """Message sent when an input action button is clicked."""
 
-        def __init__(self, action: str) -> None:
+        def __init__(self, action: InputAction) -> None:
             """Initialize with the action identifier (`clear` or `copy`)."""
             super().__init__()
             self.action = action
@@ -275,7 +279,7 @@ class InputActionButton(Static):
         """Disable terminal text selection for the action label."""
         return False
 
-    def __init__(self, label: str, action: str, **kwargs: Any) -> None:
+    def __init__(self, label: str, action: InputAction, **kwargs: Any) -> None:
         """Initialize the button with a label and an action identifier."""
         super().__init__(label, markup=False, **kwargs)
         self._action = action
@@ -843,6 +847,20 @@ class ChatTextArea(TextArea):
         self._paste_burst_last_key_time = None
         self._paste_burst_last_suppressed_enter_time = None
 
+    def _reset_paste_burst_state(self) -> None:
+        """Reset all paste-burst and backslash tracking to a clean slate.
+
+        Shared by the text-replacing entry points (`set_text_from_history`,
+        `clear_text`, `discard_text`) so a wholesale text swap never leaves
+        stale burst/backslash timing that would misclassify the next keystroke.
+        """
+        self._paste_burst_buffer = ""
+        self._paste_burst_last_char_time = None
+        self._paste_burst_window_until = None
+        self._reset_paste_burst_run()
+        self._cancel_paste_burst_timer()
+        self._backslash_pending_time = None
+
     def _enter_inserts_newline_during_burst(self, now: float) -> bool:
         """Return whether `enter` should insert a newline rather than submit.
 
@@ -1203,12 +1221,7 @@ class ChatTextArea(TextArea):
                 to preserve historical cursor-at-end behavior for callers
                 that don't specify a direction.
         """
-        self._paste_burst_buffer = ""
-        self._paste_burst_last_char_time = None
-        self._paste_burst_window_until = None
-        self._reset_paste_burst_run()
-        self._cancel_paste_burst_timer()
-        self._backslash_pending_time = None
+        self._reset_paste_burst_state()
         self._skip_history_change_events += 1
         self.text = text
         if cursor_at_end:
@@ -1228,12 +1241,7 @@ class ChatTextArea(TextArea):
         # set_text_from_history is still suppressed, plus one for the
         # self.text = "" assignment below.
         self._skip_history_change_events += 1
-        self._paste_burst_buffer = ""
-        self._paste_burst_last_char_time = None
-        self._paste_burst_window_until = None
-        self._reset_paste_burst_run()
-        self._cancel_paste_burst_timer()
-        self._backslash_pending_time = None
+        self._reset_paste_burst_state()
         self.text = ""
         self.move_cursor((0, 0))
 
@@ -1249,12 +1257,7 @@ class ChatTextArea(TextArea):
         """
         if not self.text:
             return False
-        self._paste_burst_buffer = ""
-        self._paste_burst_last_char_time = None
-        self._paste_burst_window_until = None
-        self._reset_paste_burst_run()
-        self._cancel_paste_burst_timer()
-        self._backslash_pending_time = None
+        self._reset_paste_burst_state()
         self.clear()
         return True
 
@@ -2414,9 +2417,14 @@ class ChatInput(Vertical):
             self._clear_via_button()
         elif event.action == "copy":
             self._copy_via_button()
+        else:
+            assert_never(event.action)
 
     def _clear_via_button(self) -> None:
-        """Clear the draft from the `[ X ]` button (undoable with ctrl+z)."""
+        """Clear the draft from the `[ X ]` button (undoable with ctrl+z).
+
+        Also exits any active slash/shell mode, unlike the Esc-driven clear.
+        """
         cleared = self.discard_text()
         self.exit_mode()
         if cleared:
@@ -2426,23 +2434,18 @@ class ChatInput(Vertical):
 
     def _copy_via_button(self) -> None:
         """Copy the current draft to the clipboard from the `[ COPY ]` button."""
-        from deepagents_code.clipboard import copy_text_to_clipboard
+        from deepagents_code.clipboard import copy_text_with_feedback
 
         text = self.value
-        if not text:
-            return
-        success, error = copy_text_to_clipboard(self.app, text)
-        if success:
-            self.app.notify("Input copied to clipboard", timeout=3, markup=False)
-        else:
-            self.app.notify(
-                f"Failed to copy input: {error}"
-                if error
-                else "Failed to copy input - no clipboard method available",
-                severity="warning",
-                timeout=3,
-                markup=False,
+        if text:
+            copy_text_with_feedback(
+                self.app,
+                text,
+                failure_noun="input",
+                success_message="Input copied to clipboard",
             )
+        # Refocus even on an empty draft so clicking the button never strands
+        # focus on the (non-focusable) button.
         if self._text_area is not None:
             self._text_area.focus()
 

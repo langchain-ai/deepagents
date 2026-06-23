@@ -15381,6 +15381,63 @@ class TestClearInputEscape:
         assert app._clear_input_pending is False
         chat_input.discard_text.assert_not_called()
 
+    def test_pending_resets_after_timer_expiry(self) -> None:
+        """When the arm window elapses, the timer disarms so a later Esc re-arms.
+
+        Without the reset, a stale pending flag would let a much-later Esc clear
+        a draft the user typed long after the hint vanished.
+        """
+        app = self._make_app()
+        chat_input = MagicMock()
+        chat_input.value = "draft text"
+        chat_input.discard_text.return_value = True
+        app._chat_input = chat_input
+
+        set_timer = cast("MagicMock", app.set_timer)
+
+        app._handle_clear_input_escape()  # arm
+        assert app._clear_input_pending is True
+
+        # Fire the scheduled reset callback as Textual's timer would.
+        _delay, reset_callback = set_timer.call_args.args
+        reset_callback()
+        assert app._clear_input_pending is False
+
+        # The next Esc re-arms instead of clearing the untouched draft.
+        app._handle_clear_input_escape()
+        assert app._clear_input_pending is True
+        chat_input.discard_text.assert_not_called()
+
+    async def test_double_escape_clears_via_full_escape_chain(self) -> None:
+        """Through the real Esc handler, esc+esc clears when nothing else pends.
+
+        Exercises the precedence chain: the clear only fires as the last resort
+        of `action_interrupt`, after every higher-priority interrupt has passed.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.insert("a draft I regret")
+            await pilot.pause()
+
+            app.action_interrupt()
+            await pilot.pause()
+            assert app._clear_input_pending is True
+            assert chat_input.value == "a draft I regret"
+
+            app.action_interrupt()
+            await pilot.pause()
+            assert app._clear_input_pending is False
+            assert chat_input.value == ""
+
+            # The clear is undoable.
+            text_area.undo()
+            await pilot.pause()
+            assert chat_input.value == "a draft I regret"
+
 
 class TestCopyFocusedInputText:
     """Tests for the Ctrl+C copy-whole-input fallback (no active selection)."""
@@ -15464,3 +15521,22 @@ class TestCopyFocusedInputText:
         app = self._make_app()
         monkeypatch.setattr(type(app), "focused", property(lambda _self: None))
         assert app._copy_focused_input_text() is False
+
+    async def test_no_copy_from_password_input(self) -> None:
+        """A focused masked password Input is never copied by the whole-input path."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            password_input = Input(value="secret-api-key", password=True)
+            await app.mount(password_input)
+            password_input.focus()
+            await pilot.pause()
+
+            with patch(
+                "deepagents_code.clipboard.copy_text_to_clipboard",
+                return_value=(True, None),
+            ) as copy_mock:
+                assert app._copy_focused_input_text() is False
+
+            copy_mock.assert_not_called()

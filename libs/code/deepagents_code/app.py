@@ -8439,19 +8439,9 @@ class DeepAgentsApp(App):
         if not selected_text:
             return False
 
-        from deepagents_code.clipboard import copy_text_to_clipboard
+        from deepagents_code.clipboard import copy_text_with_feedback
 
-        success, error = copy_text_to_clipboard(self, selected_text)
-        if not success:
-            self.notify(
-                f"Failed to copy selection: {error}"
-                if error
-                else "Failed to copy selection - no clipboard method available",
-                severity="warning",
-                timeout=3,
-                markup=False,
-            )
-        return success
+        return copy_text_with_feedback(self, selected_text, failure_noun="selection")
 
     def _copy_focused_input_text(self) -> bool:
         """Copy the focused input's full text to the clipboard, if non-empty.
@@ -8474,20 +8464,17 @@ class DeepAgentsApp(App):
         if not text:
             return False
 
-        from deepagents_code.clipboard import copy_text_to_clipboard
+        from deepagents_code.clipboard import copy_text_with_feedback
 
-        success, error = copy_text_to_clipboard(self, text)
-        if success:
-            self.notify("Input copied to clipboard", timeout=3, markup=False)
-        else:
-            self.notify(
-                f"Failed to copy input: {error}"
-                if error
-                else "Failed to copy input - no clipboard method available",
-                severity="warning",
-                timeout=3,
-                markup=False,
-            )
+        # Return True regardless of copy success: the keypress is consumed
+        # either way (a failed copy already warned), so it never falls through
+        # to arming quit.
+        copy_text_with_feedback(
+            self,
+            text,
+            failure_noun="input",
+            success_message="Input copied to clipboard",
+        )
         return True
 
     def _arm_quit_pending(self, shortcut: str) -> None:
@@ -8588,6 +8575,9 @@ class DeepAgentsApp(App):
         With nothing else to interrupt, the first `Esc` arms a pending flag and
         shows a hint; a second `Esc` within the window clears the draft. The
         clear is undoable via ctrl+z so a mistaken clear can be restored.
+
+        When the draft is empty there is nothing to clear, so no hint is shown
+        and any pending flag is reset.
         """
         chat_input = self._chat_input
         if chat_input is None or not chat_input.value:

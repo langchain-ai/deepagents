@@ -452,6 +452,74 @@ class TestInputActionButtons:
 
         assert copied == []
 
+    async def test_copy_button_failure_warns(self, monkeypatch) -> None:
+        """A failed `[ COPY ]` surfaces a warning toast instead of failing silently."""
+        import deepagents_code.clipboard as clipboard_module
+
+        def fake_copy(_app: object, _text: str) -> tuple[bool, str | None]:
+            return False, "boom"
+
+        monkeypatch.setattr(clipboard_module, "copy_text_to_clipboard", fake_copy)
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.insert("copy me")
+            await pilot.pause()
+
+            notifications: list[tuple[str, object]] = []
+            monkeypatch.setattr(
+                app,
+                "notify",
+                lambda message, **kwargs: notifications.append(
+                    (message, kwargs.get("severity"))
+                ),
+            )
+
+            await pilot.click("#copy-button")
+            await pilot.pause()
+
+        assert notifications == [("Failed to copy input: boom", "warning")]
+
+    async def test_clear_button_refocuses_input(self) -> None:
+        """Clicking `[ X ]` returns focus to the text area so typing can continue."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.insert("clear me")
+            await pilot.pause()
+
+            await pilot.click("#clear-button")
+            await pilot.pause()
+            assert text_area.has_focus
+
+    async def test_copy_button_refocuses_input_even_when_empty(
+        self, monkeypatch
+    ) -> None:
+        """`[ COPY ]` returns focus to the input even with an empty draft."""
+        import deepagents_code.clipboard as clipboard_module
+
+        monkeypatch.setattr(
+            clipboard_module,
+            "copy_text_to_clipboard",
+            lambda _app, _text: (True, None),
+        )
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            await pilot.pause()
+
+            await pilot.click("#copy-button")
+            await pilot.pause()
+            assert text_area.has_focus
+
 
 class _ImagePasteApp(App[None]):
     """App that wires a shared tracker into ChatInput for paste tests."""

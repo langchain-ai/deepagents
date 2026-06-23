@@ -83,8 +83,8 @@ class TestLaunchNameScreen:
 
         assert name_input.placeholder == "Your name (optional)"
 
-    async def test_copy_explains_name_memory_and_skip(self) -> None:
-        """The name screen should describe memory and skip semantics."""
+    async def test_copy_prompts_for_name_and_explains_skip(self) -> None:
+        """The name screen should prompt for a name and describe skip semantics."""
         app = LaunchNameTestApp()
         async with app.run_test() as pilot:
             app.show_name_screen()
@@ -93,7 +93,7 @@ class TestLaunchNameScreen:
             copy = app.screen.query_one(".launch-init-copy", Static)
             help_text = app.screen.query_one(".launch-init-help", Static)
 
-        assert "remembered for future sessions" in str(copy.content)
+        assert "What should Deep Agents call you?" in str(copy.content)
         assert "Esc skip setup" in str(help_text.content)
 
     async def test_submit_returns_normalized_name(self) -> None:

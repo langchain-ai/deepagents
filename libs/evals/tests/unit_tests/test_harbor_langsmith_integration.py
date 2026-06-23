@@ -78,8 +78,8 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     assert "          - dcode" in workflow
     assert "dataset:" in workflow
     assert (
-        "Harbor dataset ref (e.g. terminal-bench/terminal-bench-2 or "
-        "terminal-bench/terminal-bench-2-1)"
+        "Dataset to run. Terminal-Bench refs resolve from the Harbor registry;"
+        " deep-swe is cloned from GitHub."
     ) in workflow
     assert "include_tasks:" in workflow
     assert "Space-separated task-name globs to include" in workflow
@@ -123,11 +123,11 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     assert "--agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}'" in workflow
     assert "--agent-env 'OLLAMA_HOST=${OLLAMA_HOST}'" in workflow
     assert '"${agent_env_args[@]}"' in workflow
-    assert '--dataset "$HARBOR_DATASET"' in workflow
+    assert '"${dataset_flag[@]}"' in workflow
     assert "--plugin langsmith" in workflow
-    assert "--jobs-dir harbor-jobs/terminal-bench" in workflow
-    assert 'Path("harbor-jobs/terminal-bench")' in workflow
-    assert "libs/evals/harbor-jobs/terminal-bench" in workflow
+    assert '--jobs-dir "harbor-jobs/$jobs_subdir"' in workflow
+    assert 'Path("harbor-jobs") / os.environ["JOBS_SUBDIR"]' in workflow
+    assert "libs/evals/harbor-jobs" in workflow
     assert '--plugin-kwarg dataset_name="$HARBOR_LANGSMITH_DATASET"' in workflow
     assert '--plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT"' in workflow
 

@@ -129,10 +129,14 @@ on:
           - dcode
           - bare
       dataset:
-        description: "Harbor dataset ref (e.g. terminal-bench/terminal-bench-2 or terminal-bench/terminal-bench-2-1)"
+        description: "Dataset to run. Terminal-Bench refs resolve from the Harbor registry; deep-swe is cloned from GitHub."
         required: true
         default: "terminal-bench/terminal-bench-2"
-        type: string
+        type: choice
+        options:
+          - "terminal-bench/terminal-bench-2"
+          - "terminal-bench/terminal-bench-2-1"
+          - "deep-swe"
       n_tasks:
         description: "Maximum number of tasks to run (0 = all tasks in dataset)"
         required: true
@@ -159,6 +163,7 @@ permissions:
 env:
   UV_NO_SYNC: "true"
   HARBOR_DATASET: ${{ inputs.dataset || 'terminal-bench/terminal-bench-2' }}
+  DEEPSWE_DIR: deep-swe
 
 jobs:
   prep:
@@ -318,6 +323,13 @@ jobs:
           mkdir -p ~/.cache/harbor
           echo '{"seen":["registry-datasets-hint"]}' > ~/.cache/harbor/notifications.json
 
+      - name: "📂 Clone & patch DeepSWE tasks"
+        if: ${{ env.HARBOR_DATASET == 'deep-swe' }}
+        working-directory: libs/evals
+        run: |
+          git clone --depth 1 https://github.com/datacurve-ai/deep-swe.git "$DEEPSWE_DIR"
+          python ../.github/scripts/patch_deepswe_tasks.py "$DEEPSWE_DIR/tasks"
+
       - name: "⚓ Run Harbor"
         env:
           ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
@@ -430,18 +442,28 @@ jobs:
           echo "Agent implementation: $HARBOR_AGENT_LABEL ($HARBOR_AGENT_GRAPH)"
           echo ""
 
+          # DeepSWE is cloned locally (not in the Harbor registry); terminal-bench
+          # resolves from the registry via --dataset.
+          if [ "$HARBOR_DATASET" = "deep-swe" ]; then
+            dataset_flag=(-p "$DEEPSWE_DIR/tasks")
+            jobs_subdir="deep-swe"
+          else
+            dataset_flag=(--dataset "$HARBOR_DATASET")
+            jobs_subdir="terminal-bench"
+          fi
+
           uv run harbor run \
             --agent langgraph \
             --agent-kwarg project_path=deepagents_harbor/langgraph_project \
             --agent-kwarg config=langgraph.json \
             --agent-kwarg graph="$HARBOR_AGENT_GRAPH" \
-            --dataset "$HARBOR_DATASET" \
+            "${dataset_flag[@]}" \
             -n "$HARBOR_CONCURRENCY" \
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \
             $n_tasks_flag \
             "${include_args[@]}" \
             "${agent_env_args[@]}" \
-            --jobs-dir harbor-jobs/terminal-bench \
+            --jobs-dir "harbor-jobs/$jobs_subdir" \
             $env_flag \
             --model "$HARBOR_MODEL" \
             --plugin langsmith \
@@ -450,11 +472,14 @@ jobs:
 
       - name: "🔍 Find latest Harbor job"
         id: latest-job
+        env:
+          JOBS_SUBDIR: ${{ env.HARBOR_DATASET == 'deep-swe' && 'deep-swe' || 'terminal-bench' }}
         run: |
           latest_job=$(python - <<'PY'
+          import os
           from pathlib import Path
 
-          jobs_dir = Path("harbor-jobs/terminal-bench")
+          jobs_dir = Path("harbor-jobs") / os.environ["JOBS_SUBDIR"]
           job_dirs = sorted(path for path in jobs_dir.iterdir() if path.is_dir())
           if not job_dirs:
               raise SystemExit("No Harbor job directory found")
@@ -505,5 +530,5 @@ jobs:
         with:
           name: harbor-${{ strategy.job-index }}
           path: |
-            libs/evals/harbor-jobs/terminal-bench
+            libs/evals/harbor-jobs
           if-no-files-found: warn

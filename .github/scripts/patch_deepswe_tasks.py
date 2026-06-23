@@ -10,15 +10,24 @@ auto-discover:
    Harbor's equivalent is a ``[[verifier.collect]]`` hook that runs a shell
    command in the agent container after the agent phase ends.
 
-2. ``allow_internet = false`` on ``[environment]`` and
-   ``[verifier.environment]`` — air-gaps the sandbox. The LangGraph agent
-   runs *inside* the sandbox and must call the model provider, so the agent
-   phase needs network. Harbor supports per-phase overrides via
-   ``[agent] network_mode = "public"`` (the verifier env stays air-gapped,
-   preserving grading integrity).
+2. ``allow_internet = false`` on ``[environment]`` — air-gaps the agent
+   sandbox. The LangGraph agent runs *inside* the sandbox and must reach the
+   model provider, so its environment needs network. We set
+   ``allow_internet = true`` on the top-level ``[environment]`` section (the
+   agent environment baseline).
+
+   We set the *baseline* to public rather than a per-phase
+   ``[agent] network_mode = "public"`` override because Harbor can only switch
+   network policy between phases on the e2b sandbox; on the langsmith and
+   docker sandboxes a phase override fails with "cannot change network policy
+   after start". A public baseline needs no switch.
+
+   ``[verifier.environment] allow_internet = false`` is deliberately left
+   untouched: the verifier runs in a separate, air-gapped container, and
+   keeping it offline preserves grading integrity.
 
 This script reads each ``tasks/*/task.toml``, extracts
-``[metadata] base_commit_hash``, and injects both fixes idempotently.
+``[metadata] base_commit_hash``, and applies both fixes idempotently.
 
 Usage::
 
@@ -74,15 +83,48 @@ def _collect_command(base_commit: str) -> str:
     )
 
 
-def _has_network_mode(content: str) -> bool:
-    """True if [agent] already declares network_mode."""
-    # Match network_mode inside the [agent] section (before [verifier] or EOF).
-    agent_section = re.search(
-        r"\[agent\]\n(.*?)(?=\n\[|\Z)", content, re.DOTALL
-    )
-    if agent_section is None:
-        return False
-    return "network_mode" in agent_section.group(1)
+_ENVIRONMENT_SECTION_RE = re.compile(
+    r"^\[environment\][ \t]*\n(?P<body>.*?)(?=^\[|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+"""Matches the body of the top-level ``[environment]`` section only.
+
+Anchored to the exact ``[environment]`` header, so it never matches
+``[verifier.environment]`` (starts with ``[verifier``) or ``[environment.env]``
+(its header is ``[environment].env``). The body runs to the next section
+header or end of file.
+"""
+
+_ALLOW_INTERNET_RE = re.compile(
+    r"^([ \t]*)allow_internet[ \t]*=[ \t]*\S+[ \t]*$", re.MULTILINE
+)
+"""Matches an ``allow_internet = <value>`` assignment line."""
+
+
+def _set_environment_allow_internet(content: str) -> str:
+    """Return ``content`` with the top-level ``[environment]`` section set to
+    ``allow_internet = true``.
+
+    Only the ``[environment]`` section is touched. ``[verifier.environment]``
+    is deliberately left as-is so the verifier stays air-gapped, which is what
+    preserves grading integrity. Raises ``ValueError`` if there is no
+    ``[environment]`` section.
+    """
+    match = _ENVIRONMENT_SECTION_RE.search(content)
+    if match is None:
+        raise ValueError("task.toml has no [environment] section")
+
+    body = match.group("body")
+    if _ALLOW_INTERNET_RE.search(body):
+        new_body = _ALLOW_INTERNET_RE.sub(r"\1allow_internet = true", body, count=1)
+    else:
+        # No existing key — add one right after the [environment] header.
+        new_body = "allow_internet = true\n" + body
+
+    if new_body == body:
+        return content
+    start, end = match.span("body")
+    return content[:start] + new_body + content[end:]
 
 
 def _has_collect_hook(data: dict) -> bool:
@@ -109,28 +151,19 @@ def patch_task_toml(path: Path) -> str:
 
     changed = False
 
-    # 1. Inject [agent] network_mode = "public" if not present.
-    if not _has_network_mode(content):
-        agent_match = re.search(r"\[agent\]\n", content)
-        if agent_match:
-            # [agent] section exists — insert right after the header.
-            content = content.replace(
-                agent_match.group(0),
-                agent_match.group(0) + 'network_mode = "public"\n',
-                1,
-            )
-        else:
-            # No [agent] section — create one before [verifier] or at end.
-            agent_block = '[agent]\nnetwork_mode = "public"\n'
-            verifier_match = re.search(r"\[verifier\]", content)
-            if verifier_match:
-                content = content.replace(
-                    verifier_match.group(0),
-                    agent_block + "\n" + verifier_match.group(0),
-                    1,
-                )
-            else:
-                content += "\n" + agent_block
+    # 1. Give the agent's environment network access for model-provider calls.
+    #    We set the [environment] baseline to public rather than a per-phase
+    #    [agent] network_mode override: Harbor can only switch network policy
+    #    between phases on the e2b sandbox, so an override fails on the
+    #    langsmith/docker sandboxes ("cannot change network policy after
+    #    start"). The verifier runs in a separate, air-gapped environment, so
+    #    [verifier.environment] is left untouched and grading integrity holds.
+    try:
+        new_content = _set_environment_allow_internet(content)
+    except ValueError as exc:
+        return f"SKIP ({exc}): {path.name}"
+    if new_content != content:
+        content = new_content
         changed = True
 
     # 2. Inject [[verifier.collect]] hook if not present.

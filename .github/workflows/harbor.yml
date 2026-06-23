@@ -403,6 +403,11 @@ jobs:
           experiment_agent=$(printf '%s' "$HARBOR_AGENT_IMPL" | tr -c '[:alnum:]._-' '-')
           HARBOR_LANGSMITH_DATASET="$HARBOR_DATASET"
           HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_agent}-${experiment_model}"
+          # Self-label the experiment by any agent_env override so A/B arms don't collide.
+          if [ -n "$HARBOR_AGENT_ENV" ]; then
+            experiment_env_suffix=$(printf '%s' "$HARBOR_AGENT_ENV" | tr -c '[:alnum:]._-' '-')
+            HARBOR_LANGSMITH_EXPERIMENT="${HARBOR_LANGSMITH_EXPERIMENT}-${experiment_env_suffix}"
+          fi
           echo "HARBOR_AGENT_GRAPH=$HARBOR_AGENT_GRAPH" >> "$GITHUB_ENV"
           echo "HARBOR_AGENT_LABEL=$HARBOR_AGENT_LABEL" >> "$GITHUB_ENV"
           echo "HARBOR_LANGSMITH_DATASET=$HARBOR_LANGSMITH_DATASET" >> "$GITHUB_ENV"

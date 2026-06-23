@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import re
@@ -438,17 +439,32 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
     return agents
 
 
+@functools.lru_cache(maxsize=1)
+def _reserved_agent_dir_names() -> frozenset[str]:
+    """Return non-agent directory names reserved by the app under `~/.deepagents/`.
+
+    `bin/` holds the managed `rg` binary (`managed_tools.BIN_DIR`) and must
+    never appear in the agent picker. The name is derived from `BIN_DIR` so it
+    stays a single source of truth rather than being hardcoded here. The result
+    is cached since the reserved set is constant for the process.
+    """
+    from deepagents_code.managed_tools import BIN_DIR
+
+    return frozenset({BIN_DIR.name})
+
+
 def _is_agent_dir_entry(entry: Path) -> bool:
     """Return whether a `~/.deepagents/` entry should be listed as an agent.
 
-    Filters out symlinks (so dangling links don't masquerade as agents)
-    and dot-prefixed names — `.state/` (app internal state) plus any
-    other hidden directory the user may have placed there.
+    Filters out symlinks (so dangling links don't masquerade as agents),
+    dot-prefixed names — `.state/` (app internal state) plus any other
+    hidden directory the user may have placed there — and reserved names
+    the app owns (e.g. `bin/`, the managed-binary install dir).
 
     `OSError` from `is_dir`/`is_symlink` propagates so callers can log
     with the failing entry's name as context.
     """
-    if entry.name.startswith("."):
+    if entry.name.startswith(".") or entry.name in _reserved_agent_dir_names():
         return False
     return entry.is_dir() and not entry.is_symlink()
 
@@ -458,8 +474,9 @@ def get_available_agent_names() -> list[str]:
 
     Scans the user's `.deepagents` directory and returns each real
     subdirectory found there. Symlinks excluded so a dangling link does not
-    masquerade as an agent. Dot-prefixed entries (e.g., `.state/`) are
-    skipped so internal app state never appears as an agent.
+    masquerade as an agent. Dot-prefixed entries (e.g., `.state/`) and
+    reserved app-owned directories (e.g., `bin/`, the managed-binary install
+    dir) are skipped so internal state never appears as an agent.
 
     Filesystem errors (missing parent, permission denied, broken entries) are
     logged and surfaced as an empty list rather than raised — the caller shows

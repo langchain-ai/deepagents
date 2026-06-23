@@ -4,7 +4,7 @@ import logging
 import time
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import Mock, patch
 
 import pytest
@@ -2107,6 +2107,234 @@ class TestDisableOrphanedTracing:
 
             assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
             assert os.environ["LANGSMITH_TRACING"] == "false"
+
+
+class TestGetTracingStatus:
+    """Tests for get_tracing_status()."""
+
+    _CLEAN: ClassVar[dict[str, str]] = {
+        "LANGSMITH_TRACING_V2": "",
+        "LANGCHAIN_TRACING_V2": "",
+        "LANGSMITH_TRACING": "",
+        "LANGCHAIN_TRACING": "",
+        "LANGSMITH_API_KEY": "",
+        "LANGCHAIN_API_KEY": "",
+        "LANGSMITH_ENDPOINT": "",
+        "LANGCHAIN_ENDPOINT": "",
+        "LANGSMITH_PROJECT": "",
+        "DEEPAGENTS_CODE_LANGSMITH_PROJECT": "",
+        "DEEPAGENTS_CODE_LANGSMITH_TRACING": "",
+        "DEEPAGENTS_CODE_LANGCHAIN_TRACING_V2": "",
+        "DEEPAGENTS_CODE_LANGSMITH_API_KEY": "",
+        "DEEPAGENTS_CODE_LANGCHAIN_API_KEY": "",
+        "LANGSMITH_REPLICA_PROJECTS": "",
+        "DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS": "",
+        "LANGSMITH_PROFILE": "",
+        "LANGSMITH_CONFIG_FILE": "/__deepagents_missing_langsmith_config__.json",
+    }
+
+    def test_disabled_when_no_flags(self) -> None:
+        """A clean environment reports tracing off with configured project metadata."""
+        from deepagents_code.config import get_tracing_status
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+        with patch.dict("os.environ", self._CLEAN, clear=False):
+            status = get_tracing_status()
+        assert status.enabled is False
+        assert status.has_credentials is False
+        assert status.endpoint is None
+        assert status.project == LANGSMITH_PROJECT_DEFAULT
+        assert status.replica_project is None
+
+    def test_prefixed_flag_and_key_are_detected(self) -> None:
+        """`DEEPAGENTS_CODE_`-prefixed tracing/key vars resolve like the runtime.
+
+        `dcode doctor` runs before bootstrap bridges these to canonical names,
+        so a user with only the supported prefixed vars must still read as
+        enabled/configured with the prefixed project resolved.
+        """
+        from deepagents_code.config import get_tracing_status
+
+        env = dict(self._CLEAN)
+        env["DEEPAGENTS_CODE_LANGSMITH_TRACING"] = "true"
+        env["DEEPAGENTS_CODE_LANGSMITH_API_KEY"] = "lsv2_test"
+        env["DEEPAGENTS_CODE_LANGSMITH_PROJECT"] = "prefixed-proj"
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.enabled is True
+        assert status.has_credentials is True
+        assert status.project == "prefixed-proj"
+
+    def test_dotenv_values_are_detected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Doctor tracing status sees the same dotenv values as bootstrap."""
+        import deepagents_code.config as config_mod
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text(
+            "DEEPAGENTS_CODE_LANGSMITH_TRACING=true\n"
+            "DEEPAGENTS_CODE_LANGSMITH_API_KEY=lsv2_dotenv\n"
+            "DEEPAGENTS_CODE_LANGSMITH_PROJECT=dotenv-proj\n"
+            "DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS=replica\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(project)
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        config_mod._dotenv_loaded_values.clear()
+
+        with patch.dict("os.environ", {}, clear=True):
+            status = config_mod.get_tracing_status()
+
+        assert status.enabled is True
+        assert status.has_credentials is True
+        assert status.project == "dotenv-proj"
+        assert status.replica_project == "replica"
+
+    def test_dotenv_profile_credentials_are_detected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Doctor tracing status uses dotenv profile selectors for credentials."""
+        import deepagents_code.config as config_mod
+
+        langsmith = tmp_path / "langsmith.json"
+        langsmith.write_text(
+            "{"
+            '"current_profile":"default",'
+            '"profiles":{'
+            '"default":{},'
+            '"dotenv":{"api_key":"lsv2_profile","api_url":"http://localhost:1984"}'
+            "}"
+            "}",
+            encoding="utf-8",
+        )
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text(
+            "DEEPAGENTS_CODE_LANGSMITH_TRACING=true\n"
+            f"LANGSMITH_CONFIG_FILE={langsmith}\n"
+            "LANGSMITH_PROFILE=dotenv\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(project)
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        config_mod._dotenv_loaded_values.clear()
+
+        with patch.dict("os.environ", {}, clear=True):
+            status = config_mod.get_tracing_status()
+
+        assert status.enabled is True
+        assert status.has_credentials is True
+        assert status.endpoint == "http://localhost:1984"
+
+    def test_empty_prefixed_flag_shadows_canonical(self) -> None:
+        """An empty `DEEPAGENTS_CODE_` flag suppresses the canonical one.
+
+        Mirrors `resolve_env_var`/bootstrap: a present-but-empty prefixed var
+        disables tracing even when the canonical flag is truthy.
+        """
+        from deepagents_code.config import get_tracing_status
+
+        env = dict(self._CLEAN)
+        env["DEEPAGENTS_CODE_LANGSMITH_TRACING"] = ""
+        env["LANGSMITH_TRACING"] = "true"
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.enabled is False
+
+    def test_canonical_non_bridged_flag_enables(self) -> None:
+        """A canonical, non-bridged flag (`LANGSMITH_TRACING_V2`) enables tracing."""
+        from deepagents_code.config import get_tracing_status
+
+        env = dict(self._CLEAN)
+        env["LANGSMITH_TRACING_V2"] = "true"
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.enabled is True
+
+    def test_keyless_custom_endpoint_resolves_project(self) -> None:
+        """A keyless custom endpoint counts as active and resolves the project."""
+        from deepagents_code.config import get_tracing_status
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+        env = dict(self._CLEAN)
+        env["DEEPAGENTS_CODE_LANGSMITH_TRACING"] = "true"
+        env["LANGSMITH_ENDPOINT"] = "http://localhost:1984"
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.enabled is True
+        assert status.has_credentials is False
+        assert status.endpoint == "http://localhost:1984"
+        assert status.project == LANGSMITH_PROJECT_DEFAULT
+
+    def test_profile_credentials_are_detected(self, tmp_path: Path) -> None:
+        """A LangSmith profile API key counts as credentials (no env key needed)."""
+        from deepagents_code.config import get_tracing_status
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+        config = tmp_path / "config.json"
+        config.write_text(
+            '{"current_profile":"default","profiles":{"default":{"api_key":"lsv2_profile"}}}',
+            encoding="utf-8",
+        )
+        env = dict(self._CLEAN)
+        env["DEEPAGENTS_CODE_LANGSMITH_TRACING"] = "true"
+        env["LANGSMITH_CONFIG_FILE"] = str(config)
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.enabled is True
+        assert status.has_credentials is True
+        assert status.project == LANGSMITH_PROJECT_DEFAULT
+
+    def test_project_resolved_when_enabled_without_auth(self) -> None:
+        """Tracing auth state does not hide configured project metadata."""
+        from deepagents_code.config import get_tracing_status
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+        env = dict(self._CLEAN)
+        env["DEEPAGENTS_CODE_LANGSMITH_TRACING"] = "true"
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.enabled is True
+        assert status.has_credentials is False
+        assert status.project == LANGSMITH_PROJECT_DEFAULT
+
+    def test_empty_prefixed_project_falls_through_to_canonical(self) -> None:
+        """An empty prefixed project must not shadow a real `LANGSMITH_PROJECT`.
+
+        Mirrors the manifest/runtime contract: `resolve_scalar` skips an empty
+        `DEEPAGENTS_CODE_LANGSMITH_PROJECT` and uses bare `LANGSMITH_PROJECT`,
+        unlike `resolve_env_var`, which would shadow it and report the default.
+        """
+        from deepagents_code.config import get_tracing_status
+
+        env = dict(self._CLEAN)
+        env["DEEPAGENTS_CODE_LANGSMITH_TRACING"] = "true"
+        env["DEEPAGENTS_CODE_LANGSMITH_API_KEY"] = "lsv2_test"
+        env["DEEPAGENTS_CODE_LANGSMITH_PROJECT"] = ""
+        env["LANGSMITH_PROJECT"] = "prod"
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.project == "prod"
+
+    def test_reports_first_replica_project(self) -> None:
+        """Only the first replica project is reported (server mirrors one)."""
+        from deepagents_code.config import get_tracing_status
+
+        env = dict(self._CLEAN)
+        env["DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS"] = "replica-a, replica-b"
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.replica_project == "replica-a"
 
 
 class TestQuietSdkTracingLogging:

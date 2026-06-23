@@ -477,6 +477,18 @@ def show_doctor_help() -> None:
     console.print("  dcode doctor")
     console.print("  dcode doctor --json")
     console.print()
+    console.print(
+        "Tip: Run `dcode config show` or `dcode config get <key>` "
+        "to drill into config details.",
+        style=theme.MUTED,
+        highlight=False,
+    )
+    console.print(
+        "     Run `dcode --version` (or `dcode -v`) for dependency versions.",
+        style=theme.MUTED,
+        highlight=False,
+    )
+    console.print()
 
 
 def _print_mcp_discovery_paths() -> None:

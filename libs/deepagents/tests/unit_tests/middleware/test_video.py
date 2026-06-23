@@ -10,6 +10,7 @@ lightweight.
 import base64
 import io
 from collections.abc import Iterator
+from typing import cast
 
 import pytest
 
@@ -46,17 +47,6 @@ def synthetic_video_bytes(tmp_path_factory: pytest.TempPathFactory) -> bytes:
     return path.read_bytes()
 
 
-def test_select_sampling_rate_accepts_positive() -> None:
-    assert video_module._select_sampling_rate(0.5) == 0.5
-    assert video_module._select_sampling_rate(2.0) == 2.0
-
-
-def test_select_sampling_rate_rejects_non_positive() -> None:
-    for bad in (0, -0.1, -1):
-        with pytest.raises(ValueError, match="must be > 0"):
-            video_module._select_sampling_rate(bad)
-
-
 def test_extract_rejects_negative_offset(synthetic_video_bytes: bytes) -> None:
     with pytest.raises(ValueError, match="offset_seconds must be >= 0"):
         video_module.extract_video_frames(
@@ -77,13 +67,26 @@ def test_extract_rejects_zero_or_negative_duration(synthetic_video_bytes: bytes)
         )
 
 
+def test_extract_rejects_zero_or_negative_sampling_rate(synthetic_video_bytes: bytes) -> None:
+    with pytest.raises(ValueError, match="sampling_rate must be > 0"):
+        video_module.extract_video_frames(
+            synthetic_video_bytes,
+            offset_seconds=0,
+            duration_seconds=1,
+            sampling_rate=0,
+        )
+
+
 def test_extract_returns_interleaved_text_and_image_blocks(synthetic_video_bytes: bytes) -> None:
     """Two frames (t=0 and t=2) interleaved with text headers at 0.5 fps over a 3s clip."""
-    blocks = video_module.extract_video_frames(
-        synthetic_video_bytes,
-        offset_seconds=0,
-        duration_seconds=30,
-        sampling_rate=0.5,
+    blocks = cast(
+        "list[dict[str, str]]",
+        video_module.extract_video_frames(
+            synthetic_video_bytes,
+            offset_seconds=0,
+            duration_seconds=30,
+            sampling_rate=0.5,
+        ),
     )
     assert [b["type"] for b in blocks] == ["text", "image", "text", "image"]
     assert blocks[0]["text"].startswith("Frame at t=")
@@ -97,11 +100,14 @@ def test_extract_returns_interleaved_text_and_image_blocks(synthetic_video_bytes
 
 def test_extract_offset_skips_into_source(synthetic_video_bytes: bytes) -> None:
     """`offset_seconds` seeks into the clip; every emitted frame is at or after that point."""
-    blocks = video_module.extract_video_frames(
-        synthetic_video_bytes,
-        offset_seconds=1.0,
-        duration_seconds=1.5,
-        sampling_rate=1.0,
+    blocks = cast(
+        "list[dict[str, str]]",
+        video_module.extract_video_frames(
+            synthetic_video_bytes,
+            offset_seconds=1.0,
+            duration_seconds=1.5,
+            sampling_rate=1.0,
+        ),
     )
     headers = [b["text"] for b in blocks if b["type"] == "text"]
     assert headers, "expected at least one frame in [1s, 2.5s) at 1fps"
@@ -141,17 +147,66 @@ def test_sample_frames_wraps_decode_iteration_errors(monkeypatch: pytest.MonkeyP
     assert isinstance(exc_info.value.__cause__, av.error.InvalidDataError)
 
 
+def test_extract_wraps_seek_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Seek failures surface as `VideoExtractionError` instead of escaping."""
+
+    class FakeStream:
+        type = "video"
+        time_base = 1
+        start_time = 0
+
+    class FakeContainer:
+        def __init__(self) -> None:
+            self.closed = False
+            self.streams = [FakeStream()]
+
+        def seek(self, *_args: object, **_kwargs: object) -> None:
+            msg = "seek failed"
+            raise OSError(msg)
+
+        def decode(self, *_args: object) -> Iterator[object]:
+            msg = "decode should not run after seek fails"
+            raise AssertionError(msg)
+
+        def close(self) -> None:
+            self.closed = True
+
+    class FakeAv:
+        error = type("ErrorNamespace", (), {})
+
+        @staticmethod
+        def open(_payload: object) -> FakeContainer:
+            return container
+
+    container = FakeContainer()
+    monkeypatch.setattr(video_module, "_import_av", lambda: FakeAv)
+
+    with pytest.raises(video_module.VideoExtractionError, match="Failed to decode video frames") as exc_info:
+        video_module.extract_video_frames(
+            b"fake",
+            offset_seconds=1,
+            duration_seconds=1,
+            sampling_rate=1,
+        )
+
+    assert isinstance(exc_info.value.__cause__, OSError)
+    assert container.closed
+
+
 def test_sample_frames_normalizes_non_zero_stream_start(monkeypatch: pytest.MonkeyPatch) -> None:
     """Frame timestamps are measured from the video start, not raw container PTS."""
     monkeypatch.setattr(video_module, "_encode_jpeg", lambda _frame: b"jpeg")
 
-    blocks = video_module._sample_frames_in_window(
-        [_FakeFrame(3600), _FakeFrame(3601), _FakeFrame(3602)],
-        offset_seconds=0,
-        duration_seconds=3,
-        sampling_rate=1,
-        time_base=1,
-        stream_start_seconds=3600,
+    blocks = cast(
+        "list[dict[str, str]]",
+        video_module._sample_frames_in_window(
+            [_FakeFrame(3600), _FakeFrame(3601), _FakeFrame(3602)],
+            offset_seconds=0,
+            duration_seconds=3,
+            sampling_rate=1,
+            time_base=1,
+            stream_start_seconds=3600,
+        ),
     )
 
     headers = [block["text"] for block in blocks if block["type"] == "text"]
@@ -166,12 +221,15 @@ def test_sample_frames_keeps_next_target_after_late_frame(monkeypatch: pytest.Mo
     """A late frame should not skip the next sampling target."""
     monkeypatch.setattr(video_module, "_encode_jpeg", lambda _frame: b"jpeg")
 
-    blocks = video_module._sample_frames_in_window(
-        [_FakeFrame(1), _FakeFrame(2), _FakeFrame(3)],
-        offset_seconds=0.4,
-        duration_seconds=4,
-        sampling_rate=1,
-        time_base=1,
+    blocks = cast(
+        "list[dict[str, str]]",
+        video_module._sample_frames_in_window(
+            [_FakeFrame(1), _FakeFrame(2), _FakeFrame(3)],
+            offset_seconds=0.4,
+            duration_seconds=4,
+            sampling_rate=1,
+            time_base=1,
+        ),
     )
 
     headers = [block["text"] for block in blocks if block["type"] == "text"]
@@ -192,12 +250,15 @@ def test_sample_frames_does_not_cap_requested_duration(monkeypatch: pytest.Monke
     monkeypatch.setattr(video_module, "_encode_jpeg", lambda _frame: b"jpeg")
     monkeypatch.setattr(video_module, "MAX_VIDEO_SAMPLED_FRAMES", 2)
 
-    blocks = video_module._sample_frames_in_window(
-        [_FakeFrame(0), _FakeFrame(1), _FakeFrame(2), _FakeFrame(3)],
-        offset_seconds=0,
-        duration_seconds=999,
-        sampling_rate=1,
-        time_base=1,
+    blocks = cast(
+        "list[dict[str, str]]",
+        video_module._sample_frames_in_window(
+            [_FakeFrame(0), _FakeFrame(1), _FakeFrame(2), _FakeFrame(3)],
+            offset_seconds=0,
+            duration_seconds=999,
+            sampling_rate=1,
+            time_base=1,
+        ),
     )
 
     headers = [block["text"] for block in blocks if block["type"] == "text"]
@@ -211,12 +272,15 @@ def test_sample_frames_caps_frame_count(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(video_module, "_encode_jpeg", lambda _frame: b"jpeg")
     monkeypatch.setattr(video_module, "MAX_VIDEO_SAMPLED_FRAMES", 2)
 
-    blocks = video_module._sample_frames_in_window(
-        [_FakeFrame(0), _FakeFrame(1), _FakeFrame(2)],
-        offset_seconds=0,
-        duration_seconds=3,
-        sampling_rate=1,
-        time_base=1,
+    blocks = cast(
+        "list[dict[str, str]]",
+        video_module._sample_frames_in_window(
+            [_FakeFrame(0), _FakeFrame(1), _FakeFrame(2)],
+            offset_seconds=0,
+            duration_seconds=3,
+            sampling_rate=1,
+            time_base=1,
+        ),
     )
 
     headers = [block["text"] for block in blocks if block["type"] == "text"]

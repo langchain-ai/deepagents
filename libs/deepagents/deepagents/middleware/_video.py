@@ -61,29 +61,6 @@ def _import_av() -> Any:  # noqa: ANN401
     return av
 
 
-def _select_sampling_rate(value: float) -> float:
-    """Validate and normalize an internal sampling rate."""
-    if value <= 0:
-        msg = f"video_sampling_rate must be > 0, got {value!r}"
-        raise ValueError(msg)
-    return float(value)
-
-
-def _select_duration(value: float) -> float:
-    """Validate the agent-supplied video window length.
-
-    The agent's `limit` is authoritative over how much of the source is
-    sampled; this function only checks that the request is positive. Bounds
-    on emitted output are enforced elsewhere in the pipeline
-    (`MAX_VIDEO_DECODE_SECONDS`, `MAX_VIDEO_SAMPLED_FRAMES`,
-    `MAX_VIDEO_EMITTED_BYTES`).
-    """
-    if value <= 0:
-        msg = f"duration_seconds must be > 0, got {value!r}"
-        raise ValueError(msg)
-    return float(value)
-
-
 def _format_timestamp(seconds: float) -> str:
     """Format a frame timestamp as `HH:MM:SS.mmm` for the text header block."""
     if seconds < 0:
@@ -124,33 +101,44 @@ def extract_video_frames(
     if offset_seconds < 0:
         msg = f"offset_seconds must be >= 0, got {offset_seconds!r}"
         raise ValueError(msg)
-    rate = _select_sampling_rate(sampling_rate)
-    duration = _select_duration(duration_seconds)
+    if sampling_rate <= 0:
+        msg = f"sampling_rate must be > 0, got {sampling_rate!r}"
+        raise ValueError(msg)
+    if duration_seconds <= 0:
+        msg = f"duration_seconds must be > 0, got {duration_seconds!r}"
+        raise ValueError(msg)
+    rate = float(sampling_rate)
+    duration = float(duration_seconds)
 
     av = _import_av()
     container = _open_video_container(av, content)
+    backend_error_types = _video_backend_error_types(av)
     try:
-        video_stream = _find_video_stream(container)
-        time_base = float(video_stream.time_base)
-        stream_start_seconds = _stream_start_seconds(video_stream, time_base)
-        if offset_seconds > 0:
-            # `seek` keeps the math correct across containers that already sit
-            # at a non-zero timeline (e.g. trimmed clips).
-            start_pts = _stream_start_pts(video_stream) + int(offset_seconds / time_base)
-            container.seek(start_pts, any_frame=False, backward=True, stream=video_stream)
+        try:
+            video_stream = _find_video_stream(container)
+            time_base = float(video_stream.time_base)
+            stream_start_seconds = _stream_start_seconds(video_stream, time_base)
+            if offset_seconds > 0:
+                # `seek` keeps the math correct across containers that already sit
+                # at a non-zero timeline (e.g. trimmed clips).
+                start_pts = _stream_start_pts(video_stream) + int(offset_seconds / time_base)
+                container.seek(start_pts, any_frame=False, backward=True, stream=video_stream)
 
-        blocks = list(
-            _sample_frames_in_window(
-                container.decode(video_stream),
-                offset_seconds=offset_seconds,
-                duration_seconds=float(duration),
-                sampling_rate=rate,
-                time_base=time_base,
-                stream_start_seconds=stream_start_seconds,
-                deadline_seconds=time.monotonic() + MAX_VIDEO_DECODE_SECONDS,
-                decode_error_types=_video_backend_error_types(av),
+            blocks = list(
+                _sample_frames_in_window(
+                    container.decode(video_stream),
+                    offset_seconds=offset_seconds,
+                    duration_seconds=float(duration),
+                    sampling_rate=rate,
+                    time_base=time_base,
+                    stream_start_seconds=stream_start_seconds,
+                    deadline_seconds=time.monotonic() + MAX_VIDEO_DECODE_SECONDS,
+                    decode_error_types=backend_error_types,
+                )
             )
-        )
+        except backend_error_types as exc:
+            msg = f"Failed to decode video frames: {exc}"
+            raise VideoExtractionError(msg) from exc
     finally:
         container.close()
 

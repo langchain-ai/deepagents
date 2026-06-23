@@ -119,6 +119,28 @@ async def test_update_progress_screen_close_waits_until_done(tmp_path) -> None:
         assert app.screen is app.screen_stack[0]
 
 
+async def test_update_progress_screen_failure_uses_error_glyph(tmp_path) -> None:
+    """Failure completion should not look visually successful."""
+    screen = UpdateProgressScreen(
+        latest="2.0.0",
+        command="uv tool install -U deepagents-code",
+        log_path=tmp_path / "update.log",
+    )
+
+    app = App()
+    async with app.run_test() as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+
+        screen.mark_failure("uv tool install -U deepagents-code")
+        await pilot.pause()
+
+        status = screen.query(Static).filter(".up-status").first()
+        spinner = screen.query(Static).filter(".up-spinner").first()
+        assert "Update failed" in str(status.render())
+        assert str(spinner.render()) == get_glyphs().error
+
+
 async def test_update_progress_screen_warning_stays_visible(
     tmp_path, monkeypatch
 ) -> None:

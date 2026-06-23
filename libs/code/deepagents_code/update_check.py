@@ -1848,8 +1848,9 @@ def upgrade_install_command(
     Propagates `ExtrasIntrospectionError` if installed extras cannot be
     determined safely from distribution metadata, and
     `ToolRequirementIntrospectionError` if the uv tool `--with` packages or
-    interpreter cannot be determined safely from the tool receipt.
-    `perform_upgrade` converts both into a user-facing failure.
+    interpreter cannot be determined safely from the tool receipt. Callers choose
+    whether to treat those errors as failures or fall back to a simpler unpinned
+    upgrade command with a user-facing warning.
     """
     from deepagents_code.extras_info import installed_extra_names
 

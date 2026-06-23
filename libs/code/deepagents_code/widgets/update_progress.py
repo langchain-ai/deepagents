@@ -214,7 +214,7 @@ class UpdateProgressScreen(ModalScreen[None]):
             command: Manual command users can run to retry.
         """
         self._done = True
-        self._done_glyph = get_glyphs().checkmark
+        self._done_glyph = get_glyphs().error
         self._status = f"Update failed. Try manually: {command}"
         self._details_visible = True
         self._stop_spinner_timer()

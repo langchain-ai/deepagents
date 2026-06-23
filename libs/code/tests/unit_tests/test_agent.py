@@ -1561,7 +1561,9 @@ class TestCreateCliAgentProjectContext:
         assert sources[0] == str(agent_dir / "AGENTS.md")
         assert sources[1:] == [str(deepagents_md), str(root_md)]
 
-    def test_project_context_sets_local_shell_root_dir(self, tmp_path: Path) -> None:
+    def test_project_context_sets_local_shell_root_dir(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
         """Shell backend root should follow the explicit user working directory."""
         project_root = tmp_path / "project"
         project_root.mkdir()
@@ -1596,6 +1598,7 @@ class TestCreateCliAgentProjectContext:
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
         mock_backend = Mock()
+        monkeypatch.setenv("LANGSMITH_PROJECT", "deepagents-code")
 
         fake_model = _make_fake_chat_model()
         with (
@@ -1618,6 +1621,7 @@ class TestCreateCliAgentProjectContext:
             )
 
         assert mock_shell.call_args.kwargs["root_dir"] == user_cwd
+        assert "LANGSMITH_PROJECT" not in mock_shell.call_args.kwargs["env"]
 
     def test_cwd_sets_local_filesystem_root_dir_without_shell(
         self, tmp_path: Path

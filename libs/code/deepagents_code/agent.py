@@ -1438,8 +1438,10 @@ def create_cli_agent(
             # Create environment for shell commands
             # Restore user's original LANGSMITH_PROJECT so their code traces separately
             shell_env = os.environ.copy()
-            if settings.user_langchain_project:
+            if settings.user_langchain_project is not None:
                 shell_env["LANGSMITH_PROJECT"] = settings.user_langchain_project
+            else:
+                shell_env.pop("LANGSMITH_PROJECT", None)
             # Re-apply a launch-time PYTHONPATH that was stripped from the server
             # interpreter but relayed for approval-gated `execute` commands.
             _apply_inherited_pythonpath(shell_env)

@@ -2326,9 +2326,9 @@ class ToolCallMessage(Vertical):
 
         - `ask_user`: its `questions` payload is too noisy to render inline.
         - `js_eval`: the header shows only the first code line (truncated at
-          `_JS_EVAL_HEADER_MAX`), so the full program is offered as a
-          collapsible block whenever it spans more than one non-blank line *or*
-          a single line is long enough to be truncated in the header.
+            `_JS_EVAL_HEADER_MAX`), so the full program is offered as a
+            collapsible block whenever it spans more than one non-blank line *or*
+            a single line is long enough to be truncated in the header.
         """
         if self._tool_name == "ask_user":
             return bool(self._args)
@@ -2348,8 +2348,8 @@ class ToolCallMessage(Vertical):
         and the "show/hide code" hint below.
 
         Returns:
-            A plain `Content` renderable with a blank line of padding on top and
-            bottom.
+            A plain `Content` renderable with a blank line of padding on
+                top and bottom.
         """
         code = self._args.get("code")
         code_str = code.strip("\n") if isinstance(code, str) else str(code)

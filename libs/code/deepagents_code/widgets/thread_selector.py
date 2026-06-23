@@ -2418,7 +2418,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     @property
     def is_delete_confirmation_open(self) -> bool:
-        """Return whether the delete confirmation overlay is visible."""
+        """Whether the delete confirmation overlay is visible."""
         return self._confirming_delete
 
     def _on_delete_confirmed(self, thread_id: str, confirmed: bool | None) -> None:

@@ -2022,10 +2022,10 @@ class Settings:
 
     @property
     def user_deepagents_dir(self) -> Path:
-        """Get the base user-level .deepagents directory.
+        """Base user-level `.deepagents` directory.
 
         Returns:
-            Path to ~/.deepagents
+            Path to `~/.deepagents`
         """
         return Path.home() / ".deepagents"
 
@@ -2189,7 +2189,7 @@ class Settings:
 
     @property
     def user_agents_dir(self) -> Path:
-        """Get the base user-level `.agents` directory (`~/.agents`).
+        """Base user-level `.agents` directory (`~/.agents`).
 
         Returns:
             Path to `~/.agents`

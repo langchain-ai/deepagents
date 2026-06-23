@@ -238,7 +238,7 @@ class FileTokenStorage(TokenStorage):
 
     @property
     def path(self) -> Path:
-        """Return the on-disk token file path for this server."""
+        """On-disk token file path for this server."""
         stem = _token_file_stem(self._server_name, self._server_url)
         return _tokens_dir() / f"{stem}.json"
 

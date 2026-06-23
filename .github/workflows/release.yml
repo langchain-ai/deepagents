@@ -463,7 +463,7 @@ jobs:
       # is that PR's squash-merge); when the release commit has no associated
       # merged PR (initial release, or a direct push / manual recovery), fall back
       # to the actor who triggered the workflow. Bot accounts are dropped — there's
-      # no human to credit (the auto path's dispatcher is github-actions[bot]).
+      # no human to credit (e.g. the auto path's dispatcher is github-actions[bot]).
       - name: Resolve releaser
         id: resolve-releaser
         env:
@@ -476,13 +476,27 @@ jobs:
 
           RELEASER=""
 
-          # Primary: the user who merged the release PR.
+          # Primary: the user who merged the release PR. Distinguish "commit has no
+          # associated merged PR" (initial release, direct push, manual recovery, or
+          # eventual-consistency on a fresh squash-merge) from a real API failure.
+          # The latter must warn rather than silently fall through to the actor —
+          # on a manual release that would credit the dispatcher instead of the
+          # merger, with no breadcrumb. Mirrors the lookup pattern used below for
+          # release-label resolution.
           if [ -n "$RELEASE_COMMIT" ]; then
-            PR_NUM=$(gh api "/repos/$REPOSITORY/commits/$RELEASE_COMMIT/pulls" \
-              --jq '.[0].number // empty' 2>/dev/null || true)
+            if PULLS=$(gh api "/repos/$REPOSITORY/commits/$RELEASE_COMMIT/pulls" 2>&1); then
+              PR_NUM=$(printf '%s' "$PULLS" | jq -r '.[0].number // empty')
+            else
+              echo "::warning::releaser lookup: commit-pulls API failed: $PULLS — falling back to actor"
+              PR_NUM=""
+            fi
             if [ -n "$PR_NUM" ]; then
-              RELEASER=$(gh pr view "$PR_NUM" --repo "$REPOSITORY" \
-                --json mergedBy --jq '.mergedBy.login // empty' 2>/dev/null || true)
+              if MERGED_BY=$(gh pr view "$PR_NUM" --repo "$REPOSITORY" \
+                --json mergedBy --jq '.mergedBy.login // empty' 2>&1); then
+                RELEASER="$MERGED_BY"
+              else
+                echo "::warning::releaser lookup: gh pr view #$PR_NUM failed: $MERGED_BY — falling back to actor"
+              fi
             fi
           fi
 
@@ -491,7 +505,10 @@ jobs:
             RELEASER="$ACTOR"
           fi
 
-          # Drop bot accounts (quoted patterns are literal, so "[bot]" is not a glob class).
+          # Drop bot accounts. Quoted patterns are literal, so "[bot]" matches as a
+          # literal suffix, not a glob char class — "*[bot]" matches any login ending
+          # in "[bot]". The bare "github-actions" arm covers github.actor surfacing
+          # without the "[bot]" suffix, which "*[bot]" would not catch.
           case "$RELEASER" in
             ""|*"[bot]"|github-actions) RELEASER="" ;;
           esac

@@ -1313,6 +1313,15 @@ class ChatInput(Vertical):
         padding: 0;
         background: $surface;
         border: solid $primary;
+        layers: base actions;
+    }
+
+    ChatInput #input-actions {
+        layer: actions;
+        dock: right;
+        width: auto;
+        height: 1;
+        padding-right: 1;
     }
 
     ChatInput.mode-shell {
@@ -1470,6 +1479,11 @@ class ChatInput(Vertical):
         with Horizontal(classes="input-row"):
             yield Static(">", classes="input-prompt", id="prompt")
             yield ChatTextArea(id="chat-input")
+
+        # Action buttons float on their own z-layer over the top-right corner so
+        # the text area can use the full width; a long top line slides under
+        # them rather than the buttons reserving a column on every row.
+        with Horizontal(id="input-actions"):
             yield InputActionButton(
                 "[ X ]",
                 "clear",

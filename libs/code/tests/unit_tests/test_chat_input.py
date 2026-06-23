@@ -336,6 +336,50 @@ class TestInputActionButtons:
         assert "[ X ]" in rendered
         assert "[ COPY ]" in rendered
 
+    async def test_buttons_float_over_full_width_text_area(self) -> None:
+        """Buttons overlay the top-right corner without reserving a column.
+
+        The text area must span the full content width (so wrapped lines use
+        every column), and both buttons must sit on the text area's first row
+        within its horizontal span — proving they float on a higher z-layer
+        rather than carving a fixed column out of every row.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test(size=(60, 24)) as pilot:
+            await pilot.pause()
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            # A long single line would wrap to the text area's full width.
+            text_area.insert("Z" * 200)
+            await pilot.pause()
+
+            clear = chat_input.query_one("#clear-button", Static)
+            copy = chat_input.query_one("#copy-button", Static)
+
+            # Text area reclaims the full width up to the box's right edge.
+            assert text_area.region.right == chat_input.content_region.right
+
+            # Buttons overlay the text area's first visual row (same top y) and
+            # land within its horizontal span rather than to the right of it.
+            assert clear.region.y == text_area.region.y
+            assert copy.region.y == text_area.region.y
+            assert text_area.region.x < clear.region.x < text_area.region.right
+            assert copy.region.right <= text_area.region.right
+
+            # The floating layer must only cover the buttons themselves: a
+            # first-row click left of them still reaches the text area (so the
+            # cursor can be placed on the first line), while a click on a button
+            # hits the button.
+            left_widget, _ = app.screen.get_widget_at(
+                text_area.region.x + 1, text_area.region.y
+            )
+            assert left_widget is text_area
+            button_widget, _ = app.screen.get_widget_at(
+                copy.region.x + 1, copy.region.y
+            )
+            assert button_widget is copy
+
     async def test_copy_button_double_click_does_not_select_label(self) -> None:
         """Double-clicking `[ COPY ]` should not trigger Textual word selection."""
         app = _ChatInputTestApp()

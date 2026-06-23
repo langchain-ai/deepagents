@@ -241,8 +241,9 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
         with Vertical():
             yield Static("Installed Integrations", classes="launch-init-title")
             yield Static(
-                "Deep Agents uses installed optional packages to decide which "
-                "providers and runtime integrations are ready now.",
+                "Model providers and sandboxes work through optional add-on "
+                "packages. The ones you've already installed are ready to use "
+                "now; the rest can be added anytime with `/install`.",
                 classes="launch-init-copy",
             )
             if self._statuses:

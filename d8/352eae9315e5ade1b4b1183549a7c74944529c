@@ -1,0 +1,22 @@
+.github/workflows/release_please_scope_check.yml
+  s_9bb0872e915a56::t_c22b526fac8439 62-72,74-76
+  s_9bb0872e915a56::t_199b9e9fb140b1 102-108
+  s_9bb0872e915a56::t_fa519e9d4991e0 32-37
+  s_9bb0872e915a56::t_65c1645e9bc624 123-138
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.10",
+  "base_commit_sha": "d8352eae9315e5ade1b4b1183549a7c74944529c",
+  "prompts": {},
+  "sessions": {
+    "s_9bb0872e915a56": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ccf3f25d-ce40-4c74-b9f5-490879c3924a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

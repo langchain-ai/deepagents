@@ -103,7 +103,6 @@ def test_write_file_overwrite_drops_old_content(model: BaseChatModel) -> None:
     )
 
 
-
 @pytest.mark.eval_tier("baseline")
 @pytest.mark.eval_category("file_operations")
 @pytest.mark.langsmith

@@ -100,6 +100,13 @@ step fails repeatedly, stop and find the root cause instead of retrying the same
 approach. If you cannot fully converge before the run ends, write your best-effort
 artifact rather than leaving nothing.
 
+## Keep durable notes
+
+Maintain a notes file e.g. `/app/Notes.md` of findings, decisions, and results of
+experiments, and the exact required output contract; update it as you learn. Re-read
+it when confused, when resuming, or after summarization events, when you feel you lack
+context about what you're solving.
+
 ## Verify against the real check, not your own
 
 Two kinds of mistakes sink a task: getting the behavior wrong, and getting a name, path,
@@ -214,6 +221,7 @@ def make_graph(config: dict[str, object] | None = None) -> object:
             enable_skills=False,
             enable_shell=True,
             enable_verify=True,
+            enable_finalize=True,
             cwd=_workdir(configurable),
         )
     return graph

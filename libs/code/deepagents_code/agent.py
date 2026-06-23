@@ -1115,6 +1115,7 @@ def create_cli_agent(
     enable_shell: bool = True,
     enable_interpreter: bool = False,
     enable_verify: bool = False,
+    enable_finalize: bool = False,
     checkpointer: BaseCheckpointSaver | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
     cwd: str | Path | None = None,
@@ -1197,6 +1198,10 @@ def create_cli_agent(
             from agent state and the produced files from the backend, then runs
             a fresh LLM-judge call to confirm every named identifier in the task
             appears exactly in the implementation. Off by default.
+        enable_finalize: Add `FinalizeMiddleware`, which nudges the agent to
+            write and verify a deliverable as the run nears the LangGraph
+            `recursion_limit`, then ends gracefully before a
+            `GraphRecursionError`. Off by default.
         checkpointer: Optional checkpointer for session persistence.
             When `None`, the graph is compiled without a checkpointer.
         mcp_server_info: MCP server metadata to surface in the system prompt.
@@ -1357,6 +1362,12 @@ def create_cli_agent(
     from deepagents_code.resume_state import ResumeStateMiddleware
 
     agent_middleware.append(ResumeStateMiddleware())
+
+    # Best-effort finalize: nudge + graceful stop as the run nears recursion_limit.
+    if enable_finalize:
+        from deepagents_code.finalize_middleware import FinalizeMiddleware
+
+        agent_middleware.append(FinalizeMiddleware())
 
     # Add ask_user middleware (must be early so its tool is available)
     if enable_ask_user:

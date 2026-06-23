@@ -111,8 +111,12 @@ def test_make_graph_builds_headless_local_deepagent(
     assert captured_create[0]["enable_memory"] is False
     assert captured_create[0]["enable_skills"] is False
     assert captured_create[0]["enable_shell"] is True
+    assert captured_create[0]["enable_verify"] is True
+    assert captured_create[0]["enable_finalize"] is True
     assert isinstance(captured_create[0]["system_prompt"], str)
-    assert "Harbor benchmark sandbox" in captured_create[0]["system_prompt"]
+    assert "autonomous coding agent" in captured_create[0]["system_prompt"]
+    # Part 2: the durable-notes guidance is wired into the headless prompt.
+    assert "Notes.md" in captured_create[0]["system_prompt"]
 
 
 def test_make_graph_defaults_to_app_workdir(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -185,4 +189,4 @@ def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
     assert captured_create[0]["model"] == "chat-model"
     assert captured_create[0]["backend"] is backend
     assert isinstance(captured_create[0]["system_prompt"], str)
-    assert "Harbor benchmark sandbox" in captured_create[0]["system_prompt"]
+    assert "autonomous coding agent" in captured_create[0]["system_prompt"]

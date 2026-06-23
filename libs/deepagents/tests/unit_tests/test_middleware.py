@@ -1,4 +1,5 @@
 import base64
+import json
 import mimetypes
 import time
 from unittest.mock import MagicMock, patch
@@ -1682,6 +1683,86 @@ class TestFilesystemMiddleware:
         assert "video payload exceeds maximum input size of 3 bytes" in result.content  # type: ignore[operator]
         assert called["count"] == 0
 
+    def test_user_supplied_video_block_transforms_for_non_video_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Native video blocks are converted to sampled frames for non-video models."""
+        raw_bytes = b"user supplied video"
+        sentinel = [
+            {"type": "text", "text": "Frame at t=00:00:00.000"},
+            {"type": "image", "base64": "AAAA", "mime_type": "image/jpeg"},
+        ]
+        calls: list[dict[str, object]] = []
+
+        def fake_extract(content, *, offset_seconds, duration_seconds, sampling_rate):  # type: ignore[no-untyped-def]
+            calls.append(
+                {
+                    "content": content,
+                    "offset_seconds": offset_seconds,
+                    "duration_seconds": duration_seconds,
+                    "sampling_rate": sampling_rate,
+                }
+            )
+            return list(sentinel)
+
+        monkeypatch.setattr(filesystem_middleware, "extract_video_frames", fake_extract)
+        video_block = _video_content_block(raw_bytes, filename="upload.mp4")
+        messages = [HumanMessage(content=[{"type": "text", "text": "watch this"}, video_block])]
+
+        transformed, mutated = filesystem_middleware._transform_video_blocks_for_model(messages, native_video=False)
+
+        assert mutated is True
+        assert transformed[0] is not messages[0]
+        assert messages[0].content == [{"type": "text", "text": "watch this"}, video_block]
+        assert transformed[0].content == [
+            {"type": "text", "text": "watch this"},
+            {"type": "text", "text": "Reading first 100s of upload.mp4 at 0.5 fps."},
+            *sentinel,
+        ]
+        assert calls == [
+            {
+                "content": raw_bytes,
+                "offset_seconds": 0.0,
+                "duration_seconds": 100.0,
+                "sampling_rate": 0.5,
+            }
+        ]
+        assert video_block["base64"] not in str(transformed[0].content)
+
+    def test_user_supplied_video_block_passes_through_for_video_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Video-capable models keep native video blocks unchanged."""
+        called = {"count": 0}
+
+        def fake_extract(*args: object, **kwargs: object) -> list[dict[str, object]]:  # noqa: ARG001
+            called["count"] += 1
+            return [{"type": "text", "text": "unexpected"}]
+
+        monkeypatch.setattr(filesystem_middleware, "extract_video_frames", fake_extract)
+        messages = [HumanMessage(content=[_video_content_block(b"native", filename="gemini.mov")])]
+        native_video = filesystem_middleware._model_accepts_native_video(_VideoCapableModel("google_genai", "gemini-2.0-flash"))
+
+        transformed, mutated = filesystem_middleware._transform_video_blocks_for_model(messages, native_video=native_video)
+
+        assert native_video is True
+        assert transformed is messages
+        assert mutated is False
+        assert called["count"] == 0
+
+    def test_stringified_video_blocks_are_recovered_for_non_video_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Stringified video tool content is still converted before non-video model calls."""
+        monkeypatch.setattr(
+            filesystem_middleware,
+            "extract_video_frames",
+            lambda *_args, **_kwargs: [{"type": "image", "base64": "AAAA", "mime_type": "image/jpeg"}],
+        )
+        payload = json.dumps([_video_content_block(b"tool video", filename="tool.mp4")])
+        messages = [ToolMessage(content=payload, name="custom_tool", tool_call_id="call_1")]
+
+        transformed, mutated = filesystem_middleware._transform_video_blocks_for_model(messages, native_video=False)
+
+        assert mutated is True
+        assert isinstance(transformed[0].content, list)
+        assert transformed[0].content[0] == {"type": "text", "text": "Reading first 100s of tool.mp4 at 0.5 fps."}
+        assert all(block.get("type") != "video" for block in transformed[0].content)
+
     def test_read_file_image_returns_standard_image_content_block(self):
         """Test image reads return standard image blocks with base64 + mime_type."""
 
@@ -2818,3 +2899,24 @@ def _video_backend(raw: bytes = b"raw") -> StateBackend:
             return ReadResult(file_data={"content": payload, "encoding": "base64"})
 
     return VideoBackend()
+
+
+def _video_content_block(raw: bytes, *, filename: str) -> dict[str, object]:
+    """Build an inline video content block for request-time transformation tests."""
+    return {
+        "type": "video",
+        "base64": base64.b64encode(raw).decode("ascii"),
+        "mime_type": "video/mp4",
+        "source_metadata": {"filename": filename},
+    }
+
+
+class _VideoCapableModel:
+    """Small model stub exposing the provider metadata used for video capability."""
+
+    def __init__(self, provider: str, model_name: str) -> None:
+        self.model_name = model_name
+        self._provider = provider
+
+    def _get_ls_params(self) -> dict[str, str]:
+        return {"ls_provider": self._provider}

@@ -7,6 +7,7 @@ import binascii
 import concurrent.futures
 import contextlib
 import contextvars
+import json
 import mimetypes
 import threading
 import uuid
@@ -40,6 +41,7 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from deepagents._api.deprecation import warn_deprecated
+from deepagents._models import get_model_identifier, get_model_provider
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
 from deepagents.backends.protocol import (
     BACKEND_TYPES as BACKEND_TYPES,  # Re-export type here for backwards compatibility
@@ -100,6 +102,9 @@ _DEFAULT_FS_TOOL_OPS: dict[str, FilesystemOperation] = {
 
 _READ_FILE_MEDIA_RESULT = "read_file_media_result"
 _VIDEO_SAMPLING_RATE = 0.5
+_VIDEO_DEFAULT_DURATION_SECONDS = 100.0
+_VIDEO_CAPABLE_PATTERNS = ("gemini-",)
+_VIDEO_CAPABLE_PROVIDERS = frozenset({"google_genai", "google_vertexai"})
 
 
 def _tool_error(name: str, tool_call_id: str | None, content: str) -> ToolMessage:
@@ -141,6 +146,157 @@ def _move_media_results_after_tool_results(messages: list[AnyMessage]) -> list[A
             reordered.extend(message for message in batch if isinstance(message, ToolMessage))
             reordered.extend(message for message in batch if _is_read_file_media_result(message))
     return reordered
+
+
+def _model_accepts_native_video(model: Any) -> bool:  # noqa: ANN401
+    """Return whether `model` can receive native video blocks without conversion."""
+    model_name = get_model_identifier(model)
+    if model_name:
+        lowered = model_name.lower()
+        return any(lowered.startswith(prefix) for prefix in _VIDEO_CAPABLE_PATTERNS)
+    provider = get_model_provider(model)
+    return bool(provider and provider.lower() in _VIDEO_CAPABLE_PROVIDERS)
+
+
+def _is_video_block(block: object) -> bool:
+    """Return whether a content block represents video media."""
+    if not isinstance(block, dict):
+        return False
+    video_block = cast("dict[str, Any]", block)
+    if video_block.get("type") == "video":
+        return True
+    mime_type = video_block.get("mime_type")
+    return video_block.get("type") == "media" and isinstance(mime_type, str) and mime_type.startswith("video/")
+
+
+def _maybe_parse_stringified_video_blocks(content: str) -> list[Any] | str:
+    """Recover video content blocks stringified by tool-node serialization."""
+    if not content.startswith("[") or ('"type": "video"' not in content and '"mime_type": "video/' not in content):
+        return content
+    try:
+        parsed = json.loads(content)
+    except ValueError:
+        return content
+    if isinstance(parsed, list) and all(isinstance(block, dict) for block in parsed):
+        return parsed
+    return content
+
+
+def _video_block_filename(block: dict[str, Any]) -> str:
+    """Resolve a best-effort label for a video content block."""
+    source_metadata = block.get("source_metadata")
+    if isinstance(source_metadata, dict):
+        for key in ("filename", "name", "read_file_path"):
+            value = source_metadata.get(key)
+            if isinstance(value, str) and value:
+                return value
+    extras = block.get("extras")
+    if isinstance(extras, dict):
+        placeholder = extras.get("placeholder")
+        if isinstance(placeholder, str) and placeholder:
+            return placeholder
+    url = block.get("url")
+    if isinstance(url, str) and url and not url.startswith("data:"):
+        return url
+    return "video"
+
+
+def _video_error_block(filename: str, msg: str) -> ContentBlock:
+    """Build a model-facing replacement block for a video extraction failure."""
+    return cast(
+        "ContentBlock",
+        {
+            "type": "text",
+            "text": f"[Video '{filename}' could not be processed: {msg}. Please ask the user to describe it or retry.]",
+        },
+    )
+
+
+def _decode_data_url(data_url: str) -> bytes:
+    """Decode a base64 `data:video/...` URL payload."""
+    header, payload = data_url.split(",", 1)
+    if "base64" not in header.lower().split(";"):
+        msg = "video data URL is not base64-encoded"
+        raise ValueError(msg)
+    return base64.b64decode(payload, validate=True)
+
+
+def _decode_video_block(block: dict[str, Any]) -> bytes:
+    """Decode supported inline video block shapes to raw bytes."""
+    data = block.get("base64")
+    if not isinstance(data, str) and block.get("source_type") == "base64":
+        data = block.get("data")
+    if isinstance(data, str):
+        return base64.b64decode(data, validate=True)
+
+    url = block.get("url")
+    if isinstance(url, str) and url.startswith("data:"):
+        return _decode_data_url(url)
+
+    msg = "video block does not contain inline base64 data"
+    raise ValueError(msg)
+
+
+def _expand_video_block_for_model(block: dict[str, Any]) -> list[ContentBlock]:
+    """Replace a video content block with sampled frame blocks for the model."""
+    filename = _video_block_filename(block)
+    try:
+        raw_bytes = _decode_video_block(block)
+    except (ValueError, TypeError, binascii.Error) as exc:
+        return [_video_error_block(filename, str(exc))]
+
+    if len(raw_bytes) > MAX_VIDEO_INPUT_BYTES:
+        return [_video_error_block(filename, f"video payload exceeds maximum input size of {MAX_VIDEO_INPUT_BYTES} bytes")]
+
+    try:
+        blocks = extract_video_frames(
+            raw_bytes,
+            offset_seconds=0.0,
+            duration_seconds=_VIDEO_DEFAULT_DURATION_SECONDS,
+            sampling_rate=_VIDEO_SAMPLING_RATE,
+        )
+    except (ValueError, VideoExtractionError) as exc:
+        return [_video_error_block(filename, str(exc))]
+
+    header = _video_window_header(filename, 0.0, _VIDEO_DEFAULT_DURATION_SECONDS, _VIDEO_SAMPLING_RATE)
+    return [cast("ContentBlock", {"type": "text", "text": header}), *blocks]
+
+
+def _transform_video_blocks_for_model(
+    messages: list[AnyMessage],
+    *,
+    native_video: bool,
+) -> tuple[list[AnyMessage], bool]:
+    """Convert native video blocks to sampled frames unless the model supports video."""
+    if native_video:
+        return messages, False
+
+    transformed: list[AnyMessage] = []
+    mutated = False
+    for message in messages:
+        content = getattr(message, "content", None)
+        if isinstance(content, str):
+            content = _maybe_parse_stringified_video_blocks(content)
+        if not isinstance(content, list):
+            transformed.append(message)
+            continue
+
+        message_mutated = False
+        blocks: list[Any] = []
+        for block in content:
+            if _is_video_block(block):
+                blocks.extend(_expand_video_block_for_model(cast("dict[str, Any]", block)))
+                message_mutated = True
+            else:
+                blocks.append(block)
+
+        if message_mutated:
+            transformed.append(message.model_copy(update={"content": blocks}))
+            mutated = True
+        else:
+            transformed.append(message)
+
+    return transformed, mutated
 
 
 def _handle_video_read(
@@ -616,7 +772,7 @@ Usage:
 For multimodal reads (image, audio, video, PDF, etc.):
 - Use `read_file(file_path=...)`
 - For images and PDFs, pagination via `offset`/`limit` is text-only - supply `file_path` only
-- For videos, `offset`/`limit` are interpreted as seconds (default window 100 s; sampling rate configured on `FilesystemMiddleware`). Detailed semantics live in the deepagents docs.
+- For videos, `offset`/`limit` are interpreted as seconds (default window 100 s; sampled at a fixed rate). Use smaller windows when you need more temporal detail.
 - If file details were compacted from history, call `read_file` again on the same path
 
 - You should ALWAYS make sure a file has been read before editing it."""
@@ -2211,6 +2367,29 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         return request
 
+    @staticmethod
+    def _apply_video_block_transform(request: ModelRequest[ContextT]) -> ModelRequest[ContextT]:
+        """Convert request video blocks unless the target model accepts native video."""
+        messages, mutated = _transform_video_blocks_for_model(
+            list(request.messages),
+            native_video=_model_accepts_native_video(request.model),
+        )
+        if not mutated:
+            return request
+        return request.override(messages=messages)
+
+    @staticmethod
+    async def _aapply_video_block_transform(request: ModelRequest[ContextT]) -> ModelRequest[ContextT]:
+        """Async variant of `_apply_video_block_transform`."""
+        messages, mutated = await asyncio.to_thread(
+            _transform_video_blocks_for_model,
+            list(request.messages),
+            native_video=_model_accepts_native_video(request.model),
+        )
+        if not mutated:
+            return request
+        return request.override(messages=messages)
+
     def wrap_model_call(
         self,
         request: ModelRequest[ContextT],
@@ -2241,6 +2420,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         request_messages = _move_media_results_after_tool_results(list(request.messages))
         if request_messages != list(request.messages):
             request = request.override(messages=request_messages)
+
+        request = self._apply_video_block_transform(request)
 
         eviction_result = self._evict_and_truncate_messages(request)
         if eviction_result is not None:
@@ -2276,6 +2457,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         request_messages = _move_media_results_after_tool_results(list(request.messages))
         if request_messages != list(request.messages):
             request = request.override(messages=request_messages)
+
+        request = await self._aapply_video_block_transform(request)
 
         eviction_result = await self._aevict_and_truncate_messages(request)
         if eviction_result is not None:

@@ -1,9 +1,9 @@
-"""Video frame extraction for the `read_file` tool.
+"""Video frame extraction for filesystem and request media handling.
 
-This module is the boundary between `read_file` and the optional video
-backend (PyAV). It is imported lazily so a `deepagents` install without the
-``[video]`` extra stays lightweight; the import only fires when the agent
-actually tries to read a video file.
+This module is the boundary between Deep Agents middleware and the optional
+video backend (PyAV). It imports PyAV lazily so a `deepagents` install without
+the ``[video]`` extra stays lightweight; the import only fires when the agent
+actually tries to read or transform a video.
 
 For each video read the module decodes a contiguous slice of the source
 (``offset``-seconds skip, ``limit``-seconds window) and emits sampled
@@ -11,9 +11,9 @@ frames at the configured sampling rate. The output is a list of interleaved
 text+image content blocks so the model sees per-frame timestamps alongside
 the JPEGs.
 
-Sampling rate is a deploy-time knob on `FilesystemMiddleware`, not an
-agent-facing argument — the public `read_file` surface stays narrow and
-operators trade frame density for token cost without prompting changes.
+Sampling rate is intentionally fixed by the middleware. Agents control the
+window they inspect through `read_file`'s existing `offset`/`limit` arguments,
+which are interpreted as seconds for video reads.
 """
 
 import base64
@@ -60,7 +60,7 @@ def _import_av() -> Any:  # noqa: ANN401
 
 
 def _select_sampling_rate(value: float) -> float:
-    """Validate and normalize the constructor-supplied sampling rate."""
+    """Validate and normalize an internal sampling rate."""
     if value <= 0:
         msg = f"video_sampling_rate must be > 0, got {value!r}"
         raise ValueError(msg)

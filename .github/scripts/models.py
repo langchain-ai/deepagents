@@ -285,6 +285,19 @@ REGISTRY: tuple[Model, ...] = (
         "Fireworks",
     ),
     Model(
+        "fireworks:accounts/fireworks/models/glm-5p2",
+        frozenset(
+            {
+                "eval:open-fireworks",
+                "eval:fireworks",
+                "harbor:open-fireworks",
+                "harbor:fireworks",
+            }
+        ),
+        "GLM-5.2",
+        "Fireworks",
+    ),
+    Model(
         "fireworks:accounts/fireworks/models/minimax-m2p5",
         frozenset({"eval:set0", "eval:fireworks", "harbor:set0", "harbor:fireworks"}),
         "MiniMax M2.5",
@@ -674,6 +687,19 @@ REGISTRY: tuple[Model, ...] = (
             }
         ),
         "GLM-5.1",
+        "OpenRouter",
+    ),
+    Model(
+        "openrouter:z-ai/glm-5.2",
+        frozenset(
+            {
+                "eval:open",
+                "eval:openrouter",
+                "harbor:open",
+                "harbor:openrouter",
+            }
+        ),
+        "GLM-5.2",
         "OpenRouter",
     ),
     Model(

@@ -4388,9 +4388,11 @@ class DeepAgentsApp(App):
                 ExtrasIntrospectionError,
             )
             from deepagents_code.update_check import (
+                ToolRequirementIntrospectionError,
                 create_update_log_path,
                 editable_extra_hint,
                 install_extra_command,
+                install_extra_recovery_command,
                 is_valid_extra_name,
                 perform_install_extra,
             )
@@ -4425,7 +4427,11 @@ class DeepAgentsApp(App):
         if extra not in KNOWN_EXTRAS and not force:
             try:
                 manual_cmd = await asyncio.to_thread(install_extra_command, extra)
-            except (ExtrasIntrospectionError, ValueError) as exc:
+            except (
+                ExtrasIntrospectionError,
+                ToolRequirementIntrospectionError,
+                ValueError,
+            ) as exc:
                 logger.warning("/install command failed", exc_info=True)
                 await self._mount_message(
                     ErrorMessage(f"Install failed: {type(exc).__name__}: {exc}"),
@@ -4452,7 +4458,11 @@ class DeepAgentsApp(App):
         )
         try:
             manual_cmd = await asyncio.to_thread(install_extra_command, extra)
-        except (ExtrasIntrospectionError, ValueError) as exc:
+        except (
+            ExtrasIntrospectionError,
+            ToolRequirementIntrospectionError,
+            ValueError,
+        ) as exc:
             logger.warning("/install command failed", exc_info=True)
             await self._mount_message(
                 ErrorMessage(
@@ -4464,6 +4474,24 @@ class DeepAgentsApp(App):
             success, output = await perform_install_extra(extra, log_path=log_path)
         except (OSError, asyncio.CancelledError) as exc:
             logger.warning("/install command failed", exc_info=True)
+            # Best-effort upgrade of `manual_cmd` to the install-method-specific
+            # recovery command. On failure, keep the install-script command
+            # already bound above so the hint is never empty. `manual_cmd` is
+            # rendered into a Textual `Content` (literal, not Rich markup), so no
+            # bracket escaping is needed here.
+            try:
+                manual_cmd = await asyncio.to_thread(
+                    install_extra_recovery_command, extra
+                )
+            except (
+                ExtrasIntrospectionError,
+                ToolRequirementIntrospectionError,
+                ValueError,
+            ):
+                logger.warning(
+                    "/install recovery command failed (install raised)",
+                    exc_info=True,
+                )
             await self._mount_message(
                 ErrorMessage(
                     f"Install failed: {type(exc).__name__}: {exc}\n"
@@ -4477,6 +4505,21 @@ class DeepAgentsApp(App):
             # Tail the last 200 chars — uv resolver prints the resolved
             # error at the end, not the beginning.
             detail = f": {output[-200:]}" if output else ""
+            # See the OSError branch above: best-effort recovery command, falling
+            # back to the already-bound install-script command on failure.
+            try:
+                manual_cmd = await asyncio.to_thread(
+                    install_extra_recovery_command, extra
+                )
+            except (
+                ExtrasIntrospectionError,
+                ToolRequirementIntrospectionError,
+                ValueError,
+            ):
+                logger.warning(
+                    "/install recovery command failed (install reported failure)",
+                    exc_info=True,
+                )
             await self._mount_message(
                 ErrorMessage(
                     f"Install failed{detail}\n"

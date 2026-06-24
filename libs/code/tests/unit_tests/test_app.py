@@ -7732,6 +7732,14 @@ class TestInstallExtraModelSwitch:
         monkeypatch.setattr(
             update_check, "install_extra_command", lambda extra: f"uv install {extra}"
         )
+        # Inert stub: install succeeds below, so the recovery command (only
+        # built on failure) is never invoked. Patched to guard against an
+        # accidental real call introspecting the host's install state.
+        monkeypatch.setattr(
+            update_check,
+            "install_extra_recovery_command",
+            lambda extra: f"uv install {extra}",
+        )
         monkeypatch.setattr(
             update_check,
             "perform_install_extra",
@@ -7771,6 +7779,14 @@ class TestInstallExtraModelSwitch:
         monkeypatch.setattr(
             update_check, "install_extra_command", lambda extra: f"uv install {extra}"
         )
+        # Inert stub: install succeeds below, so the recovery command (only
+        # built on failure) is never invoked. Patched to guard against an
+        # accidental real call introspecting the host's install state.
+        monkeypatch.setattr(
+            update_check,
+            "install_extra_recovery_command",
+            lambda extra: f"uv install {extra}",
+        )
         monkeypatch.setattr(
             update_check,
             "perform_install_extra",
@@ -7808,6 +7824,14 @@ class TestInstallExtraModelSwitch:
         monkeypatch.setattr(
             update_check, "install_extra_command", lambda extra: f"uv install {extra}"
         )
+        # Inert stub: install succeeds below, so the recovery command (only
+        # built on failure) is never invoked. Patched to guard against an
+        # accidental real call introspecting the host's install state.
+        monkeypatch.setattr(
+            update_check,
+            "install_extra_recovery_command",
+            lambda extra: f"uv install {extra}",
+        )
         monkeypatch.setattr(
             update_check,
             "perform_install_extra",
@@ -7842,6 +7866,14 @@ class TestInstallExtraModelSwitch:
         )
         monkeypatch.setattr(
             update_check, "install_extra_command", lambda extra: f"uv install {extra}"
+        )
+        # Inert stub: install succeeds below, so the recovery command (only
+        # built on failure) is never invoked. Patched to guard against an
+        # accidental real call introspecting the host's install state.
+        monkeypatch.setattr(
+            update_check,
+            "install_extra_recovery_command",
+            lambda extra: f"uv install {extra}",
         )
         monkeypatch.setattr(
             update_check,
@@ -7932,6 +7964,11 @@ class TestInstallExtraModelSwitch:
         )
         monkeypatch.setattr(
             update_check, "install_extra_command", lambda extra: f"uv install {extra}"
+        )
+        monkeypatch.setattr(
+            update_check,
+            "install_extra_recovery_command",
+            lambda extra: f"uv install {extra}",
         )
         monkeypatch.setattr(
             update_check,

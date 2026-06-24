@@ -7144,6 +7144,10 @@ class DeepAgentsApp(App):
             self._queued_widgets.clear()
             self._sync_status_queued()
             await self._clear_messages()
+            # A fresh conversation drops any prior subagent fan-out too.
+            subagent_panel = self._get_subagent_panel()
+            if subagent_panel is not None:
+                subagent_panel.reset()
             self._context_tokens = 0
             self._tokens_approximate = False
             self._update_tokens(0)
@@ -7932,13 +7936,15 @@ class DeepAgentsApp(App):
         self._inflight_turn_stats = turn_stats
         self._inflight_turn_start = time.monotonic()
 
-        # Clear the prior turn's subagent fan-out panel before this turn runs,
-        # seeding it with the session model that labels each subagent row.
+        # Arm the subagent fan-out panel for this turn, seeding the session
+        # model that labels each row. The panel persists across turns and only
+        # clears when this turn's first subagent actually starts, so a turn that
+        # spawns none leaves the previous workflow's results on screen.
         panel = self._get_subagent_panel()
         if panel is not None:
             spec = self._effective_model_spec()
             model_label = spec.split(":", 1)[1] if spec and ":" in spec else spec
-            panel.reset(model_label=model_label)
+            panel.prepare_turn(model_label=model_label)
 
         try:
             await execute_task_textual(

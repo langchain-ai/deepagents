@@ -264,7 +264,22 @@ class TestHeaderToggle:
             await pilot.pause()
             header = _render(pilot.app.query_one("#subagent-header", Static))
             assert "2/2 done" in header
+            assert "1 phase" in header  # singular for a single phase
             assert "1 failed" in header
+
+    async def test_header_phase_count_pluralizes(self) -> None:
+        async with PanelApp().run_test(size=(200, 24)) as pilot:
+            panel = pilot.app.query_one("#panel", SubagentPanel)
+            panel.on_subagent_event(_start("a", "E1"))
+            await pilot.pause()
+            header = _render(pilot.app.query_one("#subagent-header", Static))
+            assert "1 phase" in header
+            assert "1 phases" not in header  # singular, not "1 phases"
+            # A second eval batch makes it plural.
+            panel.on_subagent_event(_start("b", "E2"))
+            await pilot.pause()
+            header = _render(pilot.app.query_one("#subagent-header", Static))
+            assert "2 phases" in header
 
 
 class TestReset:
@@ -278,6 +293,24 @@ class TestReset:
             assert not panel.has_class("-visible")
             assert panel._phase_order == []
             assert panel._counts() == (0, 0)
+
+    async def test_panel_persists_until_next_workflow(self) -> None:
+        async with PanelApp().run_test() as pilot:
+            panel = pilot.app.query_one("#panel", SubagentPanel)
+            panel.on_subagent_event(_start("a", "E1"))
+            panel.on_subagent_event(_complete("a", "E1"))
+            await pilot.pause()
+            assert panel.has_class("-visible")
+            # A new turn begins but spawns no subagents — results persist.
+            panel.prepare_turn()
+            await pilot.pause()
+            assert panel.has_class("-visible")
+            assert panel._phase_order == ["E1"]
+            # The next workflow's first subagent clears the prior fan-out.
+            panel.on_subagent_event(_start("b", "E2"))
+            await pilot.pause()
+            assert panel._phase_order == ["E2"]
+            assert panel._find_record("a") is None
 
 
 class TestStability:

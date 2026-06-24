@@ -253,6 +253,10 @@ class SubagentPanel(Vertical):
         self._last_render: dict[str, str] = {}
         self._spinner = Spinner()
         self._timer: Timer | None = None
+        # When True, the next subagent `start` clears the previous workflow's
+        # fan-out before adding the new row (armed by `prepare_turn`). Lets the
+        # panel persist across turns until a new workflow actually begins.
+        self._pending_reset = False
 
     def compose(self) -> ComposeResult:  # noqa: PLR6301 — Textual widget method
         """Yield the header line and the two-pane body (phases | agents)."""
@@ -312,6 +316,9 @@ class SubagentPanel(Vertical):
 
     def _handle_start(self, sub_id: str, eval_key: str, event: dict[str, Any]) -> None:
         """Create/replace a running record and (re-)show the panel."""
+        if self._pending_reset:
+            # A new workflow is starting — drop the previous turn's fan-out now.
+            self._clear()
         phase = self._phases.get(eval_key)
         if phase is None:
             phase = _Phase(eval_id=eval_key, index=len(self._phase_order) + 1)
@@ -457,17 +464,39 @@ class SubagentPanel(Vertical):
         self._selected_eval_id = self._phase_order[new_index]
         self._refresh()
 
+    def prepare_turn(self, *, model_label: str | None = None) -> None:
+        """Arm a deferred clear for a new turn without touching the panel yet.
+
+        The visible fan-out persists across turns; it is cleared lazily when the
+        next workflow actually starts a subagent (see `_handle_start`), so a turn
+        that spawns none leaves the previous results on screen. Refreshes the
+        session model used to label rows.
+        """
+        self._model_label = (
+            _sanitize(model_label, max_chars=_MODEL_COL) if model_label else None
+        )
+        self._pending_reset = True
+
     def reset(self, *, model_label: str | None = None, **_kwargs: Any) -> None:
-        """Clear all phases and hide the panel."""
+        """Clear all phases and hide the panel immediately (e.g. on `/clear`)."""
+        self._clear()
+        self._model_label = (
+            _sanitize(model_label, max_chars=_MODEL_COL) if model_label else None
+        )
+
+    def _clear(self) -> None:
+        """Drop all phase state, stop the timer, and hide the panel.
+
+        Leaves `expanded` and `_model_label` untouched so the user's open/closed
+        choice and the session model survive a clear.
+        """
         self._phases.clear()
         self._phase_order.clear()
         self._active_eval_id = None
         self._selected_eval_id = None
         self._applied_height = None
         self._last_render.clear()
-        self._model_label = (
-            _sanitize(model_label, max_chars=_MODEL_COL) if model_label else None
-        )
+        self._pending_reset = False
         self._stop_timer()
         self.remove_class("-visible")
 
@@ -627,8 +656,10 @@ class SubagentPanel(Vertical):
             The styled `Content` pieces appended after the header label.
         """
         meta_text = f"   {done}/{total} done"
-        if len(self._phase_order) > 1:
-            meta_text += f"  ·  {len(self._phase_order)} phases"
+        count = len(self._phase_order)
+        if count:
+            plural = "phase" if count == 1 else "phases"
+            meta_text += f"  ·  {count} {plural}"
         parts: list[Content] = [Content.styled(meta_text, colors.muted)]
         if failed:
             parts.append(Content.styled(f"  ·  {failed} failed", colors.error))

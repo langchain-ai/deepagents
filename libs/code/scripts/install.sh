@@ -55,6 +55,8 @@
 #     terminal (CI, wrapper scripts) update instead of stalling at the y/n
 #     prompt.
 #   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
+#   DEEPAGENTS_CODE_SKIP_XCODE_CHECK — set to 1 to bypass the macOS Xcode
+#     Command Line Tools preflight check
 #   DEEPAGENTS_CODE_VERBOSE — set to 1 to show uv's raw stderr (timing lines,
 #     unfiltered package diff), the uv installer's own output (shown only when
 #     uv isn't already installed), and the quiet-by-default status lines
@@ -147,9 +149,10 @@ detect_os
 # stubs, so fail fast here with a clear instruction instead of leaving the user
 # staring at a confusing popup mid-install. `xcode-select -p` only reports the
 # active developer dir — it never triggers the install dialog itself.
-if [ "$OS" = "macos" ] && ! xcode-select -p >/dev/null 2>&1; then
+if [ "$OS" = "macos" ] && [ "${DEEPAGENTS_CODE_SKIP_XCODE_CHECK:-}" != "1" ] && ! xcode-select -p >/dev/null 2>&1; then
   log_error "Xcode Command Line Tools are required but not installed."
   log_error "  Install them with:  xcode-select --install"
+  log_error "  To bypass this check, set:  DEEPAGENTS_CODE_SKIP_XCODE_CHECK=1"
   log_error "  Then re-run this installer."
   exit 1
 fi

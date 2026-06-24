@@ -964,6 +964,7 @@ def _invoke_with_os(
     xcode_select_rc: int,
     installed_version: str | None = None,
     latest_version: str | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     """Run `install.sh` with faked `uname`/`xcode-select` os probes.
 
@@ -991,6 +992,7 @@ def _invoke_with_os(
         "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
         "UV_BIN": str(uv),
         "DEEPAGENTS_CODE_SKIP_OPTIONAL": "1",
+        **(extra_env or {}),
     }
     proc = subprocess.run(
         ["bash", str(SCRIPT)],
@@ -1090,6 +1092,24 @@ def test_install_script_macos_without_clt_exits_early(tmp_path: Path) -> None:
     assert "Xcode Command Line Tools" in proc.stderr
     assert "xcode-select --install" in proc.stderr
     assert not uv_args.exists()
+
+
+def test_install_script_macos_skip_xcode_check_proceeds_without_clt(
+    tmp_path: Path,
+) -> None:
+    """The macOS CLT check can be bypassed for managed install environments."""
+    proc, uv_args = _invoke_with_os(
+        tmp_path,
+        uname_os="Darwin",
+        xcode_select_rc=2,
+        installed_version="0.0.1",
+        latest_version="0.2.0",
+        extra_env={"DEEPAGENTS_CODE_SKIP_XCODE_CHECK": "1"},
+    )
+
+    assert proc.returncode == 0
+    assert "Xcode Command Line Tools" not in proc.stderr
+    assert uv_args.exists()
 
 
 def test_install_script_macos_with_clt_proceeds_to_install(tmp_path: Path) -> None:

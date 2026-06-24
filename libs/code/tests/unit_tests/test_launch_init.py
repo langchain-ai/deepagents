@@ -168,6 +168,40 @@ class TestLaunchNameScreen:
         assert continued == ["Ada"]
         assert app.result is None
 
+    async def test_submit_switch_failure_dismisses_with_typed_name(self) -> None:
+        """A `ScreenStackError` during switch should dismiss with the typed name.
+
+        Unlike `LaunchDependenciesScreen`, the name screen emits no toast on this
+        path: the name has already propagated via `on_continue` before the switch
+        is attempted, so the fallback only needs to dismiss without dropping it.
+        """
+        app = LaunchNameTestApp()
+        continued: list[str] = []
+
+        async with app.run_test() as pilot:
+            app.push_screen(
+                LaunchNameScreen(
+                    continue_screen=DummyNextScreen(),
+                    on_continue=continued.append,
+                ),
+                lambda result: setattr(app, "result", result),
+            )
+            await pilot.pause()
+
+            def fake_switch_screen(_screen: object) -> None:
+                msg = "stack torn down"
+                raise ScreenStackError(msg)
+
+            app.switch_screen = fake_switch_screen  # ty: ignore
+
+            await pilot.press("a", "d", "a", "enter")
+            await pilot.pause()
+
+        # `on_continue` fired before the failed switch, so the name propagated.
+        assert continued == ["Ada"]
+        # The fallback dismisses with the typed name rather than dropping it.
+        assert app.result == "Ada"
+
     async def test_escape_skips(self) -> None:
         """Escape should skip the setup flow."""
         app = LaunchNameTestApp()

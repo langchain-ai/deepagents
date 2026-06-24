@@ -300,6 +300,9 @@ class TestModelSelectorChrome:
             help_text = screen.query_one(".model-selector-help", Static)
 
             assert "Tab autocomplete" in str(help_text.content)
+            # Standard mode still advertises the default-setting shortcut that
+            # curated/onboarding mode hides.
+            assert "Ctrl+S set default" in str(help_text.content)
             assert "Esc cancel" not in str(help_text.content)
 
 

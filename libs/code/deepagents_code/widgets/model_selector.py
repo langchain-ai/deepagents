@@ -44,7 +44,12 @@ from deepagents_code.model_config import (
 logger = logging.getLogger(__name__)
 
 _MODEL_LIST_MAX_HEIGHT = 16
-"""Upper bound (in cells) for the model selector list."""
+"""Upper bound (in cells) for the model selector list.
+
+Keep in sync with the `max-height: 16` in the `.model-list` CSS below; Textual
+CSS cannot reference Python constants, so the static cap and the runtime
+`_fit_model_list` clamp must agree.
+"""
 
 _MODEL_LIST_MIN_HEIGHT = 1
 """Floor (in cells) so the model selector list never collapses to zero."""
@@ -118,9 +123,9 @@ _RECOMMENDED_MODELS: frozenset[str] = frozenset(
 
 Used by the onboarding picker (`curated=True`) and by the in-`/model`
 "Recommended only" toggle (Ctrl+R). Same model IDs may appear under multiple
-providers (e.g. Kimi-K2.7-Code via `baseten` and `openrouter`) and are
-listed under each provider intentionally so the user can pick whichever
-provider they have credentials for.
+providers (e.g. Kimi-K2.7-Code via `baseten`, `fireworks`, `ollama`, and
+`openrouter`) and are listed under each provider intentionally so the user
+can pick whichever provider they have credentials for.
 """
 
 
@@ -292,7 +297,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     ModelSelectorScreen .model-list {
         height: auto;
         min-height: 1;
-        max-height: 16;
+        max-height: 16;  /* keep in sync with `_MODEL_LIST_MAX_HEIGHT` */
         scrollbar-gutter: stable;
         background: $background;
     }
@@ -741,13 +746,21 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         """Cap the model list so modal controls stay visible."""
         try:
             container = self.query_one(Vertical)
-            body = self.query_one(".model-list", VerticalScroll)
         except NoMatches:
+            # This runs deferred via `call_after_refresh`/`on_resize`; the
+            # screen may have been popped before it fires (e.g. a resize racing
+            # dismissal). Sizing is cosmetic, so skip quietly but leave a
+            # breadcrumb rather than letting it surface in the event loop.
             logger.debug(
-                "Skipping model-list refit; widgets not mounted",
+                "Skipping model-list refit; screen not mounted",
                 exc_info=True,
             )
             return
+        # The screen is still mounted, so `.model-list` (always composed) must
+        # exist; a missing body here is a structural regression, not the
+        # teardown race, so let `NoMatches` surface rather than silently
+        # rendering an uncapped list.
+        body = self.query_one(".model-list", VerticalScroll)
         non_body_height = max(0, container.region.height - body.region.height)
         available_height = self.size.height - non_body_height
         max_height = max(

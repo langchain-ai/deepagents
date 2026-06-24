@@ -32,7 +32,12 @@ from deepagents_code.extras_info import (
 logger = logging.getLogger(__name__)
 
 _DEPENDENCY_BODY_MAX_HEIGHT = 16
-"""Upper bound (in cells) for the scrollable dependency list."""
+"""Upper bound (in cells) for the scrollable dependency list.
+
+Keep in sync with the `max-height: 16` in the `#launch-dependencies-body` CSS;
+Textual CSS cannot reference Python constants, so the static cap and the
+runtime `_fit_dependencies_body` clamp must agree.
+"""
 _DEPENDENCY_BODY_MIN_HEIGHT = 1
 """Floor (in cells) so the list never collapses to zero on tiny terminals."""
 
@@ -231,7 +236,7 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
 
     LaunchDependenciesScreen #launch-dependencies-body {
         height: auto;
-        max-height: 16;
+        max-height: 16;  /* keep in sync with `_DEPENDENCY_BODY_MAX_HEIGHT` */
         scrollbar-gutter: stable;
         margin-bottom: 1;
     }
@@ -349,7 +354,8 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
     def _fit_dependencies_body(self) -> None:
         """Cap the dependency list height so modal controls stay in view."""
         # `#launch-dependencies-body` is only composed when statuses are
-        # non-empty (see `compose`); bail so the query below cannot miss.
+        # non-empty (see `compose`); skip the structural always-empty case
+        # here. The `NoMatches` catch below still handles the teardown race.
         if not self._statuses:
             return
 

@@ -441,22 +441,21 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     def _help_text(self) -> str:
         """Build the footer help text.
 
-        Curated/onboarding mode omits the Ctrl+R toggle and uses
-        "Esc skip setup" wording.
+        Curated/onboarding mode omits the Ctrl+R toggle and the Esc hint;
+        Escape stays bound but is not advertised. Standard mode shows
+        "Esc cancel".
 
         Returns:
             The bullet-separated help line.
         """
         glyphs = get_glyphs()
-        esc_label = "Esc skip setup" if self._curated else "Esc cancel"
         parts = [
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate",
             "Enter select",
             "Ctrl+S set default",
         ]
         if not self._curated:
-            parts.append("Ctrl+R recommended")
-        parts.append(esc_label)
+            parts.extend(("Ctrl+R recommended", "Esc cancel"))
         sep = f" {glyphs.bullet} "
         return sep.join(parts)
 

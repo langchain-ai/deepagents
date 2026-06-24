@@ -104,7 +104,7 @@ class DeterministicIntegrationChatModel(GenericFakeChatModel):
 
     @property
     def _llm_type(self) -> str:
-        """Return the LangChain model type identifier."""
+        """LangChain model type identifier."""
         return "deterministic-integration"
 
     @staticmethod

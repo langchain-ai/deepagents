@@ -1,4 +1,4 @@
-"""Async end-to-end tests for ``CodeInterpreterMiddleware`` with a fake LLM.
+"""Async end-to-end tests for `CodeInterpreterMiddleware` with a fake LLM.
 
 Covers the same integration surfaces as the prior quickjs e2e suite:
 agent wiring, REPL execution, PTC tool calls, runtime propagation,
@@ -119,7 +119,7 @@ async def test_deepagent_with_quickjs_interpreter() -> None:
 
 
 async def test_deepagent_with_quickjs_list_returning_foreign_function() -> None:
-    """A PTC tool returning a Python ``list`` surfaces as a native JS Array."""
+    """A PTC tool returning a Python `list` surfaces as a native JS Array."""
     code = "const ids = await tools.listUserIds({});\nids.join(',');"
     result = await _make_agent(
         code, CodeInterpreterMiddleware(ptc=[list_user_ids])

@@ -59,7 +59,7 @@ GraderVerdict = Literal["satisfied", "needs_revision", "failed"]
 - `satisfied`: every criterion passes.
 - `needs_revision`: at least one criterion fails; loop continues.
 - `failed`: the rubric itself is malformed or impossible to evaluate
-  against the transcript.
+    against the transcript.
 """
 
 RubricResult = GraderVerdict | Literal["max_iterations_reached", "grader_error"]
@@ -69,11 +69,12 @@ Superset of `GraderVerdict` with two middleware-synthesized terminal
 statuses the grader cannot emit itself:
 
 - `max_iterations_reached`: the iteration cap fired on a `needs_revision`
-  verdict; the agent terminates with its last response intact.
+    verdict; the agent terminates with its last response intact.
 - `grader_error`: the grader sub-agent raised an exception (provider
-  timeout, missing credentials, malformed structured response, etc.).
-  Distinct from `failed`, which the grader returns about the *rubric*,
-  not about its own machinery.
+    timeout, missing credentials, malformed structured response, etc.).
+
+    Distinct from `failed`, which the grader returns about the *rubric*,
+    not about its own machinery.
 
 Only `needs_revision` continues the loop; every other status ends the
 grading run.
@@ -310,7 +311,7 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         need to branch on non-satisfied termination must inspect one of:
 
         - `_rubric_status` on the returned state (or `agent.get_state(...)`
-          on a checkpointed thread),
+            on a checkpointed thread),
         - the `on_evaluation` callback,
         - the `rubric_evaluation_end` stream event.
 

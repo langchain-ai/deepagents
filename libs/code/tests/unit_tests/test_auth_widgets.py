@@ -59,6 +59,7 @@ class _AuthHostApp(App[None]):
         super().__init__()
         self.prompt_result: AuthResult | None = None
         self.prompt_dismissed = False
+        self.credential_saved_count = 0
 
     def compose(self) -> ComposeResult:
         """Render a placeholder root."""
@@ -78,6 +79,12 @@ class _AuthHostApp(App[None]):
     def show_manager(self) -> None:
         """Push the manager screen."""
         self.push_screen(AuthManagerScreen())
+
+    def on_auth_manager_screen_credential_saved(
+        self, _event: AuthManagerScreen.CredentialSaved
+    ) -> None:
+        """Record credential-save notifications from the manager."""
+        self.credential_saved_count += 1
 
 
 class TestCodexAuthScreen:
@@ -133,13 +140,27 @@ class TestAuthPromptScreen:
 
     def test_provider_metadata_maps_reference_known_providers(self) -> None:
         """Map keys stay in sync with real providers so none silently never resolve."""
-        known = set(model_config.PROVIDER_API_KEY_ENV) | {model_config.CODEX_PROVIDER}
+        # Services (e.g. LangSmith tracing) may carry a display name and key URL
+        # but live in SERVICE_API_KEY_ENV rather than PROVIDER_API_KEY_ENV.
+        known = (
+            set(model_config.PROVIDER_API_KEY_ENV)
+            | set(model_config.SERVICE_API_KEY_ENV)
+            | {model_config.CODEX_PROVIDER}
+        )
         assert set(PROVIDER_DISPLAY_NAMES) <= known
         # Codex uses ChatGPT login, not an API-key page, so it has no key URL.
-        # Services (e.g. Tavily) carry a key URL but live in SERVICE_API_KEY_ENV.
         assert set(PROVIDER_API_KEY_URLS) <= (
             set(model_config.PROVIDER_API_KEY_ENV)
             | set(model_config.SERVICE_API_KEY_ENV)
+        )
+
+    def test_langsmith_service_has_display_name_and_key_url(self) -> None:
+        """LangSmith tracing surfaces a branded label and a key-acquisition URL."""
+        assert PROVIDER_DISPLAY_NAMES[model_config.LANGSMITH_SERVICE] == (
+            "LangSmith (tracing)"
+        )
+        assert PROVIDER_API_KEY_URLS[model_config.LANGSMITH_SERVICE] == (
+            "https://smith.langchain.com/settings"
         )
 
     def test_every_known_provider_has_a_display_name(self) -> None:
@@ -509,6 +530,19 @@ api_key_env = "MY_GATEWAY_API_KEY"
             assert base_url.display is True
             assert base_url.value == "https://proxy.example/v1"
 
+    async def test_existing_project_expands_advanced_by_default(self) -> None:
+        """A stored LangSmith project keeps the advanced section visible."""
+        auth_store.set_stored_key("langsmith", "lsv2_existing", project="my-app")
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            project_label = app.screen.query_one("#auth-prompt-project-label", Static)
+            project_input = app.screen.query_one("#auth-prompt-project", Input)
+            assert project_label.display is True
+            assert project_input.display is True
+            assert project_input.value == "my-app"
+
     async def test_paste_and_submit_persists(self) -> None:
         """Submitting a non-empty value writes to the store and dismisses True."""
         app = _AuthHostApp()
@@ -522,6 +556,35 @@ api_key_env = "MY_GATEWAY_API_KEY"
         assert app.prompt_dismissed is True
         assert app.prompt_result is AuthResult.SAVED
         assert auth_store.get_stored_key("anthropic") == "sk-ant-test-12345"
+
+    async def test_langsmith_submit_applies_tracing_env_immediately(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Saving LangSmith auth activates tracing in the running process."""
+        import os
+
+        for var in (
+            "LANGSMITH_API_KEY",
+            "LANGSMITH_TRACING",
+            "LANGCHAIN_TRACING_V2",
+            "LANGSMITH_PROJECT",
+            "DEEPAGENTS_CODE_LANGSMITH_API_KEY",
+            "DEEPAGENTS_CODE_LANGSMITH_TRACING",
+            "DEEPAGENTS_CODE_LANGSMITH_PROJECT",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "lsv2_live"
+            await pilot.press("enter")
+            await pilot.pause()
+
+        assert app.prompt_result is AuthResult.SAVED
+        assert os.environ["LANGSMITH_API_KEY"] == "lsv2_live"
+        assert os.environ["LANGSMITH_TRACING"] == "true"
 
     async def test_base_url_round_trips_on_submit(self) -> None:
         """A base URL typed alongside the key is persisted as the pair."""
@@ -585,6 +648,34 @@ api_key_env = "MY_GATEWAY_API_KEY"
             await pilot.pause()
             base_url_field = app.screen.query_one("#auth-prompt-base-url", Input)
             assert base_url_field.value == "https://stored.example/v1"
+
+    async def test_langsmith_prompt_saves_key_and_project(self) -> None:
+        """The LangSmith prompt persists a key plus its custom project name."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            await pilot.press("f2")
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "lsv2_test"
+            project_field = app.screen.query_one("#auth-prompt-project", Input)
+            project_field.value = "my-app"
+            project_field.focus()
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+        assert app.prompt_result is AuthResult.SAVED
+        assert auth_store.get_stored_key("langsmith") == "lsv2_test"
+        assert auth_store.get_stored_project("langsmith") == "my-app"
+
+    async def test_langsmith_prompt_has_no_base_url_field(self) -> None:
+        """The LangSmith prompt swaps the base-URL field for the project field."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            assert not app.screen.query("#auth-prompt-base-url")
+            assert app.screen.query("#auth-prompt-project")
 
     async def test_empty_submit_shows_error_and_does_not_dismiss(self) -> None:
         """Empty input renders an inline error instead of dismissing."""
@@ -815,6 +906,33 @@ api_key_env = "MY_GATEWAY_API_KEY"
 class TestAuthManagerScreen:
     """Behavioral tests for the manager listing."""
 
+    async def test_prompt_save_posts_credential_saved_event(self) -> None:
+        """Saving a key notifies the app before the manager itself closes."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            screen = cast("AuthManagerScreen", app.screen)
+
+            screen._on_prompt_closed(AuthResult.SAVED)
+            await pilot.pause()
+
+        assert app.credential_saved_count == 1
+
+    async def test_prompt_cancel_does_not_post_credential_saved_event(self) -> None:
+        """Cancelling or deleting credentials should not trigger startup recovery."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            screen = cast("AuthManagerScreen", app.screen)
+
+            screen._on_prompt_closed(AuthResult.CANCELLED)
+            screen._on_prompt_closed(AuthResult.DELETED)
+            await pilot.pause()
+
+        assert app.credential_saved_count == 0
+
     async def test_lists_known_providers(self) -> None:
         """Every well-known provider appears in the option list."""
         app = _AuthHostApp()
@@ -877,6 +995,255 @@ api_key_env = "MY_GATEWAY_API_KEY"
                     break
         assert label is not None
         assert "stored" in str(label)
+
+    async def test_configured_providers_sort_to_top(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Providers with a credential float above unconfigured ones.
+
+        `openai` sorts after `anthropic` alphabetically, but storing a key for
+        it should lift it to the top of the installed-provider group while the
+        rest stay in alphabetical order.
+        """
+        for var in (
+            "OPENAI_API_KEY",
+            "DEEPAGENTS_CODE_OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "DEEPAGENTS_CODE_ANTHROPIC_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {"openai": ["gpt-5.4"], "anthropic": ["claude-opus-4-7"]},
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda _provider: True,
+        )
+        auth_store.set_stored_key("openai", "k")
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            ids = [
+                options.get_option_at_index(i).id for i in range(options.option_count)
+            ]
+        assert ids.index("openai") < ids.index("anthropic")
+
+    async def test_configured_services_sort_with_configured_providers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Configured services float above missing provider rows."""
+        for var in (
+            "ANTHROPIC_API_KEY",
+            "DEEPAGENTS_CODE_ANTHROPIC_API_KEY",
+            "TAVILY_API_KEY",
+            "DEEPAGENTS_CODE_TAVILY_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {"anthropic": ["claude-opus-4-7"]},
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda _provider: True,
+        )
+        monkeypatch.setenv("TAVILY_API_KEY", "from-env")
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            ids = [
+                options.get_option_at_index(i).id for i in range(options.option_count)
+            ]
+        assert ids.index("tavily") < ids.index("anthropic")
+
+    async def test_uninstalled_providers_stay_below_configured(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Greyed-out install-on-select entries sort after every installed row.
+
+        An uninstalled provider routes to an install prompt rather than a key
+        entry, so it stays at the bottom even when an installed-but-unconfigured
+        provider (`anthropic`) sorts below a configured one (`openai`). The
+        unconfigured installed row makes the float load-bearing: a list that
+        ignored the credential float would order `anthropic` before `openai`.
+        `groq` stays last because uninstalled extras are appended after the
+        whole manageable block, regardless of the float.
+        """
+        for var in (
+            "OPENAI_API_KEY",
+            "DEEPAGENTS_CODE_OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "DEEPAGENTS_CODE_ANTHROPIC_API_KEY",
+            "GROQ_API_KEY",
+            "DEEPAGENTS_CODE_GROQ_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {"openai": ["gpt-5.4"], "anthropic": ["claude-opus-4-7"]},
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda provider: provider != "groq",
+        )
+        auth_store.set_stored_key("openai", "k")
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            ids = [
+                options.get_option_at_index(i).id for i in range(options.option_count)
+            ]
+        assert "groq" in ids
+        # Configured openai floats above unconfigured anthropic, and the
+        # uninstalled groq extra stays below both.
+        assert ids.index("openai") < ids.index("anthropic") < ids.index("groq")
+
+    async def test_refresh_options_resorts_after_saving_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Saving a key re-floats its provider on the next options refresh.
+
+        The float is only useful if the live save/clear path re-sorts; this
+        exercises `_refresh_options` rather than the initial render. `openai`
+        starts below `anthropic` alphabetically and must overtake it once a key
+        is stored.
+        """
+        for var in (
+            "OPENAI_API_KEY",
+            "DEEPAGENTS_CODE_OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "DEEPAGENTS_CODE_ANTHROPIC_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {"openai": ["gpt-5.4"], "anthropic": ["claude-opus-4-7"]},
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda _provider: True,
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+
+            def current_ids() -> list[str | None]:
+                return [
+                    options.get_option_at_index(i).id
+                    for i in range(options.option_count)
+                ]
+
+            before = current_ids()
+            assert before.index("anthropic") < before.index("openai")
+
+            auth_store.set_stored_key("openai", "k")
+            screen = cast("AuthManagerScreen", app.screen)
+            screen._refresh_options()  # exercise the live re-sort path
+            await pilot.pause()
+            after = current_ids()
+        assert after.index("openai") < after.index("anthropic")
+
+    async def test_configured_group_preserves_alphabetical_order(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Within each group, entries keep alphabetical order.
+
+        The sort key is `(0|1, name)`, so the name tiebreaker must keep both the
+        configured block and the unconfigured block alphabetical. A regression
+        that dropped the name element (e.g. returned a bare flag) would scramble
+        order within a group while still floating configured entries.
+        """
+        for var in (
+            "ANTHROPIC_API_KEY",
+            "DEEPAGENTS_CODE_ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "DEEPAGENTS_CODE_OPENAI_API_KEY",
+            "COHERE_API_KEY",
+            "DEEPAGENTS_CODE_COHERE_API_KEY",
+            "MISTRAL_API_KEY",
+            "DEEPAGENTS_CODE_MISTRAL_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {
+                "openai": ["gpt-5.4"],
+                "anthropic": ["claude-opus-4-7"],
+                "cohere": ["command"],
+                "mistralai": ["mistral-large"],
+            },
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda _provider: True,
+        )
+        auth_store.set_stored_key("anthropic", "k")
+        auth_store.set_stored_key("openai", "k")
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            ids = [
+                options.get_option_at_index(i).id for i in range(options.option_count)
+            ]
+        # Configured group stays alphabetical, unconfigured group stays
+        # alphabetical, and the whole configured block sits above the rest.
+        assert ids.index("anthropic") < ids.index("openai")
+        assert ids.index("openai") < ids.index("cohere")
+        assert ids.index("cohere") < ids.index("mistralai")
+
+    async def test_env_configured_provider_floats(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A provider configured only via an env var floats like a stored key.
+
+        The sort keys off resolved auth status, not the stored-key set, so an
+        env-only credential must float too. `openai` is configured via
+        `OPENAI_API_KEY` alone and overtakes unconfigured `anthropic`.
+        """
+        for var in (
+            "OPENAI_API_KEY",
+            "DEEPAGENTS_CODE_OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "DEEPAGENTS_CODE_ANTHROPIC_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {"openai": ["gpt-5.4"], "anthropic": ["claude-opus-4-7"]},
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda _provider: True,
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "from-env")
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            ids = [
+                options.get_option_at_index(i).id for i in range(options.option_count)
+            ]
+            openai_label = next(
+                str(options.get_option_at_index(i).prompt)
+                for i in range(options.option_count)
+                if options.get_option_at_index(i).id == "openai"
+            )
+        assert ids.index("openai") < ids.index("anthropic")
+        # The env-resolved status object must be threaded through to the badge,
+        # not just the sort key: an env-only credential renders `[env set: …]`.
+        assert "env set" in openai_label
 
     async def test_stored_service_is_not_duplicated(self) -> None:
         """Stored non-model services appear once in the manager list."""
@@ -975,8 +1342,15 @@ api_key_env = "MY_GATEWAY_API_KEY"
             ids = {
                 options.get_option_at_index(i).id for i in range(options.option_count)
             }
-        # Non-model services (e.g. Tavily) are always listed for key entry.
-        assert ids == {"openai", "openai_codex", "anthropic", "tavily"}
+        # Non-model services (Tavily search, LangSmith tracing) are always
+        # listed for key entry.
+        assert ids == {
+            "openai",
+            "openai_codex",
+            "anthropic",
+            "tavily",
+            "langsmith",
+        }
 
     async def test_selecting_service_opens_prompt_for_its_env_var(
         self, monkeypatch: pytest.MonkeyPatch

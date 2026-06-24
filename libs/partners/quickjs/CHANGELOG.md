@@ -2,6 +2,13 @@
 
 # Changelog
 
+## [0.3.1](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.3.0...langchain-quickjs==0.3.1) (2026-06-22)
+
+### Bug Fixes
+
+* Persist top-level JS declarations across evals ([#4147](https://github.com/langchain-ai/deepagents/issues/4147)) ([7574fea](https://github.com/langchain-ai/deepagents/commit/7574fea88b51c77f7afa8279c4f561d6ecb47e3f))
+* PTC tools in tools namespace are rendered without prepended `tools.` in system prompt and task as ptc duplicated task global ([#4075](https://github.com/langchain-ai/deepagents/issues/4075)) ([014a903](https://github.com/langchain-ai/deepagents/commit/014a9033af70b5b8b08ad2eb36f98590f5f1cca8))
+
 ## [0.3.0](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.2.0...langchain-quickjs==0.3.0) (2026-06-18)
 
 ### ⚠ BREAKING CHANGES

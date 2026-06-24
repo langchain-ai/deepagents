@@ -21,7 +21,7 @@ AGENT_ASSISTANT_ID=local AGENT_MODEL=openai:gpt-5.2 uv run deepagents-talon --on
 
 If `AGENT_MODEL` is unset, Talon starts with the echo runtime. This is useful for checking host lifecycle and channel wiring without provider credentials.
 
-Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host creates restrictive state directories for the materialized agent manifest, channel sessions, and cron jobs. The default local execution workspace is `/workspace`; set `DEEPAGENTS_TALON_WORKSPACE` to use a different directory.
+Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host creates restrictive state directories for the materialized agent manifest, channel sessions, and cron jobs. The default local execution workspace is the current working directory; set `DEEPAGENTS_TALON_WORKSPACE` to use a different directory.
 
 ## Fleet Exports
 

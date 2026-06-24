@@ -157,6 +157,16 @@ on:
         required: true
         default: "1"
         type: string
+      snapshot_timing:
+        description: "Diagnostic only: build the deep-swe verifier snapshot and time it (vcpus vs default), skipping the eval. Leave false for normal runs."
+        required: false
+        default: false
+        type: boolean
+      snapshot_timing_vcpus:
+        description: "Builder vCPUs to compare against the default in the snapshot_timing diagnostic"
+        required: false
+        default: "4"
+        type: string
 permissions:
   contents: read
 
@@ -174,6 +184,7 @@ env:
 jobs:
   prep:
     name: "🔧 Prepare matrix"
+    if: ${{ !inputs.snapshot_timing }}
     runs-on: ubuntu-latest
     environment: evals
     outputs:
@@ -228,6 +239,46 @@ jobs:
         run: python .github/scripts/models.py harbor
         env:
           HARBOR_MODELS: ${{ inputs.models_override || inputs.models || 'all' }}
+
+  snapshot-timing:
+    name: "🔬 Snapshot build timing"
+    if: ${{ inputs.snapshot_timing }}
+    runs-on: ubuntu-latest
+    environment: evals
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: libs/evals
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.12"
+          cache-suffix: harbor
+          working-directory: libs/evals
+
+      - name: "📦 Install Dependencies"
+        run: uv sync --group test --locked
+
+      - name: "📂 Clone deep-swe"
+        run: git clone --depth 1 https://github.com/datacurve-ai/deep-swe.git "$DEEPSWE_DIR"
+
+      - name: "🔬 Time snapshot build (vcpus vs default)"
+        env:
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          LANGSMITH_SANDBOX_API_KEY: ${{ secrets.LANGSMITH_SANDBOX_API_KEY }}
+          # Passed via env (not interpolated into the shell) to avoid injection.
+          VCPUS: ${{ inputs.snapshot_timing_vcpus }}
+        run: |
+          tests_dir="$DEEPSWE_DIR/tasks/dynamodb-toolbox-conditional-attribute-requirements/tests"
+          if [ ! -d "$tests_dir" ]; then
+            echo "::error::tests dir not found: $tests_dir"
+            exit 1
+          fi
+          uv run python ../../.github/scripts/snapshot_build_timing.py "$tests_dir" "$VCPUS"
 
   harbor:
     name: "📊 Evals - Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_impl }})"

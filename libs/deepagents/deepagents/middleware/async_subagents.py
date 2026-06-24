@@ -63,7 +63,7 @@ class AsyncSubAgent(TypedDict):
     """URL of the [Agent Protocol](https://github.com/langchain-ai/agent-protocol) server.
 
     Defaults to the LangGraph SDK's default endpoint. Omit to use ASGI
-    transport for local servers.
+    transport for local servers (requires async invocation via `ainvoke`).
     """
 
     headers: NotRequired[dict[str, str]]
@@ -884,7 +884,8 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         async_subagents: List of async subagent specifications.
 
             Each must include `name`, `description`, and `graph_id`. `url` is
-            optional — omit it to use ASGI transport for local servers.
+            optional — omit it to use ASGI transport for local servers
+            (requires async invocation via `ainvoke`).
         system_prompt: Instructions appended to the main agent's system prompt
             about how to use the async subagent tools.
 

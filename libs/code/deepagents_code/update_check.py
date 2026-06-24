@@ -2065,6 +2065,13 @@ def install_package_command(
     reinstall would replace the tool with a plain `deepagents-code`, silently
     dropping any extras the user added through `/install <extra>`.
 
+    Already-requested `--with` packages and the uv-managed Python interpreter
+    are preserved from the uv tool receipt. Without this, reinstalling to add a
+    second package would rebuild the tool environment with only the newest
+    `--with` package and drop previously configured custom providers.
+    Propagates `ToolRequirementIntrospectionError` if the uv tool receipt's
+    interpreter or `--with` packages cannot be determined safely.
+
     Uses `--reinstall` (like the extras path, `_install_extra_uv_tool_command`)
     so the upgrade rebuilds the tool environment cleanly instead of updating it
     in place, which can leave stale files behind and break the next server
@@ -2102,7 +2109,19 @@ def install_package_command(
         msg = str(exc)
         raise ExtrasIntrospectionError(msg) from exc
     requirement = _dcode_extras_requirement(extras)
-    return f"uv tool install --reinstall -U {requirement} --with {shlex.quote(package)}"
+    cmd = "uv tool install --reinstall -U"
+    python = _uv_tool_python()
+    if python is not None:
+        cmd += f" --python {shlex.quote(python)}"
+    cmd += f" {requirement}"
+
+    with_packages = list(_uv_tool_with_packages(distribution_name=distribution_name))
+    known = {canonicalize_name(with_package) for with_package in with_packages}
+    if canonicalize_name(package) not in known:
+        with_packages.append(package)
+    for with_package in with_packages:
+        cmd += f" --with {shlex.quote(with_package)}"
+    return cmd
 
 
 def install_extras_command(extras: Iterable[str]) -> str:

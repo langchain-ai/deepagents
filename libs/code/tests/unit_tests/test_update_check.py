@@ -2729,11 +2729,13 @@ class TestInstallPackageCommand:
 
     def test_basic_no_extras(self, tmp_path, monkeypatch) -> None:
         """Clean metadata with no installed extras yields a plain requirement."""
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
         _write_dist_info(
             tmp_path,
             "deepagents-code",
             requires=('definitely-absent-dcode-test-quickjs-xyz; extra == "quickjs"',),
         )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
         monkeypatch.syspath_prepend(str(tmp_path))
 
         assert (
@@ -2744,11 +2746,13 @@ class TestInstallPackageCommand:
         )
 
     def test_allows_pep508_name_separators(self, tmp_path, monkeypatch) -> None:
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
         _write_dist_info(
             tmp_path,
             "deepagents-code",
             requires=('definitely-absent-dcode-test-quickjs-xyz; extra == "quickjs"',),
         )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
         monkeypatch.syspath_prepend(str(tmp_path))
 
         assert (
@@ -2761,6 +2765,7 @@ class TestInstallPackageCommand:
 
     def test_preserves_installed_extras(self, tmp_path, monkeypatch) -> None:
         """Adding a package keeps already-installed extras selected."""
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
         _write_dist_info(tmp_path, "definitely-present-dcode-test-nvidia")
         _write_dist_info(
             tmp_path,
@@ -2770,6 +2775,7 @@ class TestInstallPackageCommand:
                 'definitely-absent-dcode-test-baseten-xyz; extra == "baseten"',
             ),
         )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
         monkeypatch.syspath_prepend(str(tmp_path))
 
         assert installed_extra_names("deepagents-code") == {"nvidia"}
@@ -2779,6 +2785,55 @@ class TestInstallPackageCommand:
             )
             == "uv tool install --reinstall -U 'deepagents-code[nvidia]' "
             "--with langchain-custom"
+        )
+
+    def test_preserves_receipt_python_and_with_packages(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Adding a package keeps uv receipt interpreter and `--with` packages."""
+        _write_uv_receipt(
+            tmp_path,
+            '{ name = "deepagents-code" }, { name = "langchain-first" }',
+            python="/opt/Python 3.13/bin/python",
+        )
+        _write_dist_info(tmp_path, "definitely-present-dcode-test-nvidia")
+        _write_dist_info(
+            tmp_path,
+            "deepagents-code",
+            requires=('definitely-present-dcode-test-nvidia; extra == "nvidia"',),
+        )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        command = install_package_command(
+            "langchain-second", distribution_name="deepagents-code"
+        )
+
+        assert command == (
+            "uv tool install --reinstall -U --python '/opt/Python 3.13/bin/python' "
+            "'deepagents-code[nvidia]' --with langchain-first "
+            "--with langchain-second"
+        )
+
+    def test_does_not_duplicate_existing_receipt_package(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Reinstalling an existing package does not emit duplicate `--with` args."""
+        _write_uv_receipt(
+            tmp_path,
+            '{ name = "deepagents-code" }, { name = "langchain-custom" }',
+        )
+        _write_dist_info(tmp_path, "deepagents-code")
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        command = install_package_command(
+            "LangChain_Custom", distribution_name="deepagents-code"
+        )
+
+        assert (
+            command
+            == "uv tool install --reinstall -U deepagents-code --with langchain-custom"
         )
 
     def test_refuses_missing_distribution(self) -> None:

@@ -1,0 +1,37 @@
+libs/evals/tests/unit_tests/test_harbor_langsmith_integration.py
+  s_ac1c4229778f75::t_e4cb507eb8e4a6 80-81,86
+  s_ac1c4229778f75::t_a2c14b14c70145 82
+libs/evals/deepagents_clbench/README.md
+  s_ac1c4229778f75::t_e4cb507eb8e4a6 1-86
+libs/evals/deepagents_clbench/system/system.py
+  s_ac1c4229778f75::t_e4cb507eb8e4a6 1-248
+libs/code/deepagents_code/update_check.py
+  s_ac1c4229778f75::t_e4cb507eb8e4a6 2586-2611,2632-2636
+libs/evals/deepagents_clbench/system/__init__.py
+  s_ac1c4229778f75::t_e4cb507eb8e4a6 1-5
+.github/workflows/harbor.yml
+  s_ac1c4229778f75::t_e4cb507eb8e4a6 29-36,38,45,128,133,141,150,155,160,165,170,174-181,250,553-808
+  s_ac1c4229778f75::t_bd14d700c00f93 37,39-43
+libs/code/tests/unit_tests/test_update_check.py
+  s_ac1c4229778f75::t_e4cb507eb8e4a6 30,3691-3739,3968-3977,4014-4064
+libs/evals/deepagents_clbench/sync_to_clbench.sh
+  s_ac1c4229778f75::t_e4cb507eb8e4a6 1-35
+libs/evals/pyproject.toml
+  s_ac1c4229778f75::t_e4cb507eb8e4a6 123-127,131-132
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "8f2cb57fab8106bb7c1e184d19c1116bd5d38285",
+  "prompts": {},
+  "sessions": {
+    "s_ac1c4229778f75": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d92a23bd-a9bf-483d-aa07-cf0f1aa28da5",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

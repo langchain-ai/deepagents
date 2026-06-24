@@ -334,6 +334,21 @@ class TestAuthPromptScreen:
             assert "For older models" in text
             assert "Request access to Chat completions (/v1/chat/completions)" in text
 
+    async def test_anthropic_instructions_warn_against_subscription_plans(
+        self,
+    ) -> None:
+        """Anthropic keys note subscription plans don't work for API calls."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            instructions = app.screen.query_one("#auth-prompt-key-instructions", Static)
+            text = str(instructions.content)
+            assert "Sign in to Anthropic" in text
+            assert "create or copy an API key" in text
+            assert "Subscription plans (Claude Pro/Max, Claude Code) cannot be" in text
+            assert "pay-as-you-go billing" in text
+
     async def test_provider_instructions_use_config_metadata(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -427,6 +442,26 @@ api_key_env = "MY_GATEWAY_API_KEY"
             text = str(instructions.content)
             assert "configured api_key_url was ignored" in text
             assert "unsupported URL scheme" in text
+
+    async def test_anthropic_notice_and_rejected_url_notice_coexist(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Provider-specific and rejected-URL notices both render when both fire."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+api_key_url = "javascript:alert(1)"
+""")
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        model_config.clear_caches()
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            instructions = app.screen.query_one("#auth-prompt-key-instructions", Static)
+            text = str(instructions.content)
+            assert "Subscription plans (Claude Pro/Max, Claude Code) cannot be" in text
+            assert "configured api_key_url was ignored" in text
 
     async def test_f2_toggles_advanced_details(self) -> None:
         """Advanced endpoint and env-var details are hidden behind F2."""

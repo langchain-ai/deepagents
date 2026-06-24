@@ -68,6 +68,11 @@
 
 set -euo pipefail
 
+# Keep the shell PATH the user started with. The installer may source
+# ~/.local/bin/env later so it can find a freshly installed uv, but that does
+# not update the parent shell that will receive the final "Run: dcode" advice.
+ORIGINAL_PATH="${PATH:-}"
+
 # ---------------------------------------------------------------------------
 # Colors & logging
 # ---------------------------------------------------------------------------
@@ -725,17 +730,19 @@ fix_install_log_owner
 # ---------------------------------------------------------------------------
 DCODE_BIN=""
 DCODE_NAME=""
-# Tracks whether the binary resolved via PATH (`command -v`) or only via the
-# ~/.local/bin fallback. A fresh `uv tool install` drops the binary in
-# ~/.local/bin, but the current shell won't have it on PATH until it's
-# restarted or the env file is sourced — so we can verify it directly yet still
-# need to tell the user it isn't callable as `dcode` yet.
+# Tracks whether the binary would have resolved via the user's original PATH,
+# not the installer-mutated PATH. A fresh `uv tool install` drops the binary in
+# ~/.local/bin, and this script may have sourced ~/.local/bin/env earlier to
+# find uv; the parent shell still won't have dcode on PATH until it is
+# restarted or the env file is sourced.
 DCODE_ON_PATH=false
 for candidate in dcode deepagents-code; do
   if resolved=$(command -v "$candidate" 2>/dev/null) && [ -n "$resolved" ]; then
     DCODE_BIN="$resolved"
     DCODE_NAME="$candidate"
-    DCODE_ON_PATH=true
+    if PATH="$ORIGINAL_PATH" command -v "$candidate" >/dev/null 2>&1; then
+      DCODE_ON_PATH=true
+    fi
     break
   elif [ -x "${HOME}/.local/bin/${candidate}" ]; then
     DCODE_BIN="${HOME}/.local/bin/${candidate}"

@@ -659,8 +659,51 @@ class TestBuildStreamConfig:
     """Tests for `build_stream_config` metadata construction."""
 
     def setup_method(self) -> None:
-        """Clear the git-branch cache between tests."""
+        """Clear the git lookup caches between tests."""
         config_module._git_branch_cache.clear()
+        config_module._git_commit_cache.clear()
+        config_module._repo_metadata_cache.clear()
+
+    def test_coding_agent_identity_block_present(self) -> None:
+        """The coding-agent-v1 identity block is stamped on every config."""
+        from deepagents_code._version import __version__
+
+        metadata = build_stream_config("t-id", assistant_id=None)["metadata"]
+        assert metadata["ls_agent_kind"] == "coding_agent"
+        assert metadata["ls_integration"] == "deepagents-code"
+        assert metadata["ls_agent_runtime"] == "Deep Agents Code"
+        assert metadata["ls_trace_schema_version"] == "coding-agent-v1"
+        assert metadata["ls_integration_version"] == __version__
+        assert metadata["ls_agent_runtime_version"] == __version__
+
+    def test_thread_id_set_as_top_level_metadata(self) -> None:
+        """thread_id is mirrored to top-level metadata for contract grouping."""
+        config = build_stream_config("t-group", assistant_id=None)
+        assert config["metadata"]["thread_id"] == "t-group"
+        assert config["configurable"]["thread_id"] == "t-group"
+
+    def test_turn_markers_passed_through(self) -> None:
+        """turn_id / turn_number reach metadata when provided."""
+        metadata = build_stream_config(
+            "t-turn", assistant_id=None, turn_id="turn-9", turn_number=4
+        )["metadata"]
+        assert metadata["turn_id"] == "turn-9"
+        assert metadata["turn_number"] == 4
+
+    def test_turn_markers_absent_when_unset(self) -> None:
+        """turn_id / turn_number are omitted when not provided."""
+        metadata = build_stream_config("t-noturn", assistant_id=None)["metadata"]
+        assert "turn_id" not in metadata
+        assert "turn_number" not in metadata
+
+    def test_scope_restricted_keys_not_emitted(self) -> None:
+        """approval_policy / ls_subagent_* are never stamped trace-wide."""
+        metadata = build_stream_config(
+            "t-scope", assistant_id="agent", turn_id="t", turn_number=1
+        )["metadata"]
+        assert "approval_policy" not in metadata
+        assert "ls_subagent_id" not in metadata
+        assert "ls_subagent_type" not in metadata
 
     def test_dcode_agent_fields_present(self) -> None:
         """Selected dcode agent metadata should be present."""
@@ -844,8 +887,10 @@ class TestBuildStreamConfigOSError:
     """Tests for build_stream_config when Path.cwd() raises OSError."""
 
     def setup_method(self) -> None:
-        """Clear the git-branch cache between tests."""
+        """Clear the git lookup caches between tests."""
         config_module._git_branch_cache.clear()
+        config_module._git_commit_cache.clear()
+        config_module._repo_metadata_cache.clear()
 
     def test_cwd_absent_on_oserror(self) -> None:
         """Cwd should be absent from metadata when Path.cwd() raises."""

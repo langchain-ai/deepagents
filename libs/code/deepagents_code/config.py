@@ -1238,33 +1238,203 @@ def _get_git_branch() -> str | None:
     return branch
 
 
+_git_commit_cache: dict[str, str | None] = {}
+"""Per-cwd cache of resolved git commit SHAs (mirrors `_git_branch_cache`)."""
+
+_repo_metadata_cache: dict[str, tuple[str, str, str] | None] = {}
+"""Per-cwd cache of resolved `(repository_url, provider, name)` tuples."""
+
+
+def _get_git_commit_sha() -> str | None:
+    """Return the current `HEAD` commit SHA, or `None` if unavailable."""
+    from deepagents_code._git import resolve_git_commit_sha
+
+    try:
+        cwd = str(Path.cwd())
+    except OSError:
+        logger.debug("Could not determine cwd for git commit lookup", exc_info=True)
+        return None
+    if cwd in _git_commit_cache:
+        return _git_commit_cache[cwd]
+
+    try:
+        sha = resolve_git_commit_sha(cwd) or None
+    except OSError:
+        logger.debug("Could not determine git commit", exc_info=True)
+        sha = None
+
+    _git_commit_cache[cwd] = sha
+    return sha
+
+
+def _get_repository_metadata() -> tuple[str, str, str] | None:
+    """Return `(repository_url, provider, name)` for `origin`, or `None`."""
+    from deepagents_code._git import parse_repository_metadata, resolve_git_remote_url
+
+    try:
+        cwd = str(Path.cwd())
+    except OSError:
+        logger.debug("Could not determine cwd for git remote lookup", exc_info=True)
+        return None
+    if cwd in _repo_metadata_cache:
+        return _repo_metadata_cache[cwd]
+
+    repo: tuple[str, str, str] | None = None
+    try:
+        remote_url = resolve_git_remote_url(cwd)
+        if remote_url:
+            repo = parse_repository_metadata(remote_url)
+    except OSError:
+        logger.debug("Could not determine git remote", exc_info=True)
+
+    _repo_metadata_cache[cwd] = repo
+    return repo
+
+
+# coding-agent-v1 contract literals (LSEN-277). See `build_coding_agent_metadata`.
+CODING_AGENT_KIND = "coding_agent"
+"""Fixed `ls_agent_kind` literal identifying the coding-agent trace class."""
+
+CODING_AGENT_INTEGRATION = "deepagents-code"
+"""Stable `ls_integration` id for this plugin (unchanged for backward-compat)."""
+
+CODING_AGENT_RUNTIME = "Deep Agents Code"
+"""User-facing `ls_agent_runtime` name."""
+
+CODING_AGENT_TRACE_SCHEMA_VERSION = "coding-agent-v1"
+"""Version of the coding-agent trace-metadata contract this build emits."""
+
+
+def build_coding_agent_metadata(
+    *,
+    thread_id: str,
+    turn_id: str | None,
+    turn_number: int | None,
+    cwd: str,
+    git_branch: str | None,
+    sandbox_type: str | None,
+    user_id: str | None,
+) -> dict[str, Any]:
+    """Build the shared coding-agent-v1 trace-metadata block.
+
+    Implements the `coding-agent-v1` contract (LSEN-277) for Deep Agents Code:
+    one helper that stamps the identity block, plugin/runtime versions, turn
+    markers, and repo/git/cwd attribution. Keys whose value is unknown are
+    omitted (per the contract), so callers can pass `None` freely.
+
+    Because Deep Agents Code is itself the runtime — there is no separate CLI
+    package — `ls_integration_version` and `ls_agent_runtime_version` both come
+    from the `deepagents-code` package version (`__version__`). The underlying
+    `deepagents` SDK version is surfaced separately as
+    `dcode_client_deepagents_version` by `build_stream_config`.
+
+    Scope-restricted contract keys are intentionally NOT produced here:
+    `approval_policy` (root/interrupted only) and `ls_subagent_id` /
+    `ls_subagent_type` (subagent only). This metadata propagates trace-wide
+    through the LangGraph stream config (and, for subagents, the per-key config
+    merge of langgraph#7926 / deepagents#3634), so any key placed here lands on
+    every descendant run. Emitting a run-type-scoped key would therefore leak it
+    onto run types outside its contract `appliesTo` set — a hard validator
+    failure — and the LangGraph runtime exposes no clean per-run-type metadata
+    seam to scope them. See `build_stream_config` for the full rationale.
+
+    Args:
+        thread_id: Stable conversation id; also set as top-level `thread_id`.
+        turn_id: Per-turn id (uuid4 / message id), or `None`.
+        turn_number: 1-based per-thread turn index, or `None`.
+        cwd: Current working directory, or empty string when unavailable.
+        git_branch: Current branch name, or `None`.
+        sandbox_type: Sandbox provider name, or `None`/`"none"` when inactive.
+        user_id: Stable pseudonymous user id, or `None`.
+
+    Returns:
+        The contract metadata dict with unknown keys omitted.
+    """
+    metadata: dict[str, Any] = {
+        "ls_agent_kind": CODING_AGENT_KIND,
+        "ls_integration": CODING_AGENT_INTEGRATION,
+        "ls_agent_runtime": CODING_AGENT_RUNTIME,
+        "thread_id": thread_id,
+        "ls_trace_schema_version": CODING_AGENT_TRACE_SCHEMA_VERSION,
+        "ls_integration_version": __version__,
+        "ls_agent_runtime_version": __version__,
+    }
+
+    if turn_id:
+        metadata["turn_id"] = turn_id
+    if turn_number is not None:
+        metadata["turn_number"] = turn_number
+
+    repo = _get_repository_metadata()
+    if repo is not None:
+        repository_url, repository_provider, repository_name = repo
+        metadata["repository_url"] = repository_url
+        metadata["repository_provider"] = repository_provider
+        metadata["repository_name"] = repository_name
+
+    if git_branch:
+        metadata["git_branch"] = git_branch
+    commit_sha = _get_git_commit_sha()
+    if commit_sha:
+        metadata["git_commit_sha"] = commit_sha
+    if cwd:
+        metadata["cwd"] = cwd
+
+    if user_id:
+        metadata["user_id"] = user_id
+    if sandbox_type and sandbox_type != "none":
+        metadata["sandbox_type"] = sandbox_type
+
+    return metadata
+
+
 def build_stream_config(
     thread_id: str,
     assistant_id: str | None,
     *,
     sandbox_type: str | None = None,
+    turn_id: str | None = None,
+    turn_number: int | None = None,
 ) -> RunnableConfig:
     """Build the LangGraph stream config dict.
 
-    Injects the dcode version into `metadata["lc_versions"]` so LangSmith traces
-    can be correlated with specific releases. `create_deep_agent` supplies the
-    SDK version through the compiled graph config, and LangChain merges nested
-    metadata dictionaries so both versions survive at stream time.
+    Stamps the shared `coding-agent-v1` trace-metadata contract (LSEN-277) via
+    `build_coding_agent_metadata` — identity block, plugin/runtime versions,
+    turn markers, and repo/git/cwd attribution — onto `metadata`. Metadata set
+    here propagates trace-wide to every run in the graph (root, llm, tool, and
+    subagent subgraphs), which is exactly what the contract's "always" and
+    "where-known" keys require, so the helper output is stamped once here.
+
+    Scope-restricted contract keys are deliberately not emitted. `approval_policy`
+    (root/interrupted only) and `ls_subagent_id` / `ls_subagent_type` (subagent
+    only) cannot live in this trace-wide metadata: LangGraph propagates each key
+    to all descendant runs (per-key config merge, langgraph#7926 /
+    deepagents#3634), so they would leak onto run types outside their contract
+    `appliesTo` set and fail validation. This runtime exposes no clean
+    per-run-type metadata seam to scope them, so they are omitted by design
+    rather than leaked. (Subagent runs still inherit the parent/root `thread_id`
+    and all required keys, satisfying the contract's grouping rule.)
+
+    Also injects the dcode version into `metadata["lc_versions"]` so LangSmith
+    traces can be correlated with specific releases. `create_deep_agent` supplies
+    the SDK version through the compiled graph config, and LangChain merges
+    nested metadata dictionaries so both versions survive at stream time.
 
     Also records `dcode_client_deepagents_version` as a dcode-client diagnostic.
     This describes the Deep Agents package installed alongside the TUI, which
     can differ from a remote graph's Deep Agents runtime version.
 
-    Includes `ls_integration` metadata so LangSmith traces originating from
-    the app are distinguishable from bare SDK usage.
-
     Args:
-        thread_id: The app session thread identifier.
+        thread_id: The app session thread identifier. Set both on
+            `configurable.thread_id` and as the top-level `metadata.thread_id`
+            used by the contract for grouping turns.
         assistant_id: The dcode agent identifier, if any. When set, it is
             surfaced in trace metadata under `dcode_agent_name` and
             `agent_name`.
         sandbox_type: Sandbox provider name for trace metadata, or `None` if no
             sandbox is active.
+        turn_id: Stable per-turn id for the current user prompt, or `None`.
+        turn_number: 1-based per-thread turn index, or `None`.
 
     Returns:
         Config dict with `configurable` and `metadata` keys.
@@ -1277,21 +1447,24 @@ def build_stream_config(
         logger.warning("Could not determine working directory", exc_info=True)
         cwd = ""
 
-    metadata: dict[str, Any] = {
-        "lc_versions": {"deepagents-code": __version__},
-        "ls_integration": "deepagents-code",
-    }
+    from deepagents_code._env_vars import USER_ID
+
+    metadata: dict[str, Any] = build_coding_agent_metadata(
+        thread_id=thread_id,
+        turn_id=turn_id,
+        turn_number=turn_number,
+        cwd=cwd,
+        git_branch=_get_git_branch(),
+        sandbox_type=sandbox_type,
+        user_id=os.environ.get(USER_ID) or None,
+    )
+
+    # Legacy / diagnostic keys preserved for backward-compatibility during the
+    # coding-agent-v1 rollout (not part of the contract).
+    metadata["lc_versions"] = {"deepagents-code": __version__}
     deepagents_version = _get_deepagents_version()
     if deepagents_version is not None:
         metadata["dcode_client_deepagents_version"] = deepagents_version
-
-    from deepagents_code._env_vars import USER_ID
-
-    user_id = os.environ.get(USER_ID)
-    if user_id:
-        metadata["user_id"] = user_id
-    if cwd:
-        metadata["cwd"] = cwd
     if assistant_id:
         metadata.update(
             {
@@ -1300,11 +1473,7 @@ def build_stream_config(
                 "updated_at": datetime.now(UTC).isoformat(),
             }
         )
-    branch = _get_git_branch()
-    if branch:
-        metadata["git_branch"] = branch
-    if sandbox_type and sandbox_type != "none":
-        metadata["sandbox_type"] = sandbox_type
+
     return {
         "configurable": {"thread_id": thread_id},
         "metadata": metadata,

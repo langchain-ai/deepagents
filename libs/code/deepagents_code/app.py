@@ -1368,6 +1368,25 @@ class TextualSessionState:
         self.auto_approve = auto_approve
         self.thread_id = thread_id or _new_thread_id()
         self.approval_mode_key: str | None = None
+        self.turn_number = 0
+        """1-based user-turn count for the thread (coding-agent-v1 turn_number)."""
+        self.turn_id: str | None = None
+        """Stable id for the current user turn (coding-agent-v1 turn_id)."""
+
+    def advance_turn(self) -> tuple[str, int]:
+        """Begin a new user turn, advancing the per-thread turn markers.
+
+        Generates a fresh `turn_id` and increments `turn_number`. Call once per
+        user prompt, before building the stream config.
+
+        Returns:
+            The `(turn_id, turn_number)` for the new turn.
+        """
+        from uuid import uuid4
+
+        self.turn_number += 1
+        self.turn_id = str(uuid4())
+        return self.turn_id, self.turn_number
 
     def reset_thread(self) -> str:
         """Reset to a new thread.
@@ -1377,6 +1396,8 @@ class TextualSessionState:
         """
         self.thread_id = _new_thread_id()
         self.approval_mode_key = None
+        self.turn_number = 0
+        self.turn_id = None
         return self.thread_id
 
 

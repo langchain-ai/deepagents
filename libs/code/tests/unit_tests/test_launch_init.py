@@ -83,8 +83,8 @@ class TestLaunchNameScreen:
 
         assert name_input.placeholder == "Your name (optional)"
 
-    async def test_copy_prompts_for_name_and_explains_skip(self) -> None:
-        """The name screen should prompt for a name and describe skip semantics."""
+    async def test_copy_prompts_for_name_and_hides_skip_hint(self) -> None:
+        """The name screen prompts for a name without advertising the skip hint."""
         app = LaunchNameTestApp()
         async with app.run_test() as pilot:
             app.show_name_screen()
@@ -94,7 +94,8 @@ class TestLaunchNameScreen:
             help_text = app.screen.query_one(".launch-init-help", Static)
 
         assert "What should Deep Agents call you?" in str(copy.content)
-        assert "Esc skip setup" in str(help_text.content)
+        assert "Enter to continue" in str(help_text.content)
+        assert "Esc skip setup" not in str(help_text.content)
 
     async def test_submit_returns_normalized_name(self) -> None:
         """Submitting a name should dismiss with the trimmed, title-cased value."""
@@ -195,7 +196,8 @@ class TestLaunchDependenciesScreen:
         assert "Available to add" in content
         assert "Model providers: bedrock" in content
         assert "Sandboxes: runloop" in content
-        assert "Esc skip setup" in content
+        assert "Enter to continue" in content
+        assert "Esc skip setup" not in content
 
     async def test_enter_continues(self) -> None:
         """Enter should continue to the next onboarding step."""

@@ -27,6 +27,7 @@ from textual.binding import Binding, BindingType
 from textual.color import Color as TColor
 from textual.containers import Vertical
 from textual.content import Content
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.style import Style as TStyle
 from textual.widgets import Input, OptionList, Static
@@ -1016,6 +1017,9 @@ class AuthManagerScreen(ModalScreen[None]):
     the model selector's install-on-select flow) and reopen the manager.
     """
 
+    class CredentialSaved(Message):
+        """Posted when a key prompt successfully persists credentials."""
+
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Close", show=False, priority=True),
         Binding("tab", "cursor_down", "Next", show=False, priority=True),
@@ -1284,9 +1288,11 @@ class AuthManagerScreen(ModalScreen[None]):
         """Move the option-list cursor up."""
         self.query_one("#auth-manager-options", OptionList).action_cursor_up()
 
-    def _on_prompt_closed(self, _result: AuthResult | None) -> None:
+    def _on_prompt_closed(self, result: AuthResult | None) -> None:
         """Refresh the option list once the prompt dismisses."""
         self._refresh_options()
+        if result is AuthResult.SAVED:
+            self.post_message(self.CredentialSaved())
 
     def _refresh_options(self) -> None:
         """Rebuild option labels from current store state."""

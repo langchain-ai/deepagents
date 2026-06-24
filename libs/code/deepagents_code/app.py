@@ -6777,7 +6777,8 @@ class DeepAgentsApp(App):
         state. When the app is busy, chat output (user echo + clickable link)
         is deferred until the current task finishes. Error conditions (no
         session, URL failure, tracing not configured) render immediately
-        regardless of busy state.
+        regardless of busy state. When the thread has no messages yet, a note
+        is appended warning that the trace stays empty until the first message.
 
         Args:
             command: The raw command text (displayed as user message).
@@ -6900,6 +6901,21 @@ class DeepAgentsApp(App):
 
         asyncio.get_running_loop().run_in_executor(None, _open_browser)
 
+        # Warn when the thread has no human turn yet — the LangSmith view stays
+        # empty until the first message is sent. `_has_conversation_messages`
+        # returns True on errors so transient state failures suppress this warning
+        # rather than showing a false empty-thread note.
+        parts: list[str | Content | tuple[str, str | TStyle]] = [
+            f"Opening tracing project {project_name!r}:\n",
+            (url, TStyle(dim=True, italic=True, link=url)),
+        ]
+        if not await self._has_conversation_messages():
+            parts.append(
+                "\n\nYou haven't sent a message in this thread yet, so the "
+                "trace will be empty until you send your first message.",
+            )
+        msg = Content.assemble(*parts)
+
         # Defer chat output while a turn is in progress — rendering the user
         # echo + link immediately would splice it into the middle of the
         # streaming assistant response
@@ -6914,10 +6930,6 @@ class DeepAgentsApp(App):
                 with suppress(Exception):
                     await queued_widget.remove()
                 await self._mount_message(UserMessage(command))
-                msg = Content.assemble(
-                    f"Opening tracing project {project_name!r}:\n",
-                    (url, TStyle(dim=True, italic=True, link=url)),
-                )
                 await self._mount_message(AppMessage(msg))
 
             # Append directly — no dedup; each /trace invocation gets its own output.
@@ -6927,10 +6939,6 @@ class DeepAgentsApp(App):
             return
 
         await self._mount_message(UserMessage(command))
-        msg = Content.assemble(
-            f"Opening tracing project {project_name!r}:\n",
-            (url, TStyle(dim=True, italic=True, link=url)),
-        )
         await self._mount_message(AppMessage(msg))
 
     async def _handle_command(self, command: str) -> None:
@@ -7461,9 +7469,9 @@ class DeepAgentsApp(App):
 
         Returns:
             `True` if the conversation contains a `HumanMessage`, `False`
-            otherwise. On transient errors (network, corrupt state) returns
-            `True` so that `/remember` is not blocked with a misleading
-            "nothing to remember" message.
+                otherwise. On transient errors (network, corrupt state) returns
+                `True` so callers do not block or warn based on an unreliable
+                empty-thread check.
         """
         if not self._agent or not self._lc_thread_id:
             return False
@@ -7486,7 +7494,7 @@ class DeepAgentsApp(App):
             )
         except Exception:
             logger.warning(
-                "Failed to check conversation messages; allowing /remember to proceed",
+                "Failed to check conversation messages",
                 exc_info=True,
             )
             return True
@@ -9745,11 +9753,78 @@ class DeepAgentsApp(App):
                     partial(self._install_provider_then_reopen_auth, extra),
                 )
                 return
-            task = asyncio.create_task(self._maybe_start_deferred_server_from_default())
+            task = asyncio.create_task(self._resume_server_after_auth_change())
             task.add_done_callback(_log_task_exception)
 
         screen = AuthManagerScreen()
         self.push_screen(screen, handle_result)
+
+    def on_auth_manager_screen_credential_saved(self, event: Message) -> None:
+        """Retry credentials-blocked startup immediately after `/auth` saves a key."""
+        event.stop()
+        task = asyncio.create_task(self._resume_server_after_auth_change())
+        task.add_done_callback(_log_task_exception)
+
+    async def _resume_server_after_auth_change(self) -> None:
+        """Bring the server up after `/auth` if a credential now unblocks it.
+
+        Two cases close on the same key entry: a deferred first launch (no
+        credentials at startup) and a startup that failed with
+        `MissingCredentialsError`. Try the deferred path first; if it doesn't
+        apply, retry a credentials-blocked startup.
+        """
+        if await self._maybe_start_deferred_server_from_default():
+            return
+        await self._maybe_retry_startup_after_auth_change()
+
+    async def _maybe_retry_startup_after_auth_change(self) -> bool:
+        """Retry a credentials-blocked startup once `/auth` adds the key.
+
+        After the server fails to start with `MissingCredentialsError`, `/auth`
+        is the natural place to supply the missing key. Rather than make the
+        user type `/restart` afterward, retry startup automatically once the
+        blocking provider's credentials resolve.
+
+        Returns:
+            `True` when a startup retry was kicked off, otherwise `False`.
+        """
+        provider = self._server_startup_missing_credentials_provider
+        if (
+            self._server_startup_error is None
+            or provider is None
+            or self._server_kwargs is None
+        ):
+            return False
+
+        from deepagents_code.model_config import get_provider_auth_status
+
+        auth_status = get_provider_auth_status(provider)
+        if auth_status.blocks_start:
+            # Key still missing — don't loop back into the same failure.
+            return False
+
+        model_spec = self._server_kwargs.get("model_name")
+        if not model_spec:
+            from deepagents_code.config import _get_default_model_spec
+            from deepagents_code.model_config import (
+                ModelConfigError,
+                NoCredentialsConfiguredError,
+            )
+
+            try:
+                model_spec = _get_default_model_spec()
+            except NoCredentialsConfiguredError:
+                # No usable default to fall back to — nothing to retry.
+                return False
+            except ModelConfigError as exc:
+                # Malformed config is actionable; surface it instead of
+                # silently doing nothing after the user closes `/auth`.
+                await self._mount_message(ErrorMessage(str(exc)))
+                return False
+
+        extra_kwargs = self._server_kwargs.get("model_params")
+        await self._retry_startup_with_model(model_spec, extra_kwargs=extra_kwargs)
+        return True
 
     async def _install_provider_then_reopen_auth(self, extra: str) -> None:
         """Install a provider's extra from `/auth`, then reopen the manager.

@@ -1881,13 +1881,18 @@ def _uv_tool_install_command(
 
     Args:
         version: Optional exact `deepagents-code` version pin.
-        include_prereleases: Whether to include alpha/beta/rc releases.
+        include_prereleases: Whether to include alpha/beta/rc releases. When
+            `None`, follows the installed version's channel.
         distribution_name: Name of the installed distribution to inspect.
         extras_to_add: Extra names to merge with already-installed extras.
 
     Raises:
         ExtrasIntrospectionError: If a metadata-sourced extra name fails PEP 508
             validation.
+
+    Propagates `ToolRequirementIntrospectionError` if the uv tool receipt's
+    interpreter or `--with` packages cannot be determined safely from the tool
+    receipt.
     """
     from deepagents_code.extras_info import (
         ExtrasIntrospectionError,
@@ -2143,8 +2148,19 @@ def _install_extra_uv_tool_command(
 ) -> str:
     """Return the receipt-preserving uv command that installs one dcode extra.
 
+    Args:
+        extra: The extra name to add. Validated against PEP 508 grammar before
+            interpolation into the shell command.
+        distribution_name: Name of the installed distribution to inspect for
+            already-installed extras and uv receipt requirements.
+
     Raises:
         ValueError: If `extra` fails PEP 508 validation.
+
+    Propagates `ExtrasIntrospectionError` if installed extras cannot be
+    determined safely from distribution metadata, and
+    `ToolRequirementIntrospectionError` if the uv tool receipt's interpreter or
+    `--with` packages cannot be preserved safely.
     """
     if not is_valid_extra_name(extra):
         msg = (

@@ -113,7 +113,6 @@ class LaunchNameScreen(ModalScreen[str | None]):
         Yields:
             Widgets for the modal content.
         """
-        glyphs = get_glyphs()
         with Vertical():
             yield Static("Welcome to Deep Agents", classes="launch-init-title")
             yield Static(
@@ -125,7 +124,7 @@ class LaunchNameScreen(ModalScreen[str | None]):
                 id="launch-name-input",
             )
             yield Static(
-                f"Enter to continue {glyphs.bullet} Esc skip setup",
+                "Enter to continue",
                 classes="launch-init-help",
             )
 
@@ -293,7 +292,7 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
                     classes="launch-dependencies-section",
                 )
             yield Static(
-                f"Enter to continue {glyphs.bullet} Esc skip setup",
+                "Enter to continue",
                 classes="launch-init-help",
             )
 

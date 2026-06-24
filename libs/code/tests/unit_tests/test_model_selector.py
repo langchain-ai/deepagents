@@ -239,8 +239,8 @@ class TestModelSelectorChrome:
             assert "Choose a Recommended Model" in str(title.content)
             assert "Curated models backed by evals." in str(description.content)
 
-    async def test_curated_selector_help_uses_skip_setup(self) -> None:
-        """Onboarding model selection should label Escape as setup skip."""
+    async def test_curated_selector_help_hides_esc_hint(self) -> None:
+        """Onboarding model selection keeps Escape bound but hides its hint."""
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
             screen = ModelSelectorScreen(curated=True)
@@ -249,7 +249,7 @@ class TestModelSelectorChrome:
 
             help_text = screen.query_one(".model-selector-help", Static)
 
-            assert "Esc skip setup" in str(help_text.content)
+            assert "Esc skip setup" not in str(help_text.content)
             assert "Esc cancel" not in str(help_text.content)
 
     async def test_standard_selector_help_uses_cancel(self) -> None:

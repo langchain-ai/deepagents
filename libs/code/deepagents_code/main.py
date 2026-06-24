@@ -2727,6 +2727,7 @@ def cli_main() -> None:
                 create_update_log_path,
                 editable_extra_hint,
                 install_extra_command,
+                install_extras_command,
                 is_valid_extra_name,
                 perform_install_extra,
             )
@@ -2813,9 +2814,7 @@ def cli_main() -> None:
             except Exception as exc:
                 logger.warning("--install failed", exc_info=True)
                 log_line = f"\nLog: {log_path}" if log_path else ""
-                fallback_cmd = (
-                    manual_cmd or f"uv tool install -U 'deepagents-code[{extra}]'"
-                )
+                fallback_cmd = manual_cmd or install_extras_command((extra,))
                 console.print(
                     f"[bold red]Error:[/bold red] "
                     f"{type(exc).__name__}: {escape(str(exc))}"

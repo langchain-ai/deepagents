@@ -1715,7 +1715,10 @@ class TestInstallExtraSubcommand:
         # the handler's `isatty()` refusal check.
         mock_stdin.read.return_value = ""
         command_mock = MagicMock(
-            return_value=f"uv tool install -U 'deepagents-code[{extra}]'",
+            return_value=(
+                "curl -LsSf https://langch.in/dcode | "
+                f"DEEPAGENTS_CODE_EXTRAS={extra} bash"
+            ),
         )
         if command_side_effect is not None:
             command_mock.side_effect = command_side_effect
@@ -1827,7 +1830,10 @@ class TestInstallExtraSubcommand:
         else:
             perform_mock.return_value = perform_return
         command_mock = MagicMock(
-            return_value=f"uv tool install -U 'deepagents-code[{extra}]'",
+            return_value=(
+                "curl -LsSf https://langch.in/dcode | "
+                f"DEEPAGENTS_CODE_EXTRAS={extra} bash"
+            ),
         )
         if command_side_effect is not None:
             command_mock.side_effect = command_side_effect
@@ -1874,7 +1880,7 @@ class TestInstallExtraSubcommand:
         assert "Installed extra 'quickjs'" in text
 
     def test_failure_renders_log_path_and_manual_command(self) -> None:
-        """A failed install surfaces both the log path and the manual uv command."""
+        """A failed install surfaces both the log path and manual script command."""
         code, _perform, console_mock = self._run_install_capture(
             "quickjs",
             perform_return=(False, "resolver: conflict"),
@@ -1884,7 +1890,8 @@ class TestInstallExtraSubcommand:
         assert "Install failed" in text
         assert "resolver: conflict" in text
         assert "/tmp/deepagents-install.log" in text
-        assert "uv tool install -U 'deepagents-code" in text
+        assert "curl -LsSf https://langch.in/dcode" in text
+        assert "DEEPAGENTS_CODE_EXTRAS=quickjs bash" in text
         assert "quickjs" in text
 
     def test_keyboard_interrupt_exits_130(self) -> None:
@@ -1907,7 +1914,8 @@ class TestInstallExtraSubcommand:
         assert "RuntimeError" in text
         assert "disk full" in text
         assert "/tmp/deepagents-install.log" in text
-        assert "uv tool install -U 'deepagents-code" in text
+        assert "curl -LsSf https://langch.in/dcode" in text
+        assert "DEEPAGENTS_CODE_EXTRAS=quickjs bash" in text
         assert "quickjs" in text
 
     def test_command_generation_exception_uses_literal_fallback(self) -> None:
@@ -1922,7 +1930,8 @@ class TestInstallExtraSubcommand:
         assert "RuntimeError" in text
         assert "metadata broken" in text
         assert "Run manually: " in text
-        assert "uv tool install -U 'deepagents-code\\[quickjs]'" in text
+        assert "curl -LsSf https://langch.in/dcode" in text
+        assert "DEEPAGENTS_CODE_EXTRAS=quickjs bash" in text
 
     def test_interactive_decline_aborts(self) -> None:
         """Interactive TTY + reply 'n' to unknown extra aborts with exit 1."""

@@ -4388,6 +4388,7 @@ class DeepAgentsApp(App):
                 ExtrasIntrospectionError,
             )
             from deepagents_code.update_check import (
+                ToolRequirementIntrospectionError,
                 create_update_log_path,
                 editable_extra_hint,
                 install_extra_command,
@@ -4425,7 +4426,11 @@ class DeepAgentsApp(App):
         if extra not in KNOWN_EXTRAS and not force:
             try:
                 manual_cmd = await asyncio.to_thread(install_extra_command, extra)
-            except (ExtrasIntrospectionError, ValueError) as exc:
+            except (
+                ExtrasIntrospectionError,
+                ToolRequirementIntrospectionError,
+                ValueError,
+            ) as exc:
                 logger.warning("/install command failed", exc_info=True)
                 await self._mount_message(
                     ErrorMessage(f"Install failed: {type(exc).__name__}: {exc}"),
@@ -4452,7 +4457,11 @@ class DeepAgentsApp(App):
         )
         try:
             manual_cmd = await asyncio.to_thread(install_extra_command, extra)
-        except (ExtrasIntrospectionError, ValueError) as exc:
+        except (
+            ExtrasIntrospectionError,
+            ToolRequirementIntrospectionError,
+            ValueError,
+        ) as exc:
             logger.warning("/install command failed", exc_info=True)
             await self._mount_message(
                 ErrorMessage(

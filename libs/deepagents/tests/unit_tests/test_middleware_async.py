@@ -323,6 +323,47 @@ class TestFilesystemMiddlewareAsync:
 
         assert result.content == "Error: glob timed out after 0.5s. Try a more specific pattern or a narrower path."
 
+    async def test_glob_surfaces_backend_exception_as_error_async(self):
+        """A non-timeout exception from the backend aglob is returned as a tool error, not propagated."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        backend_obj = middleware._get_backend(_runtime())
+
+        async def boom(*_args: object, **_kwargs: object) -> object:
+            msg = "path traversal not allowed"
+            raise ValueError(msg)
+
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "aglob", side_effect=boom),
+        ):
+            result = await glob_search_tool.ainvoke({"pattern": "**/*", "runtime": _runtime()})
+
+        assert result.status == "error"
+        assert result.content == "Error: glob failed: path traversal not allowed"
+
+    async def test_glob_backend_timeouterror_not_misreported_as_glob_timeout_async(self):
+        """A `TimeoutError` raised inside the backend aglob must not be reported as a glob-pattern timeout."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        backend_obj = middleware._get_backend(_runtime())
+
+        async def raise_timeout(*_args: object, **_kwargs: object) -> object:
+            msg = "backend RPC timed out"
+            raise TimeoutError(msg)
+
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "aglob", side_effect=raise_timeout),
+        ):
+            result = await glob_search_tool.ainvoke({"pattern": "**/*", "runtime": _runtime()})
+
+        assert result.status == "error"
+        assert "timed out after" not in result.content
+        assert result.content == "Error: glob failed: backend RPC timed out"
+
     async def test_agrep_search_shortterm_files_with_matches(self):
         """Test async grep with files_with_matches mode."""
         files = {

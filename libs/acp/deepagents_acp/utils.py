@@ -77,7 +77,7 @@ def convert_embedded_resource_block_to_content_blocks(
     """Convert an ACP embedded resource block to LangChain content blocks.
 
     Raises:
-        ValueError: If the block has neither a ``text`` nor ``blob`` property.
+        ValueError: If the block has neither a `text` nor `blob` property.
     """
     resource = block.resource
     if hasattr(resource, "text"):
@@ -117,8 +117,8 @@ DANGEROUS_SHELL_PATTERNS = (
 )
 """Literal substrings that indicate shell injection risk.
 
-Ported from ``deepagents_cli.config.DANGEROUS_SHELL_PATTERNS``.  Used by
-``contains_dangerous_patterns`` to reject commands that embed arbitrary
+Ported from `deepagents_cli.config.DANGEROUS_SHELL_PATTERNS`.  Used by
+`contains_dangerous_patterns` to reject commands that embed arbitrary
 execution via redirects, substitution operators, or control characters —
 even when the base command is on the allow-list.
 """

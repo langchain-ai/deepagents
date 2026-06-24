@@ -1,9 +1,10 @@
-"""ContextHubBackend: Store files in a LangSmith Hub agent repo (persistent)."""
+"""`ContextHubBackend`: Store files in a LangSmith Hub agent repo (persistent)."""
 
 from __future__ import annotations
 
 import fnmatch
 import logging
+import os
 import re
 from typing import TYPE_CHECKING
 
@@ -99,7 +100,7 @@ class ContextHubBackend(BackendProtocol):
         return dict(self._linked_entries)
 
     def has_prior_commits(self) -> bool:
-        """Return True if the hub repo already exists with at least one commit."""
+        """Return `True` if the hub repo already exists with at least one commit."""
         self._ensure_cache()
         return self._commit_hash is not None
 
@@ -145,7 +146,7 @@ class ContextHubBackend(BackendProtocol):
             limit: Maximum number of lines.
 
         Returns:
-            ReadResult with raw (unformatted) content.
+            `ReadResult` with raw (unformatted) content.
         """
         hub_path = self._strip_prefix(file_path)
         try:
@@ -290,10 +291,12 @@ class ContextHubBackend(BackendProtocol):
 
         prefix = self._strip_prefix(path).rstrip("/") if path else ""
 
+        glob_re = re.compile(fnmatch.translate(os.path.normcase(glob))) if glob else None
+
         for file_path, content in cache.items():
             if prefix and not file_path.startswith(prefix):
                 continue
-            if glob and not fnmatch.fnmatch(file_path, glob):
+            if glob_re is not None and not glob_re.match(os.path.normcase(file_path)):
                 continue
             for i, line in enumerate(content.splitlines(), start=1):
                 if regex.search(line):

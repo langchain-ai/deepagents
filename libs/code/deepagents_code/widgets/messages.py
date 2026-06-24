@@ -16,8 +16,10 @@ from textual import on
 from textual.containers import Horizontal, Vertical
 from textual.content import Content
 from textual.events import Click
+from textual.geometry import Offset
 from textual.message_pump import NoActiveAppError
 from textual.reactive import var
+from textual.selection import Selection
 from textual.widgets import Static
 
 from deepagents_code import theme
@@ -29,12 +31,27 @@ from deepagents_code.config import (
 )
 from deepagents_code.formatting import format_duration
 from deepagents_code.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
-from deepagents_code.tool_display import format_tool_display
+from deepagents_code.tool_display import (
+    JS_EVAL_HEADER_MAX_LENGTH,
+    format_tool_display,
+)
+from deepagents_code.unicode_security import render_with_unicode_markers
+from deepagents_code.widgets._js_eval_display import (
+    JsEvalBlock,
+    JsEvalError,
+    JsEvalResult,
+    JsEvalStdout,
+    parse_js_eval_blocks,
+)
 from deepagents_code.widgets._links import open_style_link
 from deepagents_code.widgets.diff import compose_diff_lines
 
 if TYPE_CHECKING:
-    from rich.console import Console as RichConsole, ConsoleOptions, RenderResult
+    from rich.console import (
+        Console as RichConsole,
+        ConsoleOptions,
+        RenderResult,
+    )
     from textual.app import ComposeResult
     from textual.timer import Timer
     from textual.widgets import Markdown
@@ -97,6 +114,7 @@ _TOOLS_WITH_HEADER_INFO: set[str] = {
     "glob",
     "grep",
     "execute",  # sandbox shell
+    "js_eval",  # JS interpreter
     # Web tools
     "web_search",
     "fetch_url",
@@ -125,6 +143,50 @@ def _strip_success_exit_line(text: str) -> str:
     return _SUCCESS_EXIT_RE.sub("", text)
 
 
+# Visual width of the prompt prefix (glyph + trailing space, e.g. "> ", "$ ").
+# Glyphs are single characters, so the prefix is always two columns wide.
+_PROMPT_PREFIX_WIDTH = 2
+
+
+def _strip_prompt_prefix(
+    result: tuple[str, str] | None,
+    selection: Selection,
+) -> tuple[str, str] | None:
+    """Drop the leading prompt prefix glyph from a selected range.
+
+    The prefix is only rendered on the first row, so it is stripped only when
+    the selection begins there. This keeps triple-click / select-all copies to
+    the message body instead of the decorative `"> "` (or mode glyph) prefix.
+
+    Args:
+        result: The `(text, ending)` tuple returned by `Static.get_selection`.
+        selection: The active selection geometry.
+
+    Returns:
+        The selection with the prefix removed from row 0, or `result` unchanged.
+    """
+    if result is None:
+        return None
+    text, ending = result
+    start = selection.start
+    if start is not None and start.y != 0:
+        return result
+    start_x = 0 if start is None else start.x
+    prefix_chars = max(0, _PROMPT_PREFIX_WIDTH - start_x)
+    return text[prefix_chars:], ending
+
+
+def _select_prompt_body(widget: Static) -> None:
+    """Select the user message body without its decorative prompt glyph.
+
+    Args:
+        widget: User message widget whose body should be selected.
+    """
+    widget.screen.selections = {  # ty: ignore[invalid-assignment]  # Textual reactive descriptor assignment updates selection watchers; `set_reactive` would skip them.
+        widget: Selection(Offset(_PROMPT_PREFIX_WIDTH, 0), None),
+    }
+
+
 class UserMessage(Static):
     """Widget displaying a user message."""
 
@@ -137,7 +199,12 @@ class UserMessage(Static):
         border-left: wide $primary;
         pointer: text;
     }
+
+    UserMessage.-cancelled {
+        opacity: 0.6;
+    }
     """
+    """`-cancelled` dims a prompt whose turn was interrupted by the user."""
 
     def __init__(self, content: str, **kwargs: Any) -> None:
         """Initialize a user message.
@@ -148,6 +215,25 @@ class UserMessage(Static):
         """
         super().__init__(**kwargs)
         self._content = content
+
+    def set_cancelled(self) -> None:
+        """Dim the message to mark its turn as interrupted by the user."""
+        self.add_class("-cancelled")
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        """Exclude the prompt prefix glyph from copied text.
+
+        Args:
+            selection: The active selection geometry.
+
+        Returns:
+            The `(text, ending)` selection with the prefix removed, or `None`.
+        """
+        return _strip_prompt_prefix(super().get_selection(selection), selection)
+
+    def text_select_all(self) -> None:
+        """Select the message body without the prompt prefix glyph."""
+        _select_prompt_body(self)
 
     def on_mount(self) -> None:
         """Add CSS classes for mode-specific border and ASCII border type."""
@@ -245,6 +331,21 @@ class QueuedUserMessage(Static):
         """Add ASCII border class when in ASCII mode."""
         if is_ascii_mode():
             self.add_class("-ascii")
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        """Exclude the prompt prefix glyph from copied text.
+
+        Args:
+            selection: The active selection geometry.
+
+        Returns:
+            The `(text, ending)` selection with the prefix removed, or `None`.
+        """
+        return _strip_prompt_prefix(super().get_selection(selection), selection)
+
+    def text_select_all(self) -> None:
+        """Select the message body without the prompt prefix glyph."""
+        _select_prompt_body(self)
 
     def render(self) -> Content:
         """Render the queued user message (greyed out).
@@ -590,11 +691,22 @@ class AssistantMessage(Vertical):
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
-        self._content = content
+        self._content_parts: list[str] = [content] if content else []
         self._markdown: Markdown | None = None
         self._stream: MarkdownStream | None = None
         self._pending_append = ""
         self._flush_timer: Timer | None = None
+
+    @property
+    def _content(self) -> str:
+        """Full message text, materialized from streamed chunks on access."""
+        if len(self._content_parts) > 1:
+            self._content_parts = ["".join(self._content_parts)]
+        return self._content_parts[0] if self._content_parts else ""
+
+    @_content.setter
+    def _content(self, value: str) -> None:
+        self._content_parts = [value] if value else []
 
     def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual widget method convention
         """Compose the assistant message layout.
@@ -648,7 +760,7 @@ class AssistantMessage(Vertical):
         """
         if not text:
             return
-        self._content += text
+        self._content_parts.append(text)
         self._pending_append += text
         if self._flush_timer is None:
             self._flush_timer = self.set_interval(
@@ -815,9 +927,17 @@ class ToolCallMessage(Vertical):
     """
     """Left border tracks tool lifecycle; hover brightens for interactivity."""
 
-    # Max lines/chars to show in preview mode
     _PREVIEW_LINES = 6
+    """Maximum number of lines to show in preview mode."""
+
     _PREVIEW_CHARS = 400
+    """Maximum number of characters to show in preview mode."""
+
+    _JS_EVAL_INLINE_RESULT_MAX = 80
+    """Maximum single-line `js_eval` result length rendered inline.
+
+    Inline rendering uses `result: value` rather than a standalone labeled block.
+    """
 
     def __init__(
         self,
@@ -1203,9 +1323,16 @@ class ToolCallMessage(Vertical):
         self._update_args_display()
 
     def on_click(self, event: Click) -> None:
-        """Toggle output/argument expansion."""
+        """Toggle output/argument expansion.
+
+        Prefer toggling output, but only when the output can actually
+        expand/collapse. Otherwise fall through to the collapsible args/code
+        block — `js_eval` commonly has a short, unexpandable result sitting
+        below a multi-line, collapsible code block, and the old
+        "output wins whenever it exists" rule left that code block stuck.
+        """
         event.stop()  # Prevent click from bubbling up and scrolling
-        if self._output:
+        if self._output and self.has_expandable_output:
             self.toggle_output()
         elif self.has_expandable_args:
             self.toggle_args()
@@ -1242,6 +1369,7 @@ class ToolCallMessage(Vertical):
             "grep": self._format_search_output,
             "glob": self._format_search_output,
             "execute": self._format_shell_output,
+            "js_eval": self._format_js_eval_output,
             "web_search": self._format_web_output,
             "fetch_url": self._format_web_output,
             "task": self._format_task_output,
@@ -1265,6 +1393,18 @@ class ToolCallMessage(Vertical):
 
         # Default: plain text (Content treats input as literal)
         return FormattedOutput(content=Content(output))
+
+    @property
+    def has_expandable_output(self) -> bool:
+        """Whether collapsed output has hidden content worth a toggle.
+
+        Public wrapper around `_has_expandable_output` so toggle routing (click
+        and Ctrl+O) can tell "has output" apart from "has output that can
+        actually expand/collapse". `js_eval` results are frequently short and
+        unexpandable while the code block above them *is* collapsible, so the
+        routing must fall through to args when output cannot toggle.
+        """
+        return self._has_expandable_output()
 
     def _has_expandable_output(self) -> bool:
         """Return whether collapsed output has hidden content to expand."""
@@ -1806,6 +1946,138 @@ class ToolCallMessage(Vertical):
 
         return FormattedOutput(content=content, truncation=truncation)
 
+    def _format_js_eval_output(
+        self, output: str, *, is_preview: bool = False
+    ) -> FormattedOutput:
+        """Format `js_eval` (JS interpreter) output.
+
+        Unwraps the REPL's `<stdout>` / `<result>` / `<error>` envelope into
+        labeled, styled sections instead of dumping the raw XML-escaped blob.
+
+        Returns:
+            FormattedOutput with the formatted REPL output and optional
+            truncation info.
+        """
+        blocks = parse_js_eval_blocks(output)
+        if blocks is None:
+            # Unexpected shape — fall back to plain line rendering.
+            return self._format_lines_output(output.split("\n"), is_preview=is_preview)
+
+        colors = theme.get_theme_colors(self)
+
+        # Common case: a single short scalar result with no stdout. Rendering a
+        # standalone "result" header above a one-word value reads as a
+        # misplaced badge, so collapse it to an inline `result: value` line.
+        if len(blocks) == 1:
+            block = blocks[0]
+            if (
+                isinstance(block, JsEvalResult)
+                and not block.kind
+                and "\n" not in block.body
+                and len(block.body) <= self._JS_EVAL_INLINE_RESULT_MAX
+            ):
+                content = Content.assemble(
+                    Content.styled("result: ", colors.success),
+                    Content(block.body),
+                )
+                return FormattedOutput(content=content)
+        lines: list[Content] = []
+        total_lines = 0
+        max_lines = self._PREVIEW_LINES if is_preview else None
+        # Char budget mirrors the other formatters so a single very long body
+        # line (e.g. a 10k-char result) is clipped instead of flooding the
+        # collapsed preview. `None` outside preview means no char cap.
+        remaining_chars = self._PREVIEW_CHARS if is_preview else None
+        # Chars hidden when a single over-budget body line is clipped. Only
+        # meaningful for the hint when no whole lines were dropped (line counts
+        # take precedence below, matching `_build_truncation_hint`).
+        clipped_chars = 0
+
+        def add_section(label: Content, body: str) -> None:
+            nonlocal total_lines, remaining_chars, clipped_chars
+            if max_lines is not None and total_lines >= max_lines:
+                return
+            if remaining_chars is not None and remaining_chars <= 0:
+                return
+            lines.append(label)
+            total_lines += 1
+            body_lines = body.split("\n") if body else [""]
+            for body_line in body_lines:
+                if max_lines is not None and total_lines >= max_lines:
+                    break
+                if remaining_chars is not None:
+                    if remaining_chars <= 0:
+                        break
+                    if len(body_line) > remaining_chars:
+                        # Clip the over-budget line and stop adding more.
+                        lines.append(Content(f"  {body_line[:remaining_chars]}"))
+                        total_lines += 1
+                        clipped_chars = len(body_line) - remaining_chars
+                        remaining_chars = 0
+                        break
+                    remaining_chars -= len(body_line)
+                lines.append(Content(f"  {body_line}"))
+                total_lines += 1
+
+        for block in blocks:
+            if isinstance(block, JsEvalStdout):
+                add_section(Content.styled("stdout", "dim"), block.body)
+            elif isinstance(block, JsEvalError):
+                header = f"error ({block.error_type})" if block.error_type else "error"
+                add_section(Content.styled(header, colors.error), block.body)
+            else:  # JsEvalResult
+                label = "result (handle)" if block.kind else "result"
+                add_section(Content.styled(label, colors.success), block.body)
+
+        content = Content("\n").join(lines) if lines else Content("")
+        truncation = self._build_js_eval_truncation_hint(
+            blocks=blocks,
+            shown_lines=total_lines,
+            clipped_chars=clipped_chars,
+            is_preview=is_preview,
+        )
+        return FormattedOutput(content=content, truncation=truncation)
+
+    @staticmethod
+    def _build_js_eval_truncation_hint(
+        *,
+        blocks: list[JsEvalBlock],
+        shown_lines: int,
+        clipped_chars: int,
+        is_preview: bool,
+    ) -> str | None:
+        """Quantify how much `js_eval` preview content was hidden.
+
+        Prefers a hidden-line count over a hidden-char count (mirroring
+        `_build_truncation_hint`): when whole sections were dropped, "N more
+        lines" is the more useful signal; a lone clipped body line reports the
+        chars it lost.
+
+        Args:
+            blocks: The parsed blocks, used to compute the full (untruncated)
+                display-line count.
+            shown_lines: Display lines actually emitted into the preview.
+            clipped_chars: Chars dropped from a single clipped body line, if any.
+            is_preview: Whether this is preview rendering; full renders never
+                truncate.
+
+        Returns:
+            A hint string for the UI, or `None` when nothing was hidden.
+        """
+        if not is_preview:
+            return None
+        # Each block renders as one label line plus its body lines; an empty
+        # body still occupies one (blank) line.
+        full_lines = sum(
+            1 + (len(block.body.split("\n")) if block.body else 1) for block in blocks
+        )
+        hidden_lines = full_lines - shown_lines
+        if hidden_lines > 0:
+            return f"{hidden_lines} more lines"
+        if clipped_chars > 0:
+            return f"{clipped_chars} more chars"
+        return None
+
     def _format_web_output(
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
@@ -2024,17 +2296,49 @@ class ToolCallMessage(Vertical):
     def has_expandable_args(self) -> bool:
         """Whether the tool's args are large enough to deserve a collapsible block.
 
-        Only `ask_user` qualifies today: its `questions` payload is too noisy to
-        render inline, but users still need a way to inspect it.
+        - `ask_user`: its `questions` payload is too noisy to render inline.
+        - `js_eval`: the header shows only the first code line (truncated at
+            `JS_EVAL_HEADER_MAX_LENGTH`), so the full program is offered as a
+            collapsible block whenever it spans more than one non-blank line *or*
+            a single line is long enough to be truncated in the header.
         """
-        return self._tool_name == "ask_user" and bool(self._args)
+        if self._tool_name == "ask_user":
+            return bool(self._args)
+        if self._tool_name == "js_eval":
+            code = self._args.get("code")
+            if isinstance(code, str) and code.strip():
+                non_blank = sum(1 for line in code.splitlines() if line.strip())
+                return non_blank > 1 or len(code.strip()) > JS_EVAL_HEADER_MAX_LENGTH
+        return False
+
+    def _format_code_detail(self) -> Content:
+        """Render the `js_eval` program for the collapsible code block.
+
+        The code is shown verbatim and left-aligned (its own indentation is the
+        only indentation), as plain uncolored `Content`. Blank lines of
+        top/bottom padding add breathing room between the `js_eval` header above
+        and the "show/hide code" hint below.
+
+        Returns:
+            A plain `Content` renderable with a blank line of padding on
+                top and bottom.
+        """
+        code = self._args.get("code")
+        code_str = code.strip("\n") if isinstance(code, str) else str(code)
+        code_str = render_with_unicode_markers(code_str)
+
+        # Blank lines of top/bottom padding separate the block from the header
+        # line above and the "show/hide code" hint below.
+        return Content("\n").join((Content(""), Content(code_str), Content("")))
 
     def _format_args_detail(self) -> Content:
         """Render tool arguments as an indented `Content` block.
 
-        Falls back to `str(self._args)` (with a visible marker) when JSON
-        serialization fails — `default=str` already handles most non-serializable
-        values, so reaching the fallback indicates a deeper issue worth logging.
+        Renders JSON-pretty-printed args, falling back to `str(self._args)`
+        (with a visible marker) when JSON serialization fails — `default=str`
+        already handles most non-serializable values, so reaching the fallback
+        indicates a deeper issue worth logging. `js_eval` code is handled
+        separately by `_format_code_detail`.
 
         Returns:
             Indented `Content` containing JSON-pretty-printed arguments, or a
@@ -2063,16 +2367,21 @@ class ToolCallMessage(Vertical):
             self._args_hint_widget.display = False
             return
 
+        is_code = self._tool_name == "js_eval"
+        noun = "code" if is_code else "arguments"
         if self._args_expanded:
-            self._args_widget.update(self._format_args_detail())
+            detail = (
+                self._format_code_detail() if is_code else self._format_args_detail()
+            )
+            self._args_widget.update(detail)
             self._args_widget.display = True
             self._args_hint_widget.update(
-                Content.styled("click or Ctrl+O to hide arguments", "dim italic")
+                Content.styled(f"click or Ctrl+O to hide {noun}", "dim italic")
             )
         else:
             self._args_widget.display = False
             self._args_hint_widget.update(
-                Content.styled("click or Ctrl+O to show arguments", "dim italic")
+                Content.styled(f"click or Ctrl+O to show {noun}", "dim italic")
             )
         self._args_hint_widget.display = True
 

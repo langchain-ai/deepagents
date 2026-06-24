@@ -11,7 +11,7 @@ from typing import Annotated, Any, Required, cast
 
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
-from langchain.agents.middleware.types import AgentMiddleware, ResponseT, _InputAgentState, _OutputAgentState
+from langchain.agents.middleware.types import AgentMiddleware, InputAgentState, OutputAgentState, ResponseT
 from langchain.agents.structured_output import ResponseFormat
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 
 
 class DeepAgentState(AgentState):
-    """AgentState with DeltaChannel on messages to reduce checkpoint growth from O(N²) to O(N)."""
+    """AgentState with `DeltaChannel` on messages to reduce checkpoint growth from O(N²) to O(N)."""
 
     messages: Required[Annotated[list[AnyMessage], DeltaChannel(_messages_delta_reducer, snapshot_frequency=50)]]  # ty: ignore[invalid-argument-type]
 
@@ -189,11 +189,12 @@ def _merge_fs_interrupt_on(
     fs_interrupt_on: dict[str, InterruptOnConfig],
     user_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
 ) -> dict[str, bool | InterruptOnConfig] | None:
-    """Merge fs-permission-derived configs with user-supplied `interrupt_on`.
+    """Combine filesystem-permission configs with user-defined interrupts.
 
-    User-supplied entries override generated ones per tool name. Returns
-    `None` when both inputs are empty so callers can skip installing
-    `HumanInTheLoopMiddleware`.
+    User-defined `interrupt_on` entries take precedence over generated
+    filesystem-permission entries with the same tool name. Returns `None` when
+    there are no interrupts to configure, allowing `HumanInTheLoopMiddleware` to
+    be omitted.
     """
     if not fs_interrupt_on and not user_interrupt_on:
         return None
@@ -253,10 +254,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     debug: bool = False,
     name: str | None = None,
     cache: BaseCache | None = None,
-) -> CompiledStateGraph[AgentState[ResponseT], ContextT, _InputAgentState, _OutputAgentState[ResponseT]]:  # ty: ignore[invalid-type-arguments]  # ty can't verify generic TypedDicts satisfy StateLike bound
+) -> CompiledStateGraph[AgentState[ResponseT], ContextT, InputAgentState, OutputAgentState[ResponseT]]:  # ty: ignore[invalid-type-arguments]  # ty can't verify generic TypedDicts satisfy StateLike bound
     r"""Create a deep agent.
-
-    !!! warning "Deep agents require a LLM that supports tool calling!"
 
     By default, this agent has access to the following tools:
 
@@ -378,9 +377,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             `SubAgent` entries are invoked through the `task` tool. They should
             provide `name`, `description`, and `system_prompt`, and may also
-            override `tools`, `model`, `middleware`, `interrupt_on`, and
-            `skills`. See `interrupt_on` below for inheritance and override
-            behavior.
+            override `tools`, `model`, `middleware`, `interrupt_on`, `skills`,
+            `permissions`, and `response_format`. See `interrupt_on` below for
+            inheritance and override behavior.
 
             `CompiledSubAgent` entries are also exposed through the `task` tool,
             but provide a pre-built `runnable` instead of a declarative prompt
@@ -421,17 +420,17 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             Rules are evaluated in declaration order; the first match wins.
             If no rule matches, the call is allowed.
 
-            Each rule's ``mode`` can be:
+            Each rule's `mode` can be:
 
-            - ``"allow"`` (default): the call proceeds.
-            - ``"deny"``: the tool returns a permission-denied error.
-            - ``"interrupt"``: the call pauses for human approval via
-              `HumanInTheLoopMiddleware`. A `HumanInTheLoopMiddleware` is
-              auto-installed when any interrupt-mode rule is present, and the
-              generated `interrupt_on` entries are merged with the
-              `interrupt_on` argument below (user-supplied entries win per
-              tool name). Requires a `langchain` version that supports the
-              ``when`` predicate on `InterruptOnConfig`.
+            - `"allow"` (default): the call proceeds.
+            - `"deny"`: the tool returns a permission-denied error.
+            - `"interrupt"`: the call pauses for human approval via
+                `HumanInTheLoopMiddleware`. A `HumanInTheLoopMiddleware` is
+                auto-installed when any interrupt-mode rule is present, and the
+                generated `interrupt_on` entries are merged with the
+                `interrupt_on` argument below (user-supplied entries win per
+                tool name). Requires a `langchain` version that supports the
+                `when` predicate on `InterruptOnConfig`.
 
             Subagents inherit these rules unless they specify their own
             `permissions` field, which replaces the parent's rules entirely.
@@ -859,7 +858,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             "recursion_limit": 9_999,
             "metadata": {
                 "ls_integration": "deepagents",
-                "versions": {"deepagents": __version__},
+                "lc_versions": {"deepagents": __version__},
                 "lc_agent_name": name,
             },
         }

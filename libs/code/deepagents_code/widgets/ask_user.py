@@ -71,6 +71,12 @@ class AskUserTextArea(TextArea):
             show=False,
             priority=True,
         ),
+        Binding(
+            "ctrl+backspace,alt+backspace",
+            "delete_word_left",
+            "Delete left to start of word",
+            show=False,
+        ),
     ]
 
     class Submitted(Message):
@@ -176,9 +182,12 @@ class AskUserMenu(Container):
     def compose(self) -> ComposeResult:  # noqa: D102
         glyphs = get_glyphs()
         count = len(self._questions)
-        label = "Question" if count == 1 else "Questions"
+        if count == 1:
+            title = "Agent has a question for you"
+        else:
+            title = f"Agent has {count} Questions for you"
         yield Static(
-            f"{glyphs.cursor} Agent has {count} {label} for you",
+            f"{glyphs.cursor} {title}",
             classes="ask-user-title",
         )
         yield Static("")

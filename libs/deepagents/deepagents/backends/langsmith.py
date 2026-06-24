@@ -69,7 +69,8 @@ class LangSmithSandbox(BaseSandbox):
             command: Shell command string to execute.
             timeout: Maximum time in seconds to wait for the command to complete.
 
-                If None, uses the backend's default timeout.
+                If `None`, uses the backend's default timeout.
+
                 A value of 0 disables the command timeout when the
                 `langsmith[sandbox]` extra is installed.
 
@@ -215,7 +216,7 @@ class LangSmithSandbox(BaseSandbox):
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download multiple files from the LangSmith sandbox.
 
-        Supports partial success -- individual downloads may fail without
+        Supports partial success. Individual downloads may fail without
         affecting others.
 
         Args:

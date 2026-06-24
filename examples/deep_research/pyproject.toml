@@ -5,7 +5,7 @@ description = "Deep research agent example using deepagents package"
 requires-python = ">=3.11"
 dependencies = [
     "langchain-openai>=1.2.2",
-    "langchain-anthropic>=1.4.4",
+    "langchain-anthropic>=1.4.6",
     "langchain_tavily>=0.2.18",
     "pydantic>=2.13.4",
     "rich>=15.0.0",

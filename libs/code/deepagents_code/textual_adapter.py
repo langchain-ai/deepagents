@@ -47,9 +47,11 @@ if TYPE_CHECKING:
 
 
 from deepagents_code._ask_user_types import AskUserRequest
-from deepagents_code._cli_context import CLIContext  # noqa: TC001
+from deepagents_code._cli_context import CLIContext
+from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
 from deepagents_code._session_stats import (
     ModelStats as ModelStats,
+    ModelStatsKey as ModelStatsKey,
     SessionStats as SessionStats,
     SpinnerStatus as SpinnerStatus,
     format_token_count as format_token_count,
@@ -107,8 +109,9 @@ def print_usage_table(
 ) -> None:
     """Print a model-usage stats table to a Rich console.
 
-    When the session spans multiple models each gets its own row with a
-    totals row appended; single-model sessions show one row.
+    Each row shows the serving provider alongside the model name. When the
+    session spans multiple models each gets its own row with a totals row
+    appended; single-model sessions show one row.
 
     Args:
         stats: Cumulative session stats.
@@ -131,29 +134,33 @@ def print_usage_table(
             padding=(0, 2, 0, 0),
             show_edge=False,
         )
+        table.add_column("Provider", style="dim")
         table.add_column("Model", style="dim")
         table.add_column("Reqs", justify="right", style="dim")
         table.add_column("InputTok", justify="right", style="dim")
         table.add_column("OutputTok", justify="right", style="dim")
 
         if multi_model:
-            for model_name, ms in stats.per_model.items():
+            for ms in stats.per_model.values():
                 table.add_row(
-                    model_name,
+                    ms.provider,
+                    ms.model_name,
                     str(ms.request_count),
                     format_token_count(ms.input_tokens),
                     format_token_count(ms.output_tokens),
                 )
             table.add_row(
+                "",
                 "Total",
                 str(stats.request_count),
                 format_token_count(stats.input_tokens),
                 format_token_count(stats.output_tokens),
             )
         else:
-            model_label = next(iter(stats.per_model))
+            ms = next(iter(stats.per_model.values()))
             table.add_row(
-                model_label,
+                ms.provider,
+                ms.model_name,
                 str(stats.request_count),
                 format_token_count(stats.input_tokens),
                 format_token_count(stats.output_tokens),
@@ -394,8 +401,11 @@ async def execute_task_textual(
         adapter: The TextualUIAdapter for UI operations
         backend: Optional backend for file operations
         image_tracker: Optional tracker for images
-        context: Optional `CLIContext` with model override and params, passed
-            to the graph via `context=`.
+        context: Optional `CLIContext` with model override and params. The
+            current approval mode (`session_state.auto_approve`) is written
+            into `context["auto_approve"]` on every stream iteration before it
+            is passed to the graph via `context=`, so the `interrupt_on` `when`
+            predicate can suppress interrupts at the source.
         sandbox_type: Sandbox provider name for trace metadata, or `None`
             if no sandbox is active.
         message_kwargs: Extra fields merged into the stream input message
@@ -512,6 +522,10 @@ async def execute_task_textual(
     user_msg: dict[str, Any] = {"role": "user", "content": message_content}
     if message_kwargs:
         user_msg.update(message_kwargs)
+    # Auto-approve is carried via run context (set per stream iteration below),
+    # not graph state — so the initial input is a plain dict. A first-turn
+    # `Command(update=...)` would be rebuilt with `goto=None` by the LangGraph
+    # API server and crash `_control_branch` on a fresh thread.
     stream_input: dict | Command = {"messages": [user_msg]}
 
     # Track summarization lifecycle so spinner status and notification stay in sync.
@@ -523,6 +537,14 @@ async def execute_task_textual(
             suppress_resumed_output = False
             pending_interrupts: dict[str, HITLRequest] = {}
             pending_ask_user: dict[str, AskUserRequest] = {}
+
+            # Carry the current approval mode into run context so the
+            # `interrupt_on` `when` predicate can suppress interrupts at the
+            # source. Refreshed each iteration so enabling "approve always"
+            # mid-turn propagates to the resuming stream.
+            if context is None:
+                context = CLIContext()
+            context["auto_approve"] = bool(session_state.auto_approve)
 
             # Show the Thinking spinner before each astream iteration so
             # both the first turn and HITL/ask_user resumes surface feedback
@@ -768,17 +790,23 @@ async def execute_task_textual(
                             from deepagents_code.config import settings
 
                             active_model = settings.model_name or ""
+                            active_provider = settings.model_provider or ""
                             if input_toks or output_toks:
                                 # Model gives split counts — preferred path
                                 turn_stats.record_request(
-                                    active_model, input_toks, output_toks
+                                    active_model,
+                                    input_toks,
+                                    output_toks,
+                                    active_provider,
                                 )
                                 captured_input_tokens = max(
                                     captured_input_tokens, input_toks + output_toks
                                 )
                             elif total_toks:
                                 # Fallback: model gives only total (no split)
-                                turn_stats.record_request(active_model, total_toks, 0)
+                                turn_stats.record_request(
+                                    active_model, total_toks, 0, active_provider
+                                )
                                 captured_input_tokens = max(
                                     captured_input_tokens, total_toks
                                 )
@@ -882,7 +910,6 @@ async def execute_task_textual(
                                     )
                                     if not parts or chunk_args != parts[-1]:
                                         parts.append(chunk_args)
-                                    buffer["args"] = "".join(parts)
                             elif chunk_args is not None:
                                 buffer["args"] = chunk_args
 
@@ -891,19 +918,43 @@ async def execute_task_textual(
                             if buffer_name is None:
                                 continue
 
-                            parsed_args = buffer.get("args")
-                            if isinstance(parsed_args, str):
-                                if not parsed_args:
+                            # Resolve the tool arguments. String fragments are
+                            # accumulated in `args_parts` and joined + parsed
+                            # once the buffer holds a complete JSON value. Re-
+                            # joining and re-parsing the whole prefix on every
+                            # fragment is O(n^2) and ran on the UI event loop for
+                            # large `edit_file` blobs. Each `continue` below
+                            # leaves the buffer in `tool_call_buffers` so the next
+                            # fragment keeps accumulating; it is popped only after
+                            # a successful parse + mount.
+                            direct_args = buffer.get("args")
+                            if isinstance(direct_args, dict):
+                                parsed_args = direct_args
+                            elif direct_args is not None:
+                                parsed_args = {"value": direct_args}
+                            else:
+                                parts = buffer.get("args_parts") or []
+                                if not parts:
+                                    continue
+                                joined = "".join(parts)
+                                stripped = joined.strip()
+                                if not stripped:
+                                    continue
+                                # Objects/arrays can be large (e.g. `edit_file`
+                                # blobs), so defer parsing until the closing
+                                # bracket arrives. Scalars are always small and
+                                # never end in `}`/`]`, so parse them eagerly
+                                # rather than leaving them stuck unparsed.
+                                if stripped[0] in "{[" and not stripped.endswith(
+                                    ("}", "]")
+                                ):
                                     continue
                                 try:
-                                    parsed_args = json.loads(parsed_args)
+                                    parsed_args = json.loads(joined)
                                 except json.JSONDecodeError:
                                     continue
-                            elif parsed_args is None:
-                                continue
-
-                            if not isinstance(parsed_args, dict):
-                                parsed_args = {"value": parsed_args}
+                                if not isinstance(parsed_args, dict):
+                                    parsed_args = {"value": parsed_args}
 
                             # Flush pending text before tool call
                             pending_text = pending_text_by_namespace.get(ns_key, "")
@@ -1217,6 +1268,12 @@ async def execute_task_textual(
 
                             if decision_type == "auto_approve_all":
                                 session_state.auto_approve = True
+                                # The resuming stream re-reads
+                                # `session_state.auto_approve` into run context
+                                # at the top of the loop, so the `interrupt_on`
+                                # `when` predicate suppresses interrupts on the
+                                # remaining tool calls in this turn — keeping it
+                                # a single run instead of resuming after each.
                                 if adapter._on_auto_approve_enabled:
                                     adapter._on_auto_approve_enabled()
                                 decisions = [
@@ -1476,7 +1533,7 @@ async def _handle_interrupt_cleanup(
                 await agent.aupdate_state(config, {"messages": [interrupted_msg]})
 
             cancellation_msg = HumanMessage(
-                content="[SYSTEM] Task interrupted by user. "
+                content=f"{SYSTEM_MESSAGE_PREFIX} Task interrupted by user. "
                 "Previous operation was cancelled."
             )
             cancellation_values: dict[str, Any] = {"messages": [cancellation_msg]}

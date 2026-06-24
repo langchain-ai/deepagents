@@ -1,5 +1,7 @@
 """Unit tests for filesystem permission enforcement in `FilesystemMiddleware`."""
 
+import threading
+
 import pytest
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
@@ -10,9 +12,10 @@ from langgraph.store.memory import InMemoryStore
 from deepagents.backends import StateBackend, StoreBackend
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.protocol import EditResult, ExecuteResponse, ReadResult, SandboxBackendProtocol, WriteResult
+from deepagents.backends.protocol import EditResult, ExecuteResponse, GlobResult, ReadResult, SandboxBackendProtocol, WriteResult
 from deepagents.backends.utils import _glob_anchor, _paths_overlap
 from deepagents.graph import create_deep_agent
+from deepagents.middleware import filesystem as filesystem_module
 from deepagents.middleware._fs_interrupt import _build_interrupt_on_from_permissions, _make_fs_when_predicate
 from deepagents.middleware.filesystem import (
     FilesystemMiddleware,
@@ -486,10 +489,10 @@ class TestBuildInterruptOnFromPermissions:
         """Bulk-scope tools fire when the call subtree could intersect a rule.
 
         Covers the HITL-bypass regressions for pathless calls and current-dir
-        aliases like ``"."``/``""``/``"./"``: `validate_path` collapses those to
-        ``/.``, which doesn't string-prefix any anchor, so the predicate
-        previously returned False and an agent could call e.g. ``grep(pattern,
-        path=".")`` to read interrupt-protected paths with no HITL prompt.
+        aliases like `"."`/`""`/`"./"`: `validate_path` collapses those to
+        `/.`, which doesn't string-prefix any anchor, so the predicate
+        previously returned False and an agent could call e.g. `grep(pattern,
+        path=".")` to read interrupt-protected paths with no HITL prompt.
         """
         rule = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")
         when = _make_fs_when_predicate([rule], "read", "path", "bulk")
@@ -1023,6 +1026,51 @@ class TestCanonicalizationBypass:
 
 class TestGlobToolPermissions:
     """Tests for the glob tool permission checks in FilesystemMiddleware."""
+
+    def test_sync_glob_rejects_when_timed_out_workers_are_saturated(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        class BlockingGlobBackend(StoreBackend):
+            def __init__(self, *, release: threading.Event, started: threading.Semaphore) -> None:
+                super().__init__(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",))
+                self.release = release
+                self.started = started
+                self._calls = 0
+                self._lock = threading.Lock()
+
+            @property
+            def calls(self) -> int:
+                with self._lock:
+                    return self._calls
+
+            def glob(self, pattern: str, path: str | None = None) -> GlobResult:
+                with self._lock:
+                    self._calls += 1
+                self.started.release()
+                self.release.wait(timeout=5)
+                return GlobResult(matches=[])
+
+        monkeypatch.setattr(filesystem_module, "GLOB_TIMEOUT", 0.01)
+        release = threading.Event()
+        started = threading.Semaphore(0)
+        backend = BlockingGlobBackend(release=release, started=started)
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_tool = next(t for t in middleware.tools if t.name == "glob")
+
+        try:
+            for idx in range(filesystem_module._SYNC_GLOB_WORKERS):
+                result = glob_tool.invoke({"runtime": _runtime(f"glob-{idx}"), "pattern": "**/*", "path": "/"})
+                assert "glob timed out" in result.content
+                assert started.acquire(timeout=1)
+
+            result = glob_tool.invoke({"runtime": _runtime("glob-saturated"), "pattern": "**/*", "path": "/"})
+
+            assert "too many glob calls are already running" in result.content
+            assert backend.calls == filesystem_module._SYNC_GLOB_WORKERS
+        finally:
+            release.set()
+            middleware._glob_executor.shutdown(wait=True)
 
     def test_glob_denied_on_restricted_base_path(self):
         backend = _make_backend({"/secrets/key.txt": "top secret"})

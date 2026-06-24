@@ -1,4 +1,4 @@
-"""StoreBackend: Adapter for LangGraph's BaseStore (persistent, cross-thread)."""
+"""`StoreBackend`: Adapter for LangGraph's BaseStore (persistent, cross-thread)."""
 
 import base64
 import re
@@ -187,7 +187,7 @@ class StoreBackend(BackendProtocol):
         namespace: NamespaceFactory | None = None,
         file_format: FileFormat = "v2",
     ) -> None:
-        r"""Initialize StoreBackend.
+        r"""Initialize `StoreBackend`.
 
         Args:
             runtime: Deprecated - accepted for backward compatibility but
@@ -211,7 +211,7 @@ class StoreBackend(BackendProtocol):
                 with an `encoding` field.
 
         Example:
-                    namespace=lambda rt: (rt.server_info.user.identity, "filesystem")
+            `namespace=lambda rt: (rt.server_info.user.identity, "filesystem")`
         """
         if runtime is not None:
             warn_deprecated(
@@ -275,6 +275,7 @@ class StoreBackend(BackendProtocol):
         `("filesystem",)`.
 
         !!! deprecated
+
             Pass `namespace` to `StoreBackend` instead of relying on legacy detection.
         """
         warn_deprecated(
@@ -304,14 +305,15 @@ class StoreBackend(BackendProtocol):
         return (namespace,)
 
     def _convert_store_item_to_file_data(self, store_item: Item) -> FileData:
-        """Convert a store Item to FileData format.
+        """Convert a store `Item` to `FileData` format.
 
         Args:
-            store_item: The store Item containing file data.
+            store_item: The store `Item` containing file data.
 
         Returns:
-            FileData dict with content and encoding. Includes created_at and
-            modified_at when present in the store item.
+            `FileData` dict with content and encoding.
+
+                Includes `created_at` and `modified_at` when present in the store item.
         """
         raw_content = store_item.value.get("content")
         if raw_content is None:
@@ -348,17 +350,19 @@ class StoreBackend(BackendProtocol):
         return result
 
     def _convert_file_data_to_store_value(self, file_data: FileData) -> dict[str, Any]:
-        """Convert FileData to a dict suitable for store.put().
+        """Convert `FileData` to a dict suitable for `store.put()`.
 
         When `file_format="v1"`, returns the legacy format with `content`
         as `list[str]` and no `encoding` key.
 
         Args:
-            file_data: The FileData to convert.
+            file_data: The `FileData` to convert.
 
         Returns:
-            Dictionary with content and encoding. Includes created_at and
-            modified_at when present in the FileData.
+            Dictionary with content and encoding.
+
+                Includes `created_at` and `modified_at` when present in
+                the `FileData`.
         """
         if self._file_format == "v1":
             return _to_legacy_file_data(file_data)
@@ -388,7 +392,7 @@ class StoreBackend(BackendProtocol):
             namespace: Hierarchical path prefix to search within.
             query: Optional query for natural language search.
             filter: Key-value pairs to filter results.
-            page_size: Number of items to fetch per page (default: 100).
+            page_size: Number of items to fetch per page.
 
         Returns:
             List of all items matching the search criteria.
@@ -455,8 +459,10 @@ class StoreBackend(BackendProtocol):
             path: Absolute path to directory.
 
         Returns:
-            List of FileInfo-like dicts for files and directories directly in the directory.
-            Directories have a trailing / in their path and is_dir=True.
+            List of `FileInfo`-like dicts for files and directories directly
+                in the directory.
+
+                Directories have a trailing `/` in their path and `is_dir=True`.
         """
         store = self._get_store()
         namespace = self._get_namespace()
@@ -522,8 +528,9 @@ class StoreBackend(BackendProtocol):
             limit: Maximum number of lines to read.
 
         Returns:
-            ReadResult with raw (unformatted) content for the requested
-            window. Line-number formatting is applied by the middleware.
+            `ReadResult` with raw (unformatted) content for the requested window.
+
+                Line-number formatting is applied by the middleware.
         """
         store = self._get_store()
         namespace = self._get_namespace()
@@ -561,7 +568,7 @@ class StoreBackend(BackendProtocol):
     ) -> ReadResult:
         """Async version of read using native store async methods.
 
-        This avoids sync calls in async context by using store.aget directly.
+        This avoids sync calls in async context by using `store.aget` directly.
         """
         store = self._get_store()
         namespace = self._get_namespace()
@@ -598,7 +605,7 @@ class StoreBackend(BackendProtocol):
     ) -> WriteResult:
         """Create a new file with content.
 
-        Returns WriteResult on success or error.
+        Returns `WriteResult` on success or error.
         """
         store = self._get_store()
         namespace = self._get_namespace()
@@ -621,7 +628,7 @@ class StoreBackend(BackendProtocol):
     ) -> WriteResult:
         """Async version of write using native store async methods.
 
-        This avoids sync calls in async context by using store.aget/aput directly.
+        This avoids sync calls in async context by using `store.aget`/`aput` directly.
         """
         store = self._get_store()
         namespace = self._get_namespace()
@@ -646,7 +653,7 @@ class StoreBackend(BackendProtocol):
     ) -> EditResult:
         """Edit a file by replacing string occurrences.
 
-        Returns EditResult on success or error.
+        Returns `EditResult` on success or error.
         """
         store = self._get_store()
         namespace = self._get_namespace()
@@ -684,7 +691,7 @@ class StoreBackend(BackendProtocol):
     ) -> EditResult:
         """Async version of edit using native store async methods.
 
-        This avoids sync calls in async context by using store.aget/aput directly.
+        This avoids sync calls in async context by using `store.aget`/`aput` directly.
         """
         store = self._get_store()
         namespace = self._get_namespace()
@@ -817,11 +824,12 @@ class StoreBackend(BackendProtocol):
         Text files are stored as utf-8 strings.
 
         Args:
-            files: List of (path, content) tuples where content is bytes.
+            files: List of `(path, content)` tuples where content is bytes.
 
         Returns:
-            List of FileUploadResponse objects, one per input file.
-            Response order matches input order.
+            List of `FileUploadResponse` objects, one per input file.
+
+                Response order matches input order.
         """
         store = self._get_store()
         namespace = self._get_namespace()
@@ -850,8 +858,9 @@ class StoreBackend(BackendProtocol):
             paths: List of file paths to download.
 
         Returns:
-            List of FileDownloadResponse objects, one per input path.
-            Response order matches input order.
+            List of `FileDownloadResponse` objects, one per input path.
+
+                Response order matches input order.
         """
         store = self._get_store()
         namespace = self._get_namespace()

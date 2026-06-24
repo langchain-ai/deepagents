@@ -3,8 +3,10 @@
 
 import asyncio
 import concurrent.futures
+import contextlib
 import contextvars
 import mimetypes
+import threading
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
@@ -26,16 +28,17 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
-from langchain_core.messages import AnyMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AnyMessage, HumanMessage, RemoveMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.channels.delta import DeltaChannel
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.runtime import Runtime
-from langgraph.types import Command, Overwrite
+from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from deepagents._api.deprecation import warn_deprecated
-from deepagents.backends import CompositeBackend, StateBackend
+from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
 from deepagents.backends.protocol import (
     BACKEND_TYPES as BACKEND_TYPES,  # Re-export type here for backwards compatibility
     BackendProtocol,
@@ -43,6 +46,7 @@ from deepagents.backends.protocol import (
     EditResult,
     FileData as FileData,  # Re-export for backwards compatibility
     FileInfo,
+    GlobResult,
     GrepMatch,
     GrepResult,
     ReadResult,
@@ -73,6 +77,7 @@ from deepagents.middleware._message_eviction import (
 from deepagents.middleware._utils import append_to_system_message
 
 _FS_WCMATCH_FLAGS = wcglob.BRACE | wcglob.GLOBSTAR
+_SYNC_GLOB_WORKERS = 4
 
 FilesystemOperation = Literal["read", "write"]
 
@@ -96,17 +101,17 @@ class FilesystemPermission:
     mode: Literal["allow", "deny", "interrupt"] = "allow"
     """Effect when a tool call matches this rule:
 
-    - ``"allow"`` (default): the call proceeds.
-    - ``"deny"``: the tool returns a permission-denied error.
-    - ``"interrupt"``: the call is paused for human approval via
-      [`HumanInTheLoopMiddleware`][langchain.agents.middleware.HumanInTheLoopMiddleware].
+    - `"allow"` (default): the call proceeds.
+    - `"deny"`: the tool returns a permission-denied error.
+    - `"interrupt"`: the call is paused for human approval via
+        [`HumanInTheLoopMiddleware`][langchain.agents.middleware.HumanInTheLoopMiddleware].
 
-      Best paired with patterns that have a literal leading anchor (e.g.,
-      ``/secrets/**``, ``/projects/*/secrets/**``). Bulk tools
-      (``ls``/``glob``/``grep``) fire the interrupt based on whether their
-      search subtree could overlap the rule's anchored prefix, so a fully
-      unanchored pattern (``/**/secrets``) collapses to ``/`` and
-      conservatively over-fires for any bulk call.
+        Best paired with patterns that have a literal leading anchor (e.g.,
+        `/secrets/**`, `/projects/*/secrets/**`). Bulk tools
+        (`ls`/`glob`/`grep`) fire the interrupt based on whether their
+        search subtree could overlap the rule's anchored prefix, so a fully
+        unanchored pattern (`/**/secrets`) collapses to `/` and
+        conservatively over-fires for any bulk call.
     """
 
     def __post_init__(self) -> None:
@@ -270,6 +275,23 @@ def _format_file_paths(paths: list[str]) -> str:
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 GLOB_TIMEOUT = 20.0  # seconds
 LINE_NUMBER_WIDTH = 6
+
+
+def _glob_timeout_message() -> str:
+    """Build the glob-timeout error string.
+
+    Reads `GLOB_TIMEOUT` at call time so tests and overrides keep the message
+    in sync with the active deadline.
+    """
+    return f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path."
+
+
+def _discard_task_result(task: asyncio.Future[Any]) -> None:
+    """Consume a cancelled background task result to avoid event-loop warnings."""
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        task.result()
+
+
 DEFAULT_READ_OFFSET = 0
 DEFAULT_READ_LIMIT = 100
 # Template for truncation message in read_file
@@ -302,7 +324,7 @@ def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileDa
 
     Returns:
         Merged dictionary where right overwrites left for matching keys,
-        and `None` values in right trigger deletions.
+            and `None` values in right trigger deletions.
 
     Example:
         ```python
@@ -330,8 +352,10 @@ def _file_data_delta_reducer(
 ) -> dict[str, FileData]:
     """Batch reducer for use with DeltaChannel.
 
-    DeltaChannel calls reducer(base, list(values)) where values is a list of
-    all writes in the current step. Single dict copy + one pass over all writes.
+    `DeltaChannel` calls `reducer(base, list(values))` where values is a list of
+    all writes in the current step.
+
+    Single dict copy + one pass over all writes.
     """
     result: dict[str, FileData] = dict(left) if left else {}
     for writes in values:
@@ -360,10 +384,12 @@ class ReadFileSchema(BaseModel):
     """Input schema for the `read_file` tool."""
 
     file_path: str = Field(description="Absolute path to the file to read. Must be absolute, not relative.")
+
     offset: int = Field(
         default=DEFAULT_READ_OFFSET,
         description="Line number to start reading from (0-indexed). Use for pagination of large files.",
     )
+
     limit: int = Field(
         default=DEFAULT_READ_LIMIT,
         description="Maximum number of lines to read. Use for pagination of large files.",
@@ -374,6 +400,7 @@ class WriteFileSchema(BaseModel):
     """Input schema for the `write_file` tool."""
 
     file_path: str = Field(description="Absolute path where the file should be created. Must be absolute, not relative.")
+
     content: str = Field(description="The text content to write to the file. This parameter is required.")
 
 
@@ -381,8 +408,11 @@ class EditFileSchema(BaseModel):
     """Input schema for the `edit_file` tool."""
 
     file_path: str = Field(description="Absolute path to the file to edit. Must be absolute, not relative.")
+
     old_string: str = Field(description="The exact text to find and replace. Must be unique in the file unless replace_all is True.")
+
     new_string: str = Field(description="The text to replace old_string with. Must be different from old_string.")
+
     replace_all: bool = Field(
         default=False,
         description="If True, replace all occurrences of old_string. If False (default), old_string must be unique.",
@@ -399,6 +429,7 @@ class GlobSchema(BaseModel):
     """Input schema for the `glob` tool."""
 
     pattern: str = Field(description="Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md').")
+
     path: str | None = Field(default=None, description="Base directory to search from. Defaults to the backend's default root.")
 
 
@@ -406,8 +437,11 @@ class GrepSchema(BaseModel):
     """Input schema for the `grep` tool."""
 
     pattern: str = Field(description="Text pattern to search for (literal string, not regex).")
+
     path: str | None = Field(default=None, description="Directory to search in. Defaults to current working directory.")
+
     glob: str | None = Field(default=None, description="Glob pattern to filter which files to search (e.g., '*.py').")
+
     output_mode: Literal["files_with_matches", "content", "count"] = Field(
         default="files_with_matches",
         description="Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
@@ -418,6 +452,7 @@ class ExecuteSchema(BaseModel):
     """Input schema for the `execute` tool."""
 
     command: str = Field(description="Shell command to execute in the sandbox environment.")
+
     timeout: int | None = Field(
         default=None,
         description="Optional timeout in seconds for this command. Overrides the default timeout. Use 0 for no-timeout execution on backends that support it.",
@@ -576,6 +611,97 @@ You have access to an `execute` tool for running shell commands in a sandboxed e
 Use this tool to run commands, scripts, tests, builds, and other shell operations.
 
 - execute: run a shell command in the sandbox (returns output and exit code)"""
+
+
+def _route_host_path_prompt(backend: BackendProtocol) -> str:
+    """Build a prompt section mapping virtual route paths to host shell paths.
+
+    `execute` runs on the default backend's shell, so virtual paths (e.g.
+    `/common/`) may not exist there. Instead of rewriting shell commands, provide
+    the model with prefix-substitution mappings so it can generate correct commands
+    directly.
+
+    A route exposes a usable host path only when its files live on the same
+    filesystem the default's shell runs in, which requires the default to be a
+    `LocalShellBackend` (its shell runs on the local host). For such a default, a
+    `FilesystemBackend` route maps to a host path based on its mode:
+
+    - virtual mode: the prefix maps to the backend's host root, `route.cwd`
+        (e.g. `/common/` -> `/data/`, so `/common/x` is `/data/x` on the host).
+    - non-virtual mode: the prefix is stripped and the remaining absolute path is
+        used as-is (`root_dir` is ignored), i.e. the prefix maps to the filesystem
+        root `/` (e.g. `/legacy/x` is `/x`).
+
+    A remote/sandbox default runs its shell in a separate filesystem, so a local
+    `FilesystemBackend` route is not reachable from it. Those routes, along with
+    store-backed routes, have no host path mapping and must be accessed through the
+    file tools instead.
+
+    Returns an empty string if there are no routes to describe.
+    """
+    if not isinstance(backend, CompositeBackend):
+        return ""
+
+    # Host mappings are only valid when the default's shell shares the local
+    # filesystem with the routes (LocalShellBackend). For a remote/sandbox
+    # default, no local filesystem route is reachable from the shell.
+    default_uses_local_shell = isinstance(backend.default, LocalShellBackend)
+
+    # (virtual_prefix, host_prefix) pairs. A host_prefix of "/" means the virtual
+    # prefix is stripped down to the filesystem root.
+    host_mappings: list[tuple[str, str]] = []
+    no_host_routes: list[str] = []
+    for route_prefix, route_backend in backend.sorted_routes:
+        if not (default_uses_local_shell and isinstance(route_backend, FilesystemBackend)):
+            no_host_routes.append(route_prefix)
+        elif route_backend.virtual_mode:
+            # Virtual mode: prefix maps to the backend's host root directory.
+            host_mappings.append((route_prefix, str(route_backend.cwd)))
+        else:
+            # Non-virtual mode: prefix is stripped, remaining absolute path used
+            # as-is -> the prefix maps to the filesystem root.
+            host_mappings.append((route_prefix, "/"))
+
+    if not host_mappings and not no_host_routes:
+        return ""
+
+    def _norm(prefix: str) -> str:
+        """Ensure a trailing slash so prefix substitution composes for subpaths."""
+        return prefix if prefix.endswith("/") else f"{prefix}/"
+
+    def _mapping_line(virtual_prefix: str, host_prefix: str) -> str:
+        # Normalize both sides to end with "/" so replacing the virtual prefix with
+        # the host prefix yields a correct host path for nested paths.
+        virtual = _norm(virtual_prefix)
+        host = _norm(host_prefix)
+        example = f"`{virtual}dir/x.py` -> `{host}dir/x.py`"
+        return f"- `{virtual}` -> `{host}` (e.g. {example})"
+
+    lines = [
+        "## Shell paths vs. virtual paths",
+        "",
+        "The `execute` tool runs commands in the host shell and can only access files that exist on the host filesystem.",
+        "",
+        "Some paths returned by the file tools are virtual mounts:",
+        "",
+        "- If a virtual mount has a host path mapping, replace its virtual prefix with the host prefix when running shell commands.",
+        "- If a virtual mount does not have a host path mapping, it is not accessible "
+        "from the shell. Use the file tools listed above to interact with those files.",
+        "",
+        "Do not assume that a path returned by a file tool can be used directly in a shell command.",
+    ]
+
+    if host_mappings:
+        lines.append("")
+        lines.append("Host path mappings:")
+        lines.extend(_mapping_line(virtual_prefix, host_prefix) for virtual_prefix, host_prefix in host_mappings)
+
+    if no_host_routes:
+        lines.append("")
+        lines.append("Virtual mounts without a host path mapping (not accessible from the shell):")
+        lines.extend(f"- `{prefix}`" for prefix in no_host_routes)
+
+    return "\n".join(lines)
 
 
 def supports_execution(backend: BackendProtocol) -> bool:
@@ -808,6 +934,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._large_tool_results_prefix = f"{_root}/large_tool_results"
         self._conversation_history_prefix = f"{_root}/conversation_history"
 
+        # Cache for dynamic system prompts keyed on the `include_execution`
+        # flag. The text depends only on that flag and immutable config, so it
+        # is computed at most twice per instance.
+        self._dynamic_system_prompt_cache: dict[bool, str] = {}
+
         # Store configuration (private - internal implementation details)
         self._custom_system_prompt = system_prompt
         self._custom_tool_descriptions = custom_tool_descriptions or {}
@@ -815,6 +946,15 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._human_message_token_limit_before_evict = human_message_token_limit_before_evict
         self._max_execute_timeout = max_execute_timeout
         self._permissions = list(_permissions or [])
+
+        # Shared executor for enforcing GLOB_TIMEOUT on the sync glob tool.
+        # Timed-out worker threads keep running until the backend call returns,
+        # so the semaphore rejects overload instead of queueing behind them.
+        self._glob_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=_SYNC_GLOB_WORKERS,
+            thread_name_prefix="deepagents-glob",
+        )
+        self._glob_slots = threading.BoundedSemaphore(_SYNC_GLOB_WORKERS)
 
         self.tools = [
             self._create_ls_tool(),
@@ -826,6 +966,25 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             self._create_grep_tool(),
             self._create_execute_tool(),
         ]
+
+    def _build_dynamic_system_prompt(self, *, include_execution: bool) -> str:
+        """Build (and memoize) the dynamic system prompt.
+
+        The result depends only on `include_execution` and immutable config,
+        so it is cached per instance to avoid rebuilding on every model call.
+        The cache is intentionally lock-free even though sync and async model
+        calls share it: writes are idempotent (a given flag always yields the
+        same string), so a race at worst recomputes and re-stores that value.
+        """
+        cached = self._dynamic_system_prompt_cache.get(include_execution)
+        if cached is not None:
+            return cached
+        prompt_parts = [_FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(large_tool_results_prefix=self._large_tool_results_prefix)]
+        if include_execution:
+            prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
+        system_prompt = "\n\n".join(prompt_parts).strip()
+        self._dynamic_system_prompt_cache[include_execution] = system_prompt
+        return system_prompt
 
     def _get_backend(self, runtime: ToolRuntime[Any, Any]) -> BackendProtocol:
         """Get the resolved backend instance from backend or factory.
@@ -1387,11 +1546,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=DeleteSchema,
         )
 
-    def _create_glob_tool(self) -> BaseTool:  # noqa: C901  # Tool wiring + permission/result shaping
+    def _create_glob_tool(self) -> BaseTool:  # noqa: C901, PLR0915  # Tool wiring + permission/result shaping + timeout handling
         """Create the glob tool."""
         tool_description = self._custom_tool_descriptions.get("glob") or GLOB_TOOL_DESCRIPTION
 
-        def sync_glob(
+        def sync_glob(  # noqa: PLR0911 - early returns for distinct error conditions
             pattern: Annotated[str, "Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md')."],
             runtime: ToolRuntime[None, FilesystemState],
             path: Annotated[str | None, "Base directory to search from. Defaults to the backend's default root."] = None,
@@ -1416,17 +1575,61 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 )
             backend_path = permission_path if path is not None else None
             ctx = contextvars.copy_context()
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(lambda: ctx.run(resolved_backend.glob, pattern, path=backend_path))
+            # Submit to the shared executor rather than a per-call
+            # ThreadPoolExecutor: a `with` block here would call
+            # shutdown(wait=True) on timeout and block until the runaway glob
+            # finished anyway, defeating the timeout.
+            if not self._glob_slots.acquire(blocking=False):
+                return ToolMessage(
+                    content=("Error: too many glob calls are already running. Try again later with a more specific pattern or a narrower path."),
+                    name="glob",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+
+            def run_glob() -> GlobResult:
                 try:
-                    glob_result = future.result(timeout=GLOB_TIMEOUT)
-                except concurrent.futures.TimeoutError:
-                    return ToolMessage(
-                        content=f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path.",
-                        name="glob",
-                        tool_call_id=runtime.tool_call_id,
-                        status="error",
-                    )
+                    return ctx.run(resolved_backend.glob, pattern, path=backend_path)
+                finally:
+                    self._glob_slots.release()
+
+            try:
+                future = self._glob_executor.submit(run_glob)
+            except Exception:
+                self._glob_slots.release()
+                raise
+            # Separate the wait deadline from result retrieval. On Python 3.11+
+            # `concurrent.futures.TimeoutError is TimeoutError`, so catching the
+            # future's wait-timeout would also swallow a builtin TimeoutError
+            # raised *inside* the backend glob (e.g. a sandbox RPC timeout) and
+            # misreport it as a glob-pattern timeout. `wait()` reports only
+            # whether the deadline elapsed, leaving real backend exceptions to
+            # surface through `future.result()` below.
+            done, _ = concurrent.futures.wait([future], timeout=GLOB_TIMEOUT)
+            if not done:
+                # Deadline elapsed while the worker is still running; it cannot
+                # be cancelled, so abandon it (run_glob's finally releases the
+                # slot when it eventually returns). cancel() only succeeds if
+                # the task never started, in which case release the slot here.
+                if future.cancel():
+                    self._glob_slots.release()
+                return ToolMessage(
+                    content=_glob_timeout_message(),
+                    name="glob",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            try:
+                glob_result = future.result()
+            except Exception as e:  # noqa: BLE001  # tool boundary: surface backend errors, never let them escape
+                # run_glob's finally already released the slot before the
+                # exception propagated, so do not release again here.
+                return ToolMessage(
+                    content=f"Error: glob failed: {e}",
+                    name="glob",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
             if glob_result.error:
                 return ToolMessage(
                     content=f"Error: {glob_result.error}",
@@ -1467,14 +1670,26 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
             backend_path = permission_path if path is not None else None
-            try:
-                glob_result = await asyncio.wait_for(
-                    resolved_backend.aglob(pattern, path=backend_path),
-                    timeout=GLOB_TIMEOUT,
-                )
-            except TimeoutError:
+            # Run the backend glob as a task and wait on the deadline separately
+            # so a `TimeoutError` raised *inside* the backend (rather than by the
+            # deadline) is not misreported as a glob-pattern timeout, mirroring
+            # the sync path. Other backend exceptions surface via `task.result()`.
+            task = asyncio.ensure_future(resolved_backend.aglob(pattern, path=backend_path))
+            done, _ = await asyncio.wait({task}, timeout=GLOB_TIMEOUT)
+            if not done:
+                task.add_done_callback(_discard_task_result)
+                task.cancel()
                 return ToolMessage(
-                    content=f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path.",
+                    content=_glob_timeout_message(),
+                    name="glob",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            try:
+                glob_result = task.result()
+            except Exception as e:  # noqa: BLE001  # tool boundary: surface backend errors, never let them escape
+                return ToolMessage(
+                    content=f"Error: glob failed: {e}",
                     name="glob",
                     tool_call_id=runtime.tool_call_id,
                     status="error",
@@ -1811,6 +2026,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         has_execute_tool = "execute" in tool_names
         has_delete_tool = "delete" in tool_names
 
+        backend: BackendProtocol | None = None
         # `execute` and `delete` are optional per backend; resolve the
         # backend once and filter out any tool the backend can't serve.
         if has_execute_tool or has_delete_tool:
@@ -1839,6 +2055,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # Add execution instructions only if the execute tool survived filtering
             if has_execute_tool:
                 prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
+                if backend is not None:
+                    route_prompt = _route_host_path_prompt(backend)
+                    if route_prompt:
+                        prompt_parts.append(route_prompt)
 
             system_prompt = "\n\n".join(prompt_parts).strip()
 
@@ -1859,11 +2079,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         handles large HumanMessage eviction:
 
         1. Any message already tagged with `lc_evicted_to` in
-           `additional_kwargs` is replaced with a truncated preview for the
-           model request (content in state is unchanged).
+            `additional_kwargs` is replaced with a truncated preview for the
+            model request (content in state is unchanged).
         2. If the most recent message is an untagged HumanMessage exceeding the
-           eviction threshold, its content is written to the backend and the
-           message is tagged in state via `ExtendedModelResponse`.
+            eviction threshold, its content is written to the backend and the
+            message is tagged in state via `ExtendedModelResponse`.
 
         Args:
             request: The model request being processed.
@@ -1871,7 +2091,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         Returns:
             The model response, or an `ExtendedModelResponse` with a state
-            update tagging a newly evicted message.
+                update tagging a newly evicted message.
         """
         request = self._filter_unsupported_tools_and_apply_prompt(request)
 
@@ -1902,7 +2122,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         Returns:
             The model response from the handler, or an `ExtendedModelResponse`
-            with a state update tagging newly evicted messages.
+                with a state update tagging newly evicted messages.
         """
         request = self._filter_unsupported_tools_and_apply_prompt(request)
 
@@ -1929,14 +2149,18 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             resolved_backend: The filesystem backend to write the content to.
 
         Returns:
-            A tuple of (processed_message, evicted):
-            - processed_message: New ToolMessage with truncated content and file reference
-            - evicted: Whether the content was evicted to the filesystem
+            A tuple of `(processed_message, evicted)`:
 
-        Note:
-            Text is extracted from all text content blocks, joined, and used for both the
-            size check and eviction. Non-text blocks (images, audio, etc.) are preserved in
-            the replacement message so multimodal context is not lost. The model can recover
+                - processed_message: New `ToolMessage` with truncated content
+                    and file reference
+                - evicted: Whether the content was evicted to the filesystem
+
+        !!! note
+
+            Text is extracted from all text content blocks, joined, and used for
+            both the size check and eviction. Non-text blocks
+            (images, audio, etc.) are preserved in the replacement message
+            so multimodal context is not lost. The model can recover
             the full text by reading the offloaded file from the backend.
         """
         # Early exit if eviction not configured
@@ -1967,7 +2191,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """Async version of _process_large_message.
 
         Uses async backend methods to avoid sync calls in async context.
-        See _process_large_message for full documentation.
+
+        See `_process_large_message` for full documentation.
         """
         # Early exit if eviction not configured
         if not self._tool_token_limit_before_evict:
@@ -2029,7 +2254,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             messages: The message list to inspect.
 
         Returns:
-            Tuple of (has_tagged, new_eviction_needed).
+            Tuple of `(has_tagged, new_eviction_needed)`.
         """
         if not self._human_message_token_limit_before_evict:
             return False, False
@@ -2051,11 +2276,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
     ) -> tuple[list[AnyMessage], Command | None]:
         """Tag a newly evicted message and truncate all tagged messages.
 
-        When a new eviction fires, uses `Overwrite` to atomically replace
-        the messages channel with a fully-identified list. A plain append of
-        the tagged message would not survive DeltaChannel replay: the original
-        `HumanMessage(id=None)` write gets a fresh UUID on replay that
-        doesn't match the eviction Command's ID, producing a duplicate.
+        When a new eviction fires, emits a `Command` whose messages update
+        contains only the tagged `HumanMessage`. Because `ensure_message_ids`
+        stamps a stable UUID onto the original write before it is checkpointed,
+        the tagged copy (which reuses that ID) is deduped in-place by the
+        `DeltaChannel` reducer — no `REMOVE_ALL_MESSAGES` sentinel is needed.
+        Using a sentinel would also clobber the `AIMessage` that the model node
+        writes in the same super-step.
 
         Args:
             messages: The message list (may be modified if write succeeded).
@@ -2064,7 +2291,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             file_path: Path the content was written to.
 
         Returns:
-            Tuple of (processed_messages, state_command).
+            Tuple of `(processed_messages, state_command)`.
         """
         state_command: Command | None = None
 
@@ -2079,7 +2306,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     },
                 }
             )
-            state_command = Command(update={"messages": Overwrite([*messages[:-1], tagged])})
+            state_command = Command(update={"messages": [tagged]})
             messages = [*messages[:-1], tagged]
 
         processed: list[AnyMessage] = []
@@ -2095,7 +2322,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self,
         request: ModelRequest[ContextT],
     ) -> tuple[list[AnyMessage], Command | None] | None:
-        """Evict a new oversized HumanMessage and truncate all tagged messages.
+        """Evict a new oversized `HumanMessage` and truncate all tagged messages.
 
         Returns `None` if no messages needed processing (fast path). Otherwise
         returns `(processed_messages, command)` where `command` is a state
@@ -2106,7 +2333,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             request: The model request being processed.
 
         Returns:
-            Tuple of (messages, command) if any processing occurred, else `None`.
+            Tuple of `(messages, command)` if any processing occurred, else `None`.
         """
         messages = list(request.messages)
         has_tagged, new_eviction_needed = self._check_eviction_needed(messages)
@@ -2132,7 +2359,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             request: The model request being processed.
 
         Returns:
-            Tuple of (messages, command) if any processing occurred, else `None`.
+            Tuple of `(messages, command)` if any processing occurred, else `None`.
         """
         messages = list(request.messages)
         has_tagged, new_eviction_needed = self._check_eviction_needed(messages)
@@ -2148,21 +2375,47 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         return self._apply_eviction_and_truncate(messages, write_result, file_path)
 
+    @staticmethod
+    def _unwrap_command_messages(update: Mapping[str, Any]) -> tuple[Any, bool]:
+        """Return the message list from a Command update and whether it was prefixed with a `REMOVE_ALL_MESSAGES` sentinel.
+
+        Tools that want to atomically replace the messages channel emit
+        `[RemoveMessage(REMOVE_ALL_MESSAGES), *messages]`. Detect that
+        sentinel so we can preserve it after processing.
+        """
+        command_messages = update.get("messages", [])
+        if (
+            isinstance(command_messages, list)
+            and command_messages
+            and isinstance(command_messages[0], RemoveMessage)
+            and command_messages[0].id == REMOVE_ALL_MESSAGES
+        ):
+            return command_messages[1:], True
+        return command_messages, False
+
+    @staticmethod
+    def _rewrap_command_messages(messages: list[AnyMessage], *, wrapped: bool) -> list[AnyMessage | RemoveMessage]:
+        """Restore the `REMOVE_ALL_MESSAGES` sentinel when the original update used one."""
+        if wrapped:
+            return [RemoveMessage(id=REMOVE_ALL_MESSAGES), *messages]
+        return list(messages)
+
     def _intercept_large_tool_result(self, tool_result: ToolMessage | Command, runtime: ToolRuntime) -> ToolMessage | Command:
         """Intercept and process large tool results before they're added to state.
 
         Args:
-            tool_result: The tool result to potentially evict (ToolMessage or Command).
+            tool_result: The tool result to potentially evict (`ToolMessage` or `Command`).
             runtime: The tool runtime providing access to the filesystem backend.
 
         Returns:
             Either the original result (if small enough) or a processed result with
-            evicted content written to filesystem and truncated message.
+                evicted content written to filesystem and truncated message.
 
-        Note:
-            Handles both single ToolMessage results and Command objects containing
-            multiple messages. Large content is automatically offloaded to filesystem
-            to prevent context window overflow.
+        !!! note
+
+            Handles both single `ToolMessage` results and `Command` objects
+            containing multiple messages. Large content is automatically
+            offloaded to filesystem to prevent context window overflow.
         """
         if isinstance(tool_result, ToolMessage):
             resolved_backend = self._get_backend(runtime)
@@ -2176,7 +2429,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             update = tool_result.update
             if update is None:
                 return tool_result
-            command_messages = update.get("messages", [])
+            command_messages, wrapped = self._unwrap_command_messages(update)
             resolved_backend = self._get_backend(runtime)
             processed_messages = []
             for message in command_messages:
@@ -2189,10 +2442,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     resolved_backend,
                 )
                 processed_messages.append(processed_message)
+            new_messages = self._rewrap_command_messages(processed_messages, wrapped=wrapped)
             return Command(
                 goto=tool_result.goto,
                 graph=tool_result.graph,
-                update={**update, "messages": processed_messages},
+                update={**update, "messages": new_messages},
             )
         msg = f"Unreachable code reached in _intercept_large_tool_result: for tool_result of type {type(tool_result)}"
         raise AssertionError(msg)
@@ -2201,7 +2455,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """Async version of _intercept_large_tool_result.
 
         Uses async backend methods to avoid sync calls in async context.
-        See _intercept_large_tool_result for full documentation.
+
+        See `_intercept_large_tool_result` for full documentation.
         """
         if isinstance(tool_result, ToolMessage):
             resolved_backend = self._get_backend(runtime)
@@ -2215,7 +2470,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             update = tool_result.update
             if update is None:
                 return tool_result
-            command_messages = update.get("messages", [])
+            command_messages, wrapped = self._unwrap_command_messages(update)
             resolved_backend = self._get_backend(runtime)
             processed_messages = []
             for message in command_messages:
@@ -2228,10 +2483,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     resolved_backend,
                 )
                 processed_messages.append(processed_message)
+            new_messages = self._rewrap_command_messages(processed_messages, wrapped=wrapped)
             return Command(
                 goto=tool_result.goto,
                 graph=tool_result.graph,
-                update={**update, "messages": processed_messages},
+                update={**update, "messages": new_messages},
             )
         msg = f"Unreachable code reached in _aintercept_large_tool_result: for tool_result of type {type(tool_result)}"
         raise AssertionError(msg)
@@ -2248,9 +2504,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             handler: The handler function to call with the modified request.
 
         Returns:
-            The raw ToolMessage, or a pseudo tool message with the ToolResult in state.
+            The raw `ToolMessage`, or a pseudo tool message with the `ToolResult` in state.
 
-        Note:
+        !!! note
+
             Tool-execution exceptions (including `ToolException`) propagate
             through this wrapper unhandled by design.
         """
@@ -2266,18 +2523,18 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
     ) -> ToolMessage | Command:
-        """(async)Check the size of the tool call result and evict to filesystem if too large.
+        """(async) Check the size of the tool call result and evict to filesystem if too large.
 
         Args:
             request: The tool call request being processed.
             handler: The handler function to call with the modified request.
 
         Returns:
-            The raw ToolMessage, or a pseudo tool message with the ToolResult in state.
+            The raw `ToolMessage`, or a pseudo tool message with the `ToolResult` in state.
 
         Note:
             Tool-execution exceptions (including `ToolException`) propagate
-            through this wrapper unhandled by design.
+                through this wrapper unhandled by design.
         """
         tool_result = await handler(request)
 

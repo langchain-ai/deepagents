@@ -43,6 +43,29 @@ def positive_int(value: str) -> int:
     return parsed
 
 
+def non_negative_int(value: str) -> int:
+    """Argparse type for integer arguments that must be >= 0.
+
+    Args:
+        value: Raw argument string to parse.
+
+    Returns:
+        Parsed non-negative integer.
+
+    Raises:
+        argparse.ArgumentTypeError: If `value` is not an integer or is < 0.
+    """
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        msg = f"invalid int value: {value!r}"
+        raise argparse.ArgumentTypeError(msg) from exc
+    if parsed < 0:
+        msg = f"must be a non-negative integer (>= 0), got {parsed}"
+        raise argparse.ArgumentTypeError(msg)
+    return parsed
+
+
 def _print_option_section(*lines: str, title: str = "Options") -> None:
     """Print a help-screen options section with shared JSON/help flags.
 
@@ -83,8 +106,15 @@ def show_help() -> None:
         "  dcode threads <list|delete>               Manage conversation threads"
     )
     console.print("  dcode mcp <login>                         Manage MCP servers")
+    console.print("  dcode config <show|list|get|path>         Inspect configuration")
+    console.print(
+        "  dcode auth <list|set|remove|status|path>  Manage provider credentials"
+    )
     console.print(
         "  dcode update                              Check for and install updates"
+    )
+    console.print(
+        "  dcode doctor                              Print install diagnostics"
     )
     console.print()
 
@@ -96,6 +126,9 @@ def show_help() -> None:
     console.print("  -M, --model MODEL          Model to use (e.g., gpt-5.5)")
     console.print(
         "  --model-params JSON        Extra model kwargs (e.g., '{\"temperature\": 0.7}')"  # noqa: E501
+    )
+    console.print(
+        "  --max-retries N            Override max retries for transient model errors"
     )
     console.print("  --profile-override JSON    Override model profile fields as JSON")
     console.print("  -m, --message TEXT         Initial prompt to auto-submit on start")
@@ -109,12 +142,10 @@ def show_help() -> None:
     console.print("  --sandbox TYPE             Remote sandbox for execution")
     console.print(
         "                             LangSmith is included;"
-        " Agentcore/Modal/Daytona/Runloop"
+        " Agentcore/Modal/Daytona/Runloop/Vercel"
         " require downloading extras"
     )
-    console.print(
-        "  --sandbox-id ID            Reuse existing sandbox (skips creation/cleanup)"
-    )
+    console.print("  --sandbox-id ID            Attach to existing sandbox")
     console.print("  --sandbox-snapshot-name NAME")
     console.print(
         "                             Snapshot (langsmith) or blueprint (runloop)"
@@ -138,7 +169,7 @@ def show_help() -> None:
     )
     console.print(
         "  --interpreter-tools VALUE  PTC allowlist: 'safe', 'all', or comma-separated "
-        "tool names"
+        "tool names (may include 'safe')"
     )
     console.print("  -n, --non-interactive MSG  Run a single task and exit")
     console.print("  -q, --quiet                Clean output for piping (needs -n)")
@@ -163,6 +194,9 @@ def show_help() -> None:
     console.print("  --clear-default-model      Clear the default model")
     console.print(
         "  --update                   Check for and install updates, then exit"
+    )
+    console.print(
+        "  --prerelease               With --update, include alpha/beta/rc releases"
     )
     console.print(
         "  --auto-update              Toggle automatic updates on or off, then exit"
@@ -410,11 +444,50 @@ def show_update_help() -> None:
         "Check for and install updates from PyPI.",
     )
     console.print()
-    _print_option_section()
+    _print_option_section(
+        "  --prerelease            Include alpha/beta/rc releases",
+    )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  dcode update")
+    console.print("  dcode update --prerelease")
     console.print("  dcode update --json")
+    console.print()
+
+
+def show_doctor_help() -> None:
+    """Show help information for the `doctor` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode doctor [options]", markup=False)
+    console.print()
+    console.print(
+        "Print install health and diagnostics (versions, platform, install",
+    )
+    console.print(
+        "method, update status, and config locations). Runs offline and is",
+    )
+    console.print(
+        "safe to paste into a bug report.",
+    )
+    console.print()
+    _print_option_section()
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode doctor")
+    console.print("  dcode doctor --json")
+    console.print()
+    console.print(
+        "Tip: Run `dcode config show` or `dcode config get <key>` "
+        "to drill into config details.",
+        style=theme.MUTED,
+        highlight=False,
+    )
+    console.print(
+        "     Run `dcode --version` (or `dcode -v`) for dependency versions.",
+        style=theme.MUTED,
+        highlight=False,
+    )
     console.print()
 
 
@@ -507,6 +580,81 @@ def show_mcp_config_help() -> None:
     )
     console.print()
     _print_mcp_discovery_paths()
+    console.print()
+
+
+def show_config_help() -> None:
+    """Show help information for the `config` subcommand.
+
+    Invoked via the `-h` argparse action, the startup fast-path, or
+    `run_config_command` when no config subcommand is given. Kept import-light
+    so it stays on the startup fast path.
+    """
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode config <command> [options]")
+    console.print()
+    console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
+    console.print("  show              Show effective values and their source")
+    console.print("  list|ls           List all available options")
+    console.print("  get <key>         Show one option's value and source")
+    console.print("  path              Show config file locations")
+    console.print()
+    _print_option_section()
+    console.print()
+    console.print(
+        "  Credentials are reported as set/not set only; values are never printed.",
+        style=theme.MUTED,
+    )
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode config show")
+    console.print("  dcode config list --json")
+    console.print("  dcode config get interpreter.memory_limit_mb")
+    console.print("  dcode config path")
+    console.print()
+
+
+def show_auth_help() -> None:
+    """Show help information for the `auth` subcommand.
+
+    Invoked via the `-h` argparse action, the startup fast-path, or
+    `run_auth_command` when no auth subcommand is given. Kept import-light so
+    it stays on the startup fast path.
+    """
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode auth <command> [options]")
+    console.print()
+    console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
+    console.print("  list|ls               List providers and their status")
+    console.print("  set <provider>        Store an API key (read from stdin)")
+    console.print("  remove <provider>     Remove a stored credential (rm|delete)")
+    console.print("  status <provider>     Show resolution source for one provider")
+    console.print("  path                  Print the resolved auth.json path")
+    console.print()
+    console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
+    console.print("  --from-env VAR        With `set`, copy the key from env var VAR")
+    console.print("  --project NAME        With `set langsmith`, set the trace project")
+    console.print("  -h, --help            Show this help message")
+    console.print()
+    console.print(
+        "  Keys are read from stdin by default so they never land in shell"
+        " history or argv. An interactive terminal is rejected; pipe the key"
+        " or use --from-env.",
+        style=theme.MUTED,
+    )
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode auth list")
+    console.print("  echo $ANTHROPIC_API_KEY | dcode auth set anthropic")
+    console.print("  dcode auth set openai --from-env OPENAI_API_KEY")
+    console.print(
+        "  echo $LANGSMITH_API_KEY | dcode auth set langsmith --project my-app"
+    )
+    console.print("  dcode auth status anthropic")
+    console.print("  dcode auth remove anthropic")
+    console.print("  dcode auth path")
     console.print()
 
 

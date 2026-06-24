@@ -16,11 +16,45 @@ from importlib.metadata import (
     distribution,
     version as pkg_version,
 )
+from typing import Literal
 
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 
 logger = logging.getLogger(__name__)
+
+SdkVersionStatus = Literal["resolved", "not_installed", "error"]
+"""Outcome of an SDK version lookup.
+
+`"not_installed"` means the package metadata is genuinely absent;
+`"error"` means an unexpected failure occurred while reading it. Callers
+that don't care which kind of failure happened can treat both the same.
+"""
+
+
+def resolve_sdk_version() -> tuple[str | None, SdkVersionStatus]:
+    """Resolve the installed `deepagents` SDK version from package metadata.
+
+    Single source of truth for the lookup that `--version`, `/version`, and
+    `doctor` each used to reimplement. Distinguishes a genuinely missing
+    package from an unexpected metadata error so diagnostic callers can report
+    the two differently, while collapse-friendly callers can ignore the split.
+
+    Returns:
+        `(version, status)`. `version` is the resolved version string when
+            `status` is `"resolved"`, otherwise `None`.
+    """
+    try:
+        return pkg_version("deepagents"), "resolved"
+    except PackageNotFoundError:
+        logger.debug("deepagents SDK package not found in environment")
+        return None, "not_installed"
+    except Exception:  # Best-effort lookup; never propagate to the caller
+        logger.warning(
+            "Unexpected error looking up deepagents SDK version", exc_info=True
+        )
+        return None, "error"
+
 
 _EXTRA_MARKER_RE = re.compile(r"""extra\s*==\s*["']([^"']+)["']""")
 
@@ -66,7 +100,9 @@ MODEL_PROVIDER_EXTRAS: frozenset[str] = frozenset(
 Keep in sync with `[project.optional-dependencies]` in `pyproject.toml`.
 """
 
-SANDBOX_EXTRAS: frozenset[str] = frozenset({"agentcore", "daytona", "modal", "runloop"})
+SANDBOX_EXTRAS: frozenset[str] = frozenset(
+    {"agentcore", "daytona", "modal", "runloop", "vercel"}
+)
 """Optional extras that add sandbox integrations."""
 
 STANDALONE_EXTRAS: frozenset[str] = frozenset({"quickjs"})
@@ -137,7 +173,7 @@ class ExtraDependencyStatus:
 
     @property
     def ready(self) -> bool:
-        """Return whether all declared packages for this extra are installed."""
+        """Whether all declared packages for this extra are installed."""
         return bool(self.installed) and not self.missing
 
 
@@ -406,6 +442,85 @@ def format_extras_status_plain(status: ExtrasStatus) -> str:
         f"  {extra.ljust(extra_width)}  {pkg.ljust(package_width)}  {version}"
         for extra, pkg, version in rows
     )
+    return "\n".join(lines)
+
+
+CORE_DEPENDENCIES: tuple[str, ...] = (
+    "langchain",
+    "langchain-core",
+    "langgraph",
+    "langgraph-checkpoint",
+    "langgraph-prebuilt",
+    "langgraph-sdk",
+    "langsmith",
+)
+"""Core LangChain-ecosystem packages surfaced for editable installs.
+
+The deepagents SDK is reported separately by `/version`, so it is omitted
+here. These are the packages a local checkout is most likely to pin or
+override, so their resolved versions help diagnose editable environments.
+"""
+
+
+def get_core_dependency_versions() -> list[tuple[str, str | None]]:
+    """Return `(package, version)` pairs for the core ecosystem dependencies.
+
+    Returns:
+        One entry per package in `CORE_DEPENDENCIES`, in declaration order.
+            The version is `None` when the package is not installed.
+    """
+    versions: list[tuple[str, str | None]] = []
+    for name in CORE_DEPENDENCIES:
+        try:
+            versions.append((name, pkg_version(name)))
+        except PackageNotFoundError:
+            versions.append((name, None))
+    return versions
+
+
+def format_core_dependencies_plain() -> str:
+    """Render core ecosystem dependency versions as column-aligned plain text.
+
+    Suitable for stdout in non-interactive contexts (e.g. the `--version`
+    CLI flag) where a markdown renderer is unavailable.
+
+    Returns:
+        Multi-line string with a heading and one `package  version` row per
+            core dependency. Missing packages are reported as `not installed`.
+    """
+    rows = [
+        (name, version or "not installed")
+        for name, version in get_core_dependency_versions()
+    ]
+    package_width = max(len(name) for name, _ in rows)
+    lines = ["Core dependencies:"]
+    lines.extend(f"  {name.ljust(package_width)}  {version}" for name, version in rows)
+    return "\n".join(lines)
+
+
+def format_core_dependencies() -> str:
+    """Render core ecosystem dependency versions as a markdown fragment.
+
+    Returns:
+        Multi-line markdown string with a heading and a pipe table listing
+            each core package and its resolved version (or `not installed`).
+    """
+    rows = [
+        (name, version or "not installed")
+        for name, version in get_core_dependency_versions()
+    ]
+    headers = ("Package", "Version")
+
+    def _row(cells: tuple[str, str]) -> str:
+        return "| " + " | ".join(cells) + " |"
+
+    lines = [
+        "### Core dependencies",
+        "",
+        _row(headers),
+        "| " + " | ".join("---" for _ in headers) + " |",
+        *(_row(row) for row in rows),
+    ]
     return "\n".join(lines)
 
 

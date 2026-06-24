@@ -396,9 +396,16 @@ class TestReloadFromEnvironment:
             "PYTHONPATH=/tmp/evil\n"
             "PATH=/tmp/evil\n"
             "NODE_OPTIONS=--require /tmp/evil.js\n"
+            "DEEPAGENTS_INHERITED_PYTHONPATH=/tmp/evil\n"
             "OPENAI_API_KEY=sk-ok\n"
         )
-        for key in ("LD_PRELOAD", "PYTHONPATH", "NODE_OPTIONS", "OPENAI_API_KEY"):
+        for key in (
+            "LD_PRELOAD",
+            "PYTHONPATH",
+            "NODE_OPTIONS",
+            "DEEPAGENTS_INHERITED_PYTHONPATH",
+            "OPENAI_API_KEY",
+        ):
             monkeypatch.delenv(key, raising=False)
 
         _load_dotenv(start_path=tmp_path)
@@ -406,6 +413,9 @@ class TestReloadFromEnvironment:
         assert "LD_PRELOAD" not in os.environ
         assert "PYTHONPATH" not in os.environ
         assert "NODE_OPTIONS" not in os.environ
+        # The carrier var must not be injectable from `.env`, or a project could
+        # smuggle a PYTHONPATH into agent `execute` commands through it.
+        assert "DEEPAGENTS_INHERITED_PYTHONPATH" not in os.environ
         assert os.environ["OPENAI_API_KEY"] == "sk-ok"
 
     def test_multiple_simultaneous_changes(

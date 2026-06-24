@@ -250,16 +250,14 @@ class StateBackend(BackendProtocol):
         file_path: str,
         content: str,
     ) -> WriteResult:
-        """Create a new file with content.
+        """Write content to a file, creating it or overwriting it if it already exists.
 
         The update is queued directly via `CONFIG_KEY_SEND`.
         """
         files = self._read_files()
 
-        if file_path in files:
-            return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
-
-        new_file_data = create_file_data(content)
+        existing = files.get(file_path)
+        new_file_data = update_file_data(existing, content) if existing is not None else create_file_data(content)
         self._send_files_update({file_path: self._prepare_for_storage(new_file_data)})
         return WriteResult(path=file_path)
 

@@ -596,20 +596,19 @@ class StoreBackend(BackendProtocol):
         file_path: str,
         content: str,
     ) -> WriteResult:
-        """Create a new file with content.
+        """Write content to a file, creating it or overwriting it if it already exists.
 
         Returns WriteResult on success or error.
         """
         store = self._get_store()
         namespace = self._get_namespace()
 
-        # Check if file exists
         existing = store.get(namespace, file_path)
         if existing is not None:
-            return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
-
-        # Create new file
-        file_data = create_file_data(content)
+            existing_file_data = self._convert_store_item_to_file_data(existing)
+            file_data = update_file_data(existing_file_data, content)
+        else:
+            file_data = create_file_data(content)
         store_value = self._convert_file_data_to_store_value(file_data)
         store.put(namespace, file_path, store_value)
         return WriteResult(path=file_path)
@@ -626,13 +625,12 @@ class StoreBackend(BackendProtocol):
         store = self._get_store()
         namespace = self._get_namespace()
 
-        # Check if file exists using async method
         existing = await store.aget(namespace, file_path)
         if existing is not None:
-            return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
-
-        # Create new file using async method
-        file_data = create_file_data(content)
+            existing_file_data = self._convert_store_item_to_file_data(existing)
+            file_data = update_file_data(existing_file_data, content)
+        else:
+            file_data = create_file_data(content)
         store_value = self._convert_file_data_to_store_value(file_data)
         await store.aput(namespace, file_path, store_value)
         return WriteResult(path=file_path)

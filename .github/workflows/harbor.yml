@@ -428,6 +428,10 @@ jobs:
             --agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}'
             --agent-env 'LANGSMITH_TRACING=true'
             --agent-env "LANGSMITH_PROJECT=${HARBOR_LANGSMITH_EXPERIMENT}"
+            # langchain-fireworks is a project dep for every model and needs the
+            # fireworks-ai pre-release, so allow prereleases regardless of model.
+            # (Honored by the respect-uv-prerelease harbor build set above.)
+            --agent-env UV_PRERELEASE=allow
           )
           model_provider="${HARBOR_MODEL%%:*}"
           case "$model_provider" in
@@ -439,7 +443,6 @@ jobs:
             fireworks)
               agent_env_args+=(
                 --agent-env 'FIREWORKS_API_KEY=${FIREWORKS_API_KEY}'
-                --agent-env UV_PRERELEASE=allow
               )
               ;;
             ollama)       agent_env_args+=(--agent-env 'OLLAMA_API_KEY=${OLLAMA_API_KEY}' --agent-env 'OLLAMA_HOST=${OLLAMA_HOST}') ;;

@@ -137,7 +137,7 @@ class TestValidateSkillName:
         """Unicode lowercase names should be accepted (matching SDK behavior).
 
         The SDK's `_validate_skill_name` accepts any character where
-        ``c.isalpha() and c.islower()`` or ``c.isdigit()`` is True.
+        `c.isalpha() and c.islower()` or `c.isdigit()` is True.
         """
         valid_unicode_names = [
             "caf\u00e9",  # cafe with accent

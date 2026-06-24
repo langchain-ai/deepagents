@@ -2,6 +2,109 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.22](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.21...deepagents-code==0.1.22) (2026-06-24)
+
+### Features
+
+* Add LangSmith tracing config to `/auth` ([#4193](https://github.com/langchain-ai/deepagents/issues/4193)) ([8e62957](https://github.com/langchain-ai/deepagents/commit/8e6295791093c2ddfec7e6ac57f0df7f12048447))
+* Auto-retry credentials-blocked startup after `/auth` ([#4176](https://github.com/langchain-ai/deepagents/issues/4176)) ([d10ba3d](https://github.com/langchain-ai/deepagents/commit/d10ba3dc162e47cc71df56b8e3d0000b6e0ed847))
+* Improve onboarding Installed Integrations screen ([#4195](https://github.com/langchain-ai/deepagents/issues/4195)) ([0827bf1](https://github.com/langchain-ai/deepagents/commit/0827bf1b635b825121740ac8946dd6d98c815c7d))
+
+### Bug Fixes
+
+* Exclude managed bin dir from agent picker ([#4190](https://github.com/langchain-ai/deepagents/issues/4190)) ([d869d1e](https://github.com/langchain-ai/deepagents/commit/d869d1e1fa8558510fb48e71f78fb74c69ca4840))
+* Warn on `/trace` when thread has no messages ([#4162](https://github.com/langchain-ai/deepagents/issues/4162)) ([c338fc9](https://github.com/langchain-ai/deepagents/commit/c338fc914fcd383beb4b97c13f53dfb2684f8c90))
+* Hide "Recent" section during onboarding model selection ([#4198](https://github.com/langchain-ai/deepagents/issues/4198)) ([af882e4](https://github.com/langchain-ai/deepagents/commit/af882e4f6c859878e350d8a37bb75b7bc01bb453))
+* Keep auth modal interactive after install-on-select ([#4187](https://github.com/langchain-ai/deepagents/issues/4187)) ([afbc56a](https://github.com/langchain-ai/deepagents/commit/afbc56a1d9dbe8a89015f4c2f90bb87547d5c1d4))
+* Generic "missing credentials" in model switcher ([#4182](https://github.com/langchain-ai/deepagents/issues/4182)) ([456ce5c](https://github.com/langchain-ai/deepagents/commit/456ce5c2f5487a754d1fea7046e32c03b7e27a17))
+* Hide chat input action buttons in same frame as empty draft ([#4178](https://github.com/langchain-ai/deepagents/issues/4178)) ([f94d417](https://github.com/langchain-ai/deepagents/commit/f94d417d5ad9928db967777fe1d7bc2c37684fb9))
+* Preserve uv tool context when installing extras ([#4201](https://github.com/langchain-ai/deepagents/issues/4201)) ([fcc616c](https://github.com/langchain-ai/deepagents/commit/fcc616cf9bc2bbc7b2dc2574ae8649e2f270dc53))
+* Unpin uv self-updates and warn when a stale dcode shadows PATH ([#4185](https://github.com/langchain-ai/deepagents/issues/4185)) ([8ca0a18](https://github.com/langchain-ai/deepagents/commit/8ca0a185a15f800267cc057178a348fb5063df1e))
+
+## [0.1.21](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.20...deepagents-code==0.1.21) (2026-06-23)
+
+### Features
+
+* `dcode doctor` diagnostics command ([#4148](https://github.com/langchain-ai/deepagents/issues/4148)) ([8179731](https://github.com/langchain-ai/deepagents/commit/81797312c7d857e7d94d03c9c695cd3c8d88799a))
+* Add structured TUI display for `js_eval` ([#4151](https://github.com/langchain-ai/deepagents/issues/4151)) ([91c0dae](https://github.com/langchain-ai/deepagents/commit/91c0dae3fe0253f02a5926fcd3c6f796cd8d11fe))
+* Allow dependency updates without requiring release ([#4157](https://github.com/langchain-ai/deepagents/issues/4157)) ([7beb97a](https://github.com/langchain-ai/deepagents/commit/7beb97a2b02e2fd238baf3b6f05d43a4accf3f42))
+* Clear chat input via `esc+esc`, add `[ X ]/[ COPY ]` buttons ([#4000](https://github.com/langchain-ai/deepagents/issues/4000)) ([c20546f](https://github.com/langchain-ai/deepagents/commit/c20546feac7876786e6816776d1ccfa5fcd4b2c8))
+* Confirm "Launched" after auto-update restart ([#4098](https://github.com/langchain-ai/deepagents/issues/4098)) ([df8db8a](https://github.com/langchain-ai/deepagents/commit/df8db8af6a7cbfc2ab535020b951d73759da73dd))
+* Surface tracing in `doctor` and `config show` ([#4163](https://github.com/langchain-ai/deepagents/issues/4163)) ([2bb3e44](https://github.com/langchain-ai/deepagents/commit/2bb3e44243553a5f2954a0f3ec42364563842a87))
+
+### Bug Fixes
+
+* Handle LangSmith project-not-found and default tracing project ([#4153](https://github.com/langchain-ai/deepagents/issues/4153)) ([e303ce9](https://github.com/langchain-ai/deepagents/commit/e303ce986a3595f0cf458e796d857f7c8f5f8b5c))
+* Make `/timestamps` toggle instant via per-footer class ([#4095](https://github.com/langchain-ai/deepagents/issues/4095)) ([7ae32b0](https://github.com/langchain-ai/deepagents/commit/7ae32b0a606cc200d4311e11036a65f17e8282b3))
+* Refocus `/mcp` filter input after in-place refresh ([#4080](https://github.com/langchain-ai/deepagents/issues/4080)) ([d79cd74](https://github.com/langchain-ai/deepagents/commit/d79cd74cb8a44c300c3bbad712fe77e709f9221a))
+* Report same-version dependency updates ([#4146](https://github.com/langchain-ai/deepagents/issues/4146)) ([156e118](https://github.com/langchain-ai/deepagents/commit/156e1185242a19746f8c268904637c73f07b9a10))
+* Show "Loading..." in `/threads` agent dropdown while loading ([#4101](https://github.com/langchain-ai/deepagents/issues/4101)) ([c2d949e](https://github.com/langchain-ai/deepagents/commit/c2d949e8765fbbbdb81e5a70125932842358099f))
+* Skip tool interrupts once auto-approve is set ([#4092](https://github.com/langchain-ai/deepagents/issues/4092)) ([9e21c34](https://github.com/langchain-ai/deepagents/commit/9e21c346a6eb8ad25b9cc671f24527b07732e2b7))
+* Word-delete backspace parity in ask-user text area ([#4079](https://github.com/langchain-ai/deepagents/issues/4079)) ([ed3c499](https://github.com/langchain-ai/deepagents/commit/ed3c499354467bc5e8476e5c7cdf0cd5f8b6aec1))
+
+## [0.1.20](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.19...deepagents-code==0.1.20) (2026-06-17)
+
+### Features
+
+* Manage Tavily web-search API key in `/auth` ([#4062](https://github.com/langchain-ai/deepagents/issues/4062)) ([90cc099](https://github.com/langchain-ai/deepagents/commit/90cc099b0998a9aa55df01e3bc12ad1597c65365))
+* Surface uninstalled known providers in `/auth` menu ([#4059](https://github.com/langchain-ai/deepagents/issues/4059)) ([73db271](https://github.com/langchain-ai/deepagents/commit/73db2719bce5ad3c933ffee643df4a62cfd60e17))
+* Show provider in usage stats table ([#4049](https://github.com/langchain-ai/deepagents/issues/4049)) ([309b054](https://github.com/langchain-ai/deepagents/commit/309b054fdd040adb5086408a3bcb2550ba73439e))
+* Quiet install script's full dependency list ([#4058](https://github.com/langchain-ai/deepagents/issues/4058)) ([de2c9fd](https://github.com/langchain-ai/deepagents/commit/de2c9fd8c7437fdcdfe738599f83808c5423c55c))
+
+### Bug Fixes
+
+* Read `LANGSMITH_PROJECT` for `tracing.langsmith_project` + show default ([#4054](https://github.com/langchain-ai/deepagents/issues/4054)) ([fec1551](https://github.com/langchain-ai/deepagents/commit/fec1551e901a4fe88bd74ee4833a91ef93b1e93f))
+* Surface recommended models missing from installed provider profiles ([#4057](https://github.com/langchain-ai/deepagents/issues/4057)) ([56e0d31](https://github.com/langchain-ai/deepagents/commit/56e0d31b6c507d5a1e95c3f2058a8d3b9488a4db))
+* Clarify post-update restart semantics ([#4046](https://github.com/langchain-ai/deepagents/issues/4046)) ([6318b81](https://github.com/langchain-ai/deepagents/commit/6318b817399f7dd2f2e6dc07987dca46f1da9886))
+* Hide `[SYSTEM]` interrupt notices from `/threads` prompt ([#3988](https://github.com/langchain-ai/deepagents/issues/3988)) ([68fa0cb](https://github.com/langchain-ai/deepagents/commit/68fa0cb4d48ff3f3e552bbf16f8316433c7b6f34))
+* Keep install-required `/model` rows dimmed after navigation ([#4048](https://github.com/langchain-ai/deepagents/issues/4048)) ([c499634](https://github.com/langchain-ai/deepagents/commit/c499634c530dcab9b18e3126b4573ff0d36c3efa))
+* Rescaffold server workspace on `/restart` when config is missing ([#4050](https://github.com/langchain-ai/deepagents/issues/4050)) ([de51b0e](https://github.com/langchain-ai/deepagents/commit/de51b0e082293f5f795d96d3bf717c82efb9337e))
+* Remove transient `Restarting server...` message after restart ([#4047](https://github.com/langchain-ai/deepagents/issues/4047)) ([87cc504](https://github.com/langchain-ai/deepagents/commit/87cc50428bc96ef11dfb11cee4020bff322a7216))
+* Suppress model-switch defer toast on bare reconnect ([#4060](https://github.com/langchain-ai/deepagents/issues/4060)) ([60b1052](https://github.com/langchain-ai/deepagents/commit/60b10520d24c87b9c8c9d85b94cffae9e3c67c43))
+
+## [0.1.19](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.18...deepagents-code==0.1.19) (2026-06-17)
+
+### Features
+
+* Add latest frontier models to recommended list ([#4045](https://github.com/langchain-ai/deepagents/issues/4045)) ([1145356](https://github.com/langchain-ai/deepagents/commit/114535637eaee383c64eac5282bc9ac57007c83f))
+* Dual-write agent traces to extra LangSmith projects ([#3998](https://github.com/langchain-ai/deepagents/issues/3998)) ([1b94cf3](https://github.com/langchain-ai/deepagents/commit/1b94cf322949e0cafd6f2bacf343fb0044ec5a8c))
+* Prompt to install provider when selecting an uninstalled model ([#3981](https://github.com/langchain-ai/deepagents/issues/3981)) ([619207c](https://github.com/langchain-ai/deepagents/commit/619207c8d4d4308a9a3ab9d2d039506feeaf8a67))
+* Note minimum OpenAI key permissions in `/auth` ([#4040](https://github.com/langchain-ai/deepagents/issues/4040)) ([14be63d](https://github.com/langchain-ai/deepagents/commit/14be63d476ed8dece75e20fff05016122c258be8))
+
+### Bug Fixes
+
+* Exclude prompt prefix from `UserMessage` selection ([#4002](https://github.com/langchain-ai/deepagents/issues/4002)) ([8ee6ba6](https://github.com/langchain-ai/deepagents/commit/8ee6ba6e64895d3d36a5957627221ed7667bc1d4))
+
+## [0.1.18](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.17...deepagents-code==0.1.18) (2026-06-16)
+
+### Features
+
+* Add provider-specific auth guidance ([#4004](https://github.com/langchain-ai/deepagents/issues/4004)) ([6a39247](https://github.com/langchain-ai/deepagents/commit/6a392471ba30089b1a63135494873d55209bb081))
+
+## [0.1.17](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.16...deepagents-code==0.1.17) (2026-06-16)
+
+### Features
+
+* Make auto-update opt-out by default ([#3994](https://github.com/langchain-ai/deepagents/issues/3994)) ([7ff6e22](https://github.com/langchain-ai/deepagents/commit/7ff6e2224d7ba8462c073333da937c35831f9b34))
+* Warn on `--interpreter-tools` without `--interpreter` ([#3976](https://github.com/langchain-ai/deepagents/issues/3976)) ([e68e720](https://github.com/langchain-ai/deepagents/commit/e68e720e2c3caa4e4e7c5e937faf718db7ad2e98))
+* Add pre-release update support ([#3960](https://github.com/langchain-ai/deepagents/issues/3960)) ([341a5cc](https://github.com/langchain-ai/deepagents/commit/341a5cc55a30d808dbb366b396923c7801c431d2))
+* Add agent filter dropdown to `/threads` picker ([#3677](https://github.com/langchain-ai/deepagents/issues/3677)) ([f8193df](https://github.com/langchain-ai/deepagents/commit/f8193df41d7c47626d94252039217f4079d117cd))
+* Non-interactive `deepagents auth` subcommands ([#3910](https://github.com/langchain-ai/deepagents/issues/3910)) ([11a71bb](https://github.com/langchain-ai/deepagents/commit/11a71bbf00c4e6c1f989e70fb3472a65c8d39662))
+* Prompt before updating an out-of-date dcode install ([#3995](https://github.com/langchain-ai/deepagents/issues/3995)) ([a5ec6dd](https://github.com/langchain-ai/deepagents/commit/a5ec6dd0fec66ad321c1cc0f5e2f990c9026e03f))
+
+### Bug Fixes
+
+* Guard against misconfigured LangSmith tracing ([#3993](https://github.com/langchain-ai/deepagents/issues/3993)) ([81acc2e](https://github.com/langchain-ai/deepagents/commit/81acc2ecdada55a98e512f96b0caf8cb0f2c6d29))
+* Guard restart-prompt import against in-place self-upgrade ([#3980](https://github.com/langchain-ai/deepagents/issues/3980)) ([7af13f6](https://github.com/langchain-ai/deepagents/commit/7af13f6ec2440c2e3eb63bad2ff31e809f772804))
+* Skip startup auto-update when already updated in-session ([#3915](https://github.com/langchain-ai/deepagents/issues/3915)) ([3ba3471](https://github.com/langchain-ai/deepagents/commit/3ba347138ac61a474bad58365fdeaa0d00cc1a42))
+
+## [0.1.16](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.15...deepagents-code==0.1.16) (2026-06-13)
+
+### Features
+
+* ChatGPT OAuth sign-in for Codex models ([#3532](https://github.com/langchain-ai/deepagents/issues/3532)) ([202e0bd](https://github.com/langchain-ai/deepagents/commit/202e0bd3e5b8b874a69656815489308d75a77d05))
+* Add Vercel Sandbox provider ([#3588](https://github.com/langchain-ai/deepagents/issues/3588)) ([e5e4748](https://github.com/langchain-ai/deepagents/commit/e5e4748cb6c66ddaa9444ab464990c1a5d10854d))
+
 ## [0.1.15](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.14...deepagents-code==0.1.15) (2026-06-12)
 
 ### Features

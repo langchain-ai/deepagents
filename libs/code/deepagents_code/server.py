@@ -367,6 +367,7 @@ class ServerProcess:
         port: int = _DEFAULT_PORT,
         config_dir: str | Path | None = None,
         owns_config_dir: bool = False,
+        scaffold: Callable[[Path], None] | None = None,
     ) -> None:
         """Initialize server process manager.
 
@@ -379,11 +380,17 @@ class ServerProcess:
             config_dir: Directory containing `langgraph.json`.
             owns_config_dir: When `True`, the server will delete `config_dir`
                 on `stop()`.
+            scaffold: Optional callable that (re)generates the working
+                directory's `langgraph.json` and supporting files. When the
+                config is missing at `start()` (e.g. the temp dir was purged
+                between the initial boot and a later `/restart`), it is invoked
+                to rebuild the workspace instead of failing.
         """
         self.host = host
         self.port = port
         self.config_dir = Path(config_dir) if config_dir else None
         self._owns_config_dir = owns_config_dir
+        self._scaffold = scaffold
         self._process: subprocess.Popen | None = None
         self._temp_dir: tempfile.TemporaryDirectory | None = None
         self._log_file: tempfile.NamedTemporaryFile | None = None  # ty: ignore[invalid-type-form]
@@ -442,11 +449,37 @@ class ServerProcess:
             work_dir = Path(self._temp_dir.name)
 
         config_path = work_dir / "langgraph.json"
+        if not config_path.exists() and self._scaffold is not None:
+            # The config can vanish between the initial boot and a later
+            # `/restart` (e.g. the OS tmp reaper purging the temp work dir).
+            # Rebuild it rather than failing the restart.
+            logger.info("langgraph.json missing in %s; rescaffolding", work_dir)
+            try:
+                work_dir.mkdir(parents=True, exist_ok=True)
+                self._scaffold(work_dir)
+            except OSError as exc:
+                # Surface the failure with restart context instead of letting a
+                # bare OSError (e.g. ENOSPC/EACCES on a degraded temp fs) escape
+                # stripped of the recovery framing. Chained so the root cause
+                # stays in the traceback.
+                msg = f"Failed to rescaffold server workspace at {work_dir}: {exc}"
+                raise RuntimeError(msg) from exc
         if not config_path.exists():
-            msg = (
-                f"langgraph.json not found in {work_dir}. "
-                "Call generate_langgraph_json() first."
-            )
+            if self._scaffold is not None:
+                # The scaffold hook ran but produced no langgraph.json (a silent
+                # no-op or a write to the wrong path). The "call
+                # generate_langgraph_json() first" advice below would misdirect,
+                # since the scaffold is exactly that call run internally.
+                contents = sorted(p.name for p in work_dir.iterdir())
+                msg = (
+                    f"Rescaffolding {work_dir} did not produce langgraph.json "
+                    f"(directory contents: {contents})."
+                )
+            else:
+                msg = (
+                    f"langgraph.json not found in {work_dir}. "
+                    "Call generate_langgraph_json() first."
+                )
             raise RuntimeError(msg)
 
         if _port_in_use(self.host, self.port):

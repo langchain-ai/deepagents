@@ -2655,3 +2655,94 @@ class TestInitialPromptFromMessages:
             [{"role": "assistant", "content": "ack"}]
         )
         assert result is None
+
+    def test_skips_system_prefixed_human_message(self) -> None:
+        """Synthetic `[SYSTEM]` interrupt notices are not used as the prompt."""
+        from langchain_core.messages import HumanMessage
+
+        result = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [
+                HumanMessage(
+                    content="[SYSTEM] Task interrupted by user. "
+                    "Previous operation was cancelled."
+                ),
+                HumanMessage(content="real prompt"),
+            ]
+        )
+        assert result == "real prompt"
+
+    def test_skips_system_prefixed_dict_message(self) -> None:
+        """`[SYSTEM]`-prefixed OpenAI-shape dicts are skipped too."""
+        result = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [
+                {"role": "user", "content": "[SYSTEM] Task interrupted by user."},
+                {"role": "user", "content": "real prompt"},
+            ]
+        )
+        assert result == "real prompt"
+
+    def test_returns_none_when_only_system_message(self) -> None:
+        """A lone `[SYSTEM]` message yields no displayable prompt."""
+        from langchain_core.messages import HumanMessage
+
+        result = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [HumanMessage(content="[SYSTEM] Task interrupted by user.")]
+        )
+        assert result is None
+
+    def test_skips_system_message_across_mixed_shapes(self) -> None:
+        """Skipping advances across object/dict shapes, not just within one.
+
+        The first write to `messages` is a raw dict; later writes are serialized
+        `BaseMessage` instances, so a real thread mixes the two shapes. The skip
+        must carry over from a `[SYSTEM]` dict to a real `HumanMessage` object
+        and vice versa.
+        """
+        from langchain_core.messages import HumanMessage
+
+        dict_then_object = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [
+                {"role": "user", "content": "[SYSTEM] Task interrupted by user."},
+                HumanMessage(content="real prompt"),
+            ]
+        )
+        assert dict_then_object == "real prompt"
+
+        object_then_dict = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [
+                HumanMessage(content="[SYSTEM] Task interrupted by user."),
+                {"role": "user", "content": "real prompt"},
+            ]
+        )
+        assert object_then_dict == "real prompt"
+
+    def test_skips_consecutive_system_messages(self) -> None:
+        """A run of several `[SYSTEM]` messages is skipped, not just the first."""
+        from langchain_core.messages import HumanMessage
+
+        result = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [
+                HumanMessage(content="[SYSTEM] first notice"),
+                HumanMessage(content="[SYSTEM] second notice"),
+                HumanMessage(content="real prompt"),
+            ]
+        )
+        assert result == "real prompt"
+
+    def test_empty_first_content_returns_without_falling_through(self) -> None:
+        """Empty (non-`[SYSTEM]`) first content returns as-is, not skipped.
+
+        Only `[SYSTEM]`-prefixed content is skipped; an empty-string first human
+        message is returned verbatim (`""`) rather than falling through to a
+        later message. This pins the `prompt is not None` guard so a future
+        "skip empties" change cannot silently alter behavior.
+        """
+        from langchain_core.messages import HumanMessage
+
+        result = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [
+                HumanMessage(content=""),
+                HumanMessage(content="real prompt"),
+            ]
+        )
+        assert result == ""

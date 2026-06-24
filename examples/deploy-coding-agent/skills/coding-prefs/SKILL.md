@@ -5,7 +5,7 @@ description: Read the user's coding preferences from /memory/coding-prefs.md bef
 
 # Coding Preferences Skill
 
-Use this skill to keep ``/memory/coding-prefs.md`` in sync with how this
+Use this skill to keep `/memory/coding-prefs.md` in sync with how this
 specific user wants you to work. This file is **user-scoped**, so each user
 has their own copy — anything you write here only affects future
 conversations with the same user.

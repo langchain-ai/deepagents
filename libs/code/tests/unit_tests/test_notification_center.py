@@ -58,6 +58,10 @@ def _update_entry() -> PendingNotification:
 class TestNotificationCenterScreen:
     """Drill-in behavior tests for the list-of-notifications modal."""
 
+    def test_uses_modal_backdrop(self) -> None:
+        """The center should keep Textual's dimmed modal backdrop."""
+        assert "background: transparent" not in NotificationCenterScreen.CSS
+
     async def test_renders_one_row_per_notification(self) -> None:
         """Each pending entry shows up as a single `_NotificationRow`."""
         app = App()

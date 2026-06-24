@@ -90,8 +90,8 @@ def _is_eval_category_call(node: object) -> str | None:
 def test_expected_modules_match_filesystem():
     """Discover eval_category markers on disk and assert they match `EXPECTED_CATEGORY_MODULES`.
 
-    Scans both module-level ``pytestmark`` assignments and per-function
-    ``@pytest.mark.eval_category(...)`` decorators so that files with
+    Scans both module-level `pytestmark` assignments and per-function
+    `@pytest.mark.eval_category(...)` decorators so that files with
     mixed per-function categories (e.g. test_external_benchmarks,
     test_file_operations) are detected correctly.
     """

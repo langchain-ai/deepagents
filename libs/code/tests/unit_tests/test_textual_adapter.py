@@ -771,18 +771,131 @@ class _SequencedAgent:
     def __init__(self, streams_by_call: list[list[tuple[Any, ...]]]) -> None:
         self._streams_by_call = streams_by_call
         self.stream_inputs: list[dict | Command] = []
+        self.contexts: list[Any] = []
 
     async def astream(
         self,
         stream_input: dict | Command,
         *_: Any,
+        context: object = None,
         **__: Any,
     ) -> AsyncIterator[tuple[Any, ...]]:
-        """Yield chunks for this invocation and record stream inputs."""
+        """Yield chunks for this invocation and record stream inputs/context.
+
+        `execute_task_textual` mutates a single `context` dict in place across
+        stream iterations (production reads the value at each call), so snapshot
+        a copy here to capture the per-iteration state rather than aliasing the
+        final mutation.
+        """
         self.stream_inputs.append(stream_input)
+        self.contexts.append(dict(context) if isinstance(context, dict) else context)
         chunks = self._streams_by_call.pop(0) if self._streams_by_call else []
         for chunk in chunks:
             yield chunk
+
+
+class TestExecuteTaskTextualAutoApproveInput:
+    """Auto-approve must ride on run context, never a first-turn `Command`."""
+
+    async def test_pre_enabled_auto_approve_uses_plain_dict_and_context(self) -> None:
+        """A fresh turn sends a plain dict input; auto-approve rides on context.
+
+        A first-turn `Command(update=...)` is rebuilt with `goto=None` by the
+        LangGraph API server's `map_cmd`, crashing `_control_branch` on a fresh
+        thread. The flag must travel via run context instead.
+        """
+        agent = _SequencedAgent([[]])
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        stream_input = agent.stream_inputs[0]
+        assert not isinstance(stream_input, Command)
+        assert stream_input == {"messages": [{"role": "user", "content": "hi"}]}
+        assert agent.contexts[0]["auto_approve"] is True
+
+    async def test_mid_turn_auto_approve_all_propagates_to_resume_context(
+        self,
+    ) -> None:
+        """Choosing "auto-approve all" mid-turn flips the resuming stream's context.
+
+        The PR's headline behavior: iteration 1 interrupts for approval, the
+        user picks `auto_approve_all`, and the per-iteration context refresh
+        re-reads `session_state.auto_approve` so iteration 2 (the resume)
+        carries `auto_approve=True`. Guards against hoisting the refresh out of
+        the stream loop (which would leave the first-iteration value frozen and
+        keep interrupting the rest of the turn).
+        """
+        action_requests = [{"name": "execute", "args": {"command": "echo hi"}}]
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            _tool_call_message(
+                                "execute", {"command": "echo hi"}, "tool-1"
+                            ),
+                            {},
+                        ),
+                    ),
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": action_requests,
+                            "review_configs": [
+                                {
+                                    "action_name": "execute",
+                                    "allowed_decisions": ["approve", "reject"],
+                                }
+                            ],
+                        }
+                    ),
+                ],
+                [],
+            ]
+        )
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            future: asyncio.Future[object] = asyncio.Future()
+            future.set_result({"type": "auto_approve_all"})
+            return future
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+        session_state = SimpleNamespace(thread_id="thread-1", auto_approve=False)
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=session_state,
+            adapter=adapter,
+        )
+
+        # Two stream iterations: the initial turn and the resume after the
+        # decision. The flag must flip between them, not stay frozen.
+        assert len(agent.contexts) == 2
+        assert agent.contexts[0]["auto_approve"] is False
+        assert agent.contexts[1]["auto_approve"] is True
+        assert session_state.auto_approve is True
 
 
 def _ask_user_interrupt_chunk(payload: dict[str, Any]) -> tuple[Any, ...]:
@@ -820,6 +933,58 @@ def _tool_chunk(
         ],
     )
     return ((), "messages", (message, {}))
+
+
+def _usage_chunk(*, input_tokens: int, output_tokens: int) -> tuple[Any, ...]:
+    """Build a `messages`-stream chunk carrying only `usage_metadata`."""
+    from langchain_core.messages import AIMessageChunk
+
+    message = AIMessageChunk(
+        content="",
+        usage_metadata={
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+        },
+    )
+    return ((), "messages", (message, {}))
+
+
+class TestExecuteTaskTextualUsageStats:
+    """`execute_task_textual` forwards the active provider into usage stats.
+
+    The per-model recording API is unit-tested directly elsewhere; this guards
+    the call site actually reading `settings.model_provider` and threading it
+    through `record_request`.
+    """
+
+    async def test_records_provider_from_settings(self) -> None:
+        """A usage chunk records the configured provider on `turn_stats`."""
+
+        async def mount_message(_: object) -> None:
+            await asyncio.sleep(0)
+
+        turn_stats = SessionStats()
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        with patch("deepagents_code.config.settings") as mock_settings:
+            mock_settings.model_name = "gpt-5.5"
+            mock_settings.model_provider = "openai"
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent([_usage_chunk(input_tokens=100, output_tokens=50)]),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+                turn_stats=turn_stats,
+            )
+
+        assert turn_stats.per_model["openai", "gpt-5.5"].input_tokens == 100
+        assert turn_stats.per_model["openai", "gpt-5.5"].output_tokens == 50
 
 
 class TestExecuteTaskTextualToolCallStreaming:
@@ -2807,10 +2972,10 @@ class TestSessionStats:
         assert stats.request_count == 1
         assert stats.input_tokens == 100
         assert stats.output_tokens == 50
-        assert "gpt-4" in stats.per_model
-        assert stats.per_model["gpt-4"].request_count == 1
-        assert stats.per_model["gpt-4"].input_tokens == 100
-        assert stats.per_model["gpt-4"].output_tokens == 50
+        assert ("", "gpt-4") in stats.per_model
+        assert stats.per_model["", "gpt-4"].request_count == 1
+        assert stats.per_model["", "gpt-4"].input_tokens == 100
+        assert stats.per_model["", "gpt-4"].output_tokens == 50
 
     def test_record_request_empty_model(self) -> None:
         """record_request with empty model skips per_model entry."""
@@ -2832,23 +2997,36 @@ class TestSessionStats:
         assert stats.input_tokens == 300
         assert stats.output_tokens == 130
         assert len(stats.per_model) == 2
-        assert stats.per_model["gpt-4"].request_count == 1
-        assert stats.per_model["claude-opus-4-6"].request_count == 1
+        assert stats.per_model["", "gpt-4"].request_count == 1
+        assert stats.per_model["", "claude-opus-4-6"].request_count == 1
+
+    def test_record_request_splits_same_model_by_provider(self) -> None:
+        """Provider-specific model names should not collapse into one entry."""
+        stats = SessionStats()
+        stats.record_request("gpt-4", 100, 50, provider="openai")
+        stats.record_request("gpt-4", 200, 80, provider="azure")
+
+        assert len(stats.per_model) == 2
+        assert stats.per_model["openai", "gpt-4"].request_count == 1
+        assert stats.per_model["azure", "gpt-4"].request_count == 1
 
     def test_merge(self) -> None:
         """merge() folds another SessionStats into self."""
         a = SessionStats(
             request_count=1, input_tokens=100, output_tokens=50, wall_time_seconds=1.0
         )
-        a.per_model["gpt-4"] = ModelStats(
-            request_count=1, input_tokens=100, output_tokens=50
+        a.per_model["", "gpt-4"] = ModelStats(
+            request_count=1, input_tokens=100, output_tokens=50, model_name="gpt-4"
         )
 
         b = SessionStats(
             request_count=2, input_tokens=300, output_tokens=120, wall_time_seconds=2.5
         )
-        b.per_model["claude-opus-4-6"] = ModelStats(
-            request_count=2, input_tokens=300, output_tokens=120
+        b.per_model["", "claude-opus-4-6"] = ModelStats(
+            request_count=2,
+            input_tokens=300,
+            output_tokens=120,
+            model_name="claude-opus-4-6",
         )
 
         a.merge(b)
@@ -2858,7 +3036,7 @@ class TestSessionStats:
         assert a.output_tokens == 170
         assert a.wall_time_seconds == pytest.approx(3.5)
         assert len(a.per_model) == 2
-        assert a.per_model["claude-opus-4-6"].request_count == 2
+        assert a.per_model["", "claude-opus-4-6"].request_count == 2
 
     def test_merge_overlapping_models(self) -> None:
         """merge() combines per_model entries for the same model."""
@@ -2873,9 +3051,23 @@ class TestSessionStats:
         assert a.request_count == 2
         assert a.input_tokens == 300
         assert a.output_tokens == 130
-        assert a.per_model["gpt-4"].request_count == 2
-        assert a.per_model["gpt-4"].input_tokens == 300
-        assert a.per_model["gpt-4"].output_tokens == 130
+        assert a.per_model["", "gpt-4"].request_count == 2
+        assert a.per_model["", "gpt-4"].input_tokens == 300
+        assert a.per_model["", "gpt-4"].output_tokens == 130
+
+    def test_merge_splits_same_model_by_provider(self) -> None:
+        """merge() preserves provider-specific entries for the same model."""
+        a = SessionStats()
+        a.record_request("gpt-4", 100, 50, provider="openai")
+
+        b = SessionStats()
+        b.record_request("gpt-4", 200, 80, provider="azure")
+
+        a.merge(b)
+
+        assert len(a.per_model) == 2
+        assert a.per_model["openai", "gpt-4"].input_tokens == 100
+        assert a.per_model["azure", "gpt-4"].input_tokens == 200
 
 
 # ---------------------------------------------------------------------------
@@ -2932,6 +3124,18 @@ class TestPrintUsageTable:
         assert "gpt-4" in output
         assert "unknown" not in output
 
+    def test_shows_provider_name(self) -> None:
+        """The table should include the provider for each model."""
+        stats = SessionStats()
+        stats.record_request("gpt-4", 100, 50, provider="openai")
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True)
+        print_usage_table(stats, wall_time=2.0, console=console)
+        output = buf.getvalue()
+        assert "Provider" in output
+        assert "openai" in output
+        assert "gpt-4" in output
+
     def test_multi_model_shows_all_names_and_total(self) -> None:
         """Multi-model session should show each model and a Total row."""
         stats = SessionStats()
@@ -2945,6 +3149,25 @@ class TestPrintUsageTable:
         assert "claude-opus-4-6" in output
         assert "Total" in output
         assert "unknown" not in output
+
+    def test_same_model_with_different_providers_shows_separate_rows(self) -> None:
+        """Same-name models from different providers should render separately."""
+        stats = SessionStats()
+        stats.record_request("gpt-4", 100, 50, provider="openai")
+        stats.record_request("gpt-4", 200, 80, provider="azure")
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True)
+        print_usage_table(stats, wall_time=2.0, console=console)
+        output = buf.getvalue()
+        assert "openai" in output
+        assert "azure" in output
+        assert "Total" in output
+        # Two distinct rows, not a collapsed one: each provider's per-row token
+        # counts must appear (100/50 and 200/80), alongside the 300/130 totals.
+        assert "100" in output
+        assert "50" in output
+        assert "200" in output
+        assert "80" in output
 
     def test_tokens_with_no_wall_time_omits_timing_line(self) -> None:
         """Token table should print but timing line should be absent."""

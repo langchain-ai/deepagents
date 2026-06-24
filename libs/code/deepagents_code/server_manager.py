@@ -366,7 +366,11 @@ async def start_server_and_get_agent(
     _scaffold_workspace(work_dir)
 
     server = ServerProcess(
-        host=host, port=port, config_dir=work_dir, owns_config_dir=True
+        host=host,
+        port=port,
+        config_dir=work_dir,
+        owns_config_dir=True,
+        scaffold=_scaffold_workspace,
     )
     try:
         await server.start()

@@ -9810,7 +9810,8 @@ class DeepAgentsApp(App):
             except (ModelConfigError, NoCredentialsConfiguredError):
                 return False
 
-        await self._retry_startup_with_model(model_spec)
+        extra_kwargs = self._server_kwargs.get("model_params")
+        await self._retry_startup_with_model(model_spec, extra_kwargs=extra_kwargs)
         return True
 
     async def _install_provider_then_reopen_auth(self, extra: str) -> None:

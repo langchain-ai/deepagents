@@ -8804,7 +8804,10 @@ class TestDeferredActions:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            app._server_kwargs = {"model_name": "anthropic:claude-opus-4-7"}
+            app._server_kwargs = {
+                "model_name": "anthropic:claude-opus-4-7",
+                "model_params": {"temperature": 0.1},
+            }
             app._server_startup_error = "missing ANTHROPIC_API_KEY"
             app._server_startup_missing_credentials_provider = "anthropic"
             app._retry_startup_with_model = AsyncMock()  # ty: ignore
@@ -8821,7 +8824,8 @@ class TestDeferredActions:
 
             assert retried is True
             app._retry_startup_with_model.assert_awaited_once_with(  # ty: ignore
-                "anthropic:claude-opus-4-7"
+                "anthropic:claude-opus-4-7",
+                extra_kwargs={"temperature": 0.1},
             )
 
     async def test_auth_change_does_not_retry_when_key_still_missing(self) -> None:

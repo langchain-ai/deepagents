@@ -481,6 +481,12 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 return i
         return 0
 
+    def _initial_selected_index(self) -> int:
+        """Return the default highlighted row for the current selector mode."""
+        if self._curated:
+            return 0
+        return self._find_current_model_index()
+
     def compose(self) -> ComposeResult:
         """Compose the screen layout.
 
@@ -736,7 +742,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._install_extras = data.install_extras
         self._all_models = self._apply_subset(self._unfiltered_models)
         self._filtered_models = list(self._all_models)
-        self._selected_index = self._find_current_model_index()
+        self._selected_index = self._initial_selected_index()
         self._loaded = True
 
         # Re-apply any filter text the user typed while data was loading
@@ -824,7 +830,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         query = self._filter_text.strip()
         if not query:
             self._filtered_models = list(self._all_models)
-            self._selected_index = self._find_current_model_index()
+            self._selected_index = self._initial_selected_index()
             return
 
         tokens = query.split()
@@ -845,7 +851,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 exc_info=True,
             )
             self._filtered_models = list(search_models)
-            self._selected_index = self._find_current_model_index()
+            self._selected_index = self._initial_selected_index()
             return
 
         self._filtered_models = [

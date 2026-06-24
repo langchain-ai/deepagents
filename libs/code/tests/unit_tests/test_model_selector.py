@@ -1383,6 +1383,21 @@ class TestCuratedModelSelection:
             ("openai:gpt-5.3-codex", "openai"),
         ]
 
+    def test_curated_initial_selection_starts_at_top(self) -> None:
+        """Onboarding should highlight the first model, not the current one."""
+        screen = ModelSelectorScreen(
+            current_model="claude-opus-4-7",
+            current_provider="anthropic",
+            curated=True,
+        )
+        screen._filtered_models = [
+            ("openai:gpt-5.5", "openai"),
+            ("anthropic:claude-opus-4-7", "anthropic"),
+        ]
+
+        assert screen._find_current_model_index() == 1
+        assert screen._initial_selected_index() == 0
+
 
 class TestFormatOptionLabel:
     """Tests for _format_option_label."""

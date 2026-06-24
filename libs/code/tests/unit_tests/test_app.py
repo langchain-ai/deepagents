@@ -3352,6 +3352,95 @@ class TestTraceCommand:
             rendered = "\n".join(str(w._content) for w in app_msgs)
             assert f"Opening tracing project 'proj':\n{expected_url}" in rendered
 
+    async def test_trace_warns_when_no_messages_sent(self) -> None:
+        """Should append a note when the thread has no messages yet."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+
+            with (
+                patch(
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value="proj",
+                ),
+                patch(
+                    "deepagents_code.config.fetch_langsmith_project_url_or_raise",
+                    return_value="https://smith.langchain.com",
+                ),
+                patch("deepagents_code.app.webbrowser.open"),
+                patch.object(
+                    app, "_has_conversation_messages", AsyncMock(return_value=False)
+                ),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            rendered = "\n".join(str(w._content) for w in app_msgs)
+            assert "until you send your first message" in rendered
+
+    async def test_trace_no_warning_when_messages_exist(self) -> None:
+        """Should not append the empty-thread note once messages exist."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+
+            with (
+                patch(
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value="proj",
+                ),
+                patch(
+                    "deepagents_code.config.fetch_langsmith_project_url_or_raise",
+                    return_value="https://smith.langchain.com",
+                ),
+                patch("deepagents_code.app.webbrowser.open"),
+                patch.object(
+                    app, "_has_conversation_messages", AsyncMock(return_value=True)
+                ),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            rendered = "\n".join(str(w._content) for w in app_msgs)
+            assert "until you send your first message" not in rendered
+
+    async def test_trace_no_warning_when_message_lookup_fails(self) -> None:
+        """Should fail open when the empty-thread check cannot read state."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+            app._agent = MagicMock()
+            app._lc_thread_id = "test-thread-123"
+
+            with (
+                patch(
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value="proj",
+                ),
+                patch(
+                    "deepagents_code.config.fetch_langsmith_project_url_or_raise",
+                    return_value="https://smith.langchain.com",
+                ),
+                patch("deepagents_code.app.webbrowser.open"),
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    AsyncMock(side_effect=RuntimeError("connection lost")),
+                ),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            rendered = "\n".join(str(w._content) for w in app_msgs)
+            assert "https://smith.langchain.com/t/test-thread-123" in rendered
+            assert "until you send your first message" not in rendered
+
     async def test_trace_shows_error_when_not_configured(self) -> None:
         """Should show configuration hint when LangSmith is not set up."""
         app = DeepAgentsApp()
@@ -3602,6 +3691,42 @@ class TestTraceCommand:
                 "Opening tracing project 'proj':\n"
                 "https://smith.langchain.com/t/test-thread-123"
             ) in rendered
+
+    async def test_trace_deferred_output_includes_empty_thread_warning(self) -> None:
+        """Should keep the empty-thread warning when busy output is drained."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+            app._agent_running = True
+
+            with (
+                patch(
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value="proj",
+                ),
+                patch(
+                    "deepagents_code.config.fetch_langsmith_project_url_or_raise",
+                    return_value="https://smith.langchain.com",
+                ),
+                patch("deepagents_code.app.webbrowser.open"),
+                patch.object(
+                    app, "_has_conversation_messages", AsyncMock(return_value=False)
+                ),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            assert len(app._deferred_actions) == 1
+            action = app._deferred_actions[0]
+            assert action.kind == "chat_output"
+
+            await action.execute()
+            await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            rendered = "\n".join(str(w._content) for w in app_msgs)
+            assert "until you send your first message" in rendered
 
     async def test_trace_shows_error_when_url_build_raises(self) -> None:
         """Should show error message when the URL fetch raises."""

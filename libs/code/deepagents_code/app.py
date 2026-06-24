@@ -6777,7 +6777,8 @@ class DeepAgentsApp(App):
         state. When the app is busy, chat output (user echo + clickable link)
         is deferred until the current task finishes. Error conditions (no
         session, URL failure, tracing not configured) render immediately
-        regardless of busy state.
+        regardless of busy state. When the thread has no messages yet, a note
+        is appended warning that the trace stays empty until the first message.
 
         Args:
             command: The raw command text (displayed as user message).
@@ -6900,6 +6901,21 @@ class DeepAgentsApp(App):
 
         asyncio.get_running_loop().run_in_executor(None, _open_browser)
 
+        # Warn when the thread has no human turn yet — the LangSmith view stays
+        # empty until the first message is sent. `_has_conversation_messages`
+        # returns True on errors so transient state failures suppress this warning
+        # rather than showing a false empty-thread note.
+        parts: list[str | Content | tuple[str, str | TStyle]] = [
+            f"Opening tracing project {project_name!r}:\n",
+            (url, TStyle(dim=True, italic=True, link=url)),
+        ]
+        if not await self._has_conversation_messages():
+            parts.append(
+                "\n\nYou haven't sent a message in this thread yet, so the "
+                "trace will be empty until you send your first message.",
+            )
+        msg = Content.assemble(*parts)
+
         # Defer chat output while a turn is in progress — rendering the user
         # echo + link immediately would splice it into the middle of the
         # streaming assistant response
@@ -6914,10 +6930,6 @@ class DeepAgentsApp(App):
                 with suppress(Exception):
                     await queued_widget.remove()
                 await self._mount_message(UserMessage(command))
-                msg = Content.assemble(
-                    f"Opening tracing project {project_name!r}:\n",
-                    (url, TStyle(dim=True, italic=True, link=url)),
-                )
                 await self._mount_message(AppMessage(msg))
 
             # Append directly — no dedup; each /trace invocation gets its own output.
@@ -6927,10 +6939,6 @@ class DeepAgentsApp(App):
             return
 
         await self._mount_message(UserMessage(command))
-        msg = Content.assemble(
-            f"Opening tracing project {project_name!r}:\n",
-            (url, TStyle(dim=True, italic=True, link=url)),
-        )
         await self._mount_message(AppMessage(msg))
 
     async def _handle_command(self, command: str) -> None:
@@ -7461,9 +7469,9 @@ class DeepAgentsApp(App):
 
         Returns:
             `True` if the conversation contains a `HumanMessage`, `False`
-            otherwise. On transient errors (network, corrupt state) returns
-            `True` so that `/remember` is not blocked with a misleading
-            "nothing to remember" message.
+                otherwise. On transient errors (network, corrupt state) returns
+                `True` so callers do not block or warn based on an unreliable
+                empty-thread check.
         """
         if not self._agent or not self._lc_thread_id:
             return False
@@ -7486,7 +7494,7 @@ class DeepAgentsApp(App):
             )
         except Exception:
             logger.warning(
-                "Failed to check conversation messages; allowing /remember to proceed",
+                "Failed to check conversation messages",
                 exc_info=True,
             )
             return True

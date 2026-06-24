@@ -1,0 +1,209 @@
+libs/partners/quickjs/langchain_quickjs/_subagent.py
+  s_fbb4039f70ae43::t_6171fe92d630d8 32-37,41,43,71-82,90-92
+  s_fbb4039f70ae43::t_215bd62b71ac08 6-7
+  s_fbb4039f70ae43::t_ea1a7bb8cbdd5b 42,44-45
+  s_fbb4039f70ae43::t_c1bb7bafe46c23 83-89
+  s_fbb4039f70ae43::t_b4e9612095b3e0 167
+  s_fbb4039f70ae43::t_dd828dc2b164c4 156
+  s_fbb4039f70ae43::t_179ec8f8443899 10
+  s_fbb4039f70ae43::t_befffe361d0d46 38-40,46-70
+  s_fbb4039f70ae43::t_3e7306d95ce0ca 140-150,152-154,157-166,168-192,194
+  s_fbb4039f70ae43::t_8c7f851cac0131 125
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_mixed_foreign_functions_call.md
+  s_fbb4039f70ae43::t_8c456ffc6e6ec9 144-146,156-163,222,293,307,349-353
+libs/partners/quickjs/tests/unit_tests/test_repl_middleware.py
+  s_fbb4039f70ae43::t_6ab4bf8e2b5ca6 1089-1091,1096
+  s_fbb4039f70ae43::t_ad3689fbb8f245 1218-1219
+  s_fbb4039f70ae43::t_91faf9950e08c7 1045-1046,1081,1133,1153,1159,1188,1240
+  s_fbb4039f70ae43::t_572631390293d9 1292-1293
+libs/code/deepagents_code/app.py
+  s_fbb4039f70ae43::t_44cbb6c876b68e 1483-1484
+  s_fbb4039f70ae43::t_704b9d92f333d9 94
+  s_fbb4039f70ae43::t_bc2cd02c76635c 9082-9104
+  s_fbb4039f70ae43::t_dc82a402d29eb0 2650
+  s_fbb4039f70ae43::t_3357580566b8a7 7771,7776
+  s_fbb4039f70ae43::t_786acf1b016d62 2340-2342
+  s_fbb4039f70ae43::t_fe6d5a39a796cd 7770,7774-7775
+  s_fbb4039f70ae43::t_7daabdb8b832e2 7772-7773
+libs/partners/quickjs/tests/unit_tests/test_thread_affinity.py
+  s_fbb4039f70ae43::t_9c0bfe2bb8487f 134,175
+libs/code/tests/unit_tests/test_subagent_panel.py
+  s_fbb4039f70ae43::t_9d7a1826f741b8 286,292-293
+  s_fbb4039f70ae43::t_45414f602c606a 79,92-93
+  s_fbb4039f70ae43::t_ac0f978ffd7eaa 167,201,205-208
+  s_fbb4039f70ae43::t_ceae7547f95e6b 35-38,46-48
+  s_fbb4039f70ae43::t_fa060ca36f4ba9 319-340
+  s_fbb4039f70ae43::t_709b9355438999 560
+  s_fbb4039f70ae43::t_e01ccec93c7f4e 198
+  s_fbb4039f70ae43::t_1698d8aa093ea4 197,209-210
+  s_fbb4039f70ae43::t_10cb868eaecdef 166,194,203,255
+  s_fbb4039f70ae43::t_3167fc3acfb38c 1-5,7-15,33-34,39-45,49-78,80-91,94-160,540-559,562-563,565
+  s_fbb4039f70ae43::t_d21ce988968ff8 380,382,384-392,395-397,399-420
+  s_fbb4039f70ae43::t_f117a1d3b2fb63 373-379,381,383,421
+  s_fbb4039f70ae43::t_e4d11dff803239 346
+  s_fbb4039f70ae43::t_6a18c5bdf4b6f6 459-515
+  s_fbb4039f70ae43::t_50c049beb2cbd3 561,564
+  s_fbb4039f70ae43::t_e1b23a9fbf0e48 291,295,302-304,317,342-343,345,348-350,352-371
+  s_fbb4039f70ae43::t_9ca88e657a6520 260-271,273,275-279,281-285,287-290,294,296-301,305-316,318,341,344,347,351,372,458
+  s_fbb4039f70ae43::t_bde2f219b37c1f 516-539
+  s_fbb4039f70ae43::t_8cb37b18448105 204
+  s_fbb4039f70ae43::t_5e80e2a10f0429 199-200,202,211
+  s_fbb4039f70ae43::t_1438057a7805bd 398
+  s_fbb4039f70ae43::t_fe21080fef4651 6,16-32
+  s_fbb4039f70ae43::t_955a0c1b2a38d3 272,274,280
+  s_fbb4039f70ae43::t_2d0de521f863ff 251-253
+  s_fbb4039f70ae43::t_0937b2d43ba742 161-165,168,188-193,195-196,231-250,254,256-259
+  s_fbb4039f70ae43::t_986cf275640c90 422-457
+  s_fbb4039f70ae43::t_4bc6c64ebd80c3 393-394
+  s_fbb4039f70ae43::t_eaac8a9e8e3cab 212-217,221-230
+  s_fbb4039f70ae43::t_5805c0464855ac 169-187
+  s_fbb4039f70ae43::t_d19962cab43287 218-220
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_no_tools.md
+  s_fbb4039f70ae43::t_8c456ffc6e6ec9 144-146,156-163,222,293,307,349-353
+libs/partners/quickjs/langchain_quickjs/_ptc.py
+  s_fbb4039f70ae43::t_eea8606754d7c6 42-43
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_no_tools_call.md
+  s_fbb4039f70ae43::t_8c456ffc6e6ec9 144-146,156-163,222,293,307,349-353
+examples/ptc-tools-test/replay_real_tools.py
+  s_55bb2e5cb9e884::t_103d9d7d41a77e 1-44,67,69-79,81-82,87-90,92-93,96-97,101-105
+  s_55bb2e5cb9e884::t_3509202f1e6c58 45-66,68
+  s_55bb2e5cb9e884::t_312d1eebe69c73 80,83-86,91,94-95,98-100
+libs/partners/quickjs/langchain_quickjs/_repl.py
+  s_fbb4039f70ae43::t_802fd7a1f50a72 597
+  s_fbb4039f70ae43::t_e29db08ec1543d 580-582
+  s_fbb4039f70ae43::t_e4d4d97a604993 60-93
+libs/code/deepagents_code/textual_adapter.py
+  s_fbb4039f70ae43::t_65a4f606e2653e 293-300
+  s_fbb4039f70ae43::t_fbeed7e21585ff 84-91
+  s_fbb4039f70ae43::t_9ee20b3388e8b0 250
+  s_fbb4039f70ae43::t_968a6968bbfe5d 596-601,603-607,610-616
+  s_fbb4039f70ae43::t_64a9bd5b263e7f 576
+  s_fbb4039f70ae43::t_2e912c7d5c35c2 602,608-609
+examples/ptc-tools-test/too_complex_repro.py
+  s_55bb2e5cb9e884::t_72d1d731a7e288 1-162,181-186,197-226
+  s_55bb2e5cb9e884::t_0cca66baea4bd4 163-180,187-196
+libs/code/deepagents_code/widgets/subagent_panel.py
+  s_fbb4039f70ae43::t_15397930107c90 150-164
+  s_fbb4039f70ae43::t_37c159eb1dfa60 751,755
+  s_fbb4039f70ae43::t_317d599056b2fd 768
+  s_fbb4039f70ae43::t_88c31d54eebd81 166,168-170,175
+  s_fbb4039f70ae43::t_1213459750b82e 744-745,747
+  s_fbb4039f70ae43::t_39a59c862dd7d5 694-697
+  s_fbb4039f70ae43::t_373e1e4439c909 52,54-57,61-62,71-73,79
+  s_fbb4039f70ae43::t_831a90b7a46ac1 137-141
+  s_fbb4039f70ae43::t_4599fa98d44b44 626-630
+  s_fbb4039f70ae43::t_368377752b84f0 230
+  s_fbb4039f70ae43::t_4990aac4b3c5b1 63-66
+  s_fbb4039f70ae43::t_7d5668f3b0f4a2 77,80
+  s_fbb4039f70ae43::t_d2453f9b344181 565-580
+  s_fbb4039f70ae43::t_ce89596fbc03e0 408-417
+  s_fbb4039f70ae43::t_9e69aa7d60b914 315
+  s_fbb4039f70ae43::t_4ef3c7ad53dccf 617
+  s_fbb4039f70ae43::t_48f4e94f1dd821 652-654
+  s_fbb4039f70ae43::t_601f7232b69a2f 30
+  s_fbb4039f70ae43::t_1f58ccab754f42 674
+  s_fbb4039f70ae43::t_b65c30cbdb069a 38
+  s_fbb4039f70ae43::t_d52205e5524ec9 285-290
+  s_fbb4039f70ae43::t_e5cc37a8f8733f 684,690-693,698-699,705-707,714,717,723-724,731-734,739,746,760-761,765-766,769-774,777,779-780,782
+  s_fbb4039f70ae43::t_cfdf82323f4d0d 67-68
+  s_fbb4039f70ae43::t_af66317fb3f3f0 499-500
+  s_fbb4039f70ae43::t_c46818326ab3ae 685-689
+  s_fbb4039f70ae43::t_85dc5253f07ceb 197,221
+  s_fbb4039f70ae43::t_7ada377601f9b5 335
+  s_fbb4039f70ae43::t_dc4622998f0d9c 501
+  s_fbb4039f70ae43::t_26dcc082ed8f25 51,53
+  s_fbb4039f70ae43::t_d0c7945785d5e6 682
+  s_fbb4039f70ae43::t_4130e92380e70f 244
+  s_fbb4039f70ae43::t_9c393deef059ca 74-76,78
+  s_fbb4039f70ae43::t_cd347efcb0ff4c 462-466,468,477-479
+  s_fbb4039f70ae43::t_b1edc3244d3d37 210-211,225,257
+  s_fbb4039f70ae43::t_edce5f6ba578a3 178
+  s_fbb4039f70ae43::t_422955d474697e 581-590
+  s_fbb4039f70ae43::t_c400c142672a4b 602-603,610-612,620-621,631-632,634-645
+  s_fbb4039f70ae43::t_e7a765d41322ba 93
+  s_fbb4039f70ae43::t_ad99d57f6ea36d 374
+  s_fbb4039f70ae43::t_b30ddaaa3c9c6f 700-704
+  s_fbb4039f70ae43::t_7cdd0fa75d01d8 715
+  s_fbb4039f70ae43::t_38e5a49db6c6a1 720-722
+  s_fbb4039f70ae43::t_ffed5c5afc3ce4 533,539-564
+  s_fbb4039f70ae43::t_e6d0c57e3adf73 50
+  s_fbb4039f70ae43::t_e92855692da56f 2-8,21-24,26-29,31-37,39-41,43-47,69-70,81-84,86-92,94-95,101-105,165,167,174,190-196,198-199,204-207,226-227,234-235,237-238,245-250,264-267,269,312,317-323,325-330,332-334,336-341,349-350,352-353,373,375-376,379-389,393-394,401,459,480-486,488-490,492,494-496,511-525,528-529,532,591-592,595,683,710-712,719
+  s_fbb4039f70ae43::t_6eabdb922e8726 171-173
+  s_fbb4039f70ae43::t_55a637e022976a 497-498
+  s_fbb4039f70ae43::t_db9ae0fc860725 633
+  s_fbb4039f70ae43::t_1f9ee4daf3b365 534-538
+  s_fbb4039f70ae43::t_4e47d82ee3df4a 390-391
+  s_fbb4039f70ae43::t_175610937b772c 676,678-680
+  s_fbb4039f70ae43::t_2223ce3a305ea4 598
+  s_fbb4039f70ae43::t_b17468a5dfbd53 775-776,778
+  s_fbb4039f70ae43::t_8a57f6a6cae6a8 96-100
+  s_fbb4039f70ae43::t_2a824a5f00116a 261-263
+  s_fbb4039f70ae43::t_43b4fbe8dd2d37 725-726,743,762,781
+  s_fbb4039f70ae43::t_ac2d9524c78884 407,418-433
+  s_fbb4039f70ae43::t_4537ed8530a56c 231-233
+  s_fbb4039f70ae43::t_71e70ecc889d2a 600-601,604-609,613-616,618-619,622-625
+  s_fbb4039f70ae43::t_5c915a9b7ac87a 200-203
+  s_fbb4039f70ae43::t_8dc80dd9e5c789 48-49
+  s_fbb4039f70ae43::t_a431d217fee74c 351,354-362
+  s_fbb4039f70ae43::t_5ee85fddd5fee3 473
+  s_fbb4039f70ae43::t_03b7a2116bc2cd 1,14-16,85,106-136,142-149,176-177,180,186,216-217,219-220,222-223,251-253,275,277-282,298-311,313-314,316,324,331,343-348,364-371,377-378,392,395-400,402-404,458,461,469-471,527,531,646-648,650-651,657,659-660,665-666,668-669,671-673,681,735-738,740-742,748-750,752-754,756-759,763-764,767
+  s_fbb4039f70ae43::t_14016b04930e7f 9-13,17-20,42,179,181-185,187-189,208-209,212-215,218,224,228,236,239-241,243,254-256,268,270-274,276,283-284,291-297,342,405-406,434-457,460,467,472,491,493,526,530,593-594,596-597,599,649,655,658,661-664,667,670,675,677,708-709,713,716,718
+  s_fbb4039f70ae43::t_c1be303e00e30f 25
+  s_fbb4039f70ae43::t_ab2e733de8720a 475-476
+  s_fbb4039f70ae43::t_a39f48d95e605f 487
+  s_fbb4039f70ae43::t_52377718aee815 229,242
+  s_fbb4039f70ae43::t_e4e2e8a100b99c 363,372
+  s_fbb4039f70ae43::t_fbe652594311eb 258-260
+  s_fbb4039f70ae43::t_b718937d4cf07e 474
+  s_fbb4039f70ae43::t_e44889f7f25060 502-510
+  s_fbb4039f70ae43::t_b1925d51384b1b 727-730
+  s_fbb4039f70ae43::t_7ab5805949aa6c 656
+  s_fbb4039f70ae43::t_fd956a764c1cf6 58-60
+libs/partners/quickjs/tests/unit_tests/test_subagent_events.py
+  s_fbb4039f70ae43::t_f8cc72ee7649a2 1-33,38-42,44-66,68-75,78-79,81-101,103-119,121-127,144-145,148-153,155-166,168-171
+  s_fbb4039f70ae43::t_025c9bcafc9c70 67,102,120,154,167
+  s_fbb4039f70ae43::t_c5f5804e2dd62b 146-147
+  s_fbb4039f70ae43::t_587a1fa2196663 128-143
+  s_fbb4039f70ae43::t_0342a0e18e2d1e 34-37
+  s_fbb4039f70ae43::t_8bfe9ec5fc4f0c 76-77
+  s_fbb4039f70ae43::t_b55da0bf3d4e79 80
+  s_fbb4039f70ae43::t_ba84912a6ae4aa 43
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_mixed_foreign_functions.md
+  s_fbb4039f70ae43::t_8c456ffc6e6ec9 144-146,156-163,222,293,307,349-353
+libs/partners/quickjs/langchain_quickjs/_prompt.py
+  s_fbb4039f70ae43::t_3a2526e81103a6 46-48,58-64
+  s_fbb4039f70ae43::t_eb5e2d74f8595b 195
+  s_fbb4039f70ae43::t_43772f1483b4aa 251-255
+  s_fbb4039f70ae43::t_f15b9250b0395c 124
+  s_fbb4039f70ae43::t_a7e684efe4e80c 209
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_no_tools_turn.md
+  s_fbb4039f70ae43::t_8c456ffc6e6ec9 144-146,156-163,222,293,307,349-353
+libs/partners/quickjs/langchain_quickjs/__init__.py
+  s_fbb4039f70ae43::t_5c6791f30a39f0 4-8,12-13,16
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_mixed_foreign_functions_turn.md
+  s_fbb4039f70ae43::t_8c456ffc6e6ec9 144-146,156-163,222,293,307,349-353
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "5eea985299ca1ac636158cd25575415d0185e849",
+  "prompts": {},
+  "sessions": {
+    "s_55bb2e5cb9e884": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "90d8eefc-b814-4369-9677-981c907ab665",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Colin Francis <colin.francis@langchain.dev>"
+    },
+    "s_fbb4039f70ae43": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "70a2905b-8d2c-4e8e-a94c-0bad2c4435e0",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Colin Francis <colin.francis@langchain.dev>"
+    }
+  }
+}

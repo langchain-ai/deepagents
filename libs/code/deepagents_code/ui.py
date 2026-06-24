@@ -113,6 +113,9 @@ def show_help() -> None:
     console.print(
         "  dcode update                              Check for and install updates"
     )
+    console.print(
+        "  dcode doctor                              Print install diagnostics"
+    )
     console.print()
 
     console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
@@ -452,6 +455,42 @@ def show_update_help() -> None:
     console.print()
 
 
+def show_doctor_help() -> None:
+    """Show help information for the `doctor` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode doctor [options]", markup=False)
+    console.print()
+    console.print(
+        "Print install health and diagnostics (versions, platform, install",
+    )
+    console.print(
+        "method, update status, and config locations). Runs offline and is",
+    )
+    console.print(
+        "safe to paste into a bug report.",
+    )
+    console.print()
+    _print_option_section()
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode doctor")
+    console.print("  dcode doctor --json")
+    console.print()
+    console.print(
+        "Tip: Run `dcode config show` or `dcode config get <key>` "
+        "to drill into config details.",
+        style=theme.MUTED,
+        highlight=False,
+    )
+    console.print(
+        "     Run `dcode --version` (or `dcode -v`) for dependency versions.",
+        style=theme.MUTED,
+        highlight=False,
+    )
+    console.print()
+
+
 def _print_mcp_discovery_paths() -> None:
     """Print the auto-discovered MCP config paths in precedence order."""
     from deepagents_code.mcp_tools import MCP_CONFIG_DISCOVERY_PATHS
@@ -596,6 +635,7 @@ def show_auth_help() -> None:
     console.print()
     console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
     console.print("  --from-env VAR        With `set`, copy the key from env var VAR")
+    console.print("  --project NAME        With `set langsmith`, set the trace project")
     console.print("  -h, --help            Show this help message")
     console.print()
     console.print(
@@ -609,6 +649,9 @@ def show_auth_help() -> None:
     console.print("  dcode auth list")
     console.print("  echo $ANTHROPIC_API_KEY | dcode auth set anthropic")
     console.print("  dcode auth set openai --from-env OPENAI_API_KEY")
+    console.print(
+        "  echo $LANGSMITH_API_KEY | dcode auth set langsmith --project my-app"
+    )
     console.print("  dcode auth status anthropic")
     console.print("  dcode auth remove anthropic")
     console.print("  dcode auth path")

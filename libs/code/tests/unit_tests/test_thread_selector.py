@@ -15,6 +15,7 @@ from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Checkbox, Input, Select, Static
+from textual.widgets._select import SelectCurrent
 
 from deepagents_code.app import DeepAgentsApp, _ThreadHistoryPayload
 from deepagents_code.sessions import ThreadInfo
@@ -578,6 +579,20 @@ class TestThreadSelectorTabSort:
                 await pilot.press("shift+tab")
                 await pilot.pause()
                 assert filter_input.has_focus
+
+    def test_select_options_update_before_overlay_mount_is_safe(self) -> None:
+        """Agent option refresh can run before the overlay child is mounted."""
+        select = ThreadScopeSelect(
+            [("Loading...", "__loading__")],
+            value="__loading__",
+            allow_blank=False,
+            id="thread-agent-select",
+            classes="thread-agent-select",
+        )
+
+        select.set_options([("All agents", "__all__"), ("agent", "agent")])
+
+        assert select.value == "__all__"
 
     async def test_thread_load_preserves_open_agent_dropdown_focus(self) -> None:
         """Async thread loading should not move focus away from an open dropdown."""
@@ -4275,6 +4290,67 @@ class TestThreadSelectorAgentFilter:
         )
         options = screen._collect_agent_options()
         assert options[0] == ("All agents", _AGENT_VALUE_ALL)
+
+    def test_collect_agent_options_loading_while_pending(self) -> None:
+        """While loading with no known agents, the dropdown shows 'Loading...'."""
+        from deepagents_code.widgets.thread_selector import (
+            _AGENT_LABEL_LOADING,
+            _AGENT_VALUE_ALL,
+            _AGENT_VALUE_LOADING,
+        )
+
+        screen = ThreadSelectorScreen(
+            current_thread=None,
+            initial_threads=None,
+            filter_cwd=None,
+        )
+        assert screen._disk_load_complete is False
+        assert screen._collect_agent_options() == [
+            (_AGENT_LABEL_LOADING, _AGENT_VALUE_LOADING)
+        ]
+        # Once the disk load completes with no threads, fall back to "All agents".
+        screen._disk_load_complete = True
+        assert screen._collect_agent_options() == [("All agents", _AGENT_VALUE_ALL)]
+
+    async def test_agent_select_label_refreshes_after_empty_load(self) -> None:
+        """The loading placeholder is replaced by the final all-agents label."""
+        from deepagents_code.widgets.thread_selector import (
+            _AGENT_SELECT_ID,
+            _AGENT_VALUE_ALL,
+            _AGENT_VALUE_LOADING,
+        )
+
+        load_started = asyncio.Event()
+        load_finished = asyncio.Event()
+
+        async def list_threads_after_signal(**_: object) -> list[ThreadInfo]:
+            load_started.set()
+            await load_finished.wait()
+            return []
+
+        with (
+            patch("deepagents_code.sessions.list_threads", list_threads_after_signal),
+            _patch_columns(),
+            _patch_available_agents([]),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await asyncio.wait_for(load_started.wait(), timeout=1)
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                agent_select = screen.query_one(f"#{_AGENT_SELECT_ID}", Select)
+                assert agent_select.value == _AGENT_VALUE_LOADING
+                assert str(agent_select.query_one(SelectCurrent).label) == "Loading..."
+
+                load_finished.set()
+                await pilot.pause()
+                await pilot.pause()
+
+                assert agent_select.value == _AGENT_VALUE_ALL
+                assert str(agent_select.query_one(SelectCurrent).label) == "All agents"
 
     def test_collect_agent_options_sorted_unique(self) -> None:
         """collect_agent_options returns sorted unique agent names."""

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 from typing import TYPE_CHECKING
 
 import pytest
@@ -33,6 +34,34 @@ def _warm_model_caches() -> None:
 
         get_available_models()
         get_model_profiles()
+
+
+@pytest.fixture(autouse=True)
+def _restore_os_environ() -> Generator[None, None, None]:
+    """Snapshot and restore `os.environ` around every test.
+
+    Production code under test (`_ensure_bootstrap`, `_load_dotenv`,
+    `_apply_default_langsmith_project`) writes to `os.environ` directly. When a
+    test clears a variable with `monkeypatch.delenv(name, raising=False)` that
+    was already absent, monkeypatch records no undo entry — so a later direct
+    write by that code survives teardown and leaks into subsequent tests (e.g.
+    a dotenv-reload test leaking `DEEPAGENTS_CODE_OPENAI_API_KEY` into a gateway
+    key-mismatch test). Defined before the other autouse fixtures so it tears
+    down last, leaving `os.environ` pristine no matter how a key was set.
+
+    Restores by diffing against the snapshot rather than a blanket
+    `clear()`/`update()`, so a test that never touches `os.environ` (the vast
+    majority) triggers zero `putenv` calls on teardown.
+    """
+    snapshot = dict(os.environ)
+    try:
+        yield
+    finally:
+        for key in [key for key in os.environ if key not in snapshot]:
+            del os.environ[key]
+        for key, value in snapshot.items():
+            if os.environ.get(key) != value:
+                os.environ[key] = value
 
 
 @pytest.fixture(autouse=True)

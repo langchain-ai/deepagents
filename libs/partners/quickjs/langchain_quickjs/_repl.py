@@ -27,6 +27,7 @@ from quickjs_rs import (
     MemoryLimitError,
     Runtime,
     Snapshot,
+    SourceTransform,
     ThreadWorker,
 )
 from quickjs_rs import (
@@ -177,6 +178,39 @@ class _ConsoleBuffer:
         return out, dropped
 
 
+_UNDEFINED_TYPE = type(UNDEFINED)
+
+
+def _is_undefined(value: Any) -> bool:
+    """Return whether ``value`` is a QuickJS ``undefined`` marshal result.
+
+    Marshaling produces fresh ``Undefined`` instances rather than the
+    ``UNDEFINED`` singleton, so identity comparison is unreliable.
+    """
+    return isinstance(value, _UNDEFINED_TYPE)
+
+
+def _strip_undefined(value: Any) -> Any:
+    """Recursively drop ``undefined`` object properties so defaults apply.
+
+    JS ``undefined`` means "absent", so a dict key whose value is
+    ``undefined`` is omitted, letting the tool's schema defaults take over.
+    Array entries are converted to ``None`` (JS ``null``) instead of being
+    dropped, since dropping would shift indices and corrupt the array.
+    """
+    if isinstance(value, dict):
+        return {
+            key: _strip_undefined(val)
+            for key, val in value.items()
+            if not _is_undefined(val)
+        }
+    if isinstance(value, list):
+        return [
+            None if _is_undefined(item) else _strip_undefined(item) for item in value
+        ]
+    return value
+
+
 def _normalize_tool_input(raw: Any) -> dict[str, Any]:
     """Coerce whatever JS passed into `tools.X(...)` to a dict.
 
@@ -185,14 +219,14 @@ def _normalize_tool_input(raw: Any) -> dict[str, Any]:
     `undefined`, a bare string, or a number (none of which a well-
     formed tool call should produce, but the model is the model).
     """
-    if raw is None or raw is UNDEFINED:
+    if raw is None or _is_undefined(raw):
         return {}
     if isinstance(raw, dict):
-        return raw
+        return _strip_undefined(raw)
     # Bare scalar / list — wrap under a conventional key so the tool's
     # schema validation produces an informative error rather than a
     # silent miss.
-    return {"input": raw}
+    return {"input": _strip_undefined(raw)}
 
 
 def _synth_tool_call_id(tool_name: str) -> str:
@@ -986,7 +1020,10 @@ class _Registry:
         slot.worker.close()
 
     async def _acreate_runtime(self) -> Runtime:
-        return Runtime(memory_limit=self.memory_limit)
+        return Runtime(
+            memory_limit=self.memory_limit,
+            transform_flags=SourceTransform.TOP_LEVEL_CONST_TO_VAR,
+        )
 
     def close(self) -> None:
         with self._lock:

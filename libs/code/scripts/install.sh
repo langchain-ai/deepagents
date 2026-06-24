@@ -55,8 +55,11 @@
 #     terminal (CI, wrapper scripts) update instead of stalling at the y/n
 #     prompt.
 #   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
+#   DEEPAGENTS_CODE_SKIP_XCODE_CHECK — set to 1 to bypass the macOS Xcode
+#     Command Line Tools preflight check
 #   DEEPAGENTS_CODE_VERBOSE — set to 1 to show uv's raw stderr (timing lines,
-#     unfiltered package diff) and the quiet-by-default status lines
+#     unfiltered package diff), the uv installer's own output (shown only when
+#     uv isn't already installed), and the quiet-by-default status lines
 #     (optional-tool checks, post-install footer); useful when debugging. A
 #     fresh install otherwise hides the full list of installed dependencies.
 #   UV_BIN — path to uv binary (auto-detected if unset)
@@ -66,6 +69,11 @@
 #   patterns adapted from hermes-agent (NousResearch/hermes-agent).
 
 set -euo pipefail
+
+# Keep the shell PATH the user started with. The installer may source
+# ~/.local/bin/env later so it can find a freshly installed uv, but that does
+# not update the parent shell that will receive the final "Run: dcode" advice.
+ORIGINAL_PATH="${PATH:-}"
 
 # ---------------------------------------------------------------------------
 # Colors & logging
@@ -131,6 +139,23 @@ detect_os() {
   esac
 }
 detect_os
+
+# ---------------------------------------------------------------------------
+# macOS: require Xcode Command Line Tools
+# ---------------------------------------------------------------------------
+# On a fresh Mac the /usr/bin shims for git, python3, etc. are stubs that pop a
+# blocking GUI dialog ("...requires the command line developer tools") the first
+# time they run. uv's interpreter discovery and dcode's own git usage hit those
+# stubs, so fail fast here with a clear instruction instead of leaving the user
+# staring at a confusing popup mid-install. `xcode-select -p` only reports the
+# active developer dir — it never triggers the install dialog itself.
+if [ "$OS" = "macos" ] && [ "${DEEPAGENTS_CODE_SKIP_XCODE_CHECK:-}" != "1" ] && ! xcode-select -p >/dev/null 2>&1; then
+  log_error "Xcode Command Line Tools are required but not installed."
+  log_error "  Install them with:  xcode-select --install"
+  log_error "  To bypass this check, set:  DEEPAGENTS_CODE_SKIP_XCODE_CHECK=1"
+  log_error "  Then re-run this installer."
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Root / MDM support (macOS — Kandji, Jamf, etc.)
@@ -241,6 +266,71 @@ can_prompt() {
   { : < /dev/tty; } 2>/dev/null
 }
 
+path_is_under_home() {
+  local path="$1"
+  local home_real=""
+  local path_real=""
+  [ -n "${HOME:-}" ] || return 1
+  [ -d "$path" ] || return 1
+  home_real=$(cd "$HOME" 2>/dev/null && pwd -P) || return 1
+  path_real=$(cd "$path" 2>/dev/null && pwd -P) || return 1
+  case "$path_real" in
+    "$home_real"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+prepare_install_log_dir() {
+  local cache_root="$1"
+  local dir="${cache_root}/deepagents-code"
+  [ -n "$cache_root" ] || return 1
+  [ ! -L "$cache_root" ] || return 1
+  [ ! -L "$dir" ] || return 1
+  if [ ! -d "$cache_root" ]; then
+    mkdir -m 700 -p "$cache_root" 2>/dev/null || return 1
+  fi
+  [ -d "$cache_root" ] && [ ! -L "$cache_root" ] || return 1
+  if [ -e "$dir" ]; then
+    [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+  else
+    mkdir -m 700 "$dir" 2>/dev/null || return 1
+  fi
+  if [ "$(id -u)" -eq 0 ]; then
+    path_is_under_home "$dir" || return 1
+  fi
+  printf '%s\n' "$dir"
+}
+
+fix_install_log_owner() {
+  [ -n "${INSTALL_LOG:-}" ] || return 0
+  [ "$(id -u)" -eq 0 ] || return 0
+  [ -n "${TARGET_USER:-}" ] && [ "$TARGET_USER" != "root" ] || return 0
+  [ -d "$install_log_dir" ] && [ ! -L "$install_log_dir" ] || return 0
+  path_is_under_home "$install_log_dir" || return 0
+  if ! chown -h "$TARGET_USER" "$install_log_dir" 2>&1; then
+    log_warn "Could not fix ownership of $install_log_dir for user ${TARGET_USER}."
+  fi
+  if [ -f "$INSTALL_LOG" ] && [ ! -L "$INSTALL_LOG" ]; then
+    if ! chown -h "$TARGET_USER" "$INSTALL_LOG" 2>&1; then
+      log_warn "Could not fix ownership of $INSTALL_LOG for user ${TARGET_USER}."
+    fi
+  fi
+}
+
+copy_install_log() {
+  [ -n "${INSTALL_LOG:-}" ] || return 1
+  [ -n "${install_log_dir:-}" ] || return 1
+  [ -d "$install_log_dir" ] && [ ! -L "$install_log_dir" ] || return 1
+  if [ "$(id -u)" -eq 0 ]; then
+    path_is_under_home "$install_log_dir" || return 1
+  fi
+  [ ! -L "$INSTALL_LOG" ] || return 1
+  rm -f "$INSTALL_LOG" 2>/dev/null || return 1
+  # Publish the already-captured stderr without opening the destination for
+  # writing. `ln` fails if an attacker wins the race by creating install.log.
+  ln "$uv_stderr" "$INSTALL_LOG" 2>/dev/null
+}
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -310,20 +400,34 @@ fi
 # uv installation
 # ---------------------------------------------------------------------------
 install_uv() {
+  # The upstream uv installer is chatty (download progress, install paths,
+  # PATH-setup hints). Capture it and surface the output only when debugging
+  # or when the install fails — by default it's noise the user doesn't need.
+  local uv_install_out uv_install_rc=0
+  uv_install_out=$(mktemp 2>/dev/null) || {
+    log_error "mktemp is required to create a secure temp file."
+    exit 1
+  }
+  # Only the piped `sh` (the installer body) is captured by `>"$uv_install_out"
+  # 2>&1`; curl/wget keep their own stderr on the terminal. That's intentional —
+  # `-fsSL` includes `-S`, so a failed download still prints curl's error
+  # directly (above the "uv installation failed" line) even though the captured
+  # file is then empty. Don't assume curl's stderr is in the capture.
   if command -v curl >/dev/null 2>&1; then
-    log_info "Downloading uv installer..."
-    if ! curl -fsSL https://astral.sh/uv/install.sh | sh; then
-      log_error "uv installation failed. See errors above."
-      exit 1
-    fi
+    curl -fsSL https://astral.sh/uv/install.sh | sh >"$uv_install_out" 2>&1 || uv_install_rc=$?
   elif command -v wget >/dev/null 2>&1; then
-    log_info "Downloading uv installer..."
-    if ! wget -qO- https://astral.sh/uv/install.sh | sh; then
-      log_error "uv installation failed. See errors above."
-      exit 1
-    fi
+    wget -qO- https://astral.sh/uv/install.sh | sh >"$uv_install_out" 2>&1 || uv_install_rc=$?
   else
+    rm -f "$uv_install_out"
     log_error "curl or wget is required to install uv."
+    exit 1
+  fi
+  if [ "$VERBOSE" = "1" ] || [ "$uv_install_rc" -ne 0 ]; then
+    cat "$uv_install_out" >&2
+  fi
+  rm -f "$uv_install_out"
+  if [ "$uv_install_rc" -ne 0 ]; then
+    log_error "uv installation failed. See errors above."
     exit 1
   fi
 }
@@ -479,7 +583,7 @@ else
 fi
 
 # Capture uv stderr so we can:
-#   1. Rewrite the cryptic "Ignoring existing environment …" warning into
+#   1. Rewrite the cryptic "Ignoring existing environment ..." warning into
 #      plain English. uv emits that line when it rebuilds the tool venv
 #      instead of upgrading in place (e.g., Python interpreter mismatch, or
 #      editable↔regular install swap).
@@ -488,10 +592,45 @@ fi
 #      a Verified line with the binary name and version.
 #   3. Reformat the `- pkg==X` / `+ pkg==Y` diff into an aligned
 #      "pkg  X → Y" table under a single header.
+#   4. Detect whether uv actually moved any packages (those same
+#      `- pkg==X` / `+ pkg==Y` lines). A same-version reinstall that still
+#      bumps dependencies must report differently from a true no-op, so a
+#      later grep over this raw tempfile sets UV_REPORTED_PACKAGE_CHANGES.
+#   5. Persist the raw output to a log file (see INSTALL_LOG below) so a
+#      same-version dependency bump — or a failed install — can point the
+#      user at the full details after the terminal scrolls away.
 # Using a tempfile (vs. process substitution) ensures we see uv's full exit
-# status and don't race the warning past later log lines.
+# status, don't race the warning past later log lines, and can re-scan the
+# raw output for (4) after the awk pass above has already reformatted it.
 uv_stderr=$(mktemp 2>/dev/null) || uv_stderr="/tmp/deepagents-install.$$.err"
 uv_rc=0
+UV_REPORTED_PACKAGE_CHANGES=false
+# Mirror uv's raw output to a persistent log under the XDG cache dir. A
+# same-version dependency bump prints only a one-line summary and a failed
+# install scrolls past, so the log preserves the full diff/errors for later.
+# Prefer $XDG_CACHE_HOME, falling back to ~/.cache. INSTALL_LOG is the real
+# path used for writes; INSTALL_LOG_DISPLAY is the tilde-collapsed form shown
+# to the user. Both stay empty when the dir can't be created, which every
+# consumer treats as "feature disabled" so messages degrade cleanly.
+INSTALL_LOG=""
+INSTALL_LOG_DISPLAY=""
+cache_root="${XDG_CACHE_HOME:-}"
+if [ "$(id -u)" -eq 0 ] && [ -n "${HOME:-}" ]; then
+  cache_root="${HOME}/.cache"
+elif [ -z "$cache_root" ] && [ -n "${HOME:-}" ]; then
+  cache_root="${HOME}/.cache"
+fi
+if [ -n "$cache_root" ]; then
+  if install_log_dir=$(prepare_install_log_dir "$cache_root"); then
+    INSTALL_LOG="${install_log_dir}/install.log"
+    INSTALL_LOG_DISPLAY="$INSTALL_LOG"
+    if [ -n "${HOME:-}" ]; then
+      case "$INSTALL_LOG" in
+        "$HOME"/*) INSTALL_LOG_DISPLAY="~${INSTALL_LOG#"$HOME"}" ;;
+      esac
+    fi
+  fi
+fi
 if [[ -n "$PRERELEASE" ]]; then
   "$UV_BIN" tool install -U --python "$PYTHON_VERSION" \
     --prerelease "$PRERELEASE" "$PACKAGE" 2>"$uv_stderr" || uv_rc=$?
@@ -570,9 +709,21 @@ if [ "$VERBOSE" != "1" ] && command -v awk >/dev/null 2>&1; then
 else
   cat "$uv_stderr" >&2
 fi
+if grep -Eq '^[[:space:]]+[-+][[:space:]]+[^=]+==' "$uv_stderr"; then
+  UV_REPORTED_PACKAGE_CHANGES=true
+fi
+if [ -n "$INSTALL_LOG" ]; then
+  copy_install_log || { INSTALL_LOG=""; INSTALL_LOG_DISPLAY=""; }
+fi
 rm -f "$uv_stderr"
 if [ "$uv_rc" -ne 0 ]; then
   log_error "Failed to install ${PACKAGE}. See errors above."
+  # The log captured uv's full stderr (copied just above, before this exit), so
+  # point the user at it — non-verbose mode trims uv's lines from the terminal
+  # and piped `curl | bash` runs lose scrollback.
+  if [ -n "$INSTALL_LOG" ]; then
+    log_error "Full install log: ${INSTALL_LOG_DISPLAY}"
+  fi
   log_error "Common fixes: check your network, try a different Python version (DEEPAGENTS_CODE_PYTHON=3.12), or install manually."
   exit 1
 fi
@@ -582,15 +733,27 @@ if [ "$OS" = "macos" ] && [ -d "${HOME}/Library/Caches/uv" ]; then
 elif [ -d "${HOME}/.cache/uv" ]; then
   fix_owner "${HOME}/.cache/uv"
 fi
+# Restore ownership for the log path without recursively chowning a cache path
+# that could have been swapped after creation.
+fix_install_log_owner
 # ---------------------------------------------------------------------------
 # Post-install verification + contextual status
 # ---------------------------------------------------------------------------
 DCODE_BIN=""
 DCODE_NAME=""
+# Tracks whether the binary would have resolved via the user's original PATH,
+# not the installer-mutated PATH. A fresh `uv tool install` drops the binary in
+# ~/.local/bin, and this script may have sourced ~/.local/bin/env earlier to
+# find uv; the parent shell still won't have dcode on PATH until it is
+# restarted or the env file is sourced.
+DCODE_ON_PATH=false
 for candidate in dcode deepagents-code; do
   if resolved=$(command -v "$candidate" 2>/dev/null) && [ -n "$resolved" ]; then
     DCODE_BIN="$resolved"
     DCODE_NAME="$candidate"
+    if PATH="$ORIGINAL_PATH" command -v "$candidate" >/dev/null 2>&1; then
+      DCODE_ON_PATH=true
+    fi
     break
   elif [ -x "${HOME}/.local/bin/${candidate}" ]; then
     DCODE_BIN="${HOME}/.local/bin/${candidate}"
@@ -623,7 +786,19 @@ if [ "$IS_EDITABLE" = true ]; then
 elif [ -z "$PRE_VERSION" ]; then
   log_success "deepagents-code${NEW_VERSION:+ ${NEW_VERSION}} installed."
 elif [ -n "$NEW_VERSION" ] && [ "$PRE_VERSION" = "$NEW_VERSION" ]; then
-  log_success "deepagents-code ${NEW_VERSION} already up to date."
+  # Same app version, but uv may have refreshed transitive deps (security or
+  # compat bumps). The final status line is the user-facing summary, so a flat
+  # "already up to date" would contradict the package diff printed just above
+  # (and, in non-verbose mode where an addition-only diff is suppressed, hide
+  # the dep move entirely). UV_REPORTED_PACKAGE_CHANGES (set far above) is the
+  # signal that the reinstall actually moved packages.
+  if [ "$UV_REPORTED_PACKAGE_CHANGES" = true ]; then
+    # INSTALL_LOG_DISPLAY is empty exactly when no log was written, so the
+    # `:+` suffix appends the pointer only when there's a log to point at.
+    log_success "deepagents-code ${NEW_VERSION} was already up to date; dependencies were updated.${INSTALL_LOG_DISPLAY:+ Details: ${INSTALL_LOG_DISPLAY}}"
+  else
+    log_success "deepagents-code ${NEW_VERSION} already up to date."
+  fi
 elif [ -n "$NEW_VERSION" ]; then
   log_success "deepagents-code updated: ${PRE_VERSION} → ${NEW_VERSION}."
 else
@@ -653,6 +828,19 @@ elif [ -n "$DCODE_BIN" ]; then
 else
   log_warn "dcode (or deepagents-code) command not found in PATH. Restart your shell or run:"
   log_warn "  source ~/.zshrc   # (or ~/.bashrc)"
+fi
+
+# The binary verified via its absolute path but isn't on the current shell's
+# PATH (typical right after a fresh `uv tool install`): typing `dcode` won't
+# work until the shell picks up ~/.local/bin. Point the user at the fix so the
+# "Run: dcode" footer below isn't a dead end.
+if [ "$VERIFY_OK" = true ] && [ "$DCODE_ON_PATH" = false ]; then
+  log_warn "${DCODE_NAME} isn't on your PATH yet${DCODE_BIN_DISPLAY:+ (installed at ${DCODE_BIN_DISPLAY})}. Restart your shell, or run:"
+  if [ -f "${HOME}/.local/bin/env" ]; then
+    log_warn "  source ~/.local/bin/env"
+  else
+    log_warn "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -783,11 +971,15 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Done — footer wording depends on whether anything changed:
-#   - already up to date  → "Already installed"
+# Done — footer wording depends on what changed:
+#   - same app version + dependency changes → "Dependencies updated"
+#   - already up to date                    → "Already installed"
 #   - fresh install / upgrade / editable→PyPI swap → "Setup complete"
 # ---------------------------------------------------------------------------
 if [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] \
+  && [ "$PRE_VERSION" = "$NEW_VERSION" ] && [ "$UV_REPORTED_PACKAGE_CHANGES" = true ]; then
+  footer_msg="Dependencies updated."
+elif [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] \
   && [ "$PRE_VERSION" = "$NEW_VERSION" ]; then
   footer_msg="Already installed."
 else

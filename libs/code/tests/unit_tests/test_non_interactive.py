@@ -4,7 +4,7 @@ import asyncio
 import io
 import signal
 import sys
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Sequence
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -38,6 +38,17 @@ from deepagents_code.non_interactive import (
 def console() -> Console:
     """Console that captures output."""
     return Console(quiet=True)
+
+
+@pytest.fixture(autouse=True)
+def skip_mcp_metadata_preload() -> Iterator[None]:
+    """Keep non-MCP non-interactive tests from starting connector discovery."""
+    with patch(
+        "deepagents_code.main._preload_session_mcp_server_info",
+        new_callable=AsyncMock,
+        return_value=[],
+    ):
+        yield
 
 
 class TestMakeHitlDecision:

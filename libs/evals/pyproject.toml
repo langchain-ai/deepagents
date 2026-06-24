@@ -24,7 +24,7 @@ dependencies = [
     # Harbor runtime, with the built-in LangSmith sandbox env (`-e langsmith`, harbor>=0.13.2)
     "harbor[langsmith]>=0.13.2,<0.14.0",
     # LangSmith for observability
-    "langsmith>=0.8.11,<0.9.0",
+    "langsmith>=0.9.0,<0.10.0",
     # Sandbox runtimes
     "dockerfile-parse>=2.0.1",
     "modal>=1.4.3",
@@ -46,7 +46,7 @@ dependencies = [
     "nltk>=3.9.4",
     "openevals>=0.2.0",
     "tiktoken>=0.13.0",
-    "langchain-quickjs>=0.1.4",
+    "langchain-quickjs>=0.3.1,<0.4.0",
 ]
 
 [project.scripts]

@@ -364,6 +364,38 @@ async def test_tool_invocation_from_repl(repl: _ThreadREPL) -> None:
     assert calls == [{"name": "world", "times": 2}]
 
 
+async def test_undefined_object_property_uses_schema_default(
+    repl: _ThreadREPL,
+) -> None:
+    """A property passed as JS ``undefined`` is omitted so defaults apply."""
+
+    class _In(BaseModel):
+        name: str = Field(default="", description="Optional name")
+
+    def _fn(name: str = "") -> str:
+        return f"ok:{name!r}"
+
+    tool = StructuredTool.from_function(
+        name="myTool",
+        description="Echo the name with its repr.",
+        func=_fn,
+        args_schema=_In,
+    )
+    repl.install_tools([tool])
+
+    empty = await repl.eval_async("await tools.myTool({})")
+    assert empty.error_type is None, empty.error_message
+    assert empty.result == "ok:''"
+
+    explicit = await repl.eval_async('await tools.myTool({ name: "" })')
+    assert explicit.error_type is None, explicit.error_message
+    assert explicit.result == "ok:''"
+
+    undefined = await repl.eval_async("await tools.myTool({ name: undefined })")
+    assert undefined.error_type is None, undefined.error_message
+    assert undefined.result == "ok:''"
+
+
 async def test_promise_all_runs_tools_concurrently(repl: _ThreadREPL) -> None:
     """`Promise.all` on two tool calls resolves both before returning."""
     calls: list[dict] = []

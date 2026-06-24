@@ -156,6 +156,10 @@ test = [
     "twine>=6.2.0,<7.0.0",
 ]
 
+[tool.hatch.build.hooks.custom]
+# Stamps deepagents_code/_build_info.py with the release commit when
+# DEEPAGENTS_CODE_BUILD_COMMIT is set (CI release builds). See hatch_build.py.
+
 [tool.hatch.build.targets.wheel]
 packages = ["deepagents_code"]
 include = [

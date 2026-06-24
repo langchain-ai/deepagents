@@ -13,6 +13,7 @@ from rich.console import Console
 from deepagents_code.doctor import (
     DiagnosticItem,
     DiagnosticSection,
+    _build_commit,
     _commit_hash,
     collect_sections,
     run_doctor_command,
@@ -174,6 +175,7 @@ class TestCommitHash:
         git.chmod(0o755)
 
         with (
+            patch("deepagents_code.doctor._build_commit", return_value=None),
             patch("shutil.which", return_value=str(git)),
             patch(
                 "subprocess.run",
@@ -189,12 +191,36 @@ class TestCommitHash:
     def test_missing_git_returns_unknown(self) -> None:
         """Missing Git should degrade to `unknown` without spawning a process."""
         with (
+            patch("deepagents_code.doctor._build_commit", return_value=None),
             patch("shutil.which", return_value=None),
             patch("subprocess.run") as run,
         ):
             assert _commit_hash("/tmp") == "unknown"
 
         run.assert_not_called()
+
+    def test_baked_commit_preferred_over_git(self) -> None:
+        """A build-stamped commit wins and skips the live git probe."""
+        with (
+            patch("deepagents_code.doctor._build_commit", return_value="deadbee"),
+            patch("shutil.which") as which,
+            patch("subprocess.run") as run,
+        ):
+            assert _commit_hash("/tmp") == "deadbee"
+
+        which.assert_not_called()
+        run.assert_not_called()
+
+    def test_build_commit_missing_module(self) -> None:
+        """No generated module (editable/dev install) yields `None`."""
+        with patch.dict(sys.modules, {"deepagents_code._build_info": None}):
+            assert _build_commit() is None
+
+    def test_build_commit_reads_stamped_value(self) -> None:
+        """A generated module exposes its stamped commit."""
+        stub = SimpleNamespace(BUILD_COMMIT="abc1234")
+        with patch.dict(sys.modules, {"deepagents_code._build_info": stub}):
+            assert _build_commit() == "abc1234"
 
 
 class TestRunDoctorCommand:

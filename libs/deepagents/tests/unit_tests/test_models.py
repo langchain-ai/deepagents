@@ -1188,6 +1188,14 @@ class TestBuiltInProfiles:
         }
         assert len(suffixes) == 1
 
+    def test_glm_5p2_prompts_against_direct_image_input(self) -> None:
+        """GLM-5.2 should inspect media files through shell tools."""
+        profile = _get_harness_profile("fireworks:accounts/fireworks/models/glm-5p2")
+        assert profile is not None
+        assert profile.system_prompt_suffix
+        assert "does not support direct image input" in profile.system_prompt_suffix
+        assert "shell commands or scripts" in profile.system_prompt_suffix
+
 
 class TestProfilePluginLoader:
     """Tests for the `importlib.metadata` entry-point loader."""

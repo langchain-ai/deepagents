@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired
 
+from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -193,6 +194,11 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             in middleware state. If a snapshot exceeds this size, it is
             dropped (`_quickjs_snapshot_payload=None`). Defaults to
             `memory_limit`.
+        backend: Optional Deep Agents backend used for JavaScript imports.
+            When provided, imports read source from the backend. Absolute paths
+            are loaded as-is, relative imports are resolved from the importing
+            file, and extensionless imports try `.js`, `.mjs`, `.ts`, and
+            `index.*` candidates.
 
     Example:
         ```python
@@ -221,6 +227,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         ptc: PTCOption | None = None,
         mode: PersistenceMode | None = None,
         max_snapshot_bytes: int | None = None,
+        backend: BackendProtocol | None = None,
     ) -> None:
         """Initialize REPL middleware state and build the exposed eval tool."""
         super().__init__()
@@ -249,6 +256,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             max_stdout_chars=max_result_chars,
             max_ptc_calls=max_ptc_calls,
             subagents_enabled=subagents,
+            module_backend=backend,
         )
         self._memory_limit_mb = memory_limit // (1024 * 1024)
         self._base_prompt_cache: dict[bool, str] = {}

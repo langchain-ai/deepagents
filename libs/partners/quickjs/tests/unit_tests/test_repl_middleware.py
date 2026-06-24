@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from deepagents.backends.protocol import BackendProtocol, ReadResult
 from deepagents.backends.state import StateBackend
 from deepagents.middleware.subagents import (
     SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY,
@@ -79,6 +80,23 @@ def repl(worker: ThreadWorker, runtime: Runtime) -> _ThreadREPL:
         capture_console=True,
         max_stdout_chars=4000,
     )
+
+
+class _DictModuleBackend(BackendProtocol):
+    def __init__(self, files: dict[str, str]) -> None:
+        self.files = files
+
+    def read(
+        self,
+        file_path: str,
+        offset: int = 0,
+        limit: int = 2000,
+    ) -> ReadResult:
+        del offset, limit
+        content = self.files.get(file_path)
+        if content is None:
+            return ReadResult(error="file_not_found")
+        return ReadResult(file_data={"content": content, "encoding": "utf-8"})
 
 
 # ---------------------------------------------------------------------------
@@ -353,6 +371,55 @@ def test_registry_reset_repl_clears_state_without_recreating_runtime() -> None:
     finally:
         reg.close()
     assert outcome.result == "undefined"
+
+
+def test_backend_import_loader_supports_import(
+    worker: ThreadWorker,
+    runtime: Runtime,
+) -> None:
+    backend = _DictModuleBackend(
+        {"/math.js": "export const answer = 42; export default answer + 1;"}
+    )
+    module_repl = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+        module_backend=backend,
+    )
+
+    outcome = module_repl.eval_sync("import('/math.js').then((m) => m.answer)")
+
+    assert outcome.error_type is None
+    assert outcome.result == "42"
+
+
+def test_backend_import_loader_resolves_relative_extensionless_imports(
+    worker: ThreadWorker,
+    runtime: Runtime,
+) -> None:
+    backend = _DictModuleBackend(
+        {
+            "/lib/main.js": (
+                "import { twice } from './math'; export const value = twice(21);"
+            ),
+            "/lib/math.js": "export function twice(x) { return x * 2; }",
+        }
+    )
+    module_repl = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+        module_backend=backend,
+    )
+
+    outcome = module_repl.eval_sync("import('/lib/main').then((m) => m.value)")
+
+    assert outcome.error_type is None
+    assert outcome.result == "42"
 
 
 # ---------------------------------------------------------------------------

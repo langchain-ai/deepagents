@@ -140,13 +140,27 @@ class TestAuthPromptScreen:
 
     def test_provider_metadata_maps_reference_known_providers(self) -> None:
         """Map keys stay in sync with real providers so none silently never resolve."""
-        known = set(model_config.PROVIDER_API_KEY_ENV) | {model_config.CODEX_PROVIDER}
+        # Services (e.g. LangSmith tracing) may carry a display name and key URL
+        # but live in SERVICE_API_KEY_ENV rather than PROVIDER_API_KEY_ENV.
+        known = (
+            set(model_config.PROVIDER_API_KEY_ENV)
+            | set(model_config.SERVICE_API_KEY_ENV)
+            | {model_config.CODEX_PROVIDER}
+        )
         assert set(PROVIDER_DISPLAY_NAMES) <= known
         # Codex uses ChatGPT login, not an API-key page, so it has no key URL.
-        # Services (e.g. Tavily) carry a key URL but live in SERVICE_API_KEY_ENV.
         assert set(PROVIDER_API_KEY_URLS) <= (
             set(model_config.PROVIDER_API_KEY_ENV)
             | set(model_config.SERVICE_API_KEY_ENV)
+        )
+
+    def test_langsmith_service_has_display_name_and_key_url(self) -> None:
+        """LangSmith tracing surfaces a branded label and a key-acquisition URL."""
+        assert PROVIDER_DISPLAY_NAMES[model_config.LANGSMITH_SERVICE] == (
+            "LangSmith (tracing)"
+        )
+        assert PROVIDER_API_KEY_URLS[model_config.LANGSMITH_SERVICE] == (
+            "https://smith.langchain.com/settings"
         )
 
     def test_every_known_provider_has_a_display_name(self) -> None:
@@ -516,6 +530,19 @@ api_key_env = "MY_GATEWAY_API_KEY"
             assert base_url.display is True
             assert base_url.value == "https://proxy.example/v1"
 
+    async def test_existing_project_expands_advanced_by_default(self) -> None:
+        """A stored LangSmith project keeps the advanced section visible."""
+        auth_store.set_stored_key("langsmith", "lsv2_existing", project="my-app")
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            project_label = app.screen.query_one("#auth-prompt-project-label", Static)
+            project_input = app.screen.query_one("#auth-prompt-project", Input)
+            assert project_label.display is True
+            assert project_input.display is True
+            assert project_input.value == "my-app"
+
     async def test_paste_and_submit_persists(self) -> None:
         """Submitting a non-empty value writes to the store and dismisses True."""
         app = _AuthHostApp()
@@ -529,6 +556,35 @@ api_key_env = "MY_GATEWAY_API_KEY"
         assert app.prompt_dismissed is True
         assert app.prompt_result is AuthResult.SAVED
         assert auth_store.get_stored_key("anthropic") == "sk-ant-test-12345"
+
+    async def test_langsmith_submit_applies_tracing_env_immediately(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Saving LangSmith auth activates tracing in the running process."""
+        import os
+
+        for var in (
+            "LANGSMITH_API_KEY",
+            "LANGSMITH_TRACING",
+            "LANGCHAIN_TRACING_V2",
+            "LANGSMITH_PROJECT",
+            "DEEPAGENTS_CODE_LANGSMITH_API_KEY",
+            "DEEPAGENTS_CODE_LANGSMITH_TRACING",
+            "DEEPAGENTS_CODE_LANGSMITH_PROJECT",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "lsv2_live"
+            await pilot.press("enter")
+            await pilot.pause()
+
+        assert app.prompt_result is AuthResult.SAVED
+        assert os.environ["LANGSMITH_API_KEY"] == "lsv2_live"
+        assert os.environ["LANGSMITH_TRACING"] == "true"
 
     async def test_base_url_round_trips_on_submit(self) -> None:
         """A base URL typed alongside the key is persisted as the pair."""
@@ -592,6 +648,34 @@ api_key_env = "MY_GATEWAY_API_KEY"
             await pilot.pause()
             base_url_field = app.screen.query_one("#auth-prompt-base-url", Input)
             assert base_url_field.value == "https://stored.example/v1"
+
+    async def test_langsmith_prompt_saves_key_and_project(self) -> None:
+        """The LangSmith prompt persists a key plus its custom project name."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            await pilot.press("f2")
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "lsv2_test"
+            project_field = app.screen.query_one("#auth-prompt-project", Input)
+            project_field.value = "my-app"
+            project_field.focus()
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+        assert app.prompt_result is AuthResult.SAVED
+        assert auth_store.get_stored_key("langsmith") == "lsv2_test"
+        assert auth_store.get_stored_project("langsmith") == "my-app"
+
+    async def test_langsmith_prompt_has_no_base_url_field(self) -> None:
+        """The LangSmith prompt swaps the base-URL field for the project field."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            assert not app.screen.query("#auth-prompt-base-url")
+            assert app.screen.query("#auth-prompt-project")
 
     async def test_empty_submit_shows_error_and_does_not_dismiss(self) -> None:
         """Empty input renders an inline error instead of dismissing."""
@@ -1258,8 +1342,15 @@ api_key_env = "MY_GATEWAY_API_KEY"
             ids = {
                 options.get_option_at_index(i).id for i in range(options.option_count)
             }
-        # Non-model services (e.g. Tavily) are always listed for key entry.
-        assert ids == {"openai", "openai_codex", "anthropic", "tavily"}
+        # Non-model services (Tavily search, LangSmith tracing) are always
+        # listed for key entry.
+        assert ids == {
+            "openai",
+            "openai_codex",
+            "anthropic",
+            "tavily",
+            "langsmith",
+        }
 
     async def test_selecting_service_opens_prompt_for_its_env_var(
         self, monkeypatch: pytest.MonkeyPatch

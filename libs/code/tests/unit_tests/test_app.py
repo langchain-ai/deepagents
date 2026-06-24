@@ -1020,15 +1020,18 @@ class TestStartupSequence:
         switch_or_install.assert_awaited_once_with("openai:gpt-5.4", "openai")
         mark_complete.assert_called_once_with()
 
-    async def test_launch_init_wires_name_screen_to_dependency_screen(self) -> None:
-        """On mount, submitting the name switches straight into the deps screen.
+    async def test_launch_init_wires_name_screen_to_model_selector(self) -> None:
+        """On mount, submitting the name switches straight into the selector.
 
-        Regression guard for the no-flash wiring: the mount path must set the
-        name screen's `continue_screen` and pass a `dependency_result` future. If
-        it regressed to the old `LaunchNameScreen()` with no continue screen,
-        onboarding would fall back to the double-modal flow and the post-submit
-        screen would not be the dependency summary.
+        The integrations summary screen is off by default, so onboarding goes
+        name -> model selector. Regression guard for the no-flash wiring: the
+        mount path must set the name screen's `continue_screen` and pass a
+        `dependency_result` future. If it regressed to the old
+        `LaunchNameScreen()` with no continue screen, onboarding would fall back
+        to the double-modal flow.
         """
+        from deepagents_code.widgets.model_selector import ModelSelectorScreen
+
         app = DeepAgentsApp(launch_init=True)
         app._prewarm_deferred_imports = MagicMock()  # ty: ignore
         app._resolve_git_branch_and_continue = AsyncMock()  # ty: ignore
@@ -1037,8 +1040,40 @@ class TestStartupSequence:
             await pilot.pause()
 
             assert isinstance(app.screen, LaunchNameScreen)
-            # The name screen is pre-wired to continue into the dependency
-            # summary rather than dismissing back to the base app.
+            # The name screen is pre-wired to continue into the model selector
+            # rather than dismissing back to the base app.
+            assert isinstance(
+                app.screen._continue_screen,  # ty: ignore
+                ModelSelectorScreen,
+            )
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert isinstance(app.screen, ModelSelectorScreen)
+
+            launch_task = app._launch_init_task
+            assert launch_task is not None
+            app.screen.action_cancel()
+            await asyncio.wait_for(launch_task, timeout=2)
+            await pilot.pause()
+
+    async def test_launch_init_integrations_flag_inserts_dependency_screen(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """With the opt-in flag set, the integrations summary precedes selection."""
+        from deepagents_code._env_vars import ONBOARDING_INTEGRATIONS_SCREEN
+
+        monkeypatch.setenv(ONBOARDING_INTEGRATIONS_SCREEN, "1")
+        app = DeepAgentsApp(launch_init=True)
+        app._prewarm_deferred_imports = MagicMock()  # ty: ignore
+        app._resolve_git_branch_and_continue = AsyncMock()  # ty: ignore
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert isinstance(app.screen, LaunchNameScreen)
             assert isinstance(
                 app.screen._continue_screen,  # ty: ignore
                 LaunchDependenciesScreen,
@@ -1055,8 +1090,10 @@ class TestStartupSequence:
             await asyncio.wait_for(launch_task, timeout=2)
             await pilot.pause()
 
-    async def test_launch_init_finishes_when_dependency_switch_fails(self) -> None:
-        """A failed name-to-dependencies switch should skip the rest of setup."""
+    async def test_launch_init_finishes_when_first_screen_switch_fails(self) -> None:
+        """A failed name-to-selector switch should skip the rest of setup."""
+        from deepagents_code.widgets.model_selector import ModelSelectorScreen
+
         app = DeepAgentsApp(launch_init=True)
         app._prewarm_deferred_imports = MagicMock()  # ty: ignore
         app._resolve_git_branch_and_continue = AsyncMock()  # ty: ignore
@@ -1067,8 +1104,8 @@ class TestStartupSequence:
         app._switch_or_install_launch_model = switch_or_install  # ty: ignore
         original_switch_screen = app.switch_screen
 
-        def fail_dependency_switch(screen: ModalScreen[Any] | str) -> None:
-            if isinstance(screen, LaunchDependenciesScreen):
+        def fail_first_screen_switch(screen: ModalScreen[Any] | str) -> None:
+            if isinstance(screen, ModelSelectorScreen):
                 msg = "stack torn down"
                 raise ScreenStackError(msg)
             original_switch_screen(screen)
@@ -1079,7 +1116,7 @@ class TestStartupSequence:
             assert isinstance(app.screen, LaunchNameScreen)
             launch_task = app._launch_init_task
             assert launch_task is not None
-            app.switch_screen = fail_dependency_switch  # ty: ignore
+            app.switch_screen = fail_first_screen_switch  # ty: ignore
 
             await pilot.press("a", "d", "a", "enter")
             await pilot.pause()
@@ -1415,7 +1452,8 @@ class TestStartupSequence:
             screen._description
             == "These models have performed well in Deep Agents evals and are "
             "a solid starting set. You can explore the full model list "
-            "later with /model."
+            "later with /model. Sandboxes and other integrations install "
+            "anytime with /install."
         )
 
 

@@ -8009,6 +8009,13 @@ class DeepAgentsApp(App):
             if self._inflight_turn_stats is not None:
                 self._session_stats.merge(turn_stats)
                 self._inflight_turn_stats = None
+            # Finalize any subagent rows left "running" — an interrupt cancels
+            # the worker before the bridge emits terminal events (a cancel is a
+            # BaseException, which the bridge's `except Exception` skips), so the
+            # panel would otherwise spin forever. No-op when nothing's running.
+            subagent_panel = self._get_subagent_panel()
+            if subagent_panel is not None:
+                subagent_panel.finalize_running()
             await self._cleanup_agent_task()
 
     async def _process_next_from_queue(self) -> None:

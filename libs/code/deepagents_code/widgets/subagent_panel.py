@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.timer import Timer
 
-SubagentStatus = Literal["running", "done", "error"]
+SubagentStatus = Literal["running", "done", "error", "cancelled"]
 
 _MODEL_COL = 16
 _TIMING_COL = 6
@@ -120,6 +120,14 @@ class _Phase:
             True if at least one subagent ended in error.
         """
         return any(r.status == "error" for r in self.records.values())
+
+    def any_cancelled(self) -> bool:
+        """Whether any subagent in this phase was cancelled.
+
+        Returns:
+            True if at least one subagent was cancelled.
+        """
+        return any(r.status == "cancelled" for r in self.records.values())
 
     def all_terminal(self) -> bool:
         """Whether the phase has records and none are still running.
@@ -475,7 +483,15 @@ class SubagentPanel(Vertical):
         self._model_label = (
             _sanitize(model_label, max_chars=_MODEL_COL) if model_label else None
         )
-        self._pending_reset = True
+        # If the previous turn left rows stuck "running" — e.g. it was cancelled
+        # before the bridge emitted terminal events (CancelledError is a
+        # BaseException, so it bypasses the bridge's `except Exception`) — clear
+        # now instead of persisting a stale, still-spinning fan-out. Otherwise
+        # defer the clear so a completed workflow survives no-subagent turns.
+        if self._any_running():
+            self._clear()
+        else:
+            self._pending_reset = True
 
     def reset(self, *, model_label: str | None = None, **_kwargs: Any) -> None:
         """Clear all phases and hide the panel immediately (e.g. on `/clear`)."""
@@ -499,6 +515,27 @@ class SubagentPanel(Vertical):
         self._pending_reset = False
         self._stop_timer()
         self.remove_class("-visible")
+
+    def finalize_running(self) -> None:
+        """Mark any still-running subagents as cancelled and stop ticking.
+
+        Called when a turn is interrupted: the QuickJS bridge does not emit
+        terminal events for `asyncio.CancelledError` (a BaseException, so it
+        bypasses the bridge's `except Exception`), which would otherwise leave
+        rows spinning forever. Freezes each affected row's elapsed time.
+        """
+        changed = False
+        for phase in self._phases.values():
+            for record in phase.records.values():
+                if record.status == "running":
+                    record.status = "cancelled"
+                    if record.duration_ms is None:
+                        record.duration_ms = int(record.elapsed_seconds() * 1000)
+                    changed = True
+        if not changed:
+            return
+        self._stop_timer()
+        self._refresh()
 
     def _show(self) -> None:
         """Make the panel visible (idempotent)."""
@@ -550,13 +587,13 @@ class SubagentPanel(Vertical):
         phase = self._displayed_phase()
         return phase.counts() if phase else (0, 0)
 
-    def _turn_counts(self) -> tuple[int, int, int]:
+    def _turn_counts(self) -> tuple[int, int, int, int]:
         """Sum subagent counts across all phases.
 
         Returns:
-            A `(finished, total, failed)` tuple over the whole turn.
+            A `(finished, total, failed, cancelled)` tuple over the whole turn.
         """
-        total = done = failed = 0
+        total = done = failed = cancelled = 0
         for phase in self._phases.values():
             for record in phase.records.values():
                 total += 1
@@ -564,7 +601,9 @@ class SubagentPanel(Vertical):
                     done += 1
                 if record.status == "error":
                     failed += 1
-        return done, total, failed
+                elif record.status == "cancelled":
+                    cancelled += 1
+        return done, total, failed, cancelled
 
     def _body_height(self) -> int:
         """Constant body height for the turn — sized to the largest phase.
@@ -619,11 +658,13 @@ class SubagentPanel(Vertical):
         caret = (
             glyphs.disclosure_expanded if self.expanded else glyphs.disclosure_collapsed
         )
-        done, total, failed = self._turn_counts()
+        done, total, failed, cancelled = self._turn_counts()
         if self._any_running() or not total:
             icon, tint = self._spinner.next_frame(), colors.warning
         elif failed:
             icon, tint = glyphs.error, colors.error
+        elif cancelled:
+            icon, tint = glyphs.circle_empty, colors.muted
         else:
             icon, tint = glyphs.checkmark, colors.success
         lead_text = f"{caret} {icon}  dynamic subagents"
@@ -631,7 +672,7 @@ class SubagentPanel(Vertical):
         left_len = len(lead_text)
 
         if self.expanded and total:
-            meta = self._header_meta_parts(done, total, failed, colors)
+            meta = self._header_meta_parts(done, total, failed, cancelled, colors)
             parts.extend(meta)
             left_len += sum(len(p.plain) for p in meta)
         hint = (
@@ -648,9 +689,10 @@ class SubagentPanel(Vertical):
         done: int,
         total: int,
         failed: int,
+        cancelled: int,
         colors: Any,  # noqa: ANN401 — ThemeColors
     ) -> list[Content]:
-        """Whole-turn totals (+ phase count, + failures) shown when expanded.
+        """Whole-turn totals (phase count, failures, cancellations) when expanded.
 
         Returns:
             The styled `Content` pieces appended after the header label.
@@ -663,6 +705,8 @@ class SubagentPanel(Vertical):
         parts: list[Content] = [Content.styled(meta_text, colors.muted)]
         if failed:
             parts.append(Content.styled(f"  ·  {failed} failed", colors.error))
+        if cancelled:
+            parts.append(Content.styled(f"  ·  {cancelled} cancelled", colors.muted))
         return parts
 
     def _header_width(self) -> int:
@@ -717,7 +761,12 @@ class SubagentPanel(Vertical):
         glyphs = get_glyphs()
         done, total = phase.counts()
         if phase.all_terminal():
-            mark = glyphs.error if phase.any_error() else glyphs.checkmark
+            if phase.any_error():
+                mark = glyphs.error
+            elif phase.any_cancelled():
+                mark = glyphs.circle_empty
+            else:
+                mark = glyphs.checkmark
         elif phase.eval_id == self._active_eval_id:
             mark = glyphs.disclosure_collapsed
         else:
@@ -804,6 +853,9 @@ class SubagentPanel(Vertical):
         elif record.status == "done":
             icon = glyphs.checkmark
             tint = colors.success
+        elif record.status == "cancelled":
+            icon = glyphs.circle_empty
+            tint = colors.muted
         else:
             icon = glyphs.error
             tint = colors.error

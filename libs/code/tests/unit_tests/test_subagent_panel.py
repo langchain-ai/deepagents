@@ -312,6 +312,57 @@ class TestReset:
             assert panel._phase_order == ["E2"]
             assert panel._find_record("a") is None
 
+    async def test_finalize_running_marks_cancelled(self) -> None:
+        async with PanelApp().run_test(size=(200, 24)) as pilot:
+            panel = pilot.app.query_one("#panel", SubagentPanel)
+            panel.on_subagent_event(_start("a", "E1"))
+            panel.on_subagent_event(_start("b", "E1"))
+            await pilot.pause()
+            assert panel._any_running() is True
+            # The turn is interrupted — finalize the in-flight rows.
+            panel.finalize_running()
+            await pilot.pause()
+            assert panel._any_running() is False
+            rec_a = panel._find_record("a")
+            rec_b = panel._find_record("b")
+            assert rec_a is not None
+            assert rec_b is not None
+            assert rec_a.status == "cancelled"
+            assert rec_b.status == "cancelled"
+            header = _render(pilot.app.query_one("#subagent-header", Static))
+            assert "2 cancelled" in header
+
+    async def test_finalize_running_preserves_finished_rows(self) -> None:
+        async with PanelApp().run_test(size=(200, 24)) as pilot:
+            panel = pilot.app.query_one("#panel", SubagentPanel)
+            panel.on_subagent_event(_start("a", "E1"))
+            panel.on_subagent_event(_complete("a", "E1"))
+            panel.on_subagent_event(_start("b", "E1"))  # still running
+            await pilot.pause()
+            panel.finalize_running()
+            await pilot.pause()
+            rec_a = panel._find_record("a")
+            rec_b = panel._find_record("b")
+            assert rec_a is not None
+            assert rec_b is not None
+            assert rec_a.status == "done"  # already finished — untouched
+            assert rec_b.status == "cancelled"  # in-flight — cancelled
+
+    async def test_prepare_turn_clears_stuck_running_rows(self) -> None:
+        async with PanelApp().run_test() as pilot:
+            panel = pilot.app.query_one("#panel", SubagentPanel)
+            # A subagent starts but never finishes (e.g. the turn was cancelled
+            # before a terminal event arrived — CancelledError bypasses the
+            # bridge's terminal-event emission).
+            panel.on_subagent_event(_start("a", "E1"))
+            await pilot.pause()
+            assert panel._any_running() is True
+            # The next turn must not persist a stale, still-running fan-out.
+            panel.prepare_turn()
+            await pilot.pause()
+            assert not panel.has_class("-visible")
+            assert panel._phase_order == []
+
 
 class TestStability:
     async def test_body_height_stable_across_phase_switch(self) -> None:

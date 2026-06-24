@@ -179,11 +179,7 @@ class ReadFileContinuationNoticeMiddleware(AgentMiddleware):
         # splits long lines into continuation rows (e.g. "5.1") that do NOT count
         # against the source-line `limit`. Source-line rows have a bare-integer
         # line-number prefix; continuation rows have a "<int>.<int>" prefix.
-        n_lines = sum(
-            1
-            for row in content.split("\n")
-            if "\t" in row and row.split("\t", 1)[0].strip().isdigit()
-        )
+        n_lines = sum(1 for row in content.split("\n") if "\t" in row and row.split("\t", 1)[0].strip().isdigit())
         if n_lines < limit:
             return result
         notice = (

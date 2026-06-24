@@ -587,7 +587,9 @@ class SubagentPanel(Vertical):
         """Render the header: status icon, label, whole-turn totals, toggle hint."""
         colors = get_theme_colors(self)
         glyphs = get_glyphs()
-        caret = "▾" if self.expanded else "▸"
+        caret = (
+            glyphs.disclosure_expanded if self.expanded else glyphs.disclosure_collapsed
+        )
         done, total, failed = self._turn_counts()
         if self._any_running() or not total:
             icon, tint = self._spinner.next_frame(), colors.warning
@@ -686,10 +688,10 @@ class SubagentPanel(Vertical):
         if phase.all_terminal():
             mark = glyphs.error if phase.any_error() else glyphs.checkmark
         elif phase.eval_id == self._active_eval_id:
-            mark = "▸"
+            mark = glyphs.disclosure_collapsed
         else:
             mark = glyphs.bullet
-        caret = "›" if selected else " "  # noqa: RUF001 — selection marker
+        caret = glyphs.cursor if selected else " "
         tint = colors.primary if selected else colors.muted
         elapsed = _format_timing(phase.elapsed_seconds())
         return Content.styled(
@@ -759,22 +761,26 @@ class SubagentPanel(Vertical):
     ) -> Content:
         """Render one row: status | task (left) | model · time (right).
 
+        On failure the reason is appended to the (wide) task column rather than
+        the 6-char time column, so it stays legible instead of being truncated.
+
         Returns:
             The styled, width-filling row `Content`.
         """
         if record.status == "running":
             icon = self._spinner.current_frame()
             tint = colors.warning
-            timing = _format_timing(record.elapsed_seconds())
         elif record.status == "done":
             icon = glyphs.checkmark
             tint = colors.success
-            timing = _format_timing(record.elapsed_seconds())
         else:
             icon = glyphs.error
             tint = colors.error
-            timing = record.error or "error"
-        task = _sanitize(record.label, max_chars=task_col - 1).ljust(task_col)
+        label = record.label
+        if record.status == "error" and record.error:
+            label = f"{record.label} - {record.error}"
+        timing = _format_timing(record.elapsed_seconds())
+        task = _sanitize(label, max_chars=task_col - 1).ljust(task_col)
         model = record.model or self._model_label or ""
         right = self._right_block(model, timing)
         return Content.assemble(

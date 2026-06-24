@@ -119,20 +119,21 @@ class TestLifecycle:
             assert panel._batch_complete is True
             assert panel._counts() == (2, 2)
 
-    async def test_error_marks_terminal(self) -> None:
+    async def test_error_shows_full_reason_in_task_column(self) -> None:
         async with PanelApp().run_test(size=(200, 24)) as pilot:
             panel = pilot.app.query_one("#panel", SubagentPanel)
             panel.on_subagent_event(_start("a", "E1", label="db.ts"))
-            panel.on_subagent_event(_error("a", "E1"))  # default short "boom"
+            panel.on_subagent_event(_error("a", "E1", message="rate limit exceeded"))
             await pilot.pause()
             assert panel._batch_complete is True
             record = panel._find_record("a")
             assert record is not None
             assert record.status == "error"
-            assert record.error == "boom"
-            # The (short) error text replaces the timing column in the row.
+            assert record.error == "rate limit exceeded"
+            # The full reason appears in the wide task column; it would be cut to
+            # ~6 chars if it were rendered in the (narrow) TIME column.
             rows = _render(pilot.app.query_one("#subagent-agents", Static))
-            assert "boom" in rows
+            assert "rate limit exceeded" in rows
 
 
 class TestPhases:

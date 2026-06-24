@@ -1,0 +1,22 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "reproduce_2873",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/libs/deepagents/reproduce_2873.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/libs/deepagents",
+            "python": "${workspaceFolder}/libs/deepagents/.venv/bin/python",
+            "envFile": "${workspaceFolder}/libs/deepagents/.env",
+            "env": {
+                "LANGSMITH_TRACING": "true",
+                "LANGSMITH_PROJECT": "nm-image-loss-2"
+            }
+        }
+    ]
+}

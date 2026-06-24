@@ -2,7 +2,8 @@
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
+from unittest.mock import MagicMock
 
 import pytest
 from textual.app import App, ComposeResult
@@ -1844,6 +1845,47 @@ class TestModelSelectorAuthGate:
 class TestModelSelectorInstallRouting:
     """Selecting a model whose provider is not installed prompts to install."""
 
+    async def test_curated_screen_loads_uninstalled_recommended(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Onboarding includes install-required recommended models."""
+        from deepagents_code.widgets import model_selector
+
+        captured: dict[str, bool] = {}
+
+        def load_model_data(
+            _cli_override: dict[str, Any] | None,
+            *,
+            include_uninstalled: bool = True,
+        ) -> model_selector._ModelData:
+            captured["include_uninstalled"] = include_uninstalled
+            return model_selector._ModelData(
+                [("baseten:zai-org/GLM-5.2", "baseten")],
+                None,
+                {},
+                [],
+                {"baseten": "baseten"},
+            )
+
+        monkeypatch.setattr(
+            ModelSelectorScreen,
+            "_load_model_data",
+            staticmethod(load_model_data),
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.push_screen(
+                ModelSelectorScreen(
+                    current_model="openai:gpt-5.5",
+                    current_provider="openai",
+                    curated=True,
+                )
+            )
+            await pilot.pause()
+
+        assert captured["include_uninstalled"] is True
+
     async def test_load_model_data_surfaces_uninstalled_recommended(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2002,7 +2044,7 @@ class TestModelSelectorInstallRouting:
     async def test_load_model_data_skips_uninstalled_when_disabled(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Onboarding (`include_uninstalled=False`) hides uninstalled providers."""
+        """Explicitly disabling uninstalled recommendations hides providers."""
         from deepagents_code.widgets import model_selector
 
         monkeypatch.setattr(
@@ -2055,6 +2097,40 @@ enabled = false
         specs = {spec for spec, _ in all_models}
         assert not any(spec.startswith("baseten:") for spec in specs)
         assert "baseten" not in install_extras
+
+    async def test_curated_uninstalled_provider_defers_to_launch_install(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Onboarding selections install from the launch flow before auth."""
+        from deepagents_code.widgets import model_selector
+
+        results: list[tuple[str, str] | None] = []
+        screen = ModelSelectorScreen(
+            current_model="openai:gpt-5.5",
+            current_provider="openai",
+            curated=True,
+            result_callback=results.append,
+        )
+        dismiss = MagicMock()
+        screen.dismiss = dismiss  # ty: ignore
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.provider_install_extra",
+            lambda _provider: "baseten",
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda _provider: False,
+        )
+        monkeypatch.setattr(
+            model_selector,
+            "get_provider_auth_status",
+            lambda _provider: pytest.fail("auth should wait until after install"),
+        )
+
+        screen._select_with_auth_check("baseten:zai-org/GLM-5.2", "baseten")
+
+        assert results == [("baseten:zai-org/GLM-5.2", "baseten")]
+        dismiss.assert_called_once_with(("baseten:zai-org/GLM-5.2", "baseten"))
 
     async def test_select_uninstalled_provider_prompts_install(
         self, monkeypatch: pytest.MonkeyPatch

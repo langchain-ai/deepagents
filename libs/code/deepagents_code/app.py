@@ -6048,7 +6048,7 @@ class DeepAgentsApp(App):
                 await self._finish_launch_init(name=name)
                 return
 
-            model_spec, _provider = result
+            model_spec, provider = result
             if self._connecting:
                 # Bound the wait so a stuck server never traps onboarding.
                 # Server startup typically completes in seconds; a minute is
@@ -6076,7 +6076,7 @@ class DeepAgentsApp(App):
                 await self._await_launch_name_memory(name_memory_task)
                 return
             try:
-                await self._switch_model(model_spec, announce_unchanged=False)
+                await self._switch_or_install_launch_model(model_spec, provider)
             except Exception as exc:  # surface to user, don't crash onboarding
                 logger.warning(
                     "Model switch during onboarding failed",
@@ -6109,6 +6109,29 @@ class DeepAgentsApp(App):
             self._launch_init_running = False
             if self._chat_input:
                 self._chat_input.focus_input()
+
+    async def _switch_or_install_launch_model(
+        self,
+        model_spec: str,
+        provider: str,
+    ) -> None:
+        """Install a missing provider extra before switching from onboarding.
+
+        Args:
+            model_spec: The selected `provider:model` spec.
+            provider: Provider returned by the model selector.
+        """
+        if provider:
+            from deepagents_code.config_manifest import (
+                is_provider_package_installed,
+                provider_install_extra,
+            )
+
+            extra = provider_install_extra(provider)
+            if extra is not None and not is_provider_package_installed(provider):
+                await self._install_extra_then_switch(extra, model_spec)
+                return
+        await self._switch_model(model_spec, announce_unchanged=False)
 
     async def _finish_launch_init(self, *, name: str | None) -> None:
         """Persist onboarding completion and, when given, mount the welcome.

@@ -925,6 +925,60 @@ class TestStartupSequence:
         mount_message_mock.assert_awaited_once()
         assert events == ["switch:openai:gpt-5", "mark", "welcome"]
 
+    async def test_launch_init_installs_missing_selected_provider(self) -> None:
+        """Onboarding installs a missing recommended provider before switching."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._install_extra_then_switch = AsyncMock()  # ty: ignore
+        app._switch_model = AsyncMock()  # ty: ignore
+
+        with (
+            patch(
+                "deepagents_code.config_manifest.provider_install_extra",
+                return_value="baseten",
+            ),
+            patch(
+                "deepagents_code.config_manifest.is_provider_package_installed",
+                return_value=False,
+            ),
+        ):
+            await app._switch_or_install_launch_model(
+                "baseten:zai-org/GLM-5.2",
+                "baseten",
+            )
+
+        app._install_extra_then_switch.assert_awaited_once_with(  # ty: ignore
+            "baseten",
+            "baseten:zai-org/GLM-5.2",
+        )
+        app._switch_model.assert_not_awaited()  # ty: ignore
+
+    async def test_launch_init_switches_installed_selected_provider(self) -> None:
+        """Onboarding switches directly when the selected provider is installed."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._install_extra_then_switch = AsyncMock()  # ty: ignore
+        app._switch_model = AsyncMock()  # ty: ignore
+
+        with (
+            patch(
+                "deepagents_code.config_manifest.provider_install_extra",
+                return_value="baseten",
+            ),
+            patch(
+                "deepagents_code.config_manifest.is_provider_package_installed",
+                return_value=True,
+            ),
+        ):
+            await app._switch_or_install_launch_model(
+                "baseten:zai-org/GLM-5.2",
+                "baseten",
+            )
+
+        app._install_extra_then_switch.assert_not_awaited()  # ty: ignore
+        app._switch_model.assert_awaited_once_with(  # ty: ignore
+            "baseten:zai-org/GLM-5.2",
+            announce_unchanged=False,
+        )
+
     async def test_launch_init_sequence_allows_empty_name(self) -> None:
         """Onboarding setup should continue to model selection without a name."""
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")

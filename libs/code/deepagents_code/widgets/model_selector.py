@@ -541,8 +541,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 integration isn't installed, added as greyed-out
                 install-required rows; (2) the provider is installed but its
                 upstream profiles omit the model, added as normal selectable
-                rows. Onboarding sets this `False` because it has a dedicated
-                dependency-install step.
+                rows.
 
         Returns:
             A `_ModelData` bundle of the discovered models, default spec,
@@ -692,7 +691,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             data = await asyncio.to_thread(
                 self._load_model_data,
                 self._cli_profile_override,
-                include_uninstalled=not self._curated,
+                include_uninstalled=True,
             )
         except Exception:
             logger.exception("Failed to load model data for /model selector")
@@ -1497,18 +1496,20 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             self._dismiss_with_result((model_spec, provider))
             return
 
-        # Onboarding (`_curated`) runs its own dependency-install step and never
-        # surfaces uninstalled providers, so skip install routing there.
-        if not self._curated:
-            from deepagents_code.config_manifest import (
-                is_provider_package_installed,
-                provider_install_extra,
-            )
+        from deepagents_code.config_manifest import (
+            is_provider_package_installed,
+            provider_install_extra,
+        )
 
-            extra = provider_install_extra(provider)
-            if extra is not None and not is_provider_package_installed(provider):
-                self._prompt_install_provider(model_spec, provider, extra)
+        extra = provider_install_extra(provider)
+        if extra is not None and not is_provider_package_installed(provider):
+            if self._curated:
+                # Onboarding installs first, then prompts for credentials from the
+                # launch flow, matching the dependency screen's auto-install copy.
+                self._dismiss_with_result((model_spec, provider))
                 return
+            self._prompt_install_provider(model_spec, provider, extra)
+            return
 
         status = get_provider_auth_status(provider)
         if not status.blocks_start:

@@ -9759,6 +9759,12 @@ class DeepAgentsApp(App):
         screen = AuthManagerScreen()
         self.push_screen(screen, handle_result)
 
+    def on_auth_manager_screen_credential_saved(self, event: Message) -> None:
+        """Retry credentials-blocked startup immediately after `/auth` saves a key."""
+        event.stop()
+        task = asyncio.create_task(self._resume_server_after_auth_change())
+        task.add_done_callback(_log_task_exception)
+
     async def _resume_server_after_auth_change(self) -> None:
         """Bring the server up after `/auth` if a credential now unblocks it.
 

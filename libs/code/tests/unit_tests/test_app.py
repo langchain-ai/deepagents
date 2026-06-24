@@ -8789,6 +8789,23 @@ class TestDeferredActions:
             assert app._server_startup_missing_provider_package is None
             assert app._server_startup_missing_credentials_provider == "openai"
 
+    async def test_auth_saved_event_resumes_startup_immediately(self) -> None:
+        """Saving a key in `/auth` retries without waiting for the manager to close."""
+        from deepagents_code.widgets.auth import AuthManagerScreen
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            resume = AsyncMock()
+            app._resume_server_after_auth_change = resume  # ty: ignore
+
+            app.on_auth_manager_screen_credential_saved(
+                AuthManagerScreen.CredentialSaved()
+            )
+            await asyncio.sleep(0)
+
+            resume.assert_awaited_once_with()
+
     async def test_auth_change_retries_credentials_blocked_startup(self) -> None:
         """Adding the missing key via `/auth` auto-retries a failed startup.
 

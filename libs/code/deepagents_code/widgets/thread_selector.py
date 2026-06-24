@@ -22,7 +22,11 @@ from textual.style import Style as TStyle
 from textual.widgets import Checkbox, Input, Select, Static
 
 # Specialize focused Select overlay key handling; no public re-export available.
-from textual.widgets._select import SelectCurrent, SelectOverlay  # noqa: PLC2701
+from textual.widgets._select import (  # noqa: PLC2701
+    NoSelection,
+    SelectCurrent,
+    SelectOverlay,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -592,6 +596,26 @@ class ThreadScopeSelect(Select[str]):
         yield ThreadScopeSelectOverlay(type_to_search=self._type_to_search).data_bind(
             compact=Select.compact
         )
+
+    def _watch_value(self, value: str | NoSelection) -> None:
+        """Update the current value while using the custom overlay widget."""
+        self._value = value
+        try:
+            select_current = self.query_one(SelectCurrent)
+        except NoMatches:
+            return
+
+        if value == self.NULL:
+            select_current.update(self.NULL)
+        else:
+            for index, (prompt, option_value) in enumerate(self._options):
+                if option_value == value:
+                    with contextlib.suppress(NoMatches):
+                        select_overlay = self.query_one(ThreadScopeSelectOverlay)
+                        select_overlay.highlighted = index
+                    select_current.update(prompt)
+                    break
+        self.post_message(self.Changed(self, value))
 
     def key_tab(self, event: Key) -> None:
         """Prevent focus traversal while the dropdown menu is open."""

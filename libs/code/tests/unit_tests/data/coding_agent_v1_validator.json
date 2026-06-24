@@ -1,0 +1,241 @@
+{
+  "schemaVersion": "coding-agent-v1",
+  "description": "Machine-readable contract for LangSmith coding-agent trace metadata. Set on run.extra.metadata. 'requirement' tiers: always = on every run; where_known = required when the runtime exposes the value, omit otherwise; contextual = optional. runTypes: root | llm | tool | subagent | interrupted.",
+  "integrations": ["claude-code", "openai-codex", "deepagents-code", "cursor", "pi"],
+  "runtimeNames": {
+    "claude-code": "Claude Code",
+    "openai-codex": "Codex",
+    "deepagents-code": "Deep Agents Code",
+    "cursor": "Cursor",
+    "pi": "Pi"
+  },
+  "keys": [
+    {
+      "key": "ls_agent_kind",
+      "appliesTo": ["root", "llm", "tool", "subagent", "interrupted"],
+      "type": "string",
+      "allowedValues": ["coding_agent"],
+      "requirement": "always",
+      "requiredWhereKnown": false
+    },
+    {
+      "key": "ls_integration",
+      "appliesTo": ["root", "llm", "tool", "subagent", "interrupted"],
+      "type": "string",
+      "allowedValues": ["claude-code", "openai-codex", "deepagents-code", "cursor", "pi"],
+      "requirement": "always",
+      "requiredWhereKnown": false
+    },
+    {
+      "key": "ls_agent_runtime",
+      "appliesTo": ["root", "llm", "tool", "subagent", "interrupted"],
+      "type": "string",
+      "allowedValues": ["Claude Code", "Codex", "Deep Agents Code", "Cursor", "Pi"],
+      "requirement": "always",
+      "requiredWhereKnown": false
+    },
+    {
+      "key": "thread_id",
+      "appliesTo": ["root", "llm", "tool", "subagent", "interrupted"],
+      "type": "string",
+      "allowedValues": null,
+      "requirement": "always",
+      "requiredWhereKnown": false
+    },
+    {
+      "key": "ls_trace_schema_version",
+      "appliesTo": ["root", "llm", "tool", "subagent", "interrupted"],
+      "type": "string",
+      "allowedValues": ["coding-agent-v1"],
+      "requirement": "always",
+      "requiredWhereKnown": false
+    },
+    {
+      "key": "ls_integration_version",
+      "appliesTo": ["root", "llm", "tool", "subagent", "interrupted"],
+      "type": "string",
+      "allowedValues": null,
+      "requirement": "where_known",
+      "requiredWhereKnown": true,
+      "note": "Bundled plugins (cursor, claude-code, pi) must inject at build time via esbuild define; do not require('./package.json')."
+    },
+    {
+      "key": "ls_agent_runtime_version",
+      "appliesTo": ["root", "llm", "tool", "subagent", "interrupted"],
+      "type": "string",
+      "allowedValues": null,
+      "requirement": "where_known",
+      "requiredWhereKnown": true
+    },
+    {
+      "key": "turn_id",
+      "appliesTo": ["root", "llm", "tool", "subagent", "interrupted"],
+      "type": "string",
+      "allowedValues": null,
+      "requirement": "where_known",
+      "requiredWhereKnown": true,
+      "note": "At least one of turn_id / turn_number is required wherever the runtime exposes turns."
+    },
+    {
+      "key": "turn_number",
+      "appliesTo": ["root", "llm", "tool", "subagent", "interrupted"],
+      "type": "integer",
+      "allowedValues": null,
+      "requirement": "where_known",
+      "requiredWhereKnown": true,
+      "note": "1-based. Pi source is 0-based turnIndex -> emit turnIndex + 1."
+    },
+    {
+      "key": "repository_url",
+      "appliesTo": ["root", "llm", "tool", "subagent", "interrupted"],
+      "type": "string",
+      "allowedValues": null,
+      "requirement": "where_known",
+      "requiredWhereKnown": true
+    },
+    {
+      "key": "repository_provider",
+      "appliesTo": ["root", "llm", "tool", "subagent", "interrupted"],
+      "type": "string",
+      "allowedValues": null,
+      "suggestedValues": ["github", "gitlab", "bitbucket", "other"],
+      "requirement": "where_known",
+      "requiredWhereKnown": true
+    },
+    {
+      "key": "repository_name",
+      "appliesTo": ["root", "llm", "tool", "subagent", "interrupted"],
+      "type": "string",
+      "allowedValues": null,
+      "requirement": "where_known",
+      "requiredWhereKnown": true
+    },
+    {
+      "key": "git_branch",
+      "appliesTo": ["root", "llm", "tool", "subagent", "interrupted"],
+      "type": "string",
+      "allowedValues": null,
+      "requirement": "where_known",
+      "requiredWhereKnown": true
+    },
+    {
+      "key": "git_commit_sha",
+      "appliesTo": ["root", "llm", "tool", "subagent", "interrupted"],
+      "type": "string",
+      "allowedValues": null,
+      "requirement": "where_known",
+      "requiredWhereKnown": true
+    },
+    {
+      "key": "cwd",
+      "appliesTo": ["root", "llm", "tool", "subagent", "interrupted"],
+      "type": "string",
+      "allowedValues": null,
+      "requirement": "where_known",
+      "requiredWhereKnown": true
+    },
+    {
+      "key": "user_id",
+      "appliesTo": ["root", "llm", "tool", "subagent", "interrupted"],
+      "type": "string",
+      "allowedValues": null,
+      "requirement": "contextual",
+      "requiredWhereKnown": false,
+      "note": "Stable, pseudonymous; preferred over local_username."
+    },
+    {
+      "key": "local_username",
+      "appliesTo": ["root", "llm", "tool", "subagent", "interrupted"],
+      "type": "string",
+      "allowedValues": null,
+      "requirement": "contextual",
+      "requiredWhereKnown": false,
+      "note": "PII-sensitive, backward-compatible."
+    },
+    {
+      "key": "user_email",
+      "appliesTo": ["root", "llm", "tool", "subagent", "interrupted"],
+      "type": "string",
+      "allowedValues": null,
+      "requirement": "contextual",
+      "requiredWhereKnown": false,
+      "note": "Provisional / PII. Emit where known, omit otherwise; may be scrapped later."
+    },
+    {
+      "key": "sandbox_type",
+      "appliesTo": ["root", "llm", "tool", "subagent", "interrupted"],
+      "type": "string",
+      "allowedValues": null,
+      "requirement": "contextual",
+      "requiredWhereKnown": false
+    },
+    {
+      "key": "approval_policy",
+      "appliesTo": ["root", "interrupted"],
+      "type": "string",
+      "allowedValues": null,
+      "requirement": "contextual",
+      "requiredWhereKnown": false,
+      "note": "Permission mode / policy for the turn. Root + interrupted only."
+    },
+    {
+      "key": "ls_subagent_id",
+      "appliesTo": ["subagent"],
+      "type": "string",
+      "allowedValues": null,
+      "requirement": "contextual",
+      "requiredWhereKnown": false
+    },
+    {
+      "key": "ls_subagent_type",
+      "appliesTo": ["subagent"],
+      "type": "string",
+      "allowedValues": null,
+      "requirement": "contextual",
+      "requiredWhereKnown": false,
+      "note": "Subagent runs only. Do NOT emit on root runs (e.g. do not copy claude-code's old ls_agent_type='root' here)."
+    },
+    {
+      "key": "ls_tool_name",
+      "appliesTo": ["tool"],
+      "type": "string",
+      "allowedValues": null,
+      "requirement": "contextual",
+      "requiredWhereKnown": false,
+      "note": "Tool runs only; emit when it differs from the run name. Pass-through native name — no cross-agent taxonomy normalization."
+    }
+  ],
+  "preserveExistingOnModelAndToolRuns": [
+    "ls_provider",
+    "ls_model_name",
+    "ls_invocation_params",
+    "usage_metadata"
+  ],
+  "perIntegrationSources": {
+    "claude-code": {
+      "thread_id": "session_id (hook payload)",
+      "turn_id": "promptId (transcript, native)",
+      "turn_number": "turn_count"
+    },
+    "openai-codex": {
+      "thread_id": "thread_id",
+      "turn_id": "turn_id",
+      "turn_number": "native"
+    },
+    "cursor": {
+      "thread_id": "conversation_id",
+      "turn_id": "generation_id",
+      "turn_number": "turnNum"
+    },
+    "pi": {
+      "thread_id": "ctx.sessionManager.getSessionId()",
+      "turn_id": "none -> use turnIndex as turn_number",
+      "turn_number": "turnIndex (0-based) + 1"
+    },
+    "deepagents-code": {
+      "thread_id": "configurable.thread_id",
+      "turn_id": "add — uuid4 / msg-id per prompt",
+      "turn_number": "add — counter on session_state"
+    }
+  }
+}

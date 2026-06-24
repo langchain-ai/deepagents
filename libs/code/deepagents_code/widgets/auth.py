@@ -763,9 +763,10 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         """Build provider-specific API-key acquisition guidance.
 
         Returns:
-            Content shown before the API-key input. Appends a muted notice when
-                a user-configured `api_key_url` was rejected for using an
-                unsupported URL scheme.
+            Content shown before the API-key input. May append muted notices: a
+                provider-specific caveat (e.g. Anthropic subscription plans are
+                unsupported) and/or a warning that a user-configured `api_key_url`
+                was rejected for using an unsupported URL scheme.
         """
         config = self._config
         configured_url = config.get_provider_api_key_url(self._provider)

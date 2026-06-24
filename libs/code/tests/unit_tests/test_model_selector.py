@@ -1916,23 +1916,23 @@ class TestModelSelectorInstallRouting:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Installed-provider recommendations sort before install-required rows."""
-        from deepagents_code import config_manifest
         from deepagents_code.widgets import model_selector
 
         installed_spec = "ollama:glm-5.2:cloud"
         uninstalled_spec = "fireworks:accounts/fireworks/models/deepseek-v4-pro"
-        assert installed_spec in model_selector._RECOMMENDED_MODELS
-        assert uninstalled_spec in model_selector._RECOMMENDED_MODELS
-
+        monkeypatch.setattr(
+            model_selector,
+            "_RECOMMENDED_MODELS",
+            frozenset({installed_spec, uninstalled_spec}),
+        )
         monkeypatch.setattr(
             model_selector,
             "get_available_models",
             lambda: {"ollama": ["local-model"]},
         )
         monkeypatch.setattr(
-            config_manifest,
-            "is_provider_package_installed",
-            lambda provider: provider == "ollama",
+            "importlib.util.find_spec",
+            lambda package: object() if package == "langchain_ollama" else None,
         )
 
         all_models, _default, _profiles, _recent, install_extras = (

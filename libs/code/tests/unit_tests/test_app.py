@@ -3352,6 +3352,95 @@ class TestTraceCommand:
             rendered = "\n".join(str(w._content) for w in app_msgs)
             assert f"Opening tracing project 'proj':\n{expected_url}" in rendered
 
+    async def test_trace_warns_when_no_messages_sent(self) -> None:
+        """Should append a note when the thread has no messages yet."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+
+            with (
+                patch(
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value="proj",
+                ),
+                patch(
+                    "deepagents_code.config.fetch_langsmith_project_url_or_raise",
+                    return_value="https://smith.langchain.com",
+                ),
+                patch("deepagents_code.app.webbrowser.open"),
+                patch.object(
+                    app, "_has_conversation_messages", AsyncMock(return_value=False)
+                ),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            rendered = "\n".join(str(w._content) for w in app_msgs)
+            assert "until you send your first message" in rendered
+
+    async def test_trace_no_warning_when_messages_exist(self) -> None:
+        """Should not append the empty-thread note once messages exist."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+
+            with (
+                patch(
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value="proj",
+                ),
+                patch(
+                    "deepagents_code.config.fetch_langsmith_project_url_or_raise",
+                    return_value="https://smith.langchain.com",
+                ),
+                patch("deepagents_code.app.webbrowser.open"),
+                patch.object(
+                    app, "_has_conversation_messages", AsyncMock(return_value=True)
+                ),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            rendered = "\n".join(str(w._content) for w in app_msgs)
+            assert "until you send your first message" not in rendered
+
+    async def test_trace_no_warning_when_message_lookup_fails(self) -> None:
+        """Should fail open when the empty-thread check cannot read state."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+            app._agent = MagicMock()
+            app._lc_thread_id = "test-thread-123"
+
+            with (
+                patch(
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value="proj",
+                ),
+                patch(
+                    "deepagents_code.config.fetch_langsmith_project_url_or_raise",
+                    return_value="https://smith.langchain.com",
+                ),
+                patch("deepagents_code.app.webbrowser.open"),
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    AsyncMock(side_effect=RuntimeError("connection lost")),
+                ),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            rendered = "\n".join(str(w._content) for w in app_msgs)
+            assert "https://smith.langchain.com/t/test-thread-123" in rendered
+            assert "until you send your first message" not in rendered
+
     async def test_trace_shows_error_when_not_configured(self) -> None:
         """Should show configuration hint when LangSmith is not set up."""
         app = DeepAgentsApp()
@@ -3602,6 +3691,42 @@ class TestTraceCommand:
                 "Opening tracing project 'proj':\n"
                 "https://smith.langchain.com/t/test-thread-123"
             ) in rendered
+
+    async def test_trace_deferred_output_includes_empty_thread_warning(self) -> None:
+        """Should keep the empty-thread warning when busy output is drained."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="test-thread-123")
+            app._agent_running = True
+
+            with (
+                patch(
+                    "deepagents_code.config.get_langsmith_project_name",
+                    return_value="proj",
+                ),
+                patch(
+                    "deepagents_code.config.fetch_langsmith_project_url_or_raise",
+                    return_value="https://smith.langchain.com",
+                ),
+                patch("deepagents_code.app.webbrowser.open"),
+                patch.object(
+                    app, "_has_conversation_messages", AsyncMock(return_value=False)
+                ),
+            ):
+                await app._handle_trace_command("/trace")
+                await pilot.pause()
+
+            assert len(app._deferred_actions) == 1
+            action = app._deferred_actions[0]
+            assert action.kind == "chat_output"
+
+            await action.execute()
+            await pilot.pause()
+
+            app_msgs = app.query(AppMessage)
+            rendered = "\n".join(str(w._content) for w in app_msgs)
+            assert "until you send your first message" in rendered
 
     async def test_trace_shows_error_when_url_build_raises(self) -> None:
         """Should show error message when the URL fetch raises."""
@@ -7664,11 +7789,24 @@ class TestHandleModelSelection:
     """Tests for the model-selector result router."""
 
     async def test_install_extra_then_switch_when_pending_extra(self) -> None:
-        """A confirmed install routes through install-then-switch."""
+        """A confirmed install routes through install-then-switch in a worker.
+
+        Regression: scheduling via `call_later` runs the coroutine inline on the
+        App message pump, which blocks for the lifetime of the awaited
+        `AuthPromptScreen` so no input reaches the modal. The flow must run in a
+        worker (a separate task) instead, with `call_after_refresh` letting the
+        dismissing selector unwind first.
+        """
         app = DeepAgentsApp()
+        call_after_refresh = MagicMock()
+        app.call_after_refresh = call_after_refresh  # ty: ignore
         app.call_later = MagicMock()  # ty: ignore
+        run_worker = MagicMock()
+        app.run_worker = run_worker  # ty: ignore
         dispatch = MagicMock()
         app._dispatch_model_switch = dispatch  # ty: ignore
+        install = AsyncMock()
+        app._install_extra_then_switch = install  # ty: ignore
         screen = SimpleNamespace(pending_install_extra="baseten")
 
         app._handle_model_selection(
@@ -7678,38 +7816,145 @@ class TestHandleModelSelection:
         )
 
         dispatch.assert_not_called()
-        app.call_later.assert_called_once()  # ty: ignore
-        scheduled = app.call_later.call_args.args[0]  # ty: ignore
-        # Bound methods compare equal (same instance + function) but each
-        # attribute access yields a fresh object, so `==`, not `is`.
-        assert scheduled.func == app._install_extra_then_switch
-        assert scheduled.args == ("baseten", "baseten:moonshotai/Kimi-K2.6")
-        assert scheduled.keywords == {"extra_kwargs": {"temperature": 0}}
+        # The flow is never scheduled inline on the message pump.
+        app.call_later.assert_not_called()  # ty: ignore
+        call_after_refresh.assert_called_once()  # ty: ignore
+        # Running the deferred callback starts the worker.
+        run_worker.assert_not_called()
+        assert app._model_install_switching is True
+        call_after_refresh.call_args.args[0]()
+        run_worker.assert_called_once()
+        assert run_worker.call_args.kwargs.get("group") == "model-install-switch"
+        assert run_worker.call_args.kwargs.get("exclusive") is False
+        await run_worker.call_args.args[0]
+        install.assert_awaited_once_with(
+            "baseten",
+            "baseten:moonshotai/Kimi-K2.6",
+            extra_kwargs={"temperature": 0},
+        )
+        assert app._model_install_switching is False
+
+    async def test_install_then_switch_resets_guard_on_error(self) -> None:
+        """The in-progress guard resets even when the install raises.
+
+        The reset lives in the coroutine's `finally`, not a trailing assignment,
+        precisely so a failed install can't strand the guard `True` and block
+        every later install behind the "already in progress" notice.
+        """
+        app = DeepAgentsApp()
+        app.call_after_refresh = MagicMock()  # ty: ignore
+        run_worker = MagicMock()
+        app.run_worker = run_worker  # ty: ignore
+        install = AsyncMock(side_effect=RuntimeError("install boom"))
+        app._install_extra_then_switch = install  # ty: ignore
+        screen = SimpleNamespace(pending_install_extra="baseten")
+
+        app._handle_model_selection(
+            screen,  # ty: ignore
+            ("baseten:moonshotai/Kimi-K2.6", "baseten"),
+        )
+
+        assert app._model_install_switching is True
+        # Run the deferred callback to build and schedule the worker coroutine.
+        app.call_after_refresh.call_args.args[0]()  # ty: ignore
+        with pytest.raises(RuntimeError, match="install boom"):
+            await run_worker.call_args.args[0]
+        assert app._model_install_switching is False
+
+    async def test_install_then_switch_resets_guard_on_scheduling_failure(
+        self,
+    ) -> None:
+        """The guard resets when `run_worker` raises while scheduling.
+
+        This is the third leg of the guard lifecycle: if the worker never
+        starts, the coroutine's `finally` never runs, so `start_install_worker`
+        must close the orphan coroutine, release the guard, and re-raise. A
+        failed start that stranded the guard `True` would block every later
+        install behind the "already in progress" notice.
+        """
+        app = DeepAgentsApp()
+        app.call_after_refresh = MagicMock()  # ty: ignore
+        app.run_worker = MagicMock(  # ty: ignore
+            side_effect=RuntimeError("schedule boom"),
+        )
+        install = AsyncMock()
+        app._install_extra_then_switch = install  # ty: ignore
+        screen = SimpleNamespace(pending_install_extra="baseten")
+
+        app._handle_model_selection(
+            screen,  # ty: ignore
+            ("baseten:moonshotai/Kimi-K2.6", "baseten"),
+        )
+
+        assert app._model_install_switching is True
+        # The deferred callback schedules the worker; `run_worker` raises, so
+        # the scheduling error must propagate (never be swallowed).
+        with pytest.raises(RuntimeError, match="schedule boom"):
+            app.call_after_refresh.call_args.args[0]()  # ty: ignore
+        # Guard released so a later install can proceed.
+        assert app._model_install_switching is False
+        # The orphan coroutine was closed, never awaited, so the install body
+        # never ran.
+        install.assert_not_awaited()
+
+    async def test_pending_install_extra_does_not_start_concurrent_install(
+        self,
+    ) -> None:
+        """A second provider install selection waits for the active one."""
+        app = DeepAgentsApp()
+        app._model_install_switching = True
+        app.call_after_refresh = MagicMock()  # ty: ignore
+        app.run_worker = MagicMock()  # ty: ignore
+        app.notify = MagicMock()  # ty: ignore
+        dispatch = MagicMock()
+        app._dispatch_model_switch = dispatch  # ty: ignore
+        screen = SimpleNamespace(pending_install_extra="baseten")
+
+        app._handle_model_selection(
+            screen,  # ty: ignore
+            ("baseten:moonshotai/Kimi-K2.6", "baseten"),
+        )
+
+        app.notify.assert_called_once()
+        assert app.notify.call_args.kwargs.get("severity") == "warning"
+        # `markup=False` matches the `notify()` convention used for these
+        # operational notices: the text is shown literally rather than parsed
+        # as Textual console markup.
+        assert app.notify.call_args.kwargs.get("markup") is False
+        app.call_after_refresh.assert_not_called()  # ty: ignore
+        app.run_worker.assert_not_called()  # ty: ignore
+        dispatch.assert_not_called()
+        # The early return must not clear the in-flight flow's guard.
+        assert app._model_install_switching is True
 
     async def test_plain_switch_when_no_pending_extra(self) -> None:
         """No pending extra dispatches a normal model switch."""
         app = DeepAgentsApp()
-        app.call_later = MagicMock()  # ty: ignore
+        app.call_after_refresh = MagicMock()  # ty: ignore
+        app.run_worker = MagicMock()  # ty: ignore
         dispatch = MagicMock()
         app._dispatch_model_switch = dispatch  # ty: ignore
         screen = SimpleNamespace(pending_install_extra=None)
 
         app._handle_model_selection(screen, ("openai:gpt-5.5", "openai"))  # ty: ignore
 
-        app.call_later.assert_not_called()  # ty: ignore
+        app.call_after_refresh.assert_not_called()  # ty: ignore
+        app.run_worker.assert_not_called()  # ty: ignore
         dispatch.assert_called_once_with("openai:gpt-5.5", extra_kwargs=None)
 
     async def test_cancelled_selection_is_noop(self) -> None:
         """A `None` result neither switches nor installs."""
         app = DeepAgentsApp()
-        app.call_later = MagicMock()  # ty: ignore
+        app.call_after_refresh = MagicMock()  # ty: ignore
+        app.run_worker = MagicMock()  # ty: ignore
         dispatch = MagicMock()
         app._dispatch_model_switch = dispatch  # ty: ignore
         screen = SimpleNamespace(pending_install_extra="baseten")
 
         app._handle_model_selection(screen, None)  # ty: ignore
 
-        app.call_later.assert_not_called()  # ty: ignore
+        app.call_after_refresh.assert_not_called()  # ty: ignore
+        app.run_worker.assert_not_called()  # ty: ignore
         dispatch.assert_not_called()
 
 
@@ -8543,6 +8788,282 @@ class TestDeferredActions:
 
             assert app._server_startup_missing_provider_package is None
             assert app._server_startup_missing_credentials_provider == "openai"
+
+    async def test_auth_saved_event_resumes_startup_immediately(self) -> None:
+        """Saving a key in `/auth` retries without waiting for the manager to close."""
+        from deepagents_code.widgets.auth import AuthManagerScreen
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            resume = AsyncMock()
+            app._resume_server_after_auth_change = resume  # ty: ignore
+
+            app.on_auth_manager_screen_credential_saved(
+                AuthManagerScreen.CredentialSaved()
+            )
+            await asyncio.sleep(0)
+
+            resume.assert_awaited_once_with()
+
+    async def test_auth_change_retries_credentials_blocked_startup(self) -> None:
+        """Adding the missing key via `/auth` auto-retries a failed startup.
+
+        The user shouldn't have to type `/restart` after entering credentials
+        for the provider that blocked startup.
+        """
+        from deepagents_code.model_config import (
+            ProviderAuthSource,
+            ProviderAuthState,
+            ProviderAuthStatus,
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {
+                "model_name": "anthropic:claude-opus-4-7",
+                "model_params": {"temperature": 0.1},
+            }
+            app._server_startup_error = "missing ANTHROPIC_API_KEY"
+            app._server_startup_missing_credentials_provider = "anthropic"
+            app._retry_startup_with_model = AsyncMock()  # ty: ignore
+
+            with patch(
+                "deepagents_code.model_config.get_provider_auth_status",
+                return_value=ProviderAuthStatus(
+                    state=ProviderAuthState.CONFIGURED,
+                    provider="anthropic",
+                    source=ProviderAuthSource.STORED,
+                ),
+            ):
+                retried = await app._maybe_retry_startup_after_auth_change()
+
+            assert retried is True
+            app._retry_startup_with_model.assert_awaited_once_with(  # ty: ignore
+                "anthropic:claude-opus-4-7",
+                extra_kwargs={"temperature": 0.1},
+            )
+
+    async def test_auth_change_does_not_retry_when_key_still_missing(self) -> None:
+        """A still-missing key must not loop back into the same failure."""
+        from deepagents_code.model_config import (
+            ProviderAuthState,
+            ProviderAuthStatus,
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": "anthropic:claude-opus-4-7"}
+            app._server_startup_error = "missing ANTHROPIC_API_KEY"
+            app._server_startup_missing_credentials_provider = "anthropic"
+            app._retry_startup_with_model = AsyncMock()  # ty: ignore
+
+            with patch(
+                "deepagents_code.model_config.get_provider_auth_status",
+                return_value=ProviderAuthStatus(
+                    state=ProviderAuthState.MISSING,
+                    provider="anthropic",
+                ),
+            ):
+                retried = await app._maybe_retry_startup_after_auth_change()
+
+            assert retried is False
+            app._retry_startup_with_model.assert_not_awaited()  # ty: ignore
+
+    async def test_auth_change_no_retry_without_startup_failure(self) -> None:
+        """No credentials-blocked failure means nothing to retry."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": "anthropic:claude-opus-4-7"}
+            app._server_startup_error = None
+            app._server_startup_missing_credentials_provider = None
+            app._retry_startup_with_model = AsyncMock()  # ty: ignore
+
+            retried = await app._maybe_retry_startup_after_auth_change()
+
+            assert retried is False
+            app._retry_startup_with_model.assert_not_awaited()  # ty: ignore
+
+    async def test_resume_after_auth_prefers_deferred_start(self) -> None:
+        """A deferred first launch wins; the retry path must not also fire."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._maybe_start_deferred_server_from_default = AsyncMock(  # ty: ignore
+                return_value=True,
+            )
+            app._maybe_retry_startup_after_auth_change = AsyncMock()  # ty: ignore
+
+            await app._resume_server_after_auth_change()
+
+            app._maybe_start_deferred_server_from_default.assert_awaited_once()  # ty: ignore
+            app._maybe_retry_startup_after_auth_change.assert_not_awaited()  # ty: ignore
+
+    async def test_resume_after_auth_falls_back_to_retry(self) -> None:
+        """No deferred launch pending falls through to the retry path."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._maybe_start_deferred_server_from_default = AsyncMock(  # ty: ignore
+                return_value=False,
+            )
+            app._maybe_retry_startup_after_auth_change = AsyncMock()  # ty: ignore
+
+            await app._resume_server_after_auth_change()
+
+            app._maybe_start_deferred_server_from_default.assert_awaited_once()  # ty: ignore
+            app._maybe_retry_startup_after_auth_change.assert_awaited_once()  # ty: ignore
+
+    async def test_auth_change_retry_resolves_default_when_name_absent(self) -> None:
+        """Missing `model_name` falls back to the configured default spec."""
+        from deepagents_code.model_config import (
+            ProviderAuthSource,
+            ProviderAuthState,
+            ProviderAuthStatus,
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # No `model_name` and no `model_params` — exercises the default-spec
+            # fallback and the `extra_kwargs=None` forwarding together.
+            app._server_kwargs = {}
+            app._server_startup_error = "missing ANTHROPIC_API_KEY"
+            app._server_startup_missing_credentials_provider = "anthropic"
+            app._retry_startup_with_model = AsyncMock()  # ty: ignore
+
+            with (
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=ProviderAuthStatus(
+                        state=ProviderAuthState.CONFIGURED,
+                        provider="anthropic",
+                        source=ProviderAuthSource.STORED,
+                    ),
+                ),
+                patch(
+                    "deepagents_code.config._get_default_model_spec",
+                    return_value="anthropic:claude-opus-4-7",
+                ),
+            ):
+                retried = await app._maybe_retry_startup_after_auth_change()
+
+            assert retried is True
+            app._retry_startup_with_model.assert_awaited_once_with(  # ty: ignore
+                "anthropic:claude-opus-4-7",
+                extra_kwargs=None,
+            )
+
+    async def test_auth_change_retry_surfaces_malformed_default_config(self) -> None:
+        """A malformed default-model config is surfaced, not silently dropped."""
+        from deepagents_code.model_config import (
+            ModelConfigError,
+            ProviderAuthSource,
+            ProviderAuthState,
+            ProviderAuthStatus,
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {}
+            app._server_startup_error = "missing ANTHROPIC_API_KEY"
+            app._server_startup_missing_credentials_provider = "anthropic"
+            app._retry_startup_with_model = AsyncMock()  # ty: ignore
+            app._mount_message = AsyncMock()  # ty: ignore
+
+            with (
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=ProviderAuthStatus(
+                        state=ProviderAuthState.CONFIGURED,
+                        provider="anthropic",
+                        source=ProviderAuthSource.STORED,
+                    ),
+                ),
+                patch(
+                    "deepagents_code.config._get_default_model_spec",
+                    side_effect=ModelConfigError("unknown provider 'bogus'"),
+                ),
+            ):
+                retried = await app._maybe_retry_startup_after_auth_change()
+
+            assert retried is False
+            app._retry_startup_with_model.assert_not_awaited()  # ty: ignore
+            app._mount_message.assert_awaited_once()  # ty: ignore
+            mounted = app._mount_message.await_args.args[0]  # ty: ignore
+            assert isinstance(mounted, ErrorMessage)
+
+    async def test_auth_change_retry_silent_without_default_credentials(self) -> None:
+        """No usable default credentials means a quiet no-op, no error message."""
+        from deepagents_code.model_config import (
+            NoCredentialsConfiguredError,
+            ProviderAuthSource,
+            ProviderAuthState,
+            ProviderAuthStatus,
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {}
+            app._server_startup_error = "missing ANTHROPIC_API_KEY"
+            app._server_startup_missing_credentials_provider = "anthropic"
+            app._retry_startup_with_model = AsyncMock()  # ty: ignore
+            app._mount_message = AsyncMock()  # ty: ignore
+
+            with (
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=ProviderAuthStatus(
+                        state=ProviderAuthState.CONFIGURED,
+                        provider="anthropic",
+                        source=ProviderAuthSource.STORED,
+                    ),
+                ),
+                patch(
+                    "deepagents_code.config._get_default_model_spec",
+                    side_effect=NoCredentialsConfiguredError("no creds"),
+                ),
+            ):
+                retried = await app._maybe_retry_startup_after_auth_change()
+
+            assert retried is False
+            app._retry_startup_with_model.assert_not_awaited()  # ty: ignore
+            app._mount_message.assert_not_awaited()  # ty: ignore
+
+    async def test_auth_change_no_retry_without_server_kwargs(self) -> None:
+        """A pending failure with no app-owned server kwargs cannot retry."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = None
+            app._server_startup_error = "missing ANTHROPIC_API_KEY"
+            app._server_startup_missing_credentials_provider = "anthropic"
+            app._retry_startup_with_model = AsyncMock()  # ty: ignore
+
+            retried = await app._maybe_retry_startup_after_auth_change()
+
+            assert retried is False
+            app._retry_startup_with_model.assert_not_awaited()  # ty: ignore
+
+    async def test_auth_change_no_retry_when_failure_not_credentials(self) -> None:
+        """A non-credentials startup failure has no blocking provider to retry."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": "anthropic:claude-opus-4-7"}
+            app._server_startup_error = "some other startup failure"
+            app._server_startup_missing_credentials_provider = None
+            app._retry_startup_with_model = AsyncMock()  # ty: ignore
+
+            retried = await app._maybe_retry_startup_after_auth_change()
+
+            assert retried is False
+            app._retry_startup_with_model.assert_not_awaited()  # ty: ignore
 
     async def test_failing_deferred_action_does_not_block_others(self) -> None:
         """A failing deferred action should not prevent subsequent ones."""
@@ -9769,6 +10290,23 @@ class TestNotificationCenterIntegration:
         ):
             yield
 
+    @pytest.fixture(autouse=True)
+    def _no_shadowed_dcode(self) -> Iterator[None]:
+        """Default to no PATH shadow for the notification-action tests.
+
+        Without this, every successful "Install now" test runs the real
+        `detect_shadowed_dcode` against the host filesystem. The runner's
+        editable install currently short-circuits at `detect_install_method()`,
+        but a uv-tool-managed runner would silently re-route every success
+        case through the new warning branch. Pin to `None` here; the
+        dedicated shadow-present test below overrides it.
+        """
+        with patch(
+            "deepagents_code.update_check.detect_shadowed_dcode",
+            return_value=None,
+        ):
+            yield
+
     async def test_ctrl_n_with_empty_registry_emits_toast(self) -> None:
         """ctrl+n with nothing pending notifies and doesn't push a modal."""
         from deepagents_code.notifications import NotificationRegistry
@@ -10280,6 +10818,154 @@ class TestNotificationCenterIntegration:
 
         assert app._notice_registry.get("update:available") is None
 
+    async def test_install_success_with_shadow_surfaces_warning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When PATH is shadowed, modal success is replaced by the warning.
+
+        Regression guard for the inverted `if/elif` in the install-action
+        branch: a `if shadow / elif not progress_modal_visible` that got
+        flipped would ship a reassuring "Updated to vX.Y.Z" state over a
+        broken upgrade. This pins the contract that the success modal status
+        and toast are suppressed while the warning stays visible.
+        """
+        from deepagents_code.notifications import ActionId
+        from deepagents_code.update_check import (
+            ShadowedDcode,
+            format_shadowed_dcode_fix_command,
+        )
+        from deepagents_code.widgets.update_progress import UpdateProgressScreen
+
+        shadow = ShadowedDcode(
+            shadowing_bin=Path("/opt/stale/bin/dcode"),
+            upgraded_bin_dir=Path("/home/user/.local/bin"),
+        )
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _update_entry()
+        app._notice_registry.add(entry)
+
+        copied: list[str] = []
+        notified: list[str] = []
+        original_notify = app.notify
+        monkeypatch.setattr(app, "copy_to_clipboard", copied.append)
+
+        def capture_notify(message: str, **kwargs: Any) -> None:
+            notified.append(message)
+            original_notify(message, **kwargs)
+
+        app.notify = capture_notify  # ty: ignore
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.update_check.perform_upgrade",
+                    new=AsyncMock(return_value=(True, "Updated deepagents-code")),
+                ),
+                # Override the autouse `None` patch.
+                patch(
+                    "deepagents_code.update_check.detect_shadowed_dcode",
+                    return_value=shadow,
+                ),
+            ):
+                await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
+                await pilot.pause()
+
+            assert isinstance(app.screen, UpdateProgressScreen)
+            status = app.screen.query(Static).filter(".up-status").first()
+            assert "Update complete" not in str(status.render())
+            assert "/opt/stale/bin/dcode" in str(status.render())
+            assert "/home/user/.local/bin/dcode" in str(status.render())
+            await pilot.press("c")
+            await pilot.pause()
+
+        # The entry is still cleared — the upgrade did succeed; only the
+        # post-restart guidance is different.
+        assert app._notice_registry.get("update:available") is None
+        assert copied == [format_shadowed_dcode_fix_command(shadow)]
+        # The toast must NOT congratulate the user on a working upgrade.
+        assert not any(
+            "Updated to v" in m and "Quit and relaunch" in m for m in notified
+        )
+        # The warning toast names both paths so the user can act on it.
+        assert any(
+            "/opt/stale/bin/dcode" in m and "/home/user/.local/bin" in m
+            for m in notified
+        )
+
+    async def test_install_success_with_shadow_toast_only_when_modal_hidden(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A shadow with no progress modal still reaches the user as a toast.
+
+        When a modal is already on screen the install runs without pushing the
+        `UpdateProgressScreen`, so `progress_modal_visible` is `False` and
+        `mark_warning` is skipped. The shadow warning must still fire as a
+        `notify(severity="warning")` toast — this is the less-common leg of the
+        shadow branch, and the exact "user silently keeps the old version"
+        failure mode this PR exists to prevent. A regression that nested the
+        `self.notify(warning, ...)` inside `if progress_modal_visible:` would
+        drop the warning entirely here and pass the modal-visible test.
+        """
+        from textual.screen import ModalScreen
+
+        from deepagents_code.notifications import ActionId
+        from deepagents_code.update_check import ShadowedDcode
+        from deepagents_code.widgets.update_progress import UpdateProgressScreen
+
+        shadow = ShadowedDcode(
+            shadowing_bin=Path("/opt/stale/bin/dcode"),
+            upgraded_bin_dir=Path("/home/user/.local/bin"),
+        )
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        entry = _update_entry()
+        app._notice_registry.add(entry)
+
+        notified: list[str] = []
+        original_notify = app.notify
+
+        def capture_notify(message: str, **kwargs: Any) -> None:
+            notified.append(message)
+            original_notify(message, **kwargs)
+
+        monkeypatch.setattr(app, "notify", capture_notify)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # A modal already owns the screen, so the install path takes the
+            # toast-only branch (`progress_modal_visible` is False).
+            await app.push_screen(ModalScreen())
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.update_check.perform_upgrade",
+                    new=AsyncMock(return_value=(True, "Updated deepagents-code")),
+                ),
+                patch(
+                    "deepagents_code.update_check.detect_shadowed_dcode",
+                    return_value=shadow,
+                ),
+            ):
+                await app._dispatch_notification_action(entry.key, ActionId.INSTALL)
+                await pilot.pause()
+
+            # The progress modal was never pushed, so the warning could only
+            # have reached the user as a toast.
+            assert not isinstance(app.screen, UpdateProgressScreen)
+
+        assert app._notice_registry.get("update:available") is None
+        # The success line must not appear — relaunch would keep the old binary.
+        assert not any(
+            "Updated to v" in m and "Quit and relaunch" in m for m in notified
+        )
+        # The warning toast names both paths so the user can act on it.
+        assert any(
+            "/opt/stale/bin/dcode" in m and "/home/user/.local/bin" in m
+            for m in notified
+        )
+
     async def test_debug_update_install_does_not_run_upgrade(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -10385,7 +11071,7 @@ class TestNotificationCenterIntegration:
             spinner = app.screen.query(Static).filter(".up-spinner").first()
             assert "Update failed. Try manually:" in str(status.render())
             assert details.display is True
-            assert str(spinner.render()) == get_glyphs().checkmark
+            assert str(spinner.render()) == get_glyphs().error
 
     async def test_update_skip_once_clears_notified_marker(self) -> None:
         """'Remind me next launch' calls clear_update_notified and removes the entry."""

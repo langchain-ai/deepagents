@@ -30,6 +30,7 @@ from deepagents_code.agent import (
     _format_task_description,
     _format_web_search_description,
     _format_write_file_description,
+    _reserved_agent_dir_names,
     _sanitize_agent_message_name,
     _should_interrupt_tool_call,
     build_model_identity_section,
@@ -40,6 +41,7 @@ from deepagents_code.agent import (
     load_async_subagents,
 )
 from deepagents_code.config import Settings, get_glyphs
+from deepagents_code.managed_tools import BIN_DIR
 from deepagents_code.project_utils import ProjectContext
 
 
@@ -2932,6 +2934,25 @@ class TestGetAvailableAgentNames:
 
         with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
             assert get_available_agent_names() == ["agent"]
+
+    def test_ignores_reserved_bin_dir(self, tmp_path: Path) -> None:
+        """The managed-binary install dir is excluded from the agent list.
+
+        The reserved dir name is derived from `BIN_DIR.name` rather than the
+        literal `bin` so a future rename of `BIN_DIR` keeps this test exercising
+        the actual reserved name instead of a stale string.
+        """
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "agent").mkdir()
+        (agents_dir / BIN_DIR.name).mkdir()
+
+        with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
+            assert get_available_agent_names() == ["agent"]
+
+    def test_reserved_agent_dir_names_includes_bin_dir(self) -> None:
+        """The reserved-name set is sourced from `BIN_DIR.name` (single source)."""
+        assert _reserved_agent_dir_names() == frozenset({BIN_DIR.name})
 
     def test_permission_error_returns_empty(self, tmp_path: Path) -> None:
         """PermissionError on iterdir → logged + empty list, not raised."""

@@ -251,7 +251,7 @@ class TestAuthPromptScreen:
             toggle = app.screen.query_one("#auth-prompt-advanced-toggle", Static)
             assert "Sign in to Anthropic" in str(instructions.content)
             assert "create or copy an API key" in str(instructions.content)
-            assert "Provider key page" in str(instructions.content)
+            assert "Anthropic key page" in str(instructions.content)
             assert "Deep Agents Code stores the above key locally" in str(
                 storage_note.content
             )
@@ -386,7 +386,7 @@ api_key_env = "MY_GATEWAY_API_KEY"
             await pilot.pause()
             instructions = app.screen.query_one("#auth-prompt-key-instructions", Static)
             assert "Sign in to My Gateway" in str(instructions.content)
-            assert "Provider key page" in str(instructions.content)
+            assert "My Gateway key page" in str(instructions.content)
 
     async def test_unmapped_provider_links_to_setup_docs(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -407,8 +407,8 @@ api_key_env = "MY_GATEWAY_API_KEY"
             instructions = app.screen.query_one("#auth-prompt-key-instructions", Static)
             text = str(instructions.content)
             assert "Sign in to My Gateway" in text
-            assert "Provider setup docs" in text
-            assert "Provider key page" not in text
+            assert "My Gateway setup docs" in text
+            assert "key page" not in text
 
     async def test_unsafe_configured_key_url_is_not_rendered(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -434,8 +434,8 @@ api_key_env = "MY_GATEWAY_API_KEY"
             # The malformed URL is dropped, so no clickable link survives.
             assert not any("javascript" in str(span.style) for span in content.spans)
             # With the configured URL rejected and no built-in entry, it falls
-            # back to the generic setup-docs link.
-            assert "Provider setup docs" in str(content)
+            # back to the setup-docs link.
+            assert "My Gateway setup docs" in str(content)
 
     async def test_unsafe_configured_key_url_surfaces_notice(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -778,16 +778,16 @@ api_key_url = "javascript:alert(1)"
             key_input = app.screen.query_one("#auth-prompt-input", Input)
             help_text = app.screen.query_one(".auth-prompt-help", Static)
             copy = "\n".join(str(widget.content) for widget in app.screen.query(Static))
+            has_storage_note = bool(app.screen.query("#auth-prompt-storage-note"))
 
         assert key_input.placeholder == "Tavily API key (optional)"
         assert key_input.password is True
         assert "Web search is optional" in copy
         assert "Enter save/skip" in str(help_text.content)
-        # Tavily is a service, so the storage note uses the service phrasing
-        # ("uses it for X"), not the model-provider phrasing ("when you select
-        # X models") that would render the nonsensical "select tavily models".
-        assert "uses it for" in copy
-        assert "when you select" not in copy
+        # Services (Tavily) omit the storage note entirely — the title and
+        # reason already explain the key, so it would only be redundant copy.
+        assert has_storage_note is False
+        assert "stores the above key locally" not in copy
 
     async def test_optional_prompt_surfaces_save_failure_and_stays_open(
         self, monkeypatch: pytest.MonkeyPatch

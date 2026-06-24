@@ -6225,9 +6225,8 @@ class DeepAgentsApp(App):
                 "tavily",
                 "TAVILY_API_KEY",
                 reason=(
-                    "Web search is optional. Paste a Tavily API key to enable it "
-                    "now, or press Enter to skip. You can add or change it later "
-                    "with /auth."
+                    "Web search is optional but strongly recommended to enhance "
+                    "your agent's capabilities."
                 ),
                 allow_empty_submit=True,
                 input_placeholder="Tavily API key (optional)",

@@ -655,6 +655,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                 password=True,
                 id="auth-prompt-input",
             )
+            storage_note: Content | None
             if self._is_langsmith:
                 storage_note = Content.from_markup(
                     "Deep Agents Code stores the above key locally and turns on "
@@ -662,22 +663,22 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                     "set [bold]DEEPAGENTS_CODE_LANGSMITH_TRACING=false[/bold]."
                 )
             elif is_service(self._provider):
-                storage_note = Content.from_markup(
-                    "Deep Agents Code stores the above key locally and uses it "
-                    "for [bold]$provider[/bold].",
-                    provider=provider_label,
-                )
+                # Services (e.g. Tavily) skip the storage note: the title and
+                # reason copy already say what the key is for, so it only adds
+                # redundant copy here.
+                storage_note = None
             else:
                 storage_note = Content.from_markup(
                     "Deep Agents Code stores the above key locally and uses it "
                     "when you select [bold]$provider[/bold] models.",
                     provider=provider_label,
                 )
-            yield Static(
-                storage_note,
-                classes="auth-prompt-meta",
-                id="auth-prompt-storage-note",
-            )
+            if storage_note is not None:
+                yield Static(
+                    storage_note,
+                    classes="auth-prompt-meta",
+                    id="auth-prompt-storage-note",
+                )
             yield Static(
                 self._build_advanced_toggle_label(),
                 classes="auth-prompt-advanced-toggle",
@@ -799,12 +800,12 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         url = configured_url or PROVIDER_API_KEY_URLS.get(
             self._provider, _PROVIDERS_DOCS_URL
         )
-        label = (
-            "Provider key page"
-            if configured_url or self._provider in PROVIDER_API_KEY_URLS
-            else "Provider setup docs"
-        )
         provider = _provider_display_name(self._provider, config)
+        label = (
+            f"{provider} key page"
+            if configured_url or self._provider in PROVIDER_API_KEY_URLS
+            else f"{provider} setup docs"
+        )
         if self._provider == "azure_openai":
             instructions = Content.assemble(
                 "Find your key in your Azure OpenAI resource's "

@@ -26,11 +26,13 @@ base_commit_hash = "cb1b3b671d0ee9fa9da9f7b02f86967953ffd10a"
 environment_mode = "separate"
 [verifier.environment]
 allow_internet = false
+build_timeout_sec = 1800.0
 [agent]
 timeout_sec = 5400.0
 [environment]
 docker_image = "example"
 allow_internet = false
+build_timeout_sec = 1800.0
 mcp_servers = []
 [environment.env]
 [solution.env]
@@ -111,15 +113,33 @@ def test_idempotent(patcher, tmp_path):
 
 
 def test_already_public_environment_unchanged(patcher, tmp_path):
+    # Target the [environment] block specifically (it has docker_image;
+    # [verifier.environment] does not).
     content = _RAW_TASK.replace(
-        "allow_internet = false\nmcp_servers",
-        "allow_internet = true\nmcp_servers",
+        'docker_image = "example"\nallow_internet = false',
+        'docker_image = "example"\nallow_internet = true',
     )
     task = _write_task(tmp_path, content)
     patcher.patch_task_toml(task)
     data = tomllib.loads(task.read_text())
     assert data["environment"]["allow_internet"] is True
     assert data["verifier"]["environment"]["allow_internet"] is False
+
+
+def test_environment_build_timeout_bumped(patcher, tmp_path):
+    task = _write_task(tmp_path, _RAW_TASK)
+    patcher.patch_task_toml(task)
+    data = tomllib.loads(task.read_text())
+    assert data["environment"]["build_timeout_sec"] == 3600.0
+
+
+def test_verifier_build_timeout_unchanged(patcher, tmp_path):
+    """Harbor derives the verifier-env build timeout from [environment], so we
+    bump only that; [verifier.environment] is deliberately left as-is."""
+    task = _write_task(tmp_path, _RAW_TASK)
+    patcher.patch_task_toml(task)
+    data = tomllib.loads(task.read_text())
+    assert data["verifier"]["environment"]["build_timeout_sec"] == 1800.0
 
 
 def test_missing_environment_section_skipped(patcher, tmp_path):

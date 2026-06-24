@@ -26,8 +26,13 @@ auto-discover:
    untouched: the verifier runs in a separate, air-gapped container, and
    keeping it offline preserves grading integrity.
 
+   We also bump ``[environment] build_timeout_sec`` (default 1800s). Harbor
+   derives the separate verifier environment's build/start timeout from this
+   field, and provisioning the large swe-bench verifier image on the langsmith
+   sandbox exceeds 30 min, raising ``VerifierTimeoutError`` before grading.
+
 This script reads each ``tasks/*/task.toml``, extracts
-``[metadata] base_commit_hash``, and applies both fixes idempotently.
+``[metadata] base_commit_hash``, and applies these fixes idempotently.
 
 Usage::
 
@@ -95,31 +100,37 @@ Anchored to the exact ``[environment]`` header, so it never matches
 header or end of file.
 """
 
-_ALLOW_INTERNET_RE = re.compile(
-    r"^([ \t]*)allow_internet[ \t]*=[ \t]*\S+[ \t]*$", re.MULTILINE
-)
-"""Matches an ``allow_internet = <value>`` assignment line."""
+# Verifier-env build budget. Harbor derives the SEPARATE verifier environment's
+# start/build timeout from [environment].build_timeout_sec (not
+# [verifier.environment]). deep-swe ships 1800s (30 min), which isn't enough to
+# provision the large swe-bench verifier image snapshot on the langsmith sandbox
+# -> VerifierTimeoutError before grading runs. Give it more room.
+_ENV_BUILD_TIMEOUT_SEC = "3600.0"
 
 
-def _set_environment_allow_internet(content: str) -> str:
-    """Return ``content`` with the top-level ``[environment]`` section set to
-    ``allow_internet = true``.
+def _set_environment_key(content: str, key: str, value: str) -> str:
+    """Return ``content`` with ``key = value`` set in the top-level
+    ``[environment]`` section only.
 
-    Only the ``[environment]`` section is touched. ``[verifier.environment]``
-    is deliberately left as-is so the verifier stays air-gapped, which is what
-    preserves grading integrity. Raises ``ValueError`` if there is no
-    ``[environment]`` section.
+    ``[verifier.environment]`` is never touched: the section regex is anchored
+    to the exact ``[environment]`` header. If ``key`` is present its value is
+    replaced; otherwise the assignment is inserted right after the header.
+    Idempotent. Raises ``ValueError`` if there is no ``[environment]`` section.
     """
     match = _ENVIRONMENT_SECTION_RE.search(content)
     if match is None:
         raise ValueError("task.toml has no [environment] section")
 
     body = match.group("body")
-    if _ALLOW_INTERNET_RE.search(body):
-        new_body = _ALLOW_INTERNET_RE.sub(r"\1allow_internet = true", body, count=1)
+    key_re = re.compile(
+        rf"^([ \t]*){re.escape(key)}[ \t]*=[ \t]*\S+[ \t]*$", re.MULTILINE
+    )
+    if key_re.search(body):
+        # \g<1> (not \1) so a numeric value can't be read as part of the group ref.
+        new_body = key_re.sub(rf"\g<1>{key} = {value}", body, count=1)
     else:
         # No existing key — add one right after the [environment] header.
-        new_body = "allow_internet = true\n" + body
+        new_body = f"{key} = {value}\n" + body
 
     if new_body == body:
         return content
@@ -151,15 +162,23 @@ def patch_task_toml(path: Path) -> str:
 
     changed = False
 
-    # 1. Give the agent's environment network access for model-provider calls.
-    #    We set the [environment] baseline to public rather than a per-phase
-    #    [agent] network_mode override: Harbor can only switch network policy
-    #    between phases on the e2b sandbox, so an override fails on the
-    #    langsmith/docker sandboxes ("cannot change network policy after
-    #    start"). The verifier runs in a separate, air-gapped environment, so
-    #    [verifier.environment] is left untouched and grading integrity holds.
+    # 1. Patch the [environment] section (agent env baseline) on two axes.
+    #    (a) allow_internet=true: give the agent network for model-provider
+    #        calls. We set the baseline to public rather than a per-phase
+    #        [agent] network_mode override because Harbor can only switch
+    #        network policy between phases on the e2b sandbox, so an override
+    #        fails on langsmith/docker ("cannot change network policy after
+    #        start").
+    #    (b) build_timeout_sec: Harbor derives the separate verifier env's
+    #        build timeout from this field too; the default 1800s is too short
+    #        to provision the swe-bench verifier image on langsmith.
+    #    [verifier.environment] is left untouched, so the verifier stays
+    #    air-gapped and grading integrity holds.
     try:
-        new_content = _set_environment_allow_internet(content)
+        new_content = _set_environment_key(content, "allow_internet", "true")
+        new_content = _set_environment_key(
+            new_content, "build_timeout_sec", _ENV_BUILD_TIMEOUT_SEC
+        )
     except ValueError as exc:
         return f"SKIP ({exc}): {path.name}"
     if new_content != content:

@@ -1,0 +1,34 @@
+libs/evals/tests/unit_tests/test_harbor_langgraph_agent.py
+  s_ac1c4229778f75::t_a08cfcd13150e6 22
+  s_ac1c4229778f75::t_621798932707a1 188-233
+  s_ac1c4229778f75::t_994e4bfc8d074f 8,10
+.github/workflows/harbor.yml
+  s_ac1c4229778f75::t_fc511f2fd55bff 416-420
+libs/evals/tests/unit_tests/test_harbor_langsmith_integration.py
+  s_ac1c4229778f75::t_1ca96411d368a8 80-83
+  s_ac1c4229778f75::t_03eda96941af49 89-92
+libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py
+  s_ac1c4229778f75::t_c16d2da5978e6c 203
+  s_ac1c4229778f75::t_386022bbc00291 265
+  s_ac1c4229778f75::t_73d29634b86ad5 251
+  s_ac1c4229778f75::t_b202f9a59dfac1 9
+  s_ac1c4229778f75::t_4d36fa14709523 209-217,226-228,234-238,248-249,255-264,267
+  s_ac1c4229778f75::t_a63bf170c06128 246-247,250
+  s_ac1c4229778f75::t_919cc4e8a2480a 245
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "bf6dccb2752d73657e4774e5daa886de7f98edfa",
+  "prompts": {},
+  "sessions": {
+    "s_ac1c4229778f75": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d92a23bd-a9bf-483d-aa07-cf0f1aa28da5",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

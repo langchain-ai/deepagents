@@ -1,0 +1,23 @@
+.github/workflows/harbor.yml
+  s_80c3f828b28c9e::t_fa0135ee8e4d54 561-563
+  s_80c3f828b28c9e::t_6553ae99cfa877 701-708,720,729,731
+  s_80c3f828b28c9e::t_9429a281e7faa7 590
+libs/evals/tests/unit_tests/test_harbor_langsmith_integration.py
+  s_80c3f828b28c9e::t_788a4dda7af4a1 80-81,83
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "725895915887dbba16a6e8e3b1664bf407b60d47",
+  "prompts": {},
+  "sessions": {
+    "s_80c3f828b28c9e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "494573eb-9ae0-433c-ba3c-5b0e7b00bd7e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

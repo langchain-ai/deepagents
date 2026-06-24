@@ -432,7 +432,33 @@ class TestServiceCredentials:
         from deepagents_code.model_config import is_service
 
         assert is_service("tavily") is True
+        assert is_service("langsmith") is True
         assert is_service("anthropic") is False
+
+    def test_langsmith_service_env_var(self) -> None:
+        """LangSmith is registered as a service mapped to its API-key env var."""
+        from deepagents_code.model_config import (
+            LANGSMITH_SERVICE,
+            SERVICE_API_KEY_ENV,
+        )
+
+        assert SERVICE_API_KEY_ENV[LANGSMITH_SERVICE] == "LANGSMITH_API_KEY"
+
+    def test_apply_exports_stored_langsmith_key(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored LangSmith key is copied onto LANGSMITH_API_KEY."""
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import apply_stored_service_credentials
+
+        monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+        auth_store.set_stored_key("langsmith", "lsv2_test")
+        apply_stored_service_credentials()
+        assert os.environ["LANGSMITH_API_KEY"] == "lsv2_test"
 
     def test_status_missing_when_unset(
         self,
@@ -519,6 +545,23 @@ class TestServiceCredentials:
         auth_store.set_stored_key("tavily", "from-store")
         apply_stored_service_credentials()
         assert os.environ["TAVILY_API_KEY"] == "from-store"
+
+    def test_apply_stored_key_respects_prefixed_override(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A scoped service key is not overwritten by a stored key."""
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import apply_stored_service_credentials
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_prefixed")
+        monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_prefixed")
+        auth_store.set_stored_key("langsmith", "lsv2_stored")
+        apply_stored_service_credentials()
+        assert os.environ["LANGSMITH_API_KEY"] == "lsv2_prefixed"
 
 
 class TestSplitCredentialSource:

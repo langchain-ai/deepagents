@@ -394,27 +394,39 @@ Reach for a dedicated branch only when you need to (often temporarily) *decouple
 > [!IMPORTANT]
 > **Name the branch with a `v` prefix** — `v0.7`, `v0.6`, etc. A branch named `0.7` gets **no branch protection**.
 
-Both `main` and `v[0-9].*` require a CI-passing PR (no direct pushes). The only difference is that `v[0-9].*` allows merge commits in order to facilitate syncing `main` -> `vX.Y` ([staging](#staging-branch-main-stays-on-the-current-line) step 2) and the **cutover** (admin bypass — see below).
+Both `main` and `v[0-9].*` require a CI-passing PR (no direct pushes). The only difference is that `v[0-9].*` allows merge commits in order to facilitate syncing `main` -> `vX.Y` ([staging](#staging-branch-main-stays-on-the-current-line) step 2) and the **cutover** (admin bypass — see below). A version-line DRI with branch-rule bypass privileges may occasionally force-push a staging branch after rebasing it onto `main`, **but only when they intentionally own the history rewrite** and have verified the final `main..vX.Y` range contains only the branch's intended commits.
 
 ### TL;DR — staging the next line of work (e.g. `v0.7` while `main` stays `v0.6.x`)
 
 1. **Branch:** create `v0.7` from `main`.
 2. **Build `0.7`:** land net-new work via **squash PRs into `v0.7`** (same flow as `main`).
-3. **Sync `main` -> `v0.7` periodically:** open a PR with **base `v0.7`, head `main`** and merge it with **"Create a merge commit"** (not squash!). CI runs on the merged result; `main`'s commits arrive as shared history, so the cutover stays clean. Cherry-pick instead only if `v0.7` deliberately diverges from `main` (e.g. `v0.7` deleted or rewrote a module that `main` is still bug-fixing, so a full merge would keep dragging the old code back and re-conflict on every sync — cherry-pick just the fixes you still want).
+3. **Keep `v0.7` current with `main`:** default to a PR with **base `v0.7`, head `main`** and merge it with **"Create a merge commit"** (not squash!). CI runs on the merged result; `main`'s commits arrive as shared history, so the cutover stays clean. If the staging branch is being actively maintained by a DRI with branch-rule bypass privileges who can safely rewrite it, rebasing `v0.7` onto `main` and force-pushing with lease is also acceptable; verify `git rev-list --left-right --count main...v0.7` reports `0 N` and that `git log --oneline --no-merges main..v0.7` lists only the intended version-line commits. Cherry-pick instead only if `v0.7` deliberately diverges from `main` (e.g. `v0.7` deleted or rewrote a module that `main` is still bug-fixing, so a full merge would keep dragging the old code back and re-conflict on every sync — cherry-pick just the fixes you still want).
 4. **Cutover:** an admin merges `v0.7` onto `main` with `git merge --no-ff` under admin bypass. See [Cutover](#cutover-main-adopts-the-new-line).
 
 ### Staging branch (`main` stays on the current line)
 
 1. Create `vX.Y` from `main`. Do feature work via **squash PRs into `vX.Y`** — same flow as `main`, so every change is CI-gated and reviewed. Each PR becomes one clean conventional commit on the branch.
-2. **Pulling in `main` fixes:** keep `vX.Y` current by opening a **merge PR from `main` -> `vX.Y`** and landing it as a **merge commit (not squash)**. Do this periodically. It buys three things:
-   - **Still CI-gated.** The PR runs CI on the *merged* result, so you test `vX.Y` against the latest `main` before it lands.
-   - **Conflicts stay small.** They surface in each sync PR instead of piling up for the final cutover.
-   - **Clean cutover.** The merge brings `main`'s commits in as **shared history** (same SHAs, not copies), so they're not ultimately double-counted in the changelog(s).
+2. **Pulling in `main` fixes:** keep `vX.Y` current with one of these two workflows:
 
-   Use a merge commit **only** for these sync PRs.
+   - **Default for shared branches: merge `main` into `vX.Y`.** Open a **merge PR from `main` -> `vX.Y`** and land it as a **merge commit (not squash)**. Do this periodically. It buys three things:
+     - **Still CI-gated.** The PR runs CI on the *merged* result, so you test `vX.Y` against the latest `main` before it lands.
+     - **Conflicts stay small.** They surface in each sync PR instead of piling up for the final cutover.
+     - **Clean cutover.** The merge brings `main`'s commits in as **shared history** (same SHAs, not copies), so release-please does not see copied `main` commits as new version-line work.
+
+     Use a merge commit **only** for these sync PRs.
+
+   - **Controlled exception: rebase `vX.Y` onto `main`.** If the version-line DRI has branch-rule bypass privileges and intentionally owns rewriting the staging branch, they may rebase and force-push with lease instead of creating sync merge commits. This keeps the GitHub compare view at `0 behind, N ahead` and makes the final cutover easy to audit. If no authorized maintainer can bypass the non-fast-forward rule, use the merge-PR workflow instead. Before pushing, verify:
+
+     ```bash
+     git rev-list --left-right --count main...vX.Y  # expect: 0 N
+     git log --oneline --no-merges main..vX.Y      # only intended version-line commits
+     git log --oneline --merges main..vX.Y         # empty, unless intentional
+     ```
+
+     After that verification, merging `vX.Y` into `main` makes release-please parse only the commits in `main..vX.Y`. Do **not** use this workflow if other contributors are basing active work on the staging branch unless they know the branch will be rewritten.
 
    > [!TIP]
-   > If `vX.Y` deliberately *diverges* from `main` (it removed or rewrote code that `main` keeps patching), a full sync re-surfaces the same conflict every time. In that case **cherry-pick only the fixes you want** instead.
+   > If `vX.Y` deliberately *diverges* from `main` (it removed or rewrote code that `main` keeps patching), a full sync re-surfaces the same conflict every time. In that case **cherry-pick only the fixes you want** instead. Avoid cherry-picking commits that already exist on `main`: cherry-picks get new SHAs, so release-please can treat them as new commits at cutover.
 3. **Need an installable build?** Cut a pre-release (`0.7.0a1`, …) with the throwaway-branch flow in [How to publish a pre-release](#how-to-publish-a-pre-release). release-please is never involved and `main` is untouched.
 
 ### Cutover (`main` adopts the new line)

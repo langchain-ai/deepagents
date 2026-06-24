@@ -75,15 +75,49 @@ def _sdk_version() -> tuple[str, bool]:
     return "unknown", False
 
 
+def _build_commit() -> str | None:
+    """Return the commit stamped into the package at build time, if present.
+
+    Released wheels carry a generated `_build_info.py` (see `hatch_build.py`);
+    editable and local installs do not, so this returns `None` for them.
+    """
+    try:
+        from deepagents_code._build_info import (  # ty: ignore[unresolved-import]  # generated at build time
+            BUILD_COMMIT,
+        )
+    except ImportError:
+        return None
+    except Exception:  # a corrupt stamp must never crash `doctor`
+        logger.debug("Build-info module present but failed to import", exc_info=True)
+        return None
+    commit = (BUILD_COMMIT or "").strip()
+    return commit or None
+
+
 def _commit_hash(path: str) -> str:
-    """Return the short git commit hash for a source path, if available.
+    """Return the short git commit hash for the install, if available.
+
+    Prefers the commit stamped into a released wheel at build time, but only for
+    non-editable installs: an editable install may carry a stale stamp from a
+    prior local build (the generated file is gitignored and survives a failed
+    build), so it always probes the live git working tree, which reflects local
+    changes.
 
     Args:
         path: Directory used as the git command working directory.
 
     Returns:
-        The short commit hash, or `unknown` when git metadata cannot be read.
+        The short commit hash, or `unknown` when no commit can be determined.
     """
+    baked = _build_commit()
+    if baked:
+        from deepagents_code.config import _is_editable_install
+
+        # A baked commit only describes a built wheel; ignore it for editable
+        # installs so a stale stamp can't mask the live working-tree commit.
+        if not _is_editable_install():
+            return baked
+
     import shutil
     import subprocess  # noqa: S404  # fixed-argv git metadata probe
     from pathlib import Path

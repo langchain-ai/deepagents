@@ -52,15 +52,15 @@ jobs:
         env:
           PKG_PYPROJECT: ${{ steps.pkg.outputs.pyproject }}
         run: |
-          SDK_VERSION=$(sed -nE 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' libs/deepagents/pyproject.toml | head -1)
+          SDK_VERSION=$(sed -nE 's/^version = "([^"]*)".*/\1/p' libs/deepagents/pyproject.toml | head -1)
           if [[ -z "$SDK_VERSION" ]]; then
-            echo "::error file=libs/deepagents/pyproject.toml::Failed to extract SDK version. Expected a line matching: version = \"X.Y.Z\""
+            echo "::error file=libs/deepagents/pyproject.toml::Failed to extract SDK version. Expected a line matching: version = \"<version>\""
             exit 1
           fi
 
-          PKG_SDK_PIN=$(sed -nE 's/.*deepagents==([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PKG_PYPROJECT" | head -1)
+          PKG_SDK_PIN=$(sed -nE 's/.*deepagents==([^", <>=;]+).*/\1/p' "$PKG_PYPROJECT" | head -1)
           if [[ -z "$PKG_SDK_PIN" ]]; then
-            echo "::error file=${PKG_PYPROJECT}::Failed to extract SDK pin. Expected a dependency matching: deepagents==X.Y.Z"
+            echo "::error file=${PKG_PYPROJECT}::Failed to extract SDK pin. Expected a dependency matching: deepagents==<version>"
             exit 1
           fi
 

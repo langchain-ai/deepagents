@@ -315,11 +315,8 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
                         classes="launch-dependencies-section is-available",
                     )
                 yield Static(
-                    "These are the integrations we bundle — not the limit. "
-                    "Pick a model on the next screen to install its provider "
-                    "automatically, add a listed one with `/install <name>` "
-                    "(e.g. `/install daytona`), or pull in any other provider "
-                    "with `/install <pkg> --package`.",
+                    "Pick a model on the next screen and its provider installs "
+                    "automatically. Add more anytime with `/install`.",
                     classes="launch-init-copy",
                 )
             else:

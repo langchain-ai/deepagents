@@ -64,10 +64,8 @@ _RECOMMENDED_MODELS: frozenset[str] = frozenset(
         "anthropic:claude-opus-4-7",
         "anthropic:claude-sonnet-4-6",
         "baseten:deepseek-ai/DeepSeek-V4-Pro",
-        "baseten:moonshotai/Kimi-K2.6",
         "baseten:moonshotai/Kimi-K2.7-Code",
         "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
-        "baseten:zai-org/GLM-5",
         "baseten:zai-org/GLM-5.2",
         "fireworks:accounts/fireworks/models/deepseek-v4-pro",
         "fireworks:accounts/fireworks/models/glm-5p1",
@@ -78,7 +76,7 @@ _RECOMMENDED_MODELS: frozenset[str] = frozenset(
         "fireworks:accounts/fireworks/models/minimax-m3",
         "fireworks:accounts/fireworks/models/qwen3p6-plus",
         "fireworks:accounts/fireworks/models/qwen3p7-plus",
-        "google_genai:gemini-3-flash-preview",
+        "google_genai:gemini-3.5-flash",
         "google_genai:gemini-3.1-pro-preview",
         "ollama:deepseek-v4-flash:cloud",
         "ollama:deepseek-v4-pro:cloud",
@@ -102,10 +100,9 @@ _RECOMMENDED_MODELS: frozenset[str] = frozenset(
         "openrouter:deepseek/deepseek-v4-flash",
         "openrouter:deepseek/deepseek-v4-flash:free",
         "openrouter:deepseek/deepseek-v4-pro",
-        "openrouter:google/gemini-3-flash-preview",
+        "openrouter:google/gemini-3.5-flash",
         "openrouter:google/gemini-3.1-pro-preview",
         "openrouter:minimax/minimax-m2.7",
-        "openrouter:moonshotai/kimi-k2.6",
         "openrouter:moonshotai/kimi-k2.7-code",
         "openrouter:openai/gpt-5.4",
         "openrouter:openai/gpt-5.4-mini",
@@ -114,8 +111,6 @@ _RECOMMENDED_MODELS: frozenset[str] = frozenset(
         "openrouter:openai/gpt-5.5-pro",
         "openrouter:openrouter/fusion",
         "openrouter:qwen/qwen3.7-plus",
-        "openrouter:z-ai/glm-5",
-        "openrouter:z-ai/glm-5.1",
         "openrouter:z-ai/glm-5.2",
     }
 )
@@ -123,7 +118,7 @@ _RECOMMENDED_MODELS: frozenset[str] = frozenset(
 
 Used by the onboarding picker (`curated=True`) and by the in-`/model`
 "Recommended only" toggle (Ctrl+R). Same model IDs may appear under multiple
-providers (e.g. Kimi-K2.6 via `baseten`, `ollama`, and `openrouter`) and are
+providers (e.g. Kimi-K2.7-Code via `baseten` and `openrouter`) and are
 listed under each provider intentionally so the user can pick whichever
 provider they have credentials for.
 """

@@ -7481,7 +7481,7 @@ class TestInstallExtraModelSwitch:
 
         await app._install_extra_then_switch(
             "baseten",
-            "baseten:moonshotai/Kimi-K2.6",
+            "baseten:moonshotai/Kimi-K2.7-Code",
             extra_kwargs={"temperature": 0},
         )
 
@@ -7490,7 +7490,7 @@ class TestInstallExtraModelSwitch:
         screen = app._push_screen_wait.await_args.args[0]  # ty: ignore
         assert isinstance(screen, AuthPromptScreen)
         dispatch.assert_called_once_with(
-            "baseten:moonshotai/Kimi-K2.6",
+            "baseten:moonshotai/Kimi-K2.7-Code",
             extra_kwargs={"temperature": 0},
         )
 
@@ -7506,7 +7506,7 @@ class TestInstallExtraModelSwitch:
 
         await app._install_extra_then_switch(
             "baseten",
-            "baseten:moonshotai/Kimi-K2.6",
+            "baseten:moonshotai/Kimi-K2.7-Code",
         )
 
         app._install_extra.assert_awaited_once_with("baseten", auto_restart=True)  # ty: ignore
@@ -7537,7 +7537,7 @@ class TestInstallExtraModelSwitch:
 
         await app._install_extra_then_switch(
             "baseten",
-            "baseten:moonshotai/Kimi-K2.6",
+            "baseten:moonshotai/Kimi-K2.7-Code",
         )
 
         app._push_screen_wait.assert_awaited_once()  # ty: ignore
@@ -7811,7 +7811,7 @@ class TestHandleModelSelection:
 
         app._handle_model_selection(
             screen,  # ty: ignore
-            ("baseten:moonshotai/Kimi-K2.6", "baseten"),
+            ("baseten:moonshotai/Kimi-K2.7-Code", "baseten"),
             extra_kwargs={"temperature": 0},
         )
 
@@ -7829,7 +7829,7 @@ class TestHandleModelSelection:
         await run_worker.call_args.args[0]
         install.assert_awaited_once_with(
             "baseten",
-            "baseten:moonshotai/Kimi-K2.6",
+            "baseten:moonshotai/Kimi-K2.7-Code",
             extra_kwargs={"temperature": 0},
         )
         assert app._model_install_switching is False
@@ -7851,7 +7851,7 @@ class TestHandleModelSelection:
 
         app._handle_model_selection(
             screen,  # ty: ignore
-            ("baseten:moonshotai/Kimi-K2.6", "baseten"),
+            ("baseten:moonshotai/Kimi-K2.7-Code", "baseten"),
         )
 
         assert app._model_install_switching is True
@@ -7883,7 +7883,7 @@ class TestHandleModelSelection:
 
         app._handle_model_selection(
             screen,  # ty: ignore
-            ("baseten:moonshotai/Kimi-K2.6", "baseten"),
+            ("baseten:moonshotai/Kimi-K2.7-Code", "baseten"),
         )
 
         assert app._model_install_switching is True
@@ -7912,7 +7912,7 @@ class TestHandleModelSelection:
 
         app._handle_model_selection(
             screen,  # ty: ignore
-            ("baseten:moonshotai/Kimi-K2.6", "baseten"),
+            ("baseten:moonshotai/Kimi-K2.7-Code", "baseten"),
         )
 
         app.notify.assert_called_once()

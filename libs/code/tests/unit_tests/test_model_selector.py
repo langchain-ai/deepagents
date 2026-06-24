@@ -1909,7 +1909,7 @@ class TestModelSelectorInstallRouting:
         from deepagents_code import config_manifest
         from deepagents_code.widgets import model_selector
 
-        spec = "baseten:moonshotai/Kimi-K2.6"
+        spec = "baseten:moonshotai/Kimi-K2.7-Code"
         assert spec in model_selector._RECOMMENDED_MODELS
 
         monkeypatch.setattr(
@@ -2083,7 +2083,9 @@ enabled = false
                 lambda s, cb=None, *_a, **_k: pushed.append((s, cb)),
             )
 
-            screen._select_with_auth_check("baseten:moonshotai/Kimi-K2.6", "baseten")
+            screen._select_with_auth_check(
+                "baseten:moonshotai/Kimi-K2.7-Code", "baseten"
+            )
 
             assert len(pushed) == 1
             assert isinstance(pushed[0][0], InstallProviderConfirmScreen)
@@ -2113,7 +2115,7 @@ enabled = false
             )
 
             screen._prompt_install_provider(
-                "baseten:moonshotai/Kimi-K2.6", "baseten", "baseten"
+                "baseten:moonshotai/Kimi-K2.7-Code", "baseten", "baseten"
             )
             on_confirm = pushed[0][1]
             assert on_confirm is not None
@@ -2122,7 +2124,7 @@ enabled = false
 
         assert screen.pending_install_extra == "baseten"
         assert app.dismissed is True
-        assert app.result == ("baseten:moonshotai/Kimi-K2.6", "baseten")
+        assert app.result == ("baseten:moonshotai/Kimi-K2.7-Code", "baseten")
 
     async def test_decline_install_stays_on_selector(
         self, monkeypatch: pytest.MonkeyPatch
@@ -2148,7 +2150,7 @@ enabled = false
             )
 
             screen._prompt_install_provider(
-                "baseten:moonshotai/Kimi-K2.6", "baseten", "baseten"
+                "baseten:moonshotai/Kimi-K2.7-Code", "baseten", "baseten"
             )
             on_confirm = pushed[0][1]
             assert on_confirm is not None
@@ -2191,7 +2193,7 @@ enabled = false
         the `install_required` flag, so uninstalled rows turned bright after
         the cursor passed over them and never reverted.
         """
-        install_spec = "baseten:moonshotai/Kimi-K2.6"
+        install_spec = "baseten:moonshotai/Kimi-K2.7-Code"
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
             app.show_selector()
@@ -2240,7 +2242,7 @@ enabled = false
         install-required model also surfaces at the top as a recent pick, so
         cursoring onto then off that Recent row must re-dim it just the same.
         """
-        install_spec = "baseten:moonshotai/Kimi-K2.6"
+        install_spec = "baseten:moonshotai/Kimi-K2.7-Code"
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
             app.show_selector()

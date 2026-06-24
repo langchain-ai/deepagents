@@ -15,7 +15,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
-from textual.geometry import Offset
+from textual.geometry import Offset, Size
 from textual.message import Message
 from textual.reactive import reactive
 from textual.strip import Strip
@@ -766,6 +766,66 @@ class ChatTextArea(TextArea):
         # refresh so it stays in view.
         self.call_after_refresh(self.scroll_cursor_visible)
 
+    def _refresh_scrollbars(self) -> None:
+        """Refresh scrollbars without flashing a transient vertical bar.
+
+        `TextArea` grows its `virtual_size` height the moment a row is inserted,
+        a frame before this `height: auto` widget's container reflows to match.
+        The base `_refresh_scrollbars` decides vertical visibility by comparing
+        `virtual_size.height` against the stale `self._container_size.height`,
+        so for that one frame the freshly inserted row looks like overflow and
+        the scrollbar flashes on, then off once the container catches up.
+
+        The widget only ever truly overflows once its content exceeds the height
+        it settles at — its resolved `max-height` (the layout chain above it is
+        all `height: auto`, so it always grows to `min(content, max-height)`).
+        Feed the base method that settled height instead of the mid-reflow one,
+        so the bar appears only on genuine overflow and never flashes. All other
+        base behavior (horizontal bar, anti-oscillation, scroll updates) is left
+        untouched.
+
+        Deliberately overrides Textual's private `_refresh_scrollbars` and
+        swaps the private `_container_size`; verified against Textual 8.2.7.
+        Re-verify on major Textual upgrades.
+        """
+        bound = self._settled_content_height()
+        if bound is None:
+            super()._refresh_scrollbars()
+            return
+
+        original = self._container_size
+        # Never report a viewport smaller than the settled height; `max(...)`
+        # also guards the unlikely case where the real container is already
+        # larger than the bound, so we only ever raise the comparison height.
+        corrected_height = max(original.height, min(self.virtual_size.height, bound))
+        if corrected_height == original.height:
+            super()._refresh_scrollbars()
+            return
+
+        self._container_size = Size(original.width, corrected_height)
+        try:
+            super()._refresh_scrollbars()
+        finally:
+            self._container_size = original
+
+    def _settled_content_height(self) -> int | None:
+        """Return the content-row height this widget settles at, if knowable.
+
+        Returns `None` (so the caller defers to the base behavior) unless the
+        vertical overflow is `auto` and `max-height` resolves to a fixed cell
+        count, the only case where the flash-suppression bound is well-defined.
+        """
+        styles = self.styles
+        if styles.overflow_y != "auto" or not styles.has_rule("max_height"):
+            return None
+        max_height = styles.max_height
+        cells = max_height.cells if max_height is not None else None
+        if cells is None:
+            return None
+        # box-sizing is border-box by default, so subtract border/padding to get
+        # the content-row count the base method compares `virtual_size` against.
+        return max(1, cells - self.gutter.height)
+
     def _cursor_at_visual_top(self) -> bool:
         """Return whether the cursor cannot move up further."""
         try:
@@ -1232,6 +1292,10 @@ class ChatTextArea(TextArea):
         self._reset_paste_burst_state()
         self._skip_history_change_events += 1
         self.text = text
+        # The suppressed Changed event (see above) is what would normally toggle
+        # the clear/copy buttons, so sync them now to hide/show in the same frame
+        # the text swaps — otherwise an emptied draft keeps the buttons for a frame.
+        self._sync_owner_action_buttons(text)
         if cursor_at_end:
             self.move_cursor_to_end()
         else:
@@ -1251,7 +1315,21 @@ class ChatTextArea(TextArea):
         self._skip_history_change_events += 1
         self._reset_paste_burst_state()
         self.text = ""
+        # Hide the clear/copy buttons in the same frame the draft empties; the
+        # suppressed Changed event would otherwise leave them for an extra frame.
+        self._sync_owner_action_buttons("")
         self.move_cursor((0, 0))
+
+    def _sync_owner_action_buttons(self, text: str) -> None:
+        """Match the owner's clear/copy buttons to programmatically set text.
+
+        History/clear text swaps suppress the `Changed` event that normally
+        drives button visibility, so the owner is updated directly to keep the
+        buttons in lockstep with the draft (matching the `Changed`-path gate).
+        """
+        owner = self._chat_input_owner
+        if owner is not None:
+            owner._set_action_buttons_visible(visible=bool(text.strip()))
 
     def discard_text(self) -> bool:
         """Clear the draft via an undoable edit (restorable with ctrl+z).

@@ -59,6 +59,7 @@ class _AuthHostApp(App[None]):
         super().__init__()
         self.prompt_result: AuthResult | None = None
         self.prompt_dismissed = False
+        self.credential_saved_count = 0
 
     def compose(self) -> ComposeResult:
         """Render a placeholder root."""
@@ -78,6 +79,12 @@ class _AuthHostApp(App[None]):
     def show_manager(self) -> None:
         """Push the manager screen."""
         self.push_screen(AuthManagerScreen())
+
+    def on_auth_manager_screen_credential_saved(
+        self, _event: AuthManagerScreen.CredentialSaved
+    ) -> None:
+        """Record credential-save notifications from the manager."""
+        self.credential_saved_count += 1
 
 
 class TestCodexAuthScreen:
@@ -814,6 +821,33 @@ api_key_env = "MY_GATEWAY_API_KEY"
 @pytest.mark.usefixtures("fake_state_dir")
 class TestAuthManagerScreen:
     """Behavioral tests for the manager listing."""
+
+    async def test_prompt_save_posts_credential_saved_event(self) -> None:
+        """Saving a key notifies the app before the manager itself closes."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            screen = cast("AuthManagerScreen", app.screen)
+
+            screen._on_prompt_closed(AuthResult.SAVED)
+            await pilot.pause()
+
+        assert app.credential_saved_count == 1
+
+    async def test_prompt_cancel_does_not_post_credential_saved_event(self) -> None:
+        """Cancelling or deleting credentials should not trigger startup recovery."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            screen = cast("AuthManagerScreen", app.screen)
+
+            screen._on_prompt_closed(AuthResult.CANCELLED)
+            screen._on_prompt_closed(AuthResult.DELETED)
+            await pilot.pause()
+
+        assert app.credential_saved_count == 0
 
     async def test_lists_known_providers(self) -> None:
         """Every well-known provider appears in the option list."""

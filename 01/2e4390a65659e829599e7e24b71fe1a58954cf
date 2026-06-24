@@ -1,0 +1,32 @@
+.github/workflows/evals.yml
+  s_9af666ab03acdf::t_68097b4a3a6ec5 237-276
+  s_9af666ab03acdf::t_d71c7fe6e4e812 650-656,681-687,712-718,743-749,774-780,805-811,836-842,867-873,898-904,929-935,960-966
+  s_9af666ab03acdf::t_ae244e4d2b00f0 578-582
+  s_9af666ab03acdf::t_88e6e80308e4cc 641,672,703,734,765,796,827,858,889,920,951
+.github/workflows/_eval.yml
+  s_9af666ab03acdf::t_65a6d0018e69a2 266-337
+  s_9af666ab03acdf::t_8c41f2ebcc4897 69-93
+.github/scripts/models.py
+  s_9af666ab03acdf::t_ddf7043af8e26e 843-881
+  s_9af666ab03acdf::t_8699fd0162fa9f 937-947,952-955,958-960
+  s_9af666ab03acdf::t_9db114aa05245c 973-977,982-985
+  s_9af666ab03acdf::t_12fc86a913cd94 1069-1072
+.github/scripts/test_models.py
+  s_9af666ab03acdf::t_3e5d69256ca4fd 280-425
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "012e4390a65659e829599e7e24b71fe1a58954cf",
+  "prompts": {},
+  "sessions": {
+    "s_9af666ab03acdf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2b2a7bc3-c632-49fe-a9f6-db6ea293f1ba",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

@@ -5,10 +5,11 @@ Selecting a row drills into a dedicated detail modal
 (`UpdateAvailableScreen` for update entries, `NotificationDetailScreen`
 otherwise) stacked on top of the center. When the detail modal
 dismisses with any non-SUPPRESS action the center dismisses with a
-`NotificationActionResult` so the app layer can dispatch; SUPPRESS is
-handled in place via `NotificationSuppressRequested` so the remaining
-notifications stay reachable. When the detail cancels, the center
-stays open on the list.
+`NotificationActionResult` so the app layer can dispatch; SUPPRESS and
+ENTER_API_KEY are handled in place (via `NotificationSuppressRequested`
+and `NotificationEnterApiKeyRequested`) so the center stays open and a
+stacked prompt's Esc returns to the list. When the detail cancels, the
+center stays open on the list.
 """
 
 from __future__ import annotations
@@ -83,6 +84,26 @@ class NotificationSuppressRequested(Message):
 
         Args:
             key: Registry key of the notification being suppressed.
+        """
+        super().__init__()
+        self.key = key
+
+
+class NotificationEnterApiKeyRequested(Message):
+    """Posted when the user picks ENTER_API_KEY from a detail modal.
+
+    The center stays open so the API-key prompt stacks on top of it;
+    pressing Esc in the prompt returns to the notifications viewer
+    rather than closing every modal. The app handles this message by
+    pushing the prompt and reloading the center in place once it
+    closes.
+    """
+
+    def __init__(self, key: str) -> None:
+        """Initialize the message.
+
+        Args:
+            key: Registry key of the notification to enter a key for.
         """
         super().__init__()
         self.key = key
@@ -331,6 +352,12 @@ class NotificationCenterScreen(ModalScreen[NotificationActionResult | None]):
                 # calls `reload` with the refreshed list. Rationale is
                 # in `NotificationSuppressRequested`'s class docstring.
                 self.post_message(NotificationSuppressRequested(entry.key))
+                return
+            if action_id == ActionId.ENTER_API_KEY:
+                # Keep the center open so the API-key prompt stacks on
+                # top of it and Esc returns here. See
+                # `NotificationEnterApiKeyRequested`'s class docstring.
+                self.post_message(NotificationEnterApiKeyRequested(entry.key))
                 return
             self.dismiss(NotificationActionResult(entry.key, action_id))
 

@@ -15,6 +15,7 @@ from deepagents_code.notifications import (
 from deepagents_code.widgets.notification_center import (
     NotificationActionResult,
     NotificationCenterScreen,
+    NotificationEnterApiKeyRequested,
     NotificationSuppressRequested,
     _NotificationRow,
 )
@@ -156,6 +157,44 @@ class TestNotificationCenterScreen:
             assert isinstance(app.screen, NotificationCenterScreen)
 
         assert [m.key for m in messages] == ["dep:ripgrep"]
+
+    async def test_enter_api_key_keeps_center_open_and_posts_message(self) -> None:
+        """ENTER_API_KEY from the detail posts a message and leaves the center up."""
+        messages: list[NotificationEnterApiKeyRequested] = []
+
+        class _App(App):
+            def on_notification_enter_api_key_requested(
+                self, message: NotificationEnterApiKeyRequested
+            ) -> None:
+                messages.append(message)
+
+        entry = PendingNotification(
+            key="dep:tavily",
+            title="Tavily web search is unavailable",
+            body="No Tavily API key is set.",
+            actions=(
+                NotificationAction(
+                    ActionId.ENTER_API_KEY, "Enter API key", primary=True
+                ),
+                NotificationAction(ActionId.SUPPRESS, "Don't show notification again"),
+            ),
+            payload=MissingDepPayload(tool="tavily"),
+        )
+        app = _App()
+        screen = NotificationCenterScreen([entry])
+        async with app.run_test() as pilot:
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("enter")  # drill into the tavily entry
+            await pilot.pause()
+            assert isinstance(app.screen, NotificationDetailScreen)
+            await pilot.press("enter")  # primary ENTER_API_KEY
+            await pilot.pause()
+
+            # Center is still the active screen; no dismissal fired.
+            assert isinstance(app.screen, NotificationCenterScreen)
+
+        assert [m.key for m in messages] == ["dep:tavily"]
 
     async def test_reload_rebuilds_rows_and_preserves_selection_by_key(self) -> None:
         """`reload` re-renders the list and keeps the cursor on the same entry."""

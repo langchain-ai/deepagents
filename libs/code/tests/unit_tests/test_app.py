@@ -10415,6 +10415,94 @@ class TestNotificationCenterIntegration:
         assert app._notice_registry.get("dep:ripgrep") is entry
         assert "Unknown action_id" in caplog.text
 
+    async def test_enter_api_key_message_keeps_center_open_on_cancel(self) -> None:
+        """Cancelling the prompt leaves the center open with rows intact."""
+        from deepagents_code.widgets.auth import AuthResult
+        from deepagents_code.widgets.notification_center import (
+            NotificationCenterScreen,
+            NotificationEnterApiKeyRequested,
+            _NotificationRow,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        dep = _missing_dep_entry("ripgrep")
+        tavily = _missing_dep_entry("tavily")
+        app._notice_registry.add(dep)
+        app._notice_registry.add(tavily)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._push_screen_wait = AsyncMock(return_value=AuthResult.CANCELLED)  # ty: ignore
+            app._open_notification_center()
+            await pilot.pause()
+            assert isinstance(app.screen, NotificationCenterScreen)
+
+            app.screen.post_message(NotificationEnterApiKeyRequested("dep:tavily"))
+            await pilot.pause()
+
+            app._push_screen_wait.assert_awaited_once()  # ty: ignore
+            assert isinstance(app.screen, NotificationCenterScreen)
+            keys = [r.notification.key for r in app.screen.query(_NotificationRow)]
+            assert keys == ["dep:ripgrep", "dep:tavily"]
+            assert app._notice_registry.get("dep:tavily") is tavily
+
+    async def test_enter_api_key_message_saved_reloads_center(self) -> None:
+        """Saving a key removes the entry and refreshes the open center."""
+        from deepagents_code.widgets.auth import AuthResult
+        from deepagents_code.widgets.notification_center import (
+            NotificationCenterScreen,
+            NotificationEnterApiKeyRequested,
+            _NotificationRow,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        dep = _missing_dep_entry("ripgrep")
+        tavily = _missing_dep_entry("tavily")
+        app._notice_registry.add(dep)
+        app._notice_registry.add(tavily)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._push_screen_wait = AsyncMock(return_value=AuthResult.SAVED)  # ty: ignore
+            app.notify = lambda *_a, **_k: None  # ty: ignore
+            app._open_notification_center()
+            await pilot.pause()
+            assert isinstance(app.screen, NotificationCenterScreen)
+
+            app.screen.post_message(NotificationEnterApiKeyRequested("dep:tavily"))
+            await pilot.pause()
+
+            assert isinstance(app.screen, NotificationCenterScreen)
+            keys = [r.notification.key for r in app.screen.query(_NotificationRow)]
+            assert keys == ["dep:ripgrep"]
+            assert app._notice_registry.get("dep:tavily") is None
+
+    async def test_enter_api_key_message_saved_last_entry_closes_center(self) -> None:
+        """Saving the only entry's key dismisses the center."""
+        from deepagents_code.widgets.auth import AuthResult
+        from deepagents_code.widgets.notification_center import (
+            NotificationCenterScreen,
+            NotificationEnterApiKeyRequested,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        tavily = _missing_dep_entry("tavily")
+        app._notice_registry.add(tavily)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._push_screen_wait = AsyncMock(return_value=AuthResult.SAVED)  # ty: ignore
+            app.notify = lambda *_a, **_k: None  # ty: ignore
+            app._open_notification_center()
+            await pilot.pause()
+            assert isinstance(app.screen, NotificationCenterScreen)
+
+            app.screen.post_message(NotificationEnterApiKeyRequested("dep:tavily"))
+            await pilot.pause()
+
+            assert not isinstance(app.screen, NotificationCenterScreen)
+            assert app._notice_registry.get("dep:tavily") is None
+
     async def test_suppress_message_reloads_center_in_place(self) -> None:
         """Posting NotificationSuppressRequested refreshes the open center."""
         from deepagents_code.widgets.notification_center import (

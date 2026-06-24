@@ -238,6 +238,7 @@ if TYPE_CHECKING:
     from deepagents_code.widgets.ask_user import AskUserMenu
     from deepagents_code.widgets.model_selector import ModelSelectorScreen
     from deepagents_code.widgets.notification_center import (
+        NotificationEnterApiKeyRequested,
         NotificationSuppressRequested,
     )
     from deepagents_code.widgets.restart_prompt import RestartChoice
@@ -10440,6 +10441,43 @@ class DeepAgentsApp(App):
             # so the failure surfaces instead of vanishing into a worker.
             logger.warning(
                 "Failed to refresh notification center after suppress: %s",
+                exc,
+                exc_info=True,
+            )
+            self.notify(
+                f"Could not refresh notifications: {type(exc).__name__}: {exc}",
+                severity="warning",
+                timeout=6,
+                markup=False,
+            )
+
+    async def on_notification_enter_api_key_requested(
+        self,
+        message: NotificationEnterApiKeyRequested,
+    ) -> None:
+        """Open the API-key prompt over the center, then refresh it in place.
+
+        Keeping the center open means Esc in the prompt returns to the
+        notifications viewer instead of dismissing every modal.
+        """
+        from deepagents_code.widgets.notification_center import NotificationCenterScreen
+
+        message.stop()
+        entry = self._notice_registry.get(message.key)
+        if entry is None:
+            return
+        if not isinstance(entry.payload, MissingDepPayload):
+            self._log_unknown_action(entry, ActionId.ENTER_API_KEY)
+            return
+        await self._enter_service_api_key(entry, entry.payload)
+        screen = self.screen
+        if not isinstance(screen, NotificationCenterScreen):
+            return
+        try:
+            await screen.reload(self._notice_registry.list_all())
+        except Exception as exc:  # defend against dismiss/mount races
+            logger.warning(
+                "Failed to refresh notification center after API-key entry: %s",
                 exc,
                 exc_info=True,
             )

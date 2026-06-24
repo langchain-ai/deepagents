@@ -1,0 +1,59 @@
+libs/code/deepagents_code/widgets/subagent_panel.py
+  h_f78d33d4280f3f 1-54,60-66,68-76,82-89,91-108,114-116,122-124,130-132,138-151,155-166,170-272,279-312,314-333,339-343,349-353,355-365,367-371,377-383,389-405,411-420,425-515,521-540,547-551,553-621,627-635,641-678,684-699,706-715,721-742,748-759,765-790,796-799
+  s_fbb4039f70ae43::t_02b678ee7991bb 636-640
+  s_fbb4039f70ae43::t_25ecf9edb57f45 406-410
+  s_fbb4039f70ae43::t_eeec414391ba3e 743-747
+  s_fbb4039f70ae43::t_2a5c36fc2fe2da 791-795
+  s_fbb4039f70ae43::t_bae2dd4cb7e266 125-129
+  s_fbb4039f70ae43::t_0462b8483feb73 273-278
+  s_fbb4039f70ae43::t_0f2fd167d301e3 334-338
+  s_fbb4039f70ae43::t_28f2a1ab9073ac 622-626
+  s_fbb4039f70ae43::t_cb279d9c2877ad 77-81
+  s_fbb4039f70ae43::t_f107cda26302bf 109-113
+  s_fbb4039f70ae43::t_79d934ea132806 133-137
+  s_fbb4039f70ae43::t_b6ff528c96b74a 679-683
+  s_fbb4039f70ae43::t_47a43eb308cc9a 700-705
+  s_fbb4039f70ae43::t_c96ee85b77ac6c 716-720
+  s_fbb4039f70ae43::t_0da589fb5b308a 541-546
+  s_fbb4039f70ae43::t_dad33c0c71811e 760-764
+  s_fbb4039f70ae43::t_d082938ac1f08f 384-388
+  s_fbb4039f70ae43::t_cbec79b4b8041b 421-424
+  s_fbb4039f70ae43::t_d22045f6df1d52 516-520
+  s_fbb4039f70ae43::t_6c536a641ea6cf 117-121
+  s_fbb4039f70ae43::t_d5e7093b148734 372-376
+  s_fbb4039f70ae43::t_91329dd84afab2 344-348
+  s_fbb4039f70ae43::t_5e3e34e945a1f3 152-154
+  s_fbb4039f70ae43::t_bc4e5097cba503 167-169
+  s_fbb4039f70ae43::t_bdf75e1f11c14c 67,90,313,354,366,552
+  s_fbb4039f70ae43::t_1541b0ee0680e0 55-59
+libs/code/tests/unit_tests/test_subagent_panel.py
+  s_fbb4039f70ae43::t_97db764c85b64f 195-197
+  s_fbb4039f70ae43::t_d202665613925b 11
+  s_fbb4039f70ae43::t_7779d9a859a17f 10,17-21
+  s_fbb4039f70ae43::t_7258fe083efed6 297-299,308,311
+  s_fbb4039f70ae43::t_ec232d605e3c26 84-91
+  s_fbb4039f70ae43::t_2ad8cd8c423958 48
+  s_fbb4039f70ae43::t_01d5b2b2939196 150,170,173,184,186,199
+  s_fbb4039f70ae43::t_d791ad7e6332d0 1-9,12-16,22-47,49-83,92-149,151-169,171-172,174-183,185,187-194,198,200-296,300-307,309-310,312-337
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "ef61f3644b2498f13088ce7afc48f3f8bf62f2bd",
+  "prompts": {},
+  "humans": {
+    "h_f78d33d4280f3f": {
+      "author": "Colin Francis <colin.francis@langchain.dev>"
+    }
+  },
+  "sessions": {
+    "s_fbb4039f70ae43": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "70a2905b-8d2c-4e8e-a94c-0bad2c4435e0",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Colin Francis <colin.francis@langchain.dev>"
+    }
+  }
+}

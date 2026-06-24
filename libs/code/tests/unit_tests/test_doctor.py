@@ -8,11 +8,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from rich.console import Console
 
 from deepagents_code.doctor import (
     DiagnosticItem,
     DiagnosticSection,
+    _build_commit,
     _commit_hash,
     collect_sections,
     run_doctor_command,
@@ -174,6 +176,7 @@ class TestCommitHash:
         git.chmod(0o755)
 
         with (
+            patch("deepagents_code.doctor._build_commit", return_value=None),
             patch("shutil.which", return_value=str(git)),
             patch(
                 "subprocess.run",
@@ -189,12 +192,67 @@ class TestCommitHash:
     def test_missing_git_returns_unknown(self) -> None:
         """Missing Git should degrade to `unknown` without spawning a process."""
         with (
+            patch("deepagents_code.doctor._build_commit", return_value=None),
             patch("shutil.which", return_value=None),
             patch("subprocess.run") as run,
         ):
             assert _commit_hash("/tmp") == "unknown"
 
         run.assert_not_called()
+
+    def test_baked_commit_preferred_over_git(self) -> None:
+        """A build-stamped commit wins for a wheel and skips the live git probe."""
+        with (
+            patch("deepagents_code.doctor._build_commit", return_value="deadbee"),
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch("shutil.which") as which,
+            patch("subprocess.run") as run,
+        ):
+            assert _commit_hash("/tmp") == "deadbee"
+
+        which.assert_not_called()
+        run.assert_not_called()
+
+    def test_editable_install_ignores_baked_commit(self) -> None:
+        """An editable install ignores a (possibly stale) stamp and probes git."""
+        with (
+            patch("deepagents_code.doctor._build_commit", return_value="deadbee"),
+            patch("deepagents_code.config._is_editable_install", return_value=True),
+            patch("shutil.which", return_value=None),
+            patch("subprocess.run") as run,
+        ):
+            assert _commit_hash("/tmp") == "unknown"
+
+        run.assert_not_called()
+
+    def test_build_commit_missing_module(self) -> None:
+        """No generated module (editable/dev install) yields `None`."""
+        with patch.dict(sys.modules, {"deepagents_code._build_info": None}):
+            assert _build_commit() is None
+
+    def test_build_commit_reads_stamped_value(self) -> None:
+        """A generated module exposes its stamped commit."""
+        stub = SimpleNamespace(BUILD_COMMIT="abc1234")
+        with patch.dict(sys.modules, {"deepagents_code._build_info": stub}):
+            assert _build_commit() == "abc1234"
+
+    @pytest.mark.parametrize("value", ["", "   ", None])
+    def test_build_commit_blank_value_is_none(self, value: str | None) -> None:
+        """A present module with a blank stamp yields `None` (falls back to git)."""
+        stub = SimpleNamespace(BUILD_COMMIT=value)
+        with patch.dict(sys.modules, {"deepagents_code._build_info": stub}):
+            assert _build_commit() is None
+
+    def test_build_commit_corrupt_module_returns_none(self) -> None:
+        """A present-but-corrupt stamp degrades to `None` instead of crashing."""
+
+        class _Corrupt:
+            def __getattr__(self, name: str) -> str:
+                msg = "corrupt stamp"
+                raise ValueError(msg)
+
+        with patch.dict(sys.modules, {"deepagents_code._build_info": _Corrupt()}):
+            assert _build_commit() is None
 
 
 class TestRunDoctorCommand:

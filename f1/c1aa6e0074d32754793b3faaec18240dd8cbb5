@@ -1,0 +1,14 @@
+.github/RELEASING.md
+  h_9f69767fa5fabf 397
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "f1c1aa6e0074d32754793b3faaec18240dd8cbb5",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

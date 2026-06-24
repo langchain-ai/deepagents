@@ -2583,6 +2583,32 @@ def mark_auto_update_default_acknowledged() -> bool:
     return _write_update_state({"auto_update_default_acknowledged": True})
 
 
+def _note_install_baseline() -> None:
+    """Pre-acknowledge the auto-update default notice for a fresh install.
+
+    The migration notice (`should_announce_auto_update_default`) is intended to
+    warn users who ran dcode *before* auto-update became the opt-out default; a
+    brand-new install never experienced the old behavior, so the notice is
+    meaningless to it. Call this on the first launch ever (see
+    `should_show_whats_new`) so the notice never leaks into a new install — the
+    notice itself fires pre-TUI in `_run_startup_auto_update`.
+
+    Writes nothing when the user already set an explicit preference.
+    """
+    if is_auto_update_explicitly_set():
+        return
+    if not mark_auto_update_default_acknowledged():
+        # Fail-soft: the same unwritable state dir also drops the adjacent
+        # `seen_version` write, so the install stays "first run ever" and the
+        # stamp is retried next launch. Log the operation for context — the
+        # generic write warning in `_write_update_state` can't say which write
+        # failed when both fire back-to-back.
+        logger.debug(
+            "Could not stamp install baseline; the auto-update default notice "
+            "will be re-evaluated on the next launch",
+        )
+
+
 # ---------------------------------------------------------------------------
 # "What's new" tracking
 # ---------------------------------------------------------------------------
@@ -2603,7 +2629,11 @@ def should_show_whats_new() -> bool:
     """Return `True` if this is the first launch on a newer version."""
     seen = get_seen_version()
     if seen is None:
-        # First run ever — mark current as seen, don't show banner.
+        # First run ever — mark current as seen, don't show banner. This is the
+        # canonical fresh-install signal, so also pre-acknowledge the
+        # auto-update default migration notice (which only applies to users who
+        # predate the opt-out default) before it can fire on a later launch.
+        _note_install_baseline()
         mark_version_seen(__version__)
         return False
     try:

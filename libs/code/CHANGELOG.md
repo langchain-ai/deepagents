@@ -2,6 +2,28 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.22](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.21...deepagents-code==0.1.22) (2026-06-24)
+
+
+### Features
+
+* **code:** add LangSmith tracing config to `/auth` ([#4193](https://github.com/langchain-ai/deepagents/issues/4193)) ([8e62957](https://github.com/langchain-ai/deepagents/commit/8e6295791093c2ddfec7e6ac57f0df7f12048447))
+* **code:** auto-retry credentials-blocked startup after `/auth` ([#4176](https://github.com/langchain-ai/deepagents/issues/4176)) ([d10ba3d](https://github.com/langchain-ai/deepagents/commit/d10ba3dc162e47cc71df56b8e3d0000b6e0ed847))
+* **code:** improve onboarding Installed Integrations screen ([#4195](https://github.com/langchain-ai/deepagents/issues/4195)) ([0827bf1](https://github.com/langchain-ai/deepagents/commit/0827bf1b635b825121740ac8946dd6d98c815c7d))
+
+
+### Bug Fixes
+
+* **code:** exclude managed bin dir from agent picker ([#4190](https://github.com/langchain-ai/deepagents/issues/4190)) ([d869d1e](https://github.com/langchain-ai/deepagents/commit/d869d1e1fa8558510fb48e71f78fb74c69ca4840))
+* **code:** generic "missing credentials" in model switcher ([#4182](https://github.com/langchain-ai/deepagents/issues/4182)) ([456ce5c](https://github.com/langchain-ai/deepagents/commit/456ce5c2f5487a754d1fea7046e32c03b7e27a17))
+* **code:** hide "Recent" section during onboarding model selection ([#4198](https://github.com/langchain-ai/deepagents/issues/4198)) ([af882e4](https://github.com/langchain-ai/deepagents/commit/af882e4f6c859878e350d8a37bb75b7bc01bb453))
+* **code:** hide chat input action buttons in same frame as empty draft ([#4178](https://github.com/langchain-ai/deepagents/issues/4178)) ([f94d417](https://github.com/langchain-ai/deepagents/commit/f94d417d5ad9928db967777fe1d7bc2c37684fb9))
+* **code:** keep auth modal interactive after install-on-select ([#4187](https://github.com/langchain-ai/deepagents/issues/4187)) ([afbc56a](https://github.com/langchain-ai/deepagents/commit/afbc56a1d9dbe8a89015f4c2f90bb87547d5c1d4))
+* **code:** preserve uv tool context when installing extras ([#4201](https://github.com/langchain-ai/deepagents/issues/4201)) ([fcc616c](https://github.com/langchain-ai/deepagents/commit/fcc616cf9bc2bbc7b2dc2574ae8649e2f270dc53))
+* **code:** quiet uv installer output and require Xcode CLT on macOS ([#4180](https://github.com/langchain-ai/deepagents/issues/4180)) ([785c8d0](https://github.com/langchain-ai/deepagents/commit/785c8d0061114f8f3c457d4afc35a83bd405fc1b))
+* **code:** unpin uv self-updates and warn when a stale dcode shadows PATH ([#4185](https://github.com/langchain-ai/deepagents/issues/4185)) ([8ca0a18](https://github.com/langchain-ai/deepagents/commit/8ca0a185a15f800267cc057178a348fb5063df1e))
+* **code:** warn on `/trace` when thread has no messages ([#4162](https://github.com/langchain-ai/deepagents/issues/4162)) ([c338fc9](https://github.com/langchain-ai/deepagents/commit/c338fc914fcd383beb4b97c13f53dfb2684f8c90))
+
 ## [0.1.21](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.20...deepagents-code==0.1.21) (2026-06-23)
 
 ### Features

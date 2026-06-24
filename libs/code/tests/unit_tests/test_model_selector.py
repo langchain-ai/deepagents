@@ -239,8 +239,8 @@ class TestModelSelectorChrome:
             assert "Choose a Recommended Model" in str(title.content)
             assert "Curated models backed by evals." in str(description.content)
 
-    async def test_curated_selector_help_uses_skip_setup(self) -> None:
-        """Onboarding model selection should label Escape as setup skip."""
+    async def test_curated_selector_help_hides_esc_hint(self) -> None:
+        """Onboarding model selection keeps Escape bound but hides its hint."""
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
             screen = ModelSelectorScreen(curated=True)
@@ -249,7 +249,7 @@ class TestModelSelectorChrome:
 
             help_text = screen.query_one(".model-selector-help", Static)
 
-            assert "Esc skip setup" in str(help_text.content)
+            assert "Esc skip setup" not in str(help_text.content)
             assert "Esc cancel" not in str(help_text.content)
 
     async def test_standard_selector_help_uses_cancel(self) -> None:
@@ -1478,8 +1478,8 @@ class TestFormatAuthIndicator:
 
         assert indicator == "local provider"
 
-    def test_missing_auth_names_env_var(self) -> None:
-        """Missing credentials should show the missing env var name."""
+    def test_missing_auth_uses_generic_message(self) -> None:
+        """Missing credentials show a generic label, not the env var name."""
         indicator = ModelSelectorScreen._format_auth_indicator(
             ProviderAuthStatus(
                 state=ProviderAuthState.MISSING,
@@ -1489,7 +1489,8 @@ class TestFormatAuthIndicator:
             get_glyphs(),
         )
 
-        assert "missing ANTHROPIC_API_KEY" in indicator
+        assert "missing credentials" in indicator
+        assert "ANTHROPIC_API_KEY" not in indicator
 
     def test_missing_auth_without_env_var_uses_generic_message(self) -> None:
         """MISSING without env_var falls back to a generic missing-creds label."""

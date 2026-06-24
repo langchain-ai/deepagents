@@ -562,14 +562,14 @@ def run_oolong_case(
 
     # Score: the official OOLONG per-example score (binary for most answer
     # types; NUMERIC gets partial credit `0.75 ** |gold - pred|`). The paper's
-    # reported metric is the mean of this score — there is no separate binary
-    # "correctness", so we log exactly one `score` to match. `agent_steps` /
-    # `tool_call_requests` are harness telemetry, not part of the OOLONG metric.
+    # reported metric is the mean of this score, so we log exactly one `score`.
+    #
+    # We deliberately do NOT log root-level `agent_steps` / `tool_call_requests`:
+    # the root trajectory only sees the orchestrator's own steps, so for the
+    # code_interpreter arm all the subagent work happens inside `eval` (via the
+    # QuickJS `task()` bridge) and is invisible here — making those counts
+    # asymmetric across arms. Efficiency (subagent dispatches, LLM calls, tokens,
+    # latency) is measured post-hoc from the LangSmith run tree instead.
     # Soft-scored: logged as feedback, never `pytest.fail` (see above).
     score = _oolong_score(trajectory.answer, example.gold_answers, example.answer_type)
     t.log_feedback(key="score", score=score)
-    t.log_feedback(key="agent_steps", score=len(trajectory.steps))
-    t.log_feedback(
-        key="tool_call_requests",
-        score=sum(len(step.action.tool_calls) for step in trajectory.steps),
-    )

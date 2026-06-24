@@ -8870,6 +8870,184 @@ class TestDeferredActions:
             assert retried is False
             app._retry_startup_with_model.assert_not_awaited()  # ty: ignore
 
+    async def test_resume_after_auth_prefers_deferred_start(self) -> None:
+        """A deferred first launch wins; the retry path must not also fire."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._maybe_start_deferred_server_from_default = AsyncMock(  # ty: ignore
+                return_value=True,
+            )
+            app._maybe_retry_startup_after_auth_change = AsyncMock()  # ty: ignore
+
+            await app._resume_server_after_auth_change()
+
+            app._maybe_start_deferred_server_from_default.assert_awaited_once()  # ty: ignore
+            app._maybe_retry_startup_after_auth_change.assert_not_awaited()  # ty: ignore
+
+    async def test_resume_after_auth_falls_back_to_retry(self) -> None:
+        """No deferred launch pending falls through to the retry path."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._maybe_start_deferred_server_from_default = AsyncMock(  # ty: ignore
+                return_value=False,
+            )
+            app._maybe_retry_startup_after_auth_change = AsyncMock()  # ty: ignore
+
+            await app._resume_server_after_auth_change()
+
+            app._maybe_start_deferred_server_from_default.assert_awaited_once()  # ty: ignore
+            app._maybe_retry_startup_after_auth_change.assert_awaited_once()  # ty: ignore
+
+    async def test_auth_change_retry_resolves_default_when_name_absent(self) -> None:
+        """Missing `model_name` falls back to the configured default spec."""
+        from deepagents_code.model_config import (
+            ProviderAuthSource,
+            ProviderAuthState,
+            ProviderAuthStatus,
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # No `model_name` and no `model_params` — exercises the default-spec
+            # fallback and the `extra_kwargs=None` forwarding together.
+            app._server_kwargs = {}
+            app._server_startup_error = "missing ANTHROPIC_API_KEY"
+            app._server_startup_missing_credentials_provider = "anthropic"
+            app._retry_startup_with_model = AsyncMock()  # ty: ignore
+
+            with (
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=ProviderAuthStatus(
+                        state=ProviderAuthState.CONFIGURED,
+                        provider="anthropic",
+                        source=ProviderAuthSource.STORED,
+                    ),
+                ),
+                patch(
+                    "deepagents_code.config._get_default_model_spec",
+                    return_value="anthropic:claude-opus-4-7",
+                ),
+            ):
+                retried = await app._maybe_retry_startup_after_auth_change()
+
+            assert retried is True
+            app._retry_startup_with_model.assert_awaited_once_with(  # ty: ignore
+                "anthropic:claude-opus-4-7",
+                extra_kwargs=None,
+            )
+
+    async def test_auth_change_retry_surfaces_malformed_default_config(self) -> None:
+        """A malformed default-model config is surfaced, not silently dropped."""
+        from deepagents_code.model_config import (
+            ModelConfigError,
+            ProviderAuthSource,
+            ProviderAuthState,
+            ProviderAuthStatus,
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {}
+            app._server_startup_error = "missing ANTHROPIC_API_KEY"
+            app._server_startup_missing_credentials_provider = "anthropic"
+            app._retry_startup_with_model = AsyncMock()  # ty: ignore
+            app._mount_message = AsyncMock()  # ty: ignore
+
+            with (
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=ProviderAuthStatus(
+                        state=ProviderAuthState.CONFIGURED,
+                        provider="anthropic",
+                        source=ProviderAuthSource.STORED,
+                    ),
+                ),
+                patch(
+                    "deepagents_code.config._get_default_model_spec",
+                    side_effect=ModelConfigError("unknown provider 'bogus'"),
+                ),
+            ):
+                retried = await app._maybe_retry_startup_after_auth_change()
+
+            assert retried is False
+            app._retry_startup_with_model.assert_not_awaited()  # ty: ignore
+            app._mount_message.assert_awaited_once()  # ty: ignore
+            mounted = app._mount_message.await_args.args[0]  # ty: ignore
+            assert isinstance(mounted, ErrorMessage)
+
+    async def test_auth_change_retry_silent_without_default_credentials(self) -> None:
+        """No usable default credentials means a quiet no-op, no error message."""
+        from deepagents_code.model_config import (
+            NoCredentialsConfiguredError,
+            ProviderAuthSource,
+            ProviderAuthState,
+            ProviderAuthStatus,
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {}
+            app._server_startup_error = "missing ANTHROPIC_API_KEY"
+            app._server_startup_missing_credentials_provider = "anthropic"
+            app._retry_startup_with_model = AsyncMock()  # ty: ignore
+            app._mount_message = AsyncMock()  # ty: ignore
+
+            with (
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=ProviderAuthStatus(
+                        state=ProviderAuthState.CONFIGURED,
+                        provider="anthropic",
+                        source=ProviderAuthSource.STORED,
+                    ),
+                ),
+                patch(
+                    "deepagents_code.config._get_default_model_spec",
+                    side_effect=NoCredentialsConfiguredError("no creds"),
+                ),
+            ):
+                retried = await app._maybe_retry_startup_after_auth_change()
+
+            assert retried is False
+            app._retry_startup_with_model.assert_not_awaited()  # ty: ignore
+            app._mount_message.assert_not_awaited()  # ty: ignore
+
+    async def test_auth_change_no_retry_without_server_kwargs(self) -> None:
+        """A pending failure with no app-owned server kwargs cannot retry."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = None
+            app._server_startup_error = "missing ANTHROPIC_API_KEY"
+            app._server_startup_missing_credentials_provider = "anthropic"
+            app._retry_startup_with_model = AsyncMock()  # ty: ignore
+
+            retried = await app._maybe_retry_startup_after_auth_change()
+
+            assert retried is False
+            app._retry_startup_with_model.assert_not_awaited()  # ty: ignore
+
+    async def test_auth_change_no_retry_when_failure_not_credentials(self) -> None:
+        """A non-credentials startup failure has no blocking provider to retry."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": "anthropic:claude-opus-4-7"}
+            app._server_startup_error = "some other startup failure"
+            app._server_startup_missing_credentials_provider = None
+            app._retry_startup_with_model = AsyncMock()  # ty: ignore
+
+            retried = await app._maybe_retry_startup_after_auth_change()
+
+            assert retried is False
+            app._retry_startup_with_model.assert_not_awaited()  # ty: ignore
+
     async def test_failing_deferred_action_does_not_block_others(self) -> None:
         """A failing deferred action should not prevent subsequent ones."""
         app = DeepAgentsApp()

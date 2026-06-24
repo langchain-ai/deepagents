@@ -9794,7 +9794,7 @@ class DeepAgentsApp(App):
 
         auth_status = get_provider_auth_status(provider)
         if auth_status.blocks_start:
-            # Key still missing/invalid — don't loop back into the same failure.
+            # Key still missing — don't loop back into the same failure.
             return False
 
         model_spec = self._server_kwargs.get("model_name")
@@ -9807,7 +9807,13 @@ class DeepAgentsApp(App):
 
             try:
                 model_spec = _get_default_model_spec()
-            except (ModelConfigError, NoCredentialsConfiguredError):
+            except NoCredentialsConfiguredError:
+                # No usable default to fall back to — nothing to retry.
+                return False
+            except ModelConfigError as exc:
+                # Malformed config is actionable; surface it instead of
+                # silently doing nothing after the user closes `/auth`.
+                await self._mount_message(ErrorMessage(str(exc)))
                 return False
 
         extra_kwargs = self._server_kwargs.get("model_params")

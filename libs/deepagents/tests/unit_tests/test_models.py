@@ -1194,6 +1194,7 @@ class TestBuiltInProfiles:
         assert profile is not None
         assert profile.system_prompt_suffix
         assert "does not support direct image input" in profile.system_prompt_suffix
+        assert "Do not call `read_file` on image or video files" in profile.system_prompt_suffix
         assert "shell commands or scripts" in profile.system_prompt_suffix
 
 

@@ -836,7 +836,11 @@ fi
 # "Run: dcode" footer below isn't a dead end.
 if [ "$VERIFY_OK" = true ] && [ "$DCODE_ON_PATH" = false ]; then
   log_warn "${DCODE_NAME} isn't on your PATH yet${DCODE_BIN_DISPLAY:+ (installed at ${DCODE_BIN_DISPLAY})}. Restart your shell, or run:"
-  log_warn "  source ~/.local/bin/env"
+  if [ -f "${HOME}/.local/bin/env" ]; then
+    log_warn "  source ~/.local/bin/env"
+  else
+    log_warn "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+  fi
 fi
 
 # ---------------------------------------------------------------------------

@@ -1169,6 +1169,43 @@ def test_install_script_linux_skips_clt_check(tmp_path: Path) -> None:
     assert uv_args.exists()
 
 
+def _invoke_with_local_dcode_not_on_path(
+    tmp_path: Path, *, create_env_file: bool = False
+) -> subprocess.CompletedProcess[str]:
+    """Run with a working `dcode` in ~/.local/bin but outside the original PATH."""
+    bin_dir, home, uv = _write_fake_tools(tmp_path, installed_version=None)
+
+    local_bin = home / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    dcode = local_bin / "dcode"
+    dcode.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "${1:-}" = "-v" ]; then printf "deepagents-code 0.1.0\\n"; exit 0; fi\n'
+        "exit 0\n"
+    )
+    _make_executable(dcode)
+    if create_env_file:
+        (local_bin / "env").write_text('export PATH="$HOME/.local/bin:$PATH"\n')
+
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+        "PATH": f"{bin_dir}{os.pathsep}{_path_without_dcode()}",
+        "UV_BIN": str(uv),
+        "DEEPAGENTS_CODE_SKIP_OPTIONAL": "1",
+    }
+    return subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
 def test_install_script_warns_when_dcode_installed_but_not_on_path(
     tmp_path: Path,
 ) -> None:
@@ -1180,39 +1217,20 @@ def test_install_script_warns_when_dcode_installed_but_not_on_path(
     tell the user the binary isn't callable as `dcode` yet and how to fix it,
     rather than printing a "Run: dcode" footer that dead-ends.
     """
-    bin_dir, home, uv = _write_fake_tools(tmp_path, installed_version=None)
+    proc = _invoke_with_local_dcode_not_on_path(tmp_path)
 
-    # Place a working dcode in ~/.local/bin only — not on PATH (bin_dir).
-    local_bin = home / ".local" / "bin"
-    local_bin.mkdir(parents=True)
-    dcode = local_bin / "dcode"
-    dcode.write_text(
-        "#!/usr/bin/env bash\n"
-        'if [ "${1:-}" = "-v" ]; then printf "deepagents-code 0.1.0\\n"; exit 0; fi\n'
-        "exit 0\n"
-    )
-    _make_executable(dcode)
+    assert proc.returncode == 0
+    combined = proc.stdout + proc.stderr
+    assert "isn't on your PATH yet" in combined
+    assert 'export PATH="$HOME/.local/bin:$PATH"' in combined
+    assert "source ~/.local/bin/env" not in combined
 
-    # Real PATH minus any dir already providing dcode (e.g. the test venv's bin),
-    # so the only resolvable binary is the ~/.local/bin fallback — the case under
-    # test — while keeping the system coreutils dirs the script needs.
-    env = {
-        **os.environ,
-        "HOME": str(home),
-        "XDG_CACHE_HOME": str(home / ".cache"),
-        "PATH": f"{bin_dir}{os.pathsep}{_path_without_dcode()}",
-        "UV_BIN": str(uv),
-        "DEEPAGENTS_CODE_SKIP_OPTIONAL": "1",
-    }
-    proc = subprocess.run(
-        ["bash", str(SCRIPT)],
-        env=env,
-        check=False,
-        capture_output=True,
-        text=True,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+
+def test_install_script_uses_uv_env_file_path_hint_when_available(
+    tmp_path: Path,
+) -> None:
+    """When uv wrote ~/.local/bin/env, the not-on-PATH hint points to it."""
+    proc = _invoke_with_local_dcode_not_on_path(tmp_path, create_env_file=True)
 
     assert proc.returncode == 0
     combined = proc.stdout + proc.stderr

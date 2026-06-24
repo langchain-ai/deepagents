@@ -773,6 +773,8 @@ def _safe_suffix(file_path: str, media_type: str) -> str:
         return ".jpg"
     if media_type == "voice":
         return ".ogg"
+    if media_type == "video":
+        return ".mp4"
     return ".bin"
 
 
@@ -977,6 +979,7 @@ def _extract_media_info(msg: Mapping[str, object]) -> _TelegramMediaInfo | None:
     """
     photo = msg.get("photo")
     voice = msg.get("voice") or msg.get("audio")
+    video = msg.get("video") or msg.get("video_note")
     document = msg.get("document")
     if isinstance(photo, list) and photo:
         file_id = _largest_photo_file_id(photo)
@@ -991,17 +994,39 @@ def _extract_media_info(msg: Mapping[str, object]) -> _TelegramMediaInfo | None:
                 file_id=file_id,
                 mime_type=optional_str(values.get("mime_type")),
             )
-    if isinstance(document, dict):
-        values = cast("Mapping[str, object]", document)
+    if isinstance(video, dict):
+        values = cast("Mapping[str, object]", video)
         file_id = values.get("file_id")
         if isinstance(file_id, str):
             return _TelegramMediaInfo(
-                media_type="document",
+                media_type="video",
                 file_id=file_id,
                 file_name=optional_str(values.get("file_name")),
                 mime_type=optional_str(values.get("mime_type")),
             )
+    if isinstance(document, dict):
+        values = cast("Mapping[str, object]", document)
+        file_id = values.get("file_id")
+        if isinstance(file_id, str):
+            file_name = optional_str(values.get("file_name"))
+            mime_type = optional_str(values.get("mime_type"))
+            return _TelegramMediaInfo(
+                media_type=_document_media_type(file_name=file_name, mime_type=mime_type),
+                file_id=file_id,
+                file_name=file_name,
+                mime_type=mime_type,
+            )
     return None
+
+
+def _document_media_type(*, file_name: str | None, mime_type: str | None) -> str:
+    if mime_type is not None and mime_type.startswith("video/"):
+        return "video"
+    if file_name is not None:
+        guessed = mimetypes.guess_type(file_name)[0]
+        if guessed is not None and guessed.startswith("video/"):
+            return "video"
+    return "document"
 
 
 def _photo_size(size: dict[str, object]) -> int:

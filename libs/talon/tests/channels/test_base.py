@@ -147,6 +147,24 @@ def test_message_with_media_paths_preserves_provider_media_presence() -> None:
     assert with_media.metadata["has_media"] is True
 
 
+def test_message_with_media_paths_adds_voice_path_only_for_voice() -> None:
+    voice = message_with_media_paths(
+        ChannelMessage(conversation_id="chat", text="", metadata={"media_type": "voice"}),
+        media_paths=["voice.ogg"],
+    )
+    video = message_with_media_paths(
+        ChannelMessage(
+            conversation_id="chat",
+            text="",
+            metadata={"media_type": "video", "voice_path": None},
+        ),
+        media_paths=["clip.mp4"],
+    )
+
+    assert voice.metadata["voice_path"] == "voice.ogg"
+    assert "voice_path" not in video.metadata
+
+
 def test_max_media_bytes_from_env_defaults_to_one_gb() -> None:
     assert max_media_bytes_from_env({}) == DEFAULT_MAX_MEDIA_BYTES
 
@@ -172,7 +190,7 @@ async def test_send_with_retry_treats_none_return_as_success() -> None:
 async def test_send_with_retry_treats_none_return_as_success_on_retry() -> None:
     calls = 0
 
-    async def flaky_legacy_send() -> None:
+    async def flaky_legacy_send() -> SendResult | None:
         nonlocal calls
         calls += 1
         if calls == 1:

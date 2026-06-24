@@ -81,11 +81,12 @@ def build_inbound_text(text: str, metadata: dict[str, object]) -> str:
         parts.extend(_document_parts(media_paths))
     elif media_type == "image":
         parts.extend(_image_fallback_parts(media_paths))
+    elif media_type == "video":
+        parts.extend(_binary_media_parts(media_paths, media_type="video"))
     elif media_type in {"voice", "audio"}:
         return text
     else:
-        names = ", ".join(path.name for path in media_paths)
-        parts.append(f"_(Received unsupported WhatsApp media attachment: {names}.)_")
+        parts.extend(_binary_media_parts(media_paths, media_type="media"))
 
     return "\n\n".join(part for part in parts if part.strip()) or text
 
@@ -266,6 +267,10 @@ def _image_fallback_parts(paths: list[Path]) -> list[str]:
         if size > MAX_INBOUND_IMAGE_BYTES:
             parts.append(f"_(Image attachment is too large to inspect: {path.name}.)_")
     return parts
+
+
+def _binary_media_parts(paths: list[Path], *, media_type: str) -> list[str]:
+    return [f"_(Received {media_type} attachment: {path}.)_" for path in paths]
 
 
 def _media_paths(metadata: dict[str, object]) -> list[Path]:

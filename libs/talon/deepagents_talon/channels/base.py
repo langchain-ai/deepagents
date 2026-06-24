@@ -300,7 +300,10 @@ def message_with_media_paths(
         metadata["media_paths"] = paths
         metadata["media_path"] = paths[0]
         metadata["media_mime_types"] = types
-        metadata["voice_path"] = paths[0] if metadata.get("media_type") == "voice" else None
+        if metadata.get("media_type") == "voice":
+            metadata["voice_path"] = paths[0]
+        else:
+            metadata.pop("voice_path", None)
     return replace(message, metadata=metadata)
 
 

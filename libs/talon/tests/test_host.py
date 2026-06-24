@@ -310,6 +310,35 @@ async def test_host_passes_inbound_photo_as_model_content(tmp_path: Path) -> Non
     assert content[1]["type"] == "image_url"
 
 
+async def test_host_passes_inbound_video_path_in_text(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    video = tmp_path / "inbound.mp4"
+    video.write_bytes(b"video-bytes")
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(
+            conversation_id="chat",
+            text="watch this",
+            metadata={
+                "media_type": "video",
+                "media_paths": [str(video)],
+                "media_mime_types": ["video/mp4"],
+            },
+        ),
+    )
+    await _wait_for_request(agent, f"watch this\n\n_(Received video attachment: {video}.)_")
+    await host.stop()
+
+    request = agent.requests[0]
+    assert "unsupported" not in request.text
+    assert request.metadata["media_type"] == "video"
+    assert request.metadata["media_paths"] == [str(video)]
+
+
 async def test_host_routes_tool_approval_reply_to_pending_run(tmp_path: Path) -> None:
     channel = RecordingChannel()
     agent = ApprovalAgent()

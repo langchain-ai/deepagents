@@ -73,6 +73,10 @@ class RecordingTransport:
             file_id = params.get("file_id")
             if file_id == "voice123":
                 file_path = "voice/file.oga"
+            elif file_id in {"video123", "note123"}:
+                file_path = "videos/file.mp4"
+            elif file_id == "docvideo123":
+                file_path = "documents/clip.mp4"
             elif file_id == "doc123":
                 file_path = "documents/report.pdf"
             else:
@@ -120,6 +124,8 @@ def _make_update(  # noqa: PLR0913  # test helper with many optional fields
     message_id: int = 10,
     photo: list | None = None,
     voice: dict | None = None,
+    video: dict | None = None,
+    video_note: dict | None = None,
     document: dict | None = None,
 ) -> dict[str, object]:
     message: dict[str, object] = {
@@ -132,6 +138,10 @@ def _make_update(  # noqa: PLR0913  # test helper with many optional fields
         message["photo"] = photo
     if voice is not None:
         message["voice"] = voice
+    if video is not None:
+        message["video"] = video
+    if video_note is not None:
+        message["video_note"] = video_note
     if document is not None:
         message["document"] = document
     return {"update_id": update_id, "message": message}
@@ -869,6 +879,55 @@ async def test_channel_parses_inbound_media(
                 "suffix": ".pdf",
             },
         ),
+        (
+            "video",
+            _make_update(
+                chat_id=111,
+                sender_id=111,
+                text="",
+                video={
+                    "file_id": "video123",
+                    "file_name": "clip.mp4",
+                    "mime_type": "video/mp4",
+                },
+            ),
+            {
+                "media_type": "video",
+                "file_id": "video123",
+                "media_mime_types": ["video/mp4"],
+                "suffix": ".mp4",
+            },
+        ),
+        (
+            "video_note",
+            _make_update(
+                chat_id=111,
+                sender_id=111,
+                text="",
+                video_note={"file_id": "note123", "duration": 8, "length": 240},
+            ),
+            {"media_type": "video", "file_id": "note123", "suffix": ".mp4"},
+        ),
+        (
+            "document_video",
+            _make_update(
+                chat_id=111,
+                sender_id=111,
+                text="",
+                document={
+                    "file_id": "docvideo123",
+                    "file_name": "clip.mp4",
+                    "mime_type": "video/mp4",
+                },
+            ),
+            {
+                "media_type": "video",
+                "file_id": "docvideo123",
+                "file_name": "clip.mp4",
+                "media_mime_types": ["video/mp4"],
+                "suffix": ".mp4",
+            },
+        ),
     )
 
     for name, update, expected in cases:
@@ -894,6 +953,8 @@ async def test_channel_parses_inbound_media(
             assert metadata["media_mime_types"] == expected["media_mime_types"]
         if expected.get("voice_path") is True:
             assert metadata["voice_path"] == expected_path
+        else:
+            assert "voice_path" not in metadata
         media_path = Path(cast("str", metadata["media_path"]))
         assert await asyncio.to_thread(media_path.read_bytes) == b"media-bytes"
 

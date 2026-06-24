@@ -27,6 +27,7 @@ from deepagents_code.update_check import (
     _extract_release_times,
     _install_extra_uv_tool_command,
     _latest_from_releases,
+    _note_install_baseline,
     _parse_version,
     _uv_tool_bin_dir,
     cleanup_update_logs,
@@ -3687,6 +3688,55 @@ class TestAutoUpdateDefaultMigration:
         config_path.write_text("not [ valid toml", encoding="utf-8")
         assert is_auto_update_explicitly_set() is False
 
+    def test_baseline_acknowledges_implicit_default(
+        self,
+        config_path,  # noqa: ARG002
+        state_file,  # noqa: ARG002
+    ) -> None:
+        """`_note_install_baseline` pre-acknowledges the implicit-default notice.
+
+        On a fresh install the migration notice has no meaning, so stamping the
+        baseline suppresses it.
+        """
+        import os
+
+        os.environ.pop("DEEPAGENTS_CODE_AUTO_UPDATE", None)
+        assert should_announce_auto_update_default() is True
+        _note_install_baseline()
+        assert should_announce_auto_update_default() is False
+
+    def test_baseline_skips_when_explicitly_set(self, config_path, state_file) -> None:  # noqa: ARG002
+        """An explicit preference means no migration scenario, so no stamp.
+
+        With an explicit choice the notice is already suppressed; the baseline
+        must not record an acknowledgement. Asserting on state *content* (rather
+        than file existence) keeps the test robust to unrelated state another
+        code path might write to the same file.
+        """
+        with patch.dict("os.environ", {"DEEPAGENTS_CODE_AUTO_UPDATE": "1"}):
+            _note_install_baseline()
+        if state_file.exists():
+            state = json.loads(state_file.read_text(encoding="utf-8"))
+            assert "auto_update_default_acknowledged" not in state
+
+    def test_baseline_tolerates_write_failure(self, config_path, tmp_path) -> None:  # noqa: ARG002
+        """The fresh-install baseline stays fail-soft when the state write fails.
+
+        An unwritable state dir must not crash startup; the stamp is simply
+        retried on the next launch (see `should_show_whats_new`).
+        """
+        import os
+
+        os.environ.pop("DEEPAGENTS_CODE_AUTO_UPDATE", None)
+        # Point the state file beneath an existing *file* so the parent
+        # `mkdir`/write raises `OSError`, simulating an unwritable state dir.
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a directory", encoding="utf-8")
+        with patch(
+            "deepagents_code.update_check.UPDATE_STATE_FILE", blocker / "state.json"
+        ):
+            _note_install_baseline()  # must not raise
+
     def test_mark_tolerates_write_failure(self, config_path, tmp_path) -> None:  # noqa: ARG002
         """A failed acknowledgement write returns `False` without raising.
 
@@ -3915,8 +3965,16 @@ class TestShouldShowWhatsNew:
         with patch("deepagents_code.update_check.UPDATE_STATE_FILE", path):
             yield path
 
-    def test_first_run_returns_false_and_marks(self, state_file) -> None:
-        """First run: returns False and writes current version as seen."""
+    def test_first_run_returns_false_and_marks(
+        self,
+        state_file,
+        config_path,  # noqa: ARG002
+    ) -> None:
+        """First run: returns False and writes current version as seen.
+
+        Injects `config_path` so the first-run baseline's explicit-preference
+        check reads a clean temp config instead of the developer's real one.
+        """
         from deepagents_code.update_check import should_show_whats_new
 
         with patch("deepagents_code.update_check.__version__", "1.0.0"):
@@ -3953,3 +4011,54 @@ class TestShouldShowWhatsNew:
         assert should_notify_update("2.0.0") is False
         # Notification throttle still works
         assert should_notify_update("2.0.0") is False
+
+    def test_first_run_suppresses_auto_update_notice(
+        self,
+        state_file,
+        config_path,  # noqa: ARG002
+    ) -> None:
+        """A fresh install's first run pre-acknowledges the migration notice.
+
+        The auto-update default notice only applies to users who predate the
+        opt-out default, so a brand-new install must never see it.
+        """
+        import os
+
+        from deepagents_code.update_check import should_show_whats_new
+
+        os.environ.pop("DEEPAGENTS_CODE_AUTO_UPDATE", None)
+        assert should_announce_auto_update_default() is True
+        with patch("deepagents_code.update_check.__version__", "1.0.0"):
+            assert should_show_whats_new() is False
+        assert should_announce_auto_update_default() is False
+        # The baseline write must not clobber the adjacent `seen_version` write;
+        # both land in the same state file on first run.
+        data = json.loads(state_file.read_text(encoding="utf-8"))
+        assert data["seen_version"] == "1.0.0"
+
+    def test_existing_install_still_sees_notice(
+        self,
+        state_file,  # noqa: ARG002
+        config_path,  # noqa: ARG002
+    ) -> None:
+        """An upgrade for an existing install does not pre-acknowledge.
+
+        When a prior `seen_version` already exists, the first-run baseline does
+        not fire, so a returning user still gets the one-time migration notice.
+        """
+        import os
+
+        from deepagents_code.update_check import should_show_whats_new
+
+        os.environ.pop("DEEPAGENTS_CODE_AUTO_UPDATE", None)
+        mark_version_seen("1.0.0")
+        with patch("deepagents_code.update_check.__version__", "2.0.0"):
+            assert should_show_whats_new() is True
+        assert should_announce_auto_update_default() is True
+
+    @pytest.fixture
+    def config_path(self, tmp_path):
+        """Override DEFAULT_CONFIG_PATH so explicit-preference checks are clean."""
+        path = tmp_path / "config.toml"
+        with patch("deepagents_code.update_check.DEFAULT_CONFIG_PATH", path):
+            yield path

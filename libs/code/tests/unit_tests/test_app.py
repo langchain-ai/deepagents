@@ -1123,6 +1123,35 @@ class TestStartupSequence:
         )
         mark_complete.assert_called_once_with()
 
+    async def test_prompt_launch_tavily_surfaces_store_warnings(self) -> None:
+        """Onboarding Tavily credential saves should surface chmod warnings."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._push_screen_wait = AsyncMock(return_value="tvly-key")  # ty: ignore
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        with (
+            patch("deepagents_code.config.settings", SimpleNamespace(has_tavily=False)),
+            patch(
+                "deepagents_code.auth_store.set_stored_key",
+                return_value=SimpleNamespace(
+                    warnings=("credential file is not private",)
+                ),
+            ) as set_stored_key,
+            patch(
+                "deepagents_code.model_config.apply_stored_service_credentials"
+            ) as apply_credentials,
+        ):
+            await app._prompt_launch_tavily()
+
+        set_stored_key.assert_called_once_with("tavily", "tvly-key")
+        notify_mock.assert_called_once_with(
+            "credential file is not private",
+            severity="warning",
+            markup=False,
+        )
+        apply_credentials.assert_called_once_with()
+
     async def test_launch_init_name_memory_does_not_delay_model_prompt(self) -> None:
         """Writing the optional name should not hold the dependency/model transition."""
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")

@@ -6224,10 +6224,12 @@ class DeepAgentsApp(App):
         from deepagents_code import auth_store
 
         try:
-            await asyncio.to_thread(auth_store.set_stored_key, "tavily", key)
+            outcome = await asyncio.to_thread(auth_store.set_stored_key, "tavily", key)
         except (ValueError, RuntimeError, OSError):
             logger.warning("Could not store the onboarding Tavily key", exc_info=True)
             return
+        for warning in outcome.warnings:
+            self.notify(warning, severity="warning", markup=False)
 
         from deepagents_code.model_config import apply_stored_service_credentials
 

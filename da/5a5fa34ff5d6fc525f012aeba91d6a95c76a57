@@ -1,0 +1,21 @@
+libs/code/deepagents_code/update_check.py
+  s_1d40a2c20abdda::t_65e90dfa1a1a76 1884-1885
+  s_1d40a2c20abdda::t_c690f5b5e709ad 1892-1895
+  s_1d40a2c20abdda::t_43807d8ce71765 2151-2156,2159-2163
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "da5a5fa34ff5d6fc525f012aeba91d6a95c76a57",
+  "prompts": {},
+  "sessions": {
+    "s_1d40a2c20abdda": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aa2890c6-e0c8-48fc-aa7f-053939268490",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

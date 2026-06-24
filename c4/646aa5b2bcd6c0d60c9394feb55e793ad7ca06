@@ -1,0 +1,36 @@
+.github/workflows/check_sdk_pin.yml
+  s_6925b9c57d5a6d::t_6408b3aae81c11 55,57
+  s_1e0cf2040fd63c::t_b7f8efa6a7d288 61
+.github/scripts/test_check_sdk_pin.py
+  s_6925b9c57d5a6d::t_21f3029a3422d4 62
+  s_6925b9c57d5a6d::t_daa67f12ea92ec 77-99,105
+.github/workflows/release.yml
+  s_1e0cf2040fd63c::t_b7f8efa6a7d288 872
+.github/scripts/check_sdk_pin.py
+  s_6925b9c57d5a6d::t_b7b56a62dbc42e 24-29
+  s_6925b9c57d5a6d::t_ba7d5477324f00 56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "c4646aa5b2bcd6c0d60c9394feb55e793ad7ca06",
+  "prompts": {},
+  "sessions": {
+    "s_1e0cf2040fd63c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019efb4b-0c76-76b0-8dcf-d0ef0c176893",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    },
+    "s_6925b9c57d5a6d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f7d91e7d-ddfa-4bf4-8ffd-f68c7fdedbf8",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

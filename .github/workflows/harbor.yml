@@ -34,7 +34,13 @@ on:
         options:
           - "terminal-bench/terminal-bench-2"
           - "terminal-bench/terminal-bench-2-1"
+          - "sierra-research/tau3-bench"
           - "clbench"
+      dataset_override:
+        description: "[Harbor only] Override: arbitrary Harbor dataset ref (e.g. 'owner/dataset'). Takes priority over the dataset dropdown when non-empty. Ignored when dataset=clbench."
+        required: false
+        default: ""
+        type: string
       models:
         description: "[Harbor + clbench] Model set to run. Set definitions: libs/evals/MODEL_GROUPS.md. Leave empty to use models_override instead. Defaults to all models if both are empty."
         required: false
@@ -139,6 +145,7 @@ on:
         options:
           - dcode
           - bare
+          - tau3
       n_tasks:
         description: "[Harbor only] Maximum number of tasks to run (0 = all). Ignored when dataset=clbench — use include_tasks to pick clbench tasks."
         required: true
@@ -177,7 +184,7 @@ permissions:
 
 env:
   UV_NO_SYNC: "true"
-  HARBOR_DATASET: ${{ inputs.dataset || 'terminal-bench/terminal-bench-2' }}
+  HARBOR_DATASET: ${{ inputs.dataset_override || inputs.dataset || 'terminal-bench/terminal-bench-2' }}
 
 jobs:
   prep:
@@ -196,7 +203,7 @@ jobs:
           MODELS_OVERRIDE: ${{ inputs.models_override || '(empty)' }}
           SANDBOX_ENV: ${{ inputs.sandbox_env }}
           AGENT_IMPL: ${{ inputs.agent_impl }}
-          DATASET: ${{ inputs.dataset || 'terminal-bench/terminal-bench-2' }}
+          DATASET: ${{ inputs.dataset_override || inputs.dataset || 'terminal-bench/terminal-bench-2' }}
           N_TASKS: ${{ inputs.n_tasks }}
           INCLUDE_TASKS: ${{ inputs.include_tasks }}
           ROLLOUTS_PER_TASK: ${{ inputs.rollouts_per_task }}
@@ -414,6 +421,15 @@ jobs:
             bare)
               HARBOR_AGENT_GRAPH=bare_deepagent
               HARBOR_AGENT_LABEL="bare create_deep_agent"
+              ;;
+            tau3)
+              # Requires a Harbor build that forwards the task environment's MCP
+              # servers into the LangGraph graph configurable. The pinned Harbor
+              # does not yet, so set `harbor_package_override` to such a build
+              # until that support ships in a release; otherwise tau3_deepagent
+              # exits early with no MCP servers.
+              HARBOR_AGENT_GRAPH=tau3_deepagent
+              HARBOR_AGENT_LABEL="tau3 conversational deepagent"
               ;;
             *)
               echo "::error::Unknown agent implementation: $HARBOR_AGENT_IMPL"

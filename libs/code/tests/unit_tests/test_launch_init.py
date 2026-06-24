@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
@@ -10,6 +11,7 @@ from textual.containers import Container, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
+from deepagents_code.config import get_glyphs
 from deepagents_code.extras_info import (
     MODEL_PROVIDER_EXTRAS,
     SANDBOX_EXTRAS,
@@ -194,14 +196,18 @@ class TestLaunchDependenciesScreen:
                 str(widget.content) for widget in app.screen.query(Static)
             )
 
+        glyphs = get_glyphs()
         assert "Installed Integrations" in content
-        assert "Ready now" in content
-        assert "Available to add" in content
-        # Ready and addable extras are listed under category sub-headers.
-        assert "Model providers" in content
-        assert "Sandboxes" in content
-        for extra in ("anthropic", "daytona", "bedrock", "runloop"):
-            assert extra in content
+        # Section titles carry a total count; the `(2)` suffix is distinctive
+        # enough to prove the section header rendered (vs. matching the intro
+        # copy, which also mentions "model providers and sandboxes").
+        assert "Ready now (2)" in content
+        assert "Available to add (2)" in content
+        # Ready extras carry the checkmark glyph; addable ones the empty circle.
+        assert f"{glyphs.checkmark} anthropic" in content
+        assert f"{glyphs.checkmark} daytona" in content
+        assert f"{glyphs.circle_empty} bedrock" in content
+        assert f"{glyphs.circle_empty} runloop" in content
         # The screen points at how to act on the listed integrations.
         assert "/install" in content
         assert "Enter to continue" in content
@@ -224,7 +230,8 @@ class TestLaunchDependenciesScreen:
                 str(widget.content) for widget in app.screen.query(Static)
             )
 
-        assert "more" not in content
+        # No "+N more" truncation summary (the old `_EXTRA_LIST_LIMIT` cap).
+        assert re.search(r"\+\d+ more", content) is None
         for name in MODEL_PROVIDER_EXTRAS:
             assert name in content
 
@@ -274,6 +281,88 @@ class TestLaunchDependenciesScreen:
 
         assert "Other" in content
         assert "quickjs" in content
+
+    async def test_empty_ready_section_shows_placeholder(self) -> None:
+        """When nothing is installed, "Ready now" shows its placeholder."""
+        statuses = tuple(
+            ExtraDependencyStatus(
+                name=name, installed=(), missing=(f"langchain-{name}",)
+            )
+            for name in sorted(MODEL_PROVIDER_EXTRAS)
+        )
+        app = LaunchNameTestApp()
+        async with app.run_test() as pilot:
+            app.show_dependencies_screen(statuses)
+            await pilot.pause()
+
+            content = "\n".join(
+                str(widget.content) for widget in app.screen.query(Static)
+            )
+
+        assert "Ready now (0)" in content
+        assert "Nothing installed yet" in content
+        # No extra is ready, so the checkmark glyph never appears.
+        assert get_glyphs().checkmark not in content
+
+    async def test_empty_available_section_shows_placeholder(self) -> None:
+        """When everything is installed, "Available to add" shows its placeholder."""
+        statuses = tuple(
+            ExtraDependencyStatus(
+                name=name,
+                installed=((f"langchain-{name}", "1.0.0"),),
+                missing=(),
+            )
+            for name in sorted(MODEL_PROVIDER_EXTRAS)
+        )
+        app = LaunchNameTestApp()
+        async with app.run_test() as pilot:
+            app.show_dependencies_screen(statuses)
+            await pilot.pause()
+
+            content = "\n".join(
+                str(widget.content) for widget in app.screen.query(Static)
+            )
+
+        assert "Available to add (0)" in content
+        assert "Everything is installed." in content
+        # Nothing is addable, so the empty-circle glyph never appears.
+        assert get_glyphs().circle_empty not in content
+
+    async def test_resize_shrinks_body_to_keep_footer_visible(self) -> None:
+        """Shrinking the terminal refits the body so the footer stays visible."""
+        statuses = tuple(
+            ExtraDependencyStatus(
+                name=name, installed=(), missing=(f"langchain-{name}",)
+            )
+            for name in sorted(
+                MODEL_PROVIDER_EXTRAS | SANDBOX_EXTRAS | STANDALONE_EXTRAS
+            )
+        )
+        app = LaunchNameTestApp()
+        async with app.run_test(size=(80, 40)) as pilot:
+            app.show_dependencies_screen(statuses)
+            await pilot.pause()
+            await pilot.pause()
+
+            # A tall terminal leaves room for the full cap.
+            tall = app.screen.query_one(
+                "#launch-dependencies-body", VerticalScroll
+            ).styles.max_height
+            assert tall is not None
+            assert tall.cells == 16
+
+            await pilot.resize_terminal(80, 16)
+            await pilot.pause()
+            await pilot.pause()
+
+            body = app.screen.query_one("#launch-dependencies-body", VerticalScroll)
+            help_text = app.screen.query_one(".launch-init-help", Static)
+            short = body.styles.max_height
+
+        assert short is not None
+        assert short.cells is not None
+        assert short.cells < 16
+        assert help_text.region.y + help_text.region.height <= app.size.height
 
     async def test_enter_continues(self) -> None:
         """Enter should continue to the next onboarding step."""

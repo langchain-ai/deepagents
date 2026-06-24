@@ -9,6 +9,7 @@ from textual.app import ScreenStackError
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
@@ -29,7 +30,13 @@ from deepagents_code.extras_info import (
 logger = logging.getLogger(__name__)
 
 _DEPENDENCY_BODY_MAX_HEIGHT = 16
+"""Upper bound (in cells) for the scrollable dependency list.
+
+Sole source of truth for the cap; `_fit_dependencies_body` applies it at
+runtime, so no equivalent `max-height` is hardcoded in the CSS.
+"""
 _DEPENDENCY_BODY_MIN_HEIGHT = 1
+"""Floor (in cells) so the list never collapses to zero on tiny terminals."""
 
 
 def _normalize_name(value: str) -> str:
@@ -197,7 +204,6 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
 
     LaunchDependenciesScreen #launch-dependencies-body {
         height: auto;
-        max-height: 16;
         margin-bottom: 1;
     }
 
@@ -285,7 +291,7 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
                 # `get_optional_dependency_status` returns an empty tuple when
                 # `importlib.metadata` cannot find the distribution (editable
                 # install renamed, dev checkout without dist-info). Render a
-                # single explanatory line instead of "none detected" twice.
+                # single explanatory line rather than empty status sections.
                 yield Static(
                     "Could not read installed dependency metadata. Reinstall "
                     "with `/install <extra>` to populate.",
@@ -309,12 +315,25 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
         self.call_after_refresh(self._fit_dependencies_body)
 
     def _fit_dependencies_body(self) -> None:
-        """Cap dependency rows so modal controls remain inside the viewport."""
+        """Cap the dependency list height so modal controls stay in view."""
+        # `#launch-dependencies-body` is only composed when statuses are
+        # non-empty (see `compose`); bail so the query below cannot miss.
         if not self._statuses:
             return
 
-        container = self.query_one(Vertical)
-        body = self.query_one("#launch-dependencies-body", VerticalScroll)
+        try:
+            container = self.query_one(Vertical)
+            body = self.query_one("#launch-dependencies-body", VerticalScroll)
+        except NoMatches:
+            # This runs deferred via `call_after_refresh`; the screen may have
+            # been popped or recomposed before it fires (e.g. a resize racing
+            # dismissal). Sizing is cosmetic, so skip quietly but leave a
+            # breadcrumb rather than letting it surface in the event loop.
+            logger.debug(
+                "Skipping dependency-body refit; widgets not mounted",
+                exc_info=True,
+            )
+            return
         non_body_height = max(0, container.region.height - body.region.height)
         available_height = self.size.height - non_body_height
         max_height = max(
@@ -333,7 +352,8 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
 
         Every matching extra is listed (no truncation); each category that
         has matches is shown under a sub-header, and the section title carries
-        a total count.
+        a total count. When nothing matches, the `empty` placeholder is shown
+        in place of the sub-headers.
 
         Args:
             title: Section title.

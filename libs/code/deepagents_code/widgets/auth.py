@@ -44,7 +44,6 @@ from deepagents_code.auth_display import format_auth_badge
 from deepagents_code.config import get_glyphs, is_ascii_mode
 from deepagents_code.model_config import (
     CODEX_PROVIDER,
-    LANGSMITH_SERVICE,
     PROVIDER_API_KEY_ENV,
     PROVIDERS_DOCS_URL as _PROVIDERS_DOCS_URL,
     SERVICE_API_KEY_ENV,
@@ -59,6 +58,7 @@ from deepagents_code.model_config import (
     get_default_base_url_env,
     get_provider_auth_status,
     get_service_auth_status,
+    is_langsmith,
     is_service,
     resolved_env_var_name,
 )
@@ -482,7 +482,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         # LangSmith is configured as a tracing service: it has no base-URL
         # override but does carry an optional project name, and saving a key
         # turns tracing on.
-        self._is_langsmith = provider == LANGSMITH_SERVICE
+        self._is_langsmith = is_langsmith(provider)
         # Resolve the current credential source and probe the store, but never
         # let a corrupt `auth.json`/config crash the screen at construction
         # time — Textual would propagate the exception before the modal mounts.

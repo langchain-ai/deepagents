@@ -2231,6 +2231,23 @@ class TestApplyStoredLangSmithTracing:
         _apply_stored_langsmith_tracing()
         assert os.environ["LANGSMITH_PROJECT"] == "from-env"
 
+    def test_corrupt_store_warns_and_leaves_env_untouched(
+        self,
+        fake_state_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A corrupt credential file is logged and tracing is left untouched."""
+        import os
+
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        fake_state_dir.mkdir(parents=True, exist_ok=True)
+        (fake_state_dir / "auth.json").write_text("{ not json", encoding="utf-8")
+        with caplog.at_level("WARNING", logger="deepagents_code.config"):
+            _apply_stored_langsmith_tracing()
+        assert "LANGSMITH_TRACING" not in os.environ
+        assert any("may be corrupt" in r.getMessage() for r in caplog.records)
+
 
 class TestGetTracingStatus:
     """Tests for get_tracing_status()."""
@@ -4325,6 +4342,70 @@ class TestLazyModuleAttributes:
 
             assert "LANGSMITH_PROJECT" not in os.environ
             assert os.environ["LANGSMITH_TRACING"] == "false"
+        finally:
+            config_mod._bootstrap_done = original_done
+            config_mod._original_langsmith_project = original_ls
+
+    def test_bootstrap_stored_langsmith_key_keeps_tracing_enabled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `/auth`-stored LangSmith key survives `_disable_orphaned_tracing`.
+
+        End-to-end regression guard for the bootstrap ordering: a key stored via
+        `/auth` (never exported to the env) must be bridged onto
+        `LANGSMITH_API_KEY` and auto-enable tracing *before*
+        `_disable_orphaned_tracing` runs, so the orphan guard sees the key and
+        leaves tracing on. The helper-level `_apply_stored_langsmith_tracing`
+        tests cannot catch a regression that reorders the two bootstrap steps.
+        """
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code import auth_store
+        from deepagents_code.config import _ensure_bootstrap
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+
+        original_done = config_mod._bootstrap_done
+        original_ls = config_mod._original_langsmith_project
+        config_mod._bootstrap_done = False
+
+        try:
+            for var in (
+                "LANGSMITH_TRACING",
+                "LANGCHAIN_TRACING_V2",
+                "LANGSMITH_API_KEY",
+                "LANGCHAIN_API_KEY",
+                "LANGSMITH_PROJECT",
+                "DEEPAGENTS_CODE_LANGSMITH_TRACING",
+                "DEEPAGENTS_CODE_LANGSMITH_PROJECT",
+            ):
+                monkeypatch.delenv(var, raising=False)
+            auth_store.set_stored_key("langsmith", "lsv2_stored")
+
+            with (
+                patch("deepagents_code.config._load_dotenv"),
+                patch(
+                    "deepagents_code.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+                patch(
+                    "deepagents_code.config._has_langsmith_profile_credentials",
+                    return_value=False,
+                ),
+                patch(
+                    "deepagents_code.config._has_langsmith_profile_custom_endpoint",
+                    return_value=False,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            # The stored key was bridged onto the canonical env var, and tracing
+            # stayed on instead of being disabled as orphaned.
+            assert os.environ["LANGSMITH_API_KEY"] == "lsv2_stored"
+            assert os.environ["LANGSMITH_TRACING"] == "true"
         finally:
             config_mod._bootstrap_done = original_done
             config_mod._original_langsmith_project = original_ls

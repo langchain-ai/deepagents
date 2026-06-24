@@ -108,6 +108,22 @@ class TestRoundTrip:
         auth_store.set_stored_key("langsmith", "k2")
         assert auth_store.get_stored_project("langsmith") is None
 
+    def test_project_rejected_for_non_langsmith(self) -> None:
+        """A non-empty project may only pair with the langsmith service.
+
+        The invariant is enforced at the write boundary (not just in the CLI),
+        and nothing is persisted when it is violated.
+        """
+        with pytest.raises(ValueError, match="langsmith"):
+            auth_store.set_stored_key("anthropic", "k", project="my-app")
+        assert auth_store.get_stored_key("anthropic") is None
+
+    def test_blank_project_allowed_for_non_langsmith(self) -> None:
+        """A blank project is a no-op for any provider, so the key still stores."""
+        auth_store.set_stored_key("anthropic", "k", project="   ")
+        assert auth_store.get_stored_key("anthropic") == "k"
+        assert auth_store.get_stored_project("anthropic") is None
+
     def test_malformed_project_is_dropped_and_logged(
         self, fake_home: Path, caplog: pytest.LogCaptureFixture
     ) -> None:

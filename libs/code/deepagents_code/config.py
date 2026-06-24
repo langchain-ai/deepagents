@@ -529,20 +529,38 @@ def _apply_stored_langsmith_tracing() -> None:
     No-op when no LangSmith key is stored, so a key supplied only through the
     environment keeps the prior behavior (tracing stays off unless a flag is
     set).
+
+    A stored key is trusted by *presence*, not validity: this never pings
+    LangSmith (a network round-trip at startup would fight the package's
+    startup-perf budget). So a stored-but-invalid key (typo'd, revoked, or for
+    the wrong workspace) still force-enables tracing, and its traces are then
+    silently dropped at ingest with only SDK-internal 401s — which
+    `_quiet_sdk_tracing_logging` routes away from the TUI. `_disable_orphaned_tracing`
+    and `consume_orphaned_tracing_disabled_notice` guard only the *absent*-key
+    case, not the invalid-key case. If traces never appear, the key is the first
+    thing to re-check via `/auth`.
+
+    The store is read exactly once: a single corrupt-file `RuntimeError` is
+    logged and treated as "no stored key" rather than being raised (bootstrap
+    must never crash the app) or partially applied.
     """
     from deepagents_code import auth_store
     from deepagents_code._env_vars import classify_env_bool
     from deepagents_code.model_config import LANGSMITH_SERVICE
 
     try:
-        stored_key = auth_store.get_stored_key(LANGSMITH_SERVICE)
+        creds = auth_store.load_credentials()
     except RuntimeError:
         logger.warning(
             "Could not read the stored LangSmith credential; the credential file "
             "may be corrupt. Re-add the key via /auth."
         )
         return
-    if not stored_key:
+    entry = creds.get(LANGSMITH_SERVICE)
+    # No-op unless a LangSmith API key was stored via `/auth`. A key supplied
+    # only through the environment never lands here, keeping its prior behavior
+    # (tracing stays off unless a flag is set).
+    if entry is None or entry["type"] != "api_key" or not entry["key"]:
         return
 
     # The key was bridged onto LANGSMITH_API_KEY by
@@ -560,10 +578,7 @@ def _apply_stored_langsmith_tracing() -> None:
     if not any(flag is True for flag in flags):
         os.environ["LANGSMITH_TRACING"] = "true"
 
-    try:
-        project = auth_store.get_stored_project(LANGSMITH_SERVICE)
-    except RuntimeError:
-        project = None
+    project = entry.get("project") or None
     if project and not os.environ.get("LANGSMITH_PROJECT"):
         os.environ["LANGSMITH_PROJECT"] = project
 

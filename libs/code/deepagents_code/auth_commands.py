@@ -364,7 +364,11 @@ def _run_set(provider: str, *, from_env: str | None, project: str | None) -> int
     Returns:
         Process exit code (`0` on success, `1` on a recoverable input error).
     """
-    from deepagents_code.model_config import CODEX_PROVIDER, LANGSMITH_SERVICE
+    from deepagents_code.model_config import (
+        CODEX_PROVIDER,
+        LANGSMITH_SERVICE,
+        is_langsmith,
+    )
 
     if provider == CODEX_PROVIDER:
         print(  # noqa: T201
@@ -374,7 +378,7 @@ def _run_set(provider: str, *, from_env: str | None, project: str | None) -> int
         )
         return 1
 
-    if project is not None and provider != LANGSMITH_SERVICE:
+    if project is not None and not is_langsmith(provider):
         print(  # noqa: T201
             f"Error: --project is only valid for {LANGSMITH_SERVICE}.",
             file=sys.stderr,

@@ -190,6 +190,19 @@ class TestSet:
         assert auth_store.get_stored_key("langsmith") == "new"
         assert auth_store.get_stored_project("langsmith") == "my-app"
 
+    def test_set_langsmith_empty_project_clears_existing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicit empty `--project` clears a previously stored project."""
+        auth_store.set_stored_key("langsmith", "old", project="my-app")
+        monkeypatch.setattr(sys, "stdin", io.StringIO("new\n"))
+        code = run_auth_command(
+            _ns(auth_command="set", provider="langsmith", from_env=None, project="")
+        )
+        assert code == 0
+        assert auth_store.get_stored_key("langsmith") == "new"
+        assert auth_store.get_stored_project("langsmith") is None
+
     def test_set_project_rejected_for_non_langsmith(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:

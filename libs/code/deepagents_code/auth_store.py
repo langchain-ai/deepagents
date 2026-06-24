@@ -72,8 +72,8 @@ class ApiKeyCredential(TypedDict):
 
     Set only for the `langsmith` tracing service when the user supplies a
     custom project in `/auth`; absent means traces fall back to the default
-    (`deepagents-code`). Not a secret — it is surfaced in hints and applied to
-    `LANGSMITH_PROJECT` at startup.
+    (`deepagents-code`). Not a secret — it is shown in the `/auth` advanced
+    panel and applied to `LANGSMITH_PROJECT` at startup.
     """
 
 
@@ -400,22 +400,31 @@ def set_stored_key(
     `apply_stored_credentials` in `model_config` — a stored empty would
     unconditionally overwrite the env var).
 
+    This rewrites the whole credential record: `base_url` and `project` are
+    *not* merged with any previously stored values. Passing blank/`None` for
+    either clears it, so a caller rotating a key while wanting to keep the
+    existing endpoint/project must read it back (e.g. via `get_stored_base_url`
+    / `get_stored_project`) and pass it in again.
+
     Args:
         provider: Provider identifier (e.g., `"anthropic"`).
         key: The API key value. Whitespace is stripped before storage.
         base_url: Optional provider endpoint to pair with the key. Whitespace
             is stripped; blank/`None` stores no endpoint, meaning the key uses
             the provider default rather than any inherited (e.g. gateway) URL.
-        project: Optional LangSmith project name to pair with the key (the
-            `langsmith` tracing service). Whitespace is stripped; blank/`None`
-            stores no project, meaning traces use the default project.
+        project: Optional LangSmith project name to pair with the key. Valid
+            only for the `langsmith` tracing service. Whitespace is stripped;
+            blank/`None` stores no project, meaning traces use the default
+            project.
 
     Returns:
         A `WriteOutcome` whose `warnings` tuple lists chmod failures the
         caller should surface to the user. Empty on a clean save.
 
     Raises:
-        ValueError: If `provider` or the stripped `key` is empty.
+        ValueError: If `provider` or the stripped `key` is empty, or a non-empty
+            `project` is paired with a provider other than the `langsmith`
+            service.
         RuntimeError: If the credential file is corrupt and cannot be read, or
             the new file cannot be written (e.g. no disk space or an
             unwritable state directory).
@@ -441,6 +450,16 @@ def set_stored_key(
         entry["base_url"] = cleaned_base_url
     cleaned_project = project.strip() if project else ""
     if cleaned_project:
+        # A project name is meaningful only for the LangSmith tracing service;
+        # enforce the invariant at the write boundary so a stray project can
+        # never be persisted onto an unrelated provider, regardless of caller.
+        # Lazy import avoids a circular dependency (model_config imports this
+        # module), matching the pattern in `auth_path`.
+        from deepagents_code.model_config import is_langsmith
+
+        if not is_langsmith(provider):
+            msg = f"project is only valid for the langsmith service, not {provider!r}"
+            raise ValueError(msg)
         entry["project"] = cleaned_project
     creds[provider] = entry
     data["version"] = _STORAGE_VERSION

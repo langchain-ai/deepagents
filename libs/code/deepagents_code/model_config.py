@@ -547,8 +547,16 @@ Providers not listed here fall through to the config-file check or the langchain
 registry fallback.
 """
 
+LANGSMITH_SERVICE = "langsmith"
+"""Service name for LangSmith tracing in `SERVICE_API_KEY_ENV`.
+
+Storing a key for this service via `/auth` also enables tracing at startup
+(see `config._apply_stored_langsmith_tracing`) and can carry a custom project
+name, so it gets special handling beyond a plain key copy.
+"""
+
 SERVICE_API_KEY_ENV: dict[str, str] = {
-    "langsmith": "LANGSMITH_API_KEY",
+    LANGSMITH_SERVICE: "LANGSMITH_API_KEY",
     "tavily": "TAVILY_API_KEY",
 }
 """Non-model services configurable via `/auth`, mapped to their API-key env var.
@@ -558,14 +566,6 @@ agent tracing (LangSmith) — but their credentials follow the same store-on-dis
 model as model providers, so they appear in the `/auth` manager and can be
 entered directly in the TUI instead of being exported as environment variables
 before launch.
-"""
-
-LANGSMITH_SERVICE = "langsmith"
-"""Service name for LangSmith tracing in `SERVICE_API_KEY_ENV`.
-
-Storing a key for this service via `/auth` also enables tracing at startup
-(see `config._apply_stored_langsmith_tracing`) and can carry a custom project
-name, so it gets special handling beyond a plain key copy.
 """
 
 CODEX_PROVIDER = "openai_codex"
@@ -2020,6 +2020,16 @@ def get_default_base_url_env(provider: str) -> str | None:
 def is_service(name: str) -> bool:
     """Return whether `name` is a non-model service configurable via `/auth`."""
     return name in SERVICE_API_KEY_ENV
+
+
+def is_langsmith(name: str) -> bool:
+    """Return whether `name` is the LangSmith tracing service.
+
+    Centralizes the identity check so the LangSmith-specific branches (project
+    field instead of a base URL, tracing auto-enable) share one definition
+    rather than scattering `== LANGSMITH_SERVICE` comparisons.
+    """
+    return name == LANGSMITH_SERVICE
 
 
 def get_service_auth_status(service: str) -> ProviderAuthStatus:

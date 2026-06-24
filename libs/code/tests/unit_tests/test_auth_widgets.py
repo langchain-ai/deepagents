@@ -530,6 +530,19 @@ api_key_env = "MY_GATEWAY_API_KEY"
             assert base_url.display is True
             assert base_url.value == "https://proxy.example/v1"
 
+    async def test_existing_project_expands_advanced_by_default(self) -> None:
+        """A stored LangSmith project keeps the advanced section visible."""
+        auth_store.set_stored_key("langsmith", "lsv2_existing", project="my-app")
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            project_label = app.screen.query_one("#auth-prompt-project-label", Static)
+            project_input = app.screen.query_one("#auth-prompt-project", Input)
+            assert project_label.display is True
+            assert project_input.display is True
+            assert project_input.value == "my-app"
+
     async def test_paste_and_submit_persists(self) -> None:
         """Submitting a non-empty value writes to the store and dismisses True."""
         app = _AuthHostApp()

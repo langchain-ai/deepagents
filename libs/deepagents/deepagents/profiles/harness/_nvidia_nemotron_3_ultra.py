@@ -2,12 +2,7 @@
 
 Registers a `HarnessProfile` for NVIDIA Nemotron 3 Ultra
 (`nvidia/nemotron-3-ultra-550b-a55b`) that pairs a behavior-shaping
-`system_prompt_suffix` with three middleware.
-
-Unlike the other built-in profiles (which are prompt-suffix only), this one also
-ships middleware. The suffix and middleware were tuned and measured *together* on
-the Deep Agents behavioral eval suite and have not been measured apart, so they
-are kept as one bundle:
+`system_prompt_suffix` with three middleware:
 
 - `NemotronToolMessageShim`: `ChatNVIDIA`'s payload builder rejects a `role="tool"`
   message whose content normalizes to null (an empty string collapses to null),
@@ -183,7 +178,7 @@ class ReadFileContinuationNoticeMiddleware(AgentMiddleware):
         if n_lines < limit:
             return result
         notice = (
-            f"\n\n[read_file returned {limit} lines starting at offset {offset} — the "
+            f"\n\n[read_file returned {limit} lines starting at offset {offset}, the "
             f"per-read limit. The file likely continues past this window. To read "
             f"further, call read_file again with offset={offset + limit}. Do not assume "
             f"you have seen the end of the file.]"

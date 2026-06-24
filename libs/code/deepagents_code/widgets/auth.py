@@ -1294,30 +1294,20 @@ class AuthManagerScreen(ModalScreen[None]):
         # ones already shown above are skipped.
         self._install_extras = self._uninstalled_known_providers(config, shown)
 
-        # Float installed providers that already have a credential configured
-        # to the top so the keys a user is actively using are easiest to find;
-        # everything else keeps alphabetical order. Uninstalled
-        # install-on-select entries are listed afterwards (alphabetically)
-        # since selecting them installs a package rather than managing a key.
-        installed_providers = sorted(shown, key=self._configured_sort_key)
+        # Float entries that already have a credential configured to the top so
+        # the keys a user is actively using are easiest to find; everything else
+        # keeps alphabetical order. Uninstalled install-on-select entries are
+        # listed afterwards (alphabetically) since selecting them installs a
+        # package rather than managing a key.
+        services = set(SERVICE_API_KEY_ENV) - shown - set(self._install_extras)
+        manageable = sorted(shown | services, key=self._configured_sort_key)
         extra_providers = sorted(self._install_extras)
         options = [
-            Option(self._format_label(provider), id=provider)
-            for provider in installed_providers
+            Option(self._format_label(provider), id=provider) for provider in manageable
         ]
         options.extend(
             Option(self._format_label(provider, installed=False), id=provider)
             for provider in extra_providers
-        )
-        # Append non-model services (e.g. Tavily web search) after the model
-        # providers. These are always shown — their key is configurable here
-        # regardless of whether the backing package is installed — so users can
-        # enter it the same way they enter a model-provider key. Configured
-        # services float to the top of their group for the same reason.
-        services = set(SERVICE_API_KEY_ENV) - shown - set(self._install_extras)
-        options.extend(
-            Option(self._format_label(service), id=service)
-            for service in sorted(services, key=self._configured_sort_key)
         )
         return options, warning
 

@@ -947,6 +947,36 @@ api_key_env = "MY_GATEWAY_API_KEY"
             ]
         assert ids.index("openai") < ids.index("anthropic")
 
+    async def test_configured_services_sort_with_configured_providers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Configured services float above missing provider rows."""
+        for var in (
+            "ANTHROPIC_API_KEY",
+            "DEEPAGENTS_CODE_ANTHROPIC_API_KEY",
+            "TAVILY_API_KEY",
+            "DEEPAGENTS_CODE_TAVILY_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {"anthropic": ["claude-opus-4-7"]},
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda _provider: True,
+        )
+        monkeypatch.setenv("TAVILY_API_KEY", "from-env")
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            ids = [
+                options.get_option_at_index(i).id for i in range(options.option_count)
+            ]
+        assert ids.index("tavily") < ids.index("anthropic")
+
     async def test_uninstalled_providers_stay_below_configured(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

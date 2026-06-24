@@ -402,7 +402,6 @@ def run_oolong_case(
             "context_len": example.context_len,
             "input_subset": example.input_subset,
         },
-        eval_metadata={"arm": arm, "sub_model": sub_model_id, "origin_benchmark": "oolong-synth"},
     )
 
     # Soft scoring: log the grade as feedback; never `pytest.fail` (see above).

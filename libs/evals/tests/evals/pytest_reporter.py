@@ -156,6 +156,13 @@ def pytest_sessionstart(session: pytest.Session) -> None:
             "date": date_str,
             "deepagents_version": __version__,
         }
+        # OOLONG rlm-vs-subagents selects the arm + sub-model per run; record
+        # them as experiment metadata (the experiment dimension) so the dataset
+        # example stays shared across arms.
+        oolong_arm = os.environ.get("OOLONG_ARM")
+        if oolong_arm:
+            experiment_metadata["arm"] = oolong_arm
+            experiment_metadata["sub_model"] = session.config.getoption("--sub-model")
 
         # Auto-generate a descriptive LANGSMITH_EXPERIMENT prefix if the caller
         # didn't set one explicitly. The prefix drives _get_experiment_name, which

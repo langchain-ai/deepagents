@@ -1108,24 +1108,21 @@ def _build_logged_inputs(
 
     By default the logged input is ``{test_name, model, eval_metadata}``. When
     ``eval_inputs`` is provided, those task-specific fields (e.g. the question)
-    become the logged input and ``model``/``test_name`` fold into
-    ``eval_metadata`` — so the example input stays task-centric (no model
-    object) and is identical across experiment arms for side-by-side
-    comparison, while the model still travels with the run as metadata.
+    become the logged input *verbatim* — no model, no metadata — so the example
+    input stays task-centric and is byte-identical across experiment arms. The
+    example id is derived from the inputs, so identical inputs mean both arms
+    map to the *same* dataset example for side-by-side comparison. Run-level
+    context (model, arm, ...) belongs in the experiment metadata, not here.
     """
+    if eval_inputs is not None:
+        return dict(eval_inputs)
+
     run_tree = get_current_run_tree()
     model_str = str(getattr(model, "model", None) or getattr(model, "model_name", ""))
-    test_name = run_tree.name if run_tree else "unknown"
-
-    if eval_inputs is not None:
-        logged_inputs: dict[str, Any] = dict(eval_inputs)
-        metadata = dict(eval_metadata or {})
-        metadata.setdefault("model", model_str)
-        metadata.setdefault("test_name", test_name)
-        logged_inputs["eval_metadata"] = metadata
-        return logged_inputs
-
-    logged_inputs = {"test_name": test_name, "model": model_str}
+    logged_inputs: dict[str, Any] = {
+        "test_name": run_tree.name if run_tree else "unknown",
+        "model": model_str,
+    }
     if eval_metadata is not None:
         logged_inputs["eval_metadata"] = eval_metadata
     return logged_inputs

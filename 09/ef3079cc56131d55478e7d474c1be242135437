@@ -1,0 +1,19 @@
+libs/code/deepagents_code/widgets/auth.py
+  s_1084e95161f4fa::t_748b90bf152bed 1297-1303,1306
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "09ef3079cc56131d55478e7d474c1be242135437",
+  "prompts": {},
+  "sessions": {
+    "s_1084e95161f4fa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "24e9350b-6057-4cfa-a895-5dc177399e96",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

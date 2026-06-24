@@ -1,0 +1,20 @@
+libs/code/tests/unit_tests/test_model_selector.py
+  s_dd6e59be58f273::t_83affd53ca8b19 1949-1952
+  s_dd6e59be58f273::t_56f6c79d4ac1b5 634-636,645-647
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "56b863b0dc91703bc49e68f99bda3ea52f45cfb8",
+  "prompts": {},
+  "sessions": {
+    "s_dd6e59be58f273": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e938f593-f9ad-4c90-a241-c3fd3e8be225",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

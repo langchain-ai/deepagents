@@ -1,0 +1,21 @@
+libs/evals/tests/evals/pytest_reporter.py
+  s_943638c4b69b44::t_c16321543d5244 159-165
+libs/evals/tests/evals/utils.py
+  s_943638c4b69b44::t_927521b924ecbc 1111-1115,1117-1119,1122-1125
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "ac2d5e81c79446e84e8f6c84c13b9f2bb4c17b02",
+  "prompts": {},
+  "sessions": {
+    "s_943638c4b69b44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0385a0ed-b687-4fe3-8e00-f4dc75345399",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

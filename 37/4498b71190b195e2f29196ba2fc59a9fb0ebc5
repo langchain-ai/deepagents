@@ -1,0 +1,21 @@
+.github/scripts/check_pr_scope_files.py
+  s_ecb2048aefcb7e::t_5feed61ce7e422 287
+.github/scripts/test_check_pr_scope_files.py
+  s_ecb2048aefcb7e::t_5feed61ce7e422 329-352
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "374498b71190b195e2f29196ba2fc59a9fb0ebc5",
+  "prompts": {},
+  "sessions": {
+    "s_ecb2048aefcb7e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019efaf5-acd8-7670-b663-6e7ef9d3780f",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

@@ -8650,8 +8650,8 @@ class TestDeferredActions:
             assert isinstance(widget, ErrorMessage)
             rendered = str(widget._content)
             assert (
-                "uv tool install -U deepagents-code --with langchain-custom_provider"
-                in rendered
+                "uv tool install --reinstall -U deepagents-code "
+                "--with langchain-custom_provider" in rendered
             )
             assert "/model custom_provider:<model>" in rendered
 

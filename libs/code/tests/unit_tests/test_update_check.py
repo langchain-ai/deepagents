@@ -2467,16 +2467,16 @@ class TestInstallExtraCommand:
     """`install_extra_command` builds the uv tool install string."""
 
     def test_basic(self) -> None:
-        """Single-quoted bracket form, with `-U` to reinstall."""
+        """Single-quoted bracket form, with `--reinstall -U` for a clean env."""
         assert (
             install_extras_command(["quickjs"])
-            == "uv tool install -U 'deepagents-code[quickjs]'"
+            == "uv tool install --reinstall -U 'deepagents-code[quickjs]'"
         )
 
     def test_provider_extra(self) -> None:
         assert (
             install_extras_command(["fireworks"])
-            == "uv tool install -U 'deepagents-code[fireworks]'"
+            == "uv tool install --reinstall -U 'deepagents-code[fireworks]'"
         )
 
     def test_installed_extra_names_missing_distribution_returns_empty(self) -> None:
@@ -2502,7 +2502,7 @@ class TestInstallExtraCommand:
         assert installed_extra_names("deepagents-code") == set()
         assert (
             install_extra_command("quickjs", distribution_name="deepagents-code")
-            == "uv tool install -U 'deepagents-code[quickjs]'"
+            == "uv tool install --reinstall -U 'deepagents-code[quickjs]'"
         )
 
     def test_install_extra_command_refuses_invalid_metadata(
@@ -2535,7 +2535,7 @@ class TestInstallExtraCommand:
         assert installed_extra_names("deepagents-code") == {"nvidia"}
         assert (
             install_extra_command("baseten", distribution_name="deepagents-code")
-            == "uv tool install -U 'deepagents-code[baseten,nvidia]'"
+            == "uv tool install --reinstall -U 'deepagents-code[baseten,nvidia]'"
         )
 
     def test_dedupes_existing_extra(self, tmp_path, monkeypatch) -> None:
@@ -2550,7 +2550,7 @@ class TestInstallExtraCommand:
 
         assert (
             install_extra_command("nvidia", distribution_name="deepagents-code")
-            == "uv tool install -U 'deepagents-code[nvidia]'"
+            == "uv tool install --reinstall -U 'deepagents-code[nvidia]'"
         )
 
     def test_drops_composite_extras(self, tmp_path, monkeypatch) -> None:
@@ -2570,13 +2570,14 @@ class TestInstallExtraCommand:
         assert installed_extra_names("deepagents-code") == {"nvidia"}
         assert (
             install_extra_command("baseten", distribution_name="deepagents-code")
-            == "uv tool install -U 'deepagents-code[baseten,nvidia]'"
+            == "uv tool install --reinstall -U 'deepagents-code[baseten,nvidia]'"
         )
 
     def test_sorts_extras_deterministically(self) -> None:
         assert (
             install_extras_command({"quickjs", "baseten", "nvidia"})
-            == "uv tool install -U 'deepagents-code[baseten,nvidia,quickjs]'"
+            == "uv tool install --reinstall -U "
+            "'deepagents-code[baseten,nvidia,quickjs]'"
         )
 
     def test_rejects_shell_metacharacters(self) -> None:
@@ -2621,7 +2622,7 @@ class TestInstallPackageCommand:
             install_package_command(
                 "langchain-custom", distribution_name="deepagents-code"
             )
-            == "uv tool install -U deepagents-code --with langchain-custom"
+            == "uv tool install --reinstall -U deepagents-code --with langchain-custom"
         )
 
     def test_allows_pep508_name_separators(self, tmp_path, monkeypatch) -> None:
@@ -2636,7 +2637,8 @@ class TestInstallPackageCommand:
             install_package_command(
                 "langchain.custom_provider", distribution_name="deepagents-code"
             )
-            == "uv tool install -U deepagents-code --with langchain.custom_provider"
+            == "uv tool install --reinstall -U deepagents-code "
+            "--with langchain.custom_provider"
         )
 
     def test_preserves_installed_extras(self, tmp_path, monkeypatch) -> None:
@@ -2657,7 +2659,8 @@ class TestInstallPackageCommand:
             install_package_command(
                 "langchain-custom", distribution_name="deepagents-code"
             )
-            == "uv tool install -U 'deepagents-code[nvidia]' --with langchain-custom"
+            == "uv tool install --reinstall -U 'deepagents-code[nvidia]' "
+            "--with langchain-custom"
         )
 
     def test_refuses_missing_distribution(self) -> None:
@@ -2790,7 +2793,8 @@ class TestIsValidPackageName:
     def test_rejects_option_injection_leading_dash(self) -> None:
         """A leading dash would smuggle uv options into `--with <name>`.
 
-        The command is `uv tool install -U deepagents-code --with <name>`; a name
+        The command is `uv tool install --reinstall -U deepagents-code --with
+        <name>`; a name
         like `-rreqs.txt` or `--editable` would be parsed by uv as a flag, not a
         package. The validator must reject these regardless of `--force`/`--yes`.
         """
@@ -2988,7 +2992,9 @@ class TestRunInstallSubprocessFailureModes:
             ),
             patch(
                 "deepagents_code.update_check.install_extra_command",
-                return_value="uv tool install -U 'deepagents-code[quickjs]'",
+                return_value=(
+                    "uv tool install --reinstall -U 'deepagents-code[quickjs]'"
+                ),
             ),
             patch("asyncio.create_subprocess_shell", side_effect=_raise),
         ):

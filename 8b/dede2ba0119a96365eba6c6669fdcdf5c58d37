@@ -1,0 +1,69 @@
+libs/partners/quickjs/tests/unit_tests/test_thread_affinity.py
+  s_fbb4039f70ae43::t_1b66b3533b4474 134-135,176-177
+libs/partners/quickjs/langchain_quickjs/_ptc.py
+  h_f78d33d4280f3f 43
+  s_fbb4039f70ae43::t_198ac225f29478 42
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_no_tools_turn.md
+  s_fbb4039f70ae43::t_4c7724326f5743 146,164-172,223,294,308,350-354
+libs/partners/quickjs/langchain_quickjs/_repl.py
+  s_fbb4039f70ae43::t_028c358244c23c 534
+  s_fbb4039f70ae43::t_91d8eb1833af45 573-574
+  h_f78d33d4280f3f 535,537-538,549-551,559-568,591
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_mixed_foreign_functions.md
+  s_fbb4039f70ae43::t_4c7724326f5743 146,164-172,223,294,308,350-354
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_mixed_foreign_functions_call.md
+  s_fbb4039f70ae43::t_4c7724326f5743 146,164-172,223,294,308,350-354
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_mixed_foreign_functions_turn.md
+  s_fbb4039f70ae43::t_4c7724326f5743 146,164-172,223,294,308,350-354
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_no_tools.md
+  s_fbb4039f70ae43::t_4c7724326f5743 146,164-172,223,294,308,350-354
+libs/partners/quickjs/langchain_quickjs/_subagent.py
+  s_fbb4039f70ae43::t_b8fb46da5fd9be 27-28
+  s_fbb4039f70ae43::t_7a7fed0fe135f3 6-7
+  s_fbb4039f70ae43::t_53f53100965c73 46
+  s_fbb4039f70ae43::t_0df3d2d7d98343 59-61
+  h_f78d33d4280f3f 10,29-30,35-45,47-55,58,62-73,107,111-115,126-133,135-137,139-141,143-167,169-173,175
+libs/partners/quickjs/langchain_quickjs/__init__.py
+  s_fbb4039f70ae43::t_eb40b9ec9000f0 4-7,11,14
+libs/partners/quickjs/langchain_quickjs/_prompt.py
+  s_fbb4039f70ae43::t_cd62e5c93a07f5 48
+  s_fbb4039f70ae43::t_17619c3479b873 196
+  s_fbb4039f70ae43::t_88071df8d952c8 210
+  s_fbb4039f70ae43::t_6f49bce176b94b 125
+  s_fbb4039f70ae43::t_56cd95139d6c4c 252-256
+  s_fbb4039f70ae43::t_31c773e556076c 66-74
+libs/partners/quickjs/tests/unit_tests/test_repl_middleware.py
+  s_fbb4039f70ae43::t_b1139947dd2b7a 1045-1046
+  s_fbb4039f70ae43::t_3c43720582fcb6 1081,1085,1088-1091,1096
+  s_fbb4039f70ae43::t_eacbccf584c26b 1133
+  s_fbb4039f70ae43::t_6f6d93ac06786d 1153,1159
+  s_fbb4039f70ae43::t_81f50173a720f8 1241
+  s_fbb4039f70ae43::t_5743e6ef06cb0f 1293-1295
+  s_fbb4039f70ae43::t_ed18996022bfc9 1188
+  s_fbb4039f70ae43::t_b0656ad030d801 1218-1220
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_no_tools_call.md
+  s_fbb4039f70ae43::t_4c7724326f5743 146,164-172,223,294,308,350-354
+libs/partners/quickjs/tests/unit_tests/test_subagent_events.py
+  s_fbb4039f70ae43::t_df844653674cde 1-169
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "8bdede2ba0119a96365eba6c6669fdcdf5c58d37",
+  "prompts": {},
+  "humans": {
+    "h_f78d33d4280f3f": {
+      "author": "Colin Francis <colin.francis@langchain.dev>"
+    }
+  },
+  "sessions": {
+    "s_fbb4039f70ae43": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "70a2905b-8d2c-4e8e-a94c-0bad2c4435e0",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Colin Francis <colin.francis@langchain.dev>"
+    }
+  }
+}

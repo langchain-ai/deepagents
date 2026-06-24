@@ -14,6 +14,8 @@ from deepagents_code import _git as git_module, model_config
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code.config import (
     CLI_MAX_RETRIES_KEY,
+    LANGSMITH_EU_ENDPOINT,
+    LANGSMITH_US_ENDPOINT,
     RECOMMENDED_SAFE_SHELL_COMMANDS,
     SHELL_ALLOW_ALL,
     LangSmithApiError,
@@ -39,7 +41,9 @@ from deepagents_code.config import (
     fetch_langsmith_project_url,
     fetch_langsmith_project_url_or_raise,
     get_langsmith_project_name,
+    is_http_url,
     newline_shortcut,
+    normalize_langsmith_endpoint,
     parse_shell_allow_list,
     reset_langsmith_url_cache,
     settings,
@@ -2298,6 +2302,127 @@ class TestApplyStoredLangSmithTracing:
             _apply_stored_langsmith_tracing()
         assert "LANGSMITH_TRACING" not in os.environ
         assert any("may be corrupt" in r.getMessage() for r in caplog.records)
+
+    def test_applies_stored_endpoint(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored endpoint is applied to LANGSMITH_ENDPOINT at startup."""
+        import os
+
+        from deepagents_code import auth_store
+
+        for var in ("LANGSMITH_TRACING", "LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT"):
+            monkeypatch.delenv(var, raising=False)
+        auth_store.set_stored_key(
+            "langsmith", "lsv2_test", base_url=LANGSMITH_EU_ENDPOINT
+        )
+        _apply_stored_langsmith_tracing()
+        assert os.environ["LANGSMITH_ENDPOINT"] == LANGSMITH_EU_ENDPOINT
+        assert "LANGCHAIN_ENDPOINT" not in os.environ
+
+    def test_stored_endpoint_does_not_override_env(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An explicit LANGSMITH_ENDPOINT wins over the stored endpoint at startup."""
+        import os
+
+        from deepagents_code import auth_store
+
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        monkeypatch.delenv("LANGCHAIN_ENDPOINT", raising=False)
+        monkeypatch.setenv("LANGSMITH_ENDPOINT", "https://from-env.example.com")
+        auth_store.set_stored_key(
+            "langsmith", "lsv2_test", base_url=LANGSMITH_EU_ENDPOINT
+        )
+        _apply_stored_langsmith_tracing()
+        assert os.environ["LANGSMITH_ENDPOINT"] == "https://from-env.example.com"
+
+    def test_no_stored_endpoint_leaves_env_endpoint_untouched(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored key without an endpoint never clears an existing env endpoint."""
+        import os
+
+        from deepagents_code import auth_store
+
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        monkeypatch.setenv("LANGSMITH_ENDPOINT", "https://self-hosted.example.com")
+        auth_store.set_stored_key("langsmith", "lsv2_test")
+        _apply_stored_langsmith_tracing()
+        assert os.environ["LANGSMITH_ENDPOINT"] == "https://self-hosted.example.com"
+
+    def test_replace_applies_stored_endpoint_over_existing_env(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Immediate `/auth` save replaces the endpoint and clears the alternate."""
+        import os
+
+        from deepagents_code import auth_store
+
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        monkeypatch.setenv("LANGSMITH_ENDPOINT", "https://old.example.com")
+        monkeypatch.setenv("LANGCHAIN_ENDPOINT", "https://old-alt.example.com")
+        auth_store.set_stored_key(
+            "langsmith", "lsv2_test", base_url=LANGSMITH_EU_ENDPOINT
+        )
+        _apply_stored_langsmith_tracing(replace_project=True)
+        assert os.environ["LANGSMITH_ENDPOINT"] == LANGSMITH_EU_ENDPOINT
+        assert "LANGCHAIN_ENDPOINT" not in os.environ
+
+    def test_replace_clears_endpoint_when_blank(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Immediate `/auth` save clears the endpoint when no base URL is stored."""
+        import os
+
+        from deepagents_code import auth_store
+
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        monkeypatch.setenv("LANGSMITH_ENDPOINT", "https://old.example.com")
+        auth_store.set_stored_key("langsmith", "lsv2_test")
+        _apply_stored_langsmith_tracing(replace_project=True)
+        assert "LANGSMITH_ENDPOINT" not in os.environ
+
+
+class TestNormalizeLangSmithEndpoint:
+    """Tests for normalize_langsmith_endpoint() and is_http_url()."""
+
+    def test_us_alias(self) -> None:
+        """`us` (any case) resolves to the canonical US endpoint."""
+        assert normalize_langsmith_endpoint("us") == LANGSMITH_US_ENDPOINT
+        assert normalize_langsmith_endpoint(" US ") == LANGSMITH_US_ENDPOINT
+
+    def test_eu_alias(self) -> None:
+        """`eu` (any case) resolves to the canonical EU endpoint."""
+        assert normalize_langsmith_endpoint("eu") == LANGSMITH_EU_ENDPOINT
+        assert normalize_langsmith_endpoint("Eu") == LANGSMITH_EU_ENDPOINT
+
+    def test_full_url_passthrough(self) -> None:
+        """A full URL is returned stripped and unchanged."""
+        url = "https://langsmith.internal.example.com"
+        assert normalize_langsmith_endpoint(f"  {url}  ") == url
+
+    def test_empty(self) -> None:
+        """Blank input returns an empty string."""
+        assert normalize_langsmith_endpoint("   ") == ""
+
+    def test_is_http_url(self) -> None:
+        """Only http(s) URLs with a host pass validation."""
+        assert is_http_url(LANGSMITH_EU_ENDPOINT) is True
+        assert is_http_url("http://localhost:1984") is True
+        assert is_http_url("ftp://example.com") is False
+        assert is_http_url("not-a-url") is False
+        assert is_http_url("https://") is False
 
 
 class TestGetTracingStatus:

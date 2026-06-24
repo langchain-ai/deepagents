@@ -109,6 +109,16 @@ def setup_auth_parser(
         help="With `set langsmith`, set a custom LangSmith project name",
     )
     set_parser.add_argument(
+        "--base-url",
+        dest="base_url",
+        metavar="URL",
+        default=None,
+        help=(
+            "Pair an endpoint with the key. For `set langsmith`, accepts the "
+            "`us`/`eu` region shorthands or a full URL"
+        ),
+    )
+    set_parser.add_argument(
         "-h",
         "--help",
         action=make_help_action(_lazy_ui_help("show_auth_help")),
@@ -171,6 +181,7 @@ def run_auth_command(args: argparse.Namespace) -> int:
             args.provider,
             from_env=args.from_env,
             project=getattr(args, "project", None),
+            base_url=getattr(args, "base_url", None),
         )
     if command in {"remove", "rm", "delete"}:
         return _run_remove(args.provider)
@@ -358,12 +369,19 @@ def _run_status(provider: str | None) -> int:
     return 0
 
 
-def _run_set(provider: str, *, from_env: str | None, project: str | None) -> int:
+def _run_set(
+    provider: str,
+    *,
+    from_env: str | None,
+    project: str | None,
+    base_url: str | None,
+) -> int:
     """Store an API key for `provider`, reading it from env or stdin.
 
     Returns:
         Process exit code (`0` on success, `1` on a recoverable input error).
     """
+    from deepagents_code.config import is_http_url, normalize_langsmith_endpoint
     from deepagents_code.model_config import (
         CODEX_PROVIDER,
         LANGSMITH_SERVICE,
@@ -384,6 +402,25 @@ def _run_set(provider: str, *, from_env: str | None, project: str | None) -> int
             file=sys.stderr,
         )
         return 1
+
+    # Resolve --base-url before reading the store: a malformed value is a clean
+    # input error. `None` means "not passed" (preserve the stored endpoint); an
+    # explicit empty string clears it. LangSmith accepts the `us`/`eu` region
+    # shorthands; any non-empty value must be an http(s) URL so the key is never
+    # paired with a non-HTTP endpoint.
+    base_url_override: str | None = None
+    if base_url is not None:
+        base_url_override = (
+            normalize_langsmith_endpoint(base_url)
+            if is_langsmith(provider)
+            else base_url.strip()
+        )
+        if base_url_override and not is_http_url(base_url_override):
+            print(  # noqa: T201
+                "Error: --base-url must be an http(s) URL.",
+                file=sys.stderr,
+            )
+            return 1
 
     import os
 
@@ -419,16 +456,22 @@ def _run_set(provider: str, *, from_env: str | None, project: str | None) -> int
             return 1
 
     try:
-        # Preserve a previously stored project unless `--project` overrides it
-        # (an explicit empty value clears it). Resolved inside the try so a
-        # corrupt store surfaces as a clean error, not a traceback.
+        # Preserve a previously stored project/endpoint unless `--project` /
+        # `--base-url` overrides it (an explicit empty value clears it). Resolved
+        # inside the try so a corrupt store surfaces as a clean error, not a
+        # traceback.
         stored_project = (
             project if project is not None else auth_store.get_stored_project(provider)
+        )
+        stored_base_url = (
+            base_url_override
+            if base_url is not None
+            else auth_store.get_stored_base_url(provider)
         )
         outcome = auth_store.set_stored_key(
             provider,
             key,
-            base_url=auth_store.get_stored_base_url(provider),
+            base_url=stored_base_url,
             project=stored_project,
         )
     except (ValueError, RuntimeError) as exc:

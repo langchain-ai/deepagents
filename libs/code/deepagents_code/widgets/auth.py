@@ -30,7 +30,7 @@ from textual.content import Content
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.style import Style as TStyle
-from textual.widgets import Input, OptionList, Static
+from textual.widgets import Input, OptionList, RadioButton, RadioSet, Static
 from textual.widgets.option_list import Option
 
 if TYPE_CHECKING:
@@ -42,9 +42,12 @@ if TYPE_CHECKING:
 from deepagents_code import auth_store, theme
 from deepagents_code.auth_display import format_auth_badge
 from deepagents_code.config import (
+    LANGSMITH_EU_ENDPOINT,
     apply_stored_langsmith_auth,
     get_glyphs,
     is_ascii_mode,
+    is_http_url,
+    normalize_langsmith_endpoint,
 )
 from deepagents_code.model_config import (
     CODEX_PROVIDER,
@@ -74,6 +77,28 @@ logger = logging.getLogger(__name__)
 CONFIGURATION_DOCS_URL = (
     "https://docs.langchain.com/oss/python/deepagents/code/configuration"
 )
+
+
+_REGION_US = "us"
+_REGION_EU = "eu"
+_REGION_CUSTOM = "custom"
+
+
+def _region_for_endpoint(base_url: str) -> str:
+    """Map a stored LangSmith endpoint to its `/auth` region selection.
+
+    Args:
+        base_url: The stored endpoint, or an empty string for the SaaS default.
+
+    Returns:
+        `_REGION_US` (blank/default), `_REGION_EU` (the EU SaaS URL), or
+            `_REGION_CUSTOM` (any other endpoint, e.g. self-hosted).
+    """
+    if not base_url:
+        return _REGION_US
+    if base_url == LANGSMITH_EU_ENDPOINT:
+        return _REGION_EU
+    return _REGION_CUSTOM
 
 
 PROVIDER_DISPLAY_NAMES: dict[str, str] = {
@@ -456,6 +481,17 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         margin-bottom: 1;
     }
 
+    AuthPromptScreen #auth-prompt-region {
+        height: auto;
+        width: 100%;
+        margin-bottom: 1;
+        border: solid $primary-lighten-2;
+    }
+
+    AuthPromptScreen #auth-prompt-region:focus-within {
+        border: solid $primary;
+    }
+
     AuthPromptScreen #auth-prompt-input,
     AuthPromptScreen #auth-prompt-base-url {
         margin-bottom: 1;
@@ -502,9 +538,9 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         self._provider = provider
         self._env_var = env_var
         self._reason = reason
-        # LangSmith is configured as a tracing service: it has no base-URL
-        # override but does carry an optional project name, and saving a key
-        # turns tracing on.
+        # LangSmith is configured as a tracing service: it carries an optional
+        # project name and an endpoint chosen from a region selector (US/EU SaaS
+        # or a custom self-hosted URL), and saving a key turns tracing on.
         self._is_langsmith = is_langsmith(provider)
         # Resolve the current credential source and probe the store, but never
         # let a corrupt `auth.json`/config crash the screen at construction
@@ -523,6 +559,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             self._advanced_visible = bool(
                 self._existing_base_url or self._existing_project
             )
+            self._region = _region_for_endpoint(self._existing_base_url)
             self._store_warning: str | None = None
         except RuntimeError as exc:
             logger.warning(
@@ -536,6 +573,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             self._existing_base_url = ""
             self._existing_project = ""
             self._advanced_visible = False
+            self._region = _REGION_US
             self._store_warning = (
                 f"Credential file is unreadable ({exc}). Saving here will overwrite it."
             )
@@ -689,6 +727,58 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                 key_meta.display = self._advanced_visible
                 yield key_meta
             if self._is_langsmith:
+                region_label = Static(
+                    Content.from_markup("[bold]LangSmith region[/bold]"),
+                    classes="auth-prompt-meta",
+                    id="auth-prompt-region-label",
+                )
+                region_label.display = self._advanced_visible
+                yield region_label
+                region_set = RadioSet(
+                    RadioButton(
+                        "United States (default)",
+                        value=self._region == _REGION_US,
+                        id="auth-region-us",
+                    ),
+                    RadioButton(
+                        "Europe",
+                        value=self._region == _REGION_EU,
+                        id="auth-region-eu",
+                    ),
+                    RadioButton(
+                        "Custom (self-hosted / proxy)",
+                        value=self._region == _REGION_CUSTOM,
+                        id="auth-region-custom",
+                    ),
+                    id="auth-prompt-region",
+                )
+                region_set.display = self._advanced_visible
+                yield region_set
+                custom_visible = (
+                    self._advanced_visible and self._region == _REGION_CUSTOM
+                )
+                base_url_input = Input(
+                    value=(
+                        self._existing_base_url
+                        if self._region == _REGION_CUSTOM
+                        else ""
+                    ),
+                    placeholder="https://my-langsmith.example.com",
+                    id="auth-prompt-base-url",
+                )
+                base_url_input.display = custom_visible
+                yield base_url_input
+                base_url_hint_widget = Static(
+                    Content.from_markup(
+                        "Point tracing at a self-hosted or proxied LangSmith. "
+                        "Sets [bold]LANGSMITH_ENDPOINT[/bold]; must be an "
+                        "http(s) URL."
+                    ),
+                    classes="auth-prompt-meta",
+                    id="auth-prompt-base-url-hint",
+                )
+                base_url_hint_widget.display = custom_visible
+                yield base_url_hint_widget
                 project_label = Static(
                     Content.from_markup("[bold]Project name[/bold]"),
                     classes="auth-prompt-meta",
@@ -870,6 +960,8 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         self._advanced_visible = not self._advanced_visible
         for selector in (
             "#auth-prompt-key-meta",
+            "#auth-prompt-region-label",
+            "#auth-prompt-region",
             "#auth-prompt-base-url-label",
             "#auth-prompt-base-url",
             "#auth-prompt-base-url-hint",
@@ -879,11 +971,31 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         ):
             for widget in self.query(selector):
                 widget.display = self._advanced_visible
+        # For LangSmith the custom URL field only shows under the Custom region,
+        # so re-apply its region-gated visibility after the blanket toggle above.
+        if self._is_langsmith:
+            self._refresh_langsmith_custom_visibility()
         self.query_one("#auth-prompt-advanced-toggle", Static).update(
             self._build_advanced_toggle_label()
         )
         if not self._advanced_visible:
             self.query_one("#auth-prompt-input", Input).focus()
+
+    def _refresh_langsmith_custom_visibility(self) -> None:
+        """Show the custom URL field only when Advanced is open and region is Custom."""
+        custom_visible = self._advanced_visible and self._region == _REGION_CUSTOM
+        for selector in ("#auth-prompt-base-url", "#auth-prompt-base-url-hint"):
+            for widget in self.query(selector):
+                widget.display = custom_visible
+
+    def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
+        """Track the chosen LangSmith region and reveal the custom URL field."""
+        event.stop()
+        pressed_id = event.pressed.id or ""
+        self._region = pressed_id.removeprefix("auth-region-") or _REGION_US
+        self._refresh_langsmith_custom_visibility()
+        if self._region == _REGION_CUSTOM:
+            self.query_one("#auth-prompt-base-url", Input).focus()
 
     def on_click(self, event: Click) -> None:
         """Open style-embedded hyperlinks or toggle Advanced."""
@@ -919,6 +1031,27 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             colors = theme.get_theme_colors(self)
             container.styles.border = ("ascii", colors.success)
 
+    def _resolve_langsmith_endpoint(self) -> tuple[str, str | None]:
+        """Resolve the endpoint to store from the LangSmith region selector.
+
+        Returns:
+            A `(endpoint, error)` pair: the canonical endpoint to persist (empty
+                for the US SaaS default), and a non-`None` error message when a
+                custom URL is malformed (so the key is never paired with a
+                non-http(s) endpoint).
+        """
+        if self._region == _REGION_EU:
+            return LANGSMITH_EU_ENDPOINT, None
+        if self._region != _REGION_CUSTOM:
+            return "", None
+        raw = self.query_one("#auth-prompt-base-url", Input).value.strip()
+        if not raw:
+            return "", None
+        endpoint = normalize_langsmith_endpoint(raw)
+        if not is_http_url(endpoint):
+            return "", "Custom endpoint must be an http(s) URL."
+        return endpoint, None
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Validate, persist, and dismiss.
 
@@ -929,8 +1062,12 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         event.stop()
         cleaned = self.query_one("#auth-prompt-input", Input).value.strip()
         if self._is_langsmith:
-            base_url = ""
             project = self.query_one("#auth-prompt-project", Input).value.strip()
+            resolved, endpoint_error = self._resolve_langsmith_endpoint()
+            if endpoint_error:
+                self._show_error(endpoint_error)
+                return
+            base_url = resolved
         else:
             base_url = self.query_one("#auth-prompt-base-url", Input).value.strip()
             project = ""

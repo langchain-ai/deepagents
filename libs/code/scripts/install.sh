@@ -402,6 +402,11 @@ install_uv() {
   # or when the install fails — by default it's noise the user doesn't need.
   local uv_install_out uv_install_rc=0
   uv_install_out=$(mktemp 2>/dev/null) || uv_install_out="/tmp/deepagents-uv-install.$$.out"
+  # Only the piped `sh` (the installer body) is captured by `>"$uv_install_out"
+  # 2>&1`; curl/wget keep their own stderr on the terminal. That's intentional —
+  # `-fsSL` includes `-S`, so a failed download still prints curl's error
+  # directly (above the "uv installation failed" line) even though the captured
+  # file is then empty. Don't assume curl's stderr is in the capture.
   if command -v curl >/dev/null 2>&1; then
     curl -fsSL https://astral.sh/uv/install.sh | sh >"$uv_install_out" 2>&1 || uv_install_rc=$?
   elif command -v wget >/dev/null 2>&1; then

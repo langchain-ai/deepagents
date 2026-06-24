@@ -1749,6 +1749,15 @@ class DeepAgentsApp(App):
         self._launch_init_requested = launch_init
         """Whether startup should show onboarding during the initial paint."""
 
+        self._onboarding_session = launch_init
+        """Whether onboarding runs this session (constant for the session).
+
+        Unlike `_launch_init_requested`, which is cleared once the flow starts,
+        this stays set so background workers (e.g. the optional-tools check)
+        can register missing-dependency notices silently instead of toasting
+        over the onboarding modals.
+        """
+
         self._launch_init_running = False
         """Re-entry guard for launch init modals."""
 
@@ -2909,7 +2918,13 @@ class DeepAgentsApp(App):
         # update (already notified within CACHE_TTL) does not open the
         # modal, so toasts must still fire or returning users never
         # see the warning.
-        suppress_toasts = self._update_modal_pending.is_set()
+        # Onboarding suppresses too: the flow covers integrations (and
+        # prompts for a Tavily key) itself, so a "Web search disabled"
+        # toast over the onboarding modals is noise. Entries stay
+        # reachable via ctrl+n.
+        suppress_toasts = (
+            self._update_modal_pending.is_set() or self._onboarding_session
+        )
 
         for tool in missing:
             notification = build_missing_tool_notification(tool)
@@ -6102,6 +6117,7 @@ class DeepAgentsApp(App):
                 return
 
             model_spec, provider = result
+            await self._prompt_launch_tavily()
             if self._connecting:
                 # Bound the wait so a stuck server never traps onboarding.
                 # Server startup typically completes in seconds; a minute is
@@ -6185,6 +6201,37 @@ class DeepAgentsApp(App):
                 await self._install_extra_then_switch(extra, model_spec)
                 return
         await self._switch_model(model_spec, announce_unchanged=False)
+
+    async def _prompt_launch_tavily(self) -> None:
+        """Optionally collect and store a Tavily web-search key during onboarding.
+
+        Skipped when a Tavily key is already configured (env or stored). A
+        blank submission or Escape stores nothing; a non-empty key is persisted
+        via the same `auth_store` path `/auth` uses and takes full effect on the
+        next launch.
+        """
+        from deepagents_code.config import settings
+
+        if settings.has_tavily:
+            return
+
+        from deepagents_code.widgets.launch_init import LaunchTavilyScreen
+
+        key = await self._push_screen_wait(LaunchTavilyScreen())
+        if not key:
+            return
+
+        from deepagents_code import auth_store
+
+        try:
+            await asyncio.to_thread(auth_store.set_stored_key, "tavily", key)
+        except (ValueError, RuntimeError, OSError):
+            logger.warning("Could not store the onboarding Tavily key", exc_info=True)
+            return
+
+        from deepagents_code.model_config import apply_stored_service_credentials
+
+        apply_stored_service_credentials()
 
     async def _finish_launch_init(self, *, name: str | None) -> None:
         """Persist onboarding completion and, when given, mount the welcome.

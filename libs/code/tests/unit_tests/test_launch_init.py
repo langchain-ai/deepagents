@@ -21,6 +21,7 @@ from deepagents_code.extras_info import (
 from deepagents_code.widgets.launch_init import (
     LaunchDependenciesScreen,
     LaunchNameScreen,
+    LaunchTavilyScreen,
     _normalize_name,
 )
 
@@ -207,6 +208,83 @@ class TestLaunchNameScreen:
         app = LaunchNameTestApp()
         async with app.run_test() as pilot:
             app.show_name_screen()
+            await pilot.pause()
+
+            await pilot.press("escape")
+            await pilot.pause()
+
+        assert app.dismissed is True
+        assert app.result is None
+
+
+class LaunchTavilyTestApp(App[None]):
+    """Test app for `LaunchTavilyScreen`."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.result: str | None = None
+        self.dismissed = False
+
+    def compose(self) -> ComposeResult:
+        """Compose a minimal host app."""
+        yield Container(id="main")
+
+    def show_tavily_screen(self) -> None:
+        """Open the launch Tavily key screen."""
+
+        def handle_result(result: str | None) -> None:
+            self.result = result
+            self.dismissed = True
+
+        self.push_screen(LaunchTavilyScreen(), handle_result)
+
+
+class TestLaunchTavilyScreen:
+    """Tests for the optional Tavily key onboarding screen."""
+
+    async def test_key_field_is_optional_and_masked(self) -> None:
+        """The key field should be marked optional and use password masking."""
+        app = LaunchTavilyTestApp()
+        async with app.run_test() as pilot:
+            app.show_tavily_screen()
+            await pilot.pause()
+
+            key_input = app.screen.query_one("#launch-tavily-input", Input)
+
+        assert key_input.placeholder == "Tavily API key (optional)"
+        assert key_input.password is True
+
+    async def test_submit_returns_stripped_key(self) -> None:
+        """Submitting a key should dismiss with the trimmed value."""
+        app = LaunchTavilyTestApp()
+        async with app.run_test() as pilot:
+            app.show_tavily_screen()
+            await pilot.pause()
+
+            await pilot.press("space", "k", "e", "y", "space", "enter")
+            await pilot.pause()
+
+        assert app.dismissed is True
+        assert app.result == "key"
+
+    async def test_submit_empty_continues(self) -> None:
+        """Submitting an empty key should continue with an empty result."""
+        app = LaunchTavilyTestApp()
+        async with app.run_test() as pilot:
+            app.show_tavily_screen()
+            await pilot.pause()
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+        assert app.dismissed is True
+        assert app.result == ""
+
+    async def test_escape_skips(self) -> None:
+        """Escape should skip the Tavily step."""
+        app = LaunchTavilyTestApp()
+        async with app.run_test() as pilot:
+            app.show_tavily_screen()
             await pilot.pause()
 
             await pilot.press("escape")

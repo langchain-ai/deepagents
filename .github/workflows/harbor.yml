@@ -26,8 +26,17 @@ run-name: >-
 on:
   workflow_dispatch:
     inputs:
+      dataset:
+        description: "Benchmark to run (primary selector). Terminal-bench refs run through Harbor. The value 'clbench' runs continual-learning-bench instead — a separate benchmark (NOT Harbor) that runs on the runner with the Deep Agents system; see the clbench job. Selecting 'clbench' makes the [Harbor only] inputs below no-ops."
+        required: true
+        default: "terminal-bench/terminal-bench-2"
+        type: choice
+        options:
+          - "terminal-bench/terminal-bench-2"
+          - "terminal-bench/terminal-bench-2-1"
+          - "clbench"
       models:
-        description: "Model set to run. Set definitions: libs/evals/MODEL_GROUPS.md. Leave empty to use models_override instead. Defaults to all models if both are empty."
+        description: "[Harbor + clbench] Model set to run. Set definitions: libs/evals/MODEL_GROUPS.md. Leave empty to use models_override instead. Defaults to all models if both are empty."
         required: false
         default: ""
         type: choice
@@ -110,12 +119,12 @@ on:
           - "xai:grok-4"
           - "xai:grok-3-mini-fast"
       models_override:
-        description: "Override: comma-separated models (e.g. 'openai:gpt-4.1,anthropic:claude-sonnet-4-6'). Takes priority over dropdown when non-empty."
+        description: "[Harbor + clbench] Override: comma-separated models (e.g. 'openai:gpt-4.1,anthropic:claude-sonnet-4-6'). Takes priority over dropdown when non-empty."
         required: false
         default: ""
         type: string
       sandbox_env:
-        description: "Harbor sandbox environment"
+        description: "[Harbor only] Harbor sandbox environment. Ignored when dataset=clbench (clbench runs directly on the runner; it has no Harbor sandbox concept)."
         required: true
         default: "langsmith"
         type: choice
@@ -123,35 +132,30 @@ on:
           - docker
           - langsmith
       agent_impl:
-        description: "Deep Agents implementation to run through Harbor's LangGraph agent"
+        description: "[Harbor only] Deep Agents implementation run through Harbor's LangGraph agent. Ignored when dataset=clbench."
         required: true
         default: "dcode"
         type: choice
         options:
           - dcode
           - bare
-      dataset:
-        description: "Harbor dataset ref (e.g. terminal-bench/terminal-bench-2 or terminal-bench/terminal-bench-2-1)"
-        required: true
-        default: "terminal-bench/terminal-bench-2"
-        type: string
       n_tasks:
-        description: "Maximum number of tasks to run (0 = all tasks in dataset)"
+        description: "[Harbor only] Maximum number of tasks to run (0 = all). Ignored when dataset=clbench — use include_tasks to pick clbench tasks."
         required: true
         default: "0"
         type: string
       include_tasks:
-        description: "Space-separated task-name globs to include (e.g. re-run a subset). Empty = all tasks."
+        description: "[Harbor + clbench] Harbor: space-separated task-name globs. clbench: space-separated task names passed as --task (empty = all clbench tasks)."
         required: false
         default: ""
         type: string
       rollouts_per_task:
-        description: "Number of rollouts to run per task"
+        description: "[Harbor only] Rollouts per task. Ignored when dataset=clbench — run-all uses each task's default schedule (which defines its own runs)."
         required: true
         default: "1"
         type: string
       concurrency:
-        description: "Number of concurrent trials (parallel sandbox slots)"
+        description: "[Harbor + clbench] Harbor: concurrent trials (sandbox slots). clbench: forwarded as --per-task-parallelism."
         required: true
         default: "1"
         type: string
@@ -223,6 +227,7 @@ jobs:
   harbor:
     name: "📊 Evals - Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_impl }})"
     needs: prep
+    if: ${{ inputs.dataset != 'clbench' }}
     runs-on: ubuntu-latest
     environment: evals
     timeout-minutes: 360
@@ -508,4 +513,161 @@ jobs:
           name: harbor-${{ strategy.job-index }}
           path: |
             libs/evals/harbor-jobs/terminal-bench
+          if-no-files-found: warn
+
+  # continual-learning-bench (clbench) — NOT Harbor. Selected via dataset=clbench.
+  # Runs the whole benchmark (clbench run-all) with the Deep Agents system on the
+  # runner. Shares the prep model matrix. Harbor-only inputs (sandbox_env,
+  # agent_impl, n_tasks, rollouts_per_task) do not apply here.
+  clbench:
+    name: "🧠 Evals - clbench (${{ matrix.model }} / deepagents)"
+    needs: prep
+    if: ${{ inputs.dataset == 'clbench' }}
+    runs-on: ubuntu-latest
+    environment: evals
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prep.outputs.matrix) }}
+    env:
+      CLBENCH_REPO: "https://github.com/pgasawa/continual-learning-bench"
+      # Pinned to a specific commit (not a moving ref) for reproducibility.
+      CLBENCH_REF: "56764d61afa2860e4893bc14e6229e33fcebf06b"
+      CLBENCH_MODEL: ${{ matrix.model }}
+      CLBENCH_PROVIDER: ${{ matrix.provider }}
+      CLBENCH_INCLUDE_TASKS: ${{ inputs.include_tasks }}
+      CLBENCH_PER_TASK_PARALLELISM: ${{ inputs.concurrency }}
+    steps:
+      - name: "🔑 Verify model credentials"
+        env:
+          ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
+          GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
+          GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
+          OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ startsWith(matrix.model, 'openai:') && secrets.OPENAI_API_KEY || '' }}
+          XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
+        run: |
+          provider="${CLBENCH_MODEL%%:*}"
+          missing=()
+          case "$provider" in
+            anthropic)    [ -z "$ANTHROPIC_API_KEY" ] && missing+=("ANTHROPIC_API_KEY") ;;
+            openai)       [ -z "$OPENAI_API_KEY" ] && missing+=("OPENAI_API_KEY") ;;
+            google_genai) [ -z "$GOOGLE_API_KEY" ] && missing+=("GOOGLE_API_KEY") ;;
+            groq)         [ -z "$GROQ_API_KEY" ] && missing+=("GROQ_API_KEY") ;;
+            xai)          [ -z "$XAI_API_KEY" ] && missing+=("XAI_API_KEY") ;;
+            ollama)       [ -z "$OLLAMA_API_KEY" ] && missing+=("OLLAMA_API_KEY") ;;
+            *)
+              echo "::warning::clbench's Deep Agents system uses init_chat_model; provider '$provider' may be unsupported (supported: anthropic, openai, google_genai, groq, xai, ollama)."
+              ;;
+          esac
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing required secret(s) for $CLBENCH_MODEL: ${missing[*]}"
+            exit 1
+          fi
+          echo "Credentials present for $CLBENCH_MODEL"
+
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.13"
+          cache-suffix: clbench
+          working-directory: libs/evals
+
+      - name: "🧠 Run continual-learning-bench with the Deep Agents system"
+        env:
+          ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
+          GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
+          GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
+          OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ startsWith(matrix.model, 'openai:') && secrets.OPENAI_API_KEY || '' }}
+          XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
+        run: |
+          set -euo pipefail
+
+          # Validate the pinned ref is a full commit SHA (no moving refs).
+          if ! [[ "$CLBENCH_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::CLBENCH_REF must be a full 40-char commit SHA"; exit 1
+          fi
+          # Validate per-task parallelism is a positive integer.
+          if ! [[ "$CLBENCH_PER_TASK_PARALLELISM" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Invalid concurrency (per-task-parallelism): $CLBENCH_PER_TASK_PARALLELISM"; exit 1
+          fi
+          # Validate + collect clbench task names (alphanumeric + underscore only).
+          task_flags=()
+          if [ -n "$CLBENCH_INCLUDE_TASKS" ]; then
+            read -r -a _tasks <<< "$CLBENCH_INCLUDE_TASKS"
+            for t in "${_tasks[@]}"; do
+              if ! [[ "$t" =~ ^[A-Za-z0-9_]+$ ]]; then
+                echo "::error::Invalid clbench task name: $t"; exit 1
+              fi
+            done
+            task_flags=(--task "${_tasks[@]}")
+          fi
+
+          # Clone clbench pinned to a specific commit.
+          git clone --filter=blob:none "$CLBENCH_REPO" clbench-src
+          git -C clbench-src checkout --quiet "$CLBENCH_REF"
+
+          # Install clbench (all task extras), the local Deep Agents SDK, and the
+          # matrix model's LangChain provider integration.
+          ( cd clbench-src && uv sync --all-extras )
+          case "$CLBENCH_PROVIDER" in
+            anthropic)    provider_pkg="langchain-anthropic" ;;
+            openai)       provider_pkg="langchain-openai" ;;
+            google_genai) provider_pkg="langchain-google-genai" ;;
+            groq)         provider_pkg="langchain-groq" ;;
+            xai)          provider_pkg="langchain-xai" ;;
+            ollama)       provider_pkg="langchain-ollama" ;;
+            *)            provider_pkg="" ;;
+          esac
+          ( cd clbench-src && uv pip install -e "$GITHUB_WORKSPACE/libs/deepagents" ${provider_pkg:+"$provider_pkg"} )
+
+          # Deploy the Deep Agents system into this clbench checkout.
+          "$GITHUB_WORKSPACE/libs/evals/deepagents_clbench/sync_to_clbench.sh" "$GITHUB_WORKSPACE/clbench-src"
+
+          # Best-effort dataset setup for tasks that need it (non-fatal).
+          ( cd clbench-src && uv run clbench setup --all ) \
+            || echo "::warning::'clbench setup --all' reported errors; tasks needing that data may be skipped."
+
+          model_slug=$(printf '%s' "$CLBENCH_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
+          run_name="deepagents-${model_slug}-${GITHUB_RUN_ID}"
+
+          echo "Running 'clbench run-all' (whole benchmark) — system=deepagents, model=$CLBENCH_MODEL"
+          ( cd clbench-src && set -x && uv run clbench run-all \
+              --name "$run_name" \
+              --system deepagents \
+              --system.model "$CLBENCH_MODEL" \
+              ${task_flags[@]+"${task_flags[@]}"} \
+              --per-task-parallelism "$CLBENCH_PER_TASK_PARALLELISM" \
+              --no-live-dashboard )
+
+      - name: "📝 Write workflow summary"
+        if: always()
+        run: |
+          {
+            echo "## clbench run (continual-learning-bench — not Harbor)"
+            echo
+            echo "- Model: ${CLBENCH_MODEL}"
+            echo "- System: deepagents"
+            echo "- clbench ref: ${CLBENCH_REF}"
+            if [ -n "${CLBENCH_INCLUDE_TASKS}" ]; then
+              echo "- Tasks: ${CLBENCH_INCLUDE_TASKS}"
+            else
+              echo "- Tasks: all (run-all over the whole benchmark)"
+            fi
+            echo "- Per-task parallelism: ${CLBENCH_PER_TASK_PARALLELISM}"
+            echo "- Note: sandbox_env / agent_impl / n_tasks / rollouts_per_task are Harbor-only and were ignored."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "📤 Upload clbench results"
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: clbench-${{ strategy.job-index }}
+          path: |
+            clbench-src/final_results
+            clbench-src/results
           if-no-files-found: warn

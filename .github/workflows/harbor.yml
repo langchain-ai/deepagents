@@ -164,6 +164,12 @@ env:
   UV_NO_SYNC: "true"
   HARBOR_DATASET: ${{ inputs.dataset || 'terminal-bench/terminal-bench-2' }}
   DEEPSWE_DIR: deep-swe
+  # Stock harbor 0.13.2 installs the LangGraph agent's project deps without
+  # --prerelease=allow, so langchain-fireworks (needs the fireworks-ai
+  # pre-release) fails to resolve -> NonZeroAgentExitCodeError for every
+  # dataset/model. This harbor build makes the agent installer respect uv
+  # prereleases.
+  HARBOR_PACKAGE_OVERRIDE: "harbor[langsmith] @ git+https://github.com/nick-hollon-lc/harbor.git@nh/langgraph-respect-uv-prerelease"
 
 jobs:
   prep:
@@ -317,6 +323,10 @@ jobs:
 
       - name: "📦 Install Dependencies"
         run: uv sync --group test --locked
+
+      - name: "⚓ Install Harbor override"
+        if: env.HARBOR_PACKAGE_OVERRIDE != ''
+        run: uv pip install "$HARBOR_PACKAGE_OVERRIDE"
 
       - name: "🔇 Suppress Harbor first-run tips"
         run: |

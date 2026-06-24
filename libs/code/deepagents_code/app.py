@@ -2390,8 +2390,14 @@ class DeepAgentsApp(App):
             dependency_screen, dependency_result = (
                 self._build_launch_dependencies_prompt()
             )
+
+            def skip_dependency_prompt(_name: str) -> None:
+                if not dependency_result.done():
+                    dependency_result.set_result((False, None))
+
             name_result = self._push_launch_name_result_future(
                 continue_screen=dependency_screen,
+                on_continue_failed=skip_dependency_prompt,
             )
             self._ensure_launch_init_task(
                 name_result=name_result,
@@ -5920,12 +5926,15 @@ class DeepAgentsApp(App):
         self,
         *,
         continue_screen: ModalScreen[Any] | None = None,
+        on_continue_failed: Callable[[str], None] | None = None,
     ) -> asyncio.Future[str | None]:
         """Push the launch name modal and return its result future.
 
         Args:
             continue_screen: Optional screen that replaces the name modal after
                 submit, avoiding a frame where the base app is exposed.
+            on_continue_failed: Optional callback invoked with the submitted
+                name if replacing the name modal fails.
 
         Returns:
             Future completed with the submitted name or `None` when skipped.
@@ -5942,6 +5951,7 @@ class DeepAgentsApp(App):
         screen = LaunchNameScreen(
             continue_screen=continue_screen,
             on_continue=handle_result if continue_screen is not None else None,
+            on_continue_failed=on_continue_failed,
         )
         self.push_screen(screen, handle_result)
         return result_future

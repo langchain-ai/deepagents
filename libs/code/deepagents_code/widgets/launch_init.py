@@ -74,6 +74,7 @@ class LaunchNameScreen(ModalScreen[str | None]):
         *,
         continue_screen: Screen[Any] | None = None,
         on_continue: Callable[[str], None] | None = None,
+        on_continue_failed: Callable[[str], None] | None = None,
     ) -> None:
         """Initialize the name-entry screen.
 
@@ -81,10 +82,13 @@ class LaunchNameScreen(ModalScreen[str | None]):
             continue_screen: Optional screen to switch to after submitting a name.
             on_continue: Optional callback invoked with the submitted name before
                 switching to `continue_screen`.
+            on_continue_failed: Optional callback invoked with the submitted
+                name when switching to `continue_screen` fails.
         """
         super().__init__()
         self._continue_screen = continue_screen
         self._on_continue = on_continue
+        self._on_continue_failed = on_continue_failed
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "skip", "Skip", show=False, priority=True),
@@ -182,6 +186,8 @@ class LaunchNameScreen(ModalScreen[str | None]):
                 "Could not switch from launch name screen; dismissing instead",
                 exc_info=True,
             )
+            if self._on_continue_failed is not None:
+                self._on_continue_failed(value)
             self.dismiss(value)
 
     def action_skip(self) -> None:

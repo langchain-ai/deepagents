@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 import pytest
 from textual import events
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, ScreenStackError
 from textual.binding import Binding, BindingType
 from textual.containers import Container
 from textual.content import Content
@@ -1054,6 +1054,42 @@ class TestStartupSequence:
             app.screen.action_cancel()
             await asyncio.wait_for(launch_task, timeout=2)
             await pilot.pause()
+
+    async def test_launch_init_finishes_when_dependency_switch_fails(self) -> None:
+        """A failed name-to-dependencies switch should skip the rest of setup."""
+        app = DeepAgentsApp(launch_init=True)
+        app._prewarm_deferred_imports = MagicMock()  # ty: ignore
+        app._resolve_git_branch_and_continue = AsyncMock()  # ty: ignore
+        app._mark_onboarding_complete = AsyncMock()  # ty: ignore
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._write_launch_name_memory = AsyncMock()  # ty: ignore
+        switch_or_install = AsyncMock()
+        app._switch_or_install_launch_model = switch_or_install  # ty: ignore
+        original_switch_screen = app.switch_screen
+
+        def fail_dependency_switch(screen: ModalScreen[Any] | str) -> None:
+            if isinstance(screen, LaunchDependenciesScreen):
+                msg = "stack torn down"
+                raise ScreenStackError(msg)
+            original_switch_screen(screen)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert isinstance(app.screen, LaunchNameScreen)
+            launch_task = app._launch_init_task
+            assert launch_task is not None
+            app.switch_screen = fail_dependency_switch  # ty: ignore
+
+            await pilot.press("a", "d", "a", "enter")
+            await pilot.pause()
+
+            await asyncio.wait_for(launch_task, timeout=2)
+            await pilot.pause()
+
+        app._write_launch_name_memory.assert_awaited_once_with("Ada")  # ty: ignore
+        app._mark_onboarding_complete.assert_awaited_once()  # ty: ignore
+        switch_or_install.assert_not_awaited()
 
     async def test_launch_init_sequence_allows_empty_name(self) -> None:
         """Onboarding setup should continue to model selection without a name."""

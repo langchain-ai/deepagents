@@ -656,9 +656,7 @@ def show_auth_help() -> None:
     console.print(
         "  echo $LANGSMITH_API_KEY | dcode auth set langsmith --project my-app"
     )
-    console.print(
-        "  echo $LANGSMITH_API_KEY | dcode auth set langsmith --base-url eu"
-    )
+    console.print("  echo $LANGSMITH_API_KEY | dcode auth set langsmith --base-url eu")
     console.print("  dcode auth status anthropic")
     console.print("  dcode auth remove anthropic")
     console.print("  dcode auth path")

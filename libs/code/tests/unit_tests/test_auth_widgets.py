@@ -614,7 +614,7 @@ api_key_env = "MY_GATEWAY_API_KEY"
             await pilot.pause()
             await pilot.press("f2")
             await pilot.pause()
-            await pilot.click("#auth-region-eu")
+            app.screen.query_one("#auth-region-eu", RadioButton).value = True
             await pilot.pause()
             app.screen.query_one("#auth-prompt-input", Input).value = "lsv2_live"
             await pilot.press("enter")
@@ -630,7 +630,7 @@ api_key_env = "MY_GATEWAY_API_KEY"
             await pilot.pause()
             await pilot.press("f2")
             await pilot.pause()
-            await pilot.click("#auth-region-custom")
+            app.screen.query_one("#auth-region-custom", RadioButton).value = True
             await pilot.pause()
             custom = app.screen.query_one("#auth-prompt-base-url", Input)
             assert custom.display is True
@@ -748,14 +748,15 @@ api_key_env = "MY_GATEWAY_API_KEY"
         assert auth_store.get_stored_key("langsmith") == "lsv2_test"
         assert auth_store.get_stored_project("langsmith") == "my-app"
 
-    async def test_langsmith_prompt_has_no_base_url_field(self) -> None:
-        """The LangSmith prompt swaps the base-URL field for the project field."""
+    async def test_langsmith_prompt_hides_custom_url_field_by_default(self) -> None:
+        """LangSmith shows the project field; the custom URL field is hidden at US."""
         app = _AuthHostApp()
         async with app.run_test() as pilot:
             app.show_prompt("langsmith", "LANGSMITH_API_KEY")
             await pilot.pause()
-            assert not app.screen.query("#auth-prompt-base-url")
             assert app.screen.query("#auth-prompt-project")
+            # The base-URL field exists (for Custom) but stays hidden under US.
+            assert app.screen.query_one("#auth-prompt-base-url", Input).display is False
 
     async def test_empty_submit_shows_error_and_does_not_dismiss(self) -> None:
         """Empty input renders an inline error instead of dismissing."""

@@ -24,8 +24,6 @@ from deepagents_code.config import (
     Settings,
     _apply_default_langsmith_project,
     _apply_stored_langsmith_tracing,
-    is_http_url,
-    normalize_langsmith_endpoint,
     _create_model_from_class,
     _create_model_via_init,
     _disable_orphaned_tracing,
@@ -43,7 +41,9 @@ from deepagents_code.config import (
     fetch_langsmith_project_url,
     fetch_langsmith_project_url_or_raise,
     get_langsmith_project_name,
+    is_http_url,
     newline_shortcut,
+    normalize_langsmith_endpoint,
     parse_shell_allow_list,
     reset_langsmith_url_cache,
     settings,
@@ -2362,7 +2362,7 @@ class TestApplyStoredLangSmithTracing:
         fake_state_dir: Path,  # noqa: ARG002
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Immediate `/auth` save replaces the active endpoint and clears the alternate."""
+        """Immediate `/auth` save replaces the endpoint and clears the alternate."""
         import os
 
         from deepagents_code import auth_store

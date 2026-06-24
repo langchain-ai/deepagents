@@ -669,7 +669,9 @@ def _apply_stored_langsmith_tracing(*, replace_project: bool = False) -> None:
     if not any(flag is True for flag in flags):
         os.environ["LANGSMITH_TRACING"] = "true"
 
-    _apply_stored_langsmith_endpoint(entry.get("base_url") or None, replace=replace_project)
+    _apply_stored_langsmith_endpoint(
+        entry.get("base_url") or None, replace=replace_project
+    )
 
     project = entry.get("project") or None
     if replace_project:

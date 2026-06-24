@@ -142,7 +142,7 @@ detect_os
 # macOS: require Xcode Command Line Tools
 # ---------------------------------------------------------------------------
 # On a fresh Mac the /usr/bin shims for git, python3, etc. are stubs that pop a
-# blocking GUI dialog ("…requires the command line developer tools") the first
+# blocking GUI dialog ("...requires the command line developer tools") the first
 # time they run. uv's interpreter discovery and dcode's own git usage hit those
 # stubs, so fail fast here with a clear instruction instead of leaving the user
 # staring at a confusing popup mid-install. `xcode-select -p` only reports the
@@ -577,7 +577,7 @@ else
 fi
 
 # Capture uv stderr so we can:
-#   1. Rewrite the cryptic "Ignoring existing environment …" warning into
+#   1. Rewrite the cryptic "Ignoring existing environment ..." warning into
 #      plain English. uv emits that line when it rebuilds the tool venv
 #      instead of upgrading in place (e.g., Python interpreter mismatch, or
 #      editable↔regular install swap).

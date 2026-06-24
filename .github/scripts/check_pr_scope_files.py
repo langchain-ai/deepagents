@@ -14,6 +14,7 @@ closed.
 import json
 import re
 import sys
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -25,8 +26,14 @@ _TITLE_RE = re.compile(r"^[a-z]+(?:\(([^)]*)\))?!?:\s")
 _RELEASE_TITLE_RE = re.compile(r"^release\([^)]*\):\s")
 
 
+@lru_cache(maxsize=None)
 def _release_files(config_path: Path = DEFAULT_RELEASE_CONFIG) -> set[str]:
     """Return release-please managed artifact paths.
+
+    Cached per `config_path` so a single run does not re-read and re-parse the
+    config once per changed file. The config is immutable within a process, and
+    raised `ValueError`s are not cached, so a malformed config keeps failing
+    closed on every call.
 
     Args:
         config_path: Path to `release-please-config.json`.
@@ -68,7 +75,9 @@ def _release_files(config_path: Path = DEFAULT_RELEASE_CONFIG) -> set[str]:
     return files
 
 
-def is_release_file(file: str) -> bool:
+def is_release_file(
+    file: str, *, release_config_path: Path = DEFAULT_RELEASE_CONFIG
+) -> bool:
     """Return whether `file` is a file release-please may update in a release PR.
 
     Covers the version-of-record manifest, configured per-package changelog and
@@ -76,12 +85,14 @@ def is_release_file(file: str) -> bool:
 
     Args:
         file: Changed file path, repo-root-relative.
+        release_config_path: Path to `release-please-config.json`.
 
     Returns:
         `True` when the path is one release-please may update in a release PR.
 
     Raises:
         ValueError: If the release-please config cannot be read or validated.
+            Not reachable for `uv.lock` inputs, which return before any read.
     """
     path = Path(file)
     # release-please regenerates lockfiles wherever the uv workspace resolves —
@@ -90,7 +101,7 @@ def is_release_file(file: str) -> bool:
     # path rather than enumerating workspace-member dirs that drift over time.
     if path.name == "uv.lock":
         return True
-    return file in _release_files()
+    return file in _release_files(release_config_path)
 
 
 def is_release_title(title: str) -> bool:
@@ -105,7 +116,12 @@ def is_release_title(title: str) -> bool:
     return bool(_RELEASE_TITLE_RE.match(title))
 
 
-def is_release_pr_change(title: str, changed: list[str]) -> bool:
+def is_release_pr_change(
+    title: str,
+    changed: list[str],
+    *,
+    release_config_path: Path = DEFAULT_RELEASE_CONFIG,
+) -> bool:
     """Return whether the PR looks like a release-please artifact update.
 
     The title is author-controlled (PR event payload) and the release component
@@ -117,15 +133,26 @@ def is_release_pr_change(title: str, changed: list[str]) -> bool:
     Args:
         title: PR title.
         changed: Changed file paths, repo-root-relative.
+        release_config_path: Path to `release-please-config.json`.
 
     Returns:
         `True` only when the title is release-shaped and every changed file is a
         release-please generated/version artifact.
+
+    Raises:
+        ValueError: If the release-please config cannot be read or validated.
     """
-    return (
-        bool(changed)
-        and is_release_title(title)
-        and all(is_release_file(file) for file in changed)
+    if not (changed and is_release_title(title)):
+        return False
+    # Read (and thereby validate) the release config up front so a malformed
+    # `release-please-config.json` fails closed even when every changed file is
+    # a `uv.lock` — those short-circuit inside `is_release_file` before any read,
+    # which would otherwise let the gate stand down without validating the config.
+    # `_release_files` is cached, so the per-file checks below reuse this result.
+    _release_files(release_config_path)
+    return all(
+        is_release_file(file, release_config_path=release_config_path)
+        for file in changed
     )
 
 
@@ -267,7 +294,11 @@ def changed_packages(
 
 
 def find_offenders(
-    title: str, changed: list[str], config: dict[str, Any]
+    title: str,
+    changed: list[str],
+    config: dict[str, Any],
+    *,
+    release_config_path: Path = DEFAULT_RELEASE_CONFIG,
 ) -> list[dict[str, object]]:
     """Return touched package dirs not covered by package scopes in `title`.
 
@@ -275,17 +306,21 @@ def find_offenders(
         title: PR title.
         changed: Changed file paths, repo-root-relative.
         config: Parsed `.github/scripts/pr-labeler-config.json`.
+        release_config_path: Path to `release-please-config.json`.
 
     Returns:
         Sorted list of offender objects with `package` and `dirs` keys. Empty
+            when the PR is a release-please artifact update (`is_release_pr_change`),
             when the title declares no package scopes, when no package dirs are
             touched, or when every touched package is covered by a declared scope.
 
     Raises:
         ValueError: If required config sections are missing or malformed.
     """
+    # Computed before the release short-circuit so a malformed labeler config
+    # still fails closed (raises) on release PRs rather than passing unchecked.
     declared = declared_packages(title, config)
-    if is_release_pr_change(title, changed):
+    if is_release_pr_change(title, changed, release_config_path=release_config_path):
         return []
 
     if not declared:
@@ -299,13 +334,20 @@ def find_offenders(
     ]
 
 
-def main(title: str, changed: list[str], config_path: Path = DEFAULT_CONFIG) -> int:
+def main(
+    title: str,
+    changed: list[str],
+    config_path: Path = DEFAULT_CONFIG,
+    *,
+    release_config_path: Path = DEFAULT_RELEASE_CONFIG,
+) -> int:
     """Print offending packages as a JSON array to stdout.
 
     Args:
         title: PR title.
         changed: Changed file paths, repo-root-relative.
         config_path: Path to the PR labeler config.
+        release_config_path: Path to `release-please-config.json`.
 
     Returns:
         `0` after successful analysis. Offenders are reported on stdout and the
@@ -313,11 +355,25 @@ def main(title: str, changed: list[str], config_path: Path = DEFAULT_CONFIG) -> 
         `2` when the config cannot be read or validated, so CI fails closed.
     """
     try:
-        config = json.loads(config_path.read_text(encoding="utf-8"))
-        offenders = find_offenders(title, changed, config)
+        # Wrap the labeler-config read so its errors name the labeler file. The
+        # outer handler also catches ValueErrors raised while reading the
+        # release config (via find_offenders -> is_release_pr_change), whose
+        # messages name release-please-config.json themselves — so the generic
+        # prefix below does not mis-attribute one config's failure to the other.
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            msg = f"could not read PR labeler config {config_path}: {e}"
+            raise ValueError(msg) from e
+        offenders = find_offenders(
+            title, changed, config, release_config_path=release_config_path
+        )
+        bypassed = is_release_pr_change(
+            title, changed, release_config_path=release_config_path
+        )
     except (OSError, json.JSONDecodeError, ValueError) as e:
         print(
-            f"::error::Could not read PR labeler config {config_path}: {e}",
+            f"::error::PR scope/file check failed to read or validate config: {e}",
             file=sys.stderr,
         )
         return 2
@@ -327,7 +383,7 @@ def main(title: str, changed: list[str], config_path: Path = DEFAULT_CONFIG) -> 
     # detector-absent ::warning::. To stderr so it never corrupts the JSON
     # offenders the workflow captures from stdout. ::notice:: (not ::warning::)
     # because this is a designed, expected bypass.
-    if is_release_pr_change(title, changed):
+    if bypassed:
         print(
             "::notice::Release-shaped title; scope/file gate bypassed because "
             "every changed file matched the release-please artifact allowlist.",

@@ -5,6 +5,7 @@ import json
 import pytest
 from check_pr_scope_files import (
     DEFAULT_CONFIG,
+    _release_files,
     changed_packages,
     declared_packages,
     find_offenders,
@@ -144,15 +145,20 @@ def test_breaking_change_title_still_detects_offender() -> None:
 
 
 def test_release_title_with_release_files_bypasses_scope_file_check() -> None:
-    """Release PRs can touch generated/version files across package dirs."""
+    """Release PRs can touch generated/version files across package dirs.
+
+    `libs/cli/` is touched and the `deepagents-code` title scope does not cover
+    it, so absent the bypass `cli` is a genuine offender. The assertion can
+    therefore only pass via the release bypass, not ordinary scope coverage —
+    deleting the early-return in `find_offenders` makes this test fail.
+    """
     assert is_release_title("release(deepagents-code): 0.1.22")
     assert (
         find_offenders(
             "release(deepagents-code): 0.1.22",
             [
                 "libs/code/deepagents_code/_version.py",
-                "libs/evals/deepagents_evals/_version.py",
-                "libs/talon/deepagents_talon/_version.py",
+                "libs/cli/deepagents_cli/_version.py",
             ],
             CONFIG,
         )
@@ -211,6 +217,97 @@ def test_unmanaged_package_artifacts_do_not_trigger_release_bypass() -> None:
     assert find_offenders("release(deepagents-code): 0.1.22", changed, config) == [
         {"package": "evals", "dirs": ["libs/evals/"]}
     ]
+
+
+def test_release_files_validates_structure(tmp_path) -> None:
+    """`_release_files` fails closed on every malformed release-config shape."""
+    cases = [
+        ({"packages": {}}, "no non-empty 'packages' map"),
+        ({"packages": {"libs/code": "notadict"}}, "malformed"),
+        ({"packages": {"libs/code": {"extra-files": "x"}}}, "malformed 'extra-files'"),
+        ({"packages": {"libs/code": {"extra-files": [1]}}}, "non-string extra file"),
+    ]
+    for i, (obj, pattern) in enumerate(cases):
+        path = tmp_path / f"release-{i}.json"
+        path.write_text(json.dumps(obj), encoding="utf-8")
+        with pytest.raises(ValueError, match=pattern):
+            _release_files(path)
+
+    missing = tmp_path / "nope.json"
+    with pytest.raises(ValueError, match="could not read release-please config"):
+        _release_files(missing)
+
+
+def test_release_pr_change_fails_closed_on_malformed_release_config(tmp_path) -> None:
+    """The bypass predicate raises (fails closed) on a broken release config."""
+    bad = tmp_path / "release-please-config.json"
+    bad.write_text(json.dumps({"packages": {}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="no non-empty 'packages' map"):
+        is_release_pr_change(
+            "release(deepagents-code): 0.1.22",
+            ["libs/code/deepagents_code/_version.py"],
+            release_config_path=bad,
+        )
+
+
+def test_release_uv_lock_only_still_validates_release_config(tmp_path) -> None:
+    """An all-`uv.lock` release PR still reads/validates the release config.
+
+    `uv.lock` short-circuits in `is_release_file`, but the gate must not stand
+    down without first validating the release config — otherwise a broken config
+    would silently let the bypass fire for a lockfile-only release PR.
+    """
+    bad = tmp_path / "release-please-config.json"
+    bad.write_text("{not json", encoding="utf-8")
+    with pytest.raises(ValueError, match="could not read release-please config"):
+        is_release_pr_change(
+            "release(deepagents-code): 0.1.22",
+            ["libs/code/uv.lock", "libs/cli/uv.lock"],
+            release_config_path=bad,
+        )
+
+
+def test_main_malformed_release_config_fails_closed_and_attributes_correctly(
+    capsys, tmp_path
+) -> None:
+    """A broken release config returns 2 and is not mis-reported as labeler config."""
+    labeler = tmp_path / "pr-labeler-config.json"
+    labeler.write_text(json.dumps(CONFIG), encoding="utf-8")
+    release = tmp_path / "release-please-config.json"
+    release.write_text(json.dumps({"packages": {}}), encoding="utf-8")
+
+    rc = main(
+        "release(deepagents-code): 0.1.22",
+        ["libs/code/deepagents_code/_version.py"],
+        config_path=labeler,
+        release_config_path=release,
+    )
+    captured = capsys.readouterr()
+
+    assert rc == 2
+    assert captured.out == ""
+    assert "release-please config" in captured.err
+    assert "PR labeler config" not in captured.err
+
+
+def test_main_uv_lock_only_fails_closed_on_bad_release_config(capsys, tmp_path) -> None:
+    """All-`uv.lock` release PR returns 2 when the release config cannot be read."""
+    labeler = tmp_path / "pr-labeler-config.json"
+    labeler.write_text(json.dumps(CONFIG), encoding="utf-8")
+    release = tmp_path / "release-please-config.json"
+    release.write_text("{not json", encoding="utf-8")
+
+    rc = main(
+        "release(deepagents-code): 0.1.22",
+        ["libs/code/uv.lock", "libs/cli/uv.lock"],
+        config_path=labeler,
+        release_config_path=release,
+    )
+    captured = capsys.readouterr()
+
+    assert rc == 2
+    assert captured.out == ""
+    assert "release-please config" in captured.err
 
 
 def test_release_pr_change_covers_repo_wide_lockfiles() -> None:

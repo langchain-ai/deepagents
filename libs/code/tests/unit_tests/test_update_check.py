@@ -3689,7 +3689,9 @@ class TestAutoUpdateDefaultMigration:
         assert is_auto_update_explicitly_set() is False
 
     def test_baseline_acknowledges_implicit_default(
-        self, config_path, state_file  # noqa: ARG002
+        self,
+        config_path,  # noqa: ARG002
+        state_file,  # noqa: ARG002
     ) -> None:
         """`note_install_baseline` pre-acknowledges the implicit-default notice.
 
@@ -3981,9 +3983,11 @@ class TestShouldShowWhatsNew:
         assert should_notify_update("2.0.0") is False
 
     def test_first_run_suppresses_auto_update_notice(
-        self, state_file, config_path  # noqa: ARG002
+        self,
+        state_file,  # noqa: ARG002
+        config_path,  # noqa: ARG002
     ) -> None:
-        """A fresh install\'s first run pre-acknowledges the migration notice.
+        """A fresh install's first run pre-acknowledges the migration notice.
 
         The auto-update default notice only applies to users who predate the
         opt-out default, so a brand-new install must never see it.
@@ -3999,7 +4003,9 @@ class TestShouldShowWhatsNew:
         assert should_announce_auto_update_default() is False
 
     def test_existing_install_still_sees_notice(
-        self, state_file, config_path  # noqa: ARG002
+        self,
+        state_file,  # noqa: ARG002
+        config_path,  # noqa: ARG002
     ) -> None:
         """An upgrade for an existing install does not pre-acknowledge.
 

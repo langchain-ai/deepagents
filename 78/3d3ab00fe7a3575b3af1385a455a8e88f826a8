@@ -1,0 +1,14 @@
+libs/code/scripts/install.sh
+  h_9f69767fa5fabf 145,580
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.10",
+  "base_commit_sha": "783d3ab00fe7a3575b3af1385a455a8e88f826a8",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

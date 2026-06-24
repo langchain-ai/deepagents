@@ -48,7 +48,7 @@ _FALLBACK_WIDTH = 100
 _MIN_BODY_HEIGHT = 3
 _MAX_BODY_HEIGHT = 12
 _AGENTS_CHROME_LINES = 1
-_TICK_INTERVAL = 0.2
+_TICK_INTERVAL = 0.1
 
 
 def _right_block_width() -> int:
@@ -140,14 +140,22 @@ class _Phase:
     def elapsed_seconds(self) -> float:
         """Wall-clock elapsed for the phase (frozen once all subagents end).
 
+        Measured from the first subagent's start to the last one's finish, so
+        the value is continuous: the live "now - first start" simply freezes
+        when the final subagent ends (rather than collapsing to the longest
+        single duration).
+
         Returns:
-            Live elapsed time while running, else the longest measured duration.
+            Live elapsed while running, else first-start to last-finish.
         """
         if not self.records:
             return 0.0
         earliest = min(r.started_monotonic for r in self.records.values())
         if self.all_terminal():
-            return max(r.elapsed_seconds() for r in self.records.values())
+            latest_end = max(
+                r.started_monotonic + r.elapsed_seconds() for r in self.records.values()
+            )
+            return max(0.0, latest_end - earliest)
         return max(0.0, time.monotonic() - earliest)
 
 

@@ -9,16 +9,19 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
+import pytest
 from textual.app import App, ComposeResult
 from textual.geometry import Offset
 from textual.widgets import Static
 
-from deepagents_code.widgets.subagent_panel import SubagentPanel
+from deepagents_code.widgets.subagent_panel import (
+    SubagentPanel,
+    _Phase,
+    _SubagentRecord,
+)
 
 if TYPE_CHECKING:
     from typing import Any
-
-    import pytest
 
 
 class PanelApp(App):
@@ -420,3 +423,31 @@ class TestSafety:
             data_row = rows.split("\n")[1]
             assert "\n" not in data_row
             assert "second line" in data_row
+
+
+class TestPhaseTiming:
+    def test_phase_elapsed_is_wall_clock_not_longest_subagent(self) -> None:
+        # Two subagents with staggered starts, each running 3s:
+        #   A: starts 100.0, ends 103.0
+        #   B: starts 102.0, ends 105.0
+        # Wall-clock span is 5.0s (100.0 -> 105.0), not the 3.0s longest run.
+        phase = _Phase(eval_id="E1", index=1)
+        phase.add(
+            _SubagentRecord(
+                id="a",
+                label="a",
+                status="done",
+                started_monotonic=100.0,
+                duration_ms=3000,
+            )
+        )
+        phase.add(
+            _SubagentRecord(
+                id="b",
+                label="b",
+                status="done",
+                started_monotonic=102.0,
+                duration_ms=3000,
+            )
+        )
+        assert phase.elapsed_seconds() == pytest.approx(5.0)

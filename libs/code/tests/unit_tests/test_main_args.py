@@ -1747,6 +1747,10 @@ class TestInstallExtraSubcommand:
                 command_mock,
             ),
             patch(
+                "deepagents_code.update_check.install_extra_recovery_command",
+                command_mock,
+            ),
+            patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
                 return_value=perform_return,
@@ -1803,9 +1807,18 @@ class TestInstallExtraSubcommand:
         perform_return: tuple[bool, str] = (True, ""),
         perform_side_effect: BaseException | None = None,
         command_side_effect: BaseException | None = None,
+        command_return: str | None = None,
+        recovery_side_effect: BaseException | None = None,
+        recovery_return: str | None = None,
         input_reply: str = "n",
     ) -> tuple[int, MagicMock, MagicMock]:
         """Invoke `cli_main()` with `--install` and capture console output.
+
+        `install_extra_command` and `install_extra_recovery_command` share one
+        mock by default (the realistic "both resolve identically" case). Pass
+        `recovery_return` or `recovery_side_effect` to drive the recovery
+        command independently — e.g. to exercise the path where the initial
+        command resolves but the recovery command raises.
 
         Returns:
             `(exit_code, perform_mock, console_mock)` — *console_mock* is a
@@ -1829,14 +1842,22 @@ class TestInstallExtraSubcommand:
             perform_mock.side_effect = perform_side_effect
         else:
             perform_mock.return_value = perform_return
-        command_mock = MagicMock(
-            return_value=(
-                "curl -LsSf https://langch.in/dcode | "
-                f"DEEPAGENTS_CODE_EXTRAS={extra} bash"
-            ),
+        default_script_cmd = (
+            f"curl -LsSf https://langch.in/dcode | DEEPAGENTS_CODE_EXTRAS={extra} bash"
         )
+        command_mock = MagicMock(return_value=command_return or default_script_cmd)
         if command_side_effect is not None:
             command_mock.side_effect = command_side_effect
+        # Default: recovery resolves to the same command. Only split into its
+        # own mock when a test drives the recovery command independently.
+        if recovery_return is not None or recovery_side_effect is not None:
+            recovery_mock = MagicMock(
+                return_value=recovery_return or default_script_cmd
+            )
+            if recovery_side_effect is not None:
+                recovery_mock.side_effect = recovery_side_effect
+        else:
+            recovery_mock = command_mock
         with (
             patch.object(sys, "argv", argv),
             patch.object(sys, "stdin", mock_stdin),
@@ -1853,6 +1874,10 @@ class TestInstallExtraSubcommand:
             patch(
                 "deepagents_code.update_check.install_extra_command",
                 command_mock,
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_recovery_command",
+                recovery_mock,
             ),
             patch(
                 "deepagents_code.update_check.perform_install_extra",
@@ -1893,6 +1918,37 @@ class TestInstallExtraSubcommand:
         assert "curl -LsSf https://langch.in/dcode" in text
         assert "DEEPAGENTS_CODE_EXTRAS=quickjs bash" in text
         assert "quickjs" in text
+
+    def test_failure_escapes_uv_recovery_command_markup(self) -> None:
+        """Failed uv recovery commands preserve extras rendered by Rich."""
+        command = "uv tool install -U 'deepagents-code[quickjs]'"
+        code, _perform, console_mock = self._run_install_capture(
+            "quickjs",
+            perform_return=(False, "resolver: conflict"),
+            command_return=command,
+        )
+        assert code == 1
+        text = self._printed_text(console_mock)
+        assert "deepagents-code\\[quickjs]" in text
+
+    def test_failure_recovery_command_error_keeps_prior_command(self) -> None:
+        """A recovery-command error on a failed install keeps the prior command.
+
+        The command resolved before the failure is shown instead of crashing.
+        """
+        resolved = "uv tool install -U 'deepagents-code[quickjs]'"
+        code, _perform, console_mock = self._run_install_capture(
+            "quickjs",
+            perform_return=(False, "resolver: conflict"),
+            command_return=resolved,
+            recovery_side_effect=ValueError("bad receipt"),
+        )
+        assert code == 1
+        text = self._printed_text(console_mock)
+        assert "Install failed" in text
+        # Falls back to the install_extra_command value resolved before the
+        # failure, with its bracket escaped for Rich.
+        assert "deepagents-code\\[quickjs]" in text
 
     def test_keyboard_interrupt_exits_130(self) -> None:
         """Ctrl-C during install exits 130 with an Aborted message."""

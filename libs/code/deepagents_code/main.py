@@ -2722,11 +2722,16 @@ def cli_main() -> None:
             from rich.markup import escape
 
             from deepagents_code.config import _is_editable_install
-            from deepagents_code.extras_info import KNOWN_EXTRAS
+            from deepagents_code.extras_info import (
+                KNOWN_EXTRAS,
+                ExtrasIntrospectionError,
+            )
             from deepagents_code.update_check import (
+                ToolRequirementIntrospectionError,
                 create_update_log_path,
                 editable_extra_hint,
                 install_extra_command,
+                install_extra_recovery_command,
                 install_extras_command,
                 is_valid_extra_name,
                 perform_install_extra,
@@ -2800,10 +2805,24 @@ def cli_main() -> None:
                 # Tail the last 200 chars — uv resolver prints the resolved
                 # error at the end, not the beginning.
                 detail = f": {output[-200:]}" if output else ""
+                try:
+                    manual_cmd = install_extra_recovery_command(extra)
+                except (
+                    ExtrasIntrospectionError,
+                    ToolRequirementIntrospectionError,
+                    ValueError,
+                ):
+                    logger.warning(
+                        "--install recovery command failed (install reported failure)",
+                        exc_info=True,
+                    )
+                    # Keep the install-script command bound above; fall back to a
+                    # bare extras command only if that was never set.
+                    manual_cmd = manual_cmd or install_extras_command((extra,))
                 console.print(
                     f"[bold red]Install failed[/bold red]{escape(detail)}\n"
                     f"Log: {log_path}\n"
-                    f"Run manually: [cyan]{manual_cmd}[/cyan]",
+                    f"Run manually: [cyan]{escape(manual_cmd)}[/cyan]",
                     markup=True,
                     highlight=False,
                 )
@@ -2814,7 +2833,19 @@ def cli_main() -> None:
             except Exception as exc:
                 logger.warning("--install failed", exc_info=True)
                 log_line = f"\nLog: {log_path}" if log_path else ""
-                fallback_cmd = manual_cmd or install_extras_command((extra,))
+                # This is the catch-all for any unexpected install failure, so
+                # the recovery-hint guard is intentionally broad too: it must
+                # never raise a second error over the original one. `manual_cmd`
+                # may be unset here (the failure could predate its assignment),
+                # so fall back to a bare extras command.
+                try:
+                    fallback_cmd = install_extra_recovery_command(extra)
+                except Exception:  # best-effort hint, never re-raise here
+                    logger.warning(
+                        "--install recovery command failed (unexpected error)",
+                        exc_info=True,
+                    )
+                    fallback_cmd = manual_cmd or install_extras_command((extra,))
                 console.print(
                     f"[bold red]Error:[/bold red] "
                     f"{type(exc).__name__}: {escape(str(exc))}"

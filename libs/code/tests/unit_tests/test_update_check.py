@@ -55,6 +55,7 @@ from deepagents_code.update_check import (
     get_sdk_release_time,
     get_seen_version,
     install_extra_command,
+    install_extra_recovery_command,
     install_extras_command,
     install_package_command,
     is_auto_update_enabled,
@@ -2487,9 +2488,10 @@ class TestInstallExtraCommand:
         assert installed_extra_names("does-not-exist-pkg-xyz-abc") == set()
 
     def test_install_extra_command_ignores_missing_distribution(self) -> None:
-        """Display-only commands do not introspect installed distribution state."""
+        """Display-only commands tolerate missing distribution metadata."""
         assert (
-            install_extra_command("quickjs") == "curl -LsSf https://langch.in/dcode | "
+            install_extra_command("quickjs", distribution_name="missing-dcode-test")
+            == "curl -LsSf https://langch.in/dcode | "
             "DEEPAGENTS_CODE_EXTRAS=quickjs bash"
         )
 
@@ -2510,6 +2512,71 @@ class TestInstallExtraCommand:
         assert (
             install_extra_command("quickjs") == "curl -LsSf https://langch.in/dcode | "
             "DEEPAGENTS_CODE_EXTRAS=quickjs bash"
+        )
+
+    def test_install_extra_command_preserves_detected_extras(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Install-script guidance keeps existing extras when metadata reveals them."""
+        _write_dist_info(tmp_path, "definitely-present-dcode-test-nvidia")
+        _write_dist_info(
+            tmp_path,
+            "deepagents-code",
+            requires=(
+                'definitely-present-dcode-test-nvidia; extra == "nvidia"',
+                'definitely-absent-dcode-test-quickjs-xyz; extra == "quickjs"',
+            ),
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        assert installed_extra_names("deepagents-code") == {"nvidia"}
+        assert (
+            install_extra_command("quickjs") == "curl -LsSf https://langch.in/dcode | "
+            "DEEPAGENTS_CODE_EXTRAS=nvidia,quickjs bash"
+        )
+
+    def test_recovery_command_preserves_uv_receipt_context(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """UV recovery guidance matches the automatic context-preserving install."""
+        _write_uv_receipt(
+            tmp_path,
+            '{ name = "deepagents-code" }, { name = "langchain-custom" }',
+            python="/opt/Python 3.13/bin/python",
+        )
+        _write_dist_info(tmp_path, "definitely-present-dcode-test-nvidia")
+        _write_dist_info(
+            tmp_path,
+            "deepagents-code",
+            requires=('definitely-present-dcode-test-nvidia; extra == "nvidia"',),
+        )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.setattr(
+            "deepagents_code.update_check.detect_install_method", lambda: "uv"
+        )
+
+        assert install_extra_recovery_command("quickjs") == (
+            "uv tool install -U --python '/opt/Python 3.13/bin/python' "
+            "'deepagents-code[nvidia,quickjs]' --with langchain-custom"
+        )
+
+    def test_recovery_command_uses_script_for_non_uv_without_receipt(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Unsupported install recovery does not require uv receipt introspection."""
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }, "bad"')
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        monkeypatch.setattr(
+            "deepagents_code.update_check.detect_install_method", lambda: "other"
+        )
+        monkeypatch.setattr(
+            "deepagents_code.extras_info.installed_extra_names",
+            lambda _distribution_name="deepagents-code": set(),
+        )
+
+        assert install_extra_recovery_command("quickjs") == (
+            "curl -LsSf https://langch.in/dcode | DEEPAGENTS_CODE_EXTRAS=quickjs bash"
         )
 
     def test_uv_install_extra_command_refuses_invalid_metadata(
@@ -2795,6 +2862,13 @@ class TestPerformInstallExtra:
         """Unsupported install guidance wins over uv receipt introspection errors."""
         _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }, "bad"')
         monkeypatch.setattr("sys.prefix", str(tmp_path))
+        # Isolate from the host's installed extras so the script command is
+        # deterministic — install_extra_command merges real distribution
+        # metadata, which would otherwise leak the dev env's extras in.
+        monkeypatch.setattr(
+            "deepagents_code.extras_info.installed_extra_names",
+            lambda _distribution_name="deepagents-code": set(),
+        )
         with patch(
             "deepagents_code.update_check.detect_install_method",
             return_value=method,

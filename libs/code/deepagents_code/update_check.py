@@ -2113,18 +2113,25 @@ def install_extras_command(extras: Iterable[str]) -> str:
     )
 
 
-def install_extra_command(extra: str) -> str:
-    """Return the shell command that adds `extra` to the installed dcode tool.
+def install_extra_command(
+    extra: str,
+    *,
+    distribution_name: str = "deepagents-code",
+) -> str:
+    """Return the install-script command that adds `extra` to dcode.
 
     The promoted install path is the install script (see `scripts/install.sh`).
-    This helper is display-only and deliberately avoids install-state
-    introspection so unsupported installs can surface their method-specific
-    guidance before any uv receipt is read.
+    This helper is display-only and avoids uv receipt introspection so
+    unsupported installs can surface method-specific guidance before any uv
+    receipt is read. Already-detected extras from distribution metadata are
+    included when available, so following the command does not drop them.
 
     Args:
         extra: The extra name (e.g. `'quickjs'`, `'daytona'`, `'fireworks'`).
             Validated internally against PEP 508 grammar before interpolation
             into the shell command.
+        distribution_name: Name of the installed distribution to inspect for
+            already-installed extras.
 
     Returns:
         Shell command string suitable for display in error messages.
@@ -2138,7 +2145,35 @@ def install_extra_command(extra: str) -> str:
             f"({_EXTRA_NAME_RE.pattern})"
         )
         raise ValueError(msg)
-    return install_extras_command((extra,))
+    from deepagents_code.extras_info import installed_extra_names
+
+    extras = installed_extra_names(distribution_name)
+    extras.add(extra)
+    return install_extras_command(extras)
+
+
+def install_extra_recovery_command(extra: str) -> str:
+    """Return a manual recovery command for the current install method.
+
+    uv-managed installs can preserve the uv receipt's Python interpreter and
+    `--with` requirements, so their recovery command uses the same uv path as
+    the automatic installer. Unsupported methods keep the install-script command
+    and deliberately avoid reading uv receipts.
+
+    Args:
+        extra: Extra name to add.
+
+    Returns:
+        Shell command string suitable for display in error messages.
+
+    Propagates `ValueError` if `extra` fails PEP 508 validation, and (on the uv
+    path) `ExtrasIntrospectionError` if installed extras cannot be determined
+    safely or `ToolRequirementIntrospectionError` if the uv receipt's
+    interpreter or `--with` packages cannot be preserved safely.
+    """
+    if detect_install_method() == "uv":
+        return _install_extra_uv_tool_command(extra)
+    return install_extra_command(extra)
 
 
 def _install_extra_uv_tool_command(

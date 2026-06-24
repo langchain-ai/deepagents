@@ -487,6 +487,9 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         env_var: str | None,
         *,
         reason: str | None = None,
+        allow_empty_submit: bool = False,
+        input_placeholder: str | None = None,
+        submit_label: str | None = None,
     ) -> None:
         """Initialize the prompt for `provider`.
 
@@ -495,13 +498,20 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             env_var: Canonical env var the SDK reads, shown as helper text.
                 May be `None` for providers that don't use one of the
                 hardcoded env-var bindings (rare; the prompt still works).
-            reason: Optional one-line context, e.g.,
-                `"Required to use anthropic:claude-opus-4-7"`.
+            reason: Optional context, e.g.,
+                `"Required to use anthropic:claude-opus-4-8"`.
+            allow_empty_submit: Whether pressing Enter on an empty key dismisses
+                with `AuthResult.CANCELLED` instead of showing a validation error.
+            input_placeholder: Optional placeholder override for the key input.
+            submit_label: Optional help-label override for the Enter action.
         """
         super().__init__()
         self._provider = provider
         self._env_var = env_var
         self._reason = reason
+        self._allow_empty_submit = allow_empty_submit
+        self._input_placeholder = input_placeholder
+        self._submit_label = submit_label
         # LangSmith is configured as a tracing service: it has no base-URL
         # override but does carry an optional project name, and saving a key
         # turns tracing on.
@@ -636,7 +646,8 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                     classes="auth-prompt-error",
                 )
             yield Input(
-                placeholder=(
+                placeholder=self._input_placeholder
+                or (
                     "Paste a new key to replace the stored one"
                     if self._has_existing
                     else "Paste your API key"
@@ -649,6 +660,12 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                     "Deep Agents Code stores the above key locally and turns on "
                     "LangSmith tracing. To pause tracing without removing the key, "
                     "set [bold]DEEPAGENTS_CODE_LANGSMITH_TRACING=false[/bold]."
+                )
+            elif is_service(self._provider):
+                storage_note = Content.from_markup(
+                    "Deep Agents Code stores the above key locally and uses it "
+                    "for [bold]$provider[/bold].",
+                    provider=provider_label,
                 )
             else:
                 storage_note = Content.from_markup(
@@ -736,7 +753,9 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                 base_url_hint_widget.display = self._advanced_visible
                 yield base_url_hint_widget
             yield Static("", classes="auth-prompt-error", id="auth-prompt-error")
-            save_label = "Enter replace" if self._has_existing else "Enter save"
+            save_label = self._submit_label or (
+                "Enter replace" if self._has_existing else "Enter save"
+            )
             help_parts = [f"{save_label} {glyphs.bullet} Esc cancel", "F2 advanced"]
             if self._has_existing:
                 help_parts.append("Ctrl+D delete stored")
@@ -951,6 +970,9 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             base_url = self.query_one("#auth-prompt-base-url", Input).value.strip()
             project = ""
         if not cleaned:
+            if self._allow_empty_submit:
+                self.dismiss(AuthResult.CANCELLED)
+                return
             self._show_error("API key cannot be empty.")
             return
         try:

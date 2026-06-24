@@ -6207,34 +6207,35 @@ class DeepAgentsApp(App):
 
         Skipped when a Tavily key is already configured (env or stored). A
         blank submission or Escape stores nothing; a non-empty key is persisted
-        via the same `auth_store` path `/auth` uses and takes full effect on the
-        next launch.
+        via the same `auth_store` path `/auth` uses. The key is also exported to
+        the process environment (`apply_stored_service_credentials`) so a server
+        respawn this session picks it up; the already-running server keeps its
+        spawn-time tools, so web search takes full effect on the next launch (or
+        after a restart).
         """
         from deepagents_code.config import settings
 
         if settings.has_tavily:
             return
 
-        from deepagents_code.widgets.launch_init import LaunchTavilyScreen
+        from deepagents_code.widgets.auth import AuthPromptScreen, AuthResult
 
-        key = await self._push_screen_wait(LaunchTavilyScreen())
-        if not key:
-            return
-
-        from deepagents_code import auth_store
-
-        try:
-            outcome = await asyncio.to_thread(auth_store.set_stored_key, "tavily", key)
-        except (ValueError, RuntimeError, OSError) as exc:
-            logger.warning("Could not store the onboarding Tavily key", exc_info=True)
-            self.notify(
-                f"Could not save Tavily key: {exc}",
-                severity="error",
-                markup=False,
+        result = await self._push_screen_wait(
+            AuthPromptScreen(
+                "tavily",
+                "TAVILY_API_KEY",
+                reason=(
+                    "Web search is optional. Paste a Tavily API key to enable it "
+                    "now, or press Enter to skip. You can add or change it later "
+                    "with /auth."
+                ),
+                allow_empty_submit=True,
+                input_placeholder="Tavily API key (optional)",
+                submit_label="Enter save/skip",
             )
+        )
+        if result is not AuthResult.SAVED:
             return
-        for warning in outcome.warnings:
-            self.notify(warning, severity="warning", markup=False)
 
         from deepagents_code.model_config import apply_stored_service_credentials
 

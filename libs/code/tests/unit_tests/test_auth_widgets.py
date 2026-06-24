@@ -66,7 +66,14 @@ class _AuthHostApp(App[None]):
         yield Container(id="main")
 
     def show_prompt(
-        self, provider: str, env_var: str | None, *, reason: str | None = None
+        self,
+        provider: str,
+        env_var: str | None,
+        *,
+        reason: str | None = None,
+        allow_empty_submit: bool = False,
+        input_placeholder: str | None = None,
+        submit_label: str | None = None,
     ) -> None:
         """Push the prompt and capture the dismissal result."""
 
@@ -74,7 +81,17 @@ class _AuthHostApp(App[None]):
             self.prompt_result = result
             self.prompt_dismissed = True
 
-        self.push_screen(AuthPromptScreen(provider, env_var, reason=reason), handle)
+        self.push_screen(
+            AuthPromptScreen(
+                provider,
+                env_var,
+                reason=reason,
+                allow_empty_submit=allow_empty_submit,
+                input_placeholder=input_placeholder,
+                submit_label=submit_label,
+            ),
+            handle,
+        )
 
     def show_manager(self) -> None:
         """Push the manager screen."""
@@ -724,6 +741,108 @@ api_key_url = "javascript:alert(1)"
             assert "cannot be empty" in str(err.content)
         assert app.prompt_dismissed is False
         assert auth_store.get_stored_key("anthropic") is None
+
+    async def test_optional_empty_submit_cancels_without_error(self) -> None:
+        """Onboarding can use the auth prompt as an optional setup step."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt(
+                "tavily",
+                "TAVILY_API_KEY",
+                allow_empty_submit=True,
+                input_placeholder="Tavily API key (optional)",
+                submit_label="Enter save/skip",
+            )
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+        assert app.prompt_dismissed is True
+        assert app.prompt_result is AuthResult.CANCELLED
+        assert auth_store.get_stored_key("tavily") is None
+
+    async def test_optional_prompt_customizes_new_user_copy(self) -> None:
+        """Onboarding can explain Tavily without a separate key-entry modal."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt(
+                "tavily",
+                "TAVILY_API_KEY",
+                reason="Web search is optional. Press Enter to skip.",
+                allow_empty_submit=True,
+                input_placeholder="Tavily API key (optional)",
+                submit_label="Enter save/skip",
+            )
+            await pilot.pause()
+
+            key_input = app.screen.query_one("#auth-prompt-input", Input)
+            help_text = app.screen.query_one(".auth-prompt-help", Static)
+            copy = "\n".join(str(widget.content) for widget in app.screen.query(Static))
+
+        assert key_input.placeholder == "Tavily API key (optional)"
+        assert key_input.password is True
+        assert "Web search is optional" in copy
+        assert "Enter save/skip" in str(help_text.content)
+        # Tavily is a service, so the storage note uses the service phrasing
+        # ("uses it for X"), not the model-provider phrasing ("when you select
+        # X models") that would render the nonsensical "select tavily models".
+        assert "uses it for" in copy
+        assert "when you select" not in copy
+
+    async def test_optional_prompt_surfaces_save_failure_and_stays_open(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed credential write shows an inline error and keeps the modal."""
+
+        def _raise(*_args: object, **_kwargs: object) -> auth_store.WriteOutcome:
+            msg = "credential store is not writable"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(auth_store, "set_stored_key", _raise)
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("tavily", "TAVILY_API_KEY", allow_empty_submit=True)
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "tvly-key"
+            await pilot.press("enter")
+            await pilot.pause()
+            err = app.screen.query_one("#auth-prompt-error", Static)
+            error_text = str(err.content)
+
+        # Surfaced in-modal, not silently swallowed, and the modal stays open so
+        # onboarding cannot proceed as if the key were saved.
+        assert "Could not save credential" in error_text
+        assert "credential store is not writable" in error_text
+        assert app.prompt_dismissed is False
+
+    async def test_optional_prompt_notifies_store_warnings(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """chmod-style warnings from the store reach the user via `notify`."""
+        notices: list[tuple[str, str | None]] = []
+
+        def _capture_notify(
+            message: str, *_args: object, severity: str | None = None, **_kwargs: object
+        ) -> None:
+            notices.append((str(message), severity))
+
+        def _warn(*_args: object, **_kwargs: object) -> auth_store.WriteOutcome:
+            return auth_store.WriteOutcome(warnings=("credential file is not private",))
+
+        monkeypatch.setattr(auth_store, "set_stored_key", _warn)
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", _capture_notify)
+            app.show_prompt("tavily", "TAVILY_API_KEY", allow_empty_submit=True)
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "tvly-key"
+            await pilot.press("enter")
+            await pilot.pause()
+
+        assert ("credential file is not private", "warning") in notices
+        assert app.prompt_result is AuthResult.SAVED
 
     async def test_escape_cancels(self) -> None:
         """Escape dismisses with `CANCELLED` and writes nothing."""

@@ -1133,60 +1133,52 @@ class TestStartupSequence:
         )
         mark_complete.assert_called_once_with()
 
-    async def test_prompt_launch_tavily_surfaces_store_warnings(self) -> None:
-        """Onboarding Tavily credential saves should surface chmod warnings."""
+    async def test_prompt_launch_tavily_uses_auth_prompt_and_applies_key(self) -> None:
+        """Onboarding should reuse the `/auth` prompt for Tavily credentials."""
+        from deepagents_code.widgets.auth import AuthPromptScreen, AuthResult
+
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
-        app._push_screen_wait = AsyncMock(return_value="tvly-key")  # ty: ignore
-        notify_mock = MagicMock()
-        app.notify = notify_mock  # ty: ignore
+        pushed: list[AuthPromptScreen] = []
+
+        def capture_prompt(screen: object) -> AuthResult:
+            assert isinstance(screen, AuthPromptScreen)
+            pushed.append(screen)
+            return AuthResult.SAVED
+
+        app._push_screen_wait = AsyncMock(side_effect=capture_prompt)  # ty: ignore
 
         with (
             patch("deepagents_code.config.settings", SimpleNamespace(has_tavily=False)),
-            patch(
-                "deepagents_code.auth_store.set_stored_key",
-                return_value=SimpleNamespace(
-                    warnings=("credential file is not private",)
-                ),
-            ) as set_stored_key,
             patch(
                 "deepagents_code.model_config.apply_stored_service_credentials"
             ) as apply_credentials,
         ):
             await app._prompt_launch_tavily()
 
-        set_stored_key.assert_called_once_with("tavily", "tvly-key")
-        notify_mock.assert_called_once_with(
-            "credential file is not private",
-            severity="warning",
-            markup=False,
-        )
+        prompt = pushed[0]
+        assert prompt._provider == "tavily"
+        assert prompt._env_var == "TAVILY_API_KEY"
+        assert prompt._allow_empty_submit is True
+        assert prompt._input_placeholder == "Tavily API key (optional)"
+        assert prompt._submit_label == "Enter save/skip"
+        assert "Web search is optional" in (prompt._reason or "")
         apply_credentials.assert_called_once_with()
 
-    async def test_prompt_launch_tavily_surfaces_store_failure(self) -> None:
-        """Onboarding Tavily credential save failures should be visible."""
+    async def test_prompt_launch_tavily_cancel_does_not_apply_key(self) -> None:
+        """Cancelling the shared auth prompt leaves Tavily unset."""
+        from deepagents_code.widgets.auth import AuthResult
+
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
-        app._push_screen_wait = AsyncMock(return_value="tvly-key")  # ty: ignore
-        notify_mock = MagicMock()
-        app.notify = notify_mock  # ty: ignore
+        app._push_screen_wait = AsyncMock(return_value=AuthResult.CANCELLED)  # ty: ignore
 
         with (
             patch("deepagents_code.config.settings", SimpleNamespace(has_tavily=False)),
-            patch(
-                "deepagents_code.auth_store.set_stored_key",
-                side_effect=RuntimeError("credential store is not writable"),
-            ) as set_stored_key,
             patch(
                 "deepagents_code.model_config.apply_stored_service_credentials"
             ) as apply_credentials,
         ):
             await app._prompt_launch_tavily()
 
-        set_stored_key.assert_called_once_with("tavily", "tvly-key")
-        notify_mock.assert_called_once_with(
-            "Could not save Tavily key: credential store is not writable",
-            severity="error",
-            markup=False,
-        )
         apply_credentials.assert_not_called()
 
     async def test_prompt_launch_tavily_skips_when_configured(self) -> None:
@@ -1205,59 +1197,56 @@ class TestStartupSequence:
         set_stored_key.assert_not_called()
 
     async def test_prompt_launch_tavily_skips_blank_submission(self) -> None:
-        """A blank Tavily submission (Enter on an empty field) stores nothing."""
+        """A blank Tavily submission through `/auth` stores nothing."""
+        from deepagents_code.widgets.auth import AuthResult
+
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
-        app._push_screen_wait = AsyncMock(return_value="")  # ty: ignore
+        app._push_screen_wait = AsyncMock(return_value=AuthResult.CANCELLED)  # ty: ignore
 
         with (
             patch("deepagents_code.config.settings", SimpleNamespace(has_tavily=False)),
-            patch("deepagents_code.auth_store.set_stored_key") as set_stored_key,
             patch(
                 "deepagents_code.model_config.apply_stored_service_credentials"
             ) as apply_credentials,
         ):
             await app._prompt_launch_tavily()
 
-        set_stored_key.assert_not_called()
         apply_credentials.assert_not_called()
 
     async def test_prompt_launch_tavily_skips_on_escape(self) -> None:
-        """Escaping the Tavily screen (dismissed with None) stores nothing."""
+        """Escaping the shared auth prompt stores nothing."""
+        from deepagents_code.widgets.auth import AuthResult
+
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
-        app._push_screen_wait = AsyncMock(return_value=None)  # ty: ignore
+        app._push_screen_wait = AsyncMock(return_value=AuthResult.CANCELLED)  # ty: ignore
 
         with (
             patch("deepagents_code.config.settings", SimpleNamespace(has_tavily=False)),
-            patch("deepagents_code.auth_store.set_stored_key") as set_stored_key,
             patch(
                 "deepagents_code.model_config.apply_stored_service_credentials"
             ) as apply_credentials,
         ):
             await app._prompt_launch_tavily()
 
-        set_stored_key.assert_not_called()
         apply_credentials.assert_not_called()
 
     async def test_prompt_launch_tavily_clean_save(self) -> None:
         """A clean Tavily save applies credentials and shows no toast."""
+        from deepagents_code.widgets.auth import AuthResult
+
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
-        app._push_screen_wait = AsyncMock(return_value="tvly-key")  # ty: ignore
+        app._push_screen_wait = AsyncMock(return_value=AuthResult.SAVED)  # ty: ignore
         notify_mock = MagicMock()
         app.notify = notify_mock  # ty: ignore
 
         with (
             patch("deepagents_code.config.settings", SimpleNamespace(has_tavily=False)),
             patch(
-                "deepagents_code.auth_store.set_stored_key",
-                return_value=SimpleNamespace(warnings=()),
-            ) as set_stored_key,
-            patch(
                 "deepagents_code.model_config.apply_stored_service_credentials"
             ) as apply_credentials,
         ):
             await app._prompt_launch_tavily()
 
-        set_stored_key.assert_called_once_with("tavily", "tvly-key")
         apply_credentials.assert_called_once_with()
         notify_mock.assert_not_called()
 

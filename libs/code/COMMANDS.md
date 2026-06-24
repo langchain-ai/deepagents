@@ -12,7 +12,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | Command | Aliases | Description |
 | --- | --- | --- |
 | `/agents` |  | Browse and switch between available agents |
-| `/auth` | `/connect` | Connect and manage model provider credentials |
+| `/auth` | `/connect` | Connect and manage provider and service credentials |
 | `/auto-update` |  | Turn automatic updates on or off |
 | `/changelog` |  | Open the changelog in a browser |
 | `/clear` |  | Clear the chat and start a new thread |

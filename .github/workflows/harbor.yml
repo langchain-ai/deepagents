@@ -159,6 +159,11 @@ on:
         required: true
         default: "1"
         type: string
+      harbor_package_override:
+        description: "[Harbor only] Optional: install Harbor from an arbitrary package spec (e.g. 'harbor[langsmith] @ git+https://github.com/owner/harbor.git@branch') instead of the locked version, to test an unreleased Harbor build. Leave empty to use the pinned Harbor. Ignored when dataset=clbench."
+        required: false
+        default: ""
+        type: string
       clbench_schedule:
         description: "[clbench only] Schedule for dataset=clbench. 'quick_test' = cheap smoke (per-task clbench run; only tasks that define it — currently just exploitable_poker). 'default' = leaderboard-comparable (run-all, each task's default schedule, 5 runs + baseline) — multi-hour and likely exceeds the job timeout for a Deep Agents system. Ignored for Harbor."
         required: true
@@ -327,6 +332,13 @@ jobs:
 
       - name: "📦 Install Dependencies"
         run: uv sync --group test --locked
+
+      - name: "⚓ Install Harbor override"
+        if: ${{ inputs.harbor_package_override != '' }}
+        env:
+          # Passed via env (not interpolated into the shell) to avoid injection.
+          HARBOR_PACKAGE_OVERRIDE: ${{ inputs.harbor_package_override }}
+        run: uv pip install "$HARBOR_PACKAGE_OVERRIDE"
 
       - name: "🔇 Suppress Harbor first-run tips"
         run: |

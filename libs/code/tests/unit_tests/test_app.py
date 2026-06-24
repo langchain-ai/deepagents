@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 import pytest
 from textual import events
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, ScreenStackError
 from textual.binding import Binding, BindingType
 from textual.containers import Container
 from textual.content import Content
@@ -47,7 +47,10 @@ from deepagents_code.app import (
 )
 from deepagents_code.event_bus import ExternalEvent
 from deepagents_code.widgets.chat_input import ChatInput
-from deepagents_code.widgets.launch_init import LaunchNameScreen
+from deepagents_code.widgets.launch_init import (
+    LaunchDependenciesScreen,
+    LaunchNameScreen,
+)
 from deepagents_code.widgets.messages import (
     AppMessage,
     ErrorMessage,
@@ -924,6 +927,169 @@ class TestStartupSequence:
         mark_complete.assert_called_once_with()
         mount_message_mock.assert_awaited_once()
         assert events == ["switch:openai:gpt-5", "mark", "welcome"]
+
+    async def test_launch_init_installs_missing_selected_provider(self) -> None:
+        """Onboarding installs a missing recommended provider before switching."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._install_extra_then_switch = AsyncMock()  # ty: ignore
+        app._switch_model = AsyncMock()  # ty: ignore
+
+        with (
+            patch(
+                "deepagents_code.config_manifest.provider_install_extra",
+                return_value="baseten",
+            ),
+            patch(
+                "deepagents_code.config_manifest.is_provider_package_installed",
+                return_value=False,
+            ),
+        ):
+            await app._switch_or_install_launch_model(
+                "baseten:zai-org/GLM-5.2",
+                "baseten",
+            )
+
+        app._install_extra_then_switch.assert_awaited_once_with(  # ty: ignore
+            "baseten",
+            "baseten:zai-org/GLM-5.2",
+        )
+        app._switch_model.assert_not_awaited()  # ty: ignore
+
+    async def test_launch_init_switches_installed_selected_provider(self) -> None:
+        """Onboarding switches directly when the selected provider is installed."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._install_extra_then_switch = AsyncMock()  # ty: ignore
+        app._switch_model = AsyncMock()  # ty: ignore
+
+        with (
+            patch(
+                "deepagents_code.config_manifest.provider_install_extra",
+                return_value="baseten",
+            ),
+            patch(
+                "deepagents_code.config_manifest.is_provider_package_installed",
+                return_value=True,
+            ),
+        ):
+            await app._switch_or_install_launch_model(
+                "baseten:zai-org/GLM-5.2",
+                "baseten",
+            )
+
+        app._install_extra_then_switch.assert_not_awaited()  # ty: ignore
+        app._switch_model.assert_awaited_once_with(  # ty: ignore
+            "baseten:zai-org/GLM-5.2",
+            announce_unchanged=False,
+        )
+
+    async def test_launch_init_consumes_injected_dependency_result(self) -> None:
+        """The mount path's pre-wired dependency future drives the model switch.
+
+        On mount, `on_mount` switches the name screen directly into the
+        dependency screen and hands `_run_launch_init_sequence` the already-wired
+        result future, so the sequence must consume that future instead of
+        re-prompting via `_prompt_launch_dependencies_then_model`.
+        """
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._write_launch_name_memory = AsyncMock()  # ty: ignore
+        switch_or_install = AsyncMock()
+        app._switch_or_install_launch_model = switch_or_install  # ty: ignore
+        # The fallback prompt must NOT run when a result is injected.
+        prompt_flow_mock = AsyncMock()
+        app._prompt_launch_dependencies_then_model = prompt_flow_mock  # ty: ignore
+
+        loop = asyncio.get_running_loop()
+        name_result: asyncio.Future[str | None] = loop.create_future()
+        name_result.set_result("Ada")
+        dependency_result: asyncio.Future[tuple[bool, tuple[str, str] | None]] = (
+            loop.create_future()
+        )
+        dependency_result.set_result((True, ("openai:gpt-5.4", "openai")))
+
+        with patch(
+            "deepagents_code.onboarding.mark_onboarding_complete",
+            return_value=True,
+        ) as mark_complete:
+            await app._run_launch_init_sequence(
+                name_result=name_result,
+                dependency_result=dependency_result,
+            )
+
+        prompt_flow_mock.assert_not_awaited()
+        switch_or_install.assert_awaited_once_with("openai:gpt-5.4", "openai")
+        mark_complete.assert_called_once_with()
+
+    async def test_launch_init_wires_name_screen_to_dependency_screen(self) -> None:
+        """On mount, submitting the name switches straight into the deps screen.
+
+        Regression guard for the no-flash wiring: the mount path must set the
+        name screen's `continue_screen` and pass a `dependency_result` future. If
+        it regressed to the old `LaunchNameScreen()` with no continue screen,
+        onboarding would fall back to the double-modal flow and the post-submit
+        screen would not be the dependency summary.
+        """
+        app = DeepAgentsApp(launch_init=True)
+        app._prewarm_deferred_imports = MagicMock()  # ty: ignore
+        app._resolve_git_branch_and_continue = AsyncMock()  # ty: ignore
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert isinstance(app.screen, LaunchNameScreen)
+            # The name screen is pre-wired to continue into the dependency
+            # summary rather than dismissing back to the base app.
+            assert isinstance(
+                app.screen._continue_screen,  # ty: ignore
+                LaunchDependenciesScreen,
+            )
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert isinstance(app.screen, LaunchDependenciesScreen)
+
+            launch_task = app._launch_init_task
+            assert launch_task is not None
+            app.screen.action_cancel()
+            await asyncio.wait_for(launch_task, timeout=2)
+            await pilot.pause()
+
+    async def test_launch_init_finishes_when_dependency_switch_fails(self) -> None:
+        """A failed name-to-dependencies switch should skip the rest of setup."""
+        app = DeepAgentsApp(launch_init=True)
+        app._prewarm_deferred_imports = MagicMock()  # ty: ignore
+        app._resolve_git_branch_and_continue = AsyncMock()  # ty: ignore
+        app._mark_onboarding_complete = AsyncMock()  # ty: ignore
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._write_launch_name_memory = AsyncMock()  # ty: ignore
+        switch_or_install = AsyncMock()
+        app._switch_or_install_launch_model = switch_or_install  # ty: ignore
+        original_switch_screen = app.switch_screen
+
+        def fail_dependency_switch(screen: ModalScreen[Any] | str) -> None:
+            if isinstance(screen, LaunchDependenciesScreen):
+                msg = "stack torn down"
+                raise ScreenStackError(msg)
+            original_switch_screen(screen)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert isinstance(app.screen, LaunchNameScreen)
+            launch_task = app._launch_init_task
+            assert launch_task is not None
+            app.switch_screen = fail_dependency_switch  # ty: ignore
+
+            await pilot.press("a", "d", "a", "enter")
+            await pilot.pause()
+
+            await asyncio.wait_for(launch_task, timeout=2)
+            await pilot.pause()
+
+        app._write_launch_name_memory.assert_awaited_once_with("Ada")  # ty: ignore
+        app._mark_onboarding_complete.assert_awaited_once()  # ty: ignore
+        switch_or_install.assert_not_awaited()
 
     async def test_launch_init_sequence_allows_empty_name(self) -> None:
         """Onboarding setup should continue to model selection without a name."""
@@ -3456,7 +3622,9 @@ class TestTraceCommand:
                 await pilot.pause()
 
             app_msgs = app.query(AppMessage)
-            assert any("LANGSMITH_API_KEY" in str(w._content) for w in app_msgs)
+            rendered = "\n".join(str(w._content) for w in app_msgs)
+            assert "LANGSMITH_API_KEY" in rendered
+            assert "/auth" in rendered
 
     async def test_trace_shows_network_error_when_url_fetch_times_out(self) -> None:
         """Should distinguish a network/timeout failure from a config gap.
@@ -7481,7 +7649,7 @@ class TestInstallExtraModelSwitch:
 
         await app._install_extra_then_switch(
             "baseten",
-            "baseten:moonshotai/Kimi-K2.6",
+            "baseten:moonshotai/Kimi-K2.7-Code",
             extra_kwargs={"temperature": 0},
         )
 
@@ -7490,7 +7658,7 @@ class TestInstallExtraModelSwitch:
         screen = app._push_screen_wait.await_args.args[0]  # ty: ignore
         assert isinstance(screen, AuthPromptScreen)
         dispatch.assert_called_once_with(
-            "baseten:moonshotai/Kimi-K2.6",
+            "baseten:moonshotai/Kimi-K2.7-Code",
             extra_kwargs={"temperature": 0},
         )
 
@@ -7506,7 +7674,7 @@ class TestInstallExtraModelSwitch:
 
         await app._install_extra_then_switch(
             "baseten",
-            "baseten:moonshotai/Kimi-K2.6",
+            "baseten:moonshotai/Kimi-K2.7-Code",
         )
 
         app._install_extra.assert_awaited_once_with("baseten", auto_restart=True)  # ty: ignore
@@ -7537,7 +7705,7 @@ class TestInstallExtraModelSwitch:
 
         await app._install_extra_then_switch(
             "baseten",
-            "baseten:moonshotai/Kimi-K2.6",
+            "baseten:moonshotai/Kimi-K2.7-Code",
         )
 
         app._push_screen_wait.assert_awaited_once()  # ty: ignore
@@ -7565,6 +7733,14 @@ class TestInstallExtraModelSwitch:
         )
         monkeypatch.setattr(
             update_check, "install_extra_command", lambda extra: f"uv install {extra}"
+        )
+        # Inert stub: install succeeds below, so the recovery command (only
+        # built on failure) is never invoked. Patched to guard against an
+        # accidental real call introspecting the host's install state.
+        monkeypatch.setattr(
+            update_check,
+            "install_extra_recovery_command",
+            lambda extra: f"uv install {extra}",
         )
         monkeypatch.setattr(
             update_check,
@@ -7605,6 +7781,14 @@ class TestInstallExtraModelSwitch:
         monkeypatch.setattr(
             update_check, "install_extra_command", lambda extra: f"uv install {extra}"
         )
+        # Inert stub: install succeeds below, so the recovery command (only
+        # built on failure) is never invoked. Patched to guard against an
+        # accidental real call introspecting the host's install state.
+        monkeypatch.setattr(
+            update_check,
+            "install_extra_recovery_command",
+            lambda extra: f"uv install {extra}",
+        )
         monkeypatch.setattr(
             update_check,
             "perform_install_extra",
@@ -7642,6 +7826,14 @@ class TestInstallExtraModelSwitch:
         monkeypatch.setattr(
             update_check, "install_extra_command", lambda extra: f"uv install {extra}"
         )
+        # Inert stub: install succeeds below, so the recovery command (only
+        # built on failure) is never invoked. Patched to guard against an
+        # accidental real call introspecting the host's install state.
+        monkeypatch.setattr(
+            update_check,
+            "install_extra_recovery_command",
+            lambda extra: f"uv install {extra}",
+        )
         monkeypatch.setattr(
             update_check,
             "perform_install_extra",
@@ -7676,6 +7868,14 @@ class TestInstallExtraModelSwitch:
         )
         monkeypatch.setattr(
             update_check, "install_extra_command", lambda extra: f"uv install {extra}"
+        )
+        # Inert stub: install succeeds below, so the recovery command (only
+        # built on failure) is never invoked. Patched to guard against an
+        # accidental real call introspecting the host's install state.
+        monkeypatch.setattr(
+            update_check,
+            "install_extra_recovery_command",
+            lambda extra: f"uv install {extra}",
         )
         monkeypatch.setattr(
             update_check,
@@ -7769,6 +7969,11 @@ class TestInstallExtraModelSwitch:
         )
         monkeypatch.setattr(
             update_check,
+            "install_extra_recovery_command",
+            lambda extra: f"uv install {extra}",
+        )
+        monkeypatch.setattr(
+            update_check,
             "perform_install_extra",
             AsyncMock(return_value=(False, "resolver: conflict")),
         )
@@ -7811,7 +8016,7 @@ class TestHandleModelSelection:
 
         app._handle_model_selection(
             screen,  # ty: ignore
-            ("baseten:moonshotai/Kimi-K2.6", "baseten"),
+            ("baseten:moonshotai/Kimi-K2.7-Code", "baseten"),
             extra_kwargs={"temperature": 0},
         )
 
@@ -7829,7 +8034,7 @@ class TestHandleModelSelection:
         await run_worker.call_args.args[0]
         install.assert_awaited_once_with(
             "baseten",
-            "baseten:moonshotai/Kimi-K2.6",
+            "baseten:moonshotai/Kimi-K2.7-Code",
             extra_kwargs={"temperature": 0},
         )
         assert app._model_install_switching is False
@@ -7851,7 +8056,7 @@ class TestHandleModelSelection:
 
         app._handle_model_selection(
             screen,  # ty: ignore
-            ("baseten:moonshotai/Kimi-K2.6", "baseten"),
+            ("baseten:moonshotai/Kimi-K2.7-Code", "baseten"),
         )
 
         assert app._model_install_switching is True
@@ -7883,7 +8088,7 @@ class TestHandleModelSelection:
 
         app._handle_model_selection(
             screen,  # ty: ignore
-            ("baseten:moonshotai/Kimi-K2.6", "baseten"),
+            ("baseten:moonshotai/Kimi-K2.7-Code", "baseten"),
         )
 
         assert app._model_install_switching is True
@@ -7912,7 +8117,7 @@ class TestHandleModelSelection:
 
         app._handle_model_selection(
             screen,  # ty: ignore
-            ("baseten:moonshotai/Kimi-K2.6", "baseten"),
+            ("baseten:moonshotai/Kimi-K2.7-Code", "baseten"),
         )
 
         app.notify.assert_called_once()
@@ -8788,6 +8993,282 @@ class TestDeferredActions:
 
             assert app._server_startup_missing_provider_package is None
             assert app._server_startup_missing_credentials_provider == "openai"
+
+    async def test_auth_saved_event_resumes_startup_immediately(self) -> None:
+        """Saving a key in `/auth` retries without waiting for the manager to close."""
+        from deepagents_code.widgets.auth import AuthManagerScreen
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            resume = AsyncMock()
+            app._resume_server_after_auth_change = resume  # ty: ignore
+
+            app.on_auth_manager_screen_credential_saved(
+                AuthManagerScreen.CredentialSaved()
+            )
+            await asyncio.sleep(0)
+
+            resume.assert_awaited_once_with()
+
+    async def test_auth_change_retries_credentials_blocked_startup(self) -> None:
+        """Adding the missing key via `/auth` auto-retries a failed startup.
+
+        The user shouldn't have to type `/restart` after entering credentials
+        for the provider that blocked startup.
+        """
+        from deepagents_code.model_config import (
+            ProviderAuthSource,
+            ProviderAuthState,
+            ProviderAuthStatus,
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {
+                "model_name": "anthropic:claude-opus-4-7",
+                "model_params": {"temperature": 0.1},
+            }
+            app._server_startup_error = "missing ANTHROPIC_API_KEY"
+            app._server_startup_missing_credentials_provider = "anthropic"
+            app._retry_startup_with_model = AsyncMock()  # ty: ignore
+
+            with patch(
+                "deepagents_code.model_config.get_provider_auth_status",
+                return_value=ProviderAuthStatus(
+                    state=ProviderAuthState.CONFIGURED,
+                    provider="anthropic",
+                    source=ProviderAuthSource.STORED,
+                ),
+            ):
+                retried = await app._maybe_retry_startup_after_auth_change()
+
+            assert retried is True
+            app._retry_startup_with_model.assert_awaited_once_with(  # ty: ignore
+                "anthropic:claude-opus-4-7",
+                extra_kwargs={"temperature": 0.1},
+            )
+
+    async def test_auth_change_does_not_retry_when_key_still_missing(self) -> None:
+        """A still-missing key must not loop back into the same failure."""
+        from deepagents_code.model_config import (
+            ProviderAuthState,
+            ProviderAuthStatus,
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": "anthropic:claude-opus-4-7"}
+            app._server_startup_error = "missing ANTHROPIC_API_KEY"
+            app._server_startup_missing_credentials_provider = "anthropic"
+            app._retry_startup_with_model = AsyncMock()  # ty: ignore
+
+            with patch(
+                "deepagents_code.model_config.get_provider_auth_status",
+                return_value=ProviderAuthStatus(
+                    state=ProviderAuthState.MISSING,
+                    provider="anthropic",
+                ),
+            ):
+                retried = await app._maybe_retry_startup_after_auth_change()
+
+            assert retried is False
+            app._retry_startup_with_model.assert_not_awaited()  # ty: ignore
+
+    async def test_auth_change_no_retry_without_startup_failure(self) -> None:
+        """No credentials-blocked failure means nothing to retry."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": "anthropic:claude-opus-4-7"}
+            app._server_startup_error = None
+            app._server_startup_missing_credentials_provider = None
+            app._retry_startup_with_model = AsyncMock()  # ty: ignore
+
+            retried = await app._maybe_retry_startup_after_auth_change()
+
+            assert retried is False
+            app._retry_startup_with_model.assert_not_awaited()  # ty: ignore
+
+    async def test_resume_after_auth_prefers_deferred_start(self) -> None:
+        """A deferred first launch wins; the retry path must not also fire."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._maybe_start_deferred_server_from_default = AsyncMock(  # ty: ignore
+                return_value=True,
+            )
+            app._maybe_retry_startup_after_auth_change = AsyncMock()  # ty: ignore
+
+            await app._resume_server_after_auth_change()
+
+            app._maybe_start_deferred_server_from_default.assert_awaited_once()  # ty: ignore
+            app._maybe_retry_startup_after_auth_change.assert_not_awaited()  # ty: ignore
+
+    async def test_resume_after_auth_falls_back_to_retry(self) -> None:
+        """No deferred launch pending falls through to the retry path."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._maybe_start_deferred_server_from_default = AsyncMock(  # ty: ignore
+                return_value=False,
+            )
+            app._maybe_retry_startup_after_auth_change = AsyncMock()  # ty: ignore
+
+            await app._resume_server_after_auth_change()
+
+            app._maybe_start_deferred_server_from_default.assert_awaited_once()  # ty: ignore
+            app._maybe_retry_startup_after_auth_change.assert_awaited_once()  # ty: ignore
+
+    async def test_auth_change_retry_resolves_default_when_name_absent(self) -> None:
+        """Missing `model_name` falls back to the configured default spec."""
+        from deepagents_code.model_config import (
+            ProviderAuthSource,
+            ProviderAuthState,
+            ProviderAuthStatus,
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # No `model_name` and no `model_params` — exercises the default-spec
+            # fallback and the `extra_kwargs=None` forwarding together.
+            app._server_kwargs = {}
+            app._server_startup_error = "missing ANTHROPIC_API_KEY"
+            app._server_startup_missing_credentials_provider = "anthropic"
+            app._retry_startup_with_model = AsyncMock()  # ty: ignore
+
+            with (
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=ProviderAuthStatus(
+                        state=ProviderAuthState.CONFIGURED,
+                        provider="anthropic",
+                        source=ProviderAuthSource.STORED,
+                    ),
+                ),
+                patch(
+                    "deepagents_code.config._get_default_model_spec",
+                    return_value="anthropic:claude-opus-4-7",
+                ),
+            ):
+                retried = await app._maybe_retry_startup_after_auth_change()
+
+            assert retried is True
+            app._retry_startup_with_model.assert_awaited_once_with(  # ty: ignore
+                "anthropic:claude-opus-4-7",
+                extra_kwargs=None,
+            )
+
+    async def test_auth_change_retry_surfaces_malformed_default_config(self) -> None:
+        """A malformed default-model config is surfaced, not silently dropped."""
+        from deepagents_code.model_config import (
+            ModelConfigError,
+            ProviderAuthSource,
+            ProviderAuthState,
+            ProviderAuthStatus,
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {}
+            app._server_startup_error = "missing ANTHROPIC_API_KEY"
+            app._server_startup_missing_credentials_provider = "anthropic"
+            app._retry_startup_with_model = AsyncMock()  # ty: ignore
+            app._mount_message = AsyncMock()  # ty: ignore
+
+            with (
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=ProviderAuthStatus(
+                        state=ProviderAuthState.CONFIGURED,
+                        provider="anthropic",
+                        source=ProviderAuthSource.STORED,
+                    ),
+                ),
+                patch(
+                    "deepagents_code.config._get_default_model_spec",
+                    side_effect=ModelConfigError("unknown provider 'bogus'"),
+                ),
+            ):
+                retried = await app._maybe_retry_startup_after_auth_change()
+
+            assert retried is False
+            app._retry_startup_with_model.assert_not_awaited()  # ty: ignore
+            app._mount_message.assert_awaited_once()  # ty: ignore
+            mounted = app._mount_message.await_args.args[0]  # ty: ignore
+            assert isinstance(mounted, ErrorMessage)
+
+    async def test_auth_change_retry_silent_without_default_credentials(self) -> None:
+        """No usable default credentials means a quiet no-op, no error message."""
+        from deepagents_code.model_config import (
+            NoCredentialsConfiguredError,
+            ProviderAuthSource,
+            ProviderAuthState,
+            ProviderAuthStatus,
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {}
+            app._server_startup_error = "missing ANTHROPIC_API_KEY"
+            app._server_startup_missing_credentials_provider = "anthropic"
+            app._retry_startup_with_model = AsyncMock()  # ty: ignore
+            app._mount_message = AsyncMock()  # ty: ignore
+
+            with (
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=ProviderAuthStatus(
+                        state=ProviderAuthState.CONFIGURED,
+                        provider="anthropic",
+                        source=ProviderAuthSource.STORED,
+                    ),
+                ),
+                patch(
+                    "deepagents_code.config._get_default_model_spec",
+                    side_effect=NoCredentialsConfiguredError("no creds"),
+                ),
+            ):
+                retried = await app._maybe_retry_startup_after_auth_change()
+
+            assert retried is False
+            app._retry_startup_with_model.assert_not_awaited()  # ty: ignore
+            app._mount_message.assert_not_awaited()  # ty: ignore
+
+    async def test_auth_change_no_retry_without_server_kwargs(self) -> None:
+        """A pending failure with no app-owned server kwargs cannot retry."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = None
+            app._server_startup_error = "missing ANTHROPIC_API_KEY"
+            app._server_startup_missing_credentials_provider = "anthropic"
+            app._retry_startup_with_model = AsyncMock()  # ty: ignore
+
+            retried = await app._maybe_retry_startup_after_auth_change()
+
+            assert retried is False
+            app._retry_startup_with_model.assert_not_awaited()  # ty: ignore
+
+    async def test_auth_change_no_retry_when_failure_not_credentials(self) -> None:
+        """A non-credentials startup failure has no blocking provider to retry."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": "anthropic:claude-opus-4-7"}
+            app._server_startup_error = "some other startup failure"
+            app._server_startup_missing_credentials_provider = None
+            app._retry_startup_with_model = AsyncMock()  # ty: ignore
+
+            retried = await app._maybe_retry_startup_after_auth_change()
+
+            assert retried is False
+            app._retry_startup_with_model.assert_not_awaited()  # ty: ignore
 
     async def test_failing_deferred_action_does_not_block_others(self) -> None:
         """A failing deferred action should not prevent subsequent ones."""

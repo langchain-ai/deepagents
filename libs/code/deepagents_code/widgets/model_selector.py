@@ -481,6 +481,12 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 return i
         return 0
 
+    def _initial_selected_index(self) -> int:
+        """Return the default highlighted row for the current selector mode."""
+        if self._curated:
+            return 0
+        return self._find_current_model_index()
+
     def compose(self) -> ComposeResult:
         """Compose the screen layout.
 
@@ -533,6 +539,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         cli_override: dict[str, Any] | None,
         *,
         include_uninstalled: bool = True,
+        include_recent: bool = True,
     ) -> _ModelData:
         """Gather model discovery data synchronously.
 
@@ -547,6 +554,12 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 install-required rows; (2) the provider is installed but its
                 upstream profiles omit the model, added as normal selectable
                 rows.
+            include_recent: When `True`, load the recent-models MRU so the
+                pinned "Recent" section can render. Onboarding sets this
+                `False`: first-run users have never picked a model, and the
+                startup default-fallback resolution writes its auto-detected
+                pick into the MRU, which would otherwise surface as a bogus
+                "Recent" entry the user never chose.
 
         Returns:
             A `_ModelData` bundle of the discovered models, default spec,
@@ -612,7 +625,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             all_models.extend(uninstalled_recommended)
 
         profiles = get_model_profiles(cli_override=cli_override)
-        recent_specs = load_recent_models()
+        recent_specs = load_recent_models() if include_recent else []
         return _ModelData(
             all_models,
             config.default_model,
@@ -701,6 +714,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 self._load_model_data,
                 self._cli_profile_override,
                 include_uninstalled=True,
+                include_recent=not self._curated,
             )
         except Exception:
             logger.exception("Failed to load model data for /model selector")
@@ -728,7 +742,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._install_extras = data.install_extras
         self._all_models = self._apply_subset(self._unfiltered_models)
         self._filtered_models = list(self._all_models)
-        self._selected_index = self._find_current_model_index()
+        self._selected_index = self._initial_selected_index()
         self._loaded = True
 
         # Re-apply any filter text the user typed while data was loading
@@ -816,7 +830,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         query = self._filter_text.strip()
         if not query:
             self._filtered_models = list(self._all_models)
-            self._selected_index = self._find_current_model_index()
+            self._selected_index = self._initial_selected_index()
             return
 
         tokens = query.split()
@@ -837,7 +851,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 exc_info=True,
             )
             self._filtered_models = list(search_models)
-            self._selected_index = self._find_current_model_index()
+            self._selected_index = self._initial_selected_index()
             return
 
         self._filtered_models = [

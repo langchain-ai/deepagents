@@ -161,6 +161,7 @@ permissions:
 env:
   UV_NO_SYNC: "true"
   HARBOR_DATASET: ${{ inputs.dataset || 'terminal-bench/terminal-bench-2' }}
+  HARBOR_PACKAGE_OVERRIDE: "harbor[langsmith] @ git+https://github.com/nick-hollon-lc/harbor.git@nh/langgraph-respect-uv-prerelease"
 
 jobs:
   prep:
@@ -197,6 +198,9 @@ jobs:
           echo "| \`sandbox_env\` | \`${SANDBOX_ENV}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| \`agent_impl\` | \`${AGENT_IMPL}\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| \`dataset\` | \`${DATASET}\` |" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "${HARBOR_PACKAGE_OVERRIDE}" ]; then
+            echo "| \`harbor_package_override\` | \`${HARBOR_PACKAGE_OVERRIDE}\` |" >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [ "${N_TASKS}" = "0" ]; then
             echo "| \`n_tasks\` | all |" >> "$GITHUB_STEP_SUMMARY"
           else
@@ -314,6 +318,10 @@ jobs:
 
       - name: "📦 Install Dependencies"
         run: uv sync --group test --locked
+
+      - name: "⚓ Install Harbor override"
+        if: env.HARBOR_PACKAGE_OVERRIDE != ''
+        run: uv pip install "$HARBOR_PACKAGE_OVERRIDE"
 
       - name: "🔇 Suppress Harbor first-run tips"
         run: |

@@ -1478,8 +1478,8 @@ class TestFormatAuthIndicator:
 
         assert indicator == "local provider"
 
-    def test_missing_auth_names_env_var(self) -> None:
-        """Missing credentials should show the missing env var name."""
+    def test_missing_auth_uses_generic_message(self) -> None:
+        """Missing credentials show a generic label, not the env var name."""
         indicator = ModelSelectorScreen._format_auth_indicator(
             ProviderAuthStatus(
                 state=ProviderAuthState.MISSING,
@@ -1489,7 +1489,8 @@ class TestFormatAuthIndicator:
             get_glyphs(),
         )
 
-        assert "missing ANTHROPIC_API_KEY" in indicator
+        assert "missing credentials" in indicator
+        assert "ANTHROPIC_API_KEY" not in indicator
 
     def test_missing_auth_without_env_var_uses_generic_message(self) -> None:
         """MISSING without env_var falls back to a generic missing-creds label."""

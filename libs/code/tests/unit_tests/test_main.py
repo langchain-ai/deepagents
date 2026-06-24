@@ -47,6 +47,31 @@ class TestStartupAutoUpdate:
         ):
             yield
 
+    @pytest.fixture(autouse=True)
+    def _no_shadowed_dcode(self) -> Iterator[None]:
+        """Default to "no PATH shadow detected" for the success-path tests.
+
+        Without this, every successful-upgrade test would run the real
+        `detect_shadowed_dcode` against the host filesystem. That's
+        hermetic only by accident — the test runner's editable install
+        currently short-circuits at `detect_install_method() != "uv"` — but
+        a uv-tool-managed Python or CI image that does match would silently
+        re-route every "successful update" test through the new
+        `if shadow is not None: return` branch and skip the restart
+        assertion. Pin to `None` here so the contract being tested is
+        "shadow path is opt-in"; the dedicated shadow-present test below
+        patches it explicitly.
+
+        Patches at the source module rather than `deepagents_code.main`
+        because `_run_startup_auto_update` lazy-imports it inside the
+        function.
+        """
+        with patch(
+            "deepagents_code.update_check.detect_shadowed_dcode",
+            return_value=None,
+        ):
+            yield
+
     def test_successful_update_restarts_before_launch(self) -> None:
         """A successful startup auto-update should exec a fresh process."""
         console = MagicMock()
@@ -85,6 +110,77 @@ class TestStartupAutoUpdate:
 
         upgrade.assert_awaited_once()
         restart.assert_called_once_with()
+
+    def test_successful_update_skips_restart_when_shadowed(self) -> None:
+        """Successful upgrade + shadowed dcode must NOT restart into the old binary.
+
+        Regression guard for the critical bug: when a stale `dcode` is
+        earlier on PATH than uv's bin dir, re-exec'ing would silently
+        re-launch the old version. The pre-launch path must surface a
+        warning and return *before* `_restart_current_process` so the user
+        sees the message and isn't stranded on the old in-memory version
+        with no explanation. Also pins the markup-escape behavior: a path
+        containing a Rich-special character must not raise.
+        """
+        from deepagents_code.update_check import ShadowedDcode
+
+        console = MagicMock()
+        upgrade = AsyncMock(return_value=(True, "updated"))
+        # Embed `[` in the shadowing path — legal on POSIX filesystems —
+        # so a regression that dropped `escape()` would raise a Rich
+        # `MarkupError` here instead of silently emitting broken styling.
+        shadow = ShadowedDcode(
+            shadowing_bin=Path("/opt/old [legacy]/bin/dcode"),
+            upgraded_bin_dir=Path("/home/user/.local/bin"),
+        )
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value=Path("/tmp/dcode-update.log"),
+            ),
+            patch("deepagents_code.update_check.perform_upgrade", upgrade),
+            # Override the autouse `_no_shadowed_dcode` fixture for this
+            # single test by re-patching the same name with the positive
+            # case. The innermost patch wins, so the autouse fixture's
+            # `None` doesn't leak through.
+            patch(
+                "deepagents_code.update_check.detect_shadowed_dcode",
+                return_value=shadow,
+            ),
+            patch("deepagents_code.main._restart_current_process") as restart,
+        ):
+            _run_startup_auto_update(console)
+
+        upgrade.assert_awaited_once()
+        restart.assert_not_called()
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "Warning:" in printed
+        # The path's `[legacy]` segment must be Rich-escaped (`\[legacy]`)
+        # before interpolation under `markup=True`; a regression that
+        # dropped `escape()` would either raise `MarkupError` (test fails)
+        # or render `[legacy]` as a (broken) style tag. Asserting the
+        # escaped form pins the fix.
+        assert "/opt/old \\[legacy]/bin/dcode" in printed
+        assert "/home/user/.local/bin" in printed
+        assert "Continuing with v" in printed
 
     def test_disabled_update_does_not_check_pypi(self) -> None:
         """Disabled auto-update should not perform network or install work."""
@@ -667,6 +763,15 @@ class TestStartupAutoUpdate:
 
 class TestAutoUpdateDefaultMigration:
     """First-run consent/migration notice for the auto-update opt-out default."""
+
+    @pytest.fixture(autouse=True)
+    def _no_shadowed_dcode(self) -> Iterator[None]:
+        """Default to no PATH shadow — same reasoning as `TestStartupAutoUpdate`."""
+        with patch(
+            "deepagents_code.update_check.detect_shadowed_dcode",
+            return_value=None,
+        ):
+            yield
 
     def test_first_run_announces_and_skips_install(self) -> None:
         """An implicit (default) opt-in announces once and skips the install."""

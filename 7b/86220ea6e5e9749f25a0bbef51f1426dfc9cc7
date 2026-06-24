@@ -1,0 +1,19 @@
+libs/evals/tests/evals/oolong/benchmarks.py
+  s_a23cdcb1879983::t_e8270c83890c0a 354-359,385,391-394,397
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "7b86220ea6e5e9749f25a0bbef51f1426dfc9cc7",
+  "prompts": {},
+  "sessions": {
+    "s_a23cdcb1879983": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f048b68d-0bfd-4f95-a92e-27d4595f55fd",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

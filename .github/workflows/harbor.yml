@@ -571,14 +571,19 @@ jobs:
       - name: "🔑 Verify model credentials"
         env:
           ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
+          BASETEN_API_KEY: ${{ startsWith(matrix.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
+          FIREWORKS_API_KEY: ${{ startsWith(matrix.model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}
           GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
+          NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
           OPENAI_API_KEY: ${{ startsWith(matrix.model, 'openai:') && secrets.OPENAI_API_KEY || '' }}
+          OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
           XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
         run: |
           provider="${CLBENCH_MODEL%%:*}"
           missing=()
+          # All Harbor matrix providers resolve through init_chat_model.
           case "$provider" in
             anthropic)    [ -z "$ANTHROPIC_API_KEY" ] && missing+=("ANTHROPIC_API_KEY") ;;
             openai)       [ -z "$OPENAI_API_KEY" ] && missing+=("OPENAI_API_KEY") ;;
@@ -586,8 +591,12 @@ jobs:
             groq)         [ -z "$GROQ_API_KEY" ] && missing+=("GROQ_API_KEY") ;;
             xai)          [ -z "$XAI_API_KEY" ] && missing+=("XAI_API_KEY") ;;
             ollama)       [ -z "$OLLAMA_API_KEY" ] && missing+=("OLLAMA_API_KEY") ;;
+            fireworks)    [ -z "$FIREWORKS_API_KEY" ] && missing+=("FIREWORKS_API_KEY") ;;
+            nvidia)       [ -z "$NVIDIA_API_KEY" ] && missing+=("NVIDIA_API_KEY") ;;
+            openrouter)   [ -z "$OPENROUTER_API_KEY" ] && missing+=("OPENROUTER_API_KEY") ;;
+            baseten)      [ -z "$BASETEN_API_KEY" ] && missing+=("BASETEN_API_KEY") ;;
             *)
-              echo "::error::clbench's Deep Agents system uses init_chat_model and does not support provider '$provider' (supported: anthropic, openai, google_genai, groq, xai, ollama). Select a supported model for dataset=clbench."; exit 1
+              echo "::warning::Unknown provider prefix '$provider' for clbench; proceeding and letting init_chat_model resolve it. Ensure the matching API key secret is configured."
               ;;
           esac
           if [ ${#missing[@]} -gt 0 ]; then
@@ -609,10 +618,14 @@ jobs:
       - name: "🧠 Run continual-learning-bench with the Deep Agents system"
         env:
           ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
+          BASETEN_API_KEY: ${{ startsWith(matrix.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
+          FIREWORKS_API_KEY: ${{ startsWith(matrix.model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}
           GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
+          NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
           OPENAI_API_KEY: ${{ startsWith(matrix.model, 'openai:') && secrets.OPENAI_API_KEY || '' }}
+          OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
           XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
         run: |
           set -euo pipefail
@@ -647,6 +660,7 @@ jobs:
           # Install clbench (all task extras), the local Deep Agents SDK, and the
           # matrix model's LangChain provider integration.
           ( cd clbench-src && uv sync --all-extras )
+          # Provider -> LangChain integration package (init_chat_model resolves all of these).
           case "$CLBENCH_PROVIDER" in
             anthropic)    provider_pkg="langchain-anthropic" ;;
             openai)       provider_pkg="langchain-openai" ;;
@@ -654,9 +668,17 @@ jobs:
             groq)         provider_pkg="langchain-groq" ;;
             xai)          provider_pkg="langchain-xai" ;;
             ollama)       provider_pkg="langchain-ollama" ;;
-            *)            provider_pkg="" ;;
+            fireworks)    provider_pkg="langchain-fireworks" ;;
+            nvidia)       provider_pkg="langchain-nvidia-ai-endpoints" ;;
+            openrouter)   provider_pkg="langchain-openrouter" ;;
+            baseten)      provider_pkg="langchain-baseten" ;;
+            *)            provider_pkg="langchain-openai"
+                          echo "::warning::Unknown provider '$CLBENCH_PROVIDER'; defaulting integration to langchain-openai." ;;
           esac
-          ( cd clbench-src && uv pip install -e "$GITHUB_WORKSPACE/libs/deepagents" ${provider_pkg:+"$provider_pkg"} )
+          # Fireworks can pull a prerelease dependency (matches the Harbor job).
+          uv_pre=""
+          [ "$CLBENCH_PROVIDER" = "fireworks" ] && uv_pre="UV_PRERELEASE=allow"
+          ( cd clbench-src && env $uv_pre uv pip install -e "$GITHUB_WORKSPACE/libs/deepagents" ${provider_pkg:+"$provider_pkg"} )
 
           # Deploy the Deep Agents system into this clbench checkout.
           "$GITHUB_WORKSPACE/libs/evals/deepagents_clbench/sync_to_clbench.sh" "$GITHUB_WORKSPACE/clbench-src"

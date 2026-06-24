@@ -55,6 +55,11 @@
 #     terminal (CI, wrapper scripts) update instead of stalling at the y/n
 #     prompt.
 #   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
+#   DEEPAGENTS_CODE_RIPGREP_INSTALLER — how to provision ripgrep:
+#     "managed" (default) eagerly installs the pinned, SHA-256-verified binary
+#     into ~/.deepagents/bin (no sudo) via `dcode tools install`; "system"
+#     keeps the interactive package-manager install (brew/apt/cargo/...). Set
+#     DEEPAGENTS_CODE_OFFLINE=1 to skip the managed download entirely.
 #   DEEPAGENTS_CODE_SKIP_XCODE_CHECK — set to 1 to bypass the macOS Xcode
 #     Command Line Tools preflight check
 #   DEEPAGENTS_CODE_VERBOSE — set to 1 to show uv's raw stderr (timing lines,
@@ -345,6 +350,15 @@ PYTHON_VERSION="${DEEPAGENTS_CODE_PYTHON:-3.13}"
 SKIP_OPTIONAL="${DEEPAGENTS_CODE_SKIP_OPTIONAL:-0}"
 VERBOSE="${DEEPAGENTS_CODE_VERBOSE:-0}"
 ASSUME_YES="${DEEPAGENTS_CODE_YES:-0}"
+# How ripgrep gets provisioned: "managed" (default) eagerly fetches the
+# pinned, SHA-256-verified binary into ~/.deepagents/bin via `dcode tools
+# install`; "system" keeps the interactive package-manager path below. Any
+# value other than "system" normalizes to "managed".
+RIPGREP_INSTALLER="${DEEPAGENTS_CODE_RIPGREP_INSTALLER:-managed}"
+case "$RIPGREP_INSTALLER" in
+  system) RIPGREP_INSTALLER="system" ;;
+  *)      RIPGREP_INSTALLER="managed" ;;
+esac
 
 # PyPI JSON endpoint used to discover the latest published release so we can
 # tell whether an existing install is out of date before upgrading it.
@@ -939,7 +953,20 @@ ripgrep_manual_hint() {
 }
 
 if [ "$SKIP_OPTIONAL" != "1" ]; then
-  if command -v rg >/dev/null 2>&1; then
+  if [ "$RIPGREP_INSTALLER" = "managed" ] && [ "$VERIFY_OK" = true ] && [ -n "$DCODE_BIN" ]; then
+    # Eager, non-prompting managed install through the freshly installed binary
+    # — the same pinned, SHA-256-verified path dcode uses on first run
+    # (downloads into ~/.deepagents/bin, no sudo). Doing it here removes the
+    # first-run download latency. The binary reuses a system `rg` already on
+    # PATH and honors DEEPAGENTS_CODE_OFFLINE and
+    # DEEPAGENTS_CODE_RIPGREP_INSTALLER=system, reporting what it did.
+    echo ""
+    log_info "Setting up ripgrep (managed; opt out with DEEPAGENTS_CODE_RIPGREP_INSTALLER=system)..."
+    if ! "$DCODE_BIN" tools install; then
+      log_warn "Managed ripgrep setup did not complete; the grep tool will use a slower fallback."
+      ripgrep_manual_hint
+    fi
+  elif command -v rg >/dev/null 2>&1; then
     if [ "$VERBOSE" = "1" ]; then
       echo ""
       log_info "Checking optional tools..."

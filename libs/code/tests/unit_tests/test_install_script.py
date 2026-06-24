@@ -82,11 +82,16 @@ exit 1
 
     if installed_version is not None:
         dcode = bin_dir / "dcode"
+        tools_log = tmp_path / "dcode-tools.txt"
         dcode.write_text(
             f"""#!/usr/bin/env bash
 if [ "${{1:-}}" = "-v" ]; then
   printf 'deepagents-code {installed_version}\\n'
   exit 0
+fi
+if [ "${{1:-}}" = "tools" ]; then
+  printf '%s\\n' "$*" >> {str(tools_log)!r}
+  exit "${{FAKE_DCODE_TOOLS_RC:-0}}"
 fi
 exit 0
 """
@@ -1245,3 +1250,60 @@ def test_install_script_no_path_warning_when_dcode_on_path(tmp_path: Path) -> No
     assert proc.returncode == 0
     combined = proc.stdout + proc.stderr
     assert "isn't on your PATH yet" not in combined
+
+
+def test_install_script_managed_ripgrep_calls_tools_install(tmp_path: Path) -> None:
+    """Default (`managed`) mode eagerly runs `dcode tools install`."""
+    proc, _ = _invoke(
+        tmp_path,
+        {"DEEPAGENTS_CODE_SKIP_OPTIONAL": "0"},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    tools_log = tmp_path / "dcode-tools.txt"
+    assert tools_log.exists(), proc.stdout + proc.stderr
+    assert "tools install" in tools_log.read_text()
+
+
+def test_install_script_system_ripgrep_skips_tools_install(tmp_path: Path) -> None:
+    """`DEEPAGENTS_CODE_RIPGREP_INSTALLER=system` keeps the package-manager path."""
+    proc, _ = _invoke(
+        tmp_path,
+        {
+            "DEEPAGENTS_CODE_SKIP_OPTIONAL": "0",
+            "DEEPAGENTS_CODE_RIPGREP_INSTALLER": "system",
+        },
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert not (tmp_path / "dcode-tools.txt").exists()
+
+
+def test_install_script_skip_optional_skips_tools_install(tmp_path: Path) -> None:
+    """`DEEPAGENTS_CODE_SKIP_OPTIONAL=1` skips the managed install entirely."""
+    proc, _ = _invoke(
+        tmp_path,
+        {"DEEPAGENTS_CODE_SKIP_OPTIONAL": "1"},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert not (tmp_path / "dcode-tools.txt").exists()
+
+
+def test_install_script_managed_ripgrep_failure_warns(tmp_path: Path) -> None:
+    """A failed `dcode tools install` falls back with a slow-grep warning."""
+    proc, _ = _invoke(
+        tmp_path,
+        {"DEEPAGENTS_CODE_SKIP_OPTIONAL": "0", "FAKE_DCODE_TOOLS_RC": "1"},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "slower fallback" in (proc.stdout + proc.stderr)

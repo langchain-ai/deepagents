@@ -15,7 +15,7 @@ from unittest import mock
 import pytest
 
 from deepagents_code import managed_tools
-from deepagents_code._env_vars import OFFLINE
+from deepagents_code._env_vars import OFFLINE, RIPGREP_INSTALLER
 from deepagents_code.managed_tools import ChecksumMismatchError
 
 _EXPECTED_PLATFORM_ARCHS = {
@@ -116,6 +116,44 @@ async def test_ensure_ripgrep_short_circuits_when_offline(
 ) -> None:
     monkeypatch.setenv(OFFLINE, "1")
     monkeypatch.setattr(managed_tools, "managed_rg_path", lambda: tmp_path / "absent")
+    with mock.patch("shutil.which", return_value=None):
+        assert await managed_tools.ensure_ripgrep() is None
+
+
+def test_ripgrep_installer_defaults_to_managed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(RIPGREP_INSTALLER, raising=False)
+    assert managed_tools.ripgrep_installer() == managed_tools.INSTALLER_MANAGED
+    assert managed_tools.prefers_system_ripgrep() is False
+
+
+def test_ripgrep_installer_system(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(RIPGREP_INSTALLER, "System")
+    assert managed_tools.ripgrep_installer() == managed_tools.INSTALLER_SYSTEM
+    assert managed_tools.prefers_system_ripgrep() is True
+
+
+def test_ripgrep_installer_unrecognized_falls_back_to_managed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(RIPGREP_INSTALLER, "bogus")
+    assert managed_tools.ripgrep_installer() == managed_tools.INSTALLER_MANAGED
+
+
+async def test_ensure_ripgrep_short_circuits_when_system_installer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`RIPGREP_INSTALLER=system` skips the managed download (no system rg)."""
+    monkeypatch.delenv(OFFLINE, raising=False)
+    monkeypatch.setenv(RIPGREP_INSTALLER, "system")
+    monkeypatch.setattr(managed_tools, "managed_rg_path", lambda: tmp_path / "absent")
+
+    def _no_download(_url: str, _dest: Path) -> None:
+        msg = "_download_to must not be called in system installer mode"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(managed_tools, "_download_to", _no_download)
     with mock.patch("shutil.which", return_value=None):
         assert await managed_tools.ensure_ripgrep() is None
 

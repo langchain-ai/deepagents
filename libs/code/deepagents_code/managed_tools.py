@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from deepagents_code._env_vars import OFFLINE, is_env_truthy
+from deepagents_code._env_vars import OFFLINE, RIPGREP_INSTALLER, is_env_truthy
 
 if TYPE_CHECKING:
     import tarfile
@@ -108,6 +108,40 @@ def managed_rg_path() -> Path:
 def is_offline() -> bool:
     """Return whether managed-tool downloads are disabled via env var."""
     return is_env_truthy(OFFLINE)
+
+
+INSTALLER_MANAGED = "managed"
+"""Default installer mode: fetch the pinned, checksummed upstream binary."""
+
+INSTALLER_SYSTEM = "system"
+"""Installer mode that defers ripgrep to the system package manager / `PATH`."""
+
+
+def ripgrep_installer() -> str:
+    """Return the configured ripgrep installer mode.
+
+    Reads `RIPGREP_INSTALLER` and normalizes it to `INSTALLER_MANAGED` or
+    `INSTALLER_SYSTEM`, falling back to `INSTALLER_MANAGED` for unset or
+    unrecognized values.
+    """
+    raw = os.environ.get(RIPGREP_INSTALLER, "").strip().lower()
+    if raw == INSTALLER_SYSTEM:
+        return INSTALLER_SYSTEM
+    if raw and raw != INSTALLER_MANAGED:
+        logger.warning(
+            "Unrecognized %s=%r; expected %r or %r. Defaulting to %r.",
+            RIPGREP_INSTALLER,
+            raw,
+            INSTALLER_MANAGED,
+            INSTALLER_SYSTEM,
+            INSTALLER_MANAGED,
+        )
+    return INSTALLER_MANAGED
+
+
+def prefers_system_ripgrep() -> bool:
+    """Return whether the user opted into system-managed ripgrep."""
+    return ripgrep_installer() == INSTALLER_SYSTEM
 
 
 def prepend_managed_bin_to_path() -> None:
@@ -376,9 +410,9 @@ async def ensure_ripgrep() -> Path | None:
         version always wins, so a stale managed binary is re-fetched
         rather than deferring to a system `rg` and the resolved version
         stays deterministic.
-    3. If offline, on an unsupported platform, or no asset matches the
-        platform/arch, return `None` so callers fall back to the existing
-        notification + slow path.
+    3. If offline, the `system` installer is selected, on an unsupported
+        platform, or no asset matches the platform/arch, return `None` so
+        callers fall back to the existing notification + slow path.
     4. Otherwise download → SHA-256 verify → extract → install →
         prepend `BIN_DIR` to `PATH` → return the installed path. On a
         checksum mismatch, raises `ChecksumMismatchError` so callers can
@@ -412,6 +446,13 @@ async def ensure_ripgrep() -> Path | None:
 
     if is_offline():
         logger.debug("Skipping ripgrep install: %s is set", OFFLINE)
+        return None
+    if prefers_system_ripgrep():
+        logger.debug(
+            "Skipping managed ripgrep download: %s=%s",
+            RIPGREP_INSTALLER,
+            INSTALLER_SYSTEM,
+        )
         return None
     if sys.platform == "android":
         logger.debug("Skipping ripgrep install: unsupported platform 'android'")

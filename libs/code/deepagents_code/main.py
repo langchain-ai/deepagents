@@ -910,6 +910,7 @@ _HELP_SPECS: dict[str, tuple[str | None, str]] = {
     "mcp": ("mcp_command", "show_mcp_help"),
     "config": ("config_command", "show_config_help"),
     "auth": ("auth_command", "show_auth_help"),
+    "tools": ("tools_command", "show_tools_help"),
 }
 """Maps top-level command names to their startup-fast-path help dispatch.
 
@@ -1211,6 +1212,23 @@ def parse_args() -> argparse.Namespace:
         parents=help_parent(_lazy_help("show_doctor_help")),
     )
     add_json_output_arg(doctor_parser)
+
+    tools_parser = subparsers.add_parser(
+        "tools",
+        help="Manage managed external tools (e.g. ripgrep)",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_tools_help")),
+    )
+    add_json_output_arg(tools_parser)
+    tools_sub = tools_parser.add_subparsers(dest="tools_command")
+
+    tools_install = tools_sub.add_parser(
+        "install",
+        help="Install or repair the managed ripgrep binary",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_tools_install_help")),
+    )
+    add_json_output_arg(tools_install)
 
     # Default interactive mode — argument order here determines the
     # usage line printed by argparse; keep in sync with ui.show_help().
@@ -2292,6 +2310,11 @@ def cli_main() -> None:
             from deepagents_code.doctor import run_doctor_command
 
             sys.exit(run_doctor_command(args))
+
+        if command == "tools":
+            from deepagents_code.tools_commands import run_tools_command
+
+            sys.exit(run_tools_command(args))
 
         # Best-effort, idempotent migration. Placed after parse_args and the
         # bare-help fast path so --help / --version / `deepagents <group>`

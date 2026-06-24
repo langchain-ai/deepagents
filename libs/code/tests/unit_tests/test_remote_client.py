@@ -583,6 +583,42 @@ class TestRemoteAgentUpdateState:
         uuid.UUID(call_config["configurable"]["thread_id"])
 
 
+class TestRemoteAgentCancelActiveRuns:
+    """`acancel_active_runs` exposes best-effort remote run cancellation."""
+
+    async def test_cancels_running_and_pending_runs(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        runs_list = AsyncMock(
+            side_effect=[
+                [{"run_id": "run-1"}],
+                [{"run_id": "run-2"}],
+            ]
+        )
+        runs_cancel = AsyncMock()
+        mock_runs = MagicMock()
+        mock_runs.list = runs_list
+        mock_runs.cancel = runs_cancel
+        mock_client = MagicMock()
+        mock_client.runs = mock_runs
+        mock_graph = MagicMock()
+        mock_graph._validate_client.return_value = mock_client
+        agent._graph = mock_graph
+
+        await agent.acancel_active_runs(_config())
+
+        assert runs_list.await_count == 2
+        assert runs_cancel.await_count == 2
+        assert {call.args[1] for call in runs_cancel.await_args_list} == {
+            "run-1",
+            "run-2",
+        }
+
+    async def test_raises_when_thread_id_missing(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        with pytest.raises(ValueError, match="thread_id"):
+            await agent.acancel_active_runs({"configurable": {}})
+
+
 def _conflict_error() -> Exception:
     """Build a `ConflictError` (HTTP 409) for tests."""
     import httpx

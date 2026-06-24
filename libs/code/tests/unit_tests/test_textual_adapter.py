@@ -263,6 +263,71 @@ class TestInterruptCleanup:
         sync_message_content.assert_called_once_with("asst-1", "partial response")
         assert assistant_messages == {}
 
+    async def test_interrupt_cancels_active_remote_runs_before_state_writes(self) -> None:
+        """Remote runs should be interrupted before recovery state is persisted."""
+        calls: list[str] = []
+
+        async def cancel_runs(_config: object) -> None:
+            calls.append("cancel")
+
+        async def update_state(_config: object, _values: dict[str, Any]) -> None:
+            calls.append("update")
+
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+        agent = SimpleNamespace(
+            acancel_active_runs=AsyncMock(side_effect=cancel_runs),
+            aupdate_state=AsyncMock(side_effect=update_state),
+        )
+        config = {"configurable": {"thread_id": "t-1"}}
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config=config,
+            pending_text_by_namespace={},
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        agent.acancel_active_runs.assert_awaited_once_with(config)
+        assert calls == ["cancel", "update"]
+
+    async def test_remote_run_cancel_failure_does_not_skip_state_writes(self) -> None:
+        """Interrupt cleanup remains best-effort when remote cancel fails."""
+        agent = SimpleNamespace(
+            acancel_active_runs=AsyncMock(side_effect=RuntimeError("down")),
+            aupdate_state=AsyncMock(),
+        )
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={},
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        agent.acancel_active_runs.assert_awaited_once()
+        agent.aupdate_state.assert_awaited_once()
+
     async def test_disables_tracing_during_state_save(self) -> None:
         """Interrupt-cleanup `aupdate_state` calls must run with tracing disabled.
 

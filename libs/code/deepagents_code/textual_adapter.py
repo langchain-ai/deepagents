@@ -1512,6 +1512,13 @@ async def _handle_interrupt_cleanup(
 
     await adapter._mount_message(AppMessage("Interrupted by user"))
 
+    cancel_active_runs = getattr(agent, "acancel_active_runs", None)
+    if cancel_active_runs is not None:
+        try:
+            await cancel_active_runs(config)
+        except Exception:
+            logger.warning("Failed to cancel active remote runs", exc_info=True)
+
     interrupted_msg = _build_interrupted_ai_message(
         pending_text_by_namespace,
         adapter._current_tool_messages,

@@ -310,6 +310,11 @@ class RemoteAgent:
             )
             raise
 
+    async def acancel_active_runs(self, config: dict[str, Any]) -> None:
+        """Cancel pending/running runs on the configured thread."""
+        thread_id = _require_thread_id(config)
+        await _cancel_active_runs(self._get_graph(), thread_id)
+
     async def aupdate_state(
         self,
         config: dict[str, Any],

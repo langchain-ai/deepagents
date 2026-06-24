@@ -382,9 +382,10 @@ def build_agent(
         agent = create_deep_agent(
             model=root_model,
             system_prompt=_CODE_INTERPRETER_SYSTEM_PROMPT,
-            # Long timeout: a single `eval` awaits a Promise.all of `task()`
-            # subagent dispatches, which take much longer than the 5s default.
-            middleware=[CodeInterpreterMiddleware(timeout=600.0)],
+            # `eval` awaits a Promise.all of `task()` subagent dispatches (longer
+            # than the 5s default); cap both the per-eval wait and the number of
+            # eval calls so a retry-spiral can't run away.
+            middleware=[CodeInterpreterMiddleware(timeout=300.0, max_ptc_calls=12)],
             subagents=subagent_cfg,
         )
         return agent, {"/context.txt": context}

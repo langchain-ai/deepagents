@@ -537,6 +537,12 @@ jobs:
       CLBENCH_PROVIDER: ${{ matrix.provider }}
       CLBENCH_INCLUDE_TASKS: ${{ inputs.include_tasks }}
       CLBENCH_PER_TASK_PARALLELISM: ${{ inputs.concurrency }}
+      # Trace-level LangSmith tracing only: LangChain/LangGraph auto-captures the
+      # agent trajectories when these are set. clbench itself has no LangSmith
+      # experiment integration, so scores/gain stay in clbench's own artifacts.
+      # Tracing turns on only when the secret is present (no warnings when absent).
+      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+      LANGSMITH_TRACING: ${{ secrets.LANGSMITH_API_KEY != '' && 'true' || 'false' }}
     steps:
       - name: "🔑 Verify model credentials"
         env:
@@ -635,6 +641,17 @@ jobs:
           model_slug=$(printf '%s' "$CLBENCH_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
           run_name="deepagents-${model_slug}-${GITHUB_RUN_ID}"
 
+          # Trace-level LangSmith: group this model's agent traces under one project.
+          # Inherited by the run-all subprocesses. Never print the key, only status.
+          ls_project="deepagents-clbench-${model_slug}"
+          export LANGSMITH_PROJECT="$ls_project"
+          echo "CLBENCH_LS_PROJECT=${ls_project}" >> "$GITHUB_ENV"
+          if [ -n "${LANGSMITH_API_KEY:-}" ]; then
+            echo "LangSmith tracing: ON -> project $ls_project"
+          else
+            echo "LangSmith tracing: OFF (no LANGSMITH_API_KEY secret)"
+          fi
+
           echo "Running 'clbench run-all' (whole benchmark) — system=deepagents, model=$CLBENCH_MODEL"
           ( cd clbench-src && set -x && uv run clbench run-all \
               --name "$run_name" \
@@ -659,6 +676,11 @@ jobs:
               echo "- Tasks: all (run-all over the whole benchmark)"
             fi
             echo "- Per-task parallelism: ${CLBENCH_PER_TASK_PARALLELISM}"
+            if [ "${LANGSMITH_TRACING}" = "true" ]; then
+              echo "- LangSmith tracing: on (trajectories only; project ${CLBENCH_LS_PROJECT:-deepagents-clbench-<model>})"
+            else
+              echo "- LangSmith tracing: off (set the LANGSMITH_API_KEY secret to enable)"
+            fi
             echo "- Note: sandbox_env / agent_impl / n_tasks / rollouts_per_task are Harbor-only and were ignored."
           } >> "$GITHUB_STEP_SUMMARY"
 

@@ -25,6 +25,7 @@ from typing import Final
 
 from deepagents.backends.protocol import (
     ASYNC_GREP_TIMEOUT,
+    DeleteResult,
     EditResult,
     ExecuteResponse,
     FileData,
@@ -933,6 +934,32 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             return _map_edit_error(data["error"], file_path, old_string)
 
         return EditResult(path=file_path, occurrences=data.get("count", 1))
+
+    def delete(self, file_path: str) -> DeleteResult:
+        """Delete a file or directory from the sandbox via a server-side ``rm``.
+
+        Uses ``rm -rf``, so directories are removed recursively along with their
+        contents, and deleting a path that does not exist succeeds silently. A
+        non-zero exit (e.g. a permission error) is reported as a failure.
+
+        Args:
+            file_path: Absolute path to the file or directory to delete.
+
+        Returns:
+            `DeleteResult` with the deleted path on success, or an error if the
+                deletion command fails.
+        """
+        # `shlex.quote` only neutralizes shell metacharacters so the path is
+        # passed to `rm` as a single literal argument. It is NOT a security
+        # boundary: it does not confine the deletion to any sandbox root or
+        # block traversal. Whatever the sandbox shell can reach, this can delete.
+        quoted = shlex.quote(file_path)
+        result = self.execute(f"rm -rf {quoted}")
+
+        if result.exit_code == 0:
+            return DeleteResult(path=file_path)
+
+        return DeleteResult(error=f"Error deleting file '{file_path}': {result.output.strip() or 'unknown error'}")
 
     def grep(
         self,

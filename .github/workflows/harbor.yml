@@ -159,6 +159,14 @@ on:
         required: true
         default: "1"
         type: string
+      clbench_schedule:
+        description: "[clbench only] Schedule for dataset=clbench. 'quick_test' = cheap smoke (per-task clbench run; only tasks that define it — currently just exploitable_poker). 'default' = leaderboard-comparable (run-all, each task's default schedule, 5 runs + baseline) — multi-hour and likely exceeds the job timeout for a Deep Agents system. Ignored for Harbor."
+        required: true
+        default: "quick_test"
+        type: choice
+        options:
+          - quick_test
+          - default
 permissions:
   contents: read
 
@@ -537,6 +545,7 @@ jobs:
       CLBENCH_PROVIDER: ${{ matrix.provider }}
       CLBENCH_INCLUDE_TASKS: ${{ inputs.include_tasks }}
       CLBENCH_PER_TASK_PARALLELISM: ${{ inputs.concurrency }}
+      CLBENCH_SCHEDULE: ${{ inputs.clbench_schedule }}
       # Trace-level LangSmith tracing only: LangChain/LangGraph auto-captures the
       # agent trajectories when these are set. clbench itself has no LangSmith
       # experiment integration, so scores/gain stay in clbench's own artifacts.
@@ -601,16 +610,19 @@ jobs:
           if ! [[ "$CLBENCH_PER_TASK_PARALLELISM" =~ ^[1-9][0-9]*$ ]]; then
             echo "::error::Invalid concurrency (per-task-parallelism): $CLBENCH_PER_TASK_PARALLELISM"; exit 1
           fi
-          # Validate + collect clbench task names (alphanumeric + underscore only).
-          task_flags=()
+          # Validate the schedule name (used in a file path + the command).
+          if ! [[ "$CLBENCH_SCHEDULE" =~ ^[A-Za-z0-9_]+$ ]]; then
+            echo "::error::Invalid clbench schedule: $CLBENCH_SCHEDULE"; exit 1
+          fi
+          # Validate + collect requested task names (alphanumeric + underscore only).
+          req_tasks=()
           if [ -n "$CLBENCH_INCLUDE_TASKS" ]; then
-            read -r -a _tasks <<< "$CLBENCH_INCLUDE_TASKS"
-            for t in "${_tasks[@]}"; do
+            read -r -a req_tasks <<< "$CLBENCH_INCLUDE_TASKS"
+            for t in "${req_tasks[@]}"; do
               if ! [[ "$t" =~ ^[A-Za-z0-9_]+$ ]]; then
                 echo "::error::Invalid clbench task name: $t"; exit 1
               fi
             done
-            task_flags=(--task "${_tasks[@]}")
           fi
 
           # Clone clbench pinned to a specific commit.
@@ -652,14 +664,52 @@ jobs:
             echo "LangSmith tracing: OFF (no LANGSMITH_API_KEY secret)"
           fi
 
-          echo "Running 'clbench run-all' (whole benchmark) — system=deepagents, model=$CLBENCH_MODEL"
-          ( cd clbench-src && set -x && uv run clbench run-all \
-              --name "$run_name" \
-              --system deepagents \
-              --system.model "$CLBENCH_MODEL" \
-              ${task_flags[@]+"${task_flags[@]}"} \
-              --per-task-parallelism "$CLBENCH_PER_TASK_PARALLELISM" \
-              --no-live-dashboard )
+          if [ "$CLBENCH_SCHEDULE" = "default" ]; then
+            # Leaderboard-comparable: run-all uses each task's default schedule (5 runs
+            # + baseline). This is exactly the config the public leaderboard reports.
+            echo "::warning::clbench_schedule=default is leaderboard-scale (all default schedules, 5 runs + baseline); for a Deep Agents system this is many hours and will likely exceed the job timeout — prefer running per-task or out-of-CI."
+            task_flags=()
+            if [ "${#req_tasks[@]}" -gt 0 ]; then task_flags=(--task "${req_tasks[@]}"); fi
+            echo "Running 'clbench run-all' (leaderboard mode) — system=deepagents, model=$CLBENCH_MODEL"
+            ( cd clbench-src && set -x && uv run clbench run-all \
+                --name "$run_name" \
+                --system deepagents \
+                --system.model "$CLBENCH_MODEL" \
+                ${task_flags[@]+"${task_flags[@]}"} \
+                --per-task-parallelism "$CLBENCH_PER_TASK_PARALLELISM" \
+                --no-live-dashboard )
+          else
+            # Cheap/named-schedule mode: run-all is hardwired to default.json, so a
+            # named schedule (e.g. quick_test) must be run per task via `clbench run`.
+            targets=()
+            if [ "${#req_tasks[@]}" -gt 0 ]; then
+              targets=("${req_tasks[@]}")
+            else
+              # No include_tasks: auto-select tasks that actually define this schedule.
+              for d in clbench-src/src/tasks/*/; do
+                t="$(basename "$d")"
+                if [ -f "$d/schedules/${CLBENCH_SCHEDULE}.json" ]; then targets+=("$t"); fi
+              done
+            fi
+            if [ "${#targets[@]}" -eq 0 ]; then
+              echo "::error::No task defines schedule '$CLBENCH_SCHEDULE' (currently only exploitable_poker ships quick_test). Pass include_tasks, or use clbench_schedule=default."; exit 1
+            fi
+            echo "Cheap mode: schedule=$CLBENCH_SCHEDULE, tasks: ${targets[*]}"
+            rc=0
+            for t in "${targets[@]}"; do
+              if [ ! -f "clbench-src/src/tasks/$t/schedules/${CLBENCH_SCHEDULE}.json" ]; then
+                echo "::warning::task '$t' has no '$CLBENCH_SCHEDULE' schedule; skipping"; continue
+              fi
+              echo "Running 'clbench run $t --schedule $CLBENCH_SCHEDULE' — system=deepagents, model=$CLBENCH_MODEL"
+              ( cd clbench-src && set -x && uv run clbench run "$t" \
+                  --schedule "$CLBENCH_SCHEDULE" \
+                  --system deepagents \
+                  --system.model "$CLBENCH_MODEL" \
+                  --max-workers "$CLBENCH_PER_TASK_PARALLELISM" \
+                  --no-live-dashboard ) || rc=$?
+            done
+            [ "$rc" -eq 0 ] || { echo "::error::one or more clbench tasks failed (rc=$rc)"; exit "$rc"; }
+          fi
 
       - name: "📝 Write workflow summary"
         if: always()
@@ -676,6 +726,11 @@ jobs:
               echo "- Tasks: all (run-all over the whole benchmark)"
             fi
             echo "- Per-task parallelism: ${CLBENCH_PER_TASK_PARALLELISM}"
+            if [ "${CLBENCH_SCHEDULE}" = "default" ]; then
+              echo "- Schedule: default (leaderboard-comparable: run-all, each task's default schedule, 5 runs)"
+            else
+              echo "- Schedule: ${CLBENCH_SCHEDULE} (cheap mode: per-task clbench run --schedule)"
+            fi
             if [ "${LANGSMITH_TRACING}" = "true" ]; then
               echo "- LangSmith tracing: on (trajectories only; project ${CLBENCH_LS_PROJECT:-deepagents-clbench-<model>})"
             else

@@ -422,9 +422,7 @@ def test_backend_import_loader_strips_typescript_imports(
     worker: ThreadWorker,
     runtime: Runtime,
 ) -> None:
-    backend = _DictModuleBackend(
-        {"/math.ts": "export const answer: number = 42;"}
-    )
+    backend = _DictModuleBackend({"/math.ts": "export const answer: number = 42;"})
     module_repl = _ThreadREPL(
         worker,
         runtime,

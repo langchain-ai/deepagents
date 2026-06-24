@@ -1,0 +1,46 @@
+libs/evals/tests/evals/oolong/benchmarks.py
+  s_a23cdcb1879983::t_3351313382a859 3-416
+libs/evals/tests/evals/oolong/official_scorer.py
+  s_a23cdcb1879983::t_3604e13db4b99b 28
+  s_a23cdcb1879983::t_b48fc01ab895a1 29-31
+  s_a23cdcb1879983::t_9e0eee962d3de4 1-27,32-109
+libs/evals/tests/evals/utils.py
+  s_a23cdcb1879983::t_47486df0088de2 1208-1209,1264-1265
+  s_943638c4b69b44::t_f8bbd2bd2529e0 1105,1119
+  s_943638c4b69b44::t_35d2aca25c795b 1233,1246-1248
+  s_a23cdcb1879983::t_6cf69df6422c3f 1173,1190-1194,1211-1212
+  s_943638c4b69b44::t_9082dd727a14c0 1171,1185-1187
+  s_a23cdcb1879983::t_0ce03ccafc7867 1106-1118,1125-1130,1133,1136-1144,1149-1154
+  s_943638c4b69b44::t_1a4a29e7a037cc 1122-1124
+libs/evals/tests/evals/oolong/README.md
+  s_a23cdcb1879983::t_f5190c8dfc6111 1-120
+libs/evals/tests/evals/oolong/__init__.py
+  s_a23cdcb1879983::t_73d025596ecab4 1-4
+libs/evals/tests/evals/oolong/test_rlm_vs_subagents.py
+  s_a23cdcb1879983::t_ccaab174f08443 5-64,67
+  s_a23cdcb1879983::t_c34935b7aa113f 66
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "0734348effaea8bf137018d6509a08759ca0ec09",
+  "prompts": {},
+  "sessions": {
+    "s_943638c4b69b44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0385a0ed-b687-4fe3-8e00-f4dc75345399",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    },
+    "s_a23cdcb1879983": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f048b68d-0bfd-4f95-a92e-27d4595f55fd",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

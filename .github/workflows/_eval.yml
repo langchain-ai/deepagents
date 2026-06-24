@@ -320,6 +320,17 @@ jobs:
             exit 1
           fi
 
+          # Human-readable context-length label for the experiment name
+          # (131072 -> 128k, 65536 -> 64k, 8192 -> 8k, else <n>tok). Empty input
+          # means the test default (8192).
+          CTX_RAW="${OOLONG_CONTEXT_LEN_IN:-8192}"
+          case "$CTX_RAW" in
+            131072) CTX_LABEL=128k ;;
+            65536)  CTX_LABEL=64k ;;
+            8192)   CTX_LABEL=8k ;;
+            *)      CTX_LABEL="${CTX_RAW}tok" ;;
+          esac
+
           # Select the arm + sub-model. `OOLONG_ARM` is read by the eval module
           # and by the reporter (which records arm + sub_model as experiment
           # metadata so both arms share one dataset example).
@@ -328,9 +339,12 @@ jobs:
             [ -n "$OOLONG_N_EXAMPLES_IN" ] && printf 'OOLONG_N_EXAMPLES=%s\n' "$OOLONG_N_EXAMPLES_IN"
             [ -n "$OOLONG_CONTEXT_LEN_IN" ] && printf 'OOLONG_CONTEXT_LEN=%s\n' "$OOLONG_CONTEXT_LEN_IN"
             [ -n "$OOLONG_DATASET_IN" ] && printf 'OOLONG_DATASET=%s\n' "$OOLONG_DATASET_IN"
-            # Distinct experiment per arm so the two arms don't share a session
-            # (they share the dataset example, not the experiment).
-            printf 'LANGSMITH_EXPERIMENT=%s-oolong-%s\n' "$MODEL_IN" "$OOLONG_ARM_IN"
+            # Log OOLONG experiments to the OSS LangSmith workspace.
+            printf 'LANGSMITH_WORKSPACE_ID=495db4ef-0b85-4f00-8deb-326a2ec006ec\n'
+            # Distinct experiment per (arm, context length) so runs don't collide
+            # and the size is visible in the name. The two arms still share the
+            # dataset example (same inputs), not the experiment.
+            printf 'LANGSMITH_EXPERIMENT=%s-oolong-%s-%s\n' "$MODEL_IN" "$OOLONG_ARM_IN" "$CTX_LABEL"
           } >> "$GITHUB_ENV"
 
           printf 'PYTEST_ADDOPTS=%s --sub-model %s\n' "${PYTEST_ADDOPTS}" "$SUB_MODEL_IN" >> "$GITHUB_ENV"

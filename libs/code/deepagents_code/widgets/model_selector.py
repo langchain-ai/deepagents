@@ -526,6 +526,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         cli_override: dict[str, Any] | None,
         *,
         include_uninstalled: bool = True,
+        include_recent: bool = True,
     ) -> _ModelData:
         """Gather model discovery data synchronously.
 
@@ -541,6 +542,12 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 upstream profiles omit the model, added as normal selectable
                 rows. Onboarding sets this `False` because it has a dedicated
                 dependency-install step.
+            include_recent: When `True`, load the recent-models MRU so the
+                pinned "Recent" section can render. Onboarding sets this
+                `False`: first-run users have never picked a model, and the
+                startup default-fallback resolution writes its auto-detected
+                pick into the MRU, which would otherwise surface as a bogus
+                "Recent" entry the user never chose.
 
         Returns:
             A `_ModelData` bundle of the discovered models, default spec,
@@ -602,7 +609,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 all_models.append((spec, provider))
 
         profiles = get_model_profiles(cli_override=cli_override)
-        recent_specs = load_recent_models()
+        recent_specs = load_recent_models() if include_recent else []
         return _ModelData(
             all_models,
             config.default_model,
@@ -690,6 +697,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 self._load_model_data,
                 self._cli_profile_override,
                 include_uninstalled=not self._curated,
+                include_recent=not self._curated,
             )
         except Exception:
             logger.exception("Failed to load model data for /model selector")

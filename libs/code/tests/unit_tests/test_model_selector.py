@@ -585,6 +585,44 @@ class TestRecentModelsSection:
             specs = [spec for spec, _ in screen._filtered_models]
             assert "anthropic:claude-sonnet-4-5" in specs
 
+    async def test_recent_section_hidden_during_onboarding(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Curated onboarding never shows Recent, even if the MRU is populated.
+
+        On a fresh install the startup default-fallback resolution writes its
+        auto-detected pick into the recent-models MRU. Onboarding must not
+        surface that as a "Recent" entry the user never chose.
+        """
+        from deepagents_code.widgets import model_selector
+
+        recent_called = False
+
+        def _tracked_load_recent_models() -> list[str]:
+            nonlocal recent_called
+            recent_called = True
+            return ["anthropic:claude-opus-4-7"]
+
+        monkeypatch.setattr(
+            model_selector,
+            "load_recent_models",
+            _tracked_load_recent_models,
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(curated=True)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert recent_called is False
+            assert screen._recent_specs == []
+            headers = [
+                str(h.content)
+                for h in screen.query(".model-provider-header").results(Static)
+            ]
+            assert not any("Recent" in h for h in headers)
+
     async def test_recent_section_hidden_during_filter(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

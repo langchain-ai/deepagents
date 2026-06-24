@@ -12,8 +12,8 @@ LangSmith structure
 `run_oolong_case` logs the example explicitly: the **inputs** are the question
 + task metadata, the **reference output** is the gold answer, the run
 **outputs** are the parsed prediction + score, and numeric **feedback** is
-correctness / partial_score / agent_steps / tool_call_requests. The model and
-arm go in **metadata**, not inputs. Inputs are identical across arms, so both
+``score`` (the sole OOLONG metric) / agent_steps / tool_call_requests. The model
+and arm go in **metadata**, not inputs. Inputs are identical across arms, so both
 experiments share one dataset example and line up for side-by-side comparison.
 
 The arm is the experiment dimension, not an input: select it with

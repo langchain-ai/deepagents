@@ -305,6 +305,24 @@ class TestModelSelectorChrome:
             assert "Ctrl+S set default" in str(help_text.content)
             assert "Esc cancel" not in str(help_text.content)
 
+    async def test_standard_selector_help_wraps_to_two_rows(self) -> None:
+        """The standard footer is wider than the modal, so it must wrap.
+
+        With a clamped one-row `height` the trailing `Ctrl+R recommended`
+        hint was clipped off the end; `height: auto` lets it wrap instead.
+        """
+        app = ModelSelectorTestApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_text = screen.query_one(".model-selector-help", Static)
+
+            assert "Ctrl+R recommended" in str(help_text.content)
+            assert help_text.region.height >= 2
+            assert help_text.region.y + help_text.region.height <= app.size.height
+
 
 class TestRecommendedToggle:
     """Tests for the Ctrl+R recommended-only toggle in `/model`."""

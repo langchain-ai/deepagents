@@ -341,7 +341,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     }
 
     ModelSelectorScreen .model-selector-help {
-        height: 1;
+        height: auto;
         color: $text-muted;
         text-style: italic;
         margin-top: 1;
@@ -452,7 +452,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         """Build the footer help text.
 
         Curated/onboarding mode omits the Ctrl+S and Ctrl+R hints. Escape stays
-        bound but is not advertised so the footer does not wrap awkwardly.
+        bound but is not advertised. In standard mode the full line exceeds the
+        modal width, so the help `Static` (`height: auto`) wraps it to two rows
+        rather than clipping the trailing hints.
 
         Returns:
             The bullet-separated help line.

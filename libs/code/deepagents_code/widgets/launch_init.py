@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 from textual.app import ScreenStackError
 from textual.binding import Binding, BindingType
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
@@ -20,12 +20,13 @@ if TYPE_CHECKING:
 
 from deepagents_code import theme
 from deepagents_code.config import get_glyphs, is_ascii_mode
-from deepagents_code.extras_info import MODEL_PROVIDER_EXTRAS, SANDBOX_EXTRAS
+from deepagents_code.extras_info import (
+    MODEL_PROVIDER_EXTRAS,
+    SANDBOX_EXTRAS,
+    STANDALONE_EXTRAS,
+)
 
 logger = logging.getLogger(__name__)
-
-_EXTRA_LIST_LIMIT = 8
-"""Maximum extra names shown inline before summarizing the remainder."""
 
 
 def _normalize_name(value: str) -> str:
@@ -192,10 +193,19 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
         margin-bottom: 1;
     }
 
+    LaunchDependenciesScreen #launch-dependencies-body {
+        height: auto;
+        max-height: 16;
+        margin-bottom: 1;
+    }
+
     LaunchDependenciesScreen .launch-dependencies-section {
         height: auto;
         color: $text;
-        margin-bottom: 1;
+    }
+
+    LaunchDependenciesScreen .launch-dependencies-section.is-available {
+        margin-top: 1;
     }
 
     LaunchDependenciesScreen .launch-init-help {
@@ -240,17 +250,34 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
             yield Static(
                 "Model providers and sandboxes are enabled by optional add-on "
                 "packages. The ones already present in your environment are "
-                "ready to use now; you can add others anytime with `/install`.",
+                "ready to use now.",
                 classes="launch-init-copy",
             )
             if self._statuses:
+                with VerticalScroll(id="launch-dependencies-body"):
+                    yield Static(
+                        self._format_section(
+                            title="Ready now",
+                            ready=True,
+                            glyph=glyphs.checkmark,
+                            empty="Nothing installed yet — add one below.",
+                        ),
+                        classes="launch-dependencies-section",
+                    )
+                    yield Static(
+                        self._format_section(
+                            title="Available to add",
+                            ready=False,
+                            glyph=glyphs.circle_empty,
+                            empty="Everything is installed.",
+                        ),
+                        classes="launch-dependencies-section is-available",
+                    )
                 yield Static(
-                    self._format_section(title="Ready now", ready=True),
-                    classes="launch-dependencies-section",
-                )
-                yield Static(
-                    self._format_section(title="Available to add", ready=False),
-                    classes="launch-dependencies-section",
+                    "Pick a model on the next screen to install its provider "
+                    "automatically, or add any integration anytime with "
+                    "`/install <name>` (e.g. `/install daytona`).",
+                    classes="launch-init-copy",
                 )
             else:
                 # `get_optional_dependency_status` returns an empty tuple when
@@ -274,25 +301,43 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
             colors = theme.get_theme_colors(self)
             container.styles.border = ("ascii", colors.success)
 
-    def _format_section(self, *, title: str, ready: bool) -> str:
-        """Format one status section.
+    def _format_section(
+        self, *, title: str, ready: bool, glyph: str, empty: str
+    ) -> str:
+        """Format one status section as per-extra rows grouped by category.
+
+        Every matching extra is listed (no truncation); each category that
+        has matches is shown under a sub-header, and the section title carries
+        a total count.
 
         Args:
             title: Section title.
             ready: Whether to include ready or not-yet-ready extras.
+            glyph: Status glyph rendered before each extra name.
+            empty: Placeholder line shown when the section has no extras.
 
         Returns:
             Multi-line section text.
         """
-        providers = self._extra_names(MODEL_PROVIDER_EXTRAS, ready=ready)
-        sandboxes = self._extra_names(SANDBOX_EXTRAS, ready=ready)
-        return "\n".join(
-            [
-                title,
-                f"  Model providers: {_format_extra_names(providers)}",
-                f"  Sandboxes: {_format_extra_names(sandboxes)}",
-            ]
+        groups: tuple[tuple[str, frozenset[str]], ...] = (
+            ("Model providers", MODEL_PROVIDER_EXTRAS),
+            ("Sandboxes", SANDBOX_EXTRAS),
+            ("Other", STANDALONE_EXTRAS),
         )
+        grouped = [
+            (label, self._extra_names(names, ready=ready)) for label, names in groups
+        ]
+        total = sum(len(extras) for _, extras in grouped)
+        lines = [f"{title} ({total})"]
+        if total == 0:
+            lines.append(f"  {empty}")
+            return "\n".join(lines)
+        for label, extras in grouped:
+            if not extras:
+                continue
+            lines.append(f"  {label}")
+            lines.extend(f"    {glyph} {name}" for name in extras)
+        return "\n".join(lines)
 
     def _extra_names(self, names: frozenset[str], *, ready: bool) -> list[str]:
         """Return sorted extra names matching a category and readiness state.
@@ -340,22 +385,3 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
     def action_cancel(self) -> None:
         """See `LaunchNameScreen.action_cancel`."""
         self.action_skip()
-
-
-def _format_extra_names(names: list[str]) -> str:
-    """Format extra names for compact display.
-
-    Args:
-        names: Extra names to display.
-
-    Returns:
-        Comma-separated extra names, or a placeholder when empty.
-    """
-    if not names:
-        return "none detected"
-    shown = names[:_EXTRA_LIST_LIMIT]
-    rendered = ", ".join(shown)
-    remaining = len(names) - len(shown)
-    if remaining > 0:
-        rendered = f"{rendered}, +{remaining} more"
-    return rendered

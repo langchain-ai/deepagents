@@ -10,7 +10,10 @@ from textual.containers import Container
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
-from deepagents_code.extras_info import ExtraDependencyStatus
+from deepagents_code.extras_info import (
+    MODEL_PROVIDER_EXTRAS,
+    ExtraDependencyStatus,
+)
 from deepagents_code.widgets.launch_init import (
     LaunchDependenciesScreen,
     LaunchNameScreen,
@@ -190,12 +193,55 @@ class TestLaunchDependenciesScreen:
 
         assert "Installed Integrations" in content
         assert "Ready now" in content
-        assert "Model providers: anthropic" in content
-        assert "Sandboxes: daytona" in content
         assert "Available to add" in content
-        assert "Model providers: bedrock" in content
-        assert "Sandboxes: runloop" in content
+        # Ready and addable extras are listed under category sub-headers.
+        assert "Model providers" in content
+        assert "Sandboxes" in content
+        for extra in ("anthropic", "daytona", "bedrock", "runloop"):
+            assert extra in content
+        # The screen points at how to act on the listed integrations.
+        assert "/install" in content
         assert "Esc skip setup" in content
+
+    async def test_available_section_is_not_truncated(self) -> None:
+        """Every addable extra is listed, with no "+N more" summary."""
+        statuses = tuple(
+            ExtraDependencyStatus(
+                name=name, installed=(), missing=(f"langchain-{name}",)
+            )
+            for name in sorted(MODEL_PROVIDER_EXTRAS)
+        )
+        app = LaunchNameTestApp()
+        async with app.run_test() as pilot:
+            app.show_dependencies_screen(statuses)
+            await pilot.pause()
+
+            content = "\n".join(
+                str(widget.content) for widget in app.screen.query(Static)
+            )
+
+        assert "more" not in content
+        for name in MODEL_PROVIDER_EXTRAS:
+            assert name in content
+
+    async def test_renders_other_category(self) -> None:
+        """Standalone extras (e.g. quickjs) get their own category."""
+        statuses = (
+            ExtraDependencyStatus(
+                name="quickjs", installed=(), missing=("langchain-quickjs",)
+            ),
+        )
+        app = LaunchNameTestApp()
+        async with app.run_test() as pilot:
+            app.show_dependencies_screen(statuses)
+            await pilot.pause()
+
+            content = "\n".join(
+                str(widget.content) for widget in app.screen.query(Static)
+            )
+
+        assert "Other" in content
+        assert "quickjs" in content
 
     async def test_enter_continues(self) -> None:
         """Enter should continue to the next onboarding step."""

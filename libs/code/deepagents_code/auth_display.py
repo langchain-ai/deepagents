@@ -75,8 +75,6 @@ def format_auth_indicator(status: ProviderAuthStatus, glyphs: Glyphs) -> str:
         case ProviderAuthState.CONFIGURED:
             return ""
         case ProviderAuthState.MISSING:
-            if status.env_var:
-                return f"{glyphs.warning} missing {status.env_var}"
             return f"{glyphs.warning} missing credentials"
         case ProviderAuthState.NOT_REQUIRED:
             return status.detail or "no API key required"

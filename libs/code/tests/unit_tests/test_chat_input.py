@@ -227,6 +227,93 @@ class _RecordingApp(App[None]):
         self.submitted.append(event)
 
 
+class TestChatInputScrollbar:
+    """Regression tests for the chat input's vertical scrollbar behavior.
+
+    `ChatTextArea` is `height: auto; max-height: 8; overflow-y: auto`. The base
+    `TextArea` grows its `virtual_size` height the moment a row is inserted, a
+    frame before this auto-height widget's container reflows to match. Left to
+    the base `_refresh_scrollbars`, that one-frame mismatch makes a short draft
+    look like it overflows and flashes the vertical scrollbar on, then off. The
+    `ChatTextArea._refresh_scrollbars` override corrects the comparison height
+    so the bar appears only on genuine overflow.
+    """
+
+    async def test_newline_into_short_draft_never_flashes_scrollbar(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A newline below `max-height` must never show the vertical scrollbar.
+
+        Records the scrollbar decision on every refresh triggered by the insert
+        (not just the settled state) so the one-frame flash is caught. Fails
+        against the unpatched base behavior, which shows the bar mid-reflow.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            text_area = chat.input_widget
+            assert text_area is not None
+            text_area.focus()
+            await pilot.pause()
+
+            decisions: list[bool] = []
+            original = ChatTextArea._refresh_scrollbars
+
+            def _record(self: ChatTextArea) -> None:
+                original(self)
+                decisions.append(self.show_vertical_scrollbar)
+
+            monkeypatch.setattr(ChatTextArea, "_refresh_scrollbars", _record)
+            await pilot.press("shift+enter")
+            for _ in range(4):
+                await pilot.pause()
+
+            assert text_area.text == "\n"
+            assert text_area.max_scroll_y == 0
+            assert decisions, "expected a scrollbar refresh during the insert"
+            assert not any(decisions), (
+                f"vertical scrollbar flashed during newline insert: {decisions}"
+            )
+            assert text_area.show_vertical_scrollbar is False
+
+    async def test_overflowing_draft_keeps_visible_scrollbar(self) -> None:
+        """A draft taller than `max-height` keeps a real, scrollable bar."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            text_area = chat.input_widget
+            assert text_area is not None
+            text_area.focus()
+            await pilot.pause()
+
+            for _ in range(15):
+                await pilot.press("shift+enter")
+            for _ in range(3):
+                await pilot.pause()
+
+            assert text_area.max_scroll_y > 0
+            assert text_area.show_vertical_scrollbar is True
+            assert text_area.scrollbar_size_vertical > 0
+            # The cursor stays in view at the bottom of the overflowing draft.
+            rel_y = text_area.cursor_location[0] - text_area.scroll_offset.y
+            assert 0 <= rel_y < text_area.size.height
+
+    async def test_settled_content_height_resolves_max_height(self) -> None:
+        """The flash-suppression bound resolves to `max-height` in content rows.
+
+        Guards the override silently disabling itself: if `max-height` stops
+        resolving to a fixed cell count, `_settled_content_height` returns
+        `None` and the flash returns.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            text_area = app.query_one(ChatInput).input_widget
+            assert text_area is not None
+            await pilot.pause()
+            # max-height: 8 with no border/padding -> 8 content rows.
+            assert text_area._settled_content_height() == 8
+
+
 class TestChatTextAreaKeybindings:
     """Regression tests for terminal key aliases in the chat input."""
 
@@ -416,6 +503,31 @@ class TestInputActionButtons:
             # Clearing the draft hides them again.
             chat_input.discard_text()
             await pilot.pause()
+            assert actions.display is False
+
+    async def test_history_navigation_hides_buttons_in_same_frame(self) -> None:
+        """Emptying the draft via history/clear hides the buttons synchronously."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            actions = chat_input.query_one("#input-actions")
+
+            # Recalling content shows the buttons in the same frame (no pause).
+            text_area.set_text_from_history("recalled", cursor_at_end=True)
+            assert actions.display is True
+
+            # Tabbing forward to an empty draft hides them in the same frame,
+            # before the suppressed Changed event would otherwise process.
+            text_area.set_text_from_history("", cursor_at_end=True)
+            assert actions.display is False
+
+            # clear_text empties the draft and hides them synchronously too.
+            text_area.set_text_from_history("recalled", cursor_at_end=True)
+            assert actions.display is True
+            text_area.clear_text()
             assert actions.display is False
 
     async def test_copy_button_double_click_does_not_select_label(self) -> None:

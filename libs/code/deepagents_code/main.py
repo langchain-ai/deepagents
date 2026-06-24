@@ -195,7 +195,9 @@ def _run_startup_auto_update(console: "Console") -> None:
     from deepagents_code.config import _is_editable_install
     from deepagents_code.update_check import (
         create_update_log_path,
+        detect_shadowed_dcode_safe,
         format_release_age_parenthetical,
+        format_shadowed_dcode_warning,
         get_cached_update_available,
         is_auto_update_enabled,
         is_installed_version_at_least,
@@ -295,6 +297,31 @@ def _run_startup_auto_update(console: "Console") -> None:
         )
         success, output = asyncio.run(perform_upgrade(log_path=log_path))
         if success:
+            # If a stale `dcode` is earlier on PATH, the auto-restart would
+            # re-exec into the old binary and the user would silently keep
+            # running the pre-upgrade version. Detect that *before* the
+            # re-exec so the warning isn't immediately wiped by the new
+            # process's startup, and skip the restart — re-exec'ing into
+            # an unchanged version would also trip the `restarted_for`
+            # no-op loop guard on the next launch. Use the never-raises
+            # wrapper so a detector defect can't crash startup after an
+            # otherwise-successful upgrade.
+            shadow = detect_shadowed_dcode_safe()
+            if shadow is not None:
+                # The warning embeds filesystem paths from `shutil.which`,
+                # which can legally contain `[` (macOS/Linux). With
+                # `markup=True` those would be parsed as Rich style tags,
+                # so escape the warning before interpolation; the sibling
+                # auto-update failure branch at the bottom of this function
+                # escapes its uv output the same way.
+                warning = format_shadowed_dcode_warning(shadow)
+                console.print(
+                    f"[bold yellow]Warning:[/bold yellow] {escape(warning)}\n"
+                    f"Continuing with v{cli_version}.",
+                    highlight=False,
+                    markup=True,
+                )
+                return
             console.print(
                 f"[green]Updated to v{latest}. Launching...[/green]",
                 highlight=False,

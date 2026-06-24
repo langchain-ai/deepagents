@@ -631,9 +631,9 @@ class TestRecentModelsSection:
     ) -> None:
         """Curated onboarding never shows Recent, even if the MRU is populated.
 
-        On a fresh install the startup default-fallback resolution writes its
-        auto-detected pick into the recent-models MRU. Onboarding must not
-        surface that as a "Recent" entry the user never chose.
+        Guards the `include_recent` gating in `_load_model_data` (see its
+        docstring for why the startup auto-detected fallback must not surface
+        as a "Recent" entry the user never chose).
         """
         from deepagents_code.widgets import model_selector
 
@@ -642,6 +642,9 @@ class TestRecentModelsSection:
         def _tracked_load_recent_models() -> list[str]:
             nonlocal recent_called
             recent_called = True
+            # Deliberately a recommended model so it survives curated filtering:
+            # on a revert it would reach the rendered "Recent" header, keeping
+            # the header assertion below an effective regression guard.
             return ["anthropic:claude-opus-4-7"]
 
         monkeypatch.setattr(
@@ -1943,6 +1946,10 @@ class TestModelSelectorInstallRouting:
             await pilot.pause()
 
         assert captured["include_uninstalled"] is True
+        # Curated onboarding must skip the recent-models MRU at the call site,
+        # independent of the rendering-level guard in
+        # test_recent_section_hidden_during_onboarding.
+        assert captured["include_recent"] is False
 
     async def test_load_model_data_surfaces_uninstalled_recommended(
         self, monkeypatch: pytest.MonkeyPatch

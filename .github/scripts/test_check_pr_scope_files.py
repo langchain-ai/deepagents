@@ -326,6 +326,30 @@ def test_main_partially_malformed_file_rules_returns_2(capsys, tmp_path) -> None
     assert "::error::" in capsys.readouterr().err
 
 
+def test_main_release_bypass_validates_labeler_config(capsys, tmp_path) -> None:
+    """Release artifact bypasses still fail closed on malformed labeler config."""
+    config_path = tmp_path / "pr-labeler-config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "scopeToLabel": CONFIG["scopeToLabel"],
+                "fileRules": [{"label": "dcode", "prefix": 123}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    rc = main(
+        "release(deepagents-code): 0.1.22",
+        ["libs/code/uv.lock"],
+        config_path=config_path,
+    )
+    captured = capsys.readouterr()
+
+    assert rc == 2
+    assert captured.out == ""
+    assert "fileRules" in captured.err
+
+
 def test_main_stdout_is_json_array(capsys, tmp_path) -> None:
     """The workflow can strictly parse stdout as JSON."""
     config_path = tmp_path / "pr-labeler-config.json"

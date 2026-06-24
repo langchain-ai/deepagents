@@ -284,10 +284,10 @@ def find_offenders(
     Raises:
         ValueError: If required config sections are missing or malformed.
     """
+    declared = declared_packages(title, config)
     if is_release_pr_change(title, changed):
         return []
 
-    declared = declared_packages(title, config)
     if not declared:
         return []
 

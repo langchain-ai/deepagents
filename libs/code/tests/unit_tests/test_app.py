@@ -3622,7 +3622,9 @@ class TestTraceCommand:
                 await pilot.pause()
 
             app_msgs = app.query(AppMessage)
-            assert any("LANGSMITH_API_KEY" in str(w._content) for w in app_msgs)
+            rendered = "\n".join(str(w._content) for w in app_msgs)
+            assert "LANGSMITH_API_KEY" in rendered
+            assert "/auth" in rendered
 
     async def test_trace_shows_network_error_when_url_fetch_times_out(self) -> None:
         """Should distinguish a network/timeout failure from a config gap.

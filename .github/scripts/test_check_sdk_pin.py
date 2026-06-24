@@ -59,7 +59,7 @@ def test_missing_pin_raises(tmp_path) -> None:
         sdk_section='[project]\nname = "deepagents"\nversion = "0.6.10"\n',
         code_deps='"deepagents>=0.6.0", "rich>=15"',
     )
-    with pytest.raises(ValueError, match="No `deepagents==X.Y.Z` pin"):
+    with pytest.raises(ValueError, match="No `deepagents==<version>` pin"):
         main(repo)
 
 
@@ -74,12 +74,32 @@ def test_missing_sdk_version_raises(tmp_path) -> None:
         main(repo)
 
 
-def test_non_semver_pin_not_recognized(tmp_path) -> None:
-    """A pin without three numeric segments is not treated as a valid pin."""
+def test_prerelease_pin_in_sync(tmp_path) -> None:
+    """A PEP 440 prerelease pin matching the SDK returns 0.
+
+    The extractor must capture the full `0.7.0a2` token; a strict `X.Y.Z`
+    pattern would truncate it to `0.7.0` and report false drift against an
+    in-sync prerelease SDK. Guards parity with the release workflow's gate.
+    """
+    assert main(_write_repo(tmp_path, "0.7.0a2", "0.7.0a2")) == 0
+
+
+def test_prerelease_pin_drift(tmp_path) -> None:
+    """Two distinct prereleases must be compared verbatim, not truncated."""
+    assert main(_write_repo(tmp_path, "0.7.0a3", "0.7.0a2")) == 1
+
+
+def test_two_segment_pin_recognized(tmp_path) -> None:
+    """Any `==` token is accepted and compared verbatim (parity with sed).
+
+    The extractor no longer requires three numeric segments — it mirrors the
+    `deepagents==([^", <>=;]+)` sed pattern in the workflows, which captures
+    whatever follows `==`. A two-segment `0.6` pin is therefore recognized and
+    reported as drift against the SDK's `0.6.10` (not silently rejected).
+    """
     repo = _write_repo_raw(
         tmp_path,
         sdk_section='[project]\nname = "deepagents"\nversion = "0.6.10"\n',
         code_deps='"deepagents==0.6"',
     )
-    with pytest.raises(ValueError, match="No `deepagents==X.Y.Z` pin"):
-        main(repo)
+    assert main(repo) == 1

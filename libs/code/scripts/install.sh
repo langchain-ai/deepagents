@@ -553,12 +553,12 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE" ]; then
     log_warn "Could not determine the latest version from PyPI — continuing with an upgrade attempt."
   elif [ -n "$EXTRAS" ] || [ "$PYTHON_REQUESTED" = true ]; then
     if [ "$LATEST_VERSION" = "$PRE_VERSION" ]; then
-      log_info "deepagents-code ${PRE_VERSION} is already up to date — rebuilding with requested options."
+      log_info "deepagents-code is already up to date — rebuilding with requested options."
     else
       log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION} with requested options..."
     fi
   elif [ "$LATEST_VERSION" = "$PRE_VERSION" ]; then
-    log_success "deepagents-code ${PRE_VERSION} is already up to date."
+    log_success "deepagents-code is already up to date."
     exit 0
   elif [ "$ASSUME_YES" = "1" ]; then
     log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."

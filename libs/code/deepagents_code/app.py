@@ -2387,10 +2387,22 @@ class DeepAgentsApp(App):
         self._chat_input.focus_input()
 
         if self._launch_init_requested:
-            from deepagents_code.widgets.launch_init import LaunchNameScreen
+            dependency_screen, dependency_result = (
+                self._build_launch_dependencies_prompt()
+            )
 
-            name_result = self._push_screen_result_future(LaunchNameScreen())
-            self._ensure_launch_init_task(name_result=name_result)
+            def skip_dependency_prompt(_name: str) -> None:
+                if not dependency_result.done():
+                    dependency_result.set_result((False, None))
+
+            name_result = self._push_launch_name_result_future(
+                continue_screen=dependency_screen,
+                on_continue_failed=skip_dependency_prompt,
+            )
+            self._ensure_launch_init_task(
+                name_result=name_result,
+                dependency_result=dependency_result,
+            )
 
         # Pre-import `html.entities` on the main thread before the worker
         # starts. Python 3.14 replaced the global import lock with per-module
@@ -5910,6 +5922,40 @@ class DeepAgentsApp(App):
         self.push_screen(screen, handle_result)
         return result_future
 
+    def _push_launch_name_result_future(
+        self,
+        *,
+        continue_screen: ModalScreen[Any] | None = None,
+        on_continue_failed: Callable[[str], None] | None = None,
+    ) -> asyncio.Future[str | None]:
+        """Push the launch name modal and return its result future.
+
+        Args:
+            continue_screen: Optional screen that replaces the name modal after
+                submit, avoiding a frame where the base app is exposed.
+            on_continue_failed: Optional callback invoked with the submitted
+                name if replacing the name modal fails.
+
+        Returns:
+            Future completed with the submitted name or `None` when skipped.
+        """
+        from deepagents_code.widgets.launch_init import LaunchNameScreen
+
+        loop = asyncio.get_running_loop()
+        result_future: asyncio.Future[str | None] = loop.create_future()
+
+        def handle_result(result: str | None) -> None:
+            if not result_future.done():
+                result_future.set_result(result)
+
+        screen = LaunchNameScreen(
+            continue_screen=continue_screen,
+            on_continue=handle_result if continue_screen is not None else None,
+            on_continue_failed=on_continue_failed,
+        )
+        self.push_screen(screen, handle_result)
+        return result_future
+
     async def _push_screen_wait(
         self,
         screen: ModalScreen[ScreenResultT],
@@ -5929,12 +5975,15 @@ class DeepAgentsApp(App):
         self,
         *,
         name_result: Awaitable[str | None] | None = None,
+        dependency_result: Awaitable[tuple[bool, tuple[str, str] | None]] | None = None,
     ) -> asyncio.Task[None]:
         """Start the onboarding task if needed.
 
         Args:
             name_result: Optional pre-pushed name-screen result. Used during
                 app mount so the modal is present before the first frame.
+            dependency_result: Optional pre-wired dependency/model result. Used
+                when the name screen switches directly to the dependency screen.
 
         Returns:
             The active onboarding task.
@@ -5948,7 +5997,10 @@ class DeepAgentsApp(App):
             task = asyncio.create_task(self._run_launch_init_sequence())
         else:
             task = asyncio.create_task(
-                self._run_launch_init_sequence(name_result=name_result),
+                self._run_launch_init_sequence(
+                    name_result=name_result,
+                    dependency_result=dependency_result,
+                ),
             )
         self._launch_init_task = task
 
@@ -5964,6 +6016,7 @@ class DeepAgentsApp(App):
         self,
         *,
         name_result: Awaitable[str | None] | None = None,
+        dependency_result: Awaitable[tuple[bool, tuple[str, str] | None]] | None = None,
     ) -> None:
         """Run the onboarding flow."""
         if self._launch_init_running:
@@ -5988,10 +6041,13 @@ class DeepAgentsApp(App):
                     self._write_launch_name_memory(name),
                 )
 
-            (
-                dependency_continued,
-                result,
-            ) = await self._prompt_launch_dependencies_then_model()
+            if dependency_result is None:
+                (
+                    dependency_continued,
+                    result,
+                ) = await self._prompt_launch_dependencies_then_model()
+            else:
+                dependency_continued, result = await dependency_result
             if not dependency_continued:
                 await self._await_launch_name_memory(name_memory_task)
                 await self._finish_launch_init(name=name)
@@ -6002,7 +6058,7 @@ class DeepAgentsApp(App):
                 await self._finish_launch_init(name=name)
                 return
 
-            model_spec, _provider = result
+            model_spec, provider = result
             if self._connecting:
                 # Bound the wait so a stuck server never traps onboarding.
                 # Server startup typically completes in seconds; a minute is
@@ -6030,7 +6086,7 @@ class DeepAgentsApp(App):
                 await self._await_launch_name_memory(name_memory_task)
                 return
             try:
-                await self._switch_model(model_spec, announce_unchanged=False)
+                await self._switch_or_install_launch_model(model_spec, provider)
             except Exception as exc:  # surface to user, don't crash onboarding
                 logger.warning(
                     "Model switch during onboarding failed",
@@ -6063,6 +6119,29 @@ class DeepAgentsApp(App):
             self._launch_init_running = False
             if self._chat_input:
                 self._chat_input.focus_input()
+
+    async def _switch_or_install_launch_model(
+        self,
+        model_spec: str,
+        provider: str,
+    ) -> None:
+        """Install a missing provider extra before switching from onboarding.
+
+        Args:
+            model_spec: The selected `provider:model` spec.
+            provider: Provider returned by the model selector.
+        """
+        if provider:
+            from deepagents_code.config_manifest import (
+                is_provider_package_installed,
+                provider_install_extra,
+            )
+
+            extra = provider_install_extra(provider)
+            if extra is not None and not is_provider_package_installed(provider):
+                await self._install_extra_then_switch(extra, model_spec)
+                return
+        await self._switch_model(model_spec, announce_unchanged=False)
 
     async def _finish_launch_init(self, *, name: str | None) -> None:
         """Persist onboarding completion and, when given, mount the welcome.
@@ -6151,28 +6230,33 @@ class DeepAgentsApp(App):
     def _build_launch_dependencies_screen(
         *,
         continue_screen: ModalScreen[Any] | None = None,
+        on_done: Callable[[bool | None], None] | None = None,
     ) -> ModalScreen:
         """Build the onboarding optional-dependency summary screen.
 
         Args:
             continue_screen: Optional screen to switch to when continuing.
+            on_done: Optional callback invoked when the dependency screen finishes
+                without switching to the model selector.
 
         Returns:
             Dependency summary modal.
         """
         from deepagents_code.widgets.launch_init import LaunchDependenciesScreen
 
-        return LaunchDependenciesScreen(continue_screen=continue_screen)
+        return LaunchDependenciesScreen(
+            continue_screen=continue_screen,
+            on_done=on_done,
+        )
 
-    async def _prompt_launch_dependencies_then_model(
+    def _build_launch_dependencies_prompt(
         self,
-    ) -> tuple[bool, tuple[str, str] | None]:
-        """Show dependencies, then replace that modal with model selection.
+    ) -> tuple[ModalScreen, asyncio.Future[tuple[bool, tuple[str, str] | None]]]:
+        """Build the dependency/model prompt screen and result future.
 
         Returns:
-            A tuple where the first value indicates whether the user continued
-            past the dependency screen, and the second is the selected model
-            result when one was chosen.
+            The dependency screen and a future resolved when the dependency or
+            model screen finishes.
         """
         loop = asyncio.get_running_loop()
         result_future: asyncio.Future[tuple[bool, tuple[str, str] | None]] = (
@@ -6186,21 +6270,35 @@ class DeepAgentsApp(App):
         def handle_model(result: tuple[str, str] | None) -> None:
             finish((True, result))
 
-        model_screen = self._build_model_selector_screen(
-            curated=True,
-            result_callback=handle_model,
-        )
-        dependency_screen = self._build_launch_dependencies_screen(
-            continue_screen=model_screen,
-        )
-
         def handle_dependencies(result: bool | None) -> None:
             if result is None:
                 finish((False, None))
             elif result is True:
                 finish((True, None))
 
-        self.push_screen(dependency_screen, handle_dependencies)
+        model_screen = self._build_model_selector_screen(
+            curated=True,
+            result_callback=handle_model,
+        )
+        dependency_screen = self._build_launch_dependencies_screen(
+            continue_screen=model_screen,
+            on_done=handle_dependencies,
+        )
+
+        return dependency_screen, result_future
+
+    async def _prompt_launch_dependencies_then_model(
+        self,
+    ) -> tuple[bool, tuple[str, str] | None]:
+        """Show dependencies, then replace that modal with model selection.
+
+        Returns:
+            A tuple where the first value indicates whether the user continued
+            past the dependency screen, and the second is the selected model
+            result when one was chosen.
+        """
+        dependency_screen, result_future = self._build_launch_dependencies_prompt()
+        self.push_screen(dependency_screen)
         return await result_future
 
     def _can_bypass_queue(self, value: str) -> bool:

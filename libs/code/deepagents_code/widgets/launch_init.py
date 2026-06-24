@@ -14,6 +14,8 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from textual.app import ComposeResult
     from textual.screen import Screen
 
@@ -30,11 +32,7 @@ from deepagents_code.extras_info import (
 logger = logging.getLogger(__name__)
 
 _DEPENDENCY_BODY_MAX_HEIGHT = 16
-"""Upper bound (in cells) for the scrollable dependency list.
-
-Sole source of truth for the cap; `_fit_dependencies_body` applies it at
-runtime, so no equivalent `max-height` is hardcoded in the CSS.
-"""
+"""Upper bound (in cells) for the scrollable dependency list."""
 _DEPENDENCY_BODY_MIN_HEIGHT = 1
 """Floor (in cells) so the list never collapses to zero on tiny terminals."""
 
@@ -65,6 +63,23 @@ class LaunchNameScreen(ModalScreen[str | None]):
     """
 
     AUTO_FOCUS = "#launch-name-input"
+
+    def __init__(
+        self,
+        *,
+        continue_screen: Screen[Any] | None = None,
+        on_continue: Callable[[str], None] | None = None,
+    ) -> None:
+        """Initialize the name-entry screen.
+
+        Args:
+            continue_screen: Optional screen to switch to after submitting a name.
+            on_continue: Optional callback invoked with the submitted name before
+                switching to `continue_screen`.
+        """
+        super().__init__()
+        self._continue_screen = continue_screen
+        self._on_continue = on_continue
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "skip", "Skip", show=False, priority=True),
@@ -143,14 +158,26 @@ class LaunchNameScreen(ModalScreen[str | None]):
             container.styles.border = ("ascii", colors.success)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Dismiss with the submitted name.
+        """Continue with the submitted name.
 
         Args:
             event: The input submission event.
         """
         event.stop()
         value = _normalize_name(event.value)
-        self.dismiss(value)
+        if self._continue_screen is None:
+            self.dismiss(value)
+            return
+        if self._on_continue is not None:
+            self._on_continue(value)
+        try:
+            self.app.switch_screen(self._continue_screen)
+        except ScreenStackError:
+            logger.warning(
+                "Could not switch from launch name screen; dismissing instead",
+                exc_info=True,
+            )
+            self.dismiss(value)
 
     def action_skip(self) -> None:
         """Skip the onboarding sequence."""
@@ -204,6 +231,8 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
 
     LaunchDependenciesScreen #launch-dependencies-body {
         height: auto;
+        max-height: 16;
+        scrollbar-gutter: stable;
         margin-bottom: 1;
     }
 
@@ -229,6 +258,7 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
         statuses: tuple[ExtraDependencyStatus, ...] | None = None,
         *,
         continue_screen: Screen[Any] | None = None,
+        on_done: Callable[[bool | None], None] | None = None,
     ) -> None:
         """Initialize the dependency summary screen.
 
@@ -237,6 +267,8 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
                 the status is read from the installed package metadata.
             continue_screen: Optional screen to switch to when the user
                 continues, avoiding an intermediate base-screen frame.
+            on_done: Optional callback invoked when this screen finishes without
+                switching to `continue_screen`.
         """
         super().__init__()
         if statuses is None:
@@ -245,6 +277,7 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
             statuses = get_optional_dependency_status()
         self._statuses = statuses
         self._continue_screen = continue_screen
+        self._on_done = on_done
 
     def compose(self) -> ComposeResult:
         """Compose the dependency summary screen.
@@ -277,14 +310,16 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
                             title="Available to add",
                             ready=False,
                             glyph=glyphs.circle_empty,
-                            empty="Everything is installed.",
+                            empty="All bundled integrations are installed.",
                         ),
                         classes="launch-dependencies-section is-available",
                     )
                 yield Static(
+                    "These are the integrations we bundle — not the limit. "
                     "Pick a model on the next screen to install its provider "
-                    "automatically, or add any integration anytime with "
-                    "`/install <name>` (e.g. `/install daytona`).",
+                    "automatically, add a listed one with `/install <name>` "
+                    "(e.g. `/install daytona`), or pull in any other provider "
+                    "with `/install <pkg> --package`.",
                     classes="launch-init-copy",
                 )
             else:
@@ -419,13 +454,19 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
                     severity="warning",
                     markup=False,
                 )
-                self.dismiss(True)
+                self._finish(True)
             return
-        self.dismiss(True)
+        self._finish(True)
 
     def action_skip(self) -> None:
         """Skip the remaining onboarding sequence."""
-        self.dismiss(None)
+        self._finish(None)
+
+    def _finish(self, result: bool | None) -> None:
+        """Resolve the screen-specific callback before dismissing."""
+        if self._on_done is not None:
+            self._on_done(result)
+        self.dismiss(result)
 
     def action_cancel(self) -> None:
         """See `LaunchNameScreen.action_cancel`."""

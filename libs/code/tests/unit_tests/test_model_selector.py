@@ -7,7 +7,7 @@ from typing import ClassVar
 import pytest
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Container
+from textual.containers import Container, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
@@ -249,11 +249,47 @@ class TestModelSelectorChrome:
 
             help_text = screen.query_one(".model-selector-help", Static)
 
+            assert "Tab autocomplete" in str(help_text.content)
             assert "Esc skip setup" not in str(help_text.content)
             assert "Esc cancel" not in str(help_text.content)
 
-    async def test_standard_selector_help_uses_cancel(self) -> None:
-        """The regular /model selector should keep cancel wording."""
+    async def test_curated_selector_help_hides_default_hint(self) -> None:
+        """Onboarding model selection should not advertise default changes."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(curated=True)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_text = screen.query_one(".model-selector-help", Static)
+
+            assert "Ctrl+S" not in str(help_text.content)
+            assert "set default" not in str(help_text.content)
+
+    @pytest.mark.parametrize("curated", [False, True])
+    async def test_selector_uses_compact_sizing(self, *, curated: bool) -> None:
+        """Model selection should size like the integration summary."""
+        app = ModelSelectorTestApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            screen = ModelSelectorScreen(curated=curated)
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.pause()
+
+            container = screen.query_one(Vertical)
+            body = screen.query_one(".model-list", VerticalScroll)
+            help_text = screen.query_one(".model-selector-help", Static)
+
+        assert container.region.y >= 0
+        assert container.region.y + container.region.height <= app.size.height
+        assert help_text.region.y + help_text.region.height <= app.size.height
+        max_height = body.styles.max_height
+        assert max_height is not None
+        assert max_height.cells is not None
+        assert max_height.cells <= 16
+
+    async def test_standard_selector_help_hides_cancel_hint(self) -> None:
+        """The regular /model selector should not leave a trailing separator."""
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
             screen = ModelSelectorScreen()
@@ -262,7 +298,8 @@ class TestModelSelectorChrome:
 
             help_text = screen.query_one(".model-selector-help", Static)
 
-            assert "Esc cancel" in str(help_text.content)
+            assert "Tab autocomplete" in str(help_text.content)
+            assert "Esc cancel" not in str(help_text.content)
 
 
 class TestRecommendedToggle:

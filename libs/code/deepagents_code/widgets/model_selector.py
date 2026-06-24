@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical, VerticalScroll
 from textual.content import Content
+from textual.css.query import NoMatches
 from textual.events import (
     Click,  # noqa: TC002 - needed at runtime for Textual event dispatch
 )
@@ -41,6 +42,12 @@ from deepagents_code.model_config import (
 )
 
 logger = logging.getLogger(__name__)
+
+_MODEL_LIST_MAX_HEIGHT = 16
+"""Upper bound (in cells) for the model selector list."""
+
+_MODEL_LIST_MIN_HEIGHT = 1
+"""Floor (in cells) so the model selector list never collapses to zero."""
 
 _RECENT_SECTION_LABEL = "Recent"
 """Header label for the MRU pseudo-provider section pinned at the top of `/model`.
@@ -251,9 +258,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     }
 
     ModelSelectorScreen > Vertical {
-        width: 80;
+        width: 76;
         max-width: 90%;
-        height: 80%;
+        height: auto;
         background: $surface;
         border: solid $primary;
         padding: 1 2;
@@ -288,8 +295,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     }
 
     ModelSelectorScreen .model-list {
-        height: 1fr;
-        min-height: 5;
+        height: auto;
+        min-height: 1;
+        max-height: 16;
         scrollbar-gutter: stable;
         background: $background;
     }
@@ -441,9 +449,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     def _help_text(self) -> str:
         """Build the footer help text.
 
-        Curated/onboarding mode omits the Ctrl+R toggle and the Esc hint;
-        Escape stays bound but is not advertised. Standard mode shows
-        "Esc cancel".
+        Curated/onboarding mode omits the Ctrl+S and Ctrl+R hints. Escape stays
+        bound but is not advertised so the footer does not wrap awkwardly.
 
         Returns:
             The bullet-separated help line.
@@ -451,11 +458,11 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         glyphs = get_glyphs()
         parts = [
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate",
+            "Tab autocomplete",
             "Enter select",
-            "Ctrl+S set default",
         ]
         if not self._curated:
-            parts.extend(("Ctrl+R recommended", "Esc cancel"))
+            parts.extend(("Ctrl+S set default", "Ctrl+R recommended"))
         sep = f" {glyphs.bullet} "
         return sep.join(parts)
 
@@ -678,6 +685,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             colors = theme.get_theme_colors(self)
             container = self.query_one(Vertical)
             container.styles.border = ("ascii", colors.success)
+        self.call_after_refresh(self._fit_model_list)
 
         # Focus the filter input immediately so the user can start typing
         # while model data loads.
@@ -726,6 +734,32 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         await self._update_display()
         self._update_footer()
+
+    def on_resize(self) -> None:
+        """Refit the model list when terminal dimensions change."""
+        self.call_after_refresh(self._fit_model_list)
+
+    def _fit_model_list(self) -> None:
+        """Cap the model list so modal controls stay visible."""
+        try:
+            container = self.query_one(Vertical)
+            body = self.query_one(".model-list", VerticalScroll)
+        except NoMatches:
+            logger.debug(
+                "Skipping model-list refit; widgets not mounted",
+                exc_info=True,
+            )
+            return
+        non_body_height = max(0, container.region.height - body.region.height)
+        available_height = self.size.height - non_body_height
+        max_height = max(
+            _MODEL_LIST_MIN_HEIGHT,
+            min(_MODEL_LIST_MAX_HEIGHT, available_height),
+        )
+        current = body.styles.max_height
+        if current is not None and current.cells == max_height:
+            return
+        body.styles.max_height = max_height
 
     def on_input_changed(self, event: Input.Changed) -> None:
         """Filter models as user types.
@@ -887,6 +921,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     empty_content = Content.styled("No matching models", "dim")
             await self._options_container.mount(Static(empty_content))
             self._update_footer()
+            self.call_after_refresh(self._fit_model_list)
             return
 
         has_filter = bool(self._filter_text.strip())
@@ -1056,6 +1091,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 selected_widget.scroll_visible(animate=False)
 
         self._update_footer()
+        self.call_after_refresh(self._fit_model_list)
 
     @staticmethod
     def _format_auth_indicator(

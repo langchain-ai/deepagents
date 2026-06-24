@@ -145,6 +145,29 @@ class TestLaunchNameScreen:
         assert app.dismissed is True
         assert app.result == ""
 
+    async def test_submit_can_switch_directly_to_next_screen(self) -> None:
+        """Submitting can replace the modal without exposing the base screen."""
+        app = LaunchNameTestApp()
+        continued: list[str] = []
+
+        async with app.run_test() as pilot:
+            app.push_screen(
+                LaunchNameScreen(
+                    continue_screen=DummyNextScreen(),
+                    on_continue=continued.append,
+                ),
+                lambda result: setattr(app, "result", result),
+            )
+            await pilot.pause()
+
+            await pilot.press("a", "d", "a", "enter")
+            await pilot.pause()
+
+            assert isinstance(app.screen, DummyNextScreen)
+
+        assert continued == ["Ada"]
+        assert app.result is None
+
     async def test_escape_skips(self) -> None:
         """Escape should skip the setup flow."""
         app = LaunchNameTestApp()
@@ -324,7 +347,7 @@ class TestLaunchDependenciesScreen:
             )
 
         assert "Available to add (0)" in content
-        assert "Everything is installed." in content
+        assert "All bundled integrations are installed." in content
         # Nothing is addable, so the empty-circle glyph never appears.
         assert get_glyphs().circle_empty not in content
 

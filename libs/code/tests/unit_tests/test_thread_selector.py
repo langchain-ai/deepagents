@@ -580,6 +580,20 @@ class TestThreadSelectorTabSort:
                 await pilot.pause()
                 assert filter_input.has_focus
 
+    def test_select_options_update_before_overlay_mount_is_safe(self) -> None:
+        """Agent option refresh can run before the overlay child is mounted."""
+        select = ThreadScopeSelect(
+            [("Loading...", "__loading__")],
+            value="__loading__",
+            allow_blank=False,
+            id="thread-agent-select",
+            classes="thread-agent-select",
+        )
+
+        select.set_options([("All agents", "__all__"), ("agent", "agent")])
+
+        assert select.value == "__all__"
+
     async def test_thread_load_preserves_open_agent_dropdown_focus(self) -> None:
         """Async thread loading should not move focus away from an open dropdown."""
         started = asyncio.Event()

@@ -8,6 +8,9 @@ from check_pr_scope_files import (
     changed_packages,
     declared_packages,
     find_offenders,
+    is_release_file,
+    is_release_pr_change,
+    is_release_title,
     main,
     parse_title_scopes,
 )
@@ -140,6 +143,122 @@ def test_breaking_change_title_still_detects_offender() -> None:
     ) == [{"package": "dcode", "dirs": ["libs/code/"]}]
 
 
+def test_release_title_with_release_files_bypasses_scope_file_check() -> None:
+    """Release PRs can touch generated/version files across package dirs."""
+    assert is_release_title("release(deepagents-code): 0.1.22")
+    assert (
+        find_offenders(
+            "release(deepagents-code): 0.1.22",
+            [
+                "libs/code/deepagents_code/_version.py",
+                "libs/evals/deepagents_evals/_version.py",
+                "libs/talon/deepagents_talon/_version.py",
+            ],
+            CONFIG,
+        )
+        == []
+    )
+
+
+def test_release_title_with_source_change_still_blocks_mismatch() -> None:
+    """An author-controlled release title cannot hide ordinary package edits."""
+    assert find_offenders(
+        "release(cli): anything",
+        ["libs/code/deepagents_code/app.py"],
+        CONFIG,
+    ) == [{"package": "dcode", "dirs": ["libs/code/"]}]
+
+
+def test_release_pr_change_requires_release_files_only() -> None:
+    """The release bypass is limited to generated/version file patterns."""
+    assert is_release_file(".release-please-manifest.json")
+    assert is_release_file("libs/code/CHANGELOG.md")
+    assert is_release_file("libs/code/pyproject.toml")
+    assert is_release_file("libs/code/uv.lock")
+    assert is_release_file("libs/code/deepagents_code/_version.py")
+    assert is_release_file("libs/partners/daytona/langchain_daytona/_version.py")
+    assert not is_release_file("libs/code/deepagents_code/app.py")
+    assert not is_release_file("libs/code/docs/CHANGELOG.md")
+    assert not is_release_file("libs/code/deepagents_code/nested/_version.py")
+    # The manifest match is anchored to the repo root, not matched by name.
+    assert not is_release_file("libs/code/.release-please-manifest.json")
+    assert not is_release_pr_change(
+        "release(cli): anything",
+        ["libs/code/deepagents_code/app.py"],
+    )
+    assert not is_release_pr_change("release(cli): anything", [])
+
+
+def test_release_file_covers_partner_generated_files() -> None:
+    """Partner packages nest one level deeper; their generated files match too."""
+    assert is_release_file("libs/partners/daytona/pyproject.toml")
+    assert is_release_file("libs/partners/daytona/CHANGELOG.md")
+    assert is_release_file("libs/partners/daytona/uv.lock")
+    # A non-partner package's CHANGELOG/pyproject live at the package root
+    # (depth 3), so the same names at depth 4 are not generated-file locations.
+    assert not is_release_file("libs/code/deepagents_code/pyproject.toml")
+    assert not is_release_file("libs/code/deepagents_code/CHANGELOG.md")
+
+
+def test_release_pr_change_covers_repo_wide_lockfiles() -> None:
+    """Real partner release PRs regenerate `uv.lock` under `examples/` too.
+
+    Regression for a partner release PR (e.g. `release(langchain-quickjs)`)
+    whose changeset includes `examples/*/uv.lock`: the bypass must still fire so
+    the release PR is not blocked by cross-dir lockfile churn its title scope
+    cannot cover.
+    """
+    assert is_release_file("examples/async-subagent-server/uv.lock")
+    assert is_release_file("examples/llm-wiki/uv.lock")
+    assert is_release_pr_change(
+        "release(langchain-quickjs): 0.3.1",
+        [
+            ".release-please-manifest.json",
+            "examples/async-subagent-server/uv.lock",
+            "examples/llm-wiki/uv.lock",
+            "libs/code/uv.lock",
+            "libs/evals/uv.lock",
+            "libs/partners/quickjs/CHANGELOG.md",
+            "libs/partners/quickjs/pyproject.toml",
+            "libs/partners/quickjs/uv.lock",
+        ],
+    )
+
+
+def test_release_title_with_mixed_files_does_not_bypass() -> None:
+    """A release artifact cannot launder an accompanying source edit."""
+    changed = ["libs/code/CHANGELOG.md", "libs/code/deepagents_code/app.py"]
+    assert not is_release_pr_change("release(cli): 0.1.22", changed)
+    assert find_offenders("release(cli): 0.1.22", changed, CONFIG) == [
+        {"package": "dcode", "dirs": ["libs/code/"]}
+    ]
+
+
+def test_release_bypass_does_not_validate_component() -> None:
+    """The bypass keys off title shape + files, not a real component name.
+
+    Pins that an unrecognized component still bypasses when every file is a
+    release artifact, so a future tightening (validating the component against
+    real package names) is a conscious change rather than a silent one.
+    """
+    assert (
+        find_offenders(
+            "release(not-a-real-scope): 9.9.9", ["libs/code/uv.lock"], CONFIG
+        )
+        == []
+    )
+
+
+def test_is_release_title_boundaries() -> None:
+    """Only `release(<scope>):` shapes trigger the bypass title gate."""
+    assert is_release_title("release(cli): 1.0.0")
+    assert is_release_title("release(): 1.0.0")  # empty scope still matches
+    assert not is_release_title("release: 1.0.0")  # scope required
+    assert not is_release_title("release(scope)!: 1.0.0")  # breaking marker excluded
+    assert not is_release_title("  release(cli): 1.0.0")  # anchored; no leading ws
+    assert not is_release_title("Release(cli): 1.0.0")  # case-sensitive
+
+
 def test_partner_package_dir_detected_with_real_config() -> None:
     """Partner packages under `libs/partners/` are package dirs too."""
     config = json.loads(DEFAULT_CONFIG.read_text(encoding="utf-8"))
@@ -232,6 +351,28 @@ def test_main_clean_stdout_is_empty_json_array(capsys, tmp_path) -> None:
     assert rc == 0
     assert captured.out.strip() == "[]"
     assert captured.err == ""
+
+
+def test_main_release_bypass_emits_notice(capsys, tmp_path) -> None:
+    """A fired release bypass surfaces a `::notice::` so it is not silent.
+
+    The gate standing down must be distinguishable from a genuinely clean PR in
+    the Checks UI. The notice goes to stderr so it never corrupts the JSON
+    offenders the workflow captures from stdout.
+    """
+    config_path = tmp_path / "pr-labeler-config.json"
+    config_path.write_text(json.dumps(CONFIG), encoding="utf-8")
+
+    rc = main(
+        "release(deepagents-code): 0.1.22",
+        ["libs/code/uv.lock", "libs/evals/uv.lock"],
+        config_path=config_path,
+    )
+    captured = capsys.readouterr()
+
+    assert rc == 0
+    assert captured.out.strip() == "[]"
+    assert "::notice::" in captured.err
 
 
 def test_main_missing_config_returns_2(capsys, tmp_path) -> None:

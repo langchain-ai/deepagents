@@ -21,6 +21,85 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG = REPO_ROOT / ".github" / "scripts" / "pr-labeler-config.json"
 
 _TITLE_RE = re.compile(r"^[a-z]+(?:\(([^)]*)\))?!?:\s")
+_RELEASE_TITLE_RE = re.compile(r"^release\([^)]*\):\s")
+
+
+def is_release_file(file: str) -> bool:
+    """Return whether `file` is a file release-please may update in a release PR.
+
+    Covers the version-of-record manifest, per-package `CHANGELOG.md` /
+    `pyproject.toml` / `_version.py`, and `uv.lock` files anywhere the uv
+    workspace resolves.
+
+    Keep in sync with `extra-files`/`changelog-path` in
+    `release-please-config.json`. Drift fails closed — an unrecognized artifact
+    means the bypass does not fire and the normal scope gate runs — so this is a
+    maintenance note, not a safety hole.
+
+    Args:
+        file: Changed file path, repo-root-relative.
+
+    Returns:
+        `True` when the path is one release-please may update in a release PR.
+    """
+    path = Path(file)
+    # The version-of-record manifest release-please rewrites on every release.
+    if file == ".release-please-manifest.json":
+        return True
+    # release-please regenerates lockfiles wherever the uv workspace resolves —
+    # not just package dirs but also `examples/*/uv.lock` (observed in real
+    # partner release PRs). `uv.lock` is generated-only, so accept it at any
+    # path rather than enumerating workspace-member dirs that drift over time.
+    if path.name == "uv.lock":
+        return True
+    parts = path.parts
+    if len(parts) < 3 or parts[0] != "libs":
+        return False
+    # Package-root files: depth 3 for top-level packages (`libs/<pkg>/...`) and
+    # depth 4 for partners, which nest one level deeper under `libs/partners/`.
+    if path.name in {"CHANGELOG.md", "pyproject.toml"}:
+        return len(parts) == 3 or (len(parts) == 4 and parts[1] == "partners")
+    # `_version.py` sits inside the import package, one level below the
+    # package-root files above: depth 4 top-level, depth 5 for partners.
+    if path.name == "_version.py":
+        return len(parts) == 4 or (len(parts) == 5 and parts[1] == "partners")
+    return False
+
+
+def is_release_title(title: str) -> bool:
+    """Return whether `title` is a release PR title.
+
+    Args:
+        title: PR title, e.g. `release(deepagents-code): 1.2.0`.
+
+    Returns:
+        `True` when the title uses the release PR conventional-commit shape.
+    """
+    return bool(_RELEASE_TITLE_RE.match(title))
+
+
+def is_release_pr_change(title: str, changed: list[str]) -> bool:
+    """Return whether the PR looks like a release-please artifact update.
+
+    The title is author-controlled (PR event payload) and the release component
+    is not validated against real package names, so a non-release PR can adopt a
+    `release(...)` title. Safety therefore rests entirely on the file allowlist:
+    the bypass only applies when *every* changed file matches `is_release_file`,
+    so a single source file re-arms the scope gate.
+
+    Args:
+        title: PR title.
+        changed: Changed file paths, repo-root-relative.
+
+    Returns:
+        `True` only when the title is release-shaped and every changed file is a
+        release-please generated/version artifact.
+    """
+    return (
+        bool(changed)
+        and is_release_title(title)
+        and all(is_release_file(file) for file in changed)
+    )
 
 
 def parse_title_scopes(title: str) -> tuple[str, ...]:
@@ -178,6 +257,9 @@ def find_offenders(
     Raises:
         ValueError: If required config sections are missing or malformed.
     """
+    if is_release_pr_change(title, changed):
+        return []
+
     declared = declared_packages(title, config)
     if not declared:
         return []
@@ -212,6 +294,18 @@ def main(title: str, changed: list[str], config_path: Path = DEFAULT_CONFIG) -> 
             file=sys.stderr,
         )
         return 2
+
+    # Surface the release bypass so "gate stood down" is distinguishable from
+    # "genuinely clean" in the Checks UI, mirroring the workflow's
+    # detector-absent ::warning::. To stderr so it never corrupts the JSON
+    # offenders the workflow captures from stdout. ::notice:: (not ::warning::)
+    # because this is a designed, expected bypass.
+    if is_release_pr_change(title, changed):
+        print(
+            "::notice::Release-shaped title; scope/file gate bypassed because "
+            "every changed file matched the release-please artifact allowlist.",
+            file=sys.stderr,
+        )
 
     if offenders:
         summary = ", ".join(

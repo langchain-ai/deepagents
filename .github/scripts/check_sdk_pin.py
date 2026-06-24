@@ -21,7 +21,12 @@ import re
 import tomllib
 from pathlib import Path
 
-_VERSION_RE = re.compile(r"==\s*([0-9]+\.[0-9]+\.[0-9]+)")
+# Capture the full version token after `==`, stopping at any PEP 508 delimiter
+# (quote, comma, whitespace, marker `;`, or a range operator). Mirrors the
+# `deepagents==([^", <>=;]+)` sed extractor in `check_sdk_pin.yml` and
+# `release.yml` so all three stay in lock-step — notably all three accept PEP
+# 440 prerelease pins like `0.7.0a2`, which a strict `X.Y.Z` pattern truncates.
+_VERSION_RE = re.compile(r"==\s*([^\",\s;<>=]+)")
 _NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 
 
@@ -48,7 +53,7 @@ def _code_pin(repo_root: Path) -> str:
             version_match = _VERSION_RE.search(dep)
             if version_match:
                 return version_match.group(1)
-    msg = f"No `deepagents==X.Y.Z` pin found in {path}"
+    msg = f"No `deepagents==<version>` pin found in {path}"
     raise ValueError(msg)
 
 

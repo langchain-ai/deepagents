@@ -1,0 +1,67 @@
+name: "🔬 Snapshot Build Timing"
+
+# Standalone diagnostic: measure how long it takes to build a deep-swe verifier
+# image snapshot on the LangSmith sandbox, with a larger builder vs the default.
+# Decoupled from the full Harbor pipeline (no agent, no trial) — see
+# .github/scripts/snapshot_build_timing.py.
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "deep-swe task name (directory under tasks/)"
+        required: true
+        default: "dynamodb-toolbox-conditional-attribute-requirements"
+        type: string
+      vcpus:
+        description: "Builder vCPUs to compare against the SDK default"
+        required: true
+        default: "4"
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  UV_NO_SYNC: "true"
+
+jobs:
+  build-timing:
+    name: "🔬 Snapshot build timing"
+    runs-on: ubuntu-latest
+    environment: evals
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: libs/evals
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.12"
+          cache-suffix: harbor
+          working-directory: libs/evals
+
+      - name: "📦 Install Dependencies"
+        run: uv sync --group test --locked
+
+      - name: "📂 Clone deep-swe"
+        run: git clone --depth 1 https://github.com/datacurve-ai/deep-swe.git deep-swe
+
+      - name: "🔬 Time snapshot build"
+        env:
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          LANGSMITH_SANDBOX_API_KEY: ${{ secrets.LANGSMITH_SANDBOX_API_KEY }}
+          # Passed via env (not interpolated into the shell) to avoid injection.
+          TASK: ${{ inputs.task }}
+          VCPUS: ${{ inputs.vcpus }}
+        run: |
+          tests_dir="deep-swe/tasks/${TASK}/tests"
+          if [ ! -d "$tests_dir" ]; then
+            echo "::error::tests dir not found: $tests_dir"
+            exit 1
+          fi
+          uv run python ../../.github/scripts/snapshot_build_timing.py "$tests_dir" "$VCPUS"

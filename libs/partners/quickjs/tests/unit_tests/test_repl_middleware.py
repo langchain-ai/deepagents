@@ -395,6 +395,28 @@ def test_backend_import_loader_supports_import(
     assert outcome.result == "42"
 
 
+def test_backend_import_loader_strips_typescript_imports(
+    worker: ThreadWorker,
+    runtime: Runtime,
+) -> None:
+    backend = _DictModuleBackend(
+        {"/math.ts": "export const answer: number = 42;"}
+    )
+    module_repl = _ThreadREPL(
+        worker,
+        runtime,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+        module_backend=backend,
+    )
+
+    outcome = module_repl.eval_sync("import('/math').then((m) => m.answer)")
+
+    assert outcome.error_type is None
+    assert outcome.result == "42"
+
+
 def test_backend_import_loader_resolves_relative_extensionless_imports(
     worker: ThreadWorker,
     runtime: Runtime,

@@ -31,6 +31,7 @@ from quickjs_rs import (
     Snapshot,
     SourceTransform,
     ThreadWorker,
+    default_module_transform_flags,
 )
 from quickjs_rs import (
     TimeoutError as QJSTimeoutError,
@@ -393,6 +394,11 @@ def _module_candidates(path: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(candidates))
 
 
+def _module_transform_flags(name: str) -> SourceTransform:
+    """Return transform flags for a backend-loaded import."""
+    return default_module_transform_flags(name) | SourceTransform.TOP_LEVEL_CONST_TO_VAR
+
+
 def _decode_file_data(file_data: Mapping[str, Any]) -> str | None:
     """Decode a backend FileData-like dict into UTF-8 module source."""
     raw_content = file_data.get("content", "")
@@ -473,6 +479,7 @@ class _ThreadREPL:
             self._runtime.set_module_loader(
                 normalize=self._normalize_module_specifier,
                 load=self._read_module_source,
+                transform_flags=_module_transform_flags,
             )
         self._ctx = self._runtime.new_context(timeout=self._per_call_timeout)
         if self._capture_console:

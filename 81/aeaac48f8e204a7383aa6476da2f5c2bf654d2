@@ -1,0 +1,21 @@
+libs/deepagents/tests/unit_tests/test_models.py
+  s_12d8a59ce4e8d1::t_794a3a6753f4ed 1197
+libs/deepagents/deepagents/profiles/harness/_fireworks_glm_5p2.py
+  s_12d8a59ce4e8d1::t_90d669fdc6314e 17-21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "81aeaac48f8e204a7383aa6476da2f5c2bf654d2",
+  "prompts": {},
+  "sessions": {
+    "s_12d8a59ce4e8d1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ef463-0e84-7962-9e93-4fd45ec2737c",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

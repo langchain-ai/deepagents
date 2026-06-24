@@ -567,6 +567,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             # frozenset iterated once), so this entry guard is the only dedup
             # needed and the set never has to grow inside the loop.
             existing_specs = {spec for spec, _ in all_models}
+            installed_recommended: list[tuple[str, str]] = []
+            uninstalled_recommended: list[tuple[str, str]] = []
             for spec in sorted(_RECOMMENDED_MODELS):
                 if spec in existing_specs:
                     continue
@@ -595,12 +597,14 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     # or filtered out). Add it as a normal selectable row so the
                     # hardcoded recommendation isn't silently dropped when the
                     # profile list lags.
-                    all_models.append((spec, provider))
+                    installed_recommended.append((spec, provider))
                     continue
                 if extra is None or provider_installed:
                     continue
                 install_extras[provider] = extra
-                all_models.append((spec, provider))
+                uninstalled_recommended.append((spec, provider))
+            all_models.extend(installed_recommended)
+            all_models.extend(uninstalled_recommended)
 
         profiles = get_model_profiles(cli_override=cli_override)
         recent_specs = load_recent_models()

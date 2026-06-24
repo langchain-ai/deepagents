@@ -67,6 +67,7 @@ _RECOMMENDED_MODELS: frozenset[str] = frozenset(
     {
         "anthropic:claude-opus-4-6",
         "anthropic:claude-opus-4-7",
+        "anthropic:claude-opus-4-8",
         "anthropic:claude-sonnet-4-6",
         "baseten:deepseek-ai/DeepSeek-V4-Pro",
         "baseten:moonshotai/Kimi-K2.7-Code",
@@ -101,6 +102,7 @@ _RECOMMENDED_MODELS: frozenset[str] = frozenset(
         "openrouter:anthropic/claude-opus-4.6",
         "openrouter:anthropic/claude-opus-4.7",
         "openrouter:anthropic/claude-opus-4.7-fast",
+        "openrouter:anthropic/claude-opus-4.8",
         "openrouter:anthropic/claude-sonnet-4.6",
         "openrouter:deepseek/deepseek-v4-flash",
         "openrouter:deepseek/deepseek-v4-flash:free",

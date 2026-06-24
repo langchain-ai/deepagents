@@ -89,7 +89,7 @@ async def test_transcribe_voice_message_transcribes_video() -> None:
     assert "transcribed" in updated.text
 
 
-async def test_transcribe_voice_message_transcribes_audio_mime_document() -> None:
+async def test_transcribe_voice_message_transcribes_audio_document() -> None:
     class Transcriber:
         def __init__(self) -> None:
             self.calls = 0
@@ -102,8 +102,11 @@ async def test_transcribe_voice_message_transcribes_audio_mime_document() -> Non
     message = ChannelMessage(
         conversation_id="chat",
         text="",
-        metadata={"media_type": "document", "media_path": "song.mp3",
-                   "media_mime_types": ["audio/mpeg"]},
+        metadata={
+            "media_type": "voice",
+            "media_path": "song.mp3",
+            "media_mime_types": ["audio/mpeg"],
+        },
     )
 
     updated = await transcribe_voice_message(transcriber, message)

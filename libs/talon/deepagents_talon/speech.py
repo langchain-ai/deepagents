@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 
+from deepagents_talon.channels.base import ASR_ELIGIBLE_MEDIA_TYPES
 from deepagents_talon.interfaces import ChannelMessage
 
 if TYPE_CHECKING:
@@ -185,22 +186,11 @@ async def transcribe_voice_message(
     )
 
 
-_ASR_ELIGIBLE_MEDIA_TYPES = frozenset({"voice", "video"})
-
-
 def _is_voice_message(message: ChannelMessage) -> bool:
     if "voice_path" in message.metadata:
         return True
     media_type = message.metadata.get("media_type")
-    if isinstance(media_type, str) and media_type in _ASR_ELIGIBLE_MEDIA_TYPES:
-        return True
-    for key in ("media_mime_types", "media_mime_type"):
-        raw = message.metadata.get(key)
-        if isinstance(raw, list):
-            return any(isinstance(m, str) and m.startswith("audio/") for m in raw)
-        if isinstance(raw, str) and raw.startswith("audio/"):
-            return True
-    return False
+    return isinstance(media_type, str) and media_type in ASR_ELIGIBLE_MEDIA_TYPES
 
 
 def _voice_path(message: ChannelMessage) -> Path | None:

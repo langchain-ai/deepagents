@@ -30,6 +30,9 @@ OPEN_EXPOSURE_ACK_VALUE = "allow-arbitrary-senders"
 OUTBOUND_MEDIA_DIR_ENV = "DEEPAGENTS_TALON_OUTBOUND_MEDIA_DIR"
 WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
 
+ASR_ELIGIBLE_MEDIA_TYPES = frozenset({"voice", "video"})
+"""Media types that may contain audio eligible for ASR transcription."""
+
 _LINK_PATTERN = re.compile(r"\[([^\]]+)]\(([^)]+)\)")
 _HEADING_PATTERN = re.compile(r"^#{1,6}\s+", flags=re.MULTILINE)
 _BOLD_PATTERN = re.compile(r"\*\*([^*]+)\*\*|__([^_]+)__")
@@ -300,7 +303,7 @@ def message_with_media_paths(
         metadata["media_paths"] = paths
         metadata["media_path"] = paths[0]
         metadata["media_mime_types"] = types
-        if metadata.get("media_type") in {"voice", "video"}:
+        if metadata.get("media_type") == "voice":
             metadata["voice_path"] = paths[0]
         else:
             metadata.pop("voice_path", None)

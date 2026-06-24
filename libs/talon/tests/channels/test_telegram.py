@@ -898,7 +898,6 @@ async def test_channel_parses_inbound_media(
                 "file_id": "video123",
                 "media_mime_types": ["video/mp4"],
                 "suffix": ".mp4",
-                "voice_path": True,
             },
         ),
         (
@@ -909,7 +908,7 @@ async def test_channel_parses_inbound_media(
                 text="",
                 video_note={"file_id": "note123", "duration": 8, "length": 240},
             ),
-            {"media_type": "video", "file_id": "note123", "suffix": ".mp4", "voice_path": True},
+            {"media_type": "video", "file_id": "note123", "suffix": ".mp4"},
         ),
         (
             "document_video",
@@ -929,7 +928,6 @@ async def test_channel_parses_inbound_media(
                 "file_name": "clip.mp4",
                 "media_mime_types": ["video/mp4"],
                 "suffix": ".mp4",
-                "voice_path": True,
             },
         ),
         (

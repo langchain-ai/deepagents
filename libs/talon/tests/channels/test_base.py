@@ -147,7 +147,7 @@ def test_message_with_media_paths_preserves_provider_media_presence() -> None:
     assert with_media.metadata["has_media"] is True
 
 
-def test_message_with_media_paths_adds_voice_path_for_voice_and_video() -> None:
+def test_message_with_media_paths_adds_voice_path_only_for_voice() -> None:
     voice = message_with_media_paths(
         ChannelMessage(conversation_id="chat", text="", metadata={"media_type": "voice"}),
         media_paths=["voice.ogg"],
@@ -162,7 +162,7 @@ def test_message_with_media_paths_adds_voice_path_for_voice_and_video() -> None:
     )
 
     assert voice.metadata["voice_path"] == "voice.ogg"
-    assert video.metadata["voice_path"] == "clip.mp4"
+    assert "voice_path" not in video.metadata
 
 
 def test_max_media_bytes_from_env_defaults_to_one_gb() -> None:

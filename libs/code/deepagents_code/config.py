@@ -438,6 +438,18 @@ def _tracing_enabled() -> bool:
     )
 
 
+def _disable_set_tracing_flags() -> list[str]:
+    """Set every configured tracing-enable flag to `false`.
+
+    Returns:
+        Env var names that were disabled.
+    """
+    disabled = [var for var in _TRACING_ENABLE_ENV_VARS if var in os.environ]
+    for var in disabled:
+        os.environ[var] = "false"
+    return disabled
+
+
 def _disable_orphaned_tracing() -> None:
     """Disable LangSmith tracing when enabled without a usable API key.
 
@@ -471,9 +483,7 @@ def _disable_orphaned_tracing() -> None:
     if has_key or _has_langsmith_profile_credentials():
         return
 
-    disabled = [var for var in _TRACING_ENABLE_ENV_VARS if var in os.environ]
-    for var in disabled:
-        os.environ[var] = "false"
+    disabled = _disable_set_tracing_flags()
     _orphaned_tracing_disabled_notice = _build_orphaned_tracing_disabled_notice()
     logger.warning(
         "LangSmith tracing is enabled (%s) but no API key is set; disabling "
@@ -543,7 +553,9 @@ def _apply_stored_langsmith_tracing() -> None:
         if var in os.environ
     ]
     if any(flag is False for flag in flags):
-        # Explicit, deliberate opt-out — leave tracing off and keep the key.
+        # Explicit, deliberate opt-out — keep the key but make the opt-out
+        # authoritative over sibling SDK tracing flags.
+        _disable_set_tracing_flags()
         return
     if not any(flag is True for flag in flags):
         os.environ["LANGSMITH_TRACING"] = "true"

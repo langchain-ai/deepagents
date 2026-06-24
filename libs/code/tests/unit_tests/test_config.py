@@ -2164,6 +2164,24 @@ class TestApplyStoredLangSmithTracing:
         _apply_stored_langsmith_tracing()
         assert os.environ["LANGSMITH_TRACING"] == "false"
 
+    def test_scoped_opt_out_disables_sibling_tracing_flags(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The documented scoped opt-out wins over other truthy tracing flags."""
+        import os
+
+        from deepagents_code import auth_store
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "false")
+        monkeypatch.setenv("LANGSMITH_TRACING", "false")
+        monkeypatch.setenv("LANGCHAIN_TRACING_V2", "true")
+        auth_store.set_stored_key("langsmith", "lsv2_test")
+        _apply_stored_langsmith_tracing()
+        assert os.environ["LANGSMITH_TRACING"] == "false"
+        assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
+
     def test_leaves_explicit_enable_untouched(
         self,
         fake_state_dir: Path,  # noqa: ARG002

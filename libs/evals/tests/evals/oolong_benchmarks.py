@@ -12,15 +12,20 @@ runs the same examples through two agent configurations:
   from the shared workspace (no PTC required).
 
 Dataset choice: the paper evaluates on the OOLONG ``trec_coarse`` split
-(50 tasks at 131K-token context). The current ``oolongbench/oolong-synth``
-HuggingFace release does not include ``trec_coarse``; the closest analog
-is ``agnews`` — 4-way topic classification aggregation with the same
-counting/user/timeline task groups. There are 50 ``agnews`` examples at
-each context-length bucket (matching the paper's task count).
+(50 tasks at 131K-token context). ``trec_coarse`` *is* available in the
+``oolongbench/oolong-synth`` HuggingFace release — it lives in the
+``validation`` split (50 tasks per context-length bucket). Select it with
+``OOLONG_DATASET=trec_coarse`` to match the paper exactly. The default is
+``agnews`` (``test`` split) — a 4-way topic classification analog with the
+same counting/user/timeline task groups — kept as the cheap default.
 
-Scoring follows OOLONG paper conventions: extract ``Label: X``,
-``Answer: N``, ``User: X``, or ``Answer: Month YYYY`` from the
-trajectory's final answer and exact-match against the gold.
+Scoring is a faithful port of the official OOLONG harness
+(`abertsch72/oolong` ``src/eval/eval_helpers.py``: ``synth_attempt_answer_parse``
++ ``synth_process_response``) so results are directly comparable to the
+paper: parse the model's answer (split on ``:``, strip markdown/bracket
+artifacts), then exact-match — with substring matching for COMPARISON,
+``0.75 ** |gold - pred|`` partial credit for NUMERIC, and flexible
+``dateutil`` parsing for DATE.
 
 The module is self-contained: the pytest test module just
 parameterizes over (arm, example) pairs.
@@ -28,10 +33,15 @@ parameterizes over (arm, example) pairs.
 
 from __future__ import annotations
 
+import json
 import os
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
-from datetime import UTC
 from functools import lru_cache
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from deepagents import create_deep_agent
@@ -55,11 +65,11 @@ if TYPE_CHECKING:
 #: HuggingFace dataset id for OOLONG-synth.
 _HF_DATASET = "oolongbench/oolong-synth"
 
-#: Input subset to filter on. The RLM paper uses ``trec_coarse``; the
-#: current HF release of OOLONG-synth does not include it, so we use
-#: ``agnews`` — the closest analog (4-way topic classification
-#: aggregation, same task-group structure, 50 examples per
-#: context-length bucket).
+#: Default input subset to filter on. The RLM paper uses ``trec_coarse``
+#: (available in the ``validation`` split — set ``OOLONG_DATASET=trec_coarse``
+#: to match the paper). ``agnews`` is the cheap default: a 4-way topic
+#: classification analog with the same task-group structure and 50 examples
+#: per context-length bucket.
 _INPUT_SUBSET = "agnews"
 
 #: HF dataset split for each input subset.
@@ -67,6 +77,87 @@ _INPUT_SUBSET = "agnews"
 _SPLIT_FOR_SUBSET: dict[str, str] = {
     "trec_coarse": "validation",
 }
+
+#: HuggingFace datasets-server ``/filter`` endpoint. We fetch *only* the rows
+#: matching ``dataset`` + ``context_len`` (server-side filter) instead of
+#: ``datasets.load_dataset``, which would download the entire split parquet
+#: (~2 GB for ``validation``, ~10 GB for ``test``) just to keep 50 rows.
+_FILTER_URL = "https://datasets-server.huggingface.co/filter"
+
+#: Max rows per ``/filter`` request (the endpoint caps ``length`` at 100).
+_PAGE_SIZE = 100
+
+#: On-disk cache for fetched rows, one JSONL per (split, subset, context_len).
+_CACHE_DIR = Path(__file__).parent / ".cache" / "oolong"
+
+
+def _get_json_with_retry(url: str, *, attempts: int = 4) -> dict[str, Any]:
+    """GET a JSON payload, retrying the datasets-server's intermittent 5xx."""
+    last_err: Exception | None = None
+    for i in range(attempts):
+        try:
+            with urllib.request.urlopen(url, timeout=60) as resp:
+                return json.loads(resp.read())
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as err:
+            last_err = err
+            time.sleep(1.5 * (i + 1))
+    msg = f"datasets-server request failed after {attempts} attempts: {url}\n{last_err}"
+    raise RuntimeError(msg)
+
+
+def _fetch_oolong_rows(subset: str, context_len: int | None, split: str) -> list[dict[str, Any]]:
+    """Fetch all rows for one (subset, context_len) bucket via the filter API.
+
+    Paginates server-side until the full matching set is retrieved. A bucket is
+    typically 50 rows, so this transfers a few hundred KB (or ~35 MB at the
+    131K-token bucket) rather than the multi-GB whole-split download.
+    """
+    where = f"\"dataset\"='{subset}'"
+    if context_len is not None:
+        where += f' AND "context_len"={context_len}'
+
+    rows: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        params = urllib.parse.urlencode(
+            {
+                "dataset": _HF_DATASET,
+                "config": "default",
+                "split": split,
+                "where": where,
+                "offset": offset,
+                "length": _PAGE_SIZE,
+            }
+        )
+        data = _get_json_with_retry(f"{_FILTER_URL}?{params}")
+        batch = [r["row"] for r in data.get("rows", [])]
+        if not batch:
+            break
+        rows.extend(batch)
+        offset += len(batch)
+        if offset >= (data.get("num_rows_total") or 0):
+            break
+    return rows
+
+
+def _load_rows_cached(subset: str, context_len: int | None, split: str) -> list[dict[str, Any]]:
+    """Return the bucket's rows, fetching + caching to JSONL on first access."""
+    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    ctx_key = context_len if context_len is not None else "all"
+    cache_path = _CACHE_DIR / f"{split}__{subset}__ctx{ctx_key}.jsonl"
+
+    if cache_path.exists():
+        with cache_path.open(encoding="utf-8") as f:
+            return [json.loads(line) for line in f if line.strip()]
+
+    rows = _fetch_oolong_rows(subset, context_len, split)
+    tmp_path = cache_path.with_suffix(".jsonl.tmp")
+    with tmp_path.open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+    tmp_path.replace(cache_path)  # atomic publish so partial fetches never cache
+    return rows
+
 
 #: Task groups across all supported subsets.
 TASK_GROUPS = ("counting", "user", "timeline")
@@ -94,6 +185,10 @@ class OolongExample:
     context_window_text: str
     question: str
     gold_answers: tuple[str, ...]
+    #: Raw HF ``answer`` field, verbatim (e.g. ``"['spam']"`` or
+    #: ``"[datetime.date(2024, 1, 15)]"``). The official scorer parses this
+    #: directly via ``ast.literal_eval`` / ``strptime``.
+    answer_raw: str
     answer_type: str
 
 
@@ -108,29 +203,29 @@ def load_oolong_examples(
     """Load a deterministic OOLONG-synth subset at one context length.
 
     The paper uses ``trec_coarse`` (validation split) at 131K tokens, 50
-    examples. ``agnews`` (test split) is the closest HF-available analog.
+    examples. ``agnews`` (test split) is a same-shape analog used as the
+    cheap default.
+
+    Rows are fetched targeted via the HuggingFace datasets-server ``/filter``
+    endpoint (only the matching bucket, cached to JSONL) — *not* the whole
+    split, which would be a 2-10 GB download for 50 rows.
 
     Args:
         input_subset: Dataset name to filter on. Use ``"trec_coarse"`` for
             the paper's exact dataset, ``"agnews"`` for the default.
         context_len: Token-length bucket. OOLONG-synth has buckets at
             1024-4194304; 65536 and 131072 are the most useful.
-        n_examples: How many examples to return. ``None`` means all 50.
-            Otherwise distributed evenly across task groups by ``id``.
+        n_examples: How many examples to return. ``None`` means the whole
+            bucket (50). Otherwise distributed evenly across task groups by ``id``.
         split: HuggingFace split. Defaults to ``"validation"`` for
             ``trec_coarse``, ``"test"`` for everything else.
 
     Returns:
         A tuple of `OolongExample` instances, deterministic across calls.
     """
-    from datasets import load_dataset  # noqa: PLC0415
-
     resolved_split = split or _SPLIT_FOR_SUBSET.get(input_subset, "test")
-    dataset = load_dataset(_HF_DATASET, split=resolved_split)
-    filtered = dataset.filter(
-        lambda row: row["dataset"] == input_subset and row["context_len"] == context_len
-    )
-    filtered = filtered.sort("id")
+    rows = _load_rows_cached(input_subset, context_len, resolved_split)
+    filtered = sorted(rows, key=lambda row: int(row["id"]))
 
     def _row_to_example(row: dict[str, Any]) -> OolongExample:
         return OolongExample(
@@ -142,6 +237,7 @@ def load_oolong_examples(
             context_window_text=str(row["context_window_text"]),
             question=str(row["question"]),
             gold_answers=_coerce_gold(row["answer"]),
+            answer_raw=str(row["answer"]),
             answer_type=str(row["answer_type"]),
         )
 
@@ -196,92 +292,118 @@ def _coerce_gold(raw: Any) -> tuple[str, ...]:  # noqa: ANN401
 
 
 # ---------------------------------------------------------------------------
-# Scoring — adapted from abertsch72/oolong src/eval/eval_helpers.py
+# Scoring — faithful port of abertsch72/oolong src/eval/eval_helpers.py
+# (``synth_attempt_answer_parse`` + ``synth_process_response``). Kept verbatim
+# in logic — including the ``parse_confidence`` tiers — so the record we log
+# matches the official harness and results are directly comparable to the paper.
 # ---------------------------------------------------------------------------
 
 
-def _parse_answer(text: str) -> str:
-    """Extract the candidate answer from a model response.
+@dataclass(frozen=True)
+class OolongScore:
+    """The OOLONG per-example scoring record (mirrors ``synth_process_response``)."""
 
-    Mirrors ``synth_attempt_answer_parse`` from the official OOLONG harness:
-    split on ``:``, take the last segment, strip markdown decorators.
+    #: 0.0-1.0; the paper's headline metric, with numeric partial credit folded in.
+    score: float
+    #: The parsed candidate answer (official ``attempted_parse``).
+    prediction: str
+    #: Parse heuristic confidence: ``low`` / ``med`` / ``high`` / ``vhigh``.
+    parse_confidence: str
+    #: The gold answer, stringified (official ``answer``).
+    gold: str
+
+
+def _synth_attempt_answer_parse(answer: str) -> tuple[str, str]:
+    """Parse a model response into ``(candidate, parse_confidence)``.
+
+    Mirrors the official ``synth_attempt_answer_parse``: if there is no ``:``,
+    return the whole answer when short else its last word; otherwise take the
+    segment after the last ``:`` and strip ``*``/``[``/``]`` formatting
+    artifacts (models like to bold answers or wrap them in brackets). A long
+    candidate containing a comparison phrase is normalized to that phrase. The
+    confidence tier is reported but never affects the score.
     """
-    if ":" not in text:
-        return (text if len(text) < 20 else text.rsplit(maxsplit=1)[-1]).strip()
-    candidate = text.rsplit(":", maxsplit=1)[-1].strip()
+    parse_confidence = "low"
+    if ":" not in answer:
+        if len(answer) < 20:
+            return answer, parse_confidence
+        return answer.rsplit(maxsplit=1)[-1], parse_confidence
+
+    candidate = answer.rsplit(":", maxsplit=1)[-1].strip()
     candidate = candidate.replace("*", "").replace("[", "").replace("]", "")
-    return candidate.strip()
+
+    parse_confidence = "med"
+    if "User:" in answer or "Answer:" in answer or "Date:" in answer or "Label" in answer:
+        parse_confidence = "high"
+    if len(candidate) < 20:
+        parse_confidence = "vhigh"
+    elif "more common" in candidate:
+        candidate = "more common"
+    elif "less common" in candidate:
+        candidate = "less common"
+    elif "same frequency" in candidate:
+        candidate = "same frequency"
+    return candidate, parse_confidence
 
 
-def _parse_gold(gold: str, answer_type: str) -> object:
-    """Parse the dataset's gold answer into a comparable Python value."""
-    import ast  # noqa: PLC0415
+def _synth_process_response(output: str, answer_raw: str, answer_type: str) -> OolongScore:
+    """Score a model response against the raw gold answer.
 
-    upper = answer_type.upper()
-    if upper.endswith("DATE"):
-        from datetime import datetime  # noqa: PLC0415
+    Faithful port of the official ``synth_process_response``:
 
-        try:
-            return datetime.strptime(gold, "[datetime.date(%Y, %m, %d)]").replace(tzinfo=UTC)
-        except ValueError:
-            return gold
-    try:
-        parsed = ast.literal_eval(gold)
-        return parsed[0] if isinstance(parsed, list) else parsed
-    except (ValueError, SyntaxError):
-        return gold
+    - gold is ``ast.literal_eval(answer)[0]`` unless the raw answer is a
+      ``datetime.date(...)`` literal, in which case it is parsed via ``strptime``;
+    - exact string match scores 1.0;
+    - a parsed answer of "more common"/"less common"/"same frequency" scores 1.0
+      when contained in the gold (COMPARISON wording differences);
+    - ``ANSWER_TYPE.NUMERIC`` gets ``0.75 ** |gold - pred|`` partial credit;
+    - ``ANSWER_TYPE.DATE`` is parsed with ``dateutil`` and compared for equality.
 
+    Args:
+        output: The model's final answer text.
+        answer_raw: The dataset's raw ``answer`` field, verbatim.
+        answer_type: The dataset's ``answer_type`` (e.g. ``ANSWER_TYPE.NUMERIC``).
 
-def _oolong_score(text: str, gold_answers: tuple[str, ...], answer_type: str) -> float:
-    """Score a model response against gold, returning 0.0-1.0.
-
-    Follows the official OOLONG scoring from ``synth_process_response``:
-    - Exact string match for most types.
-    - COMPARISON: substring check for "more common"/"less common"/"same frequency".
-    - NUMERIC: partial credit ``0.75 ** abs(gold - pred)``.
-    - DATE: flexible parse via ``dateutil`` then exact equality.
+    Returns:
+        An `OolongScore` with the score plus the parsed prediction, confidence,
+        and gold — the same fields the official harness records per example.
     """
+    import ast  # noqa: PLC0415
+    from datetime import datetime  # noqa: PLC0415
+
     import dateutil.parser  # noqa: PLC0415
 
-    candidate = _parse_answer(text)
-    upper = answer_type.upper()
+    # ``answer_raw`` is a trusted dataset field, not model output; literal_eval
+    # only ever sees the HF gold string (a list literal or a date literal).
+    if "datetime" not in answer_raw:
+        gold: object = ast.literal_eval(answer_raw)[0]
+    else:
+        gold = datetime.strptime(answer_raw, "[datetime.date(%Y, %m, %d)]")  # noqa: DTZ007
 
-    for raw_gold in gold_answers:
-        gold = _parse_gold(raw_gold, upper)
+    trimmed, parse_confidence = _synth_attempt_answer_parse(output)
 
-        if upper.endswith("COMPARISON"):
-            for phrase in ("more common", "less common", "same frequency"):
-                if phrase in candidate.lower():
-                    normalized = phrase
-                    break
-            else:
-                normalized = candidate.lower()
-            if normalized in str(gold).lower() or str(gold).lower() in normalized:
-                return 1.0
-            continue
+    score = 0.0
+    if str(trimmed) == str(gold):
+        score = 1.0
+    elif str(trimmed) in ("more common", "less common", "same frequency"):
+        score = 1.0 if str(trimmed) in str(gold) else 0.0
+    elif answer_type == "ANSWER_TYPE.NUMERIC":
+        try:
+            score = 0.75 ** abs(int(gold) - int(trimmed))  # type: ignore[arg-type]
+        except (ValueError, TypeError):
+            score = 0.0
+    elif answer_type == "ANSWER_TYPE.DATE":
+        try:
+            score = 1.0 if dateutil.parser.parse(trimmed) == gold else 0.0
+        except (ValueError, OverflowError, TypeError):
+            score = 0.0
 
-        if upper.endswith("DATE"):
-            try:
-                parsed_dt = dateutil.parser.parse(candidate)
-                if parsed_dt == gold:
-                    return 1.0
-            except (ValueError, OverflowError):
-                pass
-            continue
-
-        if upper.endswith("NUMERIC"):
-            if str(candidate) == str(gold):
-                return 1.0
-            try:
-                return 0.75 ** abs(int(str(gold)) - int(candidate))
-            except (ValueError, TypeError):
-                pass
-            continue
-
-        if str(candidate).lower() == str(gold).lower():
-            return 1.0
-
-    return 0.0
+    return OolongScore(
+        score=score,
+        prediction=str(trimmed),
+        parse_confidence=parse_confidence,
+        gold=str(gold),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -362,17 +484,19 @@ def run_oolong_case(
 
     Uses the standard `run_agent` LangSmith wiring (so examples, latency and
     inputs are recorded the normal way), but scores *softly*: the answer is
-    graded into ``correctness`` / ``partial_score`` feedback rather than
-    hard-failing the test. This matters for a pairwise benchmark — a
-    ``pytest.fail`` leaves the LangSmith root run ``pending`` and never syncs the
-    dataset example, which would drop the wrong-answer arm out of the
-    side-by-side comparison entirely. Logged shape:
+    graded into feedback rather than hard-failing the test. This matters for a
+    pairwise benchmark — a ``pytest.fail`` leaves the LangSmith root run
+    ``pending`` and never syncs the dataset example, which would drop the
+    wrong-answer arm out of the side-by-side comparison entirely. Logged shape:
 
     - **inputs** (`eval_inputs`): the question + task metadata, identical across
       arms so both experiments share one dataset example;
     - **reference output**: the gold answer;
-    - **feedback**: ``correctness`` / ``partial_score`` / ``agent_steps`` /
-      ``tool_call_requests`` (numeric scores).
+    - **feedback**: ``score`` (the *only* OOLONG metric — 0-1 with numeric partial
+      credit; the paper reports its mean) plus ``agent_steps`` /
+      ``tool_call_requests`` (harness efficiency telemetry, not part of OOLONG);
+    - **outputs**: the OOLONG per-example record — ``attempted_parse`` (parsed
+      prediction), ``parse_confidence``, ``score`` and ``gold_answer``.
 
     The arm, root model and sub-model travel as metadata, not inputs.
     """
@@ -406,11 +530,24 @@ def run_oolong_case(
 
     # Soft scoring: log the grade as feedback; never `pytest.fail` (see above).
     # `score=` (not `value=`) so the metrics surface as columns in the compare view.
-    score = _oolong_score(trajectory.answer, example.gold_answers, example.answer_type)
-    t.log_feedback(key="correctness", score=1.0 if score >= 1.0 else 0.0)
-    t.log_feedback(key="partial_score", score=score)
+    result = _synth_process_response(trajectory.answer, example.answer_raw, example.answer_type)
+    # `score` is the *only* OOLONG metric: 0-1 with numeric partial credit folded
+    # in. The paper reports its mean. We deliberately do not log a separate binary
+    # "correctness" — it is not in the OOLONG spec and would discard partial credit
+    # on NUMERIC tasks. `agent_steps` / `tool_call_requests` are harness efficiency
+    # telemetry, orthogonal to the OOLONG score.
+    t.log_feedback(key="score", score=result.score)
     t.log_feedback(key="agent_steps", score=len(trajectory.steps))
     t.log_feedback(
         key="tool_call_requests",
         score=sum(len(step.action.tool_calls) for step in trajectory.steps),
+    )
+    # Mirror the official harness's per-example record for debuggability.
+    t.log_outputs(
+        {
+            "attempted_parse": result.prediction,
+            "parse_confidence": result.parse_confidence,
+            "score": result.score,
+            "gold_answer": result.gold,
+        }
     )

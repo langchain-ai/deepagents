@@ -560,11 +560,14 @@ def run_oolong_case(
         },
     )
 
-    # Soft scoring: log the grade as feedback; never `pytest.fail` (see above).
-    # `score=` (not `value=`) so the metrics surface as columns in the compare view.
+    # Score: the official OOLONG per-example score (binary for most answer
+    # types; NUMERIC gets partial credit `0.75 ** |gold - pred|`). The paper's
+    # reported metric is the mean of this score — there is no separate binary
+    # "correctness", so we log exactly one `score` to match. `agent_steps` /
+    # `tool_call_requests` are harness telemetry, not part of the OOLONG metric.
+    # Soft-scored: logged as feedback, never `pytest.fail` (see above).
     score = _oolong_score(trajectory.answer, example.gold_answers, example.answer_type)
-    t.log_feedback(key="correctness", score=1.0 if score >= 1.0 else 0.0)
-    t.log_feedback(key="partial_score", score=score)
+    t.log_feedback(key="score", score=score)
     t.log_feedback(key="agent_steps", score=len(trajectory.steps))
     t.log_feedback(
         key="tool_call_requests",

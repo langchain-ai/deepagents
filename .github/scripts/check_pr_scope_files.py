@@ -19,51 +19,78 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG = REPO_ROOT / ".github" / "scripts" / "pr-labeler-config.json"
+DEFAULT_RELEASE_CONFIG = REPO_ROOT / "release-please-config.json"
 
 _TITLE_RE = re.compile(r"^[a-z]+(?:\(([^)]*)\))?!?:\s")
 _RELEASE_TITLE_RE = re.compile(r"^release\([^)]*\):\s")
 
 
+def _release_files(config_path: Path = DEFAULT_RELEASE_CONFIG) -> set[str]:
+    """Return release-please managed artifact paths.
+
+    Args:
+        config_path: Path to `release-please-config.json`.
+
+    Returns:
+        Set of repo-root-relative files release-please manages directly.
+
+    Raises:
+        ValueError: If the release-please config is missing required structure.
+    """
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        msg = f"could not read release-please config {config_path}: {e}"
+        raise ValueError(msg) from e
+
+    packages = config.get("packages")
+    if not isinstance(packages, dict) or not packages:
+        msg = "release-please config has no non-empty 'packages' map"
+        raise ValueError(msg)
+
+    files = {".release-please-manifest.json"}
+    for root, package in packages.items():
+        if not isinstance(root, str) or not isinstance(package, dict):
+            msg = f"release-please package entry is malformed: {root!r}: {package!r}"
+            raise ValueError(msg)
+        changelog = package.get("changelog-path")
+        if isinstance(changelog, str):
+            files.add(str(Path(root) / changelog))
+        extra_files = package.get("extra-files", [])
+        if not isinstance(extra_files, list):
+            msg = f"release-please package {root!r} has malformed 'extra-files'"
+            raise ValueError(msg)
+        for extra in extra_files:
+            if not isinstance(extra, str):
+                msg = f"release-please package {root!r} has non-string extra file"
+                raise ValueError(msg)
+            files.add(str(Path(root) / extra))
+    return files
+
+
 def is_release_file(file: str) -> bool:
     """Return whether `file` is a file release-please may update in a release PR.
 
-    Covers the version-of-record manifest, per-package `CHANGELOG.md` /
-    `pyproject.toml` / `_version.py`, and `uv.lock` files anywhere the uv
-    workspace resolves.
-
-    Keep in sync with `extra-files`/`changelog-path` in
-    `release-please-config.json`. Drift fails closed — an unrecognized artifact
-    means the bypass does not fire and the normal scope gate runs — so this is a
-    maintenance note, not a safety hole.
+    Covers the version-of-record manifest, configured per-package changelog and
+    extra files, and `uv.lock` files anywhere the uv workspace resolves.
 
     Args:
         file: Changed file path, repo-root-relative.
 
     Returns:
         `True` when the path is one release-please may update in a release PR.
+
+    Raises:
+        ValueError: If the release-please config cannot be read or validated.
     """
     path = Path(file)
-    # The version-of-record manifest release-please rewrites on every release.
-    if file == ".release-please-manifest.json":
-        return True
     # release-please regenerates lockfiles wherever the uv workspace resolves —
     # not just package dirs but also `examples/*/uv.lock` (observed in real
     # partner release PRs). `uv.lock` is generated-only, so accept it at any
     # path rather than enumerating workspace-member dirs that drift over time.
     if path.name == "uv.lock":
         return True
-    parts = path.parts
-    if len(parts) < 3 or parts[0] != "libs":
-        return False
-    # Package-root files: depth 3 for top-level packages (`libs/<pkg>/...`) and
-    # depth 4 for partners, which nest one level deeper under `libs/partners/`.
-    if path.name in {"CHANGELOG.md", "pyproject.toml"}:
-        return len(parts) == 3 or (len(parts) == 4 and parts[1] == "partners")
-    # `_version.py` sits inside the import package, one level below the
-    # package-root files above: depth 4 top-level, depth 5 for partners.
-    if path.name == "_version.py":
-        return len(parts) == 4 or (len(parts) == 5 and parts[1] == "partners")
-    return False
+    return file in _release_files()
 
 
 def is_release_title(title: str) -> bool:

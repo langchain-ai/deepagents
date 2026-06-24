@@ -200,6 +200,19 @@ def test_release_file_covers_partner_generated_files() -> None:
     assert not is_release_file("libs/code/deepagents_code/CHANGELOG.md")
 
 
+def test_unmanaged_package_artifacts_do_not_trigger_release_bypass() -> None:
+    """Only package roots declared in release-please config are release artifacts."""
+    config = json.loads(DEFAULT_CONFIG.read_text(encoding="utf-8"))
+    changed = ["libs/evals/pyproject.toml"]
+
+    assert not is_release_file("libs/evals/pyproject.toml")
+    assert not is_release_file("libs/evals/deepagents_evals/_version.py")
+    assert not is_release_pr_change("release(deepagents-code): 0.1.22", changed)
+    assert find_offenders("release(deepagents-code): 0.1.22", changed, config) == [
+        {"package": "evals", "dirs": ["libs/evals/"]}
+    ]
+
+
 def test_release_pr_change_covers_repo_wide_lockfiles() -> None:
     """Real partner release PRs regenerate `uv.lock` under `examples/` too.
 

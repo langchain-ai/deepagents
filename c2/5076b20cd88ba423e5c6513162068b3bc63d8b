@@ -1,0 +1,24 @@
+libs/code/tests/unit_tests/test_subagent_panel.py
+  s_fbb4039f70ae43::t_350704087deaa0 122,126,132-134,136
+libs/code/deepagents_code/widgets/subagent_panel.py
+  s_fbb4039f70ae43::t_61c412a35bd885 591
+  s_fbb4039f70ae43::t_9f563f5b2e27ec 691,694
+  s_fbb4039f70ae43::t_a843fe76a9fbfa 590,592
+  s_fbb4039f70ae43::t_89e263c86b1287 764-766,779-783
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "c25076b20cd88ba423e5c6513162068b3bc63d8b",
+  "prompts": {},
+  "sessions": {
+    "s_fbb4039f70ae43": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "70a2905b-8d2c-4e8e-a94c-0bad2c4435e0",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Colin Francis <colin.francis@langchain.dev>"
+    }
+  }
+}

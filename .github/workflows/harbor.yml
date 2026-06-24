@@ -413,6 +413,11 @@ jobs:
               HARBOR_AGENT_LABEL="bare create_deep_agent"
               ;;
             tau3)
+              # Requires a Harbor build that forwards the task environment's MCP
+              # servers into the LangGraph graph configurable. The pinned Harbor
+              # does not yet, so set `harbor_package_override` to such a build
+              # until that support ships in a release; otherwise tau3_deepagent
+              # exits early with no MCP servers.
               HARBOR_AGENT_GRAPH=tau3_deepagent
               HARBOR_AGENT_LABEL="tau3 conversational deepagent"
               ;;

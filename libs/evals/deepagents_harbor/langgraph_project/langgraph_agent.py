@@ -6,7 +6,7 @@ import os
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
@@ -200,14 +200,21 @@ silently. Keep working with the user until the case is resolved.
 """
 
 
-def _mcp_connections(configurable: dict[str, object]) -> dict[str, dict[str, Any]]:
+def _mcp_connections(configurable: dict[str, object]) -> dict[str, Any]:
     """Build langchain-mcp-adapters connections from Harbor-forwarded servers.
 
     Harbor's LangGraph agent forwards the task environment's declared MCP servers
     via ``configurable["mcp_servers"]`` (a list of dicts shaped like Harbor's
     ``MCPServerConfig``: ``name``/``transport``/``url``/``command``/``args``). We
-    connect only to those trusted, environment-declared servers — never to a URL
-    supplied by the model at runtime.
+    connect only to those environment-declared servers, and only over remote
+    transports.
+
+    ``stdio`` servers are rejected on purpose: they carry a local ``command``/
+    ``args`` that ``MultiServerMCPClient`` would execute inside the agent sandbox.
+    Since the dataset (selectable via the workflow's ``dataset_override``) controls
+    this config, honoring ``stdio`` would let an untrusted dataset run arbitrary
+    commands in CI. tau3-runtime is a remote ``streamable-http`` server, so only
+    ``streamable-http``/``sse`` (URL-based) transports are allowed.
 
     Args:
         configurable: The graph's ``configurable`` mapping.
@@ -216,37 +223,48 @@ def _mcp_connections(configurable: dict[str, object]) -> dict[str, dict[str, Any
         A mapping of server name to a langchain-mcp-adapters connection dict.
 
     Raises:
-        ValueError: If no MCP servers were forwarded.
-        TypeError: If ``mcp_servers`` is not a list.
+        ValueError: If no MCP servers were forwarded, a server uses an
+            unsupported (e.g. ``stdio``) transport, or a server lacks a URL.
+        TypeError: If ``mcp_servers`` is not a list of mappings.
     """
     servers = configurable.get("mcp_servers")
     if not servers:
         msg = (
             "tau3 graph requires MCP servers forwarded via "
-            "`configurable['mcp_servers']`. This needs Harbor's LangGraph agent to "
-            "forward task-environment MCP servers into the graph configurable."
+            "`configurable['mcp_servers']`. Harbor's LangGraph agent must forward "
+            "the task environment's MCP servers into the graph configurable; the "
+            "pinned Harbor release does not yet do this, so run tau3 with a "
+            "`harbor_package_override` that includes MCP-server forwarding until it "
+            "ships in a release."
         )
         raise ValueError(msg)
     if not isinstance(servers, list):
         msg = "`configurable.mcp_servers` must be a list"
         raise TypeError(msg)
 
-    connections: dict[str, dict[str, Any]] = {}
-    for server in servers:
-        name = server["name"]
+    connections: dict[str, Any] = {}
+    for raw in servers:
+        if not isinstance(raw, dict):
+            msg = "Each entry in `configurable.mcp_servers` must be a mapping"
+            raise TypeError(msg)
+        server = cast("dict[str, Any]", raw)
+        name = str(server["name"])
         transport = server.get("transport", "sse")
         if transport in ("streamable-http", "http"):
             transport = "streamable_http"
-        connection: dict[str, Any] = {"transport": transport}
-        if transport in ("streamable_http", "sse"):
-            connection["url"] = server["url"]
-        elif transport == "stdio":
-            connection["command"] = server["command"]
-            connection["args"] = server.get("args", [])
-        else:
-            msg = f"Unsupported MCP transport for tau3 graph: {transport!r}"
+        if transport not in ("streamable_http", "sse"):
+            msg = (
+                f"MCP server {name!r} uses unsupported transport {transport!r}; the "
+                "tau3 graph only allows remote transports (streamable-http, sse). "
+                "stdio servers are rejected to avoid executing dataset-provided "
+                "commands in the agent sandbox."
+            )
             raise ValueError(msg)
-        connections[name] = connection
+        url = server.get("url")
+        if not url:
+            msg = f"MCP server {name!r} must declare a 'url' for transport {transport!r}"
+            raise ValueError(msg)
+        connections[name] = {"transport": transport, "url": url}
     return connections
 
 

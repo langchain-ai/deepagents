@@ -3905,8 +3905,20 @@ class TestCreateModelViaInitImportError:
             _create_model_via_init("nemotron", "nvidia", {})
 
     @patch("langchain.chat_models.init_chat_model")
-    def test_unknown_provider_fallback_package_name(self, mock_init: Mock) -> None:
-        """Unknown provider falls back to langchain-{provider} package name."""
+    def test_unknown_provider_fallback_package_name(
+        self, mock_init: Mock, tmp_path, monkeypatch
+    ) -> None:
+        """Unknown provider falls back to langchain-{provider} package name.
+
+        `install_package_command` reads the uv tool receipt, so it is isolated to
+        a temporary tool root here; otherwise the hint degrades to the manual
+        fallback (see the sibling unreadable-receipt test).
+        """
+        tmp_path.joinpath("uv-receipt.toml").write_text(
+            '[tool]\nrequirements = [{ name = "deepagents-code" }]\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
         mock_init.side_effect = ImportError("no module")
         with (
             patch("importlib.util.find_spec", return_value=None),
@@ -3917,9 +3929,36 @@ class TestCreateModelViaInitImportError:
             pytest.raises(
                 ModelConfigError,
                 match=(
-                    "Install with: uv tool install -U deepagents-code "
+                    "Install with: uv tool install --reinstall -U deepagents-code "
                     "--with langchain-custom_provider"
                 ),
+            ),
+        ):
+            _create_model_via_init("some-model", "custom_provider", {})
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_unknown_provider_receipt_failure_falls_back_to_manual(
+        self, mock_init: Mock, tmp_path, monkeypatch
+    ) -> None:
+        """An unreadable uv receipt degrades to the manual-install hint.
+
+        Exercises the `ToolRequirementIntrospectionError` arm of the fallback:
+        `install_package_command` reads the uv tool receipt, and a missing
+        receipt must surface an actionable message instead of letting the error
+        leak out of hint construction.
+        """
+        # tmp_path has no uv-receipt.toml, so the receipt read raises.
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        mock_init.side_effect = ImportError("no module")
+        with (
+            patch("importlib.util.find_spec", return_value=None),
+            patch(
+                "deepagents_code.extras_info.installed_extra_names",
+                return_value=set(),
+            ),
+            pytest.raises(
+                ModelConfigError,
+                match="Install the 'langchain-custom_provider' package manually",
             ),
         ):
             _create_model_via_init("some-model", "custom_provider", {})

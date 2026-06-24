@@ -2836,6 +2836,28 @@ class TestInstallPackageCommand:
             == "uv tool install --reinstall -U deepagents-code --with langchain-custom"
         )
 
+    def test_preserves_prerelease_channel(self, tmp_path, monkeypatch) -> None:
+        """Adding a package to a pre-release install keeps the pre-release channel.
+
+        The `--reinstall` rebuild re-resolves the unpinned `deepagents-code`
+        requirement from scratch; without `--prerelease allow` uv would resolve
+        to the latest stable and silently downgrade a pre-release user.
+        """
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
+        _write_dist_info(tmp_path, "deepagents-code")
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        with patch("deepagents_code.update_check.__version__", "1.0.0a1"):
+            command = install_package_command(
+                "langchain-custom", distribution_name="deepagents-code"
+            )
+
+        assert command == (
+            "uv tool install --reinstall -U deepagents-code "
+            "--with langchain-custom --prerelease allow"
+        )
+
     def test_refuses_missing_distribution(self) -> None:
         """Reinstalls must not drop extras when metadata is unavailable."""
         with pytest.raises(ExtrasIntrospectionError, match="cannot preserve"):
@@ -3174,6 +3196,40 @@ class TestPerformInstallPackage:
         assert "ExtrasIntrospectionError" in output
         assert "metadata unreadable" in output
         assert "introspect installed extras" in caplog.text
+
+    async def test_uv_receipt_failure_is_reported_and_logged(
+        self, tmp_path, monkeypatch, caplog
+    ) -> None:
+        """An unreadable uv receipt surfaces as a reported, logged error.
+
+        `install_package_command` now reads the uv tool receipt to preserve the
+        interpreter and `--with` packages, so a malformed receipt raises
+        `ToolRequirementIntrospectionError`. The executor must report it rather
+        than let it escape unhandled — narrowing back to `except
+        ExtrasIntrospectionError` would let the error crash the caller.
+        """
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }, "bad"')
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check.shutil.which",
+                return_value="/usr/bin/uv",
+            ),
+            patch(
+                "deepagents_code.extras_info.installed_extra_names",
+                return_value=frozenset(),
+            ),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
+        ):
+            success, output = await perform_install_package("langchain-custom")
+        assert success is False
+        assert "ToolRequirementIntrospectionError" in output
+        assert "non-table requirement" in output
+        assert "uv receipt" in caplog.text
 
 
 class TestRunInstallSubprocessFailureModes:

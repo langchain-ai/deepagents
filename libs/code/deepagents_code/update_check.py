@@ -291,7 +291,8 @@ def get_latest_version(
     except ImportError:
         logger.warning(
             "requests package not installed — update checks disabled. "
-            "Install with: uv tool install -U deepagents-code --with requests"
+            "Install with: uv tool install --reinstall -U deepagents-code "
+            "--with requests"
         )
         return cached_version
 
@@ -1876,6 +1877,7 @@ def _uv_tool_install_command(
     include_prereleases: bool | None,
     distribution_name: str,
     extras_to_add: Iterable[str] = (),
+    with_packages_to_add: Iterable[str] = (),
     reinstall: bool = False,
 ) -> str:
     """Return the receipt-preserving `uv tool install -U` command.
@@ -1886,6 +1888,11 @@ def _uv_tool_install_command(
             `None`, follows the installed version's channel.
         distribution_name: Name of the installed distribution to inspect.
         extras_to_add: Extra names to merge with already-installed extras.
+        with_packages_to_add: Package names to merge with the receipt's existing
+            `--with` packages. Names already present (compared canonically) are
+            not duplicated; genuinely new names are appended after the preserved
+            ones. Callers must validate these names before passing them — the
+            builder only `shlex.quote`-s them.
         reinstall: When `True`, add `--reinstall` so uv rebuilds the tool
             environment from scratch instead of patching it in place. An
             in-place `-U` upgrade can leave stale files behind (e.g. an old
@@ -1919,7 +1926,12 @@ def _uv_tool_install_command(
     if python is not None:
         cmd += f" --python {shlex.quote(python)}"
     cmd += f" {requirement}"
-    with_packages = _uv_tool_with_packages(distribution_name=distribution_name)
+    with_packages = list(_uv_tool_with_packages(distribution_name=distribution_name))
+    known = {canonicalize_name(package) for package in with_packages}
+    for package in with_packages_to_add:
+        if canonicalize_name(package) not in known:
+            with_packages.append(package)
+            known.add(canonicalize_name(package))
     for package in with_packages:
         cmd += f" --with {shlex.quote(package)}"
     if _resolve_include_prereleases(include_prereleases):
@@ -2055,22 +2067,20 @@ def install_package_command(
 
     The result is built for *execution* (via `perform_install_package`), not for
     display — surfacing raw `uv tool` invocations to the user is intentionally
-    avoided. `package` is validated and then `shlex.quote`-d: the validation
-    already blocks shell metacharacters, so the quoting is defense in depth that
-    keeps the command safe even if the pattern is later loosened.
+    avoided. `package` is validated here against PEP 508 grammar and then
+    `shlex.quote`-d by the shared builder: the validation already blocks shell
+    metacharacters, so the quoting is defense in depth that keeps the command
+    safe even if the pattern is later loosened.
 
-    Already-installed extras are folded into the `deepagents-code[...]`
-    requirement via the shared `_dcode_extras_requirement` helper, the same way
-    `_install_extra_uv_tool_command` builds its requirement. Without this the
-    reinstall would replace the tool with a plain `deepagents-code`, silently
-    dropping any extras the user added through `/install <extra>`.
-
-    Already-requested `--with` packages and the uv-managed Python interpreter
-    are preserved from the uv tool receipt. Without this, reinstalling to add a
-    second package would rebuild the tool environment with only the newest
-    `--with` package and drop previously configured custom providers.
-    Propagates `ToolRequirementIntrospectionError` if the uv tool receipt's
-    interpreter or `--with` packages cannot be determined safely.
+    Delegates to `_uv_tool_install_command` (the same builder the extras path
+    uses), passing the new package as a `--with` requirement. That builder folds
+    already-installed extras into the `deepagents-code[...]` requirement, and
+    preserves the uv-managed Python interpreter, the receipt's existing `--with`
+    packages, and the installed pre-release channel. Without this, reinstalling
+    to add a second package would replace the tool with a plain `deepagents-code`
+    (dropping extras the user added through `/install <extra>`), rebuild with
+    only the newest `--with` package (dropping previously configured custom
+    providers), or silently downgrade a pre-release install to the latest stable.
 
     Uses `--reinstall` (like the extras path, `_install_extra_uv_tool_command`)
     so the upgrade rebuilds the tool environment cleanly instead of updating it
@@ -2080,17 +2090,19 @@ def install_package_command(
     Args:
         package: Package name to install into the existing tool environment.
         distribution_name: Name of the installed distribution to inspect for
-            already-installed extras.
+            already-installed extras and uv receipt requirements.
 
     Returns:
         Shell command string suitable for execution via the shell.
 
     Raises:
-        ExtrasIntrospectionError: If installed extras cannot be determined
-            safely from distribution metadata (refused rather than risk
-            dropping them).
-        ValueError: If `package` or any already-installed extra fails PEP 508
-            validation.
+        ValueError: If `package` fails PEP 508 validation.
+
+    Propagates `ExtrasIntrospectionError` if installed extras cannot be
+    determined safely from distribution metadata (or a metadata-sourced extra
+    name fails PEP 508 validation), and `ToolRequirementIntrospectionError` if
+    the uv tool receipt's interpreter or `--with` packages cannot be determined
+    safely.
     """
     if not _PACKAGE_NAME_RE.fullmatch(package):
         msg = (
@@ -2098,30 +2110,13 @@ def install_package_command(
             f"({_PACKAGE_NAME_RE.pattern})"
         )
         raise ValueError(msg)
-    from deepagents_code.extras_info import (
-        ExtrasIntrospectionError,
-        installed_extra_names,
+    return _uv_tool_install_command(
+        version=None,
+        include_prereleases=None,
+        distribution_name=distribution_name,
+        with_packages_to_add=(package,),
+        reinstall=True,
     )
-
-    try:
-        extras = installed_extra_names(distribution_name, strict=True)
-    except ExtrasIntrospectionError as exc:
-        msg = str(exc)
-        raise ExtrasIntrospectionError(msg) from exc
-    requirement = _dcode_extras_requirement(extras)
-    cmd = "uv tool install --reinstall -U"
-    python = _uv_tool_python()
-    if python is not None:
-        cmd += f" --python {shlex.quote(python)}"
-    cmd += f" {requirement}"
-
-    with_packages = list(_uv_tool_with_packages(distribution_name=distribution_name))
-    known = {canonicalize_name(with_package) for with_package in with_packages}
-    if canonicalize_name(package) not in known:
-        with_packages.append(package)
-    for with_package in with_packages:
-        cmd += f" --with {shlex.quote(with_package)}"
-    return cmd
 
 
 def install_extras_command(extras: Iterable[str]) -> str:
@@ -2418,12 +2413,14 @@ async def perform_install_package(
         cmd = install_package_command(package)
     except ValueError as exc:
         return False, f"{type(exc).__name__}: {exc}"
-    except ExtrasIntrospectionError as exc:
+    except (ExtrasIntrospectionError, ToolRequirementIntrospectionError) as exc:
         # Distinct from a malformed package name: the running distribution's own
-        # metadata could not be read or parsed. Leave a breadcrumb so the cause
-        # is recoverable from logs, even though the user message is unchanged.
+        # metadata, or the uv tool receipt, could not be read or parsed. Leave a
+        # breadcrumb so the cause is recoverable from logs, even though the user
+        # message is unchanged.
         logger.warning(
-            "Could not introspect installed extras for package install of %r",
+            "Could not introspect installed extras or uv receipt for package "
+            "install of %r",
             package,
             exc_info=True,
         )

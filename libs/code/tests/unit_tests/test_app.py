@@ -8819,11 +8819,23 @@ class TestDeferredActions:
             assert "/model google_vertexai:<model>" in rendered
 
     async def test_server_failure_missing_unknown_package_shows_uv_command(
-        self,
+        self, tmp_path: Path, monkeypatch
     ) -> None:
-        """Manual fallback should include the default uv tool command."""
+        """Manual fallback should include the default uv tool command.
+
+        `install_package_command` reads the uv tool receipt to preserve the
+        interpreter and existing `--with` packages, so the receipt must be
+        isolated to a temporary tool root or the hint degrades to the manual
+        fallback (see the sibling unreadable-receipt test).
+        """
         from deepagents_code.model_config import MissingProviderPackageError
         from deepagents_code.widgets.messages import ErrorMessage
+
+        tmp_path.joinpath("uv-receipt.toml").write_text(
+            '[tool]\nrequirements = [{ name = "deepagents-code" }]\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
 
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -8857,6 +8869,58 @@ class TestDeferredActions:
             assert (
                 "uv tool install --reinstall -U deepagents-code "
                 "--with langchain-custom_provider" in rendered
+            )
+            assert "/model custom_provider:<model>" in rendered
+
+    async def test_server_failure_unknown_package_unreadable_receipt_manual(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """An unreadable uv receipt degrades the hint to a manual instruction.
+
+        `install_package_command` raises `ToolRequirementIntrospectionError`
+        when the uv tool receipt is missing — a realistic state for a tool whose
+        receipt records an unsupported `--with` source. The failure-render path
+        must catch it and surface an actionable manual hint rather than crash
+        while building the recovery message.
+        """
+        from deepagents_code.model_config import MissingProviderPackageError
+        from deepagents_code.widgets.messages import ErrorMessage
+
+        # tmp_path intentionally has no uv-receipt.toml, so the receipt read
+        # raises ToolRequirementIntrospectionError.
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": "custom_provider:fake"}
+            app._connecting = True
+
+            error = MissingProviderPackageError(
+                "Missing package for provider 'custom_provider'.",
+                provider="custom_provider",
+                package="langchain-custom_provider",
+            )
+            with (
+                patch(
+                    "deepagents_code.extras_info.extra_for_package",
+                    return_value=None,
+                ),
+                patch(
+                    "deepagents_code.extras_info.installed_extra_names",
+                    return_value=set(),
+                ),
+            ):
+                app.on_deep_agents_app_server_start_failed(
+                    DeepAgentsApp.ServerStartFailed(error=error)
+                )
+                await pilot.pause()
+
+            widget = app._startup_failure_widget
+            assert isinstance(widget, ErrorMessage)
+            rendered = str(widget._content)
+            assert (
+                "install the `langchain-custom_provider` package manually" in rendered
             )
             assert "/model custom_provider:<model>" in rendered
 

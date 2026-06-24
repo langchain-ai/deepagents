@@ -1,0 +1,19 @@
+libs/evals/tests/evals/oolong/benchmarks.py
+  s_a23cdcb1879983::t_e8270c83890c0a 385-388
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "a37dc6f708e527f5c83fe377e6a961bae79e653a",
+  "prompts": {},
+  "sessions": {
+    "s_a23cdcb1879983": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f048b68d-0bfd-4f95-a92e-27d4595f55fd",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": null
+    }
+  }
+}

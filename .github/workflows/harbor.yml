@@ -155,6 +155,11 @@ on:
         required: true
         default: "1"
         type: string
+      harbor_package_override:
+        description: "Optional: install Harbor from an arbitrary package spec (e.g. 'harbor[langsmith] @ git+https://github.com/owner/harbor.git@branch') instead of the locked version, to test an unreleased Harbor build. Leave empty to use the pinned Harbor."
+        required: false
+        default: ""
+        type: string
 permissions:
   contents: read
 
@@ -314,6 +319,13 @@ jobs:
 
       - name: "📦 Install Dependencies"
         run: uv sync --group test --locked
+
+      - name: "⚓ Install Harbor override"
+        if: ${{ inputs.harbor_package_override != '' }}
+        env:
+          # Passed via env (not interpolated into the shell) to avoid injection.
+          HARBOR_PACKAGE_OVERRIDE: ${{ inputs.harbor_package_override }}
+        run: uv pip install "$HARBOR_PACKAGE_OVERRIDE"
 
       - name: "🔇 Suppress Harbor first-run tips"
         run: |

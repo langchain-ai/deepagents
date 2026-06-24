@@ -21,6 +21,7 @@ from deepagents_code.config import (
     ModelResult,
     Settings,
     _apply_default_langsmith_project,
+    _apply_stored_langsmith_tracing,
     _create_model_from_class,
     _create_model_via_init,
     _disable_orphaned_tracing,
@@ -2108,6 +2109,109 @@ class TestDisableOrphanedTracing:
 
             assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
             assert os.environ["LANGSMITH_TRACING"] == "false"
+
+
+class TestApplyStoredLangSmithTracing:
+    """Tests for _apply_stored_langsmith_tracing()."""
+
+    @pytest.fixture
+    def fake_state_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        """Redirect the credential store into a temp directory."""
+        state = tmp_path / ".state"
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_STATE_DIR", state)
+        return state
+
+    def test_noop_without_stored_key(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No stored key leaves the environment untouched (no auto-enable)."""
+        import os
+
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        _apply_stored_langsmith_tracing()
+        assert "LANGSMITH_TRACING" not in os.environ
+
+    def test_enables_tracing_when_key_stored(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored LangSmith key turns tracing on by default."""
+        import os
+
+        from deepagents_code import auth_store
+
+        for var in ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2"):
+            monkeypatch.delenv(var, raising=False)
+        auth_store.set_stored_key("langsmith", "lsv2_test")
+        _apply_stored_langsmith_tracing()
+        assert os.environ["LANGSMITH_TRACING"] == "true"
+
+    def test_respects_explicit_opt_out(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An explicit falsy tracing flag is honored as a temporary opt-out."""
+        import os
+
+        from deepagents_code import auth_store
+
+        monkeypatch.setenv("LANGSMITH_TRACING", "false")
+        auth_store.set_stored_key("langsmith", "lsv2_test")
+        _apply_stored_langsmith_tracing()
+        assert os.environ["LANGSMITH_TRACING"] == "false"
+
+    def test_leaves_explicit_enable_untouched(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An already-truthy tracing flag is left as-is."""
+        import os
+
+        from deepagents_code import auth_store
+
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        monkeypatch.setenv("LANGCHAIN_TRACING_V2", "true")
+        auth_store.set_stored_key("langsmith", "lsv2_test")
+        _apply_stored_langsmith_tracing()
+        assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
+        assert "LANGSMITH_TRACING" not in os.environ
+
+    def test_applies_stored_custom_project(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored custom project is applied when none is already set."""
+        import os
+
+        from deepagents_code import auth_store
+
+        for var in ("LANGSMITH_TRACING", "LANGSMITH_PROJECT"):
+            monkeypatch.delenv(var, raising=False)
+        auth_store.set_stored_key("langsmith", "lsv2_test", project="my-app")
+        _apply_stored_langsmith_tracing()
+        assert os.environ["LANGSMITH_PROJECT"] == "my-app"
+
+    def test_stored_project_does_not_override_env(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An explicit LANGSMITH_PROJECT wins over the stored project."""
+        import os
+
+        from deepagents_code import auth_store
+
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        monkeypatch.setenv("LANGSMITH_PROJECT", "from-env")
+        auth_store.set_stored_key("langsmith", "lsv2_test", project="my-app")
+        _apply_stored_langsmith_tracing()
+        assert os.environ["LANGSMITH_PROJECT"] == "from-env"
 
 
 class TestGetTracingStatus:

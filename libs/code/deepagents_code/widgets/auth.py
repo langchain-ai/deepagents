@@ -43,6 +43,7 @@ from deepagents_code.auth_display import format_auth_badge
 from deepagents_code.config import get_glyphs, is_ascii_mode
 from deepagents_code.model_config import (
     CODEX_PROVIDER,
+    LANGSMITH_SERVICE,
     PROVIDER_API_KEY_ENV,
     PROVIDERS_DOCS_URL as _PROVIDERS_DOCS_URL,
     SERVICE_API_KEY_ENV,
@@ -82,6 +83,7 @@ PROVIDER_DISPLAY_NAMES: dict[str, str] = {
     "groq": "Groq",
     "huggingface": "Hugging Face",
     "ibm": "IBM watsonx",
+    "langsmith": "LangSmith (tracing)",
     "litellm": "LiteLLM",
     "mistralai": "Mistral AI",
     "nvidia": "NVIDIA",
@@ -104,6 +106,7 @@ PROVIDER_API_KEY_URLS: dict[str, str] = {
     "groq": "https://console.groq.com/keys",
     "huggingface": "https://huggingface.co/login?next=%2Fsettings%2Ftokens",
     "ibm": "https://cloud.ibm.com/iam/apikeys",
+    "langsmith": "https://smith.langchain.com/settings",
     "litellm": "https://docs.litellm.ai/docs/proxy/virtual_keys",
     "mistralai": "https://console.mistral.ai/api-keys",
     "nvidia": "https://build.nvidia.com/settings/api-keys",
@@ -475,6 +478,10 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         self._provider = provider
         self._env_var = env_var
         self._reason = reason
+        # LangSmith is configured as a tracing service: it has no base-URL
+        # override but does carry an optional project name, and saving a key
+        # turns tracing on.
+        self._is_langsmith = provider == LANGSMITH_SERVICE
         # Resolve the current credential source and probe the store, but never
         # let a corrupt `auth.json`/config crash the screen at construction
         # time — Textual would propagate the exception before the modal mounts.
@@ -492,7 +499,10 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             )
             self._has_existing = auth_store.get_stored_key(provider) is not None
             self._existing_base_url = auth_store.get_stored_base_url(provider) or ""
-            self._advanced_visible = bool(self._existing_base_url)
+            self._existing_project = auth_store.get_stored_project(provider) or ""
+            self._advanced_visible = bool(
+                self._existing_base_url or self._existing_project
+            )
             self._store_warning: str | None = None
         except RuntimeError as exc:
             logger.warning(
@@ -504,6 +514,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             )
             self._has_existing = False
             self._existing_base_url = ""
+            self._existing_project = ""
             self._advanced_visible = False
             self._store_warning = (
                 f"Credential file is unreadable ({exc}). Saving here will overwrite it."
@@ -613,12 +624,20 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                 password=True,
                 id="auth-prompt-input",
             )
-            yield Static(
-                Content.from_markup(
+            if self._is_langsmith:
+                storage_note = Content.from_markup(
+                    "Deep Agents Code stores the above key locally and turns on "
+                    "LangSmith tracing. To pause tracing without removing the key, "
+                    "set [bold]DEEPAGENTS_CODE_LANGSMITH_TRACING=false[/bold]."
+                )
+            else:
+                storage_note = Content.from_markup(
                     "Deep Agents Code stores the above key locally and uses it "
                     "when you select [bold]$provider[/bold] models.",
                     provider=provider_label,
-                ),
+                )
+            yield Static(
+                storage_note,
                 classes="auth-prompt-meta",
                 id="auth-prompt-storage-note",
             )
@@ -649,27 +668,53 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                 )
                 key_meta.display = self._advanced_visible
                 yield key_meta
-            base_url_label = Static(
-                Content.from_markup("[bold]Base URL override[/bold]"),
-                classes="auth-prompt-meta",
-                id="auth-prompt-base-url-label",
-            )
-            base_url_label.display = self._advanced_visible
-            yield base_url_label
-            base_url_input = Input(
-                value=self._existing_base_url,
-                placeholder="Base URL",
-                id="auth-prompt-base-url",
-            )
-            base_url_input.display = self._advanced_visible
-            yield base_url_input
-            base_url_hint_widget = Static(
-                self._build_base_url_hint(),
-                classes="auth-prompt-meta",
-                id="auth-prompt-base-url-hint",
-            )
-            base_url_hint_widget.display = self._advanced_visible
-            yield base_url_hint_widget
+            if self._is_langsmith:
+                project_label = Static(
+                    Content.from_markup("[bold]Project name[/bold]"),
+                    classes="auth-prompt-meta",
+                    id="auth-prompt-project-label",
+                )
+                project_label.display = self._advanced_visible
+                yield project_label
+                project_input = Input(
+                    value=self._existing_project,
+                    placeholder="LANGSMITH_PROJECT (default: deepagents-code)",
+                    id="auth-prompt-project",
+                )
+                project_input.display = self._advanced_visible
+                yield project_input
+                project_hint_widget = Static(
+                    Content.from_markup(
+                        "Route agent traces to this LangSmith project. "
+                        "Leave blank to use the default [bold]deepagents-code[/bold]."
+                    ),
+                    classes="auth-prompt-meta",
+                    id="auth-prompt-project-hint",
+                )
+                project_hint_widget.display = self._advanced_visible
+                yield project_hint_widget
+            else:
+                base_url_label = Static(
+                    Content.from_markup("[bold]Base URL override[/bold]"),
+                    classes="auth-prompt-meta",
+                    id="auth-prompt-base-url-label",
+                )
+                base_url_label.display = self._advanced_visible
+                yield base_url_label
+                base_url_input = Input(
+                    value=self._existing_base_url,
+                    placeholder="Base URL",
+                    id="auth-prompt-base-url",
+                )
+                base_url_input.display = self._advanced_visible
+                yield base_url_input
+                base_url_hint_widget = Static(
+                    self._build_base_url_hint(),
+                    classes="auth-prompt-meta",
+                    id="auth-prompt-base-url-hint",
+                )
+                base_url_hint_widget.display = self._advanced_visible
+                yield base_url_hint_widget
             yield Static("", classes="auth-prompt-error", id="auth-prompt-error")
             save_label = "Enter replace" if self._has_existing else "Enter save"
             help_parts = [f"{save_label} {glyphs.bullet} Esc cancel", "F2 advanced"]
@@ -808,6 +853,9 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             "#auth-prompt-base-url-label",
             "#auth-prompt-base-url",
             "#auth-prompt-base-url-hint",
+            "#auth-prompt-project-label",
+            "#auth-prompt-project",
+            "#auth-prompt-project-hint",
         ):
             for widget in self.query(selector):
                 widget.display = self._advanced_visible
@@ -855,17 +903,26 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         """Validate, persist, and dismiss.
 
         Reads both fields regardless of which one was submitted, so pressing
-        Enter in either the key or the base-URL input saves the pair.
+        Enter in either the key or the secondary input (base URL, or the
+        LangSmith project name) saves the pair.
         """
         event.stop()
         cleaned = self.query_one("#auth-prompt-input", Input).value.strip()
-        base_url = self.query_one("#auth-prompt-base-url", Input).value.strip()
+        if self._is_langsmith:
+            base_url = ""
+            project = self.query_one("#auth-prompt-project", Input).value.strip()
+        else:
+            base_url = self.query_one("#auth-prompt-base-url", Input).value.strip()
+            project = ""
         if not cleaned:
             self._show_error("API key cannot be empty.")
             return
         try:
             outcome = auth_store.set_stored_key(
-                self._provider, cleaned, base_url=base_url or None
+                self._provider,
+                cleaned,
+                base_url=base_url or None,
+                project=project or None,
             )
         except (ValueError, RuntimeError, OSError) as exc:
             # `auth_store` exception messages never include the secret value,

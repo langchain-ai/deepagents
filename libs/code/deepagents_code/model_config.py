@@ -548,14 +548,24 @@ registry fallback.
 """
 
 SERVICE_API_KEY_ENV: dict[str, str] = {
+    "langsmith": "LANGSMITH_API_KEY",
     "tavily": "TAVILY_API_KEY",
 }
 """Non-model services configurable via `/auth`, mapped to their API-key env var.
 
-These are not LLM providers — they back features such as web search — but
-their credentials follow the same store-on-disk model as model providers, so
-they appear in the `/auth` manager and can be entered directly in the TUI
-instead of being exported as environment variables before launch.
+These are not LLM providers — they back features such as web search (Tavily) or
+agent tracing (LangSmith) — but their credentials follow the same store-on-disk
+model as model providers, so they appear in the `/auth` manager and can be
+entered directly in the TUI instead of being exported as environment variables
+before launch.
+"""
+
+LANGSMITH_SERVICE = "langsmith"
+"""Service name for LangSmith tracing in `SERVICE_API_KEY_ENV`.
+
+Storing a key for this service via `/auth` also enables tracing at startup
+(see `config._apply_stored_langsmith_tracing`) and can carry a custom project
+name, so it gets special handling beyond a plain key copy.
 """
 
 CODEX_PROVIDER = "openai_codex"

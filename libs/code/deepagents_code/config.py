@@ -503,6 +503,59 @@ def _apply_default_langsmith_project() -> None:
     os.environ["LANGSMITH_PROJECT"] = LANGSMITH_PROJECT_DEFAULT
 
 
+def _apply_stored_langsmith_tracing() -> None:
+    """Enable tracing (and apply a custom project) for a `/auth`-stored key.
+
+    Storing a LangSmith key via `/auth` is a deliberate opt-in to tracing, but
+    a key alone never starts tracing — the SDK only traces when a tracing-enable
+    flag is truthy. So when a key is stored, turn tracing on by default.
+
+    The opt-out is intentionally non-destructive and session-scoped: an explicit
+    falsy tracing flag (most simply `DEEPAGENTS_CODE_LANGSMITH_TRACING=false`,
+    which bootstrap bridges to `LANGSMITH_TRACING`) is honored and tracing stays
+    off, so the stored key can be paused without deleting it. A custom stored
+    project is applied to `LANGSMITH_PROJECT` when the user has not set one.
+
+    No-op when no LangSmith key is stored, so a key supplied only through the
+    environment keeps the prior behavior (tracing stays off unless a flag is
+    set).
+    """
+    from deepagents_code import auth_store
+    from deepagents_code._env_vars import classify_env_bool
+    from deepagents_code.model_config import LANGSMITH_SERVICE
+
+    try:
+        stored_key = auth_store.get_stored_key(LANGSMITH_SERVICE)
+    except RuntimeError:
+        logger.warning(
+            "Could not read the stored LangSmith credential; the credential file "
+            "may be corrupt. Re-add the key via /auth."
+        )
+        return
+    if not stored_key:
+        return
+
+    # The key was bridged onto LANGSMITH_API_KEY by
+    # `apply_stored_service_credentials`. Decide whether to enable tracing.
+    flags = [
+        classify_env_bool(os.environ[var])
+        for var in _TRACING_ENABLE_ENV_VARS
+        if var in os.environ
+    ]
+    if any(flag is False for flag in flags):
+        # Explicit, deliberate opt-out — leave tracing off and keep the key.
+        return
+    if not any(flag is True for flag in flags):
+        os.environ["LANGSMITH_TRACING"] = "true"
+
+    try:
+        project = auth_store.get_stored_project(LANGSMITH_SERVICE)
+    except RuntimeError:
+        project = None
+    if project and not os.environ.get("LANGSMITH_PROJECT"):
+        os.environ["LANGSMITH_PROJECT"] = project
+
+
 def _ensure_bootstrap() -> None:
     """Run one-time bootstrap: dotenv loading and `LANGSMITH_PROJECT` override.
 
@@ -589,6 +642,21 @@ def _ensure_bootstrap() -> None:
                         canonical,
                     )
 
+            # Bridge stored service keys (e.g. Tavily web search, LangSmith
+            # tracing, entered via `/auth`) onto their canonical env vars before
+            # the tracing checks below, so a stored key activates the feature
+            # without exporting the var. Runs first so a LangSmith key stored via
+            # `/auth` is present when orphaned-tracing detection runs.
+            from deepagents_code.model_config import apply_stored_service_credentials
+
+            apply_stored_service_credentials()
+
+            # A LangSmith key stored via `/auth` opts the user into tracing, so
+            # turn tracing on (unless they explicitly disabled it) and apply any
+            # stored custom project. Runs before `_disable_orphaned_tracing` so
+            # the just-bridged key keeps tracing alive instead of being disabled.
+            _apply_stored_langsmith_tracing()
+
             # Tracing enabled without a key floods the TUI with 401 ingest
             # errors; disable it before any traced run starts.
             _disable_orphaned_tracing()
@@ -598,13 +666,6 @@ def _ensure_bootstrap() -> None:
             # look up. Runs after `_disable_orphaned_tracing` so a keyless setup
             # (tracing already turned off) is left untouched.
             _apply_default_langsmith_project()
-
-            # Bridge stored service keys (e.g. Tavily web search, entered via
-            # `/auth`) onto their canonical env vars before settings detection,
-            # so a stored key activates the feature without exporting the var.
-            from deepagents_code.model_config import apply_stored_service_credentials
-
-            apply_stored_service_credentials()
         except Exception:
             logger.exception(
                 "Bootstrap failed; .env values and LANGSMITH_PROJECT override "

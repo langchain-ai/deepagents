@@ -1246,7 +1246,7 @@ class TestNemotronUltraProfile:
         assert kept.content == "ok"
 
     def test_read_file_continuation_notice(self) -> None:
-        """A full-page read_file result gets a continuation notice; a short read does not."""
+        """A full page of source lines gets a continuation notice; a short read does not."""
         from types import SimpleNamespace  # noqa: PLC0415
 
         from langchain_core.messages import ToolMessage  # noqa: PLC0415
@@ -1257,12 +1257,25 @@ class TestNemotronUltraProfile:
 
         mw = ReadFileContinuationNoticeMiddleware()
         req = SimpleNamespace(tool_call={"name": "read_file", "args": {"offset": 0, "limit": 100}})
-        full_page = "\n".join(str(i) for i in range(100))
+
+        # read_file returns cat -n output: "<line-number>\t<text>" per row.
+        full_page = "\n".join(f"{i:6d}\t line {i}" for i in range(1, 101))  # 100 source lines
         annotated = mw._annotate(req, ToolMessage(content=full_page, tool_call_id="t3"))
         assert "[read_file returned 100 lines" in annotated.content
-        short = "\n".join(str(i) for i in range(5))
+        assert "offset=100" in annotated.content
+
+        short = "\n".join(f"{i:6d}\t line {i}" for i in range(1, 6))  # 5 source lines
         untouched = mw._annotate(req, ToolMessage(content=short, tool_call_id="t4"))
         assert "[read_file returned" not in untouched.content
+
+        # 99 source lines, but a long line adds a continuation row ("50.1") for 100
+        # rendered rows. Continuation rows must NOT count toward the limit, so there
+        # is no false notice when the read already reached EOF.
+        rows = [f"{i:6d}\t line {i}" for i in range(1, 100)]
+        rows.insert(50, "  50.1\t wrapped chunk")
+        wrapped = "\n".join(rows)
+        no_false_notice = mw._annotate(req, ToolMessage(content=wrapped, tool_call_id="t5"))
+        assert "[read_file returned" not in no_false_notice.content
 
 
 class TestProfilePluginLoader:

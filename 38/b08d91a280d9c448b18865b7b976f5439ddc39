@@ -1,0 +1,19 @@
+.github/workflows/pr_scope_file_check.yml
+  s_a3f11359ae8cb9::t_3f63be0b7cbcab 12-14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "38b08d91a280d9c448b18865b7b976f5439ddc39",
+  "prompts": {},
+  "sessions": {
+    "s_a3f11359ae8cb9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ef857-5237-7483-b5aa-83c31dea4a68",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

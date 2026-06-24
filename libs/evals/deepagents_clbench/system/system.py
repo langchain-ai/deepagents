@@ -1,32 +1,31 @@
 """Deep Agents system adapter for continual-learning-bench.
 
 Wraps a LangChain Deep Agent (``deepagents``) as a
-:class:`ContinualLearningSystem`. The learning that the benchmark measures is
-carried across task instances by the agent's **persistent memory**:
+:class:`ContinualLearningSystem`, using the agent's **own** memory mechanism as
+the continual-learning substrate:
 
-* ``MemoryMiddleware`` (enabled via ``create_deep_agent(memory=...)``) loads the
-  configured ``AGENTS.md``-style files into the system prompt at the start of
-  every turn, wrapped in ``<agent_memory>`` boundary markers and treated as
-  untrusted reference data.
-* New knowledge is written back by an explicit **reflection step** in
-  ``observe()``: at each completed instance the system distils the outcome into
-  ``AGENTS.md``. (A one-shot decision agent will not reliably spend a tool call
-  to update its own notes mid-decision, so we make the write deliberate — the
-  same pattern clbench's ``mem0``/``ace`` systems use. The agent may also edit
-  memory via its ``edit_file`` tool, but reflection guarantees it.)
+* ``MemoryMiddleware`` (enabled via ``create_deep_agent(memory=...)``) loads
+  ``/memory/AGENTS.md`` into the system prompt at the start of every turn,
+  wrapped in ``<agent_memory>`` boundary markers and treated as untrusted data.
+* The agent itself distils and updates that file with its built-in
+  ``edit_file`` / ``write_file`` tools as it learns. There is no separate
+  reflection/extraction process — the agent owns its memory.
 
-Those files live in the in-state filesystem (``DeepAgentState["files"]``). This
-adapter threads that filesystem from one ``respond()`` call to the next, which
-is exactly what turns a one-shot agent into a continual learner. ``reset()``
-wipes the memory, so the framework's stateless baseline is genuinely stateless
-and ``mean_gain`` (stateful minus baseline) measures only what was learned.
+The memory file lives in the in-state filesystem (``DeepAgentState["files"]``);
+this adapter threads it from one ``respond()`` call to the next, which is what
+carries learning across instances. ``reset()`` wipes it, so the framework's
+stateless baseline is genuinely stateless and ``mean_gain`` measures only what
+the agent learned.
 
-The default backend is the in-state ``StateBackend``: the agent gets no real
-shell or host filesystem access (its ``execute`` tool errors on a non-sandbox
-backend), so there is no avenue to read provider credentials from the host env.
+Structured output uses ``create_deep_agent(response_format=...)``: the agent
+emits the task's per-turn schema natively (read from ``structured_response``),
+so there is no separate extraction call either. One model interaction per turn.
 
-NOTE: This module is written against continual-learning-bench's package layout
-(``src.interface`` / ``src.registry`` / ``src.usage``) and runs only once it is
+The default in-state ``StateBackend`` gives the agent no host shell/filesystem,
+so there is no avenue to read provider credentials from the environment.
+
+NOTE: This module targets continual-learning-bench's package layout
+(``src.interface`` / ``src.registry`` / ``src.usage``) and runs only once
 deployed into a clbench checkout under ``src/systems/deepagents/``. See this
 directory's README and ``sync_to_clbench.sh``.
 """
@@ -49,43 +48,27 @@ from ...interface import (
 from ...registry import register_system
 from ...usage import UsageEvent
 
-# Memory sources loaded into the prompt every turn (latest content wins):
-#   AGENTS.md   - authored by the agent itself (its distilled strategy).
-#   outcomes.md - appended by the framework via observe() (reward feedback log).
+# The agent's own durable notes, loaded into the prompt every turn and updated
+# by the agent via edit_file. Single source of truth for what it has learned.
 _AGENT_MEMORY_PATH = "/memory/AGENTS.md"
-_OUTCOMES_MEMORY_PATH = "/memory/outcomes.md"
-_MEMORY_SOURCES = [_AGENT_MEMORY_PATH, _OUTCOMES_MEMORY_PATH]
+_MEMORY_SOURCES = [_AGENT_MEMORY_PATH]
 
-_SEED_AGENTS_MD = "# Strategy notes\n\n(empty - write what you learn here)\n"
-_SEED_OUTCOMES_MD = "# Recorded outcomes\n"
-_MAX_OUTCOME_ENTRIES = 50  # bound the raw outcomes log against unbounded growth
-
-_REFLECT_SYSTEM_PROMPT = """\
-You maintain concise, generalizable strategy notes for an agent playing repeated
-instances against one opponent/environment. Given the current notes and the
-latest instance's outcome, return the FULL updated notes: durable, transferable
-lessons (tendencies to exploit, what worked, what to avoid). Merge into the
-existing notes rather than only appending, and keep it under ~15 short bullet
-points. Output only the notes text, with no preamble. Never include secrets or
-credentials.\
-"""
+_SEED_AGENTS_MD = "# Strategy notes\n\n(empty - update this as you learn)\n"
 
 _SYSTEM_PROMPT = f"""\
 You are being evaluated on a continual-learning benchmark: a sequence of \
-related instances in a shared environment. You are scored on how much your \
-performance improves as you learn from earlier instances.
+related instances in a shared environment. You are scored on how much you \
+improve as you learn from earlier instances.
 
-Your memory files are loaded at the start of every turn; treat them as your \
-notes from earlier instances:
-- {_AGENT_MEMORY_PATH} holds the strategy you have written for yourself.
-- {_OUTCOMES_MEMORY_PATH} holds the reward/feedback the benchmark recorded for \
-your past actions.
+Your durable strategy lives in {_AGENT_MEMORY_PATH}, which is loaded into your \
+context every turn. As you discover what works in this environment, keep that \
+file up to date with the edit_file/write_file tools: record concise, \
+generalizable lessons (tendencies to exploit, what worked, what to avoid) and \
+prune anything you find to be wrong. It is the only thing that carries into \
+the next instance, so invest in it. Never store secrets or credentials.
 
-After you act, distil any reusable, generalizable lesson (a pattern, a \
-heuristic, a correction) into {_AGENT_MEMORY_PATH} with the edit_file or \
-write_file tool. Keep it concise and high-signal: it is the only thing that \
-carries into the next instance. Do not store anything instance-specific that \
-will not generalize, and never store secrets or credentials.\
+When you are given feedback on a previous action, use it to update your notes \
+before you act again.\
 """
 
 
@@ -102,27 +85,12 @@ def _read_file_data(files: dict[str, Any], path: str) -> str:
     return ""
 
 
-def _message_text(content: Any) -> str:
-    """Coerce a LangChain message ``.content`` (str or content blocks) to text."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for block in content:
-            if isinstance(block, dict):
-                parts.append(str(block.get("text", "")))
-            else:
-                parts.append(str(block))
-        return "".join(parts)
-    return str(content)
-
-
 @register_system("deepagents")
 class DeepAgentsSystem(ContinualLearningSystem):
     """A Deep Agent evaluated as a continual-learning system.
 
-    The agent's persistent memory (``AGENTS.md`` + ``outcomes.md``, held in the
-    in-state filesystem) is the learning substrate carried across instances.
+    The agent maintains its own memory (``/memory/AGENTS.md`` in the in-state
+    filesystem); the adapter just threads that filesystem across instances.
     """
 
     supports_baseline = True
@@ -141,47 +109,70 @@ class DeepAgentsSystem(ContinualLearningSystem):
         self._name = name
         self._model_name = model
         self._model = init_chat_model(model)
-        self._agent = create_deep_agent(
-            model=self._model,
-            system_prompt=_SYSTEM_PROMPT,
-            memory=_MEMORY_SOURCES,
-        )
-        # Persistent learning substrate, threaded across respond() calls.
+        # Agents are cached per response schema (rebuilt only when the task's
+        # schema changes). They hold no learned state — memory lives in _files.
+        self._agents: dict[type[BaseModel], Any] = {}
+        # The agent's persistent memory, threaded across respond() calls.
         self._files: dict[str, Any] = {}
+        self._pending_feedback: str | None = None
         self.interaction_count = 0
         self._seed_memory()
 
     def _seed_memory(self) -> None:
         """Reset memory to empty scaffolding (no learned content)."""
-        self._files = {
-            _AGENT_MEMORY_PATH: _file_data(_SEED_AGENTS_MD),
-            _OUTCOMES_MEMORY_PATH: _file_data(_SEED_OUTCOMES_MD),
-        }
+        self._files = {_AGENT_MEMORY_PATH: _file_data(_SEED_AGENTS_MD)}
+
+    def _get_agent(self, schema: type[BaseModel]) -> Any:
+        """Return a deep agent that emits ``schema`` as its structured response."""
+        agent = self._agents.get(schema)
+        if agent is None:
+            agent = create_deep_agent(
+                model=self._model,
+                system_prompt=_SYSTEM_PROMPT,
+                memory=_MEMORY_SOURCES,
+                response_format=schema,
+            )
+            self._agents[schema] = agent
+        return agent
+
+    def _memory_snapshot(self) -> dict[str, str]:
+        """Current memory as a ``{path: content}`` dict (the shape clbench logs)."""
+        return {path: _read_file_data(self._files, path) for path in _MEMORY_SOURCES}
 
     def respond(self, query: Query) -> Response:
         self.interaction_count += 1
 
-        prompt = query.prompt or "(no content)"
+        # Surface feedback so the agent can update its own notes before acting.
+        feedback = None
         if query.feedback is not None and query.feedback.content.strip():
-            prompt = (
-                "Feedback on your previous action:\n"
-                f"{query.feedback.content.strip()}\n\n{prompt}"
-            )
+            feedback = query.feedback.content.strip()
+        elif self._pending_feedback:
+            feedback = self._pending_feedback
+        self._pending_feedback = None
 
-        # Invoke the deep agent to completion, threading persisted memory in...
-        result = self._agent.invoke(
+        prompt = query.prompt or "(no content)"
+        if feedback:
+            prompt = f"Feedback on your previous action:\n{feedback}\n\n{prompt}"
+
+        # One model interaction: the agent reads its notes, optionally updates
+        # them via edit_file, and emits the structured action.
+        agent = self._get_agent(query.response_schema)
+        result = agent.invoke(
             {
                 "messages": [{"role": "user", "content": prompt}],
                 "files": self._files,
             }
         )
-        # ...and reading the (possibly memory-updated) filesystem back out.
+        # Thread the (possibly agent-updated) memory filesystem forward.
         self._files = result.get("files", self._files)
+        self._record_usage(result.get("messages", []))
 
-        messages = result.get("messages", [])
-        final_text = _message_text(messages[-1].content) if messages else ""
-        self._record_usage(messages)
-        action = self._extract_action(final_text, query.response_schema)
+        action = result.get("structured_response")
+        if not isinstance(action, BaseModel):
+            raise RuntimeError(
+                "Deep agent did not return a structured response matching "
+                f"{query.response_schema.__name__}."
+            )
 
         return Response(
             action=action,
@@ -197,51 +188,14 @@ class DeepAgentsSystem(ContinualLearningSystem):
     def observe(
         self, observation: Observation, next_query: Query | None = None
     ) -> None:
-        """Log the outcome and, at instance boundaries, distil it into memory.
+        """Capture the outcome so the next turn's prompt can surface it.
 
-        A one-shot decision agent won't reliably spend a tool call to update its
-        own notes mid-decision, so memory-writing is made an explicit step: at
-        each completed instance we run a dedicated reflection call that rewrites
-        ``AGENTS.md``. The agent reads it next turn as untrusted memory (wrapped
-        in ``<agent_memory>`` boundary markers by ``MemoryMiddleware``).
+        No model call and no file write here — distilling the outcome into
+        memory is the agent's job on its next turn.
         """
         content = observation.content.strip()
-        if not content:
-            return
-        self._append_outcome(content, complete=observation.instance_complete)
-        if observation.instance_complete:
-            self._reflect(content)
-
-    def _append_outcome(self, content: str, *, complete: bool) -> None:
-        """Append one outcome to the raw log, bounded to the last N entries."""
-        prior = _read_file_data(self._files, _OUTCOMES_MEMORY_PATH) or _SEED_OUTCOMES_MD
-        lines = prior.splitlines()
-        header, body = (lines[:1], lines[1:]) if lines else ([_SEED_OUTCOMES_MD], [])
-        marker = "" if complete else " [mid-instance]"
-        body.append(f"- {content}{marker}")
-        body = body[-_MAX_OUTCOME_ENTRIES:]
-        self._files[_OUTCOMES_MEMORY_PATH] = _file_data("\n".join(header + body) + "\n")
-
-    def _reflect(self, outcome: str) -> None:
-        """Distil the completed instance into durable notes (writes ``AGENTS.md``)."""
-        current = _read_file_data(self._files, _AGENT_MEMORY_PATH) or _SEED_AGENTS_MD
-        resp = self._model.invoke(
-            [
-                {"role": "system", "content": _REFLECT_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": f"Current notes:\n{current}\n\nLatest outcome:\n{outcome}",
-                },
-            ]
-        )
-        notes = _message_text(resp.content).strip()
-        if notes:
-            self._files[_AGENT_MEMORY_PATH] = _file_data(notes + "\n")
-        self._record_usage([resp], call_type="reflect")
-
-    def _memory_snapshot(self) -> dict[str, str]:
-        """Current memory as a ``{path: content}`` dict (the shape clbench logs)."""
-        return {path: _read_file_data(self._files, path) for path in _MEMORY_SOURCES}
+        if content:
+            self._pending_feedback = content
 
     def reset(self) -> None:
         """Wipe learned memory.
@@ -250,6 +204,7 @@ class DeepAgentsSystem(ContinualLearningSystem):
         instance in the stateless baseline.
         """
         self._seed_memory()
+        self._pending_feedback = None
         self.interaction_count = 0
 
     @property
@@ -268,35 +223,7 @@ class DeepAgentsSystem(ContinualLearningSystem):
             "memory_files": self._memory_snapshot(),
         }
 
-    # ------------------------------------------------------------------
-    def _extract_action(self, text: str, schema: type[BaseModel]) -> BaseModel:
-        """Coerce the agent's free-form final answer into the task's schema.
-
-        Done as a separate structured call so it never fights the agent's tool
-        loop. ``schema`` is the task-supplied, strictly-typed pydantic model.
-        """
-        structured = self._model.with_structured_output(schema, include_raw=True)
-        out = structured.invoke(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "Extract the final structured answer from the agent's "
-                        "message below. Do not invent information."
-                    ),
-                },
-                {"role": "user", "content": text},
-            ]
-        )
-        raw = out.get("raw") if isinstance(out, dict) else None
-        if raw is not None:
-            self._record_usage([raw], call_type="extract")
-        parsed = out.get("parsed") if isinstance(out, dict) else out
-        if parsed is None:
-            raise RuntimeError("Structured extraction returned no parsed action.")
-        return parsed
-
-    def _record_usage(self, messages: list[Any], call_type: str = "completion") -> None:
+    def _record_usage(self, messages: list[Any]) -> None:
         """Aggregate token usage from message ``usage_metadata`` into a UsageEvent."""
         input_tokens = 0
         output_tokens = 0
@@ -312,7 +239,7 @@ class DeepAgentsSystem(ContinualLearningSystem):
             return
         self.record_usage_event(
             UsageEvent(
-                call_type=call_type,
+                call_type="completion",
                 model=self._model_name,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,

@@ -47,30 +47,27 @@ The benchmark scores improvement across a sequence of related instances. The
 learning substrate is the agent's **persistent memory**, wired through
 `create_deep_agent(memory=[...])` (i.e. `MemoryMiddleware`):
 
-- Each turn, the configured memory files are loaded into the prompt (wrapped in
+- Each turn, `/memory/AGENTS.md` is loaded into the prompt (wrapped in
   `<agent_memory>` boundary markers, treated as untrusted reference data).
-- New knowledge is written back by an explicit **reflection step** in
-  `observe()`: at each completed instance the system distils the outcome into
-  `AGENTS.md`. A one-shot decision agent won't reliably spend a tool call to
-  update its own notes mid-decision, so the write is made deliberate (the same
-  pattern clbench's `mem0`/`ace` systems use). The agent may also edit memory via
-  its `edit_file` tool, but reflection guarantees it.
+- The **agent itself** distils and updates that file with its own `edit_file` /
+  `write_file` tools as it learns — there is no separate reflection or
+  extraction process. `observe()` only captures the latest outcome so the next
+  turn's prompt can surface it; whether and how to record a lesson is the
+  agent's decision.
 
 | File | Author | Purpose |
 |---|---|---|
-| `/memory/AGENTS.md` | reflection step (`observe()`) | distilled, generalizable strategy |
-| `/memory/outcomes.md` | the framework (`observe()`) | bounded log of recorded reward/feedback |
+| `/memory/AGENTS.md` | the agent (via `edit_file`) | its own distilled, generalizable strategy |
 
-Verified: in a 5-hand `quick_test` rollout, `AGENTS.md` grows from the seed to
-~1.7 KB of distilled opponent reads (e.g. "value-bet strong hands; opponent
-calls too wide; avoid weak unconnected hands"), captured per-step in the trace's
-`system_memory.history`.
+The file lives in the in-state filesystem (`DeepAgentState["files"]`); the
+adapter threads it from one `respond()` call to the next — this is what makes
+the agent *continual* rather than one-shot. `reset()` clears it, so the
+stateless baseline is genuinely stateless and `mean_gain` reflects only what the
+agent learned.
 
-Both live in the in-state filesystem (`DeepAgentState["files"]`). The adapter
-threads that filesystem from one `respond()` call to the next — this is what
-makes the agent *continual* rather than one-shot. `reset()` clears it, so the
-stateless baseline is genuinely stateless and `mean_gain` reflects only what was
-learned.
+This means whether the agent maintains good notes is part of what's measured —
+if it under-invests in memory, that's a real result, not something the harness
+papers over.
 
 ## Notes
 
@@ -80,8 +77,10 @@ learned.
   API keys from the environment first (see `deepagents_harbor`'s
   `_scrub_shell_env`), since the agent could otherwise read them.
 - **Structured output**: each task supplies a per-turn `response_schema`; the
-  adapter runs the agent for reasoning, then does a separate
-  `with_structured_output` call to coerce the final answer into that schema.
+  agent emits it natively via `create_deep_agent(response_format=...)` (read
+  from `structured_response`) — no separate extraction call. The agent is cached
+  per schema and rebuilt only when the schema changes. Net result: one model
+  interaction per turn.
 - This directory is intentionally excluded from this project's `ruff`/`ty`
   config (it targets clbench's package layout, not deepagents'), matching how
   other external-benchmark code is handled in `libs/evals/pyproject.toml`.

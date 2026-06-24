@@ -12,7 +12,7 @@ import shlex
 import shutil
 import sys
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution, version
 from pathlib import Path
@@ -41,8 +41,26 @@ logger = logging.getLogger(__name__)
 # callers that never touch `settings` (e.g. `deepagents --help`).
 # ---------------------------------------------------------------------------
 
-_bootstrap_done = False
-"""Whether `_ensure_bootstrap()` has executed."""
+
+@dataclass
+class _BootstrapState:
+    """Mutable state captured by `_ensure_bootstrap()`."""
+
+    done: bool = False
+    """Whether `_ensure_bootstrap()` has executed."""
+
+    start_path: Path | None = None
+    """Working directory captured at bootstrap time for dotenv and discovery."""
+
+    original_langsmith_project: str | None = None
+    """Caller's `LANGSMITH_PROJECT` before the app overrides it for traces."""
+
+    original_tracing_env: dict[str, str | None] = dataclass_field(default_factory=dict)
+    """Caller's tracing-enable env before Deep Agents Code mutates flags."""
+
+
+_bootstrap_state = _BootstrapState()
+"""State captured and mutated by lazy bootstrap."""
 
 _bootstrap_lock = threading.Lock()
 """Guards `_ensure_bootstrap()` against concurrent access from the main thread
@@ -50,23 +68,6 @@ and the prewarm worker thread."""
 
 _singleton_lock = threading.Lock()
 """Guards lazy singleton construction in `_get_console` / `_get_settings`."""
-
-_bootstrap_start_path: Path | None = None
-"""Working directory captured at bootstrap time for dotenv and project discovery."""
-
-_original_langsmith_project: str | None = None
-"""Caller's `LANGSMITH_PROJECT` value before the app overrides it for agent traces.
-
-Captured inside `_ensure_bootstrap()` after dotenv loading but before the
-`LANGSMITH_PROJECT` override, so `.env`-only values are visible.
-"""
-
-_original_tracing_env: dict[str, str | None] = {}
-"""Caller's tracing-enable env values before Deep Agents Code mutates them.
-
-Captured inside `_ensure_bootstrap()` after dotenv loading but before prefixed
-bridging, stored-key tracing, or orphaned-tracing cleanup mutates tracing flags.
-"""
 
 _dotenv_loaded_values: dict[str, str] = {}
 """Environment values injected by our dotenv loader and safe to refresh later."""
@@ -463,7 +464,7 @@ def restore_user_tracing_env(env: dict[str, str]) -> None:
     Args:
         env: Environment mapping prepared for a child/user subprocess.
     """
-    for var, value in _original_tracing_env.items():
+    for var, value in _bootstrap_state.original_tracing_env.items():
         if value is None:
             env.pop(var, None)
         else:
@@ -639,13 +640,11 @@ def _ensure_bootstrap() -> None:
     loops. Exceptions are caught and logged at ERROR level; the app proceeds
     with the environment as-is.
     """
-    global _bootstrap_done, _bootstrap_start_path, _original_langsmith_project, _original_tracing_env  # noqa: PLW0603, E501
-
-    if _bootstrap_done:
+    if _bootstrap_state.done:
         return
 
     with _bootstrap_lock:
-        if _bootstrap_done:  # double-check after acquiring lock
+        if _bootstrap_state.done:  # double-check after acquiring lock
             return
 
         try:
@@ -654,8 +653,8 @@ def _ensure_bootstrap() -> None:
             )
 
             ctx = _get_server_project_context()
-            _bootstrap_start_path = ctx.user_cwd if ctx else None
-            _load_dotenv(start_path=_bootstrap_start_path)
+            _bootstrap_state.start_path = ctx.user_cwd if ctx else None
+            _load_dotenv(start_path=_bootstrap_state.start_path)
 
             # `configure_debug_logging` already ran at import, before the `.env`
             # above was loaded. Re-run it so a `DEEPAGENTS_CODE_DEBUG` set only in
@@ -671,8 +670,10 @@ def _ensure_bootstrap() -> None:
 
             # Capture AFTER dotenv loading so .env-only values are visible,
             # but BEFORE the override below replaces it.
-            _original_langsmith_project = os.environ.get("LANGSMITH_PROJECT")
-            _original_tracing_env = {
+            _bootstrap_state.original_langsmith_project = os.environ.get(
+                "LANGSMITH_PROJECT"
+            )
+            _bootstrap_state.original_tracing_env = {
                 var: os.environ.get(var) for var in _TRACING_ENABLE_ENV_VARS
             }
 
@@ -728,7 +729,7 @@ def _ensure_bootstrap() -> None:
                 "may be missing. The app will proceed with environment as-is.",
             )
         finally:
-            _bootstrap_done = True
+            _bootstrap_state.done = True
 
 
 if TYPE_CHECKING:
@@ -1900,7 +1901,9 @@ class Settings:
         )
 
         deepagents_langchain_project = resolve_env_var(LANGSMITH_PROJECT)
-        user_langchain_project = _original_langsmith_project  # Use saved original!
+        # Use the saved original, not the current `LANGSMITH_PROJECT` that
+        # bootstrap may have overridden for agent traces.
+        user_langchain_project = _bootstrap_state.original_langsmith_project
 
         # Detect project
         from deepagents_code.project_utils import find_project_root
@@ -2104,8 +2107,10 @@ class Settings:
             # re-apply the default so ingestion keeps matching the name
             # `get_langsmith_project_name` displays (the default is a no-op when
             # tracing is off, so a disabled setup is left unset).
-            if _original_langsmith_project:
-                os.environ["LANGSMITH_PROJECT"] = _original_langsmith_project
+            if _bootstrap_state.original_langsmith_project:
+                os.environ["LANGSMITH_PROJECT"] = (
+                    _bootstrap_state.original_langsmith_project
+                )
             else:
                 os.environ.pop("LANGSMITH_PROJECT", None)
                 _apply_default_langsmith_project()
@@ -3905,11 +3910,11 @@ def _get_settings() -> Settings:
             return cached
         _ensure_bootstrap()
         try:
-            inst = Settings.from_environment(start_path=_bootstrap_start_path)
+            inst = Settings.from_environment(start_path=_bootstrap_state.start_path)
         except Exception:
             logger.exception(
                 "Failed to initialize settings from environment (start_path=%s)",
-                _bootstrap_start_path,
+                _bootstrap_state.start_path,
             )
             raise
         globals()["settings"] = inst

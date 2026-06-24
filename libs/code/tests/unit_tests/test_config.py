@@ -131,11 +131,11 @@ class TestRuntimeDotenvReload:
             tmp_path / "missing-global.env",
         )
         config_mod._dotenv_loaded_values.clear()
-        original_ls = config_mod._original_langsmith_project
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
 
         try:
             # User never set LANGSMITH_PROJECT; tracing is active with a key.
-            config_mod._original_langsmith_project = None
+            config_mod._bootstrap_state.original_langsmith_project = None
             monkeypatch.setenv("LANGSMITH_TRACING", "true")
             monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_test")
             monkeypatch.delenv("LANGSMITH_PROJECT", raising=False)
@@ -150,7 +150,7 @@ class TestRuntimeDotenvReload:
 
             assert os.environ["LANGSMITH_PROJECT"] == LANGSMITH_PROJECT_DEFAULT
         finally:
-            config_mod._original_langsmith_project = original_ls
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
             config_mod._dotenv_loaded_values.clear()
 
 
@@ -4119,8 +4119,8 @@ class TestLazyModuleAttributes:
         from deepagents_code.config import _ensure_bootstrap
 
         # Reset flag so bootstrap will re-enter
-        original = config_mod._bootstrap_done
-        config_mod._bootstrap_done = False
+        original = config_mod._bootstrap_state.done
+        config_mod._bootstrap_state.done = False
 
         try:
             with patch(
@@ -4129,9 +4129,9 @@ class TestLazyModuleAttributes:
                 _ensure_bootstrap()  # should warn, not raise
 
             # Flag must be set even after failure
-            assert config_mod._bootstrap_done is True
+            assert config_mod._bootstrap_state.done is True
         finally:
-            config_mod._bootstrap_done = original
+            config_mod._bootstrap_state.done = original
 
     def test_get_settings_returns_same_instance(self) -> None:
         """_get_settings caches in globals — two calls return the same object."""
@@ -4148,9 +4148,9 @@ class TestLazyModuleAttributes:
         import deepagents_code.config as config_mod
         from deepagents_code.config import _ensure_bootstrap
 
-        original_done = config_mod._bootstrap_done
-        original_ls = config_mod._original_langsmith_project
-        config_mod._bootstrap_done = False
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        config_mod._bootstrap_state.done = False
 
         try:
             monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", "my-agent-project")
@@ -4165,13 +4165,13 @@ class TestLazyModuleAttributes:
             ):
                 _ensure_bootstrap()
 
-            assert config_mod._original_langsmith_project is None
+            assert config_mod._bootstrap_state.original_langsmith_project is None
             import os
 
             assert os.environ["LANGSMITH_PROJECT"] == "my-agent-project"
         finally:
-            config_mod._bootstrap_done = original_done
-            config_mod._original_langsmith_project = original_ls
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
 
     def test_ensure_bootstrap_preserves_original_langsmith(
         self, monkeypatch: pytest.MonkeyPatch
@@ -4180,9 +4180,9 @@ class TestLazyModuleAttributes:
         import deepagents_code.config as config_mod
         from deepagents_code.config import _ensure_bootstrap
 
-        original_done = config_mod._bootstrap_done
-        original_ls = config_mod._original_langsmith_project
-        config_mod._bootstrap_done = False
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        config_mod._bootstrap_state.done = False
 
         try:
             monkeypatch.setenv("LANGSMITH_PROJECT", "user-project")
@@ -4197,13 +4197,15 @@ class TestLazyModuleAttributes:
             ):
                 _ensure_bootstrap()
 
-            assert config_mod._original_langsmith_project == "user-project"
+            assert (
+                config_mod._bootstrap_state.original_langsmith_project == "user-project"
+            )
             import os
 
             assert os.environ["LANGSMITH_PROJECT"] == "agent-project"
         finally:
-            config_mod._bootstrap_done = original_done
-            config_mod._original_langsmith_project = original_ls
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
 
     def test_bootstrap_propagates_prefixed_langsmith_vars(
         self, monkeypatch: pytest.MonkeyPatch
@@ -4212,9 +4214,9 @@ class TestLazyModuleAttributes:
         import deepagents_code.config as config_mod
         from deepagents_code.config import _ensure_bootstrap
 
-        original_done = config_mod._bootstrap_done
-        original_ls = config_mod._original_langsmith_project
-        config_mod._bootstrap_done = False
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        config_mod._bootstrap_state.done = False
 
         try:
             monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_test")
@@ -4237,8 +4239,8 @@ class TestLazyModuleAttributes:
             assert os.environ["LANGSMITH_API_KEY"] == "lsv2_test"
             assert os.environ["LANGSMITH_TRACING"] == "true"
         finally:
-            config_mod._bootstrap_done = original_done
-            config_mod._original_langsmith_project = original_ls
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
 
     def test_bootstrap_overrides_canonical_with_prefixed_value(
         self, monkeypatch: pytest.MonkeyPatch
@@ -4247,9 +4249,9 @@ class TestLazyModuleAttributes:
         import deepagents_code.config as config_mod
         from deepagents_code.config import _ensure_bootstrap
 
-        original_done = config_mod._bootstrap_done
-        original_ls = config_mod._original_langsmith_project
-        config_mod._bootstrap_done = False
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        config_mod._bootstrap_state.done = False
 
         try:
             monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_original")
@@ -4270,8 +4272,8 @@ class TestLazyModuleAttributes:
             # Prefixed value wins — canonical is overwritten.
             assert os.environ["LANGSMITH_API_KEY"] == "lsv2_override"
         finally:
-            config_mod._bootstrap_done = original_done
-            config_mod._original_langsmith_project = original_ls
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
 
     def test_bootstrap_propagates_empty_string(
         self, monkeypatch: pytest.MonkeyPatch
@@ -4280,9 +4282,9 @@ class TestLazyModuleAttributes:
         import deepagents_code.config as config_mod
         from deepagents_code.config import _ensure_bootstrap
 
-        original_done = config_mod._bootstrap_done
-        original_ls = config_mod._original_langsmith_project
-        config_mod._bootstrap_done = False
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        config_mod._bootstrap_state.done = False
 
         try:
             monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "")
@@ -4303,8 +4305,8 @@ class TestLazyModuleAttributes:
             # Empty string propagated — lets user explicitly disable tracing.
             assert os.environ["LANGSMITH_TRACING"] == ""
         finally:
-            config_mod._bootstrap_done = original_done
-            config_mod._original_langsmith_project = original_ls
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
 
     def test_bootstrap_defaults_project_when_tracing_and_key(
         self, monkeypatch: pytest.MonkeyPatch
@@ -4321,9 +4323,9 @@ class TestLazyModuleAttributes:
         from deepagents_code.config import _ensure_bootstrap
         from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
 
-        original_done = config_mod._bootstrap_done
-        original_ls = config_mod._original_langsmith_project
-        config_mod._bootstrap_done = False
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        config_mod._bootstrap_state.done = False
 
         try:
             monkeypatch.setenv("LANGSMITH_TRACING", "true")
@@ -4342,8 +4344,8 @@ class TestLazyModuleAttributes:
 
             assert os.environ["LANGSMITH_PROJECT"] == LANGSMITH_PROJECT_DEFAULT
         finally:
-            config_mod._bootstrap_done = original_done
-            config_mod._original_langsmith_project = original_ls
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
 
     def test_bootstrap_keyless_tracing_leaves_project_unset(
         self, monkeypatch: pytest.MonkeyPatch
@@ -4361,9 +4363,9 @@ class TestLazyModuleAttributes:
         import deepagents_code.config as config_mod
         from deepagents_code.config import _ensure_bootstrap
 
-        original_done = config_mod._bootstrap_done
-        original_ls = config_mod._original_langsmith_project
-        config_mod._bootstrap_done = False
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        config_mod._bootstrap_state.done = False
 
         try:
             monkeypatch.setenv("LANGSMITH_TRACING", "true")
@@ -4394,8 +4396,8 @@ class TestLazyModuleAttributes:
             assert "LANGSMITH_PROJECT" not in os.environ
             assert os.environ["LANGSMITH_TRACING"] == "false"
         finally:
-            config_mod._bootstrap_done = original_done
-            config_mod._original_langsmith_project = original_ls
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
 
     def test_bootstrap_stored_langsmith_key_keeps_tracing_enabled(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -4419,10 +4421,10 @@ class TestLazyModuleAttributes:
             "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
         )
 
-        original_done = config_mod._bootstrap_done
-        original_ls = config_mod._original_langsmith_project
-        original_tracing = dict(config_mod._original_tracing_env)
-        config_mod._bootstrap_done = False
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
+        config_mod._bootstrap_state.done = False
 
         try:
             for var in (
@@ -4459,9 +4461,9 @@ class TestLazyModuleAttributes:
             assert os.environ["LANGSMITH_API_KEY"] == "lsv2_stored"
             assert os.environ["LANGSMITH_TRACING"] == "true"
         finally:
-            config_mod._bootstrap_done = original_done
-            config_mod._original_langsmith_project = original_ls
-            config_mod._original_tracing_env = original_tracing
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
+            config_mod._bootstrap_state.original_tracing_env = original_tracing
 
     def test_bootstrap_prefixed_langsmith_key_wins_over_stored_key(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -4477,10 +4479,10 @@ class TestLazyModuleAttributes:
             "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
         )
 
-        original_done = config_mod._bootstrap_done
-        original_ls = config_mod._original_langsmith_project
-        original_tracing = dict(config_mod._original_tracing_env)
-        config_mod._bootstrap_done = False
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
+        config_mod._bootstrap_state.done = False
 
         try:
             monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_prefixed")
@@ -4502,9 +4504,9 @@ class TestLazyModuleAttributes:
             assert os.environ["LANGSMITH_API_KEY"] == "lsv2_prefixed"
             assert os.environ["LANGSMITH_TRACING"] == "true"
         finally:
-            config_mod._bootstrap_done = original_done
-            config_mod._original_langsmith_project = original_ls
-            config_mod._original_tracing_env = original_tracing
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
+            config_mod._bootstrap_state.original_tracing_env = original_tracing
 
     def test_scoped_tracing_opt_out_restores_user_tracing_for_shell_env(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -4520,10 +4522,10 @@ class TestLazyModuleAttributes:
             "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
         )
 
-        original_done = config_mod._bootstrap_done
-        original_ls = config_mod._original_langsmith_project
-        original_tracing = dict(config_mod._original_tracing_env)
-        config_mod._bootstrap_done = False
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
+        config_mod._bootstrap_state.done = False
 
         try:
             monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "false")
@@ -4551,9 +4553,9 @@ class TestLazyModuleAttributes:
             assert "LANGSMITH_TRACING" not in shell_env
             assert shell_env["LANGCHAIN_TRACING_V2"] == "true"
         finally:
-            config_mod._bootstrap_done = original_done
-            config_mod._original_langsmith_project = original_ls
-            config_mod._original_tracing_env = original_tracing
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
+            config_mod._bootstrap_state.original_tracing_env = original_tracing
 
 
 class TestApplyDefaultLangsmithProject:

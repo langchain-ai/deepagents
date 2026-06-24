@@ -7,10 +7,12 @@ without constructing an agent or wiring up LangGraph state.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import hashlib
 import json
 import logging
+import posixpath
 import threading
 import uuid
 from dataclasses import dataclass, field, replace
@@ -29,6 +31,7 @@ from quickjs_rs import (
     Snapshot,
     SourceTransform,
     ThreadWorker,
+    default_module_transform_flags,
 )
 from quickjs_rs import (
     TimeoutError as QJSTimeoutError,
@@ -46,8 +49,9 @@ from langchain_quickjs._subagent import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
+    from deepagents.backends.protocol import BackendProtocol
     from langchain_core.tools import BaseTool
     from langgraph.prebuilt import ToolRuntime
 
@@ -376,6 +380,48 @@ def _render_tools_namespace_assignment(bridges: dict[str, str]) -> str:
     return " ".join(statements)
 
 
+_MODULE_EXTENSIONS = (".js", ".mjs", ".ts")
+_MODULE_INDEX_FILES = tuple(f"index{ext}" for ext in _MODULE_EXTENSIONS)
+_STATIC_IMPORT_TO_DYNAMIC_IMPORT = getattr(
+    SourceTransform,
+    "STATIC_IMPORT_TO_DYNAMIC_IMPORT",
+    SourceTransform.NONE,
+)
+_TOP_LEVEL_EVAL_TRANSFORM_FLAGS = (
+    SourceTransform.TOP_LEVEL_CONST_TO_VAR | _STATIC_IMPORT_TO_DYNAMIC_IMPORT
+)
+
+
+def _module_candidates(path: str) -> tuple[str, ...]:
+    """Return backend paths to try for an import specifier."""
+    candidates = [path]
+    basename = posixpath.basename(path)
+    if "." not in basename:
+        candidates.extend(f"{path}{ext}" for ext in _MODULE_EXTENSIONS)
+        candidates.extend(posixpath.join(path, index) for index in _MODULE_INDEX_FILES)
+    return tuple(dict.fromkeys(candidates))
+
+
+def _module_transform_flags(name: str) -> SourceTransform:
+    """Return transform flags for a backend-loaded import."""
+    return default_module_transform_flags(name) | SourceTransform.TOP_LEVEL_CONST_TO_VAR
+
+
+def _decode_file_data(file_data: Mapping[str, Any]) -> str | None:
+    """Decode a backend FileData-like dict into UTF-8 module source."""
+    raw_content = file_data.get("content", "")
+    if isinstance(raw_content, list):
+        content = "\n".join(raw_content)
+    else:
+        content = str(raw_content)
+    if file_data.get("encoding", "utf-8") == "base64":
+        try:
+            return base64.standard_b64decode(content).decode("utf-8")
+        except (UnicodeDecodeError, ValueError):
+            return None
+    return content
+
+
 class _ThreadREPL:
     """One QuickJS context + console buffer, per LangGraph thread.
 
@@ -394,6 +440,7 @@ class _ThreadREPL:
         max_stdout_chars: int,
         max_ptc_calls: int | None = 256,
         subagents_enabled: bool = True,
+        module_backend: BackendProtocol | None = None,
     ) -> None:
         self._worker = worker
         self._runtime = runtime
@@ -406,6 +453,7 @@ class _ThreadREPL:
         # Static budget config; mutable counters live in `_ptc_state`.
         self._max_ptc_calls = max_ptc_calls
         self._subagents_enabled = subagents_enabled
+        self._module_backend = module_backend
         self._console = _ConsoleBuffer(max_stdout_chars)
         self._ctx: Context | None = None
         # PTC state. `_registered_tools` tracks which camel-case names
@@ -435,6 +483,12 @@ class _ThreadREPL:
         worker.run_sync(self._ainit())
 
     async def _ainit(self) -> None:
+        if self._module_backend is not None:
+            self._runtime.set_module_loader(
+                normalize=self._normalize_module_specifier,
+                load=self._read_module_source,
+                transform_flags=_module_transform_flags,
+            )
         self._ctx = self._runtime.new_context(timeout=self._per_call_timeout)
         if self._capture_console:
             self._install_console()
@@ -448,6 +502,40 @@ class _ThreadREPL:
             msg = "QuickJS context is closed"
             raise RuntimeError(msg)
         return self._ctx
+
+    def _normalize_module_specifier(self, base: str, specifier: str) -> str | None:
+        """Resolve QuickJS ESM specifiers to absolute backend paths."""
+        if specifier.startswith("/"):
+            candidate = specifier
+        elif specifier.startswith(("./", "../")):
+            base_dir = posixpath.dirname(base) if base.startswith("/") else "/"
+            candidate = posixpath.join(base_dir, specifier)
+        else:
+            # Treat bare specifiers as virtual absolute paths so a backend can
+            # expose `/lodash.js` and the model can `import("lodash")`.
+            candidate = f"/{specifier}"
+        normalized = posixpath.normpath(candidate)
+        if not normalized.startswith("/"):
+            normalized = f"/{normalized}"
+        for path in _module_candidates(normalized):
+            if self._read_module_source(path) is not None:
+                return path
+        return normalized
+
+    def _read_module_source(self, path: str) -> str | None:
+        """Read one UTF-8 import source file from the configured backend."""
+        backend = self._module_backend
+        if backend is None:
+            return None
+
+        try:
+            read_result = backend.read(path, 0, 1_000_000)
+        except Exception:  # noqa: BLE001 - backends raise implementation-specific errors
+            logger.debug("QuickJS import read failed for %s", path, exc_info=True)
+            return None
+        if read_result.error is not None or read_result.file_data is None:
+            return None
+        return _decode_file_data(read_result.file_data)
 
     def _install_console(self) -> None:
         ctx = self._require_ctx()
@@ -927,6 +1015,7 @@ class _Registry:
     max_stdout_chars: int
     max_ptc_calls: int | None = 256
     subagents_enabled: bool = True
+    module_backend: BackendProtocol | None = None
     _slots: dict[str, _Slot] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -975,6 +1064,7 @@ class _Registry:
             max_stdout_chars=self.max_stdout_chars,
             max_ptc_calls=self.max_ptc_calls,
             subagents_enabled=self.subagents_enabled,
+            module_backend=self.module_backend,
         )
 
         with self._lock:
@@ -998,6 +1088,7 @@ class _Registry:
             max_stdout_chars=self.max_stdout_chars,
             max_ptc_calls=self.max_ptc_calls,
             subagents_enabled=self.subagents_enabled,
+            module_backend=self.module_backend,
         )
         return _Slot(worker=worker, runtime=runtime, repl=repl)
 
@@ -1022,7 +1113,7 @@ class _Registry:
     async def _acreate_runtime(self) -> Runtime:
         return Runtime(
             memory_limit=self.memory_limit,
-            transform_flags=SourceTransform.TOP_LEVEL_CONST_TO_VAR,
+            transform_flags=_TOP_LEVEL_EVAL_TRANSFORM_FLAGS,
         )
 
     def close(self) -> None:

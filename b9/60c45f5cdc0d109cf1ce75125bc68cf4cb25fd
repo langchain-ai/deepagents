@@ -1,0 +1,21 @@
+.github/scripts/snapshot_build_timing.py
+  s_82899181f7060d::t_487ac60c7e2ebe 1-156
+.github/workflows/snapshot-build-test.yml
+  s_82899181f7060d::t_6a3fec779973fd 1-67
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "b960c45f5cdc0d109cf1ce75125bc68cf4cb25fd",
+  "prompts": {},
+  "sessions": {
+    "s_82899181f7060d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "aa9ce3b1-b1ec-486e-ad1a-f8f1aad0824f",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

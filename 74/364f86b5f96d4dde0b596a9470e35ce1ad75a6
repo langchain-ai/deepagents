@@ -1,0 +1,14 @@
+libs/code/deepagents_code/app.py
+  h_9f69767fa5fabf 6888-6891,6898,7457-7458,7481
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.10",
+  "base_commit_sha": "74364f86b5f96d4dde0b596a9470e35ce1ad75a6",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

@@ -1,0 +1,41 @@
+libs/evals/tests/evals/OOLONG.md
+  s_2a0d13da2c7aef::t_80358e6df98c46 50
+  s_2a0d13da2c7aef::t_b3dc4408921ba9 197-199,202-204,206-209,213-214,216-218
+  s_2a0d13da2c7aef::t_9c37ad62d41a7c 1-49,51-196,200-201,205,210-212,215,219-239
+libs/evals/tests/evals/oolong_benchmarks.py
+  s_2a0d13da2c7aef::t_c040a00fe994c6 297-298,302-318,323-324,326,328-330,335-337,339-350,367-369,383,385,387-390,392,394-395,397,399-406,553
+  s_2a0d13da2c7aef::t_13026c354ce731 206-211,218-219,227-228
+  s_2a0d13da2c7aef::t_13b0df12396c60 188-191
+  s_2a0d13da2c7aef::t_8882fc883e45d4 161,533
+  s_2a0d13da2c7aef::t_1b7bdd36ddabcf 537-538,545
+  s_2a0d13da2c7aef::t_edcb36c0b8943e 295-296,319-322,327,333,338,351-360,362-365,372,374,376-382,384,386,391,393,396,398
+  s_2a0d13da2c7aef::t_a93fb49cdef456 332
+  s_2a0d13da2c7aef::t_7a3d0d796913e2 534-536
+  s_2a0d13da2c7aef::t_e595c8ceadd18c 495-497
+  s_2a0d13da2c7aef::t_2c4923f3769051 99
+  s_2a0d13da2c7aef::t_df1179383b4af5 36,38-41,44
+  s_2a0d13da2c7aef::t_2c87a4cf139418 15-28
+  s_2a0d13da2c7aef::t_0a7a92a61f3ebe 68-72
+  s_2a0d13da2c7aef::t_b2989f9a1276da 240
+  s_2a0d13da2c7aef::t_c68b2eeca68223 539,546-552
+  s_2a0d13da2c7aef::t_30dbd8c378275e 487-490,498-499
+  s_2a0d13da2c7aef::t_c808b9d7c81ccf 81-98,100-160
+libs/evals/tests/evals/test_oolong_rlm_vs_subagents.py
+  s_2a0d13da2c7aef::t_59702065681172 15-16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "3f38eff9146a5281090f42e56c42702c22ce2e56",
+  "prompts": {},
+  "sessions": {
+    "s_2a0d13da2c7aef": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0845cdb0-80b9-4cd3-b6a1-5935ac3612b5",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": null
+    }
+  }
+}

@@ -1,0 +1,49 @@
+libs/evals/tests/evals/test_oolong_rlm_vs_subagents.py
+  s_943638c4b69b44::t_21152d935e29fa 18
+  s_943638c4b69b44::t_96b94cd18ffbcf 21,68,91
+  s_943638c4b69b44::t_b76851fb312c90 1,7-11,19-20,22-28,41,60,64-67,74,87
+  s_943638c4b69b44::t_a5a1d2dc3c94d1 12-14
+  s_943638c4b69b44::t_3293d8c1c117a7 15-17,48,78,81
+libs/evals/EVAL_CATALOG.md
+  s_943638c4b69b44::t_1447694cb4bc47 159
+libs/evals/tests/evals/oolong_benchmarks.py
+  s_943638c4b69b44::t_ded3ad1bf69d8f 361,370,396-397,400,402
+  s_943638c4b69b44::t_ec09ad757eafed 390
+  s_943638c4b69b44::t_9d36210f0c715e 168-177
+  s_943638c4b69b44::t_73a82cc95d0d79 31,35
+  s_943638c4b69b44::t_069dc55284b5de 362,378,388-389,394
+  s_943638c4b69b44::t_14236e9fdda5b2 373,376,379-380
+  s_943638c4b69b44::t_42c1fb93fab487 405
+  s_1f4aad2fdaeb2f::t_dc6c27fcf84fc5 39
+  s_943638c4b69b44::t_85c605707d78a8 371
+  s_943638c4b69b44::t_c795979f8ff3fd 363-369,372,374-375,377,391,406-416
+libs/evals/tests/evals/utils.py
+  s_943638c4b69b44::t_1a4a29e7a037cc 1111-1114,1118-1128
+  s_943638c4b69b44::t_f8bbd2bd2529e0 1105,1107-1110,1115
+  s_943638c4b69b44::t_35d2aca25c795b 1210,1223-1225,1241
+  s_943638c4b69b44::t_9082dd727a14c0 1156,1169-1171,1187
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "3abef6dca05e746680a1dabc7cb569414dbe1018",
+  "prompts": {},
+  "sessions": {
+    "s_1f4aad2fdaeb2f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e57c1405-d566-4f7e-96c7-ce43b7e79127",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    },
+    "s_943638c4b69b44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0385a0ed-b687-4fe3-8e00-f4dc75345399",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

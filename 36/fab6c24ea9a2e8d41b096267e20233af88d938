@@ -1,0 +1,38 @@
+libs/code/deepagents_code/config.py
+  s_b92a22e9249f8b::t_c201fc84977233 1904-1906,2110-2113,3913,3917
+  s_b92a22e9249f8b::t_99205698221dcc 15,58
+  s_b92a22e9249f8b::t_a0fcd395e7b123 45-47,49-50,52-53,55-56,59,62-70
+  s_b92a22e9249f8b::t_6989dd76a58e90 467,643,647,656-657,673-676,732
+libs/code/tests/unit_tests/test_config.py
+  s_b92a22e9249f8b::t_2ff328c5f2eb6c 4122-4123,4132,4134,4151-4153,4168,4173-4174,4183-4185,4200,4202,4207-4208
+  s_b92a22e9249f8b::t_87caf0e6b23025 4217-4219,4242-4243,4252-4254,4275-4276,4285-4287,4308-4309,4326-4328,4347-4348,4366-4368,4399-4400
+  s_b92a22e9249f8b::t_2f9d270079ced1 4201
+  s_b92a22e9249f8b::t_d7178e9e1adbb2 4424-4427,4464-4466,4482-4485,4507-4509,4525-4528,4556-4558
+  s_b92a22e9249f8b::t_0b1f416202d956 134,138,153
+libs/code/tests/unit_tests/test_welcome.py
+  s_9bdff77192c24c::t_8fc422f34eed03 98-99,104
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "36fab6c24ea9a2e8d41b096267e20233af88d938",
+  "prompts": {},
+  "sessions": {
+    "s_9bdff77192c24c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ef798-d961-7a52-aa9d-fba9ffed973f",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    },
+    "s_b92a22e9249f8b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ef78d-5ac0-7901-a894-0ee5a1b9b29d",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

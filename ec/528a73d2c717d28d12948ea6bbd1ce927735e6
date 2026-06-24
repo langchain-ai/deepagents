@@ -1,0 +1,24 @@
+libs/evals/tests/evals/oolong_benchmarks.py
+  s_1f4aad2fdaeb2f::t_303eea6b9e71a7 47
+  s_1f4aad2fdaeb2f::t_98cd72283df42d 190,194-200,203-206,208-209,214-215,217-237,239-266,268-275,280-284,289-291,293,296-297,299-301
+  s_1f4aad2fdaeb2f::t_88ffdab0fe4d6e 207,213
+  s_1f4aad2fdaeb2f::t_fb95172bb47447 216
+  s_1f4aad2fdaeb2f::t_0bf4230bf4aa39 267
+  s_1f4aad2fdaeb2f::t_a4894310c404ea 334
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "ec528a73d2c717d28d12948ea6bbd1ce927735e6",
+  "prompts": {},
+  "sessions": {
+    "s_1f4aad2fdaeb2f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e57c1405-d566-4f7e-96c7-ce43b7e79127",
+        "model": "claude-sonnet-4-6"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

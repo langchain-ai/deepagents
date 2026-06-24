@@ -800,6 +800,21 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                 "Request access to Chat completions (/v1/chat/completions). ",
                 (label, self._link_style(url)),
             )
+        elif self._provider == "anthropic":
+            instructions = Content.assemble(
+                f"Sign in to {provider}, create or copy an API key, "
+                "then paste it below. ",
+                (label, self._link_style(url)),
+                "\n",
+                (
+                    (
+                        "Subscription plans (Claude Pro/Max, Claude Code) cannot "
+                        "be used for Anthropic calls in Deep Agents Code. Only a "
+                        "standard API key with pay-as-you-go billing works here."
+                    ),
+                    "italic $text-muted",
+                ),
+            )
         else:
             instructions = Content.assemble(
                 f"Sign in to {provider}, create or copy an API key, "

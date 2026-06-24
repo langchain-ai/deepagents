@@ -334,6 +334,21 @@ class TestAuthPromptScreen:
             assert "For older models" in text
             assert "Request access to Chat completions (/v1/chat/completions)" in text
 
+    async def test_anthropic_instructions_warn_against_subscription_plans(
+        self,
+    ) -> None:
+        """Anthropic keys note subscription plans don't work for API calls."""
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            instructions = app.screen.query_one("#auth-prompt-key-instructions", Static)
+            text = str(instructions.content)
+            assert "Sign in to Anthropic" in text
+            assert "create or copy an API key" in text
+            assert "Subscription plans (Claude Pro/Max, Claude Code) cannot be" in text
+            assert "pay-as-you-go billing" in text
+
     async def test_provider_instructions_use_config_metadata(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

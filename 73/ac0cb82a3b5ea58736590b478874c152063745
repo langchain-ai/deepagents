@@ -1,0 +1,33 @@
+libs/code/deepagents_code/widgets/subagent_panel.py
+  s_fbb4039f70ae43::t_3d6f0b317bdd21 692,695,708-709
+  s_fbb4039f70ae43::t_13e39a3458c631 661,666-667
+  s_fbb4039f70ae43::t_91f5272aefd95d 856-858
+  s_fbb4039f70ae43::t_9b28f6d996b4ff 519-539
+  s_fbb4039f70ae43::t_b179b793c9f6f4 590,594,596,604-606
+  s_fbb4039f70ae43::t_7e0a9633f0d47e 40
+  s_fbb4039f70ae43::t_28577781474692 675
+  s_fbb4039f70ae43::t_526f7b8462c0a8 764-769
+  s_fbb4039f70ae43::t_546016e3b46705 486-494
+  s_fbb4039f70ae43::t_43e68debbb1aba 124-131
+libs/code/tests/unit_tests/test_subagent_panel.py
+  s_fbb4039f70ae43::t_44f43ba77efb88 315-350
+  s_fbb4039f70ae43::t_6604ba2f548ddb 351-365
+libs/code/deepagents_code/app.py
+  s_fbb4039f70ae43::t_9f6e9261f99213 8012-8018
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "73ac0cb82a3b5ea58736590b478874c152063745",
+  "prompts": {},
+  "sessions": {
+    "s_fbb4039f70ae43": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "70a2905b-8d2c-4e8e-a94c-0bad2c4435e0",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Colin Francis <colin.francis@langchain.dev>"
+    }
+  }
+}

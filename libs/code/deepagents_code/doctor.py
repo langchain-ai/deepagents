@@ -87,6 +87,9 @@ def _build_commit() -> str | None:
         )
     except ImportError:
         return None
+    except Exception:  # a corrupt stamp must never crash `doctor`
+        logger.debug("Build-info module present but failed to import", exc_info=True)
+        return None
     commit = (BUILD_COMMIT or "").strip()
     return commit or None
 
@@ -94,8 +97,11 @@ def _build_commit() -> str | None:
 def _commit_hash(path: str) -> str:
     """Return the short git commit hash for the install, if available.
 
-    Prefers the commit stamped into a released wheel at build time, then falls
-    back to probing the live git working tree (for editable/dev installs).
+    Prefers the commit stamped into a released wheel at build time, but only for
+    non-editable installs: an editable install may carry a stale stamp from a
+    prior local build (the generated file is gitignored and survives a failed
+    build), so it always probes the live git working tree, which reflects local
+    changes.
 
     Args:
         path: Directory used as the git command working directory.
@@ -105,7 +111,12 @@ def _commit_hash(path: str) -> str:
     """
     baked = _build_commit()
     if baked:
-        return baked
+        from deepagents_code.config import _is_editable_install
+
+        # A baked commit only describes a built wheel; ignore it for editable
+        # installs so a stale stamp can't mask the live working-tree commit.
+        if not _is_editable_install():
+            return baked
 
     import shutil
     import subprocess  # noqa: S404  # fixed-argv git metadata probe

@@ -47,6 +47,8 @@ class CustomBuildHook(BuildHookInterface):
             f'BUILD_COMMIT = "{short}"\n',
             encoding="utf-8",
         )
+        # `_TARGET` is gitignored, so hatchling excludes it from the build by
+        # default; registering it as an artifact force-includes it in the dist.
         build_data.setdefault("artifacts", []).append(str(_TARGET))
 
     def finalize(
@@ -55,7 +57,11 @@ class CustomBuildHook(BuildHookInterface):
         build_data: dict[str, Any],  # noqa: ARG002  # part of the hook signature
         artifact_path: str,  # noqa: ARG002  # part of the hook signature
     ) -> None:
-        """Remove the generated module so the working tree stays clean."""
+        """Remove the generated module so the working tree stays clean.
+
+        Runs only when the stamp env var was set, mirroring `initialize`, so
+        editable and local builds (which never wrote the file) skip the unlink.
+        """
         if not os.environ.get(_COMMIT_ENV, "").strip():
             return
         (Path(self.root) / _TARGET).unlink(missing_ok=True)

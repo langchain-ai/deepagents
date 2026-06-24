@@ -139,6 +139,8 @@ Reddit = "https://www.reddit.com/r/LangChain/"
 test = [
     "textual-dev>=1.8.0,<2.0.0",
     "build>=1.5.0,<2.0.0",
+    # Build backend; imported by tests that exercise the `hatch_build.py` hook.
+    "hatchling>=1.27.0,<2.0.0",
     "ruff>=0.15.18,<1.0.0",
     "ty>=0.0.52,<1.0.0",
     "langchain-quickjs>=0.3.1,<0.4.0",

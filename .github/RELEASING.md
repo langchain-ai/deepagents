@@ -394,13 +394,13 @@ Reach for a dedicated branch only when you need to (often temporarily) *decouple
 > [!IMPORTANT]
 > **Name the branch with a `v` prefix** — `v0.7`, `v0.6`, etc. A branch named `0.7` gets **no branch protection**.
 
-Both `main` and `v[0-9].*` require a CI-passing PR (no direct pushes). The only difference is that `v[0-9].*` allows merge commits in order to facilitate syncing `main` -> `vX.Y` ([staging](#staging-branch-main-stays-on-the-current-line) step 2) and the **cutover** (admin bypass — see below). A version-line DRI may occasionally force-push a staging branch after rebasing it onto `main`, but only when they intentionally own the history rewrite and have verified the final `main..vX.Y` range contains only the branch's intended commits.
+Both `main` and `v[0-9].*` require a CI-passing PR (no direct pushes). The only difference is that `v[0-9].*` allows merge commits in order to facilitate syncing `main` -> `vX.Y` ([staging](#staging-branch-main-stays-on-the-current-line) step 2) and the **cutover** (admin bypass — see below). A version-line DRI with branch-rule bypass privileges may occasionally force-push a staging branch after rebasing it onto `main`, **but only when they intentionally own the history rewrite** and have verified the final `main..vX.Y` range contains only the branch's intended commits.
 
 ### TL;DR — staging the next line of work (e.g. `v0.7` while `main` stays `v0.6.x`)
 
 1. **Branch:** create `v0.7` from `main`.
 2. **Build `0.7`:** land net-new work via **squash PRs into `v0.7`** (same flow as `main`).
-3. **Keep `v0.7` current with `main`:** default to a PR with **base `v0.7`, head `main`** and merge it with **"Create a merge commit"** (not squash!). CI runs on the merged result; `main`'s commits arrive as shared history, so the cutover stays clean. If the staging branch is being actively maintained by a DRI who can safely rewrite it, rebasing `v0.7` onto `main` and force-pushing with lease is also acceptable; verify `git rev-list --left-right --count main...v0.7` reports `0 N` and that `git log --oneline --no-merges main..v0.7` lists only the intended version-line commits. Cherry-pick instead only if `v0.7` deliberately diverges from `main` (e.g. `v0.7` deleted or rewrote a module that `main` is still bug-fixing, so a full merge would keep dragging the old code back and re-conflict on every sync — cherry-pick just the fixes you still want).
+3. **Keep `v0.7` current with `main`:** default to a PR with **base `v0.7`, head `main`** and merge it with **"Create a merge commit"** (not squash!). CI runs on the merged result; `main`'s commits arrive as shared history, so the cutover stays clean. If the staging branch is being actively maintained by a DRI with branch-rule bypass privileges who can safely rewrite it, rebasing `v0.7` onto `main` and force-pushing with lease is also acceptable; verify `git rev-list --left-right --count main...v0.7` reports `0 N` and that `git log --oneline --no-merges main..v0.7` lists only the intended version-line commits. Cherry-pick instead only if `v0.7` deliberately diverges from `main` (e.g. `v0.7` deleted or rewrote a module that `main` is still bug-fixing, so a full merge would keep dragging the old code back and re-conflict on every sync — cherry-pick just the fixes you still want).
 4. **Cutover:** an admin merges `v0.7` onto `main` with `git merge --no-ff` under admin bypass. See [Cutover](#cutover-main-adopts-the-new-line).
 
 ### Staging branch (`main` stays on the current line)
@@ -415,7 +415,7 @@ Both `main` and `v[0-9].*` require a CI-passing PR (no direct pushes). The only 
 
      Use a merge commit **only** for these sync PRs.
 
-   - **Controlled exception: rebase `vX.Y` onto `main`.** If the version-line DRI intentionally owns rewriting the staging branch, they may rebase and force-push with lease instead of creating sync merge commits. This keeps the GitHub compare view at `0 behind, N ahead` and makes the final cutover easy to audit. Before pushing, verify:
+   - **Controlled exception: rebase `vX.Y` onto `main`.** If the version-line DRI has branch-rule bypass privileges and intentionally owns rewriting the staging branch, they may rebase and force-push with lease instead of creating sync merge commits. This keeps the GitHub compare view at `0 behind, N ahead` and makes the final cutover easy to audit. If no authorized maintainer can bypass the non-fast-forward rule, use the merge-PR workflow instead. Before pushing, verify:
 
      ```bash
      git rev-list --left-right --count main...vX.Y  # expect: 0 N

@@ -152,6 +152,25 @@ def _provider_display_name(provider: str, config: ModelConfig | None = None) -> 
     ) or PROVIDER_DISPLAY_NAMES.get(provider, provider.replace("_", " ").title())
 
 
+def _auth_status_for(provider: str) -> ProviderAuthStatus:
+    """Resolve the credential readiness of a provider or non-model service.
+
+    Routes services (e.g. Tavily) and model providers to their respective
+    status helpers. Each call reads the credential file, so callers that need
+    the status more than once should resolve it here a single time and reuse
+    the result.
+
+    Args:
+        provider: Provider or service config key.
+
+    Returns:
+        The auth status used for both ordering and badge rendering.
+    """
+    if is_service(provider):
+        return get_service_auth_status(provider)
+    return get_provider_auth_status(provider)
+
+
 class AuthResult(StrEnum):
     """Outcome of an `AuthPromptScreen` interaction.
 
@@ -486,11 +505,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         # cached instance instead of reloading outside this crash-safety guard.
         try:
             self._config = ModelConfig.load()
-            self._auth_status = (
-                get_service_auth_status(provider)
-                if is_service(provider)
-                else get_provider_auth_status(provider)
-            )
+            self._auth_status = _auth_status_for(provider)
             self._has_existing = auth_store.get_stored_key(provider) is not None
             self._existing_base_url = auth_store.get_stored_base_url(provider) or ""
             self._advanced_visible = bool(self._existing_base_url)
@@ -1294,42 +1309,34 @@ class AuthManagerScreen(ModalScreen[None]):
         # ones already shown above are skipped.
         self._install_extras = self._uninstalled_known_providers(config, shown)
 
+        # Resolve each manageable entry's auth status once and reuse it for
+        # both ordering and badge rendering. `_auth_status_for` reads the
+        # credential file, so resolving it separately in the sort key and in
+        # `_format_label` would read `auth.json` twice per row (and, on a
+        # corrupt store, log the same warning twice). A single pass halves both.
+        services = set(SERVICE_API_KEY_ENV) - shown - set(self._install_extras)
+        status_by_key = {key: _auth_status_for(key) for key in shown | services}
+
         # Float entries that already have a credential configured to the top so
         # the keys a user is actively using are easiest to find; everything else
-        # keeps alphabetical order. Uninstalled install-on-select entries are
-        # listed afterwards (alphabetically) since selecting them installs a
-        # package rather than managing a key.
-        services = set(SERVICE_API_KEY_ENV) - shown - set(self._install_extras)
-        manageable = sorted(shown | services, key=self._configured_sort_key)
+        # keeps alphabetical order (the `key` tiebreaker). Uninstalled
+        # install-on-select entries are listed afterwards (alphabetically) since
+        # selecting them installs a package rather than managing a key.
+        def sort_key(key: str) -> tuple[int, str]:
+            configured = status_by_key[key].state is ProviderAuthState.CONFIGURED
+            return (0 if configured else 1, key)
+
+        manageable = sorted(status_by_key, key=sort_key)
         extra_providers = sorted(self._install_extras)
         options = [
-            Option(self._format_label(provider), id=provider) for provider in manageable
+            Option(self._format_label(key, status=status_by_key[key]), id=key)
+            for key in manageable
         ]
         options.extend(
             Option(self._format_label(provider, installed=False), id=provider)
             for provider in extra_providers
         )
         return options, warning
-
-    @staticmethod
-    def _configured_sort_key(provider: str) -> tuple[int, str]:
-        """Sort key placing providers with a configured credential first.
-
-        Args:
-            provider: Provider or service config key.
-
-        Returns:
-            `(0, provider)` when the credential resolves to `CONFIGURED`,
-                otherwise `(1, provider)`, so configured entries sort ahead of
-                the rest while each group stays alphabetical.
-        """
-        status = (
-            get_service_auth_status(provider)
-            if is_service(provider)
-            else get_provider_auth_status(provider)
-        )
-        configured = status.state is ProviderAuthState.CONFIGURED
-        return (0 if configured else 1, provider)
 
     @staticmethod
     def _uninstalled_known_providers(
@@ -1361,7 +1368,12 @@ class AuthManagerScreen(ModalScreen[None]):
         return uninstalled
 
     @staticmethod
-    def _format_label(provider: str, *, installed: bool = True) -> Content:
+    def _format_label(
+        provider: str,
+        *,
+        installed: bool = True,
+        status: ProviderAuthStatus | None = None,
+    ) -> Content:
         """Build a `Content` label for `provider` showing its credential source.
 
         Args:
@@ -1369,6 +1381,10 @@ class AuthManagerScreen(ModalScreen[None]):
             installed: Whether the provider's integration package is installed.
                 Uninstalled providers render dimmed with a `[not installed]`
                 marker since selecting them prompts an install, not a key.
+            status: Precomputed auth status to render. Pass this when the
+                caller already resolved it to avoid a duplicate credential-file
+                read; resolved on demand when omitted. Ignored for uninstalled
+                providers, which render no badge.
 
         Returns:
             A composed `Content` with the provider label and a status badge.
@@ -1380,11 +1396,8 @@ class AuthManagerScreen(ModalScreen[None]):
                 "  ",
                 Content.styled("[not installed]", "dim"),
             )
-        status = (
-            get_service_auth_status(provider)
-            if is_service(provider)
-            else get_provider_auth_status(provider)
-        )
+        if status is None:
+            status = _auth_status_for(provider)
         badge = format_auth_badge(status)
         return Content.assemble(
             Content.from_markup("$provider", provider=name),

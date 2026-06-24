@@ -980,22 +980,28 @@ api_key_env = "MY_GATEWAY_API_KEY"
     async def test_uninstalled_providers_stay_below_configured(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Greyed-out install-on-select entries sort after configured rows.
+        """Greyed-out install-on-select entries sort after every installed row.
 
         An uninstalled provider routes to an install prompt rather than a key
-        entry, so it must stay at the bottom even if a credential float would
-        otherwise reorder the list.
+        entry, so it stays at the bottom even when an installed-but-unconfigured
+        provider (`anthropic`) sorts below a configured one (`openai`). The
+        unconfigured installed row makes the float load-bearing: a list that
+        ignored the credential float would order `anthropic` before `openai`.
+        `groq` stays last because uninstalled extras are appended after the
+        whole manageable block, regardless of the float.
         """
         for var in (
             "OPENAI_API_KEY",
             "DEEPAGENTS_CODE_OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "DEEPAGENTS_CODE_ANTHROPIC_API_KEY",
             "GROQ_API_KEY",
             "DEEPAGENTS_CODE_GROQ_API_KEY",
         ):
             monkeypatch.delenv(var, raising=False)
         monkeypatch.setattr(
             "deepagents_code.widgets.auth.get_available_models",
-            lambda: {"openai": ["gpt-5.4"]},
+            lambda: {"openai": ["gpt-5.4"], "anthropic": ["claude-opus-4-7"]},
         )
         monkeypatch.setattr(
             "deepagents_code.config_manifest.is_provider_package_installed",
@@ -1011,7 +1017,149 @@ api_key_env = "MY_GATEWAY_API_KEY"
                 options.get_option_at_index(i).id for i in range(options.option_count)
             ]
         assert "groq" in ids
-        assert ids.index("openai") < ids.index("groq")
+        # Configured openai floats above unconfigured anthropic, and the
+        # uninstalled groq extra stays below both.
+        assert ids.index("openai") < ids.index("anthropic") < ids.index("groq")
+
+    async def test_refresh_options_resorts_after_saving_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Saving a key re-floats its provider on the next options refresh.
+
+        The float is only useful if the live save/clear path re-sorts; this
+        exercises `_refresh_options` rather than the initial render. `openai`
+        starts below `anthropic` alphabetically and must overtake it once a key
+        is stored.
+        """
+        for var in (
+            "OPENAI_API_KEY",
+            "DEEPAGENTS_CODE_OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "DEEPAGENTS_CODE_ANTHROPIC_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {"openai": ["gpt-5.4"], "anthropic": ["claude-opus-4-7"]},
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda _provider: True,
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+
+            def current_ids() -> list[str | None]:
+                return [
+                    options.get_option_at_index(i).id
+                    for i in range(options.option_count)
+                ]
+
+            before = current_ids()
+            assert before.index("anthropic") < before.index("openai")
+
+            auth_store.set_stored_key("openai", "k")
+            screen = cast("AuthManagerScreen", app.screen)
+            screen._refresh_options()  # exercise the live re-sort path
+            await pilot.pause()
+            after = current_ids()
+        assert after.index("openai") < after.index("anthropic")
+
+    async def test_configured_group_preserves_alphabetical_order(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Within each group, entries keep alphabetical order.
+
+        The sort key is `(0|1, name)`, so the name tiebreaker must keep both the
+        configured block and the unconfigured block alphabetical. A regression
+        that dropped the name element (e.g. returned a bare flag) would scramble
+        order within a group while still floating configured entries.
+        """
+        for var in (
+            "ANTHROPIC_API_KEY",
+            "DEEPAGENTS_CODE_ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "DEEPAGENTS_CODE_OPENAI_API_KEY",
+            "COHERE_API_KEY",
+            "DEEPAGENTS_CODE_COHERE_API_KEY",
+            "MISTRAL_API_KEY",
+            "DEEPAGENTS_CODE_MISTRAL_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {
+                "openai": ["gpt-5.4"],
+                "anthropic": ["claude-opus-4-7"],
+                "cohere": ["command"],
+                "mistralai": ["mistral-large"],
+            },
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda _provider: True,
+        )
+        auth_store.set_stored_key("anthropic", "k")
+        auth_store.set_stored_key("openai", "k")
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            ids = [
+                options.get_option_at_index(i).id for i in range(options.option_count)
+            ]
+        # Configured group stays alphabetical, unconfigured group stays
+        # alphabetical, and the whole configured block sits above the rest.
+        assert ids.index("anthropic") < ids.index("openai")
+        assert ids.index("openai") < ids.index("cohere")
+        assert ids.index("cohere") < ids.index("mistralai")
+
+    async def test_env_configured_provider_floats(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A provider configured only via an env var floats like a stored key.
+
+        The sort keys off resolved auth status, not the stored-key set, so an
+        env-only credential must float too. `openai` is configured via
+        `OPENAI_API_KEY` alone and overtakes unconfigured `anthropic`.
+        """
+        for var in (
+            "OPENAI_API_KEY",
+            "DEEPAGENTS_CODE_OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "DEEPAGENTS_CODE_ANTHROPIC_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {"openai": ["gpt-5.4"], "anthropic": ["claude-opus-4-7"]},
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda _provider: True,
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "from-env")
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            ids = [
+                options.get_option_at_index(i).id for i in range(options.option_count)
+            ]
+            openai_label = next(
+                str(options.get_option_at_index(i).prompt)
+                for i in range(options.option_count)
+                if options.get_option_at_index(i).id == "openai"
+            )
+        assert ids.index("openai") < ids.index("anthropic")
+        # The env-resolved status object must be threaded through to the badge,
+        # not just the sort key: an env-only credential renders `[env set: …]`.
+        assert "env set" in openai_label
 
     async def test_stored_service_is_not_duplicated(self) -> None:
         """Stored non-model services appear once in the manager list."""

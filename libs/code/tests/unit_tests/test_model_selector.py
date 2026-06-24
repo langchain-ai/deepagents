@@ -2,12 +2,13 @@
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
+from unittest.mock import MagicMock
 
 import pytest
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Container
+from textual.containers import Container, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
@@ -249,11 +250,47 @@ class TestModelSelectorChrome:
 
             help_text = screen.query_one(".model-selector-help", Static)
 
+            assert "Tab autocomplete" in str(help_text.content)
             assert "Esc skip setup" not in str(help_text.content)
             assert "Esc cancel" not in str(help_text.content)
 
-    async def test_standard_selector_help_uses_cancel(self) -> None:
-        """The regular /model selector should keep cancel wording."""
+    async def test_curated_selector_help_hides_default_hint(self) -> None:
+        """Onboarding model selection should not advertise default changes."""
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(curated=True)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_text = screen.query_one(".model-selector-help", Static)
+
+            assert "Ctrl+S" not in str(help_text.content)
+            assert "set default" not in str(help_text.content)
+
+    @pytest.mark.parametrize("curated", [False, True])
+    async def test_selector_uses_compact_sizing(self, *, curated: bool) -> None:
+        """Model selection should size like the integration summary."""
+        app = ModelSelectorTestApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            screen = ModelSelectorScreen(curated=curated)
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.pause()
+
+            container = screen.query_one(Vertical)
+            body = screen.query_one(".model-list", VerticalScroll)
+            help_text = screen.query_one(".model-selector-help", Static)
+
+        assert container.region.y >= 0
+        assert container.region.y + container.region.height <= app.size.height
+        assert help_text.region.y + help_text.region.height <= app.size.height
+        max_height = body.styles.max_height
+        assert max_height is not None
+        assert max_height.cells is not None
+        assert max_height.cells <= 16
+
+    async def test_standard_selector_help_hides_cancel_hint(self) -> None:
+        """The regular /model selector should not leave a trailing separator."""
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
             screen = ModelSelectorScreen()
@@ -262,7 +299,11 @@ class TestModelSelectorChrome:
 
             help_text = screen.query_one(".model-selector-help", Static)
 
-            assert "Esc cancel" in str(help_text.content)
+            assert "Tab autocomplete" in str(help_text.content)
+            # Standard mode still advertises the default-setting shortcut that
+            # curated/onboarding mode hides.
+            assert "Ctrl+S set default" in str(help_text.content)
+            assert "Esc cancel" not in str(help_text.content)
 
 
 class TestRecommendedToggle:
@@ -1807,6 +1848,47 @@ class TestModelSelectorAuthGate:
 class TestModelSelectorInstallRouting:
     """Selecting a model whose provider is not installed prompts to install."""
 
+    async def test_curated_screen_loads_uninstalled_recommended(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Onboarding includes install-required recommended models."""
+        from deepagents_code.widgets import model_selector
+
+        captured: dict[str, bool] = {}
+
+        def load_model_data(
+            _cli_override: dict[str, Any] | None,
+            *,
+            include_uninstalled: bool = True,
+        ) -> model_selector._ModelData:
+            captured["include_uninstalled"] = include_uninstalled
+            return model_selector._ModelData(
+                [("baseten:zai-org/GLM-5.2", "baseten")],
+                None,
+                {},
+                [],
+                {"baseten": "baseten"},
+            )
+
+        monkeypatch.setattr(
+            ModelSelectorScreen,
+            "_load_model_data",
+            staticmethod(load_model_data),
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.push_screen(
+                ModelSelectorScreen(
+                    current_model="openai:gpt-5.5",
+                    current_provider="openai",
+                    curated=True,
+                )
+            )
+            await pilot.pause()
+
+        assert captured["include_uninstalled"] is True
+
     async def test_load_model_data_surfaces_uninstalled_recommended(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1832,6 +1914,38 @@ class TestModelSelectorInstallRouting:
         assert any(spec.startswith("ollama:") for spec in specs)
         assert install_extras.get("baseten") == "baseten"
         assert install_extras.get("ollama") == "ollama"
+
+    async def test_load_model_data_orders_installed_recommended_before_uninstalled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Installed-provider recommendations sort before install-required rows."""
+        from deepagents_code.widgets import model_selector
+
+        installed_spec = "ollama:glm-5.2:cloud"
+        uninstalled_spec = "fireworks:accounts/fireworks/models/deepseek-v4-pro"
+        monkeypatch.setattr(
+            model_selector,
+            "_RECOMMENDED_MODELS",
+            frozenset({installed_spec, uninstalled_spec}),
+        )
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"ollama": ["local-model"]},
+        )
+        monkeypatch.setattr(
+            "importlib.util.find_spec",
+            lambda package: object() if package == "langchain_ollama" else None,
+        )
+
+        all_models, _default, _profiles, _recent, install_extras = (
+            ModelSelectorScreen._load_model_data(None, include_uninstalled=True)
+        )
+
+        specs = [model_spec for model_spec, _ in all_models]
+        assert specs.index(installed_spec) < specs.index(uninstalled_spec)
+        assert install_extras.get("fireworks") == "fireworks"
+        assert "ollama" not in install_extras
 
     async def test_load_model_data_surfaces_installed_unprofiled_recommended(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1872,7 +1986,7 @@ class TestModelSelectorInstallRouting:
         from deepagents_code import config_manifest
         from deepagents_code.widgets import model_selector
 
-        spec = "baseten:moonshotai/Kimi-K2.6"
+        spec = "baseten:moonshotai/Kimi-K2.7-Code"
         assert spec in model_selector._RECOMMENDED_MODELS
 
         monkeypatch.setattr(
@@ -1965,7 +2079,7 @@ class TestModelSelectorInstallRouting:
     async def test_load_model_data_skips_uninstalled_when_disabled(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Onboarding (`include_uninstalled=False`) hides uninstalled providers."""
+        """Explicitly disabling uninstalled recommendations hides providers."""
         from deepagents_code.widgets import model_selector
 
         monkeypatch.setattr(
@@ -2019,6 +2133,40 @@ enabled = false
         assert not any(spec.startswith("baseten:") for spec in specs)
         assert "baseten" not in install_extras
 
+    async def test_curated_uninstalled_provider_defers_to_launch_install(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Onboarding selections install from the launch flow before auth."""
+        from deepagents_code.widgets import model_selector
+
+        results: list[tuple[str, str] | None] = []
+        screen = ModelSelectorScreen(
+            current_model="openai:gpt-5.5",
+            current_provider="openai",
+            curated=True,
+            result_callback=results.append,
+        )
+        dismiss = MagicMock()
+        screen.dismiss = dismiss  # ty: ignore
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.provider_install_extra",
+            lambda _provider: "baseten",
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda _provider: False,
+        )
+        monkeypatch.setattr(
+            model_selector,
+            "get_provider_auth_status",
+            lambda _provider: pytest.fail("auth should wait until after install"),
+        )
+
+        screen._select_with_auth_check("baseten:zai-org/GLM-5.2", "baseten")
+
+        assert results == [("baseten:zai-org/GLM-5.2", "baseten")]
+        dismiss.assert_called_once_with(("baseten:zai-org/GLM-5.2", "baseten"))
+
     async def test_select_uninstalled_provider_prompts_install(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2046,7 +2194,9 @@ enabled = false
                 lambda s, cb=None, *_a, **_k: pushed.append((s, cb)),
             )
 
-            screen._select_with_auth_check("baseten:moonshotai/Kimi-K2.6", "baseten")
+            screen._select_with_auth_check(
+                "baseten:moonshotai/Kimi-K2.7-Code", "baseten"
+            )
 
             assert len(pushed) == 1
             assert isinstance(pushed[0][0], InstallProviderConfirmScreen)
@@ -2076,7 +2226,7 @@ enabled = false
             )
 
             screen._prompt_install_provider(
-                "baseten:moonshotai/Kimi-K2.6", "baseten", "baseten"
+                "baseten:moonshotai/Kimi-K2.7-Code", "baseten", "baseten"
             )
             on_confirm = pushed[0][1]
             assert on_confirm is not None
@@ -2085,7 +2235,7 @@ enabled = false
 
         assert screen.pending_install_extra == "baseten"
         assert app.dismissed is True
-        assert app.result == ("baseten:moonshotai/Kimi-K2.6", "baseten")
+        assert app.result == ("baseten:moonshotai/Kimi-K2.7-Code", "baseten")
 
     async def test_decline_install_stays_on_selector(
         self, monkeypatch: pytest.MonkeyPatch
@@ -2111,7 +2261,7 @@ enabled = false
             )
 
             screen._prompt_install_provider(
-                "baseten:moonshotai/Kimi-K2.6", "baseten", "baseten"
+                "baseten:moonshotai/Kimi-K2.7-Code", "baseten", "baseten"
             )
             on_confirm = pushed[0][1]
             assert on_confirm is not None
@@ -2154,7 +2304,7 @@ enabled = false
         the `install_required` flag, so uninstalled rows turned bright after
         the cursor passed over them and never reverted.
         """
-        install_spec = "baseten:moonshotai/Kimi-K2.6"
+        install_spec = "baseten:moonshotai/Kimi-K2.7-Code"
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
             app.show_selector()
@@ -2203,7 +2353,7 @@ enabled = false
         install-required model also surfaces at the top as a recent pick, so
         cursoring onto then off that Recent row must re-dim it just the same.
         """
-        install_spec = "baseten:moonshotai/Kimi-K2.6"
+        install_spec = "baseten:moonshotai/Kimi-K2.7-Code"
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
             app.show_selector()

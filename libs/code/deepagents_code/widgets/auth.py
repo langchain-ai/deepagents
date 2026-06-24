@@ -1294,25 +1294,52 @@ class AuthManagerScreen(ModalScreen[None]):
         # ones already shown above are skipped.
         self._install_extras = self._uninstalled_known_providers(config, shown)
 
-        providers = sorted(shown | set(self._install_extras))
+        # Float installed providers that already have a credential configured
+        # to the top so the keys a user is actively using are easiest to find;
+        # everything else keeps alphabetical order. Uninstalled
+        # install-on-select entries are listed afterwards (alphabetically)
+        # since selecting them installs a package rather than managing a key.
+        installed_providers = sorted(shown, key=self._configured_sort_key)
+        extra_providers = sorted(self._install_extras)
         options = [
-            Option(
-                self._format_label(
-                    provider, installed=provider not in self._install_extras
-                ),
-                id=provider,
-            )
-            for provider in providers
+            Option(self._format_label(provider), id=provider)
+            for provider in installed_providers
         ]
+        options.extend(
+            Option(self._format_label(provider, installed=False), id=provider)
+            for provider in extra_providers
+        )
         # Append non-model services (e.g. Tavily web search) after the model
         # providers. These are always shown — their key is configurable here
         # regardless of whether the backing package is installed — so users can
-        # enter it the same way they enter a model-provider key.
+        # enter it the same way they enter a model-provider key. Configured
+        # services float to the top of their group for the same reason.
+        services = set(SERVICE_API_KEY_ENV) - shown - set(self._install_extras)
         options.extend(
             Option(self._format_label(service), id=service)
-            for service in sorted(set(SERVICE_API_KEY_ENV) - set(providers))
+            for service in sorted(services, key=self._configured_sort_key)
         )
         return options, warning
+
+    @staticmethod
+    def _configured_sort_key(provider: str) -> tuple[int, str]:
+        """Sort key placing providers with a configured credential first.
+
+        Args:
+            provider: Provider or service config key.
+
+        Returns:
+            `(0, provider)` when the credential resolves to `CONFIGURED`,
+                otherwise `(1, provider)`, so configured entries sort ahead of
+                the rest while each group stays alphabetical.
+        """
+        status = (
+            get_service_auth_status(provider)
+            if is_service(provider)
+            else get_provider_auth_status(provider)
+        )
+        configured = status.state is ProviderAuthState.CONFIGURED
+        return (0 if configured else 1, provider)
 
     @staticmethod
     def _uninstalled_known_providers(

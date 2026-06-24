@@ -912,6 +912,77 @@ api_key_env = "MY_GATEWAY_API_KEY"
         assert label is not None
         assert "stored" in str(label)
 
+    async def test_configured_providers_sort_to_top(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Providers with a credential float above unconfigured ones.
+
+        `openai` sorts after `anthropic` alphabetically, but storing a key for
+        it should lift it to the top of the installed-provider group while the
+        rest stay in alphabetical order.
+        """
+        for var in (
+            "OPENAI_API_KEY",
+            "DEEPAGENTS_CODE_OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "DEEPAGENTS_CODE_ANTHROPIC_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {"openai": ["gpt-5.4"], "anthropic": ["claude-opus-4-7"]},
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda _provider: True,
+        )
+        auth_store.set_stored_key("openai", "k")
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            ids = [
+                options.get_option_at_index(i).id for i in range(options.option_count)
+            ]
+        assert ids.index("openai") < ids.index("anthropic")
+
+    async def test_uninstalled_providers_stay_below_configured(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Greyed-out install-on-select entries sort after configured rows.
+
+        An uninstalled provider routes to an install prompt rather than a key
+        entry, so it must stay at the bottom even if a credential float would
+        otherwise reorder the list.
+        """
+        for var in (
+            "OPENAI_API_KEY",
+            "DEEPAGENTS_CODE_OPENAI_API_KEY",
+            "GROQ_API_KEY",
+            "DEEPAGENTS_CODE_GROQ_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {"openai": ["gpt-5.4"]},
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda provider: provider != "groq",
+        )
+        auth_store.set_stored_key("openai", "k")
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager()
+            await pilot.pause()
+            options = app.screen.query_one("#auth-manager-options", OptionList)
+            ids = [
+                options.get_option_at_index(i).id for i in range(options.option_count)
+            ]
+        assert "groq" in ids
+        assert ids.index("openai") < ids.index("groq")
+
     async def test_stored_service_is_not_duplicated(self) -> None:
         """Stored non-model services appear once in the manager list."""
         auth_store.set_stored_key("tavily", "k")

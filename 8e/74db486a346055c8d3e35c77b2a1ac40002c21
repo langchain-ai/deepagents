@@ -1,0 +1,38 @@
+libs/evals/deepagents_clbench/system/system.py
+  s_80c3f828b28c9e::t_1511601070edc1 192-193,200,202-206,211-216,218-244
+  s_80c3f828b28c9e::t_f67cec4628cf32 260-263,268
+  s_80c3f828b28c9e::t_576f52cdac287f 1-10,17-59,72-191,194-199,201,207-210,217,245-259,264-267,269-321
+  s_80c3f828b28c9e::t_e8a6f68839bc98 11-16
+  s_80c3f828b28c9e::t_8338c381a2d94d 60-71
+libs/evals/deepagents_clbench/sync_to_clbench.sh
+  s_80c3f828b28c9e::t_dc90c27f957f24 1-35
+libs/evals/deepagents_clbench/system/__init__.py
+  s_80c3f828b28c9e::t_2226e8315233c1 1-5
+libs/evals/pyproject.toml
+  s_80c3f828b28c9e::t_a2af62d269637d 123-127,131-132
+libs/evals/deepagents_clbench/README.md
+  s_80c3f828b28c9e::t_3219689b824062 1-51,58-60,68-87
+  s_80c3f828b28c9e::t_39f663b6c15137 52-57,61-67
+.github/workflows/harbor.yml
+  s_80c3f828b28c9e::t_04485674c9ca8a 29-37,39
+  s_80c3f828b28c9e::t_f521bf474144cc 230
+  s_80c3f828b28c9e::t_6029bfe915de54 643
+  s_80c3f828b28c9e::t_1e7ddd945eeed7 122,127,135,143,148,153,158
+  s_80c3f828b28c9e::t_2f591b22b4e90a 517-642,644-673
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "8e74db486a346055c8d3e35c77b2a1ac40002c21",
+  "prompts": {},
+  "sessions": {
+    "s_80c3f828b28c9e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "494573eb-9ae0-433c-ba3c-5b0e7b00bd7e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

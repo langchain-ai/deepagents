@@ -373,7 +373,8 @@ class ReadFileSchema(BaseModel):
 class WriteFileSchema(BaseModel):
     """Input schema for the `write_file` tool."""
 
-    file_path: str = Field(description="Absolute path where the file should be created. Must be absolute, not relative.")
+    file_path: str = Field(description="Absolute path where the file should be written. Must be absolute, not relative.")
+
     content: str = Field(description="The text content to write to the file. This parameter is required.")
 
 
@@ -462,10 +463,10 @@ Usage:
 - Only use emojis if the user explicitly requests it."""
 
 
-WRITE_FILE_TOOL_DESCRIPTION = """Writes to a new file in the filesystem.
+WRITE_FILE_TOOL_DESCRIPTION = """Writes content to a file. Creates the file if it does not exist; replaces it entirely if it does.
 
 Usage:
-- The write_file tool will create the a new file.
+- Use this tool when you intend to create a new file or replace the whole file. You do not need to read the file first.
 - Prefer to edit existing files (with the edit_file tool) over creating new ones when possible.
 """
 
@@ -1113,7 +1114,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_description = self._custom_tool_descriptions.get("write_file") or WRITE_FILE_TOOL_DESCRIPTION
 
         def sync_write_file(
-            file_path: Annotated[str, "Absolute path where the file should be created. Must be absolute, not relative."],
+            file_path: Annotated[str, "Absolute path where the file should be written. Must be absolute, not relative."],
             content: Annotated[str, "The text content to write to the file. This parameter is required."],
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
@@ -1152,7 +1153,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             )
 
         async def async_write_file(
-            file_path: Annotated[str, "Absolute path where the file should be created. Must be absolute, not relative."],
+            file_path: Annotated[str, "Absolute path where the file should be written. Must be absolute, not relative."],
             content: Annotated[str, "The text content to write to the file. This parameter is required."],
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:

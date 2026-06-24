@@ -35,6 +35,50 @@ def simple_history(tmp_path: Path) -> HistoryManager:
     return mgr
 
 
+class TestSkillInvocationHistory:
+    """Skill invocations (/skill:<name>) are stored; other slash commands are not."""
+
+    def test_skill_invocation_added(self, tmp_path: Path) -> None:
+        """`/skill:web-research` should be stored in history."""
+        mgr = HistoryManager(tmp_path / "history.jsonl")
+        mgr.add("/skill:web-research find quantum computing")
+        assert mgr._entries == ["/skill:web-research find quantum computing"]
+
+    def test_skill_invocation_without_args_added(self, tmp_path: Path) -> None:
+        """`/skill:remember` with no args should be stored."""
+        mgr = HistoryManager(tmp_path / "history.jsonl")
+        mgr.add("/skill:remember")
+        assert mgr._entries == ["/skill:remember"]
+
+    def test_non_skill_slash_command_not_added(self, tmp_path: Path) -> None:
+        """`/help` and other slash commands should not be stored."""
+        mgr = HistoryManager(tmp_path / "history.jsonl")
+        mgr.add("/help")
+        mgr.add("/quit")
+        mgr.add("/model")
+        assert mgr._entries == []
+
+    def test_skill_invocation_recallable(self, tmp_path: Path) -> None:
+        """Skill invocations should be recallable via get_previous."""
+        mgr = HistoryManager(tmp_path / "history.jsonl")
+        mgr.add("some regular text")
+        mgr.add("/skill:web-research find cats")
+        mgr.reset_navigation()
+
+        entry = mgr.get_previous("", query="")
+        assert entry == "/skill:web-research find cats"
+
+        entry = mgr.get_previous("", query="")
+        assert entry == "some regular text"
+
+    def test_skill_invocation_dedup(self, tmp_path: Path) -> None:
+        """Duplicate skill invocations are deduplicated like normal entries."""
+        mgr = HistoryManager(tmp_path / "history.jsonl")
+        mgr.add("/skill:web-research find cats")
+        mgr.add("/skill:web-research find cats")
+        assert mgr._entries == ["/skill:web-research find cats"]
+
+
 class TestSubstringMatch:
     """Substring matching navigates to entries containing the query."""
 

@@ -97,8 +97,10 @@ class HistoryManager:
             text: The command text to add
         """
         text = text.strip()
-        # Skip empty or slash commands
-        if not text or text.startswith("/"):
+        # Skip empty or non-skill slash commands.
+        # Skill invocations (/skill:<name>) are kept so users can recall them
+        # with up-arrow; other slash commands are ephemeral UI actions.
+        if not text or (text.startswith("/") and not text.startswith("/skill:")):
             return
 
         # Skip duplicates of the last entry

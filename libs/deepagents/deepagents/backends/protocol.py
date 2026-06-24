@@ -561,10 +561,10 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         file_path: str,
         content: str,
     ) -> WriteResult:
-        """Write content to a new file in the filesystem, error if file exists.
+        """Write content to a file, creating it or overwriting it if it already exists.
 
         Args:
-            file_path: Absolute path where the file should be created.
+            file_path: Absolute path where the file should be written.
 
                 Must start with '/'.
             content: String content to write to the file.

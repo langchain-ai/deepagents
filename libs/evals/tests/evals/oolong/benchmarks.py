@@ -316,15 +316,67 @@ def _coerce_gold(raw: Any) -> tuple[str, ...]:  # noqa: ANN401
 # ---------------------------------------------------------------------------
 
 _PLAIN_SYSTEM_PROMPT = (
-    "You are a helpful assistant. "
-    "The document you need to analyze is at `/context.txt` in your workspace. "
-    "Use the task tool to delegate parts of the analysis to subagents."
+    "You are a precise data analyst. The document to analyze is at `/context.txt`.\n"
+    "\n"
+    "Work in two phases:\n"
+    "1. UNDERSTAND: read enough of `/context.txt` (the header plus a few lines) to "
+    "learn its exact format and how many data lines it has. Do not try to read or "
+    "classify the whole document yourself — it is too large to do accurately in one pass.\n"
+    "2. ORCHESTRATE: split the data lines into contiguous chunks (~40-60 lines each) and "
+    "dispatch them to `general-purpose` subagents *in parallel* — emit multiple `task` calls "
+    "in a single turn, one per chunk. Each `task` tells its subagent the exact line range to "
+    "read from `/context.txt` and to return structured per-line results (the label for each "
+    "line in its range). Subagents read their own range with `read_file`.\n"
+    "\n"
+    "Then AGGREGATE the per-line results from all chunks yourself: concatenate them and "
+    "compute the answer (count labels, take the min/max, etc.). Never ask one subagent to "
+    "process the whole document, and never let a subagent return the final aggregate — do the "
+    "final computation yourself. Finish by stating the final answer in the exact format the "
+    "question requests.\n"
+    "\n"
+    "Keep the orchestration to a SINGLE fan-out round: one batch of parallel `task` calls over "
+    "fixed contiguous chunks, then aggregate. Do NOT run validation-and-repair passes or "
+    "re-dispatch subagents for missing/duplicate lines — if a few lines are missing, just "
+    "aggregate what you have. One round keeps latency bounded."
 )
 
 _CODE_INTERPRETER_SYSTEM_PROMPT = (
-    "You are a helpful assistant. "
-    "The document you need to analyze is at `/context.txt` in your workspace. "
-    "Use the eval and task tools to analyze the document."
+    "You are a precise data analyst. The document to analyze is at `/context.txt`.\n"
+    "\n"
+    "Work in two phases:\n"
+    "1. UNDERSTAND: read enough of `/context.txt` (the header plus a few lines) to "
+    "learn its exact format and how many data lines it has. Do not try to read or "
+    "classify the whole document yourself — it is too large to do accurately in one pass.\n"
+    "2. ORCHESTRATE IN THE REPL: do ALL of the heavy work inside a single `eval` program. "
+    "Split the data lines into contiguous chunks (~40-60 lines each) and fan the chunks out "
+    "to `general-purpose` subagents *in parallel* with `Promise.all([...])` of `task(...)` "
+    "calls. Each `task` tells its subagent the exact line range to read from `/context.txt` "
+    "and uses a `responseSchema` so it returns structured per-line results (e.g. the label "
+    "for each line in its range). Subagents read their own range with `read_file`.\n"
+    "\n"
+    "Then AGGREGATE deterministically in JavaScript: concatenate the per-line results from "
+    "all chunks and compute the answer with code (count labels, take the min/max, etc.). "
+    "Never ask one subagent to process the whole document, and never let a subagent return "
+    "the final aggregate — the counting and the final computation must happen in your "
+    "JavaScript so they are exact. Finish by stating the final answer in the exact format "
+    "the question requests.\n"
+    "\n"
+    "Keep the orchestration to a SINGLE fan-out round: one `Promise.all` of `task` calls over "
+    "fixed contiguous chunks, then aggregate. Do NOT run validation-and-repair passes or "
+    "re-dispatch subagents for missing/duplicate lines — if a few lines are missing, just "
+    "aggregate what you have. One round keeps latency bounded."
+)
+
+#: Shared subagent prompt (both arms use the same general-purpose subagent, so
+#: only the orchestrator's aggregation substrate differs).
+_SUBAGENT_SYSTEM_PROMPT = (
+    "You analyze one assigned range of /context.txt. "
+    "Read the ENTIRE assigned line range with read_file (paginate with "
+    "offset/limit if needed), then process every line in the range — do not "
+    "skip, sample, or approximate. Return exactly the structured per-line "
+    "result the task asks for (one entry per data line in your range). "
+    "Do not compute aggregates or totals; return the raw per-line data so the "
+    "caller can aggregate. Do not delegate further."
 )
 
 
@@ -341,13 +393,8 @@ def build_agent(
     subagent_cfg: list[SubAgent] = [
         {
             "name": "general-purpose",
-            "description": "Reads a range of /context.txt and extracts facts as directed.",
-            "system_prompt": (
-                "You are a helpful assistant. "
-                "Read the assigned range of /context.txt using read_file, "
-                "extract the requested facts, and return concise results. "
-                "Do not delegate further."
-            ),
+            "description": "Reads a range of /context.txt and extracts per-line facts as directed.",
+            "system_prompt": _SUBAGENT_SYSTEM_PROMPT,
             "model": sub_model_id,
         }
     ]
@@ -364,7 +411,9 @@ def build_agent(
         agent = create_deep_agent(
             model=root_model,
             system_prompt=_CODE_INTERPRETER_SYSTEM_PROMPT,
-            middleware=[CodeInterpreterMiddleware()],
+            # Long timeout: a single `eval` awaits a Promise.all of `task()`
+            # subagent dispatches, which take much longer than the 5s default.
+            middleware=[CodeInterpreterMiddleware(timeout=600.0)],
             subagents=subagent_cfg,
         )
         return agent, {"/context.txt": context}

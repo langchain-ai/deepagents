@@ -41,7 +41,11 @@ if TYPE_CHECKING:
 
 from deepagents_code import auth_store, theme
 from deepagents_code.auth_display import format_auth_badge
-from deepagents_code.config import get_glyphs, is_ascii_mode
+from deepagents_code.config import (
+    apply_stored_langsmith_auth,
+    get_glyphs,
+    is_ascii_mode,
+)
 from deepagents_code.model_config import (
     CODEX_PROVIDER,
     PROVIDER_API_KEY_ENV,
@@ -939,6 +943,8 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             # chmod failures are security regressions the user must see —
             # `logger.warning` alone is invisible inside a Textual session.
             self.app.notify(warning, severity="warning", markup=False)
+        if self._is_langsmith:
+            apply_stored_langsmith_auth(replace_project=True)
         clear_caches()
         self.dismiss(AuthResult.SAVED)
 

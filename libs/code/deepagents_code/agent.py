@@ -63,6 +63,7 @@ from deepagents_code.config import (
     get_default_coding_instructions,
     get_glyphs,
     get_langsmith_project_name,
+    restore_user_tracing_env,
     settings,
 )
 from deepagents_code.configurable_model import ConfigurableModelMiddleware
@@ -1523,6 +1524,7 @@ def create_cli_agent(
                 shell_env["LANGSMITH_PROJECT"] = settings.user_langchain_project
             else:
                 shell_env.pop("LANGSMITH_PROJECT", None)
+            restore_user_tracing_env(shell_env)
             # Re-apply a launch-time PYTHONPATH that was stripped from the server
             # interpreter but relayed for approval-gated `execute` commands.
             _apply_inherited_pythonpath(shell_env)

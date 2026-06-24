@@ -61,6 +61,13 @@ Captured inside `_ensure_bootstrap()` after dotenv loading but before the
 `LANGSMITH_PROJECT` override, so `.env`-only values are visible.
 """
 
+_original_tracing_env: dict[str, str | None] = {}
+"""Caller's tracing-enable env values before Deep Agents Code mutates them.
+
+Captured inside `_ensure_bootstrap()` after dotenv loading but before prefixed
+bridging, stored-key tracing, or orphaned-tracing cleanup mutates tracing flags.
+"""
+
 _dotenv_loaded_values: dict[str, str] = {}
 """Environment values injected by our dotenv loader and safe to refresh later."""
 
@@ -450,6 +457,19 @@ def _disable_set_tracing_flags() -> list[str]:
     return disabled
 
 
+def restore_user_tracing_env(env: dict[str, str]) -> None:
+    """Restore caller tracing flags in an environment passed to user code.
+
+    Args:
+        env: Environment mapping prepared for a child/user subprocess.
+    """
+    for var, value in _original_tracing_env.items():
+        if value is None:
+            env.pop(var, None)
+        else:
+            env[var] = value
+
+
 def _disable_orphaned_tracing() -> None:
     """Disable LangSmith tracing when enabled without a usable API key.
 
@@ -513,7 +533,25 @@ def _apply_default_langsmith_project() -> None:
     os.environ["LANGSMITH_PROJECT"] = LANGSMITH_PROJECT_DEFAULT
 
 
-def _apply_stored_langsmith_tracing() -> None:
+def apply_stored_langsmith_auth(*, replace_project: bool = False) -> None:
+    """Apply a `/auth`-stored LangSmith key and tracing settings now.
+
+    Args:
+        replace_project: Whether the stored LangSmith project should replace
+            the current process `LANGSMITH_PROJECT`. Startup leaves this false
+            so an explicit environment value remains authoritative; the `/auth`
+            save path sets it true because the saved project is the newest user
+            choice for the already-running session.
+    """
+    from deepagents_code.model_config import apply_stored_service_credentials
+
+    apply_stored_service_credentials()
+    _apply_stored_langsmith_tracing(replace_project=replace_project)
+    _disable_orphaned_tracing()
+    _apply_default_langsmith_project()
+
+
+def _apply_stored_langsmith_tracing(*, replace_project: bool = False) -> None:
     """Enable tracing (and apply a custom project) for a `/auth`-stored key.
 
     Storing a LangSmith key via `/auth` is a deliberate opt-in to tracing, but
@@ -524,7 +562,8 @@ def _apply_stored_langsmith_tracing() -> None:
     falsy tracing flag (most simply `DEEPAGENTS_CODE_LANGSMITH_TRACING=false`,
     which bootstrap bridges to `LANGSMITH_TRACING`) is honored and tracing stays
     off, so the stored key can be paused without deleting it. A custom stored
-    project is applied to `LANGSMITH_PROJECT` when the user has not set one.
+    project is applied to `LANGSMITH_PROJECT` when the user has not set one,
+    unless `replace_project` is set for the immediate `/auth` save path.
 
     No-op when no LangSmith key is stored, so a key supplied only through the
     environment keeps the prior behavior (tracing stays off unless a flag is
@@ -579,6 +618,12 @@ def _apply_stored_langsmith_tracing() -> None:
         os.environ["LANGSMITH_TRACING"] = "true"
 
     project = entry.get("project") or None
+    if replace_project:
+        if project:
+            os.environ["LANGSMITH_PROJECT"] = project
+        else:
+            os.environ.pop("LANGSMITH_PROJECT", None)
+        return
     if project and not os.environ.get("LANGSMITH_PROJECT"):
         os.environ["LANGSMITH_PROJECT"] = project
 
@@ -594,7 +639,7 @@ def _ensure_bootstrap() -> None:
     loops. Exceptions are caught and logged at ERROR level; the app proceeds
     with the environment as-is.
     """
-    global _bootstrap_done, _bootstrap_start_path, _original_langsmith_project  # noqa: PLW0603
+    global _bootstrap_done, _bootstrap_start_path, _original_langsmith_project, _original_tracing_env  # noqa: PLW0603, E501
 
     if _bootstrap_done:
         return
@@ -627,6 +672,9 @@ def _ensure_bootstrap() -> None:
             # Capture AFTER dotenv loading so .env-only values are visible,
             # but BEFORE the override below replaces it.
             _original_langsmith_project = os.environ.get("LANGSMITH_PROJECT")
+            _original_tracing_env = {
+                var: os.environ.get(var) for var in _TRACING_ENABLE_ENV_VARS
+            }
 
             # CRITICAL: Override LANGSMITH_PROJECT to route agent traces to a
             # separate project. LangSmith reads LANGSMITH_PROJECT at invocation
@@ -669,30 +717,11 @@ def _ensure_bootstrap() -> None:
                         canonical,
                     )
 
-            # Bridge stored service keys (e.g. Tavily web search, LangSmith
-            # tracing, entered via `/auth`) onto their canonical env vars before
-            # the tracing checks below, so a stored key activates the feature
-            # without exporting the var. Runs first so a LangSmith key stored via
-            # `/auth` is present when orphaned-tracing detection runs.
-            from deepagents_code.model_config import apply_stored_service_credentials
-
-            apply_stored_service_credentials()
-
-            # A LangSmith key stored via `/auth` opts the user into tracing, so
-            # turn tracing on (unless they explicitly disabled it) and apply any
-            # stored custom project. Runs before `_disable_orphaned_tracing` so
-            # the just-bridged key keeps tracing alive instead of being disabled.
-            _apply_stored_langsmith_tracing()
-
-            # Tracing enabled without a key floods the TUI with 401 ingest
-            # errors; disable it before any traced run starts.
-            _disable_orphaned_tracing()
-
-            # If tracing is still active but no project is configured, default
-            # to `deepagents-code` so ingestion matches the name we display and
-            # look up. Runs after `_disable_orphaned_tracing` so a keyless setup
-            # (tracing already turned off) is left untouched.
-            _apply_default_langsmith_project()
+            # Bridge stored service keys, apply stored LangSmith tracing defaults,
+            # disable orphaned tracing, and route active tracing to the displayed
+            # project. Keeping this in one helper lets `/auth` save apply the same
+            # state immediately inside an already-running TUI session.
+            apply_stored_langsmith_auth()
         except Exception:
             logger.exception(
                 "Bootstrap failed; .env values and LANGSMITH_PROJECT override "

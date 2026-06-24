@@ -30,6 +30,7 @@ from deepagents_code.config import (
     _read_config_toml_retries,
     _resolve_retry_kwargs,
     _resolve_retry_param_name,
+    apply_stored_langsmith_auth,
     build_langsmith_thread_url,
     consume_orphaned_tracing_disabled_notice,
     create_model,
@@ -2231,6 +2232,56 @@ class TestApplyStoredLangSmithTracing:
         _apply_stored_langsmith_tracing()
         assert os.environ["LANGSMITH_PROJECT"] == "from-env"
 
+    def test_replace_project_applies_stored_project_over_existing_env(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Immediate `/auth` save applies the latest stored project."""
+        import os
+
+        from deepagents_code import auth_store
+
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        monkeypatch.setenv("LANGSMITH_PROJECT", "old-project")
+        auth_store.set_stored_key("langsmith", "lsv2_test", project="my-app")
+        _apply_stored_langsmith_tracing(replace_project=True)
+        assert os.environ["LANGSMITH_PROJECT"] == "my-app"
+
+    def test_replace_project_clears_existing_env_when_project_removed(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Immediate `/auth` save clears the old project when the field is blank."""
+        import os
+
+        from deepagents_code import auth_store
+
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        monkeypatch.setenv("LANGSMITH_PROJECT", "old-project")
+        auth_store.set_stored_key("langsmith", "lsv2_test")
+        _apply_stored_langsmith_tracing(replace_project=True)
+        assert "LANGSMITH_PROJECT" not in os.environ
+
+    def test_immediate_auth_clear_restores_default_project(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Clearing `/auth` project updates the active traced session."""
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+        monkeypatch.setenv("LANGSMITH_PROJECT", "old-project")
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        auth_store.set_stored_key("langsmith", "lsv2_test")
+        apply_stored_langsmith_auth(replace_project=True)
+        assert os.environ["LANGSMITH_PROJECT"] == LANGSMITH_PROJECT_DEFAULT
+        assert os.environ["LANGSMITH_TRACING"] == "true"
+
     def test_corrupt_store_warns_and_leaves_env_untouched(
         self,
         fake_state_dir: Path,
@@ -4370,6 +4421,7 @@ class TestLazyModuleAttributes:
 
         original_done = config_mod._bootstrap_done
         original_ls = config_mod._original_langsmith_project
+        original_tracing = dict(config_mod._original_tracing_env)
         config_mod._bootstrap_done = False
 
         try:
@@ -4409,6 +4461,99 @@ class TestLazyModuleAttributes:
         finally:
             config_mod._bootstrap_done = original_done
             config_mod._original_langsmith_project = original_ls
+            config_mod._original_tracing_env = original_tracing
+
+    def test_bootstrap_prefixed_langsmith_key_wins_over_stored_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A session-scoped LangSmith key remains authoritative at bootstrap."""
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code import auth_store
+        from deepagents_code.config import _ensure_bootstrap
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+
+        original_done = config_mod._bootstrap_done
+        original_ls = config_mod._original_langsmith_project
+        original_tracing = dict(config_mod._original_tracing_env)
+        config_mod._bootstrap_done = False
+
+        try:
+            monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_prefixed")
+            monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+            monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+            monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+            monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
+            auth_store.set_stored_key("langsmith", "lsv2_stored")
+
+            with (
+                patch("deepagents_code.config._load_dotenv"),
+                patch(
+                    "deepagents_code.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            assert os.environ["LANGSMITH_API_KEY"] == "lsv2_prefixed"
+            assert os.environ["LANGSMITH_TRACING"] == "true"
+        finally:
+            config_mod._bootstrap_done = original_done
+            config_mod._original_langsmith_project = original_ls
+            config_mod._original_tracing_env = original_tracing
+
+    def test_scoped_tracing_opt_out_restores_user_tracing_for_shell_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Deep Agents Code opt-out does not leak into child command envs."""
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code import auth_store
+        from deepagents_code.config import _ensure_bootstrap, restore_user_tracing_env
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+
+        original_done = config_mod._bootstrap_done
+        original_ls = config_mod._original_langsmith_project
+        original_tracing = dict(config_mod._original_tracing_env)
+        config_mod._bootstrap_done = False
+
+        try:
+            monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "false")
+            monkeypatch.setenv("LANGCHAIN_TRACING_V2", "true")
+            monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+            monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+            monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
+            auth_store.set_stored_key("langsmith", "lsv2_stored")
+
+            with (
+                patch("deepagents_code.config._load_dotenv"),
+                patch(
+                    "deepagents_code.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            assert os.environ["LANGSMITH_TRACING"] == "false"
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
+
+            shell_env = os.environ.copy()
+            restore_user_tracing_env(shell_env)
+
+            assert "LANGSMITH_TRACING" not in shell_env
+            assert shell_env["LANGCHAIN_TRACING_V2"] == "true"
+        finally:
+            config_mod._bootstrap_done = original_done
+            config_mod._original_langsmith_project = original_ls
+            config_mod._original_tracing_env = original_tracing
 
 
 class TestApplyDefaultLangsmithProject:

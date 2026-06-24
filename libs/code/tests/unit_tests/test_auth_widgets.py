@@ -557,6 +557,35 @@ api_key_env = "MY_GATEWAY_API_KEY"
         assert app.prompt_result is AuthResult.SAVED
         assert auth_store.get_stored_key("anthropic") == "sk-ant-test-12345"
 
+    async def test_langsmith_submit_applies_tracing_env_immediately(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Saving LangSmith auth activates tracing in the running process."""
+        import os
+
+        for var in (
+            "LANGSMITH_API_KEY",
+            "LANGSMITH_TRACING",
+            "LANGCHAIN_TRACING_V2",
+            "LANGSMITH_PROJECT",
+            "DEEPAGENTS_CODE_LANGSMITH_API_KEY",
+            "DEEPAGENTS_CODE_LANGSMITH_TRACING",
+            "DEEPAGENTS_CODE_LANGSMITH_PROJECT",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("langsmith", "LANGSMITH_API_KEY")
+            await pilot.pause()
+            app.screen.query_one("#auth-prompt-input", Input).value = "lsv2_live"
+            await pilot.press("enter")
+            await pilot.pause()
+
+        assert app.prompt_result is AuthResult.SAVED
+        assert os.environ["LANGSMITH_API_KEY"] == "lsv2_live"
+        assert os.environ["LANGSMITH_TRACING"] == "true"
+
     async def test_base_url_round_trips_on_submit(self) -> None:
         """A base URL typed alongside the key is persisted as the pair."""
         app = _AuthHostApp()

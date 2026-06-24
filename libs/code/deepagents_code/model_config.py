@@ -2062,9 +2062,10 @@ def apply_stored_service_credentials() -> None:
 
     Services (e.g. web search via Tavily) have no base URL to reconcile, so
     this is a plain key copy onto the canonical env var name the underlying
-    SDK reads. A stored key takes precedence over an existing env var, matching
-    `apply_stored_credentials`. Only the unprefixed canonical name is written,
-    so a `DEEPAGENTS_CODE_`-prefixed override still wins via `resolve_env_var`.
+    SDK reads. A stored key takes precedence over an existing plain env var,
+    matching `apply_stored_credentials`; a `DEEPAGENTS_CODE_`-prefixed override
+    is left authoritative because the app already treats it as the top-priority
+    per-session credential.
     """
     for service, env_var in SERVICE_API_KEY_ENV.items():
         try:
@@ -2076,7 +2077,12 @@ def apply_stored_service_credentials() -> None:
                 service,
             )
             continue
-        if stored and os.environ.get(env_var) != stored:
+        if not stored:
+            continue
+        prefixed = f"{_ENV_PREFIX}{env_var}"
+        if prefixed in os.environ:
+            continue
+        if os.environ.get(env_var) != stored:
             os.environ[env_var] = stored
 
 

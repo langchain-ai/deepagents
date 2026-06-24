@@ -22,7 +22,7 @@ from deepagents.graph import (
     BASE_AGENT_PROMPT,
     DeepAgentState,
     _create_bedrock_prompt_caching_middleware,
-    _apply_user_middleware,
+    _apply_custom_middleware,
     create_deep_agent,
     get_default_model,
 )
@@ -2184,7 +2184,7 @@ class TestApplyUserMiddleware:
     def test_matching_name_replaces_at_same_position(self) -> None:
         a, b, c = _named_mw("A"), _named_mw("B"), _named_mw("C")
         replacement = _named_mw("B")
-        result = _apply_user_middleware([a, b, c], [replacement])
+        result = _apply_custom_middleware([a, b, c], [replacement])
         assert result[1] is replacement
         assert result[0] is a
         assert result[2] is c
@@ -2193,19 +2193,19 @@ class TestApplyUserMiddleware:
     def test_non_matching_name_is_appended(self) -> None:
         a, b = _named_mw("A"), _named_mw("B")
         new = _named_mw("Z")
-        result = _apply_user_middleware([a, b], [new])
+        result = _apply_custom_middleware([a, b], [new])
         assert result[-1] is new
         assert len(result) == 3
 
     def test_empty_user_list_returns_base_unchanged(self) -> None:
         a, b = _named_mw("A"), _named_mw("B")
-        result = _apply_user_middleware([a, b], [])
+        result = _apply_custom_middleware([a, b], [])
         assert result == [a, b]
 
     def test_multiple_replacements_in_one_call(self) -> None:
         a, b, c = _named_mw("A"), _named_mw("B"), _named_mw("C")
         r_a, r_c = _named_mw("A"), _named_mw("C")
-        result = _apply_user_middleware([a, b, c], [r_a, r_c])
+        result = _apply_custom_middleware([a, b, c], [r_a, r_c])
         assert result[0] is r_a
         assert result[1] is b
         assert result[2] is r_c
@@ -2214,17 +2214,38 @@ class TestApplyUserMiddleware:
     def test_non_matching_appended_in_original_order(self) -> None:
         base = _named_mw("Base")
         x, y = _named_mw("X"), _named_mw("Y")
-        result = _apply_user_middleware([base], [x, y])
+        result = _apply_custom_middleware([base], [x, y])
         assert result[1] is x
         assert result[2] is y
 
     def test_mix_of_replacements_and_new_entries(self) -> None:
         a, b = _named_mw("A"), _named_mw("B")
         r_a, new = _named_mw("A"), _named_mw("New")
-        result = _apply_user_middleware([a, b], [r_a, new])
+        result = _apply_custom_middleware([a, b], [r_a, new])
         assert result[0] is r_a
         assert result[1] is b
         assert result[2] is new
+
+    def test_excluded_slot_inserted_at_original_position(self) -> None:
+        """Excluded-slot replacement is inserted at its original position, not appended."""
+        a, b, c = _named_mw("A"), _named_mw("B"), _named_mw("C")
+        original = {m.name: i for i, m in enumerate([a, b, c])}
+        filtered = [a, c]  # b was excluded
+        r_b = _named_mw("B")
+        result = _apply_custom_middleware(filtered, [r_b], original)
+        assert len(result) == 3
+        assert result[0] is a
+        assert result[1] is r_b
+        assert result[2] is c
+
+    def test_multiple_excluded_slots_preserve_relative_order(self) -> None:
+        """Multiple excluded-slot insertions are placed in their original relative order."""
+        a, b, c, d = _named_mw("A"), _named_mw("B"), _named_mw("C"), _named_mw("D")
+        original = {m.name: i for i, m in enumerate([a, b, c, d])}
+        filtered = [a, d]  # b and c were excluded
+        r_b, r_c = _named_mw("B"), _named_mw("C")
+        result = _apply_custom_middleware(filtered, [r_b, r_c], original)
+        assert result == [a, r_b, r_c, d]
 
 
 class TestUserMiddlewareOverride:
@@ -2339,3 +2360,37 @@ class TestUserMiddlewareOverride:
         summ_entries = [m for m in subagent_stack if isinstance(m, _DeepAgentsSummarizationMiddleware)]
         assert len(summ_entries) == 1
         assert summ_entries[0] is custom
+
+    def test_same_name_subclass_with_exclusion_does_not_raise(self) -> None:
+        """Profile-excluded default replaced by same-name subclass does not raise ValueError."""
+
+        class MySummarizationMiddleware(SummarizationMiddleware):
+            @property
+            def name(self) -> str:
+                return "SummarizationMiddleware"
+
+        custom = MySummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+        )
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "excsamwprov",
+                HarnessProfile(excluded_middleware=frozenset({_DeepAgentsSummarizationMiddleware})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                # Should not raise ValueError from coverage verification
+                create_deep_agent(model="excsamwprov:some-model", middleware=[custom])
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+        stack = mock_create.call_args.kwargs["middleware"]
+        assert any(m is custom for m in stack)

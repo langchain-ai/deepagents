@@ -56,7 +56,7 @@ class RecordingTransport:
         self.uploads: list[tuple[str, str, Path, dict[str, object]]] = []
         self._get_me_called = False
 
-    async def call(self, method: str, **params: object) -> object:
+    async def call(self, method: str, **params: object) -> object:  # noqa: C901  # test mock dispatch
         self.calls.append((method, dict(params)))
         if method == "getMe":
             self._get_me_called = True
@@ -79,6 +79,8 @@ class RecordingTransport:
                 file_path = "documents/clip.mp4"
             elif file_id == "doc123":
                 file_path = "documents/report.pdf"
+            elif file_id == "docaudio123":
+                file_path = "music/file.mp3"
             else:
                 file_path = "photos/file.jpg"
             return {"file_id": file_id, "file_path": file_path}
@@ -896,6 +898,7 @@ async def test_channel_parses_inbound_media(
                 "file_id": "video123",
                 "media_mime_types": ["video/mp4"],
                 "suffix": ".mp4",
+                "voice_path": True,
             },
         ),
         (
@@ -906,7 +909,7 @@ async def test_channel_parses_inbound_media(
                 text="",
                 video_note={"file_id": "note123", "duration": 8, "length": 240},
             ),
-            {"media_type": "video", "file_id": "note123", "suffix": ".mp4"},
+            {"media_type": "video", "file_id": "note123", "suffix": ".mp4", "voice_path": True},
         ),
         (
             "document_video",
@@ -926,6 +929,28 @@ async def test_channel_parses_inbound_media(
                 "file_name": "clip.mp4",
                 "media_mime_types": ["video/mp4"],
                 "suffix": ".mp4",
+                "voice_path": True,
+            },
+        ),
+        (
+            "document_audio",
+            _make_update(
+                chat_id=111,
+                sender_id=111,
+                text="",
+                document={
+                    "file_id": "docaudio123",
+                    "file_name": "song.mp3",
+                    "mime_type": "audio/mpeg",
+                },
+            ),
+            {
+                "media_type": "voice",
+                "file_id": "docaudio123",
+                "file_name": "song.mp3",
+                "media_mime_types": ["audio/mpeg"],
+                "suffix": ".mp3",
+                "voice_path": True,
             },
         ),
     )

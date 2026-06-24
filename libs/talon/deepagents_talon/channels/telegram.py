@@ -1020,10 +1020,14 @@ def _extract_media_info(msg: Mapping[str, object]) -> _TelegramMediaInfo | None:
 
 
 def _document_media_type(*, file_name: str | None, mime_type: str | None) -> str:
+    if mime_type is not None and mime_type.startswith("audio/"):
+        return "voice"
     if mime_type is not None and mime_type.startswith("video/"):
         return "video"
     if file_name is not None:
         guessed = mimetypes.guess_type(file_name)[0]
+        if guessed is not None and guessed.startswith("audio/"):
+            return "voice"
         if guessed is not None and guessed.startswith("video/"):
             return "video"
     return "document"

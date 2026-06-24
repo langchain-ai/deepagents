@@ -28,6 +28,9 @@ from deepagents_code.extras_info import (
 
 logger = logging.getLogger(__name__)
 
+_DEPENDENCY_BODY_MAX_HEIGHT = 16
+_DEPENDENCY_BODY_MIN_HEIGHT = 1
+
 
 def _normalize_name(value: str) -> str:
     """Normalize submitted onboarding names for display.
@@ -300,6 +303,29 @@ class LaunchDependenciesScreen(ModalScreen[bool | None]):
             container = self.query_one(Vertical)
             colors = theme.get_theme_colors(self)
             container.styles.border = ("ascii", colors.success)
+        self.call_after_refresh(self._fit_dependencies_body)
+
+    def on_resize(self) -> None:
+        """Refit the scroll body when terminal dimensions change."""
+        self.call_after_refresh(self._fit_dependencies_body)
+
+    def _fit_dependencies_body(self) -> None:
+        """Cap dependency rows so modal controls remain inside the viewport."""
+        if not self._statuses:
+            return
+
+        container = self.query_one(Vertical)
+        body = self.query_one("#launch-dependencies-body", VerticalScroll)
+        non_body_height = max(0, container.region.height - body.region.height)
+        available_height = self.size.height - non_body_height
+        max_height = max(
+            _DEPENDENCY_BODY_MIN_HEIGHT,
+            min(_DEPENDENCY_BODY_MAX_HEIGHT, available_height),
+        )
+        current = body.styles.max_height
+        if current is not None and current.cells == max_height:
+            return
+        body.styles.max_height = max_height
 
     def _format_section(
         self, *, title: str, ready: bool, glyph: str, empty: str

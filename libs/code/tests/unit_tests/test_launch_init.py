@@ -6,12 +6,14 @@ from typing import Any
 
 import pytest
 from textual.app import App, ComposeResult, ScreenStackError
-from textual.containers import Container
+from textual.containers import Container, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
 from deepagents_code.extras_info import (
     MODEL_PROVIDER_EXTRAS,
+    SANDBOX_EXTRAS,
+    STANDALONE_EXTRAS,
     ExtraDependencyStatus,
 )
 from deepagents_code.widgets.launch_init import (
@@ -223,6 +225,34 @@ class TestLaunchDependenciesScreen:
         assert "more" not in content
         for name in MODEL_PROVIDER_EXTRAS:
             assert name in content
+
+    async def test_populated_screen_fits_standard_terminal_height(self) -> None:
+        """A full dependency list should keep footer controls visible at 80x24."""
+        statuses = tuple(
+            ExtraDependencyStatus(
+                name=name, installed=(), missing=(f"langchain-{name}",)
+            )
+            for name in sorted(
+                MODEL_PROVIDER_EXTRAS | SANDBOX_EXTRAS | STANDALONE_EXTRAS
+            )
+        )
+        app = LaunchNameTestApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            app.show_dependencies_screen(statuses)
+            await pilot.pause()
+            await pilot.pause()
+
+            container = app.screen.query_one(Vertical)
+            body = app.screen.query_one("#launch-dependencies-body", VerticalScroll)
+            help_text = app.screen.query_one(".launch-init-help", Static)
+
+        assert container.region.y >= 0
+        assert container.region.y + container.region.height <= app.size.height
+        assert help_text.region.y + help_text.region.height <= app.size.height
+        max_height = body.styles.max_height
+        assert max_height is not None
+        assert max_height.cells is not None
+        assert max_height.cells < 16
 
     async def test_renders_other_category(self) -> None:
         """Standalone extras (e.g. quickjs) get their own category."""

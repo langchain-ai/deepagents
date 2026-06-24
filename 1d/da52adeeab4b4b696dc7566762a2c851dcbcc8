@@ -1,0 +1,27 @@
+libs/code/tests/unit_tests/conftest.py
+  s_b982aea78c7fba::t_d4fb09fbc92c88 95-111
+libs/code/tests/unit_tests/test_app.py
+  s_b982aea78c7fba::t_530400cc178120 11589-11633
+  s_b982aea78c7fba::t_b98c2d7d14edcc 1192-1263
+  s_b982aea78c7fba::t_cac602c01ea378 1002-1005
+  s_b982aea78c7fba::t_8a5e59b725d235 907-910
+  s_b982aea78c7fba::t_91e7cea404b7ce 1112-1113
+  s_b982aea78c7fba::t_c532ce059f0381 1401-1403
+  s_b982aea78c7fba::t_a6ff5e033bcf1b 1520-1522
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "1dda52adeeab4b4b696dc7566762a2c851dcbcc8",
+  "prompts": {},
+  "sessions": {
+    "s_b982aea78c7fba": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3bfbd1cf-abae-4b37-88c4-b7a32b6990ee",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

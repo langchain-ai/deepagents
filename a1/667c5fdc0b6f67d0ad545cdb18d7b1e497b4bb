@@ -1,0 +1,22 @@
+libs/evals/deepagents_clbench/README.md
+  s_80c3f828b28c9e::t_c864ebe51f24d1 50,52-56,60,62-66,68-70
+  s_80c3f828b28c9e::t_e3be5a20d1ae79 80-83
+libs/evals/deepagents_clbench/system/system.py
+  s_80c3f828b28c9e::t_07a4a4ff65862d 4-28,51-52,54-56,60-71,92-93,112-115,117,123-140,145-146,148-151,153-160,166,168,170-175,191,193-194,197-198,207,226,242
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "a1667c5fdc0b6f67d0ad545cdb18d7b1e497b4bb",
+  "prompts": {},
+  "sessions": {
+    "s_80c3f828b28c9e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "494573eb-9ae0-433c-ba3c-5b0e7b00bd7e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

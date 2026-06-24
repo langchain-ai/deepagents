@@ -1,0 +1,28 @@
+libs/evals/tests/evals/oolong_benchmarks.py
+  s_943638c4b69b44::t_8306d6f9fbaff4 406-433,437
+  s_943638c4b69b44::t_9ac262def92382 493
+  s_943638c4b69b44::t_e86fa243930051 321-327,351
+  s_943638c4b69b44::t_69426f1379429e 436,442-446,448
+  s_943638c4b69b44::t_07b4f18b462198 485
+  s_943638c4b69b44::t_b0d5374d4f1972 394-405,434-435,438-441,447,449-450
+  s_943638c4b69b44::t_056f7dd8987080 362-365
+  s_943638c4b69b44::t_d7ac1ecaef2481 294,300-320,348-350,353-356
+  s_943638c4b69b44::t_7e6eada0faea1c 357-361
+  s_943638c4b69b44::t_2b44b6b8f6107d 328-347,352
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "134c9af07f3e50266c911c56dc013acfa76f7afa",
+  "prompts": {},
+  "sessions": {
+    "s_943638c4b69b44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0385a0ed-b687-4fe3-8e00-f4dc75345399",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

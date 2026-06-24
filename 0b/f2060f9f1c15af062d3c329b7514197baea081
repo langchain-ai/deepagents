@@ -1,0 +1,35 @@
+libs/code/pyproject.toml
+  s_0d3d0c574ade9d::t_00732e1f96879a 142-143
+libs/code/deepagents_code/doctor.py
+  s_0d3d0c574ade9d::t_d7da9e610f2a31 90
+  s_0d3d0c574ade9d::t_0a5b38b99e85a6 100-104,114-119
+  s_0d3d0c574ade9d::t_4b0ebb29a863d1 91-92
+libs/code/tests/unit_tests/test_doctor.py
+  s_0d3d0c574ade9d::t_cd39ad4c50cc6b 250
+  s_0d3d0c574ade9d::t_fa1901f380fbb3 11
+  s_0d3d0c574ade9d::t_ab054d5d1fa0fb 204,207,216-227,239-249,251-255
+libs/code/tests/unit_tests/test_hatch_build.py
+  s_0d3d0c574ade9d::t_208faf251d6c13 14
+  s_0d3d0c574ade9d::t_fbb0ab3e58b1ee 34
+  s_0d3d0c574ade9d::t_439dd0e557db02 1-13,15-33,35-121,123-132,134-141,143-157,159
+  s_0d3d0c574ade9d::t_0d17a6c00f9fa5 122,133,142,158
+libs/code/hatch_build.py
+  s_0d3d0c574ade9d::t_5938cf56a5d81e 60-64
+  s_0d3d0c574ade9d::t_c9883caa7aab03 50-51
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "0bf2060f9f1c15af062d3c329b7514197baea081",
+  "prompts": {},
+  "sessions": {
+    "s_0d3d0c574ade9d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1e8ea28f-a5c3-49a5-a8fb-2924af920c4c",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

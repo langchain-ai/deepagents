@@ -24,7 +24,7 @@ from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field
-from quickjs_rs import Runtime, ThreadWorker
+from quickjs_rs import Runtime, SourceTransform, ThreadWorker
 
 from langchain_quickjs import CodeInterpreterMiddleware
 from langchain_quickjs._format import format_outcome
@@ -390,6 +390,29 @@ def test_backend_import_loader_supports_import(
     )
 
     outcome = module_repl.eval_sync("import('/math.js').then((m) => m.answer)")
+
+    assert outcome.error_type is None
+    assert outcome.result == "42"
+
+
+@pytest.mark.skipif(
+    not hasattr(SourceTransform, "STATIC_IMPORT_TO_DYNAMIC_IMPORT"),
+    reason="quickjs-rs does not expose static-import rewrite transform",
+)
+def test_top_level_static_imports_are_rewritten_for_backend_loader() -> None:
+    backend = _DictModuleBackend({"/math.js": "export const answer = 42;"})
+    reg = _Registry(
+        memory_limit=32 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4000,
+        module_backend=backend,
+    )
+    try:
+        repl = reg.get("thread-a")
+        outcome = repl.eval_sync('import { answer } from "/math.js"; answer')
+    finally:
+        reg.close()
 
     assert outcome.error_type is None
     assert outcome.result == "42"

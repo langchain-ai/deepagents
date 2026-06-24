@@ -382,6 +382,14 @@ def _render_tools_namespace_assignment(bridges: dict[str, str]) -> str:
 
 _MODULE_EXTENSIONS = (".js", ".mjs", ".ts")
 _MODULE_INDEX_FILES = tuple(f"index{ext}" for ext in _MODULE_EXTENSIONS)
+_STATIC_IMPORT_TO_DYNAMIC_IMPORT = getattr(
+    SourceTransform,
+    "STATIC_IMPORT_TO_DYNAMIC_IMPORT",
+    SourceTransform.NONE,
+)
+_TOP_LEVEL_EVAL_TRANSFORM_FLAGS = (
+    SourceTransform.TOP_LEVEL_CONST_TO_VAR | _STATIC_IMPORT_TO_DYNAMIC_IMPORT
+)
 
 
 def _module_candidates(path: str) -> tuple[str, ...]:
@@ -1105,7 +1113,7 @@ class _Registry:
     async def _acreate_runtime(self) -> Runtime:
         return Runtime(
             memory_limit=self.memory_limit,
-            transform_flags=SourceTransform.TOP_LEVEL_CONST_TO_VAR,
+            transform_flags=_TOP_LEVEL_EVAL_TRANSFORM_FLAGS,
         )
 
     def close(self) -> None:

@@ -1,0 +1,60 @@
+libs/evals/tests/evals/utils.py
+  s_a23cdcb1879983::t_47486df0088de2 1208-1209,1264-1265
+  s_943638c4b69b44::t_f8bbd2bd2529e0 1105,1119
+  s_a23cdcb1879983::t_0ce03ccafc7867 1106-1118,1125-1130,1133,1136-1144,1149-1154
+  s_943638c4b69b44::t_9082dd727a14c0 1171,1185-1187
+  s_943638c4b69b44::t_1a4a29e7a037cc 1122-1124
+  s_943638c4b69b44::t_35d2aca25c795b 1233,1246-1248
+  s_a23cdcb1879983::t_6cf69df6422c3f 1173,1190-1194,1211-1212
+libs/evals/tests/evals/oolong/benchmarks.py
+  s_a23cdcb1879983::t_c7dcbec8225a7c 395-398
+  s_a23cdcb1879983::t_340460340ce782 444-447,459-469,472-473,475
+  s_a23cdcb1879983::t_55e15e6adf449b 23-24,26-32
+  s_a23cdcb1879983::t_29cfcaea33a672 47,49-52,55,62
+  s_a23cdcb1879983::t_3351313382a859 3-4,7-8,10-14,19-22,25,33,39-41,46,48,56,60,63,78-82,84-85,180,182-188,190,192,198,200,206-207,213-214,222-223,234,240-241,243,245,251,253,276-296,388-394,399-403,411-413,421,424,426-431,434,441-443,448-457,470-471,474,476-477
+  s_a23cdcb1879983::t_06c0c7a203db28 34-38
+  s_a23cdcb1879983::t_eda6be5e4010fe 108
+  s_a23cdcb1879983::t_e32846b2a04627 15-18
+  s_a23cdcb1879983::t_1d7fda18e8d07c 216-219,235-236,257,260,263
+  s_a23cdcb1879983::t_485c38257c4991 247-248
+  s_a23cdcb1879983::t_086e39e0324774 414-420,436-439
+  s_a23cdcb1879983::t_7e04f105060407 90-107,109-170
+  s_a23cdcb1879983::t_67937ec980f50b 194-195
+libs/evals/tests/evals/oolong/README.md
+  s_a23cdcb1879983::t_3e773680a4a603 103,105-113,121-122
+  s_a23cdcb1879983::t_893a7ad0d4d866 115-120,125-134,137-141
+  s_a23cdcb1879983::t_f5190c8dfc6111 1-102,104,114,123-124,135-136
+libs/evals/tests/evals/oolong/official_scorer.py
+  s_a23cdcb1879983::t_3604e13db4b99b 28
+  s_a23cdcb1879983::t_b48fc01ab895a1 29-31
+  s_a23cdcb1879983::t_9e0eee962d3de4 1-27,32-109
+libs/evals/tests/evals/oolong/test_rlm_vs_subagents.py
+  s_a23cdcb1879983::t_ccaab174f08443 5,7-18,28,31,38,50,53-59,63-64,67
+  s_a23cdcb1879983::t_c34935b7aa113f 66
+libs/evals/tests/evals/oolong/__init__.py
+  s_a23cdcb1879983::t_73d025596ecab4 1-4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "9cd87cf3e8a6942d023fbc3fd10231f66637ee4c",
+  "prompts": {},
+  "sessions": {
+    "s_943638c4b69b44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0385a0ed-b687-4fe3-8e00-f4dc75345399",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    },
+    "s_a23cdcb1879983": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f048b68d-0bfd-4f95-a92e-27d4595f55fd",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": null
+    }
+  }
+}

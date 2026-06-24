@@ -1,0 +1,51 @@
+libs/evals/tests/evals/oolong/test_rlm_vs_subagents.py
+  s_a23cdcb1879983::t_ccaab174f08443 5,7-18,28,31,38,50,53-59,63-64,67
+  s_a23cdcb1879983::t_c34935b7aa113f 66
+libs/evals/tests/evals/oolong/official_scorer.py
+  s_a23cdcb1879983::t_b48fc01ab895a1 29-31
+  s_a23cdcb1879983::t_9e0eee962d3de4 1-27,32-109
+  s_a23cdcb1879983::t_3604e13db4b99b 28
+libs/evals/tests/evals/oolong/README.md
+  s_a23cdcb1879983::t_3e773680a4a603 103,105-113,119-120
+  s_a23cdcb1879983::t_f5190c8dfc6111 1-102,104,114-118,121-128
+libs/evals/tests/evals/utils.py
+  s_943638c4b69b44::t_f8bbd2bd2529e0 1105,1119
+  s_a23cdcb1879983::t_47486df0088de2 1208-1209,1264-1265
+  s_943638c4b69b44::t_35d2aca25c795b 1233,1246-1248
+  s_a23cdcb1879983::t_0ce03ccafc7867 1106-1118,1125-1130,1133,1136-1144,1149-1154
+  s_943638c4b69b44::t_1a4a29e7a037cc 1122-1124
+  s_943638c4b69b44::t_9082dd727a14c0 1171,1185-1187
+  s_a23cdcb1879983::t_6cf69df6422c3f 1173,1190-1194,1211-1212
+libs/evals/tests/evals/oolong/benchmarks.py
+  s_a23cdcb1879983::t_485c38257c4991 160-161
+  s_a23cdcb1879983::t_67937ec980f50b 107-108
+  s_a23cdcb1879983::t_086e39e0324774 374-380,396-399
+  s_a23cdcb1879983::t_55e15e6adf449b 22-23,25-31
+  s_a23cdcb1879983::t_3351313382a859 3-4,7-8,10-21,24,32-38,43-44,47,51,53-55,57,72-76,78-79,93,95-101,103,105,111,113,119-120,126-127,130-131,144-147,153-154,156,158,164,166,189-209,228,232-233,235-239,241-242,244-245,247-254,256-264,267-268,271,348-363,371-373,381,384,386-391,394,401-425,427-435
+libs/evals/tests/evals/oolong/__init__.py
+  s_a23cdcb1879983::t_73d025596ecab4 1-4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "c617fdb5aaf0ba1ea33d07c1eef1053b7f9e046d",
+  "prompts": {},
+  "sessions": {
+    "s_943638c4b69b44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0385a0ed-b687-4fe3-8e00-f4dc75345399",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    },
+    "s_a23cdcb1879983": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f048b68d-0bfd-4f95-a92e-27d4595f55fd",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": null
+    }
+  }
+}

@@ -626,6 +626,47 @@ class TestRecentModelsSection:
             specs = [spec for spec, _ in screen._filtered_models]
             assert "anthropic:claude-sonnet-4-5" in specs
 
+    async def test_recent_section_hidden_during_onboarding(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Curated onboarding never shows Recent, even if the MRU is populated.
+
+        Guards the `include_recent` gating in `_load_model_data` (see its
+        docstring for why the startup auto-detected fallback must not surface
+        as a "Recent" entry the user never chose).
+        """
+        from deepagents_code.widgets import model_selector
+
+        recent_called = False
+
+        def _tracked_load_recent_models() -> list[str]:
+            nonlocal recent_called
+            recent_called = True
+            # Deliberately a recommended model so it survives curated filtering:
+            # on a revert it would reach the rendered "Recent" header, keeping
+            # the header assertion below an effective regression guard.
+            return ["anthropic:claude-opus-4-7"]
+
+        monkeypatch.setattr(
+            model_selector,
+            "load_recent_models",
+            _tracked_load_recent_models,
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(curated=True)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert recent_called is False
+            assert screen._recent_specs == []
+            headers = [
+                str(h.content)
+                for h in screen.query(".model-provider-header").results(Static)
+            ]
+            assert not any("Recent" in h for h in headers)
+
     async def test_recent_section_hidden_during_filter(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1345,6 +1386,21 @@ class TestCuratedModelSelection:
             ("openai:gpt-5.3-codex", "openai"),
         ]
 
+    def test_curated_initial_selection_starts_at_top(self) -> None:
+        """Onboarding should highlight the first model, not the current one."""
+        screen = ModelSelectorScreen(
+            current_model="claude-opus-4-7",
+            current_provider="anthropic",
+            curated=True,
+        )
+        screen._filtered_models = [
+            ("openai:gpt-5.5", "openai"),
+            ("anthropic:claude-opus-4-7", "anthropic"),
+        ]
+
+        assert screen._find_current_model_index() == 1
+        assert screen._initial_selected_index() == 0
+
 
 class TestFormatOptionLabel:
     """Tests for _format_option_label."""
@@ -1860,8 +1916,10 @@ class TestModelSelectorInstallRouting:
             _cli_override: dict[str, Any] | None,
             *,
             include_uninstalled: bool = True,
+            include_recent: bool = True,
         ) -> model_selector._ModelData:
             captured["include_uninstalled"] = include_uninstalled
+            captured["include_recent"] = include_recent
             return model_selector._ModelData(
                 [("baseten:zai-org/GLM-5.2", "baseten")],
                 None,
@@ -1888,6 +1946,10 @@ class TestModelSelectorInstallRouting:
             await pilot.pause()
 
         assert captured["include_uninstalled"] is True
+        # Curated onboarding must skip the recent-models MRU at the call site,
+        # independent of the rendering-level guard in
+        # test_recent_section_hidden_during_onboarding.
+        assert captured["include_recent"] is False
 
     async def test_load_model_data_surfaces_uninstalled_recommended(
         self, monkeypatch: pytest.MonkeyPatch

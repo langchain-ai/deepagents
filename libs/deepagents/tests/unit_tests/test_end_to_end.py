@@ -2846,6 +2846,52 @@ class TestStateBackendConfigKeys:
         assert "buffered" in tool_msg.content
         assert "ERROR" not in tool_msg.content
 
+    def test_write_overwrites_existing_file(self) -> None:
+        """write_file on an existing path replaces its content."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/doc.txt", "content": "new content"},
+                                "id": "call_w2",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": "/doc.txt"},
+                                "id": "call_r2",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model)
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="go")],
+                "files": {"/doc.txt": {"content": "old content", "encoding": "utf-8"}},
+            }
+        )
+
+        tool_msgs = [m for m in result["messages"] if m.type == "tool"]
+        # write should succeed and overwrite the old content
+        assert any("Updated file" in m.content for m in tool_msgs)
+        assert any("new content" in m.content for m in tool_msgs)
+        assert not any("old content" in m.content for m in tool_msgs)
+
     def test_state_backend_delete_in_graph_context(self) -> None:
         """delete() removes a file from state; missing paths report an error."""
         backend = StateBackend()

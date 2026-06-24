@@ -469,15 +469,14 @@ class FilesystemBackend(BackendProtocol):
         file_path: str,
         content: str,
     ) -> WriteResult:
-        """Create a new file with content.
+        """Write content to a file, creating it or overwriting it if it already exists.
 
         Args:
-            file_path: Path where the new file will be created.
+            file_path: Path where the file will be written.
             content: Text content to write to the file.
 
         Returns:
-            `WriteResult` with path on success, or error message if the file
-                already exists or write fails.
+            `WriteResult` with path on success, or error message on write failure.
         """
         try:
             resolved_path = self._resolve_path(file_path)
@@ -485,10 +484,6 @@ class FilesystemBackend(BackendProtocol):
             return WriteResult(error=f"Error writing file '{file_path}': {e}")
 
         try:
-            if resolved_path.exists():
-                msg = f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path."
-                return WriteResult(error=msg)
-
             # Create parent directories if needed
             resolved_path.parent.mkdir(parents=True, exist_ok=True)
 

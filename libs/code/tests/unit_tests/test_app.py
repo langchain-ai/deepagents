@@ -1152,6 +1152,33 @@ class TestStartupSequence:
         )
         apply_credentials.assert_called_once_with()
 
+    async def test_prompt_launch_tavily_surfaces_store_failure(self) -> None:
+        """Onboarding Tavily credential save failures should be visible."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._push_screen_wait = AsyncMock(return_value="tvly-key")  # ty: ignore
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        with (
+            patch("deepagents_code.config.settings", SimpleNamespace(has_tavily=False)),
+            patch(
+                "deepagents_code.auth_store.set_stored_key",
+                side_effect=RuntimeError("credential store is not writable"),
+            ) as set_stored_key,
+            patch(
+                "deepagents_code.model_config.apply_stored_service_credentials"
+            ) as apply_credentials,
+        ):
+            await app._prompt_launch_tavily()
+
+        set_stored_key.assert_called_once_with("tavily", "tvly-key")
+        notify_mock.assert_called_once_with(
+            "Could not save Tavily key: credential store is not writable",
+            severity="error",
+            markup=False,
+        )
+        apply_credentials.assert_not_called()
+
     async def test_launch_init_name_memory_does_not_delay_model_prompt(self) -> None:
         """Writing the optional name should not hold the dependency/model transition."""
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")

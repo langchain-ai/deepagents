@@ -6225,8 +6225,13 @@ class DeepAgentsApp(App):
 
         try:
             outcome = await asyncio.to_thread(auth_store.set_stored_key, "tavily", key)
-        except (ValueError, RuntimeError, OSError):
+        except (ValueError, RuntimeError, OSError) as exc:
             logger.warning("Could not store the onboarding Tavily key", exc_info=True)
+            self.notify(
+                f"Could not save Tavily key: {exc}",
+                severity="error",
+                markup=False,
+            )
             return
         for warning in outcome.warnings:
             self.notify(warning, severity="warning", markup=False)

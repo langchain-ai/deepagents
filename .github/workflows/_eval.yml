@@ -66,6 +66,31 @@ on:
         required: false
         default: ""
         type: string
+      oolong_arm:
+        description: "OOLONG eval arm for this run (`plain` or `code_interpreter`). Empty = not an OOLONG run; the OOLONG-specific config below is ignored."
+        required: false
+        default: ""
+        type: string
+      sub_model:
+        description: "Sub-model id for OOLONG (`--sub-model`), e.g. `openai:gpt-5-mini`. Only used when `oolong_arm` is set."
+        required: false
+        default: ""
+        type: string
+      oolong_n_examples:
+        description: "OOLONG example count (`OOLONG_N_EXAMPLES`). `0` = full 50-task bucket. Only used when `oolong_arm` is set."
+        required: false
+        default: ""
+        type: string
+      oolong_context_len:
+        description: "OOLONG context-length bucket (`OOLONG_CONTEXT_LEN`). Only used when `oolong_arm` is set."
+        required: false
+        default: ""
+        type: string
+      oolong_dataset:
+        description: "OOLONG input subset (`OOLONG_DATASET`), e.g. `agnews` or `trec_coarse`. Only used when `oolong_arm` is set."
+        required: false
+        default: ""
+        type: string
     secrets:
       ANTHROPIC_API_KEY:
         required: false
@@ -237,6 +262,78 @@ jobs:
               ;;
           esac
           printf 'PYTEST_ADDOPTS=%s --repl %s\n' "${PYTEST_ADDOPTS}" "${repl}" >> "$GITHUB_ENV"
+
+      - name: "🐢 Apply OOLONG config"
+        # OOLONG long-context aggregation runs one arm per job (matching the
+        # one-experiment-per-arm requirement). The arm + sub-model + dataset
+        # knobs arrive as workflow_call inputs. All of them are user-influenced
+        # (they originate from a `workflow_dispatch` form), so each is read via
+        # an `env:` indirection — never inline `${{ }}` in the `run:` body — and
+        # structurally validated (allowlist / integer / safe-charset) before it
+        # is written to `$GITHUB_ENV` or appended to `PYTEST_ADDOPTS`. This
+        # prevents a crafted input from injecting shell or extra pytest flags.
+        if: inputs.oolong_arm != ''
+        env:
+          OOLONG_ARM_IN: ${{ inputs.oolong_arm }}
+          SUB_MODEL_IN: ${{ inputs.sub_model }}
+          OOLONG_N_EXAMPLES_IN: ${{ inputs.oolong_n_examples }}
+          OOLONG_CONTEXT_LEN_IN: ${{ inputs.oolong_context_len }}
+          OOLONG_DATASET_IN: ${{ inputs.oolong_dataset }}
+          MODEL_IN: ${{ inputs.model }}
+        run: |
+          set -euo pipefail
+
+          # Arm: allowlist. Keep in sync with `OOLONG_ARMS` in
+          # `.github/scripts/models.py` and the `Arm` literal in the eval module.
+          case "$OOLONG_ARM_IN" in
+            plain|code_interpreter) ;;
+            *)
+              echo "::error::Unsupported oolong_arm: '${OOLONG_ARM_IN}'. Allowed: plain, code_interpreter."
+              exit 1
+              ;;
+          esac
+
+          # Sub-model: must look like a `provider:model` spec. Same safe charset
+          # the matrix builder enforces for model specs.
+          if [ -z "$SUB_MODEL_IN" ]; then
+            echo "::error::oolong_arm is set but sub_model is empty; pass a --sub-model spec (e.g. openai:gpt-5-mini)."
+            exit 1
+          fi
+          if ! printf '%s' "$SUB_MODEL_IN" | grep -Eq '^[A-Za-z0-9._/:-]+$'; then
+            echo "::error::sub_model contains disallowed characters: '${SUB_MODEL_IN}'."
+            exit 1
+          fi
+
+          # Numeric knobs: integers only (empty = use the test's default).
+          for pair in "OOLONG_N_EXAMPLES:${OOLONG_N_EXAMPLES_IN}" "OOLONG_CONTEXT_LEN:${OOLONG_CONTEXT_LEN_IN}"; do
+            val="${pair#*:}"
+            name="${pair%%:*}"
+            if [ -n "$val" ] && ! printf '%s' "$val" | grep -Eq '^[0-9]+$'; then
+              echo "::error::${name} must be a non-negative integer, got '${val}'."
+              exit 1
+            fi
+          done
+
+          # Dataset subset: conservative identifier charset (empty = default).
+          if [ -n "$OOLONG_DATASET_IN" ] && ! printf '%s' "$OOLONG_DATASET_IN" | grep -Eq '^[A-Za-z0-9_-]+$'; then
+            echo "::error::oolong_dataset contains disallowed characters: '${OOLONG_DATASET_IN}'."
+            exit 1
+          fi
+
+          # Select the arm + sub-model. `OOLONG_ARM` is read by the eval module
+          # and by the reporter (which records arm + sub_model as experiment
+          # metadata so both arms share one dataset example).
+          {
+            printf 'OOLONG_ARM=%s\n' "$OOLONG_ARM_IN"
+            [ -n "$OOLONG_N_EXAMPLES_IN" ] && printf 'OOLONG_N_EXAMPLES=%s\n' "$OOLONG_N_EXAMPLES_IN"
+            [ -n "$OOLONG_CONTEXT_LEN_IN" ] && printf 'OOLONG_CONTEXT_LEN=%s\n' "$OOLONG_CONTEXT_LEN_IN"
+            [ -n "$OOLONG_DATASET_IN" ] && printf 'OOLONG_DATASET=%s\n' "$OOLONG_DATASET_IN"
+            # Distinct experiment per arm so the two arms don't share a session
+            # (they share the dataset example, not the experiment).
+            printf 'LANGSMITH_EXPERIMENT=%s-oolong-%s\n' "$MODEL_IN" "$OOLONG_ARM_IN"
+          } >> "$GITHUB_ENV"
+
+          printf 'PYTEST_ADDOPTS=%s --sub-model %s\n' "${PYTEST_ADDOPTS}" "$SUB_MODEL_IN" >> "$GITHUB_ENV"
 
       - name: "📊 Run Evals"
         env:

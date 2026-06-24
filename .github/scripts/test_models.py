@@ -277,6 +277,152 @@ def test_matrix_outputs_rejects_three_way_collision(
     assert "foo:a:b" in msg
 
 
+# ---------------------------------------------------------------------------
+# OOLONG arm crossing
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_oolong_arms_empty_means_no_crossing(models: ModuleType) -> None:
+    """Empty / whitespace-only `OOLONG_ARMS` resolves to `None` (no crossing)."""
+    assert models._resolve_oolong_arms("") is None
+    assert models._resolve_oolong_arms("   ") is None
+    assert models._resolve_oolong_arms(" , ,") is None
+
+
+def test_resolve_oolong_arms_valid_and_deduped(models: ModuleType) -> None:
+    """Valid arms parse in order, trimmed and deduped."""
+    assert models._resolve_oolong_arms("plain") == ["plain"]
+    assert models._resolve_oolong_arms(" plain , code_interpreter ") == [
+        "plain",
+        "code_interpreter",
+    ]
+    assert models._resolve_oolong_arms("plain,plain,code_interpreter") == [
+        "plain",
+        "code_interpreter",
+    ]
+
+
+def test_resolve_oolong_arms_rejects_unknown(models: ModuleType) -> None:
+    """An arm outside the allowlist raises, naming the offender and the allowed set.
+
+    This is the injection guard: a dispatch input can never reach the
+    `OOLONG_ARM` env / `--sub-model` plumbing in `_eval.yml` unless it is one
+    of the literal allowlisted values.
+    """
+    with pytest.raises(ValueError) as excinfo:
+        models._resolve_oolong_arms("plain,rm -rf /")
+    msg = str(excinfo.value)
+    assert "rm -rf /" in msg
+    assert "plain" in msg
+    assert "code_interpreter" in msg
+
+
+def test_matrix_entry_default_has_no_arm_field(models: ModuleType) -> None:
+    """Without an arm the entry shape is unchanged (no `arm`, unsuffixed key)."""
+    entry = models._matrix_entry("anthropic:claude-sonnet-4-6")
+    assert entry == {
+        "model": "anthropic:claude-sonnet-4-6",
+        "provider": "anthropic",
+        "artifact_key": "anthropic-claude-sonnet-4-6",
+    }
+    assert "arm" not in entry
+
+
+def test_matrix_entry_with_arm_suffixes_key(models: ModuleType) -> None:
+    """An arm is appended to `artifact_key` and surfaced as an `arm` field."""
+    entry = models._matrix_entry("openai:gpt-5", "code_interpreter")
+    assert entry == {
+        "model": "openai:gpt-5",
+        "provider": "openai",
+        "artifact_key": "openai-gpt-5-code_interpreter",
+        "arm": "code_interpreter",
+    }
+
+
+def test_matrix_outputs_crosses_models_with_arms(models: ModuleType) -> None:
+    """Passing arms crosses every model with every arm, partitioned by provider."""
+    outputs = models._matrix_outputs(
+        "eval",
+        ["anthropic:claude-sonnet-4-6", "openai:gpt-5"],
+        ["plain", "code_interpreter"],
+    )
+
+    assert outputs["anthropic_matrix"] == {
+        "include": [
+            {
+                "model": "anthropic:claude-sonnet-4-6",
+                "provider": "anthropic",
+                "artifact_key": "anthropic-claude-sonnet-4-6-plain",
+                "arm": "plain",
+            },
+            {
+                "model": "anthropic:claude-sonnet-4-6",
+                "provider": "anthropic",
+                "artifact_key": "anthropic-claude-sonnet-4-6-code_interpreter",
+                "arm": "code_interpreter",
+            },
+        ]
+    }
+    openai = outputs["openai_matrix"]["include"]
+    assert [e["arm"] for e in openai] == ["plain", "code_interpreter"]
+    # Per-arm artifact keys stay unique so caches / uploads don't collide.
+    keys = [e["artifact_key"] for e in outputs["matrix"]["include"]]
+    assert len(keys) == len(set(keys))
+
+
+def test_matrix_outputs_without_arms_is_unchanged(models: ModuleType) -> None:
+    """`arms=None` (and `[]`) leaves the matrix byte-identical to the legacy shape."""
+    baseline = models._matrix_outputs("eval", ["openai:gpt-5"])
+    assert models._matrix_outputs("eval", ["openai:gpt-5"], None) == baseline
+    assert models._matrix_outputs("eval", ["openai:gpt-5"], []) == baseline
+    assert "arm" not in baseline["openai_matrix"]["include"][0]
+
+
+def test_main_crosses_arms_from_env(
+    models: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`main()` reads `OOLONG_ARMS` and crosses the eval matrix with the arms."""
+    output_file = tmp_path / "github_output"
+    output_file.touch()
+
+    monkeypatch.setenv("EVAL_MODELS", "anthropic:claude-sonnet-4-6")
+    monkeypatch.setenv("OOLONG_ARMS", "plain,code_interpreter")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_file))
+    monkeypatch.setattr("sys.argv", ["models.py", "eval"])
+
+    models.main()
+
+    keyed = dict(line.split("=", 1) for line in output_file.read_text().splitlines())
+    anthropic = json.loads(keyed["anthropic_matrix"])["include"]
+    assert [e["arm"] for e in anthropic] == ["plain", "code_interpreter"]
+    assert anthropic[0]["artifact_key"].endswith("-plain")
+
+
+def test_main_ignores_oolong_arms_for_harbor(
+    models: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Arm crossing is eval-only; harbor ignores `OOLONG_ARMS` entirely."""
+    output_file = tmp_path / "github_output"
+    output_file.touch()
+
+    monkeypatch.setenv("HARBOR_MODELS", "openai:gpt-5.4")
+    monkeypatch.setenv("OOLONG_ARMS", "plain,code_interpreter")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_file))
+    monkeypatch.setattr("sys.argv", ["models.py", "harbor"])
+
+    models.main()
+
+    keyed = dict(line.split("=", 1) for line in output_file.read_text().splitlines())
+    matrix = json.loads(keyed["matrix"])["include"]
+    assert matrix == [
+        {"model": "openai:gpt-5.4", "provider": "openai", "artifact_key": "openai-gpt-5.4"}
+    ]
+
+
 def test_provider_returns_whole_string_when_no_colon(models: ModuleType) -> None:
     """`_provider` falls through cleanly when the spec lacks a `:` separator.
 

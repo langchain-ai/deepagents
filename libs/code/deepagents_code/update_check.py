@@ -2583,6 +2583,21 @@ def mark_auto_update_default_acknowledged() -> bool:
     return _write_update_state({"auto_update_default_acknowledged": True})
 
 
+def note_install_baseline() -> None:
+    """Pre-acknowledge the auto-update default notice for a fresh install.
+
+    The migration notice (`should_announce_auto_update_default`) exists only to
+    warn users who ran dcode *before* auto-update became the opt-out default; a
+    brand-new install never experienced the old behavior, so the notice is
+    meaningless to it. Call this on the first launch ever (see
+    `should_show_whats_new`) so the notice never leaks into a new install.
+    No-op when the user already set an explicit preference.
+    """
+    if is_auto_update_explicitly_set():
+        return
+    mark_auto_update_default_acknowledged()
+
+
 # ---------------------------------------------------------------------------
 # "What's new" tracking
 # ---------------------------------------------------------------------------
@@ -2603,7 +2618,11 @@ def should_show_whats_new() -> bool:
     """Return `True` if this is the first launch on a newer version."""
     seen = get_seen_version()
     if seen is None:
-        # First run ever — mark current as seen, don't show banner.
+        # First run ever — mark current as seen, don't show banner. This is the
+        # canonical fresh-install signal, so also pre-acknowledge the
+        # auto-update default migration notice (which only applies to users who
+        # predate the opt-out default) before it can fire on a later launch.
+        note_install_baseline()
         mark_version_seen(__version__)
         return False
     try:

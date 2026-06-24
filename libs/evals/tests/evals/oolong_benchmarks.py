@@ -28,18 +28,17 @@ parameterizes over (arm, example) pairs.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import UTC
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from deepagents import create_deep_agent
 from langchain_quickjs import CodeInterpreterMiddleware
+from langsmith import testing as t
 
 from tests.evals.utils import (
-    AgentTrajectory,
-    SuccessAssertion,
-    TrajectoryScorer,
     run_agent,
 )
 
@@ -166,6 +165,16 @@ def load_oolong_examples(
     return tuple(out[:n_examples])
 
 
+def resolve_arm() -> Arm:
+    """Resolve the experiment arm from the ``OOLONG_ARM`` env var (default ``plain``)."""
+    arm = os.environ.get("OOLONG_ARM", "plain")
+    valid = get_args(Arm)
+    if arm not in valid:
+        msg = f"OOLONG_ARM must be one of {valid}, got {arm!r}"
+        raise ValueError(msg)
+    return arm  # type: ignore[return-value]
+
+
 def _coerce_gold(raw: Any) -> tuple[str, ...]:  # noqa: ANN401
     """Coerce the dataset's `answer` field into a tuple of strings."""
     if isinstance(raw, list):
@@ -275,35 +284,6 @@ def _oolong_score(text: str, gold_answers: tuple[str, ...], answer_type: str) ->
     return 0.0
 
 
-@dataclass(frozen=True)
-class _OolongAnswerMatches(SuccessAssertion):
-    """Fail unless the trajectory's final answer exactly matches any gold answer.
-
-    Also computes a partial score (0.0-1.0) stored on ``self`` so callers can
-    log it as metadata without re-running the scorer.
-    """
-
-    gold_answers: tuple[str, ...]
-    answer_type: str
-
-    def score(self, trajectory: AgentTrajectory) -> float:
-        return _oolong_score(trajectory.answer, self.gold_answers, self.answer_type)
-
-    def check(self, trajectory: AgentTrajectory) -> bool:
-        return self.score(trajectory) >= 1.0
-
-    def describe_failure(self, trajectory: AgentTrajectory) -> str:
-        s = self.score(trajectory)
-        candidate = _parse_answer(trajectory.answer)
-        return (
-            f"OOLONG answer mismatch (answer_type={self.answer_type!r}, "
-            f"partial_score={s:.3f}). "
-            f"Parsed={candidate!r}, "
-            f"gold={list(self.gold_answers)!r}, "
-            f"final_text={trajectory.answer[:300]!r}"
-        )
-
-
 # ---------------------------------------------------------------------------
 # Agent factories
 # ---------------------------------------------------------------------------
@@ -378,7 +358,26 @@ def run_oolong_case(
     root_model: BaseChatModel,
     sub_model_id: str,
 ) -> None:
-    """Run a single OOLONG example through the given arm and score it."""
+    """Run a single OOLONG example through the given arm and score it.
+
+    Uses the standard `run_agent` LangSmith wiring (so examples, latency and
+    inputs are recorded the normal way), but scores *softly*: the answer is
+    graded into ``correctness`` / ``partial_score`` feedback rather than
+    hard-failing the test. This matters for a pairwise benchmark — a
+    ``pytest.fail`` leaves the LangSmith root run ``pending`` and never syncs the
+    dataset example, which would drop the wrong-answer arm out of the
+    side-by-side comparison entirely. Logged shape:
+
+    - **inputs** (`eval_inputs`): the question + task metadata, identical across
+      arms so both experiments share one dataset example;
+    - **reference output**: the gold answer;
+    - **feedback**: ``correctness`` / ``partial_score`` / ``agent_steps`` /
+      ``tool_call_requests`` (numeric scores).
+
+    The arm, root model and sub-model travel as metadata, not inputs.
+    """
+    t.log_reference_outputs({"gold_answer": list(example.gold_answers)})
+
     agent, initial_files = build_agent(
         arm,
         root_model=root_model,
@@ -386,28 +385,33 @@ def run_oolong_case(
         context=example.context_window_text,
     )
 
-    query = f"The document is at `/context.txt` in your workspace.\n\n{example.question}"
-
-    run_agent(
+    # The context is uploaded to the agent's filesystem at `/context.txt` (via
+    # `initial_files`); the question alone is the human message (the system
+    # prompt already points the agent at `/context.txt`).
+    trajectory = run_agent(
         agent,
         model=root_model,
-        query=query,
+        query=example.question,
         initial_files=initial_files,
-        scorer=TrajectoryScorer().success(
-            _OolongAnswerMatches(
-                gold_answers=example.gold_answers,
-                answer_type=example.answer_type,
-            )
-        ),
-        eval_metadata={
-            "arm": arm,
+        eval_inputs={
+            "question": example.question,
             "oolong_id": example.id,
             "task_group": example.task_group,
-            "task": example.task,
-            "context_len": example.context_len,
+            "task_type": example.task,
             "answer_type": example.answer_type,
-            "origin_benchmark": "oolong-synth",
+            "context_len": example.context_len,
             "input_subset": example.input_subset,
-            "sub_model": sub_model_id,
         },
+        eval_metadata={"arm": arm, "sub_model": sub_model_id, "origin_benchmark": "oolong-synth"},
+    )
+
+    # Soft scoring: log the grade as feedback; never `pytest.fail` (see above).
+    # `score=` (not `value=`) so the metrics surface as columns in the compare view.
+    score = _oolong_score(trajectory.answer, example.gold_answers, example.answer_type)
+    t.log_feedback(key="correctness", score=1.0 if score >= 1.0 else 0.0)
+    t.log_feedback(key="partial_score", score=score)
+    t.log_feedback(key="agent_steps", score=len(trajectory.steps))
+    t.log_feedback(
+        key="tool_call_requests",
+        score=sum(len(step.action.tool_calls) for step in trajectory.steps),
     )

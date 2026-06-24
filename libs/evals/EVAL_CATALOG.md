@@ -156,4 +156,4 @@ file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test,l
 
 ## Long-Context Aggregation (`long_context_aggregation`) (1 eval)
 
-- [`test_oolong_synth`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_oolong_rlm_vs_subagents.py#L70) — `tests/evals/test_oolong_rlm_vs_subagents.py:70`
+- [`test_oolong_synth`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_oolong_rlm_vs_subagents.py#L82) — `tests/evals/test_oolong_rlm_vs_subagents.py:82`

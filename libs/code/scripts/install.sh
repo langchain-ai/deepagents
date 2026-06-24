@@ -404,7 +404,10 @@ install_uv() {
   # PATH-setup hints). Capture it and surface the output only when debugging
   # or when the install fails — by default it's noise the user doesn't need.
   local uv_install_out uv_install_rc=0
-  uv_install_out=$(mktemp 2>/dev/null) || uv_install_out="/tmp/deepagents-uv-install.$$.out"
+  uv_install_out=$(mktemp 2>/dev/null) || {
+    log_error "mktemp is required to create a secure temp file."
+    exit 1
+  }
   # Only the piped `sh` (the installer body) is captured by `>"$uv_install_out"
   # 2>&1`; curl/wget keep their own stderr on the terminal. That's intentional —
   # `-fsSL` includes `-S`, so a failed download still prints curl's error

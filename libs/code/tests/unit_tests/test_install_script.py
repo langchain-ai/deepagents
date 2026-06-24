@@ -1007,7 +1007,11 @@ def _invoke_with_os(
 
 
 def _run_install_uv(
-    tmp_path: Path, *, verbose: bool, fails: bool = False
+    tmp_path: Path,
+    *,
+    verbose: bool,
+    fails: bool = False,
+    mktemp_fails: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """Run the real `install_uv` from `install.sh` against a fake uv installer.
 
@@ -1023,6 +1027,10 @@ def _run_install_uv(
     installer = "'echo UV_INSTALLER_NOISE'" + (" 'exit 3'" if fails else "")
     curl.write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' {installer}\n")
     _make_executable(curl)
+    if mktemp_fails:
+        mktemp = bin_dir / "mktemp"
+        mktemp.write_text("#!/usr/bin/env bash\nexit 1\n")
+        _make_executable(mktemp)
 
     script = tmp_path / "install_uv_harness.sh"
     script.write_text(
@@ -1074,6 +1082,15 @@ def test_install_uv_surfaces_output_on_failure(tmp_path: Path) -> None:
     assert proc.returncode != 0
     assert "UV_INSTALLER_NOISE" in proc.stderr
     assert "uv installation failed" in proc.stderr
+
+
+def test_install_uv_requires_secure_temp_file(tmp_path: Path) -> None:
+    """`install_uv` fails closed if secure temporary file creation is unavailable."""
+    proc = _run_install_uv(tmp_path, verbose=False, mktemp_fails=True)
+
+    assert proc.returncode != 0
+    assert "mktemp is required to create a secure temp file" in proc.stderr
+    assert "UV_INSTALLER_NOISE" not in proc.stderr
 
 
 def test_install_script_macos_without_clt_exits_early(tmp_path: Path) -> None:

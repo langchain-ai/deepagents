@@ -55,8 +55,11 @@
 #     terminal (CI, wrapper scripts) update instead of stalling at the y/n
 #     prompt.
 #   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
+#   DEEPAGENTS_CODE_SKIP_XCODE_CHECK — set to 1 to bypass the macOS Xcode
+#     Command Line Tools preflight check
 #   DEEPAGENTS_CODE_VERBOSE — set to 1 to show uv's raw stderr (timing lines,
-#     unfiltered package diff) and the quiet-by-default status lines
+#     unfiltered package diff), the uv installer's own output (shown only when
+#     uv isn't already installed), and the quiet-by-default status lines
 #     (optional-tool checks, post-install footer); useful when debugging. A
 #     fresh install otherwise hides the full list of installed dependencies.
 #   UV_BIN — path to uv binary (auto-detected if unset)
@@ -66,6 +69,11 @@
 #   patterns adapted from hermes-agent (NousResearch/hermes-agent).
 
 set -euo pipefail
+
+# Keep the shell PATH the user started with. The installer may source
+# ~/.local/bin/env later so it can find a freshly installed uv, but that does
+# not update the parent shell that will receive the final "Run: dcode" advice.
+ORIGINAL_PATH="${PATH:-}"
 
 # ---------------------------------------------------------------------------
 # Colors & logging
@@ -131,6 +139,23 @@ detect_os() {
   esac
 }
 detect_os
+
+# ---------------------------------------------------------------------------
+# macOS: require Xcode Command Line Tools
+# ---------------------------------------------------------------------------
+# On a fresh Mac the /usr/bin shims for git, python3, etc. are stubs that pop a
+# blocking GUI dialog ("...requires the command line developer tools") the first
+# time they run. uv's interpreter discovery and dcode's own git usage hit those
+# stubs, so fail fast here with a clear instruction instead of leaving the user
+# staring at a confusing popup mid-install. `xcode-select -p` only reports the
+# active developer dir — it never triggers the install dialog itself.
+if [ "$OS" = "macos" ] && [ "${DEEPAGENTS_CODE_SKIP_XCODE_CHECK:-}" != "1" ] && ! xcode-select -p >/dev/null 2>&1; then
+  log_error "Xcode Command Line Tools are required but not installed."
+  log_error "  Install them with:  xcode-select --install"
+  log_error "  To bypass this check, set:  DEEPAGENTS_CODE_SKIP_XCODE_CHECK=1"
+  log_error "  Then re-run this installer."
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Root / MDM support (macOS — Kandji, Jamf, etc.)
@@ -375,20 +400,34 @@ fi
 # uv installation
 # ---------------------------------------------------------------------------
 install_uv() {
+  # The upstream uv installer is chatty (download progress, install paths,
+  # PATH-setup hints). Capture it and surface the output only when debugging
+  # or when the install fails — by default it's noise the user doesn't need.
+  local uv_install_out uv_install_rc=0
+  uv_install_out=$(mktemp 2>/dev/null) || {
+    log_error "mktemp is required to create a secure temp file."
+    exit 1
+  }
+  # Only the piped `sh` (the installer body) is captured by `>"$uv_install_out"
+  # 2>&1`; curl/wget keep their own stderr on the terminal. That's intentional —
+  # `-fsSL` includes `-S`, so a failed download still prints curl's error
+  # directly (above the "uv installation failed" line) even though the captured
+  # file is then empty. Don't assume curl's stderr is in the capture.
   if command -v curl >/dev/null 2>&1; then
-    log_info "Downloading uv installer..."
-    if ! curl -fsSL https://astral.sh/uv/install.sh | sh; then
-      log_error "uv installation failed. See errors above."
-      exit 1
-    fi
+    curl -fsSL https://astral.sh/uv/install.sh | sh >"$uv_install_out" 2>&1 || uv_install_rc=$?
   elif command -v wget >/dev/null 2>&1; then
-    log_info "Downloading uv installer..."
-    if ! wget -qO- https://astral.sh/uv/install.sh | sh; then
-      log_error "uv installation failed. See errors above."
-      exit 1
-    fi
+    wget -qO- https://astral.sh/uv/install.sh | sh >"$uv_install_out" 2>&1 || uv_install_rc=$?
   else
+    rm -f "$uv_install_out"
     log_error "curl or wget is required to install uv."
+    exit 1
+  fi
+  if [ "$VERBOSE" = "1" ] || [ "$uv_install_rc" -ne 0 ]; then
+    cat "$uv_install_out" >&2
+  fi
+  rm -f "$uv_install_out"
+  if [ "$uv_install_rc" -ne 0 ]; then
+    log_error "uv installation failed. See errors above."
     exit 1
   fi
 }
@@ -544,7 +583,7 @@ else
 fi
 
 # Capture uv stderr so we can:
-#   1. Rewrite the cryptic "Ignoring existing environment …" warning into
+#   1. Rewrite the cryptic "Ignoring existing environment ..." warning into
 #      plain English. uv emits that line when it rebuilds the tool venv
 #      instead of upgrading in place (e.g., Python interpreter mismatch, or
 #      editable↔regular install swap).
@@ -702,10 +741,19 @@ fix_install_log_owner
 # ---------------------------------------------------------------------------
 DCODE_BIN=""
 DCODE_NAME=""
+# Tracks whether the binary would have resolved via the user's original PATH,
+# not the installer-mutated PATH. A fresh `uv tool install` drops the binary in
+# ~/.local/bin, and this script may have sourced ~/.local/bin/env earlier to
+# find uv; the parent shell still won't have dcode on PATH until it is
+# restarted or the env file is sourced.
+DCODE_ON_PATH=false
 for candidate in dcode deepagents-code; do
   if resolved=$(command -v "$candidate" 2>/dev/null) && [ -n "$resolved" ]; then
     DCODE_BIN="$resolved"
     DCODE_NAME="$candidate"
+    if PATH="$ORIGINAL_PATH" command -v "$candidate" >/dev/null 2>&1; then
+      DCODE_ON_PATH=true
+    fi
     break
   elif [ -x "${HOME}/.local/bin/${candidate}" ]; then
     DCODE_BIN="${HOME}/.local/bin/${candidate}"
@@ -780,6 +828,19 @@ elif [ -n "$DCODE_BIN" ]; then
 else
   log_warn "dcode (or deepagents-code) command not found in PATH. Restart your shell or run:"
   log_warn "  source ~/.zshrc   # (or ~/.bashrc)"
+fi
+
+# The binary verified via its absolute path but isn't on the current shell's
+# PATH (typical right after a fresh `uv tool install`): typing `dcode` won't
+# work until the shell picks up ~/.local/bin. Point the user at the fix so the
+# "Run: dcode" footer below isn't a dead end.
+if [ "$VERIFY_OK" = true ] && [ "$DCODE_ON_PATH" = false ]; then
+  log_warn "${DCODE_NAME} isn't on your PATH yet${DCODE_BIN_DISPLAY:+ (installed at ${DCODE_BIN_DISPLAY})}. Restart your shell, or run:"
+  if [ -f "${HOME}/.local/bin/env" ]; then
+    log_warn "  source ~/.local/bin/env"
+  else
+    log_warn "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+  fi
 fi
 
 # ---------------------------------------------------------------------------

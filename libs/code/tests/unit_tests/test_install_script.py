@@ -935,3 +935,313 @@ def test_install_script_interactive_empty_answer_keeps_current(tmp_path: Path) -
     assert code == 0
     assert not args_path.exists()
     assert "Keeping deepagents-code 0.1.0" in output
+
+
+def _path_without_dcode() -> str:
+    """Return the host `PATH` with any directory that already provides dcode dropped.
+
+    The test venv installs a real `dcode`/`deepagents-code` on `PATH`. Tests that
+    need to exercise the `~/.local/bin` fallback must ensure neither resolves via
+    `PATH`, while keeping the system directories the script's coreutils need.
+    Filtering the real `PATH` is portable across hosts, unlike hardcoding
+    `/usr/bin:/bin`.
+    """
+    kept = [
+        entry
+        for entry in os.environ.get("PATH", "").split(os.pathsep)
+        if entry
+        and not any(
+            (Path(entry) / name).exists() for name in ("dcode", "deepagents-code")
+        )
+    ]
+    return os.pathsep.join(kept)
+
+
+def _invoke_with_os(
+    tmp_path: Path,
+    *,
+    uname_os: str,
+    xcode_select_rc: int,
+    installed_version: str | None = None,
+    latest_version: str | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    """Run `install.sh` with faked `uname`/`xcode-select` os probes.
+
+    Pins the detected OS and the Xcode Command Line Tools check deterministically,
+    independent of the host running the suite, on top of the usual fake tool rig.
+    Returns the completed process and the path where the fake `uv` records its
+    `tool install` argv — absent if the script exited before invoking uv.
+    """
+    bin_dir, home, uv = _write_fake_tools(
+        tmp_path,
+        installed_version=installed_version,
+        latest_version=latest_version,
+    )
+    uname = bin_dir / "uname"
+    uname.write_text(f"#!/usr/bin/env bash\necho {uname_os}\n")
+    _make_executable(uname)
+    xcode_select = bin_dir / "xcode-select"
+    xcode_select.write_text(f"#!/usr/bin/env bash\nexit {xcode_select_rc}\n")
+    _make_executable(xcode_select)
+
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "UV_BIN": str(uv),
+        "DEEPAGENTS_CODE_SKIP_OPTIONAL": "1",
+        **(extra_env or {}),
+    }
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    return proc, tmp_path / "uv-args.txt"
+
+
+def _run_install_uv(
+    tmp_path: Path,
+    *,
+    verbose: bool,
+    fails: bool = False,
+    mktemp_fails: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    """Run the real `install_uv` from `install.sh` against a fake uv installer.
+
+    A fake `curl` emits a trivial "installer" that prints a noise line; the
+    function pipes it to `sh`, so the noise lands in its captured output. When
+    `fails` is set, that installer also exits non-zero, exercising the
+    surface-output-on-failure branch. Returns the completed process so callers
+    can assert on whether the noise reached the terminal and on the exit code.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    curl = bin_dir / "curl"
+    installer = "'echo UV_INSTALLER_NOISE'" + (" 'exit 3'" if fails else "")
+    curl.write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' {installer}\n")
+    _make_executable(curl)
+    if mktemp_fails:
+        mktemp = bin_dir / "mktemp"
+        mktemp.write_text("#!/usr/bin/env bash\nexit 1\n")
+        _make_executable(mktemp)
+
+    script = tmp_path / "install_uv_harness.sh"
+    script.write_text(
+        "set -euo pipefail\n"
+        "log_info() { :; }\n"
+        'log_error() { printf "%s\\n" "$*" >&2; }\n'
+        f"VERBOSE={'1' if verbose else '0'}\n"
+        f"{_extract_shell_function('install_uv')}\n"
+        "install_uv\n",
+        encoding="utf-8",
+    )
+    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    return subprocess.run(
+        ["bash", str(script)],
+        env=env,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+    )
+
+
+def test_install_uv_hides_installer_output_by_default(tmp_path: Path) -> None:
+    """The chatty upstream uv installer output is suppressed on a normal run."""
+    proc = _run_install_uv(tmp_path, verbose=False)
+
+    assert proc.returncode == 0
+    assert "UV_INSTALLER_NOISE" not in proc.stdout
+    assert "UV_INSTALLER_NOISE" not in proc.stderr
+
+
+def test_install_uv_verbose_shows_installer_output(tmp_path: Path) -> None:
+    """`DEEPAGENTS_CODE_VERBOSE=1` opts back in to the uv installer's output."""
+    proc = _run_install_uv(tmp_path, verbose=True)
+
+    assert proc.returncode == 0
+    assert "UV_INSTALLER_NOISE" in proc.stderr
+
+
+def test_install_uv_surfaces_output_on_failure(tmp_path: Path) -> None:
+    """A failed uv install replays the captured output even when not verbose.
+
+    The surface-on-failure half of the gate (`uv_install_rc -ne 0`) is the only
+    diagnostic the user gets when the upstream installer dies, so it must fire
+    regardless of `DEEPAGENTS_CODE_VERBOSE` and the script must exit non-zero.
+    """
+    proc = _run_install_uv(tmp_path, verbose=False, fails=True)
+
+    assert proc.returncode != 0
+    assert "UV_INSTALLER_NOISE" in proc.stderr
+    assert "uv installation failed" in proc.stderr
+
+
+def test_install_uv_requires_secure_temp_file(tmp_path: Path) -> None:
+    """`install_uv` fails closed if secure temporary file creation is unavailable."""
+    proc = _run_install_uv(tmp_path, verbose=False, mktemp_fails=True)
+
+    assert proc.returncode != 0
+    assert "mktemp is required to create a secure temp file" in proc.stderr
+    assert "UV_INSTALLER_NOISE" not in proc.stderr
+
+
+def test_install_script_macos_without_clt_exits_early(tmp_path: Path) -> None:
+    """On macOS, missing Xcode Command Line Tools fails fast before uv runs.
+
+    Pins `uname`→Darwin and a failing `xcode-select -p` so the pre-flight check
+    trips. The script must exit non-zero with an actionable message and must do
+    so before invoking uv (the fake `uv` records no argv), rather than letting a
+    downstream tool trigger the macOS "install developer tools" GUI popup.
+    """
+    proc, uv_args = _invoke_with_os(
+        tmp_path, uname_os="Darwin", xcode_select_rc=2, installed_version="0.0.1"
+    )
+
+    assert proc.returncode != 0
+    assert "Xcode Command Line Tools" in proc.stderr
+    assert "xcode-select --install" in proc.stderr
+    assert not uv_args.exists()
+
+
+def test_install_script_macos_skip_xcode_check_proceeds_without_clt(
+    tmp_path: Path,
+) -> None:
+    """The macOS CLT check can be bypassed for managed install environments."""
+    proc, uv_args = _invoke_with_os(
+        tmp_path,
+        uname_os="Darwin",
+        xcode_select_rc=2,
+        installed_version="0.0.1",
+        latest_version="0.2.0",
+        extra_env={"DEEPAGENTS_CODE_SKIP_XCODE_CHECK": "1"},
+    )
+
+    assert proc.returncode == 0
+    assert "Xcode Command Line Tools" not in proc.stderr
+    assert uv_args.exists()
+
+
+def test_install_script_macos_with_clt_proceeds_to_install(tmp_path: Path) -> None:
+    """On macOS with Xcode CLT present, the pre-flight check passes through to uv.
+
+    Pins `uname`→Darwin and a succeeding `xcode-select -p` so the gate's no-fire
+    branch is asserted deterministically rather than relying on the host's own
+    CLT state. The run must reach `uv tool install` without emitting the CLT
+    error.
+    """
+    proc, uv_args = _invoke_with_os(
+        tmp_path,
+        uname_os="Darwin",
+        xcode_select_rc=0,
+        installed_version="0.0.1",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0
+    assert "Xcode Command Line Tools" not in proc.stderr
+    assert uv_args.exists()
+
+
+def test_install_script_linux_skips_clt_check(tmp_path: Path) -> None:
+    """The CLT gate is macOS-only: a failing `xcode-select` is ignored on Linux.
+
+    Pins `uname`→Linux with a failing `xcode-select -p`; the `$OS = macos` guard
+    must short-circuit so the check never trips and the install proceeds.
+    """
+    proc, uv_args = _invoke_with_os(
+        tmp_path,
+        uname_os="Linux",
+        xcode_select_rc=2,
+        installed_version="0.0.1",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0
+    assert "Xcode Command Line Tools" not in proc.stderr
+    assert uv_args.exists()
+
+
+def _invoke_with_local_dcode_not_on_path(
+    tmp_path: Path, *, create_env_file: bool = False
+) -> subprocess.CompletedProcess[str]:
+    """Run with a working `dcode` in ~/.local/bin but outside the original PATH."""
+    bin_dir, home, uv = _write_fake_tools(tmp_path, installed_version=None)
+
+    local_bin = home / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    dcode = local_bin / "dcode"
+    dcode.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "${1:-}" = "-v" ]; then printf "deepagents-code 0.1.0\\n"; exit 0; fi\n'
+        "exit 0\n"
+    )
+    _make_executable(dcode)
+    if create_env_file:
+        (local_bin / "env").write_text('export PATH="$HOME/.local/bin:$PATH"\n')
+
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+        "PATH": f"{bin_dir}{os.pathsep}{_path_without_dcode()}",
+        "UV_BIN": str(uv),
+        "DEEPAGENTS_CODE_SKIP_OPTIONAL": "1",
+    }
+    return subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def test_install_script_warns_when_dcode_installed_but_not_on_path(
+    tmp_path: Path,
+) -> None:
+    """A fresh install resolved only via ~/.local/bin warns it isn't on PATH.
+
+    Simulates `uv tool install` dropping the binary in ~/.local/bin without the
+    current shell having picked it up: `command -v dcode` misses, the fallback
+    path hits, and the script verifies it directly. The success path must still
+    tell the user the binary isn't callable as `dcode` yet and how to fix it,
+    rather than printing a "Run: dcode" footer that dead-ends.
+    """
+    proc = _invoke_with_local_dcode_not_on_path(tmp_path)
+
+    assert proc.returncode == 0
+    combined = proc.stdout + proc.stderr
+    assert "isn't on your PATH yet" in combined
+    assert 'export PATH="$HOME/.local/bin:$PATH"' in combined
+    assert "source ~/.local/bin/env" not in combined
+
+
+def test_install_script_uses_uv_env_file_path_hint_when_available(
+    tmp_path: Path,
+) -> None:
+    """When uv wrote ~/.local/bin/env, the not-on-PATH hint points to it."""
+    proc = _invoke_with_local_dcode_not_on_path(tmp_path, create_env_file=True)
+
+    assert proc.returncode == 0
+    combined = proc.stdout + proc.stderr
+    assert "isn't on your PATH yet" in combined
+    assert "source ~/.local/bin/env" in combined
+
+
+def test_install_script_no_path_warning_when_dcode_on_path(tmp_path: Path) -> None:
+    """When `dcode` resolves via PATH, the not-on-PATH hint is suppressed."""
+    proc, _ = _invoke(tmp_path, {}, installed_version="0.1.0", latest_version="0.2.0")
+
+    assert proc.returncode == 0
+    combined = proc.stdout + proc.stderr
+    assert "isn't on your PATH yet" not in combined

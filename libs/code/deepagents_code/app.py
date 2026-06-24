@@ -91,6 +91,7 @@ from deepagents_code.widgets.messages import (
     UserMessage,
 )
 from deepagents_code.widgets.status import StatusBar
+from deepagents_code.widgets.subagent_panel import SubagentPanel
 from deepagents_code.widgets.welcome import WelcomeBanner
 
 logger = logging.getLogger(__name__)
@@ -1478,6 +1479,7 @@ class DeepAgentsApp(App):
         ),
         Binding("ctrl+d", "quit_app", "Quit", show=False, priority=True),
         Binding("ctrl+t", "toggle_auto_approve", "Toggle Auto-Approve", show=False),
+        Binding("ctrl+g", "toggle_subagent_panel", "Toggle Subagents", show=False),
         Binding(
             "shift+tab",
             "toggle_auto_approve",
@@ -2333,6 +2335,9 @@ class DeepAgentsApp(App):
             )
             yield Container(id="messages")
         with Container(id="bottom-app-container"):
+            # Live fan-out panel for subagents spawned from js_eval. Hidden
+            # until the first spawn event; sits just above the input.
+            yield SubagentPanel(id="subagent-panel")
             yield ChatInput(
                 cwd=self._cwd,
                 image_tracker=self._image_tracker,
@@ -2652,6 +2657,7 @@ class DeepAgentsApp(App):
             sync_message_content=self._sync_message_content,
             request_ask_user=self._request_ask_user,
             on_tool_complete=self._schedule_git_branch_refresh,
+            on_subagent_event=self._on_subagent_event,
         )
         # Wire token display callbacks
         self._ui_adapter._on_tokens_update = self._on_tokens_update
@@ -7925,6 +7931,15 @@ class DeepAgentsApp(App):
         turn_stats = SessionStats()
         self._inflight_turn_stats = turn_stats
         self._inflight_turn_start = time.monotonic()
+
+        # Clear the prior turn's subagent fan-out panel before this turn runs,
+        # seeding it with the session model that labels each subagent row.
+        panel = self._get_subagent_panel()
+        if panel is not None:
+            spec = self._effective_model_spec()
+            model_label = spec.split(":", 1)[1] if spec and ":" in spec else spec
+            panel.reset(model_label=model_label)
+
         try:
             await execute_task_textual(
                 user_input=message,
@@ -9229,6 +9244,33 @@ class DeepAgentsApp(App):
             )
         restore_iterm_cursor_guide()
         super().exit(result=result, return_code=return_code, message=message)
+
+    def _get_subagent_panel(self) -> SubagentPanel | None:
+        """Return the subagent fan-out panel, or None if not yet mounted.
+
+        Returns:
+            The mounted `SubagentPanel`, or None during early startup.
+        """
+        try:
+            return self.query_one("#subagent-panel", SubagentPanel)
+        except Exception:  # noqa: BLE001 — not mounted during early startup
+            return None
+
+    def _on_subagent_event(self, event: dict[str, Any]) -> None:
+        """Forward a validated subagent custom-stream event to the panel.
+
+        Runs on the Textual event loop (same loop as the stream consumer), so
+        the panel widget can be updated directly.
+        """
+        panel = self._get_subagent_panel()
+        if panel is not None:
+            panel.on_subagent_event(event)
+
+    def action_toggle_subagent_panel(self) -> None:
+        """Expand or collapse the subagent fan-out panel."""
+        panel = self._get_subagent_panel()
+        if panel is not None:
+            panel.toggle()
 
     def action_toggle_auto_approve(self) -> None:
         """Toggle auto-approve mode for the current session.

@@ -2858,6 +2858,83 @@ class TestInstallPackageCommand:
             "--with langchain-custom --prerelease allow"
         )
 
+    def test_stable_channel_omits_prerelease_flag(self, tmp_path, monkeypatch) -> None:
+        """A stable install does not add `--prerelease allow` for a package add.
+
+        The negative companion to `test_preserves_prerelease_channel`: pins that
+        the channel is *inferred* from the installed version, so an inverted
+        condition that always emitted `--prerelease allow` would fail here.
+        """
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
+        _write_dist_info(tmp_path, "deepagents-code")
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        with patch("deepagents_code.update_check.__version__", "1.0.0"):
+            command = install_package_command(
+                "langchain-custom", distribution_name="deepagents-code"
+            )
+
+        assert command == (
+            "uv tool install --reinstall -U deepagents-code --with langchain-custom"
+        )
+
+    def test_appends_new_with_package_after_sorted_receipt_packages(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A new `--with` package is appended after preserved ones, not re-sorted.
+
+        Preserved receipt packages come back sorted, and the new package is
+        appended afterward regardless of where it would sort. Using a new name
+        (`langchain-alpha`) that sorts *before* the receipt's (`langchain-zeta`)
+        distinguishes this append-after-preserved contract from a plain
+        alphabetical sort of the union, which the same-order cases cannot.
+        """
+        _write_uv_receipt(
+            tmp_path,
+            '{ name = "deepagents-code" }, { name = "langchain-zeta" }',
+        )
+        _write_dist_info(tmp_path, "deepagents-code")
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        command = install_package_command(
+            "langchain-alpha", distribution_name="deepagents-code"
+        )
+
+        assert command == (
+            "uv tool install --reinstall -U deepagents-code "
+            "--with langchain-zeta --with langchain-alpha"
+        )
+
+    def test_unpreservable_receipt_with_requirement_raises(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A `--with` requirement uv can't re-express by name aborts the build.
+
+        Exercises the `unsupported_keys` arm through `install_package_command`'s
+        newly-added receipt read: a source-pinned `--with` entry (e.g. an
+        editable install) carries keys beyond `name`, so it cannot be safely
+        re-expressed as a `--with <name>` and must raise rather than be silently
+        dropped from the rebuilt command.
+        """
+        _write_uv_receipt(
+            tmp_path,
+            '{ name = "deepagents-code" }, '
+            '{ name = "langchain-custom", editable = true }',
+        )
+        _write_dist_info(tmp_path, "deepagents-code")
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        with pytest.raises(
+            ToolRequirementIntrospectionError,
+            match="cannot be preserved automatically",
+        ):
+            install_package_command(
+                "langchain-new", distribution_name="deepagents-code"
+            )
+
     def test_refuses_missing_distribution(self) -> None:
         """Reinstalls must not drop extras when metadata is unavailable."""
         with pytest.raises(ExtrasIntrospectionError, match="cannot preserve"):

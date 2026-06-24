@@ -1896,10 +1896,11 @@ def _uv_tool_install_command(
         reinstall: When `True`, add `--reinstall` so uv rebuilds the tool
             environment from scratch instead of patching it in place. An
             in-place `-U` upgrade can leave stale files behind (e.g. an old
-            `tools.py` or its cached bytecode), producing a half-updated env
-            that crashes the next server start with an `ImportError`; the
-            preserved `--python` interpreter and `--with` packages still apply,
-            so the rebuild keeps the existing tool context.
+            `tools.py` or its cached bytecode), which has been observed to
+            produce a half-updated env that crashes the next server start with
+            an `ImportError`; the preserved `--python` interpreter and `--with`
+            packages still apply, so the rebuild keeps the existing tool
+            context.
 
     Raises:
         ExtrasIntrospectionError: If a metadata-sourced extra name fails PEP 508
@@ -2082,10 +2083,10 @@ def install_package_command(
     only the newest `--with` package (dropping previously configured custom
     providers), or silently downgrade a pre-release install to the latest stable.
 
-    Uses `--reinstall` (like the extras path, `_install_extra_uv_tool_command`)
-    so the upgrade rebuilds the tool environment cleanly instead of updating it
-    in place, which can leave stale files behind and break the next server
-    start.
+    Like the extras path (`_install_extra_uv_tool_command`), passes
+    `reinstall=True` so the upgrade rebuilds the tool environment cleanly; see
+    `_uv_tool_install_command`'s `reinstall` parameter for why an in-place
+    upgrade is unsafe.
 
     Args:
         package: Package name to install into the existing tool environment.
@@ -2211,10 +2212,8 @@ def _install_extra_uv_tool_command(
     """Return the receipt-preserving uv command that installs one dcode extra.
 
     Passes `reinstall=True` so the upgrade rebuilds the tool environment from
-    scratch rather than patching it in place; this avoids the half-updated env
-    (stale `tools.py` / cached bytecode) that otherwise crashes the next server
-    start with an `ImportError`, while still preserving the receipt's `--python`
-    interpreter and `--with` packages.
+    scratch rather than patching it in place; see `_uv_tool_install_command`'s
+    `reinstall` parameter for why an in-place upgrade is unsafe.
 
     Args:
         extra: The extra name to add. Validated against PEP 508 grammar before

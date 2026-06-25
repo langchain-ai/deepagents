@@ -1,0 +1,20 @@
+docs/superpowers/specs/2026-06-25-harness-eval-engine-design.md
+  s_be045b46d84183::t_48f7d0a5f1bf4e 239,241
+  s_be045b46d84183::t_1c25ac2665e5dd 1-238,240,242-271
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "80af2ac381b2f4d7e2ad9a27092fa66f9a531229",
+  "prompts": {},
+  "sessions": {
+    "s_be045b46d84183": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cade71c4-e821-4a02-888b-b70674466c73",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": null
+    }
+  }
+}

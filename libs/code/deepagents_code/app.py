@@ -5576,6 +5576,9 @@ class DeepAgentsApp(App):
             self._session_state.approval_mode_key = None
             logger.warning("Failed to write live approval-mode state", exc_info=True)
             return False
+        if live_key is None:
+            self._session_state.approval_mode_key = None
+            return False
         self._session_state.approval_mode_key = live_key
         return True
 

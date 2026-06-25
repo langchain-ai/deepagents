@@ -13330,6 +13330,18 @@ class TestLiveApprovalModeWrites:
         assert not await app._write_live_approval_mode()
         assert app._session_state.approval_mode_key is None
 
+    async def test_write_live_approval_mode_fails_without_writer(self) -> None:
+        app = DeepAgentsApp()
+        app._agent = object()
+        app._session_state = TextualSessionState(
+            thread_id="thread-1",
+            auto_approve=False,
+        )
+        app._session_state.approval_mode_key = "stale"
+
+        assert not await app._write_live_approval_mode()
+        assert app._session_state.approval_mode_key is None
+
     async def test_toggle_off_failed_write_cancels_running_agent(self) -> None:
         app = DeepAgentsApp(auto_approve=True)
         async with app.run_test() as pilot:

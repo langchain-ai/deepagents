@@ -5576,6 +5576,14 @@ class DeepAgentsApp(App):
             self._session_state.approval_mode_key = None
             logger.warning("Failed to write live approval-mode state", exc_info=True)
             return False
+        if live_key is None:
+            # No store writer on the agent (a local/in-process agent rather
+            # than a RemoteAgent). This is an expected configuration, not a
+            # fault, so — unlike the except branch above — we clear the stale
+            # key and fail closed without logging, to avoid noise on every
+            # toggle. The run-context path persists the mode for local agents.
+            self._session_state.approval_mode_key = None
+            return False
         self._session_state.approval_mode_key = live_key
         return True
 

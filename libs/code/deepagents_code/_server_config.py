@@ -101,67 +101,6 @@ def _read_env_optional_bool(suffix: str) -> bool | None:
     return raw.lower() == "true"
 
 
-def _resolve_enable_interpreter(
-    enable_interpreter: bool | None, sandbox_type: str | None
-) -> bool:
-    """Resolve the interpreter's tri-state caller option to a concrete boolean.
-
-    Args:
-        enable_interpreter: Explicit caller preference, or `None` to use the
-            sandbox-aware default.
-        sandbox_type: Sandbox backend identifier. Any falsy value (`None`, `""`)
-            or `"none"` is treated as local execution.
-
-    Returns:
-        The explicit `enable_interpreter` value when not `None`; `False` for
-            remote-sandbox defaults; otherwise the configured local default
-            (`settings.enable_interpreter`).
-    """
-    if enable_interpreter is not None:
-        return enable_interpreter
-    if sandbox_type and sandbox_type != "none":
-        return False
-
-    from deepagents_code.config import settings
-
-    return settings.enable_interpreter
-
-
-def _interpreter_suppressed_by_sandbox(
-    *, enable_interpreter: bool | None, sandbox_type: str | None, local_default: bool
-) -> bool:
-    """Whether a remote sandbox suppressed the otherwise-default interpreter.
-
-    Used to decide whether to surface an advisory: returns `True` only when the
-    user made no explicit choice, a remote sandbox is active, and the local
-    default would have enabled it — i.e. the sandbox (not an explicit
-    `--no-interpreter` opt-out, nor a disabled `[interpreter]` config) is why
-    `js_eval` is unavailable.
-
-    Takes the *raw* tri-state caller intent rather than the resolved boolean: a
-    sandbox-suppressed default and an explicit `--no-interpreter` both resolve to
-    `False`, so the resolved value cannot distinguish them. Any explicit choice
-    (`not None`) is the user's own decision and is left unannounced.
-
-    Args:
-        enable_interpreter: The raw tri-state caller intent (`--interpreter` →
-            `True`, `--no-interpreter` → `False`, unset → `None`).
-        sandbox_type: Sandbox backend identifier. Any falsy value (`None`, `""`)
-            or `"none"` is treated as local execution.
-        local_default: The local-mode default (`settings.enable_interpreter`);
-            gating on it keeps the advisory quiet for users who disabled the
-            interpreter in config.
-
-    Returns:
-        `True` when the advisory should be shown, otherwise `False`.
-    """
-    if enable_interpreter is not None:
-        return False
-    if not (sandbox_type and sandbox_type != "none"):
-        return False
-    return local_default
-
-
 @dataclass(frozen=True)
 class ServerConfig:
     """Full configuration payload passed from the app to the server subprocess.
@@ -215,13 +154,6 @@ class ServerConfig:
 
     enable_interpreter: bool = False
     """Enable `CodeInterpreterMiddleware` (`js_eval` REPL) on the main agent.
-
-    Always the resolved concrete value: `from_cli_args` collapses the tri-state
-    caller option via `_resolve_enable_interpreter` before constructing the
-    config, so the `bool | None` "defer to default" sentinel never reaches this
-    field. The `False` default here is only the bare-constructor/`from_env`
-    fallback; the user-facing default (on in local mode) lives in
-    `settings.enable_interpreter`.
 
     Local-mode only; the server graph raises if a sandbox is configured and
     this flag is `True`.
@@ -409,7 +341,7 @@ class ServerConfig:
         sandbox_setup: str | None,
         enable_shell: bool,
         enable_ask_user: bool,
-        enable_interpreter: bool | None = None,
+        enable_interpreter: bool = False,
         interpreter_ptc: str | list[str] | None = None,
         interpreter_ptc_acknowledge_unsafe: bool = False,
         mcp_config_path: str | None,
@@ -441,7 +373,7 @@ class ServerConfig:
             enable_shell: Enable shell execution tools.
             enable_ask_user: Enable ask_user tool.
             enable_interpreter: Enable `CodeInterpreterMiddleware` on the main
-                agent. `None` uses the sandbox-aware default.
+                agent.
             interpreter_ptc: Override for `settings.interpreter_ptc`.
             interpreter_ptc_acknowledge_unsafe: Mirror of
                 `settings.interpreter_ptc_acknowledge_unsafe`.
@@ -455,10 +387,6 @@ class ServerConfig:
         """
         normalized_mcp = _normalize_path(mcp_config_path, project_context, "MCP config")
 
-        resolved_enable_interpreter = _resolve_enable_interpreter(
-            enable_interpreter, sandbox_type
-        )
-
         return cls(
             model=model_name,
             model_params=model_params,
@@ -469,7 +397,7 @@ class ServerConfig:
             interactive=interactive,
             enable_shell=enable_shell,
             enable_ask_user=enable_ask_user,
-            enable_interpreter=resolved_enable_interpreter,
+            enable_interpreter=enable_interpreter,
             interpreter_ptc=interpreter_ptc,
             interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
             sandbox_type=sandbox_type,

@@ -55,11 +55,6 @@
 #     terminal (CI, wrapper scripts) update instead of stalling at the y/n
 #     prompt.
 #   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
-#   DEEPAGENTS_CODE_RIPGREP_INSTALLER — how to provision ripgrep:
-#     "managed" (default) eagerly installs the pinned, SHA-256-verified binary
-#     into ~/.deepagents/bin (no sudo) via `dcode tools install`; "system"
-#     keeps the interactive package-manager install (brew/apt/cargo/...). Set
-#     DEEPAGENTS_CODE_OFFLINE=1 to skip the managed download entirely.
 #   DEEPAGENTS_CODE_SKIP_XCODE_CHECK — set to 1 to bypass the macOS Xcode
 #     Command Line Tools preflight check
 #   DEEPAGENTS_CODE_VERBOSE — set to 1 to show uv's raw stderr (timing lines,
@@ -350,22 +345,6 @@ PYTHON_VERSION="${DEEPAGENTS_CODE_PYTHON:-3.13}"
 SKIP_OPTIONAL="${DEEPAGENTS_CODE_SKIP_OPTIONAL:-0}"
 VERBOSE="${DEEPAGENTS_CODE_VERBOSE:-0}"
 ASSUME_YES="${DEEPAGENTS_CODE_YES:-0}"
-# How ripgrep gets provisioned: "managed" (default) eagerly fetches the
-# pinned, SHA-256-verified binary into ~/.deepagents/bin via `dcode tools
-# install`; "system" keeps the interactive package-manager path below. Any
-# value other than "system" normalizes to "managed".
-#
-# Lowercase and strip whitespace first so this matches the `.strip().lower()`
-# normalization in managed_tools.ripgrep_installer(). Without this, a value
-# like "System" would parse as "managed" here but "system" in dcode, and the
-# eager `dcode tools install` would skip silently while this script also
-# skipped the package-manager path — leaving ripgrep unprovisioned.
-RIPGREP_INSTALLER="$(printf '%s' "${DEEPAGENTS_CODE_RIPGREP_INSTALLER:-managed}" \
-  | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
-case "$RIPGREP_INSTALLER" in
-  system) RIPGREP_INSTALLER="system" ;;
-  *)      RIPGREP_INSTALLER="managed" ;;
-esac
 
 # PyPI JSON endpoint used to discover the latest published release so we can
 # tell whether an existing install is out of date before upgrading it.
@@ -574,12 +553,12 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE" ]; then
     log_warn "Could not determine the latest version from PyPI — continuing with an upgrade attempt."
   elif [ -n "$EXTRAS" ] || [ "$PYTHON_REQUESTED" = true ]; then
     if [ "$LATEST_VERSION" = "$PRE_VERSION" ]; then
-      log_info "deepagents-code is already up to date — rebuilding with requested options."
+      log_info "deepagents-code ${PRE_VERSION} is already up to date — rebuilding with requested options."
     else
       log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION} with requested options..."
     fi
   elif [ "$LATEST_VERSION" = "$PRE_VERSION" ]; then
-    log_success "deepagents-code is already up to date."
+    log_success "deepagents-code ${PRE_VERSION} is already up to date."
     exit 0
   elif [ "$ASSUME_YES" = "1" ]; then
     log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."
@@ -960,22 +939,7 @@ ripgrep_manual_hint() {
 }
 
 if [ "$SKIP_OPTIONAL" != "1" ]; then
-  if [ "$RIPGREP_INSTALLER" = "managed" ] && [ "$VERIFY_OK" = true ] && [ -n "$DCODE_BIN" ]; then
-    # Eager, non-prompting managed install through the freshly installed binary
-    # — the same pinned, SHA-256-verified path dcode uses on first run
-    # (downloads into ~/.deepagents/bin, no sudo). Doing it here removes the
-    # first-run download latency. The binary reuses a system `rg` already on
-    # PATH and honors DEEPAGENTS_CODE_OFFLINE and
-    # DEEPAGENTS_CODE_RIPGREP_INSTALLER=system, reporting what it did.
-    echo ""
-    log_info "Setting up ripgrep (managed; opt out with DEEPAGENTS_CODE_RIPGREP_INSTALLER=system)..."
-    if "$DCODE_BIN" tools install; then
-      fix_owner "${HOME}/.deepagents/bin"
-    else
-      log_warn "Managed ripgrep setup did not complete; the grep tool will use a slower fallback."
-      ripgrep_manual_hint
-    fi
-  elif command -v rg >/dev/null 2>&1; then
+  if command -v rg >/dev/null 2>&1; then
     if [ "$VERBOSE" = "1" ]; then
       echo ""
       log_info "Checking optional tools..."

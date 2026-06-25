@@ -1817,7 +1817,7 @@ class Settings:
     agent. Local-mode only; raises `ValueError` at agent-build time when a
     remote sandbox is active. Subagents never receive the interpreter in v1.
 
-    `langchain-quickjs` is installed as a core dependency.
+    The `quickjs` optional extra must be installed when this flag is `True`.
 
     Defaults are owned by `config_manifest` (the canonical config surface) so
     they are defined in exactly one place.
@@ -1846,7 +1846,7 @@ class Settings:
     Accepted values:
 
     - `False` or `[]`: pure REPL, no `tools.*` bridge.
-    - `"safe"`: expand to `INTERPRETER_PTC_SAFE_PRESET` (the default).
+    - `"safe"`: expand to `INTERPRETER_PTC_SAFE_PRESET`.
     - `"all"`: every tool passed to `create_cli_agent` is exposed. Requires
         `interpreter_ptc_acknowledge_unsafe=True` when `auto_approve` is `False`.
     - `list[str]`: explicit tool names. The list may also include the `"safe"`
@@ -3426,18 +3426,11 @@ def _create_model_via_init(
                 )
             else:
                 from deepagents_code.extras_info import ExtrasIntrospectionError
-                from deepagents_code.update_check import (
-                    ToolRequirementIntrospectionError,
-                    install_package_command,
-                )
+                from deepagents_code.update_check import install_package_command
 
                 try:
                     install_cmd = install_package_command(package)
-                except (
-                    ValueError,
-                    ExtrasIntrospectionError,
-                    ToolRequirementIntrospectionError,
-                ) as exc:
+                except (ValueError, ExtrasIntrospectionError) as exc:
                     logger.debug(
                         "install_package_command failed; falling back to "
                         "manual hint: %s",

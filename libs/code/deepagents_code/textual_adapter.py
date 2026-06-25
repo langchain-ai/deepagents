@@ -227,7 +227,7 @@ class TextualUIAdapter:
         mount_message: Callable[..., Awaitable[None]],
         update_status: Callable[[str], None],
         request_approval: Callable[..., Awaitable[Any]],
-        on_auto_approve_enabled: Callable[[], Awaitable[None] | None] | None = None,
+        on_auto_approve_enabled: Callable[[], None] | None = None,
         set_spinner: Callable[[SpinnerStatus], Awaitable[None]] | None = None,
         set_active_message: Callable[[str | None], None] | None = None,
         sync_message_content: Callable[[str, str], None] | None = None,
@@ -239,7 +239,6 @@ class TextualUIAdapter:
             | None
         ) = None,
         on_tool_complete: Callable[[], None] | None = None,
-        on_subagent_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         """Initialize the adapter."""
         self._mount_message = mount_message
@@ -280,14 +279,6 @@ class TextualUIAdapter:
         The app uses this to refresh the footer's git branch as soon as an
         agent-executed tool (e.g. `git checkout`) returns, instead of waiting
         for the full turn to finish.
-        """
-
-        self._on_subagent_event = on_subagent_event
-        """Sync callback fired for each validated `subagent` custom-stream event.
-
-        Drives the live subagent fan-out panel. Events originate from the
-        QuickJS `task()` bridge during a `js_eval` call; payload strings are
-        LLM/JS-authored and treated as untrusted by the panel renderer.
         """
 
         # State tracking
@@ -383,23 +374,6 @@ def _read_mentioned_file(file_path: Path, max_embed_bytes: int) -> str:
     return f"\n### {file_path.name}\nPath: `{file_path}`\n```\n{content}\n```"
 
 
-def _is_renderable_subagent_event(data: Any, *, is_main_agent: bool) -> bool:  # noqa: ANN401  # custom-stream payload is dynamic
-    """Whether a `custom` payload is a subagent event this UI can render.
-
-    Guards the live panel against unrelated/malformed custom events and against
-    nested (subagent-to-subagent) emissions.
-
-    Args:
-        data: The `custom` stream payload.
-        is_main_agent: Whether the event came from the main agent's namespace
-            (the empty namespace). Nested emissions are ignored.
-
-    Returns:
-        True only for a well-formed subagent event from the main agent.
-    """
-    return is_main_agent and isinstance(data, dict) and data.get("type") == "subagent"
-
-
 async def execute_task_textual(
     user_input: str,
     agent: Any,  # noqa: ANN401  # Dynamic agent graph type
@@ -459,8 +433,6 @@ async def execute_task_textual(
     from langchain_core.messages import HumanMessage, ToolMessage
     from langgraph.types import Command
     from pydantic import ValidationError
-
-    from deepagents_code.approval_mode import awrite_approval_mode
 
     hitl_request_adapter = _get_hitl_request_adapter(HITLRequest)
     ask_user_adapter = _get_ask_user_adapter()
@@ -568,35 +540,11 @@ async def execute_task_textual(
 
             # Carry the current approval mode into run context so the
             # `interrupt_on` `when` predicate can suppress interrupts at the
-            # source. Also write the live store item that the server-side
-            # predicate re-reads on each tool call, so toggling approval mode
-            # mid-stream (either direction) takes effect before the current
-            # stream returns. Turning auto-approve off is the safety-critical
-            # direction, but the same store write also propagates turning it on.
+            # source. Refreshed each iteration so enabling "approve always"
+            # mid-turn propagates to the resuming stream.
             if context is None:
                 context = CLIContext()
-            auto_approve = bool(session_state.auto_approve)
-            context["auto_approve"] = auto_approve
-            try:
-                live_key = await awrite_approval_mode(
-                    agent,
-                    thread_id,
-                    auto_approve=auto_approve,
-                )
-            except Exception:
-                logger.warning(
-                    "Failed to write live approval mode; interrupting for safety",
-                    exc_info=True,
-                )
-                context["auto_approve"] = False
-                context.pop("approval_mode_key", None)
-                session_state.approval_mode_key = None
-            else:
-                if live_key is None:
-                    context.pop("approval_mode_key", None)
-                else:
-                    context["approval_mode_key"] = live_key
-                session_state.approval_mode_key = live_key
+            context["auto_approve"] = bool(session_state.auto_approve)
 
             # Show the Thinking spinner before each astream iteration so
             # both the first turn and HITL/ask_user resumes surface feedback
@@ -608,7 +556,7 @@ async def execute_task_textual(
 
             async for chunk in agent.astream(
                 stream_input,
-                stream_mode=["messages", "updates", "custom"],
+                stream_mode=["messages", "updates"],
                 subgraphs=True,
                 config=config,
                 context=context,
@@ -627,25 +575,6 @@ async def execute_task_textual(
                 # namespace). Subagents run via Task tool and should only
                 # report back to the main agent
                 is_main_agent = ns_key == ()
-
-                # Handle CUSTOM stream - live subagent fan-out events emitted by
-                # the QuickJS task() bridge during a js_eval call. Validate at
-                # this boundary before forwarding so unrelated/malformed or
-                # nested custom events never reach the panel; forwarding must
-                # never raise into the stream loop.
-                if current_stream_mode == "custom":
-                    if (
-                        adapter._on_subagent_event is not None
-                        and _is_renderable_subagent_event(
-                            data, is_main_agent=is_main_agent
-                        )
-                    ):
-                        try:
-                            adapter._on_subagent_event(data)
-                        except Exception:
-                            # Panel rendering must never crash the stream loop.
-                            logger.exception("subagent panel event handler failed")
-                    continue
 
                 # Handle UPDATES stream - for interrupts and todos
                 if current_stream_mode == "updates":
@@ -1346,9 +1275,7 @@ async def execute_task_textual(
                                 # remaining tool calls in this turn — keeping it
                                 # a single run instead of resuming after each.
                                 if adapter._on_auto_approve_enabled:
-                                    callback_result = adapter._on_auto_approve_enabled()
-                                    if callback_result is not None:
-                                        await callback_result
+                                    adapter._on_auto_approve_enabled()
                                 decisions = [
                                     ApproveDecision(type="approve")
                                     for _ in action_requests
@@ -1567,11 +1494,6 @@ async def _handle_interrupt_cleanup(
         captured_output_tokens: Output tokens captured before interrupt.
         turn_stats: Stats for the current turn.
         start_time: Monotonic timestamp when the turn began.
-
-    Raises:
-        ValueError: If proactive remote-run cancellation is attempted without a
-            `thread_id` in `config` (a contract violation rather than a
-            transient remote failure).
     """
     from langchain_core.messages import HumanMessage
 
@@ -1589,29 +1511,6 @@ async def _handle_interrupt_cleanup(
     await _stop_assistant_streams(adapter, assistant_message_by_namespace)
 
     await adapter._mount_message(AppMessage("Interrupted by user"))
-
-    # Proactively cancel server-side runs before persisting recovery state, so
-    # the aupdate_state writes below don't 409 against a still-busy thread. This
-    # is defense-in-depth layered on top of aupdate_state's own 409 -> cancel ->
-    # retry path (see RemoteAgent.aupdate_state); a failure here is not fatal.
-    # Absent on local agents, so this is a no-op for them.
-    cancel_active_runs = getattr(agent, "acancel_active_runs", None)
-    if cancel_active_runs is not None:
-        try:
-            await cancel_active_runs(config)
-        except ValueError:
-            # A missing thread_id is a contract violation (a bug), not a
-            # transient remote failure — surface it rather than downgrading it
-            # to a warning alongside the swallowed network errors below.
-            raise
-        except Exception:
-            # Remote cancel is best-effort defense-in-depth; transient remote
-            # failures here are recovered by aupdate_state's 409 retry below.
-            logger.warning(
-                "Failed to cancel active remote runs for thread %s",
-                config.get("configurable", {}).get("thread_id"),
-                exc_info=True,
-            )
 
     interrupted_msg = _build_interrupted_ai_message(
         pending_text_by_namespace,

@@ -66,14 +66,7 @@ class _AuthHostApp(App[None]):
         yield Container(id="main")
 
     def show_prompt(
-        self,
-        provider: str,
-        env_var: str | None,
-        *,
-        reason: str | None = None,
-        allow_empty_submit: bool = False,
-        input_placeholder: str | None = None,
-        submit_label: str | None = None,
+        self, provider: str, env_var: str | None, *, reason: str | None = None
     ) -> None:
         """Push the prompt and capture the dismissal result."""
 
@@ -81,17 +74,7 @@ class _AuthHostApp(App[None]):
             self.prompt_result = result
             self.prompt_dismissed = True
 
-        self.push_screen(
-            AuthPromptScreen(
-                provider,
-                env_var,
-                reason=reason,
-                allow_empty_submit=allow_empty_submit,
-                input_placeholder=input_placeholder,
-                submit_label=submit_label,
-            ),
-            handle,
-        )
+        self.push_screen(AuthPromptScreen(provider, env_var, reason=reason), handle)
 
     def show_manager(self) -> None:
         """Push the manager screen."""
@@ -251,7 +234,7 @@ class TestAuthPromptScreen:
             toggle = app.screen.query_one("#auth-prompt-advanced-toggle", Static)
             assert "Sign in to Anthropic" in str(instructions.content)
             assert "create or copy an API key" in str(instructions.content)
-            assert "Anthropic key page" in str(instructions.content)
+            assert "Provider key page" in str(instructions.content)
             assert "Deep Agents Code stores the above key locally" in str(
                 storage_note.content
             )
@@ -351,21 +334,6 @@ class TestAuthPromptScreen:
             assert "For older models" in text
             assert "Request access to Chat completions (/v1/chat/completions)" in text
 
-    async def test_anthropic_instructions_warn_against_subscription_plans(
-        self,
-    ) -> None:
-        """Anthropic keys note subscription plans don't work for API calls."""
-        app = _AuthHostApp()
-        async with app.run_test() as pilot:
-            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
-            await pilot.pause()
-            instructions = app.screen.query_one("#auth-prompt-key-instructions", Static)
-            text = str(instructions.content)
-            assert "Sign in to Anthropic" in text
-            assert "create or copy an API key" in text
-            assert "Subscription plans (Claude Pro/Max, Claude Code) cannot be" in text
-            assert "pay-as-you-go billing" in text
-
     async def test_provider_instructions_use_config_metadata(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -386,7 +354,7 @@ api_key_env = "MY_GATEWAY_API_KEY"
             await pilot.pause()
             instructions = app.screen.query_one("#auth-prompt-key-instructions", Static)
             assert "Sign in to My Gateway" in str(instructions.content)
-            assert "My Gateway key page" in str(instructions.content)
+            assert "Provider key page" in str(instructions.content)
 
     async def test_unmapped_provider_links_to_setup_docs(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -407,8 +375,8 @@ api_key_env = "MY_GATEWAY_API_KEY"
             instructions = app.screen.query_one("#auth-prompt-key-instructions", Static)
             text = str(instructions.content)
             assert "Sign in to My Gateway" in text
-            assert "My Gateway setup docs" in text
-            assert "key page" not in text
+            assert "Provider setup docs" in text
+            assert "Provider key page" not in text
 
     async def test_unsafe_configured_key_url_is_not_rendered(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -434,8 +402,8 @@ api_key_env = "MY_GATEWAY_API_KEY"
             # The malformed URL is dropped, so no clickable link survives.
             assert not any("javascript" in str(span.style) for span in content.spans)
             # With the configured URL rejected and no built-in entry, it falls
-            # back to the setup-docs link.
-            assert "My Gateway setup docs" in str(content)
+            # back to the generic setup-docs link.
+            assert "Provider setup docs" in str(content)
 
     async def test_unsafe_configured_key_url_surfaces_notice(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -459,26 +427,6 @@ api_key_env = "MY_GATEWAY_API_KEY"
             text = str(instructions.content)
             assert "configured api_key_url was ignored" in text
             assert "unsupported URL scheme" in text
-
-    async def test_anthropic_notice_and_rejected_url_notice_coexist(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Provider-specific and rejected-URL notices both render when both fire."""
-        config_path = tmp_path / "config.toml"
-        config_path.write_text("""
-[models.providers.anthropic]
-api_key_url = "javascript:alert(1)"
-""")
-        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
-        model_config.clear_caches()
-        app = _AuthHostApp()
-        async with app.run_test() as pilot:
-            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
-            await pilot.pause()
-            instructions = app.screen.query_one("#auth-prompt-key-instructions", Static)
-            text = str(instructions.content)
-            assert "Subscription plans (Claude Pro/Max, Claude Code) cannot be" in text
-            assert "configured api_key_url was ignored" in text
 
     async def test_f2_toggles_advanced_details(self) -> None:
         """Advanced endpoint and env-var details are hidden behind F2."""
@@ -741,108 +689,6 @@ api_key_url = "javascript:alert(1)"
             assert "cannot be empty" in str(err.content)
         assert app.prompt_dismissed is False
         assert auth_store.get_stored_key("anthropic") is None
-
-    async def test_optional_empty_submit_cancels_without_error(self) -> None:
-        """Onboarding can use the auth prompt as an optional setup step."""
-        app = _AuthHostApp()
-        async with app.run_test() as pilot:
-            app.show_prompt(
-                "tavily",
-                "TAVILY_API_KEY",
-                allow_empty_submit=True,
-                input_placeholder="Tavily API key (optional)",
-                submit_label="Enter save/skip",
-            )
-            await pilot.pause()
-            await pilot.press("enter")
-            await pilot.pause()
-
-        assert app.prompt_dismissed is True
-        assert app.prompt_result is AuthResult.CANCELLED
-        assert auth_store.get_stored_key("tavily") is None
-
-    async def test_optional_prompt_customizes_new_user_copy(self) -> None:
-        """Onboarding can explain Tavily without a separate key-entry modal."""
-        app = _AuthHostApp()
-        async with app.run_test() as pilot:
-            app.show_prompt(
-                "tavily",
-                "TAVILY_API_KEY",
-                reason="Web search is optional. Press Enter to skip.",
-                allow_empty_submit=True,
-                input_placeholder="Tavily API key (optional)",
-                submit_label="Enter save/skip",
-            )
-            await pilot.pause()
-
-            key_input = app.screen.query_one("#auth-prompt-input", Input)
-            help_text = app.screen.query_one(".auth-prompt-help", Static)
-            copy = "\n".join(str(widget.content) for widget in app.screen.query(Static))
-            has_storage_note = bool(app.screen.query("#auth-prompt-storage-note"))
-
-        assert key_input.placeholder == "Tavily API key (optional)"
-        assert key_input.password is True
-        assert "Web search is optional" in copy
-        assert "Enter save/skip" in str(help_text.content)
-        # Services (Tavily) omit the storage note entirely — the title and
-        # reason already explain the key, so it would only be redundant copy.
-        assert has_storage_note is False
-        assert "stores the above key locally" not in copy
-
-    async def test_optional_prompt_surfaces_save_failure_and_stays_open(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A failed credential write shows an inline error and keeps the modal."""
-
-        def _raise(*_args: object, **_kwargs: object) -> auth_store.WriteOutcome:
-            msg = "credential store is not writable"
-            raise RuntimeError(msg)
-
-        monkeypatch.setattr(auth_store, "set_stored_key", _raise)
-
-        app = _AuthHostApp()
-        async with app.run_test() as pilot:
-            app.show_prompt("tavily", "TAVILY_API_KEY", allow_empty_submit=True)
-            await pilot.pause()
-            app.screen.query_one("#auth-prompt-input", Input).value = "tvly-key"
-            await pilot.press("enter")
-            await pilot.pause()
-            err = app.screen.query_one("#auth-prompt-error", Static)
-            error_text = str(err.content)
-
-        # Surfaced in-modal, not silently swallowed, and the modal stays open so
-        # onboarding cannot proceed as if the key were saved.
-        assert "Could not save credential" in error_text
-        assert "credential store is not writable" in error_text
-        assert app.prompt_dismissed is False
-
-    async def test_optional_prompt_notifies_store_warnings(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """chmod-style warnings from the store reach the user via `notify`."""
-        notices: list[tuple[str, str | None]] = []
-
-        def _capture_notify(
-            message: str, *_args: object, severity: str | None = None, **_kwargs: object
-        ) -> None:
-            notices.append((str(message), severity))
-
-        def _warn(*_args: object, **_kwargs: object) -> auth_store.WriteOutcome:
-            return auth_store.WriteOutcome(warnings=("credential file is not private",))
-
-        monkeypatch.setattr(auth_store, "set_stored_key", _warn)
-
-        app = _AuthHostApp()
-        async with app.run_test() as pilot:
-            monkeypatch.setattr(app, "notify", _capture_notify)
-            app.show_prompt("tavily", "TAVILY_API_KEY", allow_empty_submit=True)
-            await pilot.pause()
-            app.screen.query_one("#auth-prompt-input", Input).value = "tvly-key"
-            await pilot.press("enter")
-            await pilot.pause()
-
-        assert ("credential file is not private", "warning") in notices
-        assert app.prompt_result is AuthResult.SAVED
 
     async def test_escape_cancels(self) -> None:
         """Escape dismisses with `CANCELLED` and writes nothing."""

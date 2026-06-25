@@ -3,35 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from deepagents_code.widgets._links import event_targets_link, open_style_link
-
-
-def _move_event(
-    *, link: str | None = None, meta: dict | None = None
-) -> SimpleNamespace:
-    """Build a minimal mouse-move-like event for hover tests."""
-    return SimpleNamespace(style=SimpleNamespace(link=link, meta=meta or {}))
-
-
-def test_event_targets_link_detects_osc8_link() -> None:
-    """A Rich `Style(link=...)` span counts as a link."""
-    assert event_targets_link(_move_event(link="https://example.com")) is True  # ty: ignore
-
-
-def test_event_targets_link_detects_markdown_click_action() -> None:
-    """Markdown `@click=link(...)` meta actions count as links."""
-    event = _move_event(meta={"@click": "link('https://example.com')"})
-    assert event_targets_link(event) is True  # ty: ignore
-
-
-def test_event_targets_link_ignores_plain_text() -> None:
-    """Plain hovered text is not a link."""
-    assert event_targets_link(_move_event()) is False  # ty: ignore
-
-
-def test_event_targets_link_ignores_other_click_actions() -> None:
-    """Non-link `@click` actions are not treated as links."""
-    assert event_targets_link(_move_event(meta={"@click": "toggle()"})) is False  # ty: ignore
+from deepagents_code.widgets._links import open_style_link
 
 
 def _event_with_link(url: str) -> SimpleNamespace:

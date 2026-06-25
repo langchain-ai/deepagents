@@ -310,26 +310,26 @@ def test_format_known_extras_groups_extras_under_correct_label() -> None:
 # `deepagents_code.config` at call time. Patch the source module — patching
 # `deepagents_code.extras_info._is_editable_install` would not work (it isn't
 # bound there as a module-level attribute).
-def test_verify_interpreter_deps_raises_with_reinstall_hint_for_tool_install() -> None:
+def test_verify_interpreter_deps_raises_with_dcode_hint_for_tool_install() -> None:
     with (
         patch(
             "deepagents_code.extras_info.importlib.util.find_spec", return_value=None
         ),
         patch("deepagents_code.config._is_editable_install", return_value=False),
-        pytest.raises(ImportError, match="Reinstall dcode"),
+        pytest.raises(ImportError, match="dcode --install quickjs"),
     ):
         verify_interpreter_deps()
 
 
-def test_verify_interpreter_deps_raises_with_uv_sync_hint_for_editable_install() -> (
-    None
-):
+def test_verify_interpreter_deps_raises_with_uv_hint_for_editable_install() -> None:
     with (
         patch(
             "deepagents_code.extras_info.importlib.util.find_spec", return_value=None
         ),
         patch("deepagents_code.config._is_editable_install", return_value=True),
-        pytest.raises(ImportError, match="uv sync"),
+        pytest.raises(
+            ImportError, match=r"uv tool install --editable.*deepagents-code\[quickjs\]"
+        ),
     ):
         verify_interpreter_deps()
 

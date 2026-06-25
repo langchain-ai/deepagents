@@ -106,10 +106,11 @@ SANDBOX_EXTRAS: frozenset[str] = frozenset(
 """Optional extras that add sandbox integrations."""
 
 STANDALONE_EXTRAS: frozenset[str] = frozenset({"quickjs"})
-"""Compatibility extras that don't fit the provider/sandbox taxonomy.
+"""Optional extras that don't fit the provider/sandbox taxonomy.
 
-`quickjs` is a core dependency now, but the empty extra remains installable so
-older `deepagents-code[quickjs]` and `/install quickjs` workflows stay harmless.
+These integrations layer onto the main agent (e.g. a JS REPL via
+`langchain-quickjs`) and aren't grouped under `all-providers` or
+`all-sandboxes`.
 """
 
 KNOWN_EXTRAS: frozenset[str] = (
@@ -373,12 +374,12 @@ def extra_for_package(
 
 
 def verify_interpreter_deps() -> None:
-    """Check that `langchain-quickjs` is installed for the interpreter.
+    """Check that `langchain-quickjs` is installed for the `--interpreter` flag.
 
     Uses `importlib.util.find_spec` for a lightweight check with no actual
     imports. Call this in the app process *before* spawning the server
     subprocess so users get a clear, actionable error instead of an opaque
-    server crash when the core dependency is missing or broken.
+    server crash when the optional `quickjs` extra is not installed.
 
     Returns silently when the package is importable.
 
@@ -398,16 +399,16 @@ def verify_interpreter_deps() -> None:
         from deepagents_code.config import _is_editable_install
 
         if _is_editable_install():
+            from deepagents_code.update_check import editable_extra_hint
+
             msg = (
-                "Missing core dependency for the interpreter. Editable install "
-                "detected — refresh the local environment with uv sync, or "
-                "relaunch with --no-interpreter to skip it."
+                "Missing dependencies for --interpreter. Editable install "
+                f"detected — {editable_extra_hint('quickjs')}"
             )
         else:
             msg = (
-                "Missing core dependency for the interpreter. "
-                "Reinstall dcode to restore langchain-quickjs, or relaunch with "
-                "--no-interpreter to skip it."
+                "Missing dependencies for --interpreter. "
+                "Install with: dcode --install quickjs"
             )
         raise ImportError(msg)
 

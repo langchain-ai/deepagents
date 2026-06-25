@@ -116,9 +116,6 @@ def show_help() -> None:
     console.print(
         "  dcode doctor                              Print install diagnostics"
     )
-    console.print(
-        "  dcode tools <install>                     Manage managed tools (ripgrep)"
-    )
     console.print()
 
     console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
@@ -167,11 +164,8 @@ def show_help() -> None:
         "  --trust-project-mcp        Trust project MCP configs (skip approval prompt)"
     )
     console.print(
-        "  --interpreter, --no-interpreter"
-        "  Enable or disable JS interpreter (`js_eval`) middleware"
-    )
-    console.print(
-        "                             Enabled by default when not using a sandbox"
+        "  --interpreter              Enable JS interpreter (`js_eval`) middleware "
+        "(local mode only)"
     )
     console.print(
         "  --interpreter-tools VALUE  PTC allowlist: 'safe', 'all', or comma-separated "
@@ -208,7 +202,7 @@ def show_help() -> None:
         "  --auto-update              Toggle automatic updates on or off, then exit"
     )
     console.print(
-        "  --install NAME             Install an optional extra (e.g. daytona)"
+        "  --install NAME             Install an optional extra (e.g. quickjs)"
     )
     console.print(
         "  --package                  With --install, treat NAME as a package "
@@ -491,58 +485,6 @@ def show_doctor_help() -> None:
     )
     console.print(
         "     Run `dcode --version` (or `dcode -v`) for dependency versions.",
-        style=theme.MUTED,
-        highlight=False,
-    )
-    console.print()
-
-
-def show_tools_help() -> None:
-    """Show help information for the `tools` subcommand."""
-    console.print()
-    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  dcode tools <command> [options]")
-    console.print()
-    console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
-    console.print("  install           Install or repair the managed ripgrep binary")
-    console.print()
-    _print_option_section()
-    console.print()
-    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  dcode tools install")
-    console.print("  dcode tools install --json")
-    console.print()
-
-
-def show_tools_install_help() -> None:
-    """Show help information for the `tools install` subcommand."""
-    console.print()
-    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  dcode tools install [options]")
-    console.print()
-    console.print(
-        "Download the pinned, SHA-256-verified ripgrep binary into",
-    )
-    console.print(
-        "~/.deepagents/bin (no sudo). Reuses a system `rg` already on PATH and",
-    )
-    console.print(
-        "is also handy for repairing a missing or stale managed binary.",
-    )
-    console.print()
-    _print_option_section()
-    console.print()
-    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  dcode tools install")
-    console.print("  dcode tools install --json")
-    console.print()
-    console.print(
-        "Opt out with DEEPAGENTS_CODE_OFFLINE=1 or set",
-        style=theme.MUTED,
-        highlight=False,
-    )
-    console.print(
-        "DEEPAGENTS_CODE_RIPGREP_INSTALLER=system to use your package manager.",
         style=theme.MUTED,
         highlight=False,
     )

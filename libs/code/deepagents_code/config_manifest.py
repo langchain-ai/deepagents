@@ -50,12 +50,12 @@ logger = logging.getLogger(__name__)
 # These are the single source of truth for `[interpreter]` defaults. The
 # `Settings` dataclass references them so the default is defined once.
 
-INTERPRETER_ENABLE_DEFAULT = True
+INTERPRETER_ENABLE_DEFAULT = False
 INTERPRETER_TIMEOUT_SECONDS_DEFAULT = 5.0
 INTERPRETER_MEMORY_LIMIT_MB_DEFAULT = 64
 INTERPRETER_MAX_PTC_CALLS_DEFAULT = 256
 INTERPRETER_MAX_RESULT_CHARS_DEFAULT = 4000
-INTERPRETER_PTC_DEFAULT: str | bool | list[str] = "safe"
+INTERPRETER_PTC_DEFAULT: str | bool | list[str] = False
 INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT = False
 
 LANGSMITH_PROJECT_DEFAULT = "deepagents-code"
@@ -840,14 +840,6 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=False,
         env_var=_env_vars.NO_TERMINAL_ESCAPE,
     ),
-    ConfigOption(
-        key="display.onboarding_integrations_screen",
-        group="Display",
-        summary="Show the integrations summary screen during first-run onboarding.",
-        kind=OptionKind.BOOL,
-        default=False,
-        env_var=_env_vars.ONBOARDING_INTEGRATIONS_SCREEN,
-    ),
     # --- Models --------------------------------------------------------
     ConfigOption(
         key="models.default",
@@ -949,7 +941,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.BOOL,
         default=INTERPRETER_ENABLE_DEFAULT,
         toml_keys=("interpreter", "enable_interpreter"),
-        cli_flag="--interpreter",
+        cli_flag="--enable-interpreter",
         settings_field="enable_interpreter",
     ),
     ConfigOption(
@@ -1070,14 +1062,6 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.BOOL,
         default=False,
         env_var=_env_vars.OFFLINE,
-    ),
-    ConfigOption(
-        key="runtime.ripgrep_installer",
-        group="Runtime",
-        summary="Select ripgrep provisioning mode ('managed' or 'system').",
-        kind=OptionKind.STR,
-        default="managed",
-        env_var=_env_vars.RIPGREP_INSTALLER,
     ),
     # --- Debug / Development -------------------------------------------
     ConfigOption(

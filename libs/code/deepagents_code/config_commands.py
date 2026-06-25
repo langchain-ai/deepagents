@@ -2,9 +2,10 @@
 
 `config list` prints the static manifest (every tunable option, its type,
 default, and where it can be set). `config show` resolves each option against
-the live environment and `config.toml`, reporting the effective value and which
-source provided it. `config get <key>` does the same for a single option.
-`config path` prints the on-disk config locations.
+the app credential store (for credentials), the live environment, and
+`config.toml`, reporting the effective value and which source provided it.
+`config get <key>` does the same for a single option. `config path` prints the
+on-disk config locations.
 
 Secret-flagged options (API keys and other credentials) are never printed by
 value — `config show`/`config get` report only whether they are set and from
@@ -131,10 +132,12 @@ def setup_config_parser(
 
 
 def _resolve(option: ConfigOption, toml_data: dict[str, Any]) -> tuple[bool, str, Any]:
-    """Resolve an option via the shared manifest resolver.
+    """Resolve an option for display, reporting what the runtime actually reads.
 
-    Delegates to `config_manifest.resolve_scalar` so `config show`/`get`
-    report exactly what the runtime reads.
+    Credential options first consult the app credential store (`/auth`), which
+    beats env vars at runtime (`resolve_provider_credential`); everything else
+    (and credentials with no stored key) delegates to
+    `config_manifest.resolve_scalar` (env then `config.toml`).
 
     Returns:
         `(is_set, source, value)`, where `is_set` is `False` when the value
@@ -142,8 +145,43 @@ def _resolve(option: ConfigOption, toml_data: dict[str, Any]) -> tuple[bool, str
     """
     from deepagents_code.config_manifest import resolve_scalar
 
+    if option.group == "Credentials":
+        stored = _resolve_stored_credential(option)
+        if stored is not None:
+            value, source = stored
+            return True, source, value
+
     value, source = resolve_scalar(option, toml_data=toml_data)
     return source != "default", source, value
+
+
+def _resolve_stored_credential(option: ConfigOption) -> tuple[Any, str] | None:
+    """Return the `/auth`-stored credential for a credential option, if any.
+
+    Mirrors the runtime precedence in `resolve_provider_credential` (a key
+    entered via `/auth` and saved to `auth.json` beats an environment variable)
+    so `config show`/`get` reports the credential the agent actually sends. A
+    corrupt store is logged and treated as absent so resolution falls through to
+    env/`config.toml` rather than failing the command.
+
+    Returns:
+        `(value, "stored")` when a key is stored for the option's provider,
+        otherwise `None`.
+    """
+    from deepagents_code import auth_store
+    from deepagents_code.model_config import ProviderAuthSource
+
+    provider = option.key.split(".", 1)[1]
+    try:
+        stored = auth_store.get_stored_key(provider)
+    except RuntimeError:
+        logger.warning(
+            "Could not read stored credential for %s; treating as absent", provider
+        )
+        return None
+    if stored:
+        return stored, ProviderAuthSource.STORED.value
+    return None
 
 
 def _display_value(option: ConfigOption, *, is_set: bool, value: object) -> str:

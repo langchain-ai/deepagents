@@ -199,6 +199,88 @@ def test_run_get_json_omits_secret_value(monkeypatch, capsys) -> None:
     assert payload["data"]["value"] is None
 
 
+@pytest.fixture
+def stored_auth_dir(tmp_path, monkeypatch):
+    """Redirect the credential store into a temp dir so `/auth` keys are isolated."""
+    state_dir = tmp_path / ".deepagents" / ".state"
+    monkeypatch.setattr("deepagents_code.model_config.DEFAULT_STATE_DIR", state_dir)
+    return state_dir
+
+
+@pytest.mark.usefixtures("stored_auth_dir")
+def test_resolve_credential_prefers_stored_over_env(monkeypatch):
+    """A `/auth`-stored key wins over an env var, matching runtime precedence."""
+    from deepagents_code import auth_store
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "from-env")
+    auth_store.set_stored_key("anthropic", "from-store")
+    option = get_option("credentials.anthropic")
+    assert option is not None
+    is_set, source, value = _resolve(option, {})
+    assert is_set is True
+    assert source == "stored"
+    assert value == "from-store"
+
+
+@pytest.mark.usefixtures("stored_auth_dir")
+def test_resolve_credential_uses_stored_when_env_unset(monkeypatch):
+    """A stored key is surfaced even with no env var set."""
+    from deepagents_code import auth_store
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", raising=False)
+    auth_store.set_stored_key("anthropic", "from-store")
+    option = get_option("credentials.anthropic")
+    assert option is not None
+    is_set, source, _ = _resolve(option, {})
+    assert is_set is True
+    assert source == "stored"
+
+
+@pytest.mark.usefixtures("stored_auth_dir")
+def test_resolve_credential_falls_back_to_env_without_stored(monkeypatch):
+    """With no stored key, resolution falls through to the env var."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "from-env")
+    option = get_option("credentials.anthropic")
+    assert option is not None
+    is_set, source, value = _resolve(option, {})
+    assert is_set is True
+    assert source == "env (ANTHROPIC_API_KEY)"
+    assert value == "from-env"
+
+
+def test_resolve_credential_corrupt_store_falls_back_to_env(
+    stored_auth_dir, monkeypatch, caplog
+):
+    """A corrupt `auth.json` is logged and treated as absent, not a hard error."""
+    import logging
+
+    stored_auth_dir.mkdir(parents=True, exist_ok=True)
+    (stored_auth_dir / "auth.json").write_text("{ not json", encoding="utf-8")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "from-env")
+    option = get_option("credentials.anthropic")
+    assert option is not None
+    with caplog.at_level(logging.WARNING):
+        is_set, source, value = _resolve(option, {})
+    assert is_set is True
+    assert source == "env (ANTHROPIC_API_KEY)"
+    assert value == "from-env"
+    assert "treating as absent" in caplog.text
+
+
+@pytest.mark.usefixtures("stored_auth_dir")
+def test_run_get_text_reports_stored_source(capsys):
+    """`config get` shows a stored credential as configured from the store."""
+    from deepagents_code import auth_store
+
+    auth_store.set_stored_key("anthropic", "from-store")
+    assert _run_get("credentials.anthropic", "text") == 0
+    out = capsys.readouterr().out
+    assert "configured" in out
+    assert "stored" in out
+    assert "from-store" not in out
+
+
 def test_charset_auto_display_value_includes_effective_glyph_mode() -> None:
     """The charset auto value says which glyph mode is actually being used."""
     option = get_option("display.charset")

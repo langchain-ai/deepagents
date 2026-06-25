@@ -16,6 +16,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents._tools import _apply_tool_description_overrides, _tool_name
 from deepagents._version import __version__
+from deepagents.backends import StateBackend
 from deepagents.graph import (
     _REQUIRED_MIDDLEWARE_CLASSES,
     _REQUIRED_MIDDLEWARE_NAMES,

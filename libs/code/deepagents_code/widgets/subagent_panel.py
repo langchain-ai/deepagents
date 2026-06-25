@@ -17,12 +17,14 @@ escapes cannot influence rendering or panel state.
 from __future__ import annotations
 
 import contextlib
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
+from textual.css.query import NoMatches, TooManyMatches
 from textual.reactive import reactive
 from textual.widgets import Static
 
@@ -36,6 +38,8 @@ if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
     from textual.timer import Timer
+
+logger = logging.getLogger(__name__)
 
 SubagentStatus = Literal["running", "done", "error", "cancelled"]
 
@@ -67,12 +71,22 @@ class _SubagentRecord:
     """One subagent's live state within a phase."""
 
     id: str
+    """Per-dispatch subagent id from the stream event."""
+
     label: str
+    """Sanitized, display-ready task label for the row."""
+
     status: SubagentStatus = "running"
+    """Lifecycle state; starts running and moves to a terminal value once."""
+
     started_monotonic: float = field(default_factory=time.monotonic)
+    """Monotonic timestamp captured when the record was created."""
+
     duration_ms: int | None = None
+    """Measured duration once finished; None while still running."""
+
     error: str | None = None
-    model: str | None = None
+    """Failure reason, set only when status is error."""
 
     def elapsed_seconds(self) -> float:
         """Seconds since this subagent started (live for running rows).
@@ -90,9 +104,16 @@ class _Phase:
     """One `js_eval` fan-out batch, keyed by the eval's tool-call id."""
 
     eval_id: str
+    """Parent `js_eval` tool-call id, or empty string when none was provided."""
+
     index: int
+    """1-based display ordinal assigned when the phase is created."""
+
     records: dict[str, _SubagentRecord] = field(default_factory=dict)
+    """Subagent records keyed by id; kept in sync with `order` via `add`."""
+
     order: list[str] = field(default_factory=list)
+    """Record ids in arrival order, defining render sequence."""
 
     def add(self, record: _SubagentRecord) -> None:
         """Insert or replace a subagent record, preserving arrival order."""
@@ -303,11 +324,6 @@ class SubagentPanel(Vertical):
                 return phase
         return self._active_phase
 
-    @property
-    def _batch_complete(self) -> bool:
-        """Whether at least one phase exists and nothing is still running."""
-        return bool(self._phases) and not self._any_running()
-
     def on_subagent_event(self, event: dict[str, Any]) -> None:
         """Apply one validated subagent lifecycle event.
 
@@ -318,6 +334,9 @@ class SubagentPanel(Vertical):
         phase = event.get("phase")
         sub_id = event.get("id")
         if not isinstance(sub_id, str) or not sub_id:
+            # Producer/consumer contract drift — leave a breadcrumb rather than
+            # dropping the event with no trace.
+            logger.debug("Dropping subagent event with missing/invalid id: %r", event)
             return
         eval_id = event.get("eval_id")
         eval_key = eval_id if isinstance(eval_id, str) else ""
@@ -325,8 +344,13 @@ class SubagentPanel(Vertical):
         if phase == "start":
             self._handle_start(sub_id, eval_key, event)
         elif phase in {"complete", "error"}:
-            self._handle_finish(sub_id, phase, event)
+            self._handle_finish(sub_id, eval_key, phase, event)
         else:
+            logger.debug(
+                "Dropping subagent event with unrecognized phase %r (id=%s)",
+                phase,
+                sub_id,
+            )
             return
 
         self._refresh()
@@ -336,22 +360,30 @@ class SubagentPanel(Vertical):
         if self._pending_reset:
             # A new workflow is starting — drop the previous turn's fan-out now.
             self._clear()
-        phase = self._phases.get(eval_key)
-        if phase is None:
-            phase = _Phase(eval_id=eval_key, index=len(self._phase_order) + 1)
-            self._phases[eval_key] = phase
-            self._phase_order.append(eval_key)
+        phase = self._ensure_phase(eval_key)
         self._active_eval_id = eval_key
 
         record = _SubagentRecord(
             id=sub_id,
             label=_sanitize(self._row_label(event), max_chars=200),
-            model=self._event_model(event),
         )
         phase.add(record)
         self._show()
         self._apply_body_height()
         self._ensure_timer()
+
+    def _ensure_phase(self, eval_key: str) -> _Phase:
+        """Return the phase for `eval_key`, creating and ordering it if new.
+
+        Returns:
+            The existing or newly created `_Phase` for this eval batch.
+        """
+        phase = self._phases.get(eval_key)
+        if phase is None:
+            phase = _Phase(eval_id=eval_key, index=len(self._phase_order) + 1)
+            self._phases[eval_key] = phase
+            self._phase_order.append(eval_key)
+        return phase
 
     @staticmethod
     def _row_label(event: dict[str, Any]) -> str:
@@ -368,34 +400,69 @@ class SubagentPanel(Vertical):
             label = " ".join(label.split())[:_LABEL_FALLBACK_MAX_CHARS]
         return f"{sub_type}: {label}"
 
-    @staticmethod
-    def _event_model(event: dict[str, Any]) -> str | None:
-        """Sanitized per-subagent model override from the event, if any.
+    def _handle_finish(
+        self, sub_id: str, eval_key: str, outcome: str, event: dict[str, Any]
+    ) -> None:
+        """Mark a record done/error, recording duration and stopping the timer.
 
-        Returns:
-            The sanitized model string, or None when the event carries no model.
+        An error with no matching `start` is adopted as a fresh row (see
+        `_adopt_orphan_finish`) so a dropped-start failure still surfaces.
         """
-        raw_model = event.get("model")
-        if isinstance(raw_model, str):
-            return _sanitize(raw_model, max_chars=_MODEL_COL)
-        return None
-
-    def _handle_finish(self, sub_id: str, phase: str, event: dict[str, Any]) -> None:
-        """Mark a record done/error, record its duration, and stop the timer."""
         record = self._find_record(sub_id)
         if record is None:
-            return
-        record.status = "done" if phase == "complete" else "error"
+            if outcome != "error":
+                # A success with no matching `start` has no row or label to
+                # attach to, so ignore it rather than creating a phantom phase.
+                # Log it, though: a dropped `start` is the same producer/consumer
+                # contract drift the other drop paths leave breadcrumbs for.
+                logger.debug(
+                    "Dropping subagent complete event with no matching start "
+                    "(id=%s, eval_id=%s)",
+                    sub_id,
+                    eval_key,
+                )
+                return
+            # An error with no matching `start` (e.g. the start event was
+            # dropped on the wire) carries the failure string — synthesize a
+            # minimal record so it still surfaces instead of vanishing silently.
+            record = self._adopt_orphan_finish(sub_id, eval_key, event)
+        record.status = "done" if outcome == "complete" else "error"
         duration = event.get("duration_ms")
         if isinstance(duration, (int, float)):
             record.duration_ms = int(duration)
-        if phase == "error":
+        if outcome == "error":
             raw_err = event.get("error")
             record.error = (
                 _sanitize(raw_err, max_chars=120) if isinstance(raw_err, str) else None
             )
         if not self._any_running():
             self._stop_timer()
+
+    def _adopt_orphan_finish(
+        self, sub_id: str, eval_key: str, event: dict[str, Any]
+    ) -> _SubagentRecord:
+        """Create a record for a terminal event that has no matching `start`.
+
+        Places it in the event's phase (creating the phase if needed) and shows
+        the panel so a dropped-start failure is still visible to the user.
+
+        Returns:
+            The newly created record, already inserted into its phase.
+        """
+        if self._pending_reset:
+            # A dropped-start error is still evidence that a new workflow
+            # started, so clear the previous turn before surfacing it.
+            self._clear()
+        phase = self._ensure_phase(eval_key)
+        self._active_eval_id = eval_key
+        record = _SubagentRecord(
+            id=sub_id,
+            label=_sanitize(self._row_label(event), max_chars=200),
+        )
+        phase.add(record)
+        self._show()
+        self._apply_body_height()
+        return record
 
     def _find_record(self, sub_id: str) -> _SubagentRecord | None:
         """Locate a record by id across all phases.
@@ -439,7 +506,7 @@ class SubagentPanel(Vertical):
         """
         try:
             header = self.query_one("#subagent-header", Static)
-        except Exception:  # noqa: BLE001 — not mounted yet
+        except (NoMatches, TooManyMatches):  # not mounted yet
             return False
         return event.get_content_offset(header) is not None
 
@@ -454,7 +521,7 @@ class SubagentPanel(Vertical):
         """
         try:
             phases = self.query_one("#subagent-phases", Static)
-        except Exception:  # noqa: BLE001 — not mounted yet
+        except (NoMatches, TooManyMatches):  # not mounted yet
             return None
         offset = event.get_content_offset(phases)
         if offset is None:
@@ -563,7 +630,7 @@ class SubagentPanel(Vertical):
         """Show/hide the body when the expanded state changes."""
         try:
             body = self.query_one("#subagent-body")
-        except Exception:  # noqa: BLE001 — body not mounted yet
+        except (NoMatches, TooManyMatches):  # body not mounted yet
             return
         body.set_class(not expanded, "-collapsed")
         # Drop vertical padding when collapsed so the header bar is thin.
@@ -645,7 +712,7 @@ class SubagentPanel(Vertical):
         height = self._body_height()
         if height == self._applied_height:
             return
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(NoMatches, TooManyMatches):  # not mounted yet
             self.query_one("#subagent-body").styles.height = height
             self._applied_height = height
 
@@ -655,7 +722,7 @@ class SubagentPanel(Vertical):
             return
         try:
             self.query_one(f"#{widget_id}", Static).update(content)
-        except Exception:  # noqa: BLE001 — not mounted yet
+        except (NoMatches, TooManyMatches):  # not mounted yet
             return
         self._last_render[widget_id] = content.plain
 
@@ -731,7 +798,7 @@ class SubagentPanel(Vertical):
         """
         try:
             width = self.query_one("#subagent-header", Static).size.width
-        except Exception:  # noqa: BLE001 — not mounted yet
+        except (NoMatches, TooManyMatches):  # not mounted yet
             width = 0
         return width if width and width > 0 else _FALLBACK_WIDTH
 
@@ -739,7 +806,7 @@ class SubagentPanel(Vertical):
         """Render the left pane: one selectable row per phase (eval batch)."""
         try:
             scroll = self.query_one("#subagent-phases-scroll")
-        except Exception:  # noqa: BLE001 — not mounted yet
+        except (NoMatches, TooManyMatches):  # not mounted yet
             return
         # Hide only when there are no phases at all; otherwise always show the
         # list (even a single phase) for a consistent two-pane view.
@@ -801,7 +868,7 @@ class SubagentPanel(Vertical):
         """
         try:
             width = self.query_one("#subagent-agents", Static).size.width
-        except Exception:  # noqa: BLE001 — not mounted yet
+        except (NoMatches, TooManyMatches):  # not mounted yet
             width = 0
         if not width or width <= 0:
             width = _FALLBACK_WIDTH
@@ -878,7 +945,7 @@ class SubagentPanel(Vertical):
             label = f"{record.label} - {record.error}"
         timing = _format_timing(record.elapsed_seconds())
         task = _sanitize(label, max_chars=task_col - 1).ljust(task_col)
-        model = record.model or self._model_label or ""
+        model = self._model_label or ""
         right = self._right_block(model, timing)
         return Content.assemble(
             Content.styled(f"  {icon}  ", tint),

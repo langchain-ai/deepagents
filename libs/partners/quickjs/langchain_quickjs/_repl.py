@@ -535,7 +535,12 @@ class _ThreadREPL:
     def _validate_task_payload(
         payload: dict[str, Any],
     ) -> tuple[str, str, str | None, dict[str, Any] | None]:
-        """Validate JS `task()` input and return its typed fields."""
+        """Validate JS `task()` input and return its typed fields.
+
+        JS callers pass camelCase keys (`subagentType`, `responseSchema`) as
+        documented in the system prompt; the returned tuple is snake_case for
+        the Python dispatch path.
+        """
         description = payload.get("description")
         if not isinstance(description, str) or not description:
             msg = "task() requires non-empty string field `description`"

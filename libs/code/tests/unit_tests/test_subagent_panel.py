@@ -112,17 +112,17 @@ class TestLifecycle:
             assert panel.expanded is True
             assert panel._counts() == (0, 1)
 
-    async def test_batch_complete_tracks_terminal_state(self) -> None:
+    async def test_any_running_tracks_terminal_state(self) -> None:
         async with PanelApp().run_test() as pilot:
             panel = pilot.app.query_one("#panel", SubagentPanel)
             panel.on_subagent_event(_start("a", "E1"))
             panel.on_subagent_event(_start("b", "E1"))
             await pilot.pause()
-            assert panel._batch_complete is False
+            assert panel._any_running() is True
             panel.on_subagent_event(_complete("a", "E1"))
             panel.on_subagent_event(_complete("b", "E1"))
             await pilot.pause()
-            assert panel._batch_complete is True
+            assert panel._any_running() is False
             assert panel._counts() == (2, 2)
 
     async def test_missing_label_falls_back_to_short_description(self) -> None:
@@ -140,7 +140,7 @@ class TestLifecycle:
             panel.on_subagent_event(_start("a", "E1", label="db.ts"))
             panel.on_subagent_event(_error("a", "E1", message="rate limit exceeded"))
             await pilot.pause()
-            assert panel._batch_complete is True
+            assert panel._any_running() is False
             record = panel._find_record("a")
             assert record is not None
             assert record.status == "error"
@@ -149,6 +149,69 @@ class TestLifecycle:
             # ~6 chars if it were rendered in the (narrow) TIME column.
             rows = _render(pilot.app.query_one("#subagent-agents", Static))
             assert "rate limit exceeded" in rows
+
+    async def test_orphan_error_surfaces_without_start(self) -> None:
+        # An error whose `start` was dropped on the wire must still surface as a
+        # failed row rather than vanishing silently.
+        async with PanelApp().run_test(size=(200, 24)) as pilot:
+            panel = pilot.app.query_one("#panel", SubagentPanel)
+            panel.on_subagent_event(_error("orphan", "E1", message="dropped boom"))
+            await pilot.pause()
+            assert panel.has_class("-visible")
+            record = panel._find_record("orphan")
+            assert record is not None
+            assert record.status == "error"
+            assert record.error == "dropped boom"
+            rows = _render(pilot.app.query_one("#subagent-agents", Static))
+            assert "dropped boom" in rows
+
+    async def test_orphan_error_after_prepare_turn_replaces_prior_turn(self) -> None:
+        async with PanelApp().run_test(size=(200, 24)) as pilot:
+            panel = pilot.app.query_one("#panel", SubagentPanel)
+            panel.on_subagent_event(_start("a", "E1", label="old work"))
+            panel.on_subagent_event(_complete("a", "E1"))
+            panel.prepare_turn()
+            panel.on_subagent_event(_error("orphan", "E2", message="dropped boom"))
+            panel.on_subagent_event(_start("b", "E3", label="later work"))
+            await pilot.pause()
+            assert panel._phase_order == ["E2", "E3"]
+            assert panel._find_record("a") is None
+            assert panel._find_record("orphan") is not None
+            assert panel._find_record("b") is not None
+
+    async def test_orphan_error_becomes_active_phase(self) -> None:
+        async with PanelApp().run_test(size=(200, 24)) as pilot:
+            panel = pilot.app.query_one("#panel", SubagentPanel)
+            panel.on_subagent_event(_start("a", "E1", label="old work"))
+            panel.on_subagent_event(_complete("a", "E1"))
+            panel.on_subagent_event(_error("orphan", "E2", message="dropped boom"))
+            await pilot.pause()
+            assert _displayed_id(panel) == "E2"
+            rows = _render(pilot.app.query_one("#subagent-agents", Static))
+            assert "dropped boom" in rows
+
+    async def test_orphan_error_without_duration_still_renders(self) -> None:
+        # The realistic dropped-wire case: a partial error event missing
+        # `duration_ms` must still surface, leaving the duration unset rather
+        # than crashing on the missing/non-numeric field.
+        async with PanelApp().run_test(size=(200, 24)) as pilot:
+            panel = pilot.app.query_one("#panel", SubagentPanel)
+            panel.on_subagent_event(
+                {
+                    "type": "subagent",
+                    "phase": "error",
+                    "id": "orphan",
+                    "eval_id": "E1",
+                    "error": "dropped boom",
+                }
+            )
+            await pilot.pause()
+            record = panel._find_record("orphan")
+            assert record is not None
+            assert record.status == "error"
+            assert record.duration_ms is None
+            rows = _render(pilot.app.query_one("#subagent-agents", Static))
+            assert "dropped boom" in rows
 
 
 class TestPhases:
@@ -173,6 +236,27 @@ class TestPhases:
             await pilot.pause()
             assert panel._phase_order == []
             assert not panel.has_class("-visible")
+
+    async def test_missing_eval_id_groups_into_single_phase(self) -> None:
+        # When the runtime exposes no tool_call_id the producer omits `eval_id`;
+        # such events share the empty-string phase key. Document that collapse so
+        # a future change that needs to distinguish them is forced to notice.
+        async with PanelApp().run_test() as pilot:
+            panel = pilot.app.query_one("#panel", SubagentPanel)
+            for sub_id in ("a", "b"):
+                panel.on_subagent_event(
+                    {
+                        "type": "subagent",
+                        "phase": "start",
+                        "id": sub_id,
+                        "subagent_type": "research",
+                        "description": "task",
+                        "label": "work",
+                    }
+                )
+            await pilot.pause()
+            assert panel._phase_order == [""]
+            assert set(panel._phases[""].records) == {"a", "b"}
 
 
 class TestSelection:

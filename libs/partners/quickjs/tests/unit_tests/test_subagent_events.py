@@ -183,3 +183,47 @@ async def test_missing_writer_is_a_noop() -> None:
         runtime=runtime,
     )
     assert out == "ok"
+
+
+async def test_missing_tool_call_id_omits_eval_id() -> None:
+    # When the runtime exposes no tool_call_id, `eval_id` is omitted from the
+    # wire event entirely (rather than sent as None) so consumers can tell
+    # "no parent batch" from a real id.
+    rec = _Recorder()
+    runtime = _FakeRuntime(tool_call_id=None, stream_writer=rec)
+
+    await call_subagent_task_tool(
+        _FakeTaskTool("r"),
+        description="x",
+        subagent_type="t",
+        label="lbl",
+        response_schema=None,
+        runtime=runtime,
+    )
+
+    assert [e["phase"] for e in rec.events] == ["start", "complete"]
+    for event in rec.events:
+        assert "eval_id" not in event
+
+
+async def test_structured_output_path_still_emits_events() -> None:
+    # Setting response_schema replaces the runtime and changes output parsing;
+    # the start/complete lifecycle events must still fire around it.
+    rec = _Recorder()
+    runtime = _FakeRuntime(stream_writer=rec)
+
+    out = await call_subagent_task_tool(
+        _FakeTaskTool('{"answer": 42}'),
+        description="x",
+        subagent_type="t",
+        label="lbl",
+        response_schema={
+            "type": "object",
+            "properties": {"answer": {"type": "number"}},
+        },
+        runtime=runtime,
+    )
+
+    assert out == {"answer": 42}
+    assert [e["phase"] for e in rec.events] == ["start", "complete"]
+    assert rec.events[0]["eval_id"] == "eval_call_123"

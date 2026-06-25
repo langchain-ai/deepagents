@@ -643,6 +643,7 @@ async def execute_task_textual(
                         try:
                             adapter._on_subagent_event(data)
                         except Exception:
+                            # Panel rendering must never crash the stream loop.
                             logger.exception("subagent panel event handler failed")
                     continue
 
@@ -1566,6 +1567,11 @@ async def _handle_interrupt_cleanup(
         captured_output_tokens: Output tokens captured before interrupt.
         turn_stats: Stats for the current turn.
         start_time: Monotonic timestamp when the turn began.
+
+    Raises:
+        ValueError: If proactive remote-run cancellation is attempted without a
+            `thread_id` in `config` (a contract violation rather than a
+            transient remote failure).
     """
     from langchain_core.messages import HumanMessage
 
@@ -1593,7 +1599,14 @@ async def _handle_interrupt_cleanup(
     if cancel_active_runs is not None:
         try:
             await cancel_active_runs(config)
+        except ValueError:
+            # A missing thread_id is a contract violation (a bug), not a
+            # transient remote failure — surface it rather than downgrading it
+            # to a warning alongside the swallowed network errors below.
+            raise
         except Exception:
+            # Remote cancel is best-effort defense-in-depth; transient remote
+            # failures here are recovered by aupdate_state's 409 retry below.
             logger.warning(
                 "Failed to cancel active remote runs for thread %s",
                 config.get("configurable", {}).get("thread_id"),

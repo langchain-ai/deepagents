@@ -971,6 +971,20 @@ def _format_model_params(extra_kwargs: dict[str, Any] | None) -> str:
     return f" with model params {json.dumps(extra_kwargs, sort_keys=True)}"
 
 
+def _display_model_label(spec: str | None) -> str | None:
+    """Strip the provider prefix from a model spec for display.
+
+    `anthropic:opus` becomes `opus`; only the first colon splits, so a model
+    name that itself contains a colon is preserved. A spec without a colon (or
+    an empty/`None` spec) is returned unchanged. This is a cosmetic label only,
+    so a malformed spec degrades to a slightly-off label rather than an error.
+
+    Returns:
+        The display label, or the spec unchanged when there is no prefix.
+    """
+    return spec.split(":", 1)[1] if spec and ":" in spec else spec
+
+
 InputMode = Literal["normal", "shell", "shell_incognito", "command"]
 
 _RECONNECT_FORCE_TOKENS: frozenset[str] = frozenset({"force", "--force", "-f"})
@@ -8085,8 +8099,7 @@ class DeepAgentsApp(App):
         panel = self._get_subagent_panel()
         if panel is not None:
             spec = self._effective_model_spec()
-            model_label = spec.split(":", 1)[1] if spec and ":" in spec else spec
-            panel.prepare_turn(model_label=model_label)
+            panel.prepare_turn(model_label=_display_model_label(spec))
 
         try:
             await execute_task_textual(

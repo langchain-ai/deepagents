@@ -489,7 +489,7 @@ wheels = [
 
 [[package]]
 name = "deepagents-code"
-version = "0.1.22"
+version = "0.1.23"
 source = { directory = "../code" }
 dependencies = [
     { name = "aiosqlite", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -590,6 +590,7 @@ provides-extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fir
 [package.metadata.requires-dev]
 test = [
     { name = "build", specifier = ">=1.5.0,<2.0.0" },
+    { name = "hatchling", specifier = ">=1.27.0,<2.0.0" },
     { name = "langchain-quickjs", editable = "../partners/quickjs" },
     { name = "pytest", specifier = ">=9.1.1,<10.0.0" },
     { name = "pytest-asyncio", specifier = ">=1.4.0,<2.0.0" },

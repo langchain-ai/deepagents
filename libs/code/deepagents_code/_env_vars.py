@@ -158,6 +158,15 @@ and `/api/show`. See `_ollama_discovery_enabled` for accepted truthy/falsy
 values.
 """
 
+ONBOARDING_INTEGRATIONS_SCREEN = "DEEPAGENTS_CODE_ONBOARDING_INTEGRATIONS_SCREEN"
+"""Show the "Installed Integrations" summary screen during first-run onboarding.
+
+Off by default: onboarding goes straight from the name prompt to the model
+selector, which already surfaces (and installs) uninstalled model providers.
+Set to a truthy value to bring the standalone integrations screen back into the
+flow. Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
+"""
+
 RESTARTED_AFTER_UPDATE = "DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE"
 """Internal sentinel recording the target version immediately before the
 startup auto-update re-execs the process.

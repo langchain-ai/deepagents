@@ -92,6 +92,24 @@ def _clear_langsmith_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _clear_tavily_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent a Tavily key loaded from .env from leaking into tests.
+
+    Like `LANGSMITH_*`, `dotenv.load_dotenv()` at `deepagents_code.config`
+    import time may inject `TAVILY_API_KEY` from a developer's local `.env`.
+    A leaked key flips `settings.has_tavily` to `True`, which silently changes
+    onboarding behavior: the launch sequence short-circuits the Tavily step on
+    a dev machine but runs it on CI, so a test that reaches the step passes
+    locally yet hangs (real screen push) or writes a credential on CI.
+
+    Each test that *needs* a Tavily key should set it explicitly via
+    `monkeypatch.setenv` or patch `settings.has_tavily`.
+    """
+    for key in ("TAVILY_API_KEY", "DEEPAGENTS_CODE_TAVILY_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _clear_provider_base_url_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent provider base-URL env vars from leaking into tests.
 

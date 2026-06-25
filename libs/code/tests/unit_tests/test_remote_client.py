@@ -2,6 +2,7 @@
 
 import uuid
 from collections.abc import Sequence
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -825,6 +826,44 @@ class TestRemoteAgentUpdateStateConflictRecovery:
         assert mock_graph.aupdate_state.await_count == 1
         runs_list.assert_not_called()
         runs_cancel.assert_not_called()
+
+
+class TestRemoteAgentStore:
+    async def test_aput_store_item_uses_unindexed_put(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        store = SimpleNamespace(put_item=AsyncMock())
+        client = SimpleNamespace(store=store)
+        graph = MagicMock()
+        graph._validate_client.return_value = client
+        agent._graph = graph
+
+        await agent.aput_store_item(("ns",), "key", {"auto_approve": True})
+
+        store.put_item.assert_awaited_once_with(
+            ("ns",),
+            "key",
+            {"auto_approve": True},
+            index=False,
+        )
+
+    async def test_aput_store_item_logs_and_reraises(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        store = SimpleNamespace(put_item=AsyncMock(side_effect=RuntimeError("boom")))
+        client = SimpleNamespace(store=store)
+        graph = MagicMock()
+        graph._validate_client.return_value = client
+        agent._graph = graph
+
+        with (
+            caplog.at_level("DEBUG", logger="deepagents_code.remote_client"),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            await agent.aput_store_item(("ns",), "key", {"auto_approve": True})
+
+        assert "Failed to write store item ns/key" in caplog.text
 
 
 class TestRemoteAgentEnsureThread:

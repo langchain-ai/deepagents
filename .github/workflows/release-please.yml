@@ -549,10 +549,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       actions: write # required for `gh workflow run` to dispatch release.yml
+      issues: read # read release PR labels for opt-in release bypasses
+      pull-requests: read # resolve the release PR associated with the merge commit
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       VERSION: ${{ needs.detect-release-commit.outputs.release-version }}
       RELEASE_SHA: ${{ github.sha }}
+      SDK_PIN_BYPASS_LABEL: "release: skip sdk pin check"
       RELEASE_WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository
         }}/actions/workflows/release.yml
       CLI_RELEASE: ${{ needs.detect-release-commit.outputs.cli-release }}
@@ -637,18 +640,62 @@ jobs:
               2>/dev/null || true
           }
 
+          # Fail-closed: a non-zero return means "do NOT skip the SDK pin check".
+          # Every error path (PR unresolved, label-read API failure) returns
+          # non-zero, so a transient API blip can never flip the dangerous bypass
+          # on — it only ever turns on for a positively-matched label.
+          release_pr_has_label() {
+            local label="$1" pr_number="" labels="" rc=0
+            # `/commits/{sha}/pulls` lists every PR associated with the commit;
+            # filter to the merged one so a non-release PR sharing this SHA can't
+            # be mistaken for the release PR (which produced RELEASE_SHA on main).
+            pr_number=$(gh api \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/${GITHUB_REPOSITORY}/commits/${RELEASE_SHA}/pulls" \
+              --jq 'map(select(.merged_at != null)) | .[0].number // empty' 2>/dev/null || true)
+            if [ -z "$pr_number" ]; then
+              echo "::warning::Could not resolve release PR for $RELEASE_SHA; SDK pin check will be ENFORCED for deepagents-code (bypass label '$label' not read)."
+              return 1
+            fi
+            # Capture the label read separately so an API failure is distinguishable
+            # from "label genuinely absent" and can be surfaced. `local` is declared
+            # above so it doesn't clobber the captured `$?` here.
+            labels=$(gh api "/repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels" \
+              --jq '.[].name' 2>/dev/null) || rc=$?
+            if [ "$rc" -ne 0 ]; then
+              echo "::warning::Could not read labels for PR #$pr_number (gh api exit $rc); SDK pin check will be ENFORCED for deepagents-code (bypass label '$label' treated as absent)."
+              return 1
+            fi
+            printf '%s\n' "$labels" | grep -Fxq "$label"
+          }
+
+          # True only for the one package whose release honors the SDK-pin bypass.
+          # Reads the job-global AUTO_SKIP_SDK_PIN_CHECK at call time (set below),
+          # keeping the deepagents-code-only guard in a single place.
+          skip_applies_to() {
+            [ "$1" = "deepagents-code" ] && [ "$AUTO_SKIP_SDK_PIN_CHECK" = "true" ]
+          }
+
           dispatch() {
             local package="$1"
-            echo "Dispatching release for $package (version=$VERSION, sha=$RELEASE_SHA)"
+            local cmd=(
+              gh workflow run release.yml
+              --repo "$GITHUB_REPOSITORY"
+              --ref main
+              -f package="$package"
+              -f version="$VERSION"
+              -f release-sha="$RELEASE_SHA"
+            )
+            if skip_applies_to "$package"; then
+              cmd+=(-f dangerous-skip-sdk-pin-check=true)
+              echo "Dispatching release for $package (version=$VERSION, sha=$RELEASE_SHA, dangerous-skip-sdk-pin-check=true)"
+            else
+              echo "Dispatching release for $package (version=$VERSION, sha=$RELEASE_SHA)"
+            fi
             # `--repo` is required: this job has no `actions/checkout` step, so
             # `gh` cannot discover the target repo from a local `.git/` and
             # would otherwise fail with `fatal: not a git repository`.
-            if gh workflow run release.yml \
-              --repo "$GITHUB_REPOSITORY" \
-              --ref main \
-              -f package="$package" \
-              -f version="$VERSION" \
-              -f release-sha="$RELEASE_SHA"; then
+            if "${cmd[@]}"; then
               DISPATCHED+=("$package")
             else
               echo "::error::Failed to dispatch release.yml for $package"
@@ -690,6 +737,12 @@ jobs:
           RUNLOOP_RELEASE="${RUNLOOP_RELEASE:-false}"; assert_bool RUNLOOP_RELEASE "$RUNLOOP_RELEASE"
           VERCEL_RELEASE="${VERCEL_RELEASE:-false}";   assert_bool VERCEL_RELEASE  "$VERCEL_RELEASE"
           QUICKJS_RELEASE="${QUICKJS_RELEASE:-false}"; assert_bool QUICKJS_RELEASE "$QUICKJS_RELEASE"
+
+          AUTO_SKIP_SDK_PIN_CHECK=false
+          if [ "$CODE_RELEASE" = "true" ] && release_pr_has_label "$SDK_PIN_BYPASS_LABEL"; then
+            AUTO_SKIP_SDK_PIN_CHECK=true
+            echo "Release PR has '$SDK_PIN_BYPASS_LABEL'; dispatching deepagents-code with dangerous-skip-sdk-pin-check=true."
+          fi
 
           # Banner: log + step summary. The step summary renders at the top of the
           # run page, so operators see the link before scrolling through step logs.
@@ -745,11 +798,15 @@ jobs:
             echo "### Dispatched (${#DISPATCHED[@]})"
             if [ "${#DISPATCHED[@]}" -gt 0 ]; then
               for p in "${DISPATCHED[@]}"; do
+                suffix=""
+                if skip_applies_to "$p"; then
+                  suffix=" _(SDK pin check skipped from release PR label)_"
+                fi
                 url="${RUN_URLS[$p]:-}"
                 if [ -n "$url" ]; then
-                  echo "- [\`$p\` @ \`$VERSION\`]($url)"
+                  echo "- [\`$p\` @ \`$VERSION\`]($url)$suffix"
                 else
-                  echo "- \`$p\` @ \`$VERSION\` _(run link unavailable — see workflow page above)_"
+                  echo "- \`$p\` @ \`$VERSION\` _(run link unavailable — see workflow page above)_$suffix"
                 fi
               done
             else
@@ -764,7 +821,11 @@ jobs:
               echo ""
               echo '```'
               for p in "${FAILED[@]}"; do
-                echo "gh workflow run release.yml -f package=$p -f version=$VERSION -f release-sha=$RELEASE_SHA"
+                if skip_applies_to "$p"; then
+                  echo "gh workflow run release.yml -f package=$p -f version=$VERSION -f release-sha=$RELEASE_SHA -f dangerous-skip-sdk-pin-check=true"
+                else
+                  echo "gh workflow run release.yml -f package=$p -f version=$VERSION -f release-sha=$RELEASE_SHA"
+                fi
               done
               echo '```'
             fi

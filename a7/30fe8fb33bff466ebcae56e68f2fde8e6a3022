@@ -1,0 +1,21 @@
+.github/workflows/_eval.yml
+  s_3c31b0a433abf6::t_9f026d98a8002a 7
+.github/workflows/clbench.yml
+  s_3c31b0a433abf6::t_b9ffd341f61cb3 24,26,77,104
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "a730fe8fb33bff466ebcae56e68f2fde8e6a3022",
+  "prompts": {},
+  "sessions": {
+    "s_3c31b0a433abf6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9e7d9735-7298-4614-8ae0-43f406aa30f9",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": null
+    }
+  }
+}

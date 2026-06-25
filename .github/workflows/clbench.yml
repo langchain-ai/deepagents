@@ -21,9 +21,9 @@
 #   FIREWORKS_API_KEY  — needed for Fireworks-hosted models
 #   OPENROUTER_API_KEY — needed for OpenRouter-hosted models
 
-name: "🧠 Evals - clbench"
+name: "📊 Evals - Clbench"
 run-name: >-
-  🧠 Evals - clbench — ${{ contains(inputs.models, ',') && 'custom models' || (inputs.models || 'all') }} / ${{ inputs.clbench_schedule }}
+  📊 Evals - Clbench — ${{ contains(inputs.models, ',') && 'custom models' || (inputs.models || 'all') }} / ${{ inputs.clbench_schedule }}
 
 on:
   workflow_dispatch:
@@ -74,7 +74,7 @@ jobs:
           CONCURRENCY: ${{ inputs.concurrency }}
           CLBENCH_SCHEDULE: ${{ inputs.clbench_schedule }}
         run: |
-          echo "### 🧠 Evals - clbench dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
+          echo "### 📊 Evals - Clbench dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Input | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
@@ -101,7 +101,7 @@ jobs:
   # (clbench run-all) with the Deep Agents system on the runner. Shares the prep
   # model matrix with the evals/Harbor model groups.
   clbench:
-    name: "🧠 Evals - clbench (${{ matrix.model }} / deepagents)"
+    name: "📊 Evals - Clbench (${{ matrix.model }} / deepagents)"
     needs: prep
     runs-on: ubuntu-latest
     environment: evals

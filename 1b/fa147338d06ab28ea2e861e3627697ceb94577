@@ -1,0 +1,24 @@
+.github/workflows/clbench.yml
+  s_fb3844eb0c411a::t_020b4202265656 128-129
+  s_fb3844eb0c411a::t_6f736849ba5c15 179-184,223-225
+  s_fb3844eb0c411a::t_7a7c960871822e 241-243
+  s_fb3844eb0c411a::t_e5ed9256bf4945 266-268
+  s_fb3844eb0c411a::t_b9175bcf13d393 238-240
+  s_fb3844eb0c411a::t_7baaecb3795f70 244-246,263-265
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "1bfa147338d06ab28ea2e861e3627697ceb94577",
+  "prompts": {},
+  "sessions": {
+    "s_fb3844eb0c411a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "611b6d52-ac87-43bc-9010-048af62ab351",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

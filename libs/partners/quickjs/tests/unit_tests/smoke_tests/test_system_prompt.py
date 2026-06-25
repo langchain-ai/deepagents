@@ -18,7 +18,6 @@ intentional prompt change.
 
 from __future__ import annotations
 
-import re
 from collections.abc import (
     Iterator,  # noqa: TC003 — pydantic resolves field annotations at runtime
 )
@@ -132,18 +131,6 @@ def _system_message_as_text(message: SystemMessage) -> str:
     )
 
 
-# Insert a blank line after a `##` heading when the next line is non-blank.
-# The released `langchain==1.3.0` `WRITE_TODOS_SYSTEM_PROMPT` is missing this
-# blank line; the fix is on `langchain` `main` and will land in the next
-# release. Drop this normalization once we pin a `langchain` version that
-# includes it.
-_HEADING_NO_BLANK = re.compile(r"(?m)^(#+ [^\n]*)\n(?=[^\n])")
-
-
-def _normalize_heading_blanks(text: str) -> str:
-    return _HEADING_NO_BLANK.sub(r"\1\n\n", text)
-
-
 def _assert_snapshot(
     snapshot_path: Path, actual: str, *, update_snapshots: bool
 ) -> None:
@@ -155,7 +142,7 @@ def _assert_snapshot(
         raise AssertionError(msg)
 
     expected = snapshot_path.read_text(encoding="utf-8")
-    assert _normalize_heading_blanks(actual) == _normalize_heading_blanks(expected)
+    assert actual == expected
 
 
 def _invoke_for_snapshot(agent: object, payload: dict[str, Any]) -> None:

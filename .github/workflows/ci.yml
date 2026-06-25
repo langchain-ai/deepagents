@@ -367,6 +367,8 @@ jobs:
   # editable local SDK (resolved via [tool.uv.sources] in quickjs).
   #
   # Skipped when:
+  #   - deepagents != 'true': the SDK is unchanged, so there is no new prompt
+  #     wording for the snapshots to drift against.
   #   - quickjs == 'true': the full test-quickjs suite already runs these
   #     snapshots via `make test`, so this would be redundant.
   #   - push: test-quickjs runs on every push regardless of the filter, so
@@ -403,6 +405,20 @@ jobs:
       - name: "📦 Install Test Dependencies"
         shell: bash
         run: uv sync --group test
+
+      # Fail loudly if the smoke test file is moved or renamed. Because any
+      # change under libs/partners/quickjs/** flips the quickjs filter to
+      # 'true' (skipping this job), such a rename lands on a PR that never
+      # runs this job — so without this guard a stale path would silently
+      # collect zero tests on some later SDK-only PR instead of failing here.
+      - name: "🔍 Verify Smoke Test Path"
+        shell: bash
+        run: |
+          set -eu
+          test -f tests/unit_tests/smoke_tests/test_system_prompt.py || {
+            echo "::error::quickjs smoke test file moved or renamed; update its path in ci.yml"
+            exit 1
+          }
 
       - name: "🧪 Run quickjs prompt smoke tests"
         shell: bash

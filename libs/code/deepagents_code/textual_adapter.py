@@ -227,7 +227,7 @@ class TextualUIAdapter:
         mount_message: Callable[..., Awaitable[None]],
         update_status: Callable[[str], None],
         request_approval: Callable[..., Awaitable[Any]],
-        on_auto_approve_enabled: Callable[[], None] | None = None,
+        on_auto_approve_enabled: Callable[[], Awaitable[None] | None] | None = None,
         set_spinner: Callable[[SpinnerStatus], Awaitable[None]] | None = None,
         set_active_message: Callable[[str | None], None] | None = None,
         sync_message_content: Callable[[str, str], None] | None = None,
@@ -434,6 +434,8 @@ async def execute_task_textual(
     from langgraph.types import Command
     from pydantic import ValidationError
 
+    from deepagents_code.approval_mode import awrite_approval_mode
+
     hitl_request_adapter = _get_hitl_request_adapter(HITLRequest)
     ask_user_adapter = _get_ask_user_adapter()
 
@@ -540,11 +542,33 @@ async def execute_task_textual(
 
             # Carry the current approval mode into run context so the
             # `interrupt_on` `when` predicate can suppress interrupts at the
-            # source. Refreshed each iteration so enabling "approve always"
-            # mid-turn propagates to the resuming stream.
+            # source. Also write the live store item that the server-side
+            # predicate re-reads on each tool call, so toggling auto-approve off
+            # mid-stream takes effect before the current stream returns.
             if context is None:
                 context = CLIContext()
-            context["auto_approve"] = bool(session_state.auto_approve)
+            auto_approve = bool(session_state.auto_approve)
+            context["auto_approve"] = auto_approve
+            try:
+                live_key = await awrite_approval_mode(
+                    agent,
+                    thread_id,
+                    auto_approve=auto_approve,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to write live approval mode; interrupting for safety",
+                    exc_info=True,
+                )
+                context["auto_approve"] = False
+                context.pop("approval_mode_key", None)
+                session_state.approval_mode_key = None
+            else:
+                if live_key is None:
+                    context.pop("approval_mode_key", None)
+                else:
+                    context["approval_mode_key"] = live_key
+                session_state.approval_mode_key = live_key
 
             # Show the Thinking spinner before each astream iteration so
             # both the first turn and HITL/ask_user resumes surface feedback
@@ -1275,7 +1299,9 @@ async def execute_task_textual(
                                 # remaining tool calls in this turn — keeping it
                                 # a single run instead of resuming after each.
                                 if adapter._on_auto_approve_enabled:
-                                    adapter._on_auto_approve_enabled()
+                                    callback_result = adapter._on_auto_approve_enabled()
+                                    if callback_result is not None:
+                                        await callback_result
                                 decisions = [
                                     ApproveDecision(type="approve")
                                     for _ in action_requests

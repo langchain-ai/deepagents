@@ -20,6 +20,7 @@ from rich.console import Console
 
 from deepagents_code import config as config_module
 from deepagents_code._ask_user_types import AskUserWidgetResult, Question
+from deepagents_code.approval_mode import APPROVAL_MODE_NAMESPACE, approval_mode_key
 from deepagents_code.config import build_stream_config
 from deepagents_code.textual_adapter import (
     ModelStats,
@@ -772,6 +773,16 @@ class _SequencedAgent:
         self._streams_by_call = streams_by_call
         self.stream_inputs: list[dict | Command] = []
         self.contexts: list[Any] = []
+        self.store_items: list[tuple[tuple[str, ...], str, dict[str, Any]]] = []
+
+    async def aput_store_item(
+        self,
+        namespace: tuple[str, ...],
+        key: str,
+        value: dict[str, Any],
+    ) -> None:
+        """Record store writes requested by `execute_task_textual`."""
+        self.store_items.append((namespace, key, value))
 
     async def astream(
         self,
@@ -792,6 +803,21 @@ class _SequencedAgent:
         chunks = self._streams_by_call.pop(0) if self._streams_by_call else []
         for chunk in chunks:
             yield chunk
+
+
+class _FailingApprovalStoreAgent(_SequencedAgent):
+    """Agent test double whose approval-mode store writes fail."""
+
+    async def aput_store_item(
+        self,
+        namespace: tuple[str, ...],
+        key: str,
+        value: dict[str, Any],
+    ) -> None:
+        """Raise while preserving the production store-writer signature."""
+        _ = (namespace, key, value)
+        msg = "approval-mode store unavailable"
+        raise RuntimeError(msg)
 
 
 class TestExecuteTaskTextualAutoApproveInput:
@@ -823,6 +849,34 @@ class TestExecuteTaskTextualAutoApproveInput:
         assert not isinstance(stream_input, Command)
         assert stream_input == {"messages": [{"role": "user", "content": "hi"}]}
         assert agent.contexts[0]["auto_approve"] is True
+        key = approval_mode_key("thread-1")
+        assert agent.contexts[0]["approval_mode_key"] == key
+        assert agent.store_items == [
+            (APPROVAL_MODE_NAMESPACE, key, {"auto_approve": True})
+        ]
+
+    async def test_live_approval_write_failure_fails_closed_context(self) -> None:
+        """A failed live-mode write must not reuse a stale approval key."""
+        agent = _FailingApprovalStoreAgent([[]])
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        stream_input = agent.stream_inputs[0]
+        assert not isinstance(stream_input, Command)
+        assert agent.contexts[0]["auto_approve"] is False
+        assert "approval_mode_key" not in agent.contexts[0]
+        assert agent.store_items == []
 
     async def test_mid_turn_auto_approve_all_propagates_to_resume_context(
         self,
@@ -875,10 +929,17 @@ class TestExecuteTaskTextualAutoApproveInput:
             future.set_result({"type": "auto_approve_all"})
             return future
 
+        callback_seen: list[bool] = []
+
+        async def on_auto_approve_enabled() -> None:
+            await asyncio.sleep(0)
+            callback_seen.append(True)
+
         adapter = TextualUIAdapter(
             mount_message=_mock_mount,
             update_status=_noop_status,
             request_approval=request_approval,
+            on_auto_approve_enabled=on_auto_approve_enabled,
         )
         session_state = SimpleNamespace(thread_id="thread-1", auto_approve=False)
 
@@ -895,6 +956,14 @@ class TestExecuteTaskTextualAutoApproveInput:
         assert len(agent.contexts) == 2
         assert agent.contexts[0]["auto_approve"] is False
         assert agent.contexts[1]["auto_approve"] is True
+        key = approval_mode_key("thread-1")
+        assert agent.contexts[0]["approval_mode_key"] == key
+        assert agent.contexts[1]["approval_mode_key"] == key
+        assert agent.store_items == [
+            (APPROVAL_MODE_NAMESPACE, key, {"auto_approve": False}),
+            (APPROVAL_MODE_NAMESPACE, key, {"auto_approve": True}),
+        ]
+        assert callback_seen == [True]
         assert session_state.auto_approve is True
 
 

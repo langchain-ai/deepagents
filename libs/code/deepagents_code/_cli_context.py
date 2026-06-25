@@ -39,6 +39,8 @@ class CLIContextSchema:
 
     auto_approve: bool = False
 
+    approval_mode_key: str | None = None
+
 
 class CLIContext(TypedDict, total=False):
     """Client-facing builder for the per-run graph context payload.
@@ -75,4 +77,13 @@ class CLIContext(TypedDict, total=False):
     self-approve by writing state. The `interrupt_on` `when` predicate reads
     this to suppress interrupts at the source when "approve always" is on,
     avoiding the interrupt-then-auto-resolve round-trip.
+    """
+
+    approval_mode_key: str | None
+    """Store key for the live approval-mode control record.
+
+    The TUI updates this record when the user toggles approval mode mid-run.
+    The server-side interrupt predicate reads it from the LangGraph Store on
+    each gated tool call so auto-to-manual changes can take effect before the
+    current stream returns.
     """

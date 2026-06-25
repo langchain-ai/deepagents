@@ -1,9 +1,9 @@
 """Unit tests for agent formatting functions."""
 
 import warnings
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import fields
+from dataclasses import dataclass, fields
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -45,6 +45,27 @@ from deepagents_code.managed_tools import BIN_DIR
 from deepagents_code.project_utils import ProjectContext
 
 
+@dataclass
+class _StoreItem:
+    value: dict[str, Any]
+
+
+class _FakeStore:
+    def __init__(self) -> None:
+        self.items: dict[tuple[tuple[str, ...], str], _StoreItem] = {}
+
+    def put(
+        self,
+        namespace: tuple[str, ...],
+        key: str,
+        value: Mapping[str, Any],
+    ) -> None:
+        self.items[namespace, key] = _StoreItem(dict(value))
+
+    def get(self, namespace: tuple[str, ...], key: str) -> _StoreItem | None:
+        return self.items.get((namespace, key))
+
+
 def _make_fake_chat_model() -> GenericFakeChatModel:
     """Create a fake chat model compatible with summarization middleware."""
     model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
@@ -81,10 +102,14 @@ def test_add_interrupt_on_attaches_auto_approve_predicate() -> None:
         assert config.get("when") is _should_interrupt_tool_call
 
 
-def _request_with_context(context: object) -> "ToolCallRequest":
+def _request_with_context(
+    context: object,
+    *,
+    store: object | None = None,
+) -> "ToolCallRequest":
     return cast(
         "ToolCallRequest",
-        SimpleNamespace(runtime=SimpleNamespace(context=context)),
+        SimpleNamespace(runtime=SimpleNamespace(context=context, store=store)),
     )
 
 
@@ -101,6 +126,70 @@ def test_should_interrupt_tool_call_respects_auto_approve_context() -> None:
     assert _should_interrupt_tool_call(_request_with_context({"auto_approve": False}))
     assert not _should_interrupt_tool_call(
         _request_with_context({"auto_approve": True})
+    )
+
+
+def test_should_interrupt_tool_call_prefers_live_approval_mode() -> None:
+    """A live manual toggle overrides an auto-approve run-context snapshot."""
+    from deepagents_code.approval_mode import (
+        APPROVAL_MODE_NAMESPACE,
+        approval_mode_key,
+        approval_mode_payload,
+    )
+
+    store = _FakeStore()
+    key = approval_mode_key("thread-1")
+    store.put(
+        APPROVAL_MODE_NAMESPACE,
+        key,
+        approval_mode_payload(auto_approve=False),
+    )
+    assert _should_interrupt_tool_call(
+        _request_with_context(
+            {"auto_approve": True, "approval_mode_key": key},
+            store=store,
+        )
+    )
+    assert _should_interrupt_tool_call(
+        _request_with_context(
+            CLIContextSchema(auto_approve=True, approval_mode_key=key),
+            store=store,
+        )
+    )
+
+    store.put(
+        APPROVAL_MODE_NAMESPACE,
+        key,
+        approval_mode_payload(auto_approve=True),
+    )
+    assert not _should_interrupt_tool_call(
+        _request_with_context(
+            {"auto_approve": False, "approval_mode_key": key},
+            store=store,
+        )
+    )
+
+
+def test_should_interrupt_tool_call_fails_closed_when_live_mode_missing() -> None:
+    """A configured but missing live mode should interrupt for safety."""
+    from deepagents_code.approval_mode import approval_mode_key
+
+    assert _should_interrupt_tool_call(
+        _request_with_context(
+            {"auto_approve": True, "approval_mode_key": approval_mode_key("thread-1")},
+            store=_FakeStore(),
+        )
+    )
+
+
+def test_should_interrupt_tool_call_fails_closed_without_live_mode_store() -> None:
+    """A configured live-mode key with no runtime store should interrupt."""
+    from deepagents_code.approval_mode import approval_mode_key
+
+    assert _should_interrupt_tool_call(
+        _request_with_context(
+            {"auto_approve": True, "approval_mode_key": approval_mode_key("thread-1")}
+        )
     )
 
 

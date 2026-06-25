@@ -367,6 +367,32 @@ class RemoteAgent:
             )
             raise
 
+    async def aput_store_item(
+        self,
+        namespace: tuple[str, ...],
+        key: str,
+        value: dict[str, Any],
+    ) -> None:
+        """Write an item to the server-side LangGraph Store.
+
+        Args:
+            namespace: Store namespace.
+            key: Item key within `namespace`.
+            value: JSON-serializable item value.
+        """
+        graph = self._get_graph()
+        try:
+            client = graph._validate_client()
+            await client.store.put_item(namespace, key, value, index=False)
+        except Exception:
+            logger.debug(
+                "Failed to write store item %s/%s",
+                ".".join(namespace),
+                key,
+                exc_info=True,
+            )
+            raise
+
     async def aensure_thread(self, config: dict[str, Any]) -> None:
         """Ensure the remote thread record exists before mutating state.
 

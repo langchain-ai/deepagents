@@ -1,0 +1,29 @@
+docs/superpowers/plans/2026-06-25-continual-learning-m1-middleware.md
+  s_ff1d954e22bc10::t_5f4a1c6f28f019 407-408
+  s_ff1d954e22bc10::t_3900d9a41d278a 7
+  s_ff1d954e22bc10::t_a23f23a0c0ba2e 351,356-361,364,366-367,369,371,378,380,383,385,388,390,393,396
+  s_ff1d954e22bc10::t_095ff2ef49bdf9 19
+  s_ff1d954e22bc10::t_a2bd7a6487aee0 1-6,8-18,20-339,341-344,346-348,350,352-355,362-363,365,368,370,372-377,379,381-382,384,386-387,389,391-392,394-395,397-406,409-418,426-427,429-430,432-442,463-514,517-523
+  s_ff1d954e22bc10::t_61d08218009a3c 419-425,428,431
+  s_ff1d954e22bc10::t_0373887d39bc96 443-461
+  s_ff1d954e22bc10::t_10f3dc9b024d9c 515
+  s_ff1d954e22bc10::t_4a0d8329a55147 462
+  s_ff1d954e22bc10::t_dc9ac1555b2e53 340,345,349
+  s_ff1d954e22bc10::t_63a23c5de02181 516
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "014d9c0e0be3cd656a0c682c61175fe1e7749870",
+  "prompts": {},
+  "sessions": {
+    "s_ff1d954e22bc10": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e85341e2-a6d5-4077-a245-b6953a292cae",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

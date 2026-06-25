@@ -1,0 +1,21 @@
+libs/evals/deepagents_clbench/system/system.py
+  s_ff1d954e22bc10::t_026917ff155a5a 59-64
+  s_ff1d954e22bc10::t_6c4c3b3e0b520d 37
+  s_ff1d954e22bc10::t_d83a8b050d82e9 203-205,207-225,229-233
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "2a8744702b4969ab296d0e85ae7f9ac376b07600",
+  "prompts": {},
+  "sessions": {
+    "s_ff1d954e22bc10": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e85341e2-a6d5-4077-a245-b6953a292cae",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

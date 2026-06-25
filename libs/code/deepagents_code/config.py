@@ -1817,7 +1817,7 @@ class Settings:
     agent. Local-mode only; raises `ValueError` at agent-build time when a
     remote sandbox is active. Subagents never receive the interpreter in v1.
 
-    The `quickjs` optional extra must be installed when this flag is `True`.
+    `langchain-quickjs` is installed as a core dependency.
 
     Defaults are owned by `config_manifest` (the canonical config surface) so
     they are defined in exactly one place.
@@ -1846,7 +1846,7 @@ class Settings:
     Accepted values:
 
     - `False` or `[]`: pure REPL, no `tools.*` bridge.
-    - `"safe"`: expand to `INTERPRETER_PTC_SAFE_PRESET`.
+    - `"safe"`: expand to `INTERPRETER_PTC_SAFE_PRESET` (the default).
     - `"all"`: every tool passed to `create_cli_agent` is exposed. Requires
         `interpreter_ptc_acknowledge_unsafe=True` when `auto_approve` is `False`.
     - `list[str]`: explicit tool names. The list may also include the `"safe"`

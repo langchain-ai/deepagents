@@ -2204,22 +2204,151 @@ class TestParseInterpreterToolsFlag:
         assert exc_info.value.code == 2
 
 
+class TestInterpreterFlagParsing:
+    """`--interpreter` is a tri-state `BooleanOptionalAction` (default `None`)."""
+
+    def test_default_is_none(self, mock_argv: MockArgvType) -> None:
+        with mock_argv("-n", "task"):
+            args = parse_args()
+        assert args.interpreter is None
+
+    def test_explicit_flag_is_true(self, mock_argv: MockArgvType) -> None:
+        with mock_argv("-n", "task", "--interpreter"):
+            args = parse_args()
+        assert args.interpreter is True
+
+    def test_no_flag_is_false(self, mock_argv: MockArgvType) -> None:
+        with mock_argv("-n", "task", "--no-interpreter"):
+            args = parse_args()
+        assert args.interpreter is False
+
+
+class TestResolveInterpreterEnabled:
+    """Tests for `_resolve_interpreter_enabled`."""
+
+    def test_local_mode_uses_config_default(self, mock_argv: MockArgvType) -> None:
+        from deepagents_code.config import settings
+        from deepagents_code.main import _resolve_interpreter_enabled
+
+        with mock_argv("-n", "task"):
+            args = parse_args()
+        with patch.object(settings, "enable_interpreter", False):
+            assert _resolve_interpreter_enabled(args) is False
+        with patch.object(settings, "enable_interpreter", True):
+            assert _resolve_interpreter_enabled(args) is True
+
+    def test_sandbox_defaults_disabled(self, mock_argv: MockArgvType) -> None:
+        from deepagents_code.config import settings
+        from deepagents_code.main import _resolve_interpreter_enabled
+
+        with mock_argv("-n", "task", "--sandbox", "daytona"):
+            args = parse_args()
+        with patch.object(settings, "enable_interpreter", True):
+            assert _resolve_interpreter_enabled(args) is False
+
+    def test_explicit_flag_overrides_sandbox_default(
+        self, mock_argv: MockArgvType
+    ) -> None:
+        from deepagents_code.main import _resolve_interpreter_enabled
+
+        with mock_argv("-n", "task", "--sandbox", "daytona", "--interpreter"):
+            args = parse_args()
+        assert _resolve_interpreter_enabled(args) is True
+
+    def test_explicit_no_flag_overrides_local_default(
+        self, mock_argv: MockArgvType
+    ) -> None:
+        from deepagents_code.config import settings
+        from deepagents_code.main import _resolve_interpreter_enabled
+
+        with mock_argv("-n", "task", "--no-interpreter"):
+            args = parse_args()
+        with patch.object(settings, "enable_interpreter", True):
+            assert _resolve_interpreter_enabled(args) is False
+
+    def test_empty_sandbox_treated_as_local(self) -> None:
+        """An empty-string sandbox is falsy and must resolve as local mode.
+
+        Parity with the `_resolve_enable_interpreter` edge case (the CLI resolver
+        delegates to it); a regression in the falsy-sandbox guard must fail here
+        too, not only at the server-config layer.
+        """
+        import argparse
+
+        from deepagents_code.config import settings
+        from deepagents_code.main import _resolve_interpreter_enabled
+
+        args = argparse.Namespace(interpreter=None, sandbox="")
+        with patch.object(settings, "enable_interpreter", True):
+            assert _resolve_interpreter_enabled(args) is True
+
+
+class TestRunTextualCliAsyncInterpreterDefault:
+    """Tests for TUI helper interpreter tri-state forwarding."""
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            (None, None),
+            (True, True),
+            (False, False),
+        ],
+    )
+    async def test_forwards_interpreter_tri_state(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        value: bool | None,
+        expected: bool | None,
+    ) -> None:
+        from deepagents_code.app import AppResult
+        from deepagents_code.main import run_textual_cli_async
+
+        run_textual_app = AsyncMock(
+            return_value=AppResult(return_code=0, thread_id="thread")
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config._get_default_model_spec",
+            lambda: "test-model",
+        )
+        monkeypatch.setattr("deepagents_code.config.detect_provider", lambda _: "")
+        monkeypatch.setattr(
+            "deepagents_code.onboarding.should_run_onboarding",
+            lambda: False,
+        )
+        monkeypatch.setattr("deepagents_code.app.run_textual_app", run_textual_app)
+
+        if value is not None:
+            await run_textual_cli_async(
+                assistant_id="agent",
+                sandbox_type="daytona",
+                enable_interpreter=value,
+            )
+        else:
+            await run_textual_cli_async(
+                assistant_id="agent",
+                sandbox_type="daytona",
+            )
+
+        server_kwargs = run_textual_app.call_args.kwargs["server_kwargs"]
+        assert server_kwargs["enable_interpreter"] is expected
+
+
 class TestWarnInterpreterToolsWithoutInterpreter:
     """Tests for `_warn_if_interpreter_tools_without_interpreter`."""
 
-    def test_warns_without_interpreter(
+    def test_warns_when_interpreter_disabled(
         self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """--interpreter-tools without --interpreter warns and does not exit."""
+        """--interpreter-tools with --no-interpreter warns and does not exit."""
         from deepagents_code.main import (
             _warn_if_interpreter_tools_without_interpreter,
         )
 
-        with mock_argv("-n", "task", "--interpreter-tools", "safe"):
+        with mock_argv("-n", "task", "--no-interpreter", "--interpreter-tools", "safe"):
             args = parse_args()
-        _warn_if_interpreter_tools_without_interpreter(args)
+        _warn_if_interpreter_tools_without_interpreter(args, enable_interpreter=False)
         assert (
-            "--interpreter-tools has no effect unless --interpreter is set"
+            "--interpreter-tools has no effect when the interpreter is disabled"
             in capsys.readouterr().err
         )
 
@@ -2233,7 +2362,7 @@ class TestWarnInterpreterToolsWithoutInterpreter:
 
         with mock_argv("-n", "task", "--interpreter", "--interpreter-tools", "safe"):
             args = parse_args()
-        _warn_if_interpreter_tools_without_interpreter(args)
+        _warn_if_interpreter_tools_without_interpreter(args, enable_interpreter=True)
         assert capsys.readouterr().err == ""
 
     def test_no_warning_without_flag(
@@ -2246,13 +2375,13 @@ class TestWarnInterpreterToolsWithoutInterpreter:
 
         with mock_argv("-n", "task"):
             args = parse_args()
-        _warn_if_interpreter_tools_without_interpreter(args)
+        _warn_if_interpreter_tools_without_interpreter(args, enable_interpreter=True)
         assert capsys.readouterr().err == ""
 
     def test_cli_main_emits_warning_on_non_interactive_path(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """End-to-end: `-n --interpreter-tools` without `--interpreter` warns.
+        """End-to-end: `-n --no-interpreter --interpreter-tools` warns.
 
         Guards the wiring (not just the helper): a dropped or misplaced call
         site, or an earlier `sys.exit` swallowing the warning, fails here.
@@ -2263,7 +2392,16 @@ class TestWarnInterpreterToolsWithoutInterpreter:
         mock_stdin.isatty.return_value = True
         with (
             patch.object(
-                sys, "argv", ["deepagents", "-n", "task", "--interpreter-tools", "safe"]
+                sys,
+                "argv",
+                [
+                    "deepagents",
+                    "-n",
+                    "task",
+                    "--no-interpreter",
+                    "--interpreter-tools",
+                    "safe",
+                ],
             ),
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
@@ -2282,6 +2420,166 @@ class TestWarnInterpreterToolsWithoutInterpreter:
 
         assert exc_info.value.code == 0
         assert (
-            "--interpreter-tools has no effect unless --interpreter is set"
+            "--interpreter-tools has no effect when the interpreter is disabled"
             in capsys.readouterr().err
         )
+
+
+class TestWarnInterpreterDisabledBySandbox:
+    """Tests for `_warn_if_interpreter_disabled_by_sandbox` (stderr advisory)."""
+
+    def test_warns_when_sandbox_suppresses_default(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A `--sandbox` run with the default-on interpreter warns on stderr."""
+        from deepagents_code.config import settings
+        from deepagents_code.main import _warn_if_interpreter_disabled_by_sandbox
+
+        with mock_argv("-n", "task", "--sandbox", "daytona"):
+            args = parse_args()
+        with patch.object(settings, "enable_interpreter", True):
+            _warn_if_interpreter_disabled_by_sandbox(args)
+        assert "unavailable under a remote sandbox" in capsys.readouterr().err
+
+    def test_silent_in_local_mode(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Local mode keeps the interpreter, so there is nothing to warn about."""
+        from deepagents_code.config import settings
+        from deepagents_code.main import _warn_if_interpreter_disabled_by_sandbox
+
+        with mock_argv("-n", "task"):
+            args = parse_args()
+        with patch.object(settings, "enable_interpreter", True):
+            _warn_if_interpreter_disabled_by_sandbox(args)
+        assert capsys.readouterr().err == ""
+
+    def test_silent_on_explicit_opt_out_under_sandbox(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """An explicit `--no-interpreter` is the user's choice, not a drop."""
+        from deepagents_code.config import settings
+        from deepagents_code.main import _warn_if_interpreter_disabled_by_sandbox
+
+        with mock_argv("-n", "task", "--sandbox", "daytona", "--no-interpreter"):
+            args = parse_args()
+        with patch.object(settings, "enable_interpreter", True):
+            _warn_if_interpreter_disabled_by_sandbox(args)
+        assert capsys.readouterr().err == ""
+
+    def test_silent_when_config_default_off(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A user who disabled the interpreter in config is not nagged."""
+        from deepagents_code.config import settings
+        from deepagents_code.main import _warn_if_interpreter_disabled_by_sandbox
+
+        with mock_argv("-n", "task", "--sandbox", "daytona"):
+            args = parse_args()
+        with patch.object(settings, "enable_interpreter", False):
+            _warn_if_interpreter_disabled_by_sandbox(args)
+        assert capsys.readouterr().err == ""
+
+    def test_cli_main_forwards_enabled_interpreter_in_local_mode(self) -> None:
+        """End-to-end: bare `-n task` resolves the interpreter on and forwards it.
+
+        Guards the `cli_main` -> `run_non_interactive` wiring: a dropped or
+        reverted assignment (e.g. back to a hard-coded `False`) fails here.
+        """
+        from deepagents_code.config import settings
+        from deepagents_code.main import cli_main
+
+        run_mock = AsyncMock(return_value=0)
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(sys, "argv", ["deepagents", "-n", "task"]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch.object(settings, "enable_interpreter", True),
+            patch("deepagents_code.non_interactive.run_non_interactive", run_mock),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        assert run_mock.call_args.kwargs["enable_interpreter"] is True
+
+    def test_cli_main_warns_and_disables_under_sandbox(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """End-to-end: `-n --sandbox` forwards the disabled interpreter and warns."""
+        from deepagents_code.config import settings
+        from deepagents_code.main import cli_main
+
+        run_mock = AsyncMock(return_value=0)
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys, "argv", ["deepagents", "-n", "task", "--sandbox", "daytona"]
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.integrations.sandbox_factory.verify_sandbox_deps",
+            ),
+            patch.object(settings, "enable_interpreter", True),
+            patch("deepagents_code.non_interactive.run_non_interactive", run_mock),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        assert run_mock.call_args.kwargs["enable_interpreter"] is False
+        assert "unavailable under a remote sandbox" in capsys.readouterr().err
+
+    def test_cli_main_silent_on_explicit_opt_out_under_sandbox(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """End-to-end: `-n --sandbox --no-interpreter` disables without an advisory."""
+        from deepagents_code.config import settings
+        from deepagents_code.main import cli_main
+
+        run_mock = AsyncMock(return_value=0)
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "deepagents",
+                    "-n",
+                    "task",
+                    "--sandbox",
+                    "daytona",
+                    "--no-interpreter",
+                ],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.integrations.sandbox_factory.verify_sandbox_deps",
+            ),
+            patch.object(settings, "enable_interpreter", True),
+            patch("deepagents_code.non_interactive.run_non_interactive", run_mock),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        assert run_mock.call_args.kwargs["enable_interpreter"] is False
+        assert "unavailable under a remote sandbox" not in capsys.readouterr().err

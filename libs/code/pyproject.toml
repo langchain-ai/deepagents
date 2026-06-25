@@ -57,6 +57,7 @@ dependencies = [
 
     # Tools
     "tavily-python>=0.7.26,<1.0.0",
+    "langchain-quickjs>=0.3.1,<0.4.0",
 
     # Clipboard
     "pyperclip>=1.11.0,<2.0.0",
@@ -117,8 +118,8 @@ all-sandboxes = [
     "deepagents-code[agentcore,daytona,modal,runloop,vercel]",
 ]
 
-# Standalone integrations (not part of any composite extra)
-quickjs = ["langchain-quickjs>=0.3.1,<0.4.0"]
+# Standalone integrations (kept for backwards-compatible install commands)
+quickjs = []
 
 
 [project.scripts]
@@ -143,7 +144,6 @@ test = [
     "hatchling>=1.27.0,<2.0.0",
     "ruff>=0.15.18,<1.0.0",
     "ty>=0.0.52,<1.0.0",
-    "langchain-quickjs>=0.3.1,<0.4.0",
     "pytest>=9.1.1,<10.0.0",
     "pytest-asyncio>=1.4.0,<2.0.0",
     "pytest-benchmark>=5.2.3,<6.0.0",

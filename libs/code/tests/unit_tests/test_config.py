@@ -4745,12 +4745,12 @@ class TestInterpreterSettings:
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
             settings_obj = Settings.from_environment(start_path=tmp_path)
 
-        assert settings_obj.enable_interpreter is False
+        assert settings_obj.enable_interpreter is True
         assert settings_obj.interpreter_timeout_seconds == pytest.approx(5.0)
         assert settings_obj.interpreter_memory_limit_mb == 64
         assert settings_obj.interpreter_max_ptc_calls == 256
         assert settings_obj.interpreter_max_result_chars == 4000
-        assert settings_obj.interpreter_ptc is False
+        assert settings_obj.interpreter_ptc == "safe"
         assert settings_obj.interpreter_ptc_acknowledge_unsafe is False
 
     def test_round_trip_through_toml(self, tmp_path: Path) -> None:
@@ -4802,7 +4802,7 @@ ptc = [""]
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
             settings_obj = Settings.from_environment(start_path=tmp_path)
 
-        assert settings_obj.interpreter_ptc is False
+        assert settings_obj.interpreter_ptc == "safe"
 
     def test_ptc_list_with_safe_preset_round_trip(self, tmp_path: Path) -> None:
         """`"safe"` is preserved as a list entry until agent-build expansion."""
@@ -4830,7 +4830,7 @@ ptc = ["all", "task"]
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
             settings_obj = Settings.from_environment(start_path=tmp_path)
 
-        assert settings_obj.interpreter_ptc is False
+        assert settings_obj.interpreter_ptc == "safe"
 
 
 class TestCreateModelCodex:

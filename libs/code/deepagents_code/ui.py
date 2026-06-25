@@ -167,8 +167,11 @@ def show_help() -> None:
         "  --trust-project-mcp        Trust project MCP configs (skip approval prompt)"
     )
     console.print(
-        "  --interpreter              Enable JS interpreter (`js_eval`) middleware "
-        "(local mode only)"
+        "  --interpreter, --no-interpreter"
+        "  Enable or disable JS interpreter (`js_eval`) middleware"
+    )
+    console.print(
+        "                             Enabled by default when not using a sandbox"
     )
     console.print(
         "  --interpreter-tools VALUE  PTC allowlist: 'safe', 'all', or comma-separated "
@@ -205,7 +208,7 @@ def show_help() -> None:
         "  --auto-update              Toggle automatic updates on or off, then exit"
     )
     console.print(
-        "  --install NAME             Install an optional extra (e.g. quickjs)"
+        "  --install NAME             Install an optional extra (e.g. daytona)"
     )
     console.print(
         "  --package                  With --install, treat NAME as a package "

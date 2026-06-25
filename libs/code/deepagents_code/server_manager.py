@@ -281,7 +281,7 @@ async def start_server_and_get_agent(
     sandbox_setup: str | None = None,
     enable_shell: bool = True,
     enable_ask_user: bool = False,
-    enable_interpreter: bool = False,
+    enable_interpreter: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
     mcp_config_path: str | None = None,
@@ -307,7 +307,7 @@ async def start_server_and_get_agent(
         enable_shell: Enable shell execution tools.
         enable_ask_user: Enable ask_user tool.
         enable_interpreter: Enable the JS interpreter (`js_eval`) middleware on
-            the main agent. Local-mode only.
+            the main agent. `None` uses the sandbox-aware default.
         interpreter_ptc: Override for `settings.interpreter_ptc` (PTC allowlist).
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
@@ -406,7 +406,7 @@ async def server_session(
     sandbox_setup: str | None = None,
     enable_shell: bool = True,
     enable_ask_user: bool = False,
-    enable_interpreter: bool = False,
+    enable_interpreter: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
     mcp_config_path: str | None = None,
@@ -435,7 +435,7 @@ async def server_session(
         enable_shell: Enable shell execution tools.
         enable_ask_user: Enable ask_user tool.
         enable_interpreter: Enable the JS interpreter (`js_eval`) middleware on
-            the main agent. Local-mode only.
+            the main agent. `None` uses the sandbox-aware default.
         interpreter_ptc: Override for `settings.interpreter_ptc` (PTC allowlist).
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.

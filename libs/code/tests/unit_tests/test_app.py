@@ -13187,6 +13187,170 @@ class TestForceInterruptActiveWork:
             app._force_interrupt_active_work()
 
 
+class _ApprovalModeWriter:
+    def __init__(self) -> None:
+        self.item: tuple[tuple[str, ...], str, dict[str, Any]] | None = None
+
+    async def aput_store_item(
+        self,
+        namespace: tuple[str, ...],
+        key: str,
+        value: dict[str, Any],
+    ) -> None:
+        self.item = (namespace, key, value)
+
+
+class _FailingApprovalModeWriter:
+    async def aput_store_item(
+        self,
+        namespace: tuple[str, ...],
+        key: str,
+        value: dict[str, Any],
+    ) -> None:
+        _ = (namespace, key, value)
+        msg = "store unavailable"
+        raise RuntimeError(msg)
+
+
+class TestLiveApprovalModeWrites:
+    """Verify live approval-mode write and toggle failure behavior."""
+
+    async def test_write_live_approval_mode_records_key(self) -> None:
+        from deepagents_code.approval_mode import (
+            APPROVAL_MODE_NAMESPACE,
+            approval_mode_key,
+        )
+
+        app = DeepAgentsApp()
+        writer = _ApprovalModeWriter()
+        app._agent = cast("Any", writer)
+        app._session_state = TextualSessionState(
+            thread_id="thread-1",
+            auto_approve=True,
+        )
+
+        assert await app._write_live_approval_mode()
+        assert app._session_state.approval_mode_key == approval_mode_key("thread-1")
+        assert writer.item == (
+            APPROVAL_MODE_NAMESPACE,
+            approval_mode_key("thread-1"),
+            {"auto_approve": True},
+        )
+
+    async def test_write_live_approval_mode_clears_key_on_failure(self) -> None:
+        app = DeepAgentsApp()
+        app._agent = cast("Any", _FailingApprovalModeWriter())
+        app._session_state = TextualSessionState(
+            thread_id="thread-1",
+            auto_approve=False,
+        )
+        app._session_state.approval_mode_key = "stale"
+
+        assert not await app._write_live_approval_mode()
+        assert app._session_state.approval_mode_key is None
+
+    async def test_toggle_off_failed_write_cancels_running_agent(self) -> None:
+        app = DeepAgentsApp(auto_approve=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(
+                thread_id="thread-1",
+                auto_approve=True,
+            )
+            app._session_state.approval_mode_key = "stale"
+            app._agent_running = True
+            with (
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(return_value=False),
+                ),
+                patch.object(app, "_force_interrupt_active_work") as force,
+                patch.object(app, "notify") as notify,
+            ):
+                await app.action_toggle_auto_approve()
+
+        assert app._auto_approve is False
+        assert app._session_state.auto_approve is False
+        assert app._session_state.approval_mode_key is None
+        force.assert_called_once()
+        notify.assert_called_once()
+        assert notify.call_args.kwargs["severity"] == "warning"
+
+    async def test_toggle_off_failed_write_does_not_cancel_when_idle(self) -> None:
+        app = DeepAgentsApp(auto_approve=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(
+                thread_id="thread-1",
+                auto_approve=True,
+            )
+            app._agent_running = False
+            with (
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(return_value=False),
+                ),
+                patch.object(app, "_force_interrupt_active_work") as force,
+                patch.object(app, "notify") as notify,
+            ):
+                await app.action_toggle_auto_approve()
+
+        force.assert_not_called()
+        notify.assert_called_once()
+        # The idle branch emits a distinct message from the cancel branch.
+        assert "start a new run" in notify.call_args.args[0]
+
+    async def test_toggle_on_failed_write_does_not_cancel_running_agent(self) -> None:
+        app = DeepAgentsApp(auto_approve=False)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(
+                thread_id="thread-1",
+                auto_approve=False,
+            )
+            app._agent_running = True
+            with (
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(return_value=False),
+                ),
+                patch.object(app, "_force_interrupt_active_work") as force,
+                patch.object(app, "notify") as notify,
+            ):
+                await app.action_toggle_auto_approve()
+
+        assert app._auto_approve is True
+        assert app._session_state.auto_approve is True
+        force.assert_not_called()
+        notify.assert_called_once()
+        # Toggling on emits the auto-approve warning, not the manual one.
+        assert "Auto-approve could not sync" in notify.call_args.args[0]
+
+    async def test_auto_approve_all_failed_write_warns(self) -> None:
+        app = DeepAgentsApp(auto_approve=False)
+        app._session_state = TextualSessionState(
+            thread_id="thread-1",
+            auto_approve=False,
+        )
+        with (
+            patch.object(
+                app,
+                "_write_live_approval_mode",
+                new=AsyncMock(return_value=False),
+            ),
+            patch.object(app, "notify") as notify,
+        ):
+            await app._on_auto_approve_enabled()
+
+        assert app._auto_approve is True
+        assert app._session_state.auto_approve is True
+        notify.assert_called_once()
+        assert notify.call_args.kwargs["severity"] == "warning"
+
+
 class TestExternalBypassFieldHonored:
     """`event.bypass` overrides queue when set on a prompt event."""
 

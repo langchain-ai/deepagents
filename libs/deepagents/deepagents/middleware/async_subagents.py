@@ -125,7 +125,7 @@ def _tasks_reducer(
 class AsyncSubAgentState(AgentState):
     """State extension for async subagent task tracking."""
 
-    async_tasks: Annotated[NotRequired[dict[str, AsyncTask]], _tasks_reducer]
+    async_tasks: NotRequired[Annotated[dict[str, AsyncTask], _tasks_reducer]]
 
 
 class StartAsyncTaskSchema(BaseModel):
@@ -884,7 +884,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         async_subagents: List of async subagent specifications.
 
             Each must include `name`, `description`, and `graph_id`. `url` is
-            optional — omit it to use ASGI transport for local servers
+            optional - omit it to use ASGI transport for local servers
             (requires async invocation via `ainvoke`).
         system_prompt: Instructions appended to the main agent's system prompt
             about how to use the async subagent tools.

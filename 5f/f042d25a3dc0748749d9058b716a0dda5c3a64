@@ -1,0 +1,22 @@
+libs/evals/deepagents_clbench/task/biased_opponent/task.py
+  s_ff1d954e22bc10::t_7798079c269b05 79
+  s_ff1d954e22bc10::t_c903e7f797148d 115
+  s_ff1d954e22bc10::t_17929aab4d097e 55-57,64-66
+  s_ff1d954e22bc10::t_d8454d65a37eeb 99
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "5ff042d25a3dc0748749d9058b716a0dda5c3a64",
+  "prompts": {},
+  "sessions": {
+    "s_ff1d954e22bc10": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e85341e2-a6d5-4077-a245-b6953a292cae",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

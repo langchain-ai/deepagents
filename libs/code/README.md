@@ -42,6 +42,12 @@ The fastest way to start using Deep Agents. `deepagents-code` is a pre-built cod
 - **Headless mode** — run non-interactively for scripting and CI
 - **Human-in-the-loop** — approve or reject tool calls before execution
 
+## 🔒 Security model
+
+By default, `dcode` trusts the directory you run it in. Project files can influence what the agent sees and runs: the nearest project `.env` is discovered and loaded into the process environment, and local context such as `Makefile` contents is read at startup. Human-in-the-loop approval gates model-requested tool calls, but project artifacts are read before any approval prompt.
+
+Do not run `dcode` in a directory you do not trust without a sandbox backend. For untrusted repositories, use a [remote sandbox](https://docs.langchain.com/oss/deepagents/code/remote-sandboxes) so execution is isolated from your machine. Shell startup-hook keys (such as `BASH_ENV` and `ENV`) are stripped from `.env` loading so a project cannot use them to run code, but the broader trust boundary stands: running `dcode` in a directory lets that directory's files shape execution. See [`THREAT_MODEL.md`](https://github.com/langchain-ai/deepagents/blob/main/libs/code/THREAT_MODEL.md) for details.
+
 ## 📖 Resources
 
 - **[Documentation](https://docs.langchain.com/deepagents-code)**

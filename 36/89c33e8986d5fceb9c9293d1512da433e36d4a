@@ -1,0 +1,19 @@
+.github/workflows/dependabot_lockfile_fix.yml
+  s_ca9ed1e87cd4a7::t_ace21508f614c6 26-32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "3689c33e8986d5fceb9c9293d1512da433e36d4a",
+  "prompts": {},
+  "sessions": {
+    "s_ca9ed1e87cd4a7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d1403f8c-229e-40da-b911-7717aa498e54",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

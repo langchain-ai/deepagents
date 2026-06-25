@@ -7,6 +7,7 @@ import ipaddress
 import logging
 import socket
 import threading
+from html.parser import HTMLParser
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urljoin, urlparse
 
@@ -14,7 +15,7 @@ from langchain_core.runnables import RunnableConfig  # noqa: TC002  # runtime hi
 from langchain_core.tools import tool
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from tavily import TavilyClient
 
@@ -200,6 +201,42 @@ def _pinned_dns(hostname: str, allowed_ips: list[str]) -> Iterator[None]:
             urllib3_connection.create_connection = original
 
 
+class _TextExtractor(HTMLParser):
+    """Extract visible text from HTML as a markdownify fallback."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        text = " ".join(data.split())
+        if text:
+            self.parts.append(text)
+
+    def get_text(self) -> str:
+        """Return extracted text separated into readable paragraphs."""
+        return "\n\n".join(self.parts)
+
+
+def _html_to_markdown_content(html: str, markdownify: Callable[[str], str]) -> str:
+    """Convert HTML to markdown, falling back to plain text on recursion.
+
+    Returns:
+        Markdown content, or extracted text if markdown conversion recurses.
+    """
+    try:
+        return markdownify(html)
+    except RecursionError:
+        logger.debug(
+            "markdownify hit recursion depth; falling back to text extraction",
+            exc_info=True,
+        )
+        parser = _TextExtractor()
+        parser.feed(html)
+        parser.close()
+        return parser.get_text()
+
+
 def _get_tavily_client() -> TavilyClient | None:
     """Get or initialize the lazy Tavily client singleton.
 
@@ -356,7 +393,7 @@ def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:
     except requests.exceptions.RequestException as e:
         return {"error": f"Fetch URL error: {e!s}", "url": url, "category": "network"}
 
-    markdown_content = markdownify(response.text)
+    markdown_content = _html_to_markdown_content(response.text, markdownify)
     return {
         "url": str(response.url),
         "markdown_content": markdown_content,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import socket
 from typing import TYPE_CHECKING, Any
 
+import markdownify as markdownify_module
 import pytest
 import requests
 import responses
@@ -96,6 +97,34 @@ def test_fetch_url_success() -> None:
     assert "Test" in result["markdown_content"]
     assert result["url"].startswith("http://example.com")
     assert result["content_length"] > 0
+
+
+@responses.activate
+@pytest.mark.usefixtures("resolve_public")
+def test_fetch_url_falls_back_when_markdownify_recurses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recursive markdown conversion falls back to extracted text."""
+    body = "<html><body><p>Hello <strong>world</strong></p><p>Second</p></body></html>"
+    responses.add(
+        responses.GET,
+        "http://example.com/deep",
+        body=body,
+        status=200,
+    )
+
+    def recursive_markdownify(_html: str) -> str:
+        msg = "maximum recursion depth exceeded"
+        raise RecursionError(msg)
+
+    monkeypatch.setattr(markdownify_module, "markdownify", recursive_markdownify)
+
+    result = fetch_url("http://example.com/deep")
+
+    assert result["status_code"] == 200
+    assert "Hello" in result["markdown_content"]
+    assert "world" in result["markdown_content"]
+    assert "Second" in result["markdown_content"]
 
 
 @responses.activate

@@ -827,8 +827,14 @@ def test_run_show_text_returns_zero() -> None:
 
 
 def test_run_list_text_returns_zero() -> None:
-    """The default (text) `config list` rendering path runs without error."""
+    """`config list` aliases the effective-value view and renders without error."""
     args = argparse.Namespace(config_command="list", output_format="text")
+    assert run_config_command(args) == 0
+
+
+def test_run_show_verbose_text_returns_zero() -> None:
+    """`config show --verbose` renders descriptions and how-to-set without error."""
+    args = argparse.Namespace(config_command="show", output_format="text", verbose=True)
     assert run_config_command(args) == 0
 
 
@@ -1073,8 +1079,47 @@ def test_run_path_json_reports_existence(monkeypatch, tmp_path, capsys) -> None:
     assert row["path"] == str(cfg)
 
 
-def test_run_list_json_serializes_catalog(capsys) -> None:
-    """`config list --json` serializes the catalog without error."""
+def test_run_show_json_reports_effective_values(capsys) -> None:
+    """`config show --json` reports effective values without catalog fields."""
+    import json
+
+    args = argparse.Namespace(config_command="show", output_format="json")
+    assert run_config_command(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["command"] == "config show"
+    rows = payload["data"]
+    assert all(
+        {"key", "group", "source", "set", "redacted", "value"} <= set(r) for r in rows
+    )
+    assert all("type" not in r for r in rows)
+
+
+def test_run_show_verbose_json_serializes_catalog(capsys) -> None:
+    """`config show --verbose --json` folds the catalog into each row."""
+    import json
+
+    args = argparse.Namespace(config_command="show", output_format="json", verbose=True)
+    assert run_config_command(args) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["command"] == "config show"
+    rows = payload["data"]
+    assert any(
+        r["key"] == "interpreter.memory_limit_mb" and r["default"] == 64 for r in rows
+    )
+    assert all(
+        {"key", "type", "default", "redacted", "env_var", "toml_path", "cli_flag"}
+        <= set(r)
+        for r in rows
+    )
+
+
+def test_run_list_json_preserves_catalog(capsys) -> None:
+    """`config list --json` keeps catalog fields for backward compatibility.
+
+    `list` was the machine-readable catalog endpoint, so its JSON must stay
+    additive: effective value/source plus the original catalog fields, even
+    without `--verbose`.
+    """
     import json
 
     args = argparse.Namespace(config_command="list", output_format="json")

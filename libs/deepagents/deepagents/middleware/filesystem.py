@@ -59,6 +59,7 @@ from deepagents.backends.utils import (
     check_empty_content,
     format_content_with_line_numbers,
     format_grep_matches,
+    regex_literal_hint,
     sanitize_tool_call_id as sanitize_tool_call_id,
     truncate_if_too_long,
     validate_path,
@@ -204,6 +205,7 @@ def _filter_grep_matches_by_permission(
 def _format_grep_tool_result(
     result: GrepResult,
     output_mode: Literal["files_with_matches", "content", "count"],
+    pattern: str = "",
 ) -> tuple[str, Literal["success", "error"]]:
     """Format a backend grep result for the tool boundary."""
     matches = result.matches or []
@@ -213,6 +215,8 @@ def _format_grep_tool_result(
     formatted = format_grep_matches(matches, output_mode)
     if result.error:
         return f"{result.error}\n\nPartial matches:\n{formatted}", "error"
+    if not matches and (hint := regex_literal_hint(pattern)):
+        return f"{formatted}\n\n{hint}", "success"
     return formatted, "success"
 
 
@@ -336,6 +340,20 @@ class FilesystemState(AgentState):
     """Files in the filesystem. Uses DeltaChannel with snapshots every ~50 pregel steps to bound read depth."""
 
 
+GREP_GLOB_DESCRIPTION = (
+    "Glob pattern (NOT regex) limiting which files are searched, matched against "
+    "the file name (e.g. '*.py', '*.{ts,tsx}'). This is an in-tool file filter, "
+    "not a call to the separate glob tool."
+)
+
+GREP_OUTPUT_MODE_DESCRIPTION = (
+    "Shape of the returned text. 'files_with_matches' (default): newline-separated "
+    "matching file paths. 'content': matching lines grouped by file, each formatted "
+    "'<line_number>: <line text>' (only the matched line, no surrounding context). "
+    "'count': one '<path>: <match_count>' line per file."
+)
+
+
 class LsSchema(BaseModel):
     """Input schema for the `ls` tool."""
 
@@ -396,11 +414,11 @@ class GrepSchema(BaseModel):
 
     path: str | None = Field(default=None, description="Directory to search in. Defaults to current working directory.")
 
-    glob: str | None = Field(default=None, description="Glob pattern to filter which files to search (e.g., '*.py').")
+    glob: str | None = Field(default=None, description=GREP_GLOB_DESCRIPTION)
 
     output_mode: Literal["files_with_matches", "content", "count"] = Field(
         default="files_with_matches",
-        description="Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
+        description=GREP_OUTPUT_MODE_DESCRIPTION,
     )
 
 
@@ -470,16 +488,22 @@ Examples:
 - `*.txt` - Find all text files in the backend's default root
 - `/subdir/**/*.md` - Find all markdown files under /subdir"""
 
-GREP_TOOL_DESCRIPTION = """Search for a text pattern across files.
+GREP_TOOL_DESCRIPTION = """Search for a LITERAL text pattern across files (NOT regex).
 
-Searches for literal text (not regex) and returns matching files or content based on output_mode.
-Special characters like parentheses, brackets, pipes, etc. are treated as literal characters, not regex operators.
+Returns matching files or content based on output_mode. The pattern is matched
+verbatim: regex metacharacters are treated as ordinary characters, NOT operators.
+
+Do NOT pass a regex. In particular:
+- To match any of several strings, run a SEPARATE grep for each one. There is no
+  `|` alternation: `grep(pattern="foo|bar")` looks for the literal text "foo|bar".
+- Do not use wildcards (`.*`) or escapes (`\\.`); they match those characters literally.
+- If you genuinely need regex, use the execute tool with `rg '<regex>'` instead.
 
 Examples:
 - Search all files: `grep(pattern="TODO")`
 - Search Python files only: `grep(pattern="import", glob="*.py")`
 - Show matching lines: `grep(pattern="error", output_mode="content")`
-- Search for code with special chars: `grep(pattern="def __init__(self):")`"""
+- Literal special chars are fine: `grep(pattern="def __init__(self):")`"""
 
 EXECUTE_TOOL_DESCRIPTION = """Executes a shell command in an isolated sandbox environment.
 
@@ -1580,10 +1604,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             pattern: Annotated[str, "Text pattern to search for (literal string, not regex)."],
             runtime: ToolRuntime[None, FilesystemState],
             path: Annotated[str | None, "Directory to search in. Defaults to current working directory."] = None,
-            glob: Annotated[str | None, "Glob pattern to filter which files to search (e.g., '*.py')."] = None,
+            glob: Annotated[str | None, GREP_GLOB_DESCRIPTION] = None,
             output_mode: Annotated[
                 Literal["files_with_matches", "content", "count"],
-                "Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
+                GREP_OUTPUT_MODE_DESCRIPTION,
             ] = "files_with_matches",
         ) -> ToolMessage:
             """Synchronous wrapper for grep tool."""
@@ -1611,6 +1635,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             formatted, status = _format_grep_tool_result(
                 GrepResult(error=grep_result.error, matches=filtered_matches),
                 output_mode,
+                pattern,
             )
             return ToolMessage(
                 content=truncate_if_too_long(formatted),
@@ -1623,10 +1648,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             pattern: Annotated[str, "Text pattern to search for (literal string, not regex)."],
             runtime: ToolRuntime[None, FilesystemState],
             path: Annotated[str | None, "Directory to search in. Defaults to current working directory."] = None,
-            glob: Annotated[str | None, "Glob pattern to filter which files to search (e.g., '*.py')."] = None,
+            glob: Annotated[str | None, GREP_GLOB_DESCRIPTION] = None,
             output_mode: Annotated[
                 Literal["files_with_matches", "content", "count"],
-                "Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
+                GREP_OUTPUT_MODE_DESCRIPTION,
             ] = "files_with_matches",
         ) -> ToolMessage:
             """Asynchronous wrapper for grep tool."""
@@ -1654,6 +1679,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             formatted, status = _format_grep_tool_result(
                 GrepResult(error=grep_result.error, matches=filtered_matches),
                 output_mode,
+                pattern,
             )
             return ToolMessage(
                 content=truncate_if_too_long(formatted),

@@ -782,6 +782,69 @@ class TestFilesystemMiddleware:
         )
         assert "No matches found" in result.content
 
+    def test_grep_regex_pattern_no_matches_adds_hint(self):
+        """A no-match pattern that looks like regex gets a literal-search hint."""
+        files = {
+            "/test.py": FileData(
+                content=["def hello():"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        result = grep_search_tool.invoke(
+            {
+                "pattern": "def hello|def world",
+                "runtime": _runtime(),
+            }
+        )
+        assert result.content.startswith("No matches found")
+        assert "literal text, not regex" in result.content
+
+    def test_grep_literal_no_matches_omits_hint(self):
+        """A plain literal no-match pattern does not get the regex hint."""
+        files = {
+            "/test.py": FileData(
+                content=["print('hello')"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        result = grep_search_tool.invoke(
+            {
+                "pattern": "import",
+                "runtime": _runtime(),
+            }
+        )
+        assert result.content == "No matches found"
+
+    def test_grep_regex_pattern_with_matches_omits_hint(self):
+        """A regex-looking pattern that still matches literally shows no hint."""
+        files = {
+            "/test.py": FileData(
+                content=["a = b|c"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        result = grep_search_tool.invoke(
+            {
+                "pattern": "b|c",
+                "output_mode": "content",
+                "runtime": _runtime(),
+            }
+        )
+        assert "a = b|c" in result.content
+        assert "literal text, not regex" not in result.content
+
     def test_search_store_paginated_empty(self):
         """Test pagination with no items."""
         store = InMemoryStore()

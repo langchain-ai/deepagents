@@ -310,6 +310,22 @@ class RemoteAgent:
             )
             raise
 
+    async def acancel_active_runs(self, config: dict[str, Any]) -> None:
+        """Cancel pending/running runs on the configured thread.
+
+        Best-effort: per-run cancellation failures are swallowed by
+        `_cancel_active_runs`. Intended for proactive cancellation on
+        interrupt, before recovery-state writes.
+
+        Args:
+            config: Config with `configurable.thread_id`.
+
+        Raises:
+            ValueError: If `thread_id` is not present in `config`.
+        """  # noqa: DOC502 — raised by _require_thread_id
+        thread_id = _require_thread_id(config)
+        await _cancel_active_runs(self._get_graph(), thread_id)
+
     async def aupdate_state(
         self,
         config: dict[str, Any],

@@ -1540,6 +1540,22 @@ async def _handle_interrupt_cleanup(
 
     await adapter._mount_message(AppMessage("Interrupted by user"))
 
+    # Proactively cancel server-side runs before persisting recovery state, so
+    # the aupdate_state writes below don't 409 against a still-busy thread. This
+    # is defense-in-depth layered on top of aupdate_state's own 409 -> cancel ->
+    # retry path (see RemoteAgent.aupdate_state); a failure here is not fatal.
+    # Absent on local agents, so this is a no-op for them.
+    cancel_active_runs = getattr(agent, "acancel_active_runs", None)
+    if cancel_active_runs is not None:
+        try:
+            await cancel_active_runs(config)
+        except Exception:
+            logger.warning(
+                "Failed to cancel active remote runs for thread %s",
+                config.get("configurable", {}).get("thread_id"),
+                exc_info=True,
+            )
+
     interrupted_msg = _build_interrupted_ai_message(
         pending_text_by_namespace,
         adapter._current_tool_messages,

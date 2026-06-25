@@ -2816,9 +2816,10 @@ class DeepAgentsApp(App):
         `_ripgrep_ensured` instead of installing again.
 
         Returns:
-            `True` when a usable managed `rg` is on `PATH`, `False` when the
-            install was skipped or failed (caller should surface the missing
-            tool and fall back to the slow path).
+            `True` when a usable `rg` is resolved — the managed binary (with
+            `BIN_DIR` prepended to `PATH`) or a system `rg` already on `PATH` —
+            `False` when the install was skipped or failed (caller should
+            surface the missing tool and fall back to the slow path).
         """
         async with self._ripgrep_ensure_lock:
             if self._ripgrep_ensured.is_set():
@@ -2829,6 +2830,7 @@ class DeepAgentsApp(App):
                 from deepagents_code.managed_tools import (
                     ChecksumMismatchError,
                     ensure_ripgrep,
+                    managed_rg_path,
                     prepend_managed_bin_to_path,
                 )
             except ImportError:
@@ -2875,7 +2877,8 @@ class DeepAgentsApp(App):
                 )
 
             if installed is not None:
-                prepend_managed_bin_to_path()
+                if installed == managed_rg_path():
+                    prepend_managed_bin_to_path()
                 self._ripgrep_ensured.set()
                 return True
 

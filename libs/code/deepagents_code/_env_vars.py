@@ -177,6 +177,16 @@ version), skips auto-updating to break out of an otherwise endless
 upgrade/restart loop. Set and read internally across `os.execv`.
 """
 
+RIPGREP_INSTALLER = "DEEPAGENTS_CODE_RIPGREP_INSTALLER"
+"""Select how ripgrep is provisioned: `managed` (default) or `system`.
+
+`managed` downloads the pinned, SHA-256-verified upstream binary into
+`~/.deepagents/bin` (no sudo). `system` skips that download so power users can
+rely on their distro package / existing toolchain instead; the install script's
+`system` mode keeps the brew/apt/cargo path. A system `rg` already on `PATH` is
+reused under either setting. Unrecognized values fall back to `managed`. See
+`managed_tools.ripgrep_installer`."""
+
 SERVER_ENV_PREFIX = "DEEPAGENTS_CODE_SERVER_"
 """Environment variable prefix used to pass CLI config to the server subprocess."""
 

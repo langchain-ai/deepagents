@@ -111,8 +111,10 @@ def test_make_graph_builds_headless_local_deepagent(
     assert captured_create[0]["enable_memory"] is False
     assert captured_create[0]["enable_skills"] is False
     assert captured_create[0]["enable_shell"] is True
+    assert captured_create[0]["enable_finalize"] is True
+    assert captured_create[0]["enable_anti_ramble"] is True
     assert isinstance(captured_create[0]["system_prompt"], str)
-    assert "Harbor benchmark sandbox" in captured_create[0]["system_prompt"]
+    assert "autonomous coding agent" in captured_create[0]["system_prompt"]
 
 
 def test_make_graph_defaults_to_app_workdir(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -136,6 +138,26 @@ def test_make_graph_defaults_to_app_workdir(monkeypatch: pytest.MonkeyPatch) -> 
 
     assert captured_create[0]["cwd"] == Path("/app")
     assert captured_create[0]["assistant_id"]
+
+
+def test_make_graph_sanitizes_dotted_session_id(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured_create: list[dict[str, object]] = []
+
+    monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        langgraph_agent,
+        "create_cli_agent",
+        lambda **kwargs: (captured_create.append(kwargs) or object(), object()),
+    )
+    # Harbor sets HARBOR_SESSION_ID to the trial name; dotted names (e.g.
+    # install-windows-3.11) are rejected by dcode's agent-name validator.
+    monkeypatch.setenv("HARBOR_SESSION_ID", "install-windows-3.11__6atwQrL")
+
+    langgraph_agent.make_graph({"configurable": {"model": "p:m", "cwd": str(tmp_path)}})
+
+    assert captured_create[0]["assistant_id"] == "install-windows-3_11__6atwQrL"
 
 
 def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
@@ -185,4 +207,4 @@ def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
     assert captured_create[0]["model"] == "chat-model"
     assert captured_create[0]["backend"] is backend
     assert isinstance(captured_create[0]["system_prompt"], str)
-    assert "Harbor benchmark sandbox" in captured_create[0]["system_prompt"]
+    assert "autonomous coding agent" in captured_create[0]["system_prompt"]

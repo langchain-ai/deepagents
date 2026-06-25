@@ -47,7 +47,7 @@ To release a package:
 4. Merge the release PR — this triggers the pre-release checks, PyPI publish, and GitHub release
 
 > [!IMPORTANT]
-> `deepagents-code` pins an exact `deepagents==` version in `libs/code/pyproject.toml`. Bump this pin as part of any PR that depends on new SDK functionality — don't defer it to release time. The pin should always reflect the minimum SDK version `deepagents-code` actually requires. See [Release Failed: Code SDK Pin Is Older Than SDK](#release-failed-code-sdk-pin-is-older-than-sdk) for recovery if a stale pin slips through.
+> `deepagents-code` pins an exact `deepagents==` version in `libs/code/pyproject.toml`. Bump this pin as part of any PR that depends on new SDK functionality — don't defer it to release time. The pin should always reflect the minimum SDK version `deepagents-code` actually requires. If you intentionally need to ship a release PR with an older SDK pin, add the `release: skip sdk pin check` label before merging. See [Release Failed: Code SDK Pin Is Older Than SDK](#release-failed-code-sdk-pin-is-older-than-sdk) for recovery if a stale pin slips through.
 
 ### Version Bumping
 
@@ -679,7 +679,9 @@ deepagents-code SDK pin (libs/code/pyproject.toml): 0.4.1
 
 This means `deepagents-code`'s pinned `deepagents` dependency in `libs/code/pyproject.toml` is older than the current SDK version. This can happen when the SDK is released independently and the pin isn't updated before the `deepagents-code` release PR is merged. A pin ahead of the workspace SDK is allowed for intentional prerelease coordination.
 
-**To fix:**
+If the older pin is intentional, add the `release: skip sdk pin check` label to the release PR before merging. The automatic release dispatch will pass `dangerous-skip-sdk-pin-check=true`, preserving the normal auto-release path while recording the bypass decision on the PR. Only use this when `deepagents-code` does not depend on SDK functionality newer than the pinned version.
+
+**To fix after an unlabeled release PR already failed:**
 
 1. **Hotfix the pin on `main`:**
 

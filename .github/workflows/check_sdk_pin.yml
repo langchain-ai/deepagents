@@ -87,6 +87,7 @@ jobs:
       - name: Manage PR comment
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
+          SDK_PIN_BYPASS_LABEL: "release: skip sdk pin check"
           SDK_VERSION: ${{ steps.check.outputs.sdk_version }}
           PKG_PIN: ${{ steps.check.outputs.pkg_pin }}
           PIN_STALE: ${{ steps.check.outputs.stale }}
@@ -104,6 +105,7 @@ jobs:
             const pkgLabel = process.env.PKG_LABEL;
             const pkgPyproject = process.env.PKG_PYPROJECT;
             const pkgLockdir = process.env.PKG_LOCKDIR;
+            const sdkPinBypassLabel = process.env.SDK_PIN_BYPASS_LABEL;
             const marker = `<!-- sdk-pin-check:${pkgName} -->`;
             const { owner, repo } = context.repo;
             const prNumber = context.payload.pull_request.number;
@@ -142,7 +144,7 @@ jobs:
                 '>',
                 `> **To fix:** update \`${pkgPyproject}\` to pin \`deepagents==${sdkVersion}\`, then run \`cd ${pkgLockdir} && uv lock\` and commit the lockfile update.`,
                 '>',
-                `> **To bypass:** if you intentionally need to pin an older SDK version, re-run the release workflow with \`dangerous-skip-sdk-pin-check\` enabled. Ensure the ${pkgLabel} package does not contain any code that depends on functionality introduced after \`deepagents==${pkgPin}\` — otherwise the published package will fail at runtime.`,
+                `> **To bypass:** if you intentionally need to pin an older SDK version, add the \`${sdkPinBypassLabel}\` label before merging so the auto-dispatched release skips this check, or re-run the release workflow with \`dangerous-skip-sdk-pin-check\` enabled after a failure. Ensure the ${pkgLabel} package does not contain any code that depends on functionality introduced after \`deepagents==${pkgPin}\` — otherwise the published package will fail at runtime.`,
                 '>',
                 '> See [`.github/RELEASING.md`](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#release-failed-code-sdk-pin-is-older-than-sdk) for the full recovery procedure.',
               ].join('\n');

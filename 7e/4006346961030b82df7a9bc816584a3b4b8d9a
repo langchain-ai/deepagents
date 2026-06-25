@@ -1,0 +1,14 @@
+libs/code/tests/unit_tests/conftest.py
+  h_9f69767fa5fabf 20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "7e4006346961030b82df7a9bc816584a3b4b8d9a",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

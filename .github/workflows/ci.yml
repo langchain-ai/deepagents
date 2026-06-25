@@ -382,6 +382,8 @@ jobs:
       needs.changes.outputs.quickjs != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
     # Match the canonical test path (_test.yml) and the quickjs Makefile:
     # freeze against uv.lock so `uv sync` cannot rewrite the lockfile (which
     # would dirty the tree and trip the clean-working-directory check below).

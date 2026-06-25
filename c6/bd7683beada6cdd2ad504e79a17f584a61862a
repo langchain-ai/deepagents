@@ -1,0 +1,19 @@
+docs/superpowers/plans/2026-06-25-harness-eval-engine.md
+  s_be045b46d84183::t_fbbd9433b16f4c 1-1797
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "c6bd7683beada6cdd2ad504e79a17f584a61862a",
+  "prompts": {},
+  "sessions": {
+    "s_be045b46d84183": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cade71c4-e821-4a02-888b-b70674466c73",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

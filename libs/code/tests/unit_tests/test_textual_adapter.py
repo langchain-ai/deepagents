@@ -9,7 +9,7 @@ from importlib.metadata import PackageNotFoundError
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -38,6 +38,9 @@ from deepagents_code.widgets.messages import (
     SummarizationMessage,
     ToolCallMessage,
 )
+
+if TYPE_CHECKING:
+    from langchain_core.runnables import RunnableConfig
 
 
 async def _mock_mount(widget: object) -> None:
@@ -264,14 +267,18 @@ class TestInterruptCleanup:
         sync_message_content.assert_called_once_with("asst-1", "partial response")
         assert assistant_messages == {}
 
-    async def test_interrupt_cancels_active_remote_runs_before_state_writes(self) -> None:
+    async def test_interrupt_cancels_active_remote_runs_before_state_writes(
+        self,
+    ) -> None:
         """Remote runs should be interrupted before recovery state is persisted."""
         calls: list[str] = []
 
-        async def cancel_runs(_config: object) -> None:
+        # Sync side effects are fine: the AsyncMock wrapping them is awaitable,
+        # and recording into `calls` is enough to assert relative ordering.
+        def cancel_runs(_config: object) -> None:
             calls.append("cancel")
 
-        async def update_state(_config: object, _values: dict[str, Any]) -> None:
+        def update_state(_config: object, _values: dict[str, Any]) -> None:
             calls.append("update")
 
         adapter = TextualUIAdapter(
@@ -285,7 +292,7 @@ class TestInterruptCleanup:
             acancel_active_runs=AsyncMock(side_effect=cancel_runs),
             aupdate_state=AsyncMock(side_effect=update_state),
         )
-        config = {"configurable": {"thread_id": "t-1"}}
+        config: RunnableConfig = {"configurable": {"thread_id": "t-1"}}
 
         await _handle_interrupt_cleanup(
             adapter=adapter,
@@ -327,6 +334,31 @@ class TestInterruptCleanup:
         )
 
         agent.acancel_active_runs.assert_awaited_once()
+        agent.aupdate_state.assert_awaited_once()
+
+    async def test_local_agent_without_cancel_method_still_writes_state(self) -> None:
+        """Local agents lack `acancel_active_runs`; cleanup must skip it cleanly."""
+        agent = SimpleNamespace(aupdate_state=AsyncMock())
+        assert not hasattr(agent, "acancel_active_runs")
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={},
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
         agent.aupdate_state.assert_awaited_once()
 
     async def test_disables_tracing_during_state_save(self) -> None:

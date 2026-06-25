@@ -904,6 +904,10 @@ class TestStartupSequence:
         app._switch_model = switch_model_mock  # ty: ignore
         app._mount_message = track_mount_message  # ty: ignore
         app._dispatch_launch_name_hook = MagicMock()  # ty: ignore
+        # The Tavily step has dedicated coverage; stub it here so this
+        # name/model orchestration test stays isolated from the credential
+        # store (and the real modal push) regardless of the ambient env.
+        app._prompt_launch_tavily = AsyncMock()  # ty: ignore
 
         with (
             patch(
@@ -995,6 +999,10 @@ class TestStartupSequence:
         app._write_launch_name_memory = AsyncMock()  # ty: ignore
         switch_or_install = AsyncMock()
         app._switch_or_install_launch_model = switch_or_install  # ty: ignore
+        # Stub the Tavily step (covered separately): without a run_test
+        # harness the real `_push_screen_wait` would block forever, and on
+        # CI (no TAVILY_API_KEY) `has_tavily` is False so the step would run.
+        app._prompt_launch_tavily = AsyncMock()  # ty: ignore
         # The fallback prompt must NOT run when a result is injected.
         prompt_flow_mock = AsyncMock()
         app._prompt_launch_dependencies_then_model = prompt_flow_mock  # ty: ignore
@@ -1019,6 +1027,50 @@ class TestStartupSequence:
         prompt_flow_mock.assert_not_awaited()
         switch_or_install.assert_awaited_once_with("openai:gpt-5.4", "openai")
         mark_complete.assert_called_once_with()
+
+    async def test_launch_init_sequence_runs_tavily_step_before_model_switch(
+        self,
+    ) -> None:
+        """The sequence must invoke the Tavily step after model resolution.
+
+        Regression guard for the wiring itself. The dedicated
+        `_prompt_launch_tavily` tests exercise the method in isolation, so
+        without this test the call site could be deleted and the onboarding
+        Tavily prompt silently lost with every other test still green. The
+        step must also land before the model switch (its env export feeds a
+        potential server respawn).
+        """
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._write_launch_name_memory = AsyncMock()  # ty: ignore
+
+        order: list[str] = []
+        app._prompt_launch_tavily = AsyncMock(  # ty: ignore
+            side_effect=lambda: order.append("tavily")
+        )
+        app._switch_or_install_launch_model = AsyncMock(  # ty: ignore
+            side_effect=lambda *_args: order.append("switch")
+        )
+
+        loop = asyncio.get_running_loop()
+        name_result: asyncio.Future[str | None] = loop.create_future()
+        name_result.set_result("Ada")
+        dependency_result: asyncio.Future[tuple[bool, tuple[str, str] | None]] = (
+            loop.create_future()
+        )
+        dependency_result.set_result((True, ("openai:gpt-5.4", "openai")))
+
+        with patch(
+            "deepagents_code.onboarding.mark_onboarding_complete",
+            return_value=True,
+        ):
+            await app._run_launch_init_sequence(
+                name_result=name_result,
+                dependency_result=dependency_result,
+            )
+
+        app._prompt_launch_tavily.assert_awaited_once_with()  # ty: ignore
+        assert order == ["tavily", "switch"]
 
     async def test_launch_init_wires_name_screen_to_dependency_screen(self) -> None:
         """On mount, submitting the name switches straight into the deps screen.
@@ -1101,6 +1153,8 @@ class TestStartupSequence:
         app._prompt_launch_dependencies_then_model = prompt_flow_mock  # ty: ignore
         app._switch_model = switch_model_mock  # ty: ignore
         app._mount_message = mount_message_mock  # ty: ignore
+        # Tavily step covered separately; stub for isolation.
+        app._prompt_launch_tavily = AsyncMock()  # ty: ignore
 
         with (
             patch(
@@ -1122,6 +1176,135 @@ class TestStartupSequence:
             "openai:gpt-5", announce_unchanged=False
         )
         mark_complete.assert_called_once_with()
+
+    async def test_prompt_launch_tavily_uses_auth_prompt_and_applies_key(self) -> None:
+        """Onboarding should reuse the `/auth` prompt for Tavily credentials."""
+        from deepagents_code.widgets.auth import AuthPromptScreen, AuthResult
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        pushed: list[AuthPromptScreen] = []
+
+        def capture_prompt(screen: object) -> AuthResult:
+            assert isinstance(screen, AuthPromptScreen)
+            pushed.append(screen)
+            return AuthResult.SAVED
+
+        app._push_screen_wait = AsyncMock(side_effect=capture_prompt)  # ty: ignore
+
+        with (
+            patch("deepagents_code.config.settings", SimpleNamespace(has_tavily=False)),
+            patch(
+                "deepagents_code.model_config.apply_stored_service_credentials"
+            ) as apply_credentials,
+        ):
+            await app._prompt_launch_tavily()
+
+        prompt = pushed[0]
+        assert prompt._provider == "tavily"
+        assert prompt._env_var == "TAVILY_API_KEY"
+        assert prompt._allow_empty_submit is True
+        assert prompt._input_placeholder == "Tavily API key (optional)"
+        assert prompt._submit_label == "Enter save/skip"
+        assert "Web search is optional" in (prompt._reason or "")
+        apply_credentials.assert_called_once_with()
+
+    async def test_prompt_launch_tavily_cancel_does_not_apply_key(self) -> None:
+        """A `CANCELLED` result applies no Tavily credential.
+
+        At this boundary `_prompt_launch_tavily` only sees the `AuthResult`;
+        both a blank submit and an Escape produce `CANCELLED`, so they are
+        indistinguishable here. The distinct gestures are exercised at the
+        widget layer (`test_optional_empty_submit_cancels_without_error` and
+        `test_escape_cancels` in `test_auth_widgets.py`).
+        """
+        from deepagents_code.widgets.auth import AuthResult
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._push_screen_wait = AsyncMock(return_value=AuthResult.CANCELLED)  # ty: ignore
+
+        with (
+            patch("deepagents_code.config.settings", SimpleNamespace(has_tavily=False)),
+            patch(
+                "deepagents_code.model_config.apply_stored_service_credentials"
+            ) as apply_credentials,
+        ):
+            await app._prompt_launch_tavily()
+
+        apply_credentials.assert_not_called()
+
+    async def test_prompt_launch_tavily_skips_when_configured(self) -> None:
+        """Onboarding should not prompt when a Tavily key already exists."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        push_screen_wait = AsyncMock(return_value="tvly-key")
+        app._push_screen_wait = push_screen_wait  # ty: ignore
+
+        with (
+            patch("deepagents_code.config.settings", SimpleNamespace(has_tavily=True)),
+            patch("deepagents_code.auth_store.set_stored_key") as set_stored_key,
+        ):
+            await app._prompt_launch_tavily()
+
+        push_screen_wait.assert_not_awaited()
+        set_stored_key.assert_not_called()
+
+    async def test_prompt_launch_tavily_clean_save_activates_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A clean save that lands the key in the env shows no toast."""
+        from deepagents_code.widgets.auth import AuthResult
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._push_screen_wait = AsyncMock(return_value=AuthResult.SAVED)  # ty: ignore
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        def export_key() -> None:
+            # Model the real export: the saved key reaches the canonical env
+            # var the SDK reads.
+            monkeypatch.setenv("TAVILY_API_KEY", "tvly-real-key")
+
+        with (
+            patch("deepagents_code.config.settings", SimpleNamespace(has_tavily=False)),
+            patch(
+                "deepagents_code.model_config.apply_stored_service_credentials",
+                side_effect=export_key,
+            ) as apply_credentials,
+        ):
+            await app._prompt_launch_tavily()
+
+        apply_credentials.assert_called_once_with()
+        assert os.environ["TAVILY_API_KEY"] == "tvly-real-key"
+        notify_mock.assert_not_called()
+
+    async def test_prompt_launch_tavily_warns_when_activation_fails(self) -> None:
+        """A saved key that never reaches the env warns instead of failing silently.
+
+        `apply_stored_service_credentials` is best-effort and only logs on a
+        corrupt store, which is invisible inside Textual. Onboarding must tell
+        the user their accepted key didn't take effect this session.
+        """
+        from deepagents_code.widgets.auth import AuthResult
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        app._push_screen_wait = AsyncMock(return_value=AuthResult.SAVED)  # ty: ignore
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        with (
+            patch("deepagents_code.config.settings", SimpleNamespace(has_tavily=False)),
+            # No side_effect: the export is a no-op, so `TAVILY_API_KEY` stays
+            # unset (the autouse `_clear_tavily_env` fixture cleared it).
+            patch(
+                "deepagents_code.model_config.apply_stored_service_credentials"
+            ) as apply_credentials,
+        ):
+            await app._prompt_launch_tavily()
+
+        apply_credentials.assert_called_once_with()
+        notify_mock.assert_called_once()
+        message = str(notify_mock.call_args.args[0])
+        assert "/auth" in message
+        assert notify_mock.call_args.kwargs.get("severity") == "warning"
 
     async def test_launch_init_name_memory_does_not_delay_model_prompt(self) -> None:
         """Writing the optional name should not hold the dependency/model transition."""
@@ -1260,6 +1443,9 @@ class TestStartupSequence:
         )
         switch_failure = RuntimeError("missing credentials")
         app._switch_model = AsyncMock(side_effect=switch_failure)  # ty: ignore
+        # Tavily step covered separately; stub so its toasts can't be
+        # mistaken for the switch-failure toast this test asserts on.
+        app._prompt_launch_tavily = AsyncMock()  # ty: ignore
         app._mount_message = AsyncMock()  # ty: ignore
         app._dispatch_launch_name_hook = MagicMock()  # ty: ignore
         notify_mock = MagicMock()
@@ -1376,6 +1562,9 @@ class TestStartupSequence:
         app._mount_message = AsyncMock()  # ty: ignore
         app._connecting = True
         app._dispatch_launch_name_hook = MagicMock()  # ty: ignore
+        # Tavily step (before the connection wait) is covered separately;
+        # stub so its toasts can't be mistaken for the timeout toast.
+        app._prompt_launch_tavily = AsyncMock()  # ty: ignore
         # Constructor pre-sets the readiness event when no server is configured;
         # clear it so the wait_for actually has to time out.
         app._connection_ready_event.clear()
@@ -11505,6 +11694,51 @@ class TestNotificationCenterIntegration:
         entry = app._notice_registry.get("dep:ripgrep")
         assert entry is not None
         assert app._notice_registry.toast_identity_for("dep:ripgrep") is not None
+
+    async def test_tool_toasts_suppressed_during_onboarding(self) -> None:
+        """During onboarding, missing-dep toasts are silent but still recorded.
+
+        The onboarding flow handles integrations itself (and prompts for a
+        Tavily key), so a "Web search disabled" toast stacked over the
+        onboarding modals is noise. The entry is still added to the registry
+        so ctrl+n surfaces it; only the toast is skipped. Suppression here is
+        keyed on `_onboarding_session` alone, not `_update_modal_pending`.
+        """
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app._onboarding_session = True
+        # Crucially, _update_modal_pending stays clear so this asserts the
+        # onboarding clause of `suppress_toasts`, not the update-modal one.
+
+        with (
+            patch(
+                "deepagents_code.main.check_optional_tools",
+                return_value=["ripgrep"],
+            ),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.main._ripgrep_install_hint",
+                return_value="brew install ripgrep",
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.managed_tools.ensure_ripgrep",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._check_optional_tools_background()
+                await pilot.pause()
+
+        entry = app._notice_registry.get("dep:ripgrep")
+        assert entry is not None
+        assert app._notice_registry.toast_identity_for("dep:ripgrep") is None
 
     async def test_update_check_skips_editable_install(self) -> None:
         """Editable installs skip update detection and never queue the modal."""

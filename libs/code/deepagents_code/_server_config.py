@@ -178,7 +178,7 @@ class ServerConfig:
     enable_skills: bool = True
     """Enable the skills subsystem (SKILL.md loading and skill tools)."""
 
-    enable_interpreter: bool = True
+    enable_interpreter: bool = False
     """Enable `CodeInterpreterMiddleware` (`js_eval` REPL) on the main agent.
 
     Local-mode only; the server graph raises if a sandbox is configured and
@@ -330,7 +330,7 @@ class ServerConfig:
             enable_ask_user=_read_env_bool("ENABLE_ASK_USER"),
             enable_memory=_read_env_bool("ENABLE_MEMORY", default=True),
             enable_skills=_read_env_bool("ENABLE_SKILLS", default=True),
-            enable_interpreter=_read_env_bool("ENABLE_INTERPRETER", default=True),
+            enable_interpreter=_read_env_bool("ENABLE_INTERPRETER"),
             interpreter_ptc=_read_env_json("INTERPRETER_PTC"),
             interpreter_ptc_acknowledge_unsafe=_read_env_bool(
                 "INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE"

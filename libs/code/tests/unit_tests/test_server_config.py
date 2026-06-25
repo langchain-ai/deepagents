@@ -190,6 +190,11 @@ class TestServerConfigPostInit:
 class TestServerConfigInterpreterDefault:
     """Tests for sandbox-aware interpreter default resolution."""
 
+    def test_bare_server_config_keeps_interpreter_disabled(self) -> None:
+        config = ServerConfig()
+
+        assert config.enable_interpreter is False
+
     @staticmethod
     def _build(*, sandbox_type: str, enable_interpreter: bool | None) -> ServerConfig:
         """Build a `ServerConfig` exercising only the interpreter resolution."""

@@ -1,0 +1,43 @@
+libs/evals/tests/unit_tests/harness_opt/test_harbor_runner.py
+  s_be045b46d84183::t_7ad9c7a4404245 24-25
+  s_be045b46d84183::t_b0c9642000c23d 1-23,26-75,77-79,86-93
+  s_be045b46d84183::t_e49153031f807b 80-85
+  s_be045b46d84183::t_7f5a98c6e81a55 94-95
+  s_be045b46d84183::t_b7dd63416b7228 76
+libs/evals/tests/unit_tests/harness_opt/fixtures/result_fail.json
+  s_be045b46d84183::t_dc2ec2c428a7b1 1
+libs/evals/tests/unit_tests/test_harbor_langgraph_agent.py
+  s_be045b46d84183::t_cb28729abe4ca3 23
+libs/evals/pyproject.toml
+  s_be045b46d84183::t_7f0bd3dff13477 198-200
+libs/evals/tests/unit_tests/harness_opt/fixtures/result_pass.json
+  s_be045b46d84183::t_881f4a315b297a 1
+libs/evals/deepagents_harness_opt/runner.py
+  s_be045b46d84183::t_f835745d23831e 12
+  s_be045b46d84183::t_15e8d0d730ac8e 75-135,137-162,168-267
+  s_be045b46d84183::t_8fcf0c34e2be48 136
+  s_be045b46d84183::t_7a6bb956a802a8 3,8-10,15
+  s_be045b46d84183::t_f4c8d774532f4c 163-167
+docs/superpowers/plans/2026-06-25-harness-eval-engine.md
+  s_be045b46d84183::t_3639ff433868da 1605-1607
+libs/evals/tests/integration_tests/test_harbor_runner_live.py
+  s_be045b46d84183::t_363a265d211b93 1-33
+libs/evals/tests/unit_tests/harness_opt/fixtures/result_infra.json
+  s_be045b46d84183::t_2695bd1d7bd0bc 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "16684ce3634587ffdc82ae2aa1cdbcaaab1861cc",
+  "prompts": {},
+  "sessions": {
+    "s_be045b46d84183": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cade71c4-e821-4a02-888b-b70674466c73",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

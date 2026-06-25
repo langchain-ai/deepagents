@@ -167,8 +167,11 @@ def show_help() -> None:
         "  --trust-project-mcp        Trust project MCP configs (skip approval prompt)"
     )
     console.print(
-        "  --[no-]interpreter         Enable or disable JS interpreter (`js_eval`) "
-        "middleware (enabled by default when not using a sandbox)"
+        "  --interpreter, --no-interpreter"
+        "  Enable or disable JS interpreter (`js_eval`) middleware"
+    )
+    console.print(
+        "                             Enabled by default when not using a sandbox"
     )
     console.print(
         "  --interpreter-tools VALUE  PTC allowlist: 'safe', 'all', or comma-separated "

@@ -120,11 +120,16 @@ extra-paths = ["../deepagents", "../code"]
 # https://docs.astral.sh/ty/rules/
 division-by-zero = "error"
 
+[tool.ty.src]
+# clbench integration code targets the external benchmark's package layout
+# (src.interface / src.registry), not this project's — exclude it from type checks.
+exclude = ["deepagents_clbench"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-# Vendored BFCL benchmark files — skip both lint and format
-exclude = ["tests/evals/data/bfcl_apis"]
+# Vendored BFCL benchmark files + external-benchmark integration code — skip lint and format
+exclude = ["tests/evals/data/bfcl_apis", "deepagents_clbench"]
 force-exclude = true
 
 [tool.ruff.format]

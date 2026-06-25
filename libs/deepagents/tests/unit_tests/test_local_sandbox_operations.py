@@ -284,20 +284,19 @@ class TestLocalSandboxOperations:
         exec_result = sandbox.execute(f"cat {test_path}")
         assert exec_result.output.strip() == content
 
-    def test_write_existing_file_fails(self, sandbox: LocalSubprocessSandbox) -> None:
-        """Test that writing to an existing file returns an error."""
+    def test_write_existing_file_overwrites(self, sandbox: LocalSubprocessSandbox) -> None:
+        """Test that writing to an existing file overwrites it."""
         test_path = "/tmp/test_sandbox_ops/existing.txt"
         # Create file first
         sandbox.write(test_path, "First content")
 
-        # Try to write again
+        # Write again should overwrite
         result = sandbox.write(test_path, "Second content")
 
-        assert result.error is not None
-        assert "already exists" in result.error.lower()
-        # Verify original content unchanged
+        assert result.error is None
+        # Verify new content
         exec_result = sandbox.execute(f"cat {test_path}")
-        assert exec_result.output.strip() == "First content"
+        assert exec_result.output.strip() == "Second content"
 
     def test_write_special_characters(self, sandbox: LocalSubprocessSandbox) -> None:
         """Test writing content with special characters and escape sequences."""

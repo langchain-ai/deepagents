@@ -1,0 +1,31 @@
+.github/workflows/harbor.yml
+  s_3c31b0a433abf6::t_497376b20a713c 30,39,44
+  s_3c31b0a433abf6::t_ebbe87b799e6e2 127,132,140,149,154,159,164,169
+.github/scripts/models.py
+  s_3c31b0a433abf6::t_d43a14fa1685c5 812-824,984,988,1015
+.github/scripts/test_models.py
+  s_3c31b0a433abf6::t_161a06d12c9947 102-130
+.github/workflows/clbench.yml
+  s_3c31b0a433abf6::t_f845ef71b40e96 1-23,25,27-76,78-103,105-352
+  s_3c31b0a433abf6::t_27d4e7b3181016 77
+  s_3c31b0a433abf6::t_0971d4e8c1c593 24,26
+  s_3c31b0a433abf6::t_306032637931f0 104
+.github/workflows/_eval.yml
+  s_3c31b0a433abf6::t_9f026d98a8002a 7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "8d665ab1335a6c04105451a3a94d5e7b3c93764c",
+  "prompts": {},
+  "sessions": {
+    "s_3c31b0a433abf6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9e7d9735-7298-4614-8ae0-43f406aa30f9",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

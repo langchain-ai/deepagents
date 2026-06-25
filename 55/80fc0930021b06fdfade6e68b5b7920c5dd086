@@ -1,0 +1,23 @@
+.github/scripts/check_sdk_pin.py
+  s_0224771ddf4025::t_1ff24e85a1c3ae 117-138
+.github/workflows/check_sdk_pin.yml
+  s_0224771ddf4025::t_1cf71d9dfd076e 167
+.github/scripts/test_check_sdk_pin.py
+  s_0224771ddf4025::t_62b22792527487 120-135
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "5580fc0930021b06fdfade6e68b5b7920c5dd086",
+  "prompts": {},
+  "sessions": {
+    "s_0224771ddf4025": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7cd86eae-7ee8-4c51-9a38-dd79731d4b80",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

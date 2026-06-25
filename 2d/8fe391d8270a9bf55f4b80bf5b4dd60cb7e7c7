@@ -1,0 +1,19 @@
+libs/code/deepagents_code/config_manifest.py
+  s_7117b39ef66595::t_aef7afec274cf2 843-850
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "2d8fe391d8270a9bf55f4b80bf5b4dd60cb7e7c7",
+  "prompts": {},
+  "sessions": {
+    "s_7117b39ef66595": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ab08e114-1427-41f0-acd6-676af765f3bb",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

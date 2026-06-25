@@ -1442,6 +1442,7 @@ class TestUpdateSubcommand:
         flag_style: bool = False,
         prerelease_before_command: bool = False,
         install_method: str = "uv",
+        release_requires_prereleases: bool = False,
     ) -> tuple[int, MagicMock, MagicMock]:
         """Invoke `cli_main()` with `update`; return exit code + mocks."""
         from deepagents_code._env_vars import DEBUG_UPDATE
@@ -1474,6 +1475,10 @@ class TestUpdateSubcommand:
                 "deepagents_code.update_check.is_update_available",
                 return_value=is_update_available_return,
             ) as is_update_mock,
+            patch(
+                "deepagents_code.update_check.release_requires_prereleases",
+                return_value=release_requires_prereleases,
+            ),
             patch(
                 "deepagents_code.update_check.create_update_log_path",
                 return_value=log_path,
@@ -1554,6 +1559,28 @@ class TestUpdateSubcommand:
         perform_upgrade_mock.assert_awaited_once_with(
             log_path="/tmp/deepagents-update.log",
             include_prereleases=None,
+            target_version="99.0.0",
+        )
+
+    def test_stable_update_with_prerelease_deps_keeps_upgrade_intent_none(
+        self,
+    ) -> None:
+        """Stable releases with pre-release deps let `perform_upgrade` pin the app."""
+        code, is_update_mock, perform_upgrade_mock = self._run_update(
+            editable=False,
+            is_update_available_return=(True, "99.0.0"),
+            release_requires_prereleases=True,
+        )
+
+        assert code == 0
+        is_update_mock.assert_called_once_with(
+            bypass_cache=True,
+            include_prereleases=None,
+        )
+        perform_upgrade_mock.assert_awaited_once_with(
+            log_path="/tmp/deepagents-update.log",
+            include_prereleases=None,
+            target_version="99.0.0",
         )
 
     def test_prerelease_update_includes_prereleases(self) -> None:
@@ -1572,6 +1599,7 @@ class TestUpdateSubcommand:
         perform_upgrade_mock.assert_awaited_once_with(
             log_path="/tmp/deepagents-update.log",
             include_prereleases=True,
+            target_version="99.0.0rc1",
         )
 
     def test_prerelease_update_flag_includes_prereleases(self) -> None:
@@ -1591,6 +1619,7 @@ class TestUpdateSubcommand:
         perform_upgrade_mock.assert_awaited_once_with(
             log_path="/tmp/deepagents-update.log",
             include_prereleases=True,
+            target_version="99.0.0rc1",
         )
 
     def test_prerelease_before_update_includes_prereleases(self) -> None:
@@ -1609,6 +1638,7 @@ class TestUpdateSubcommand:
         perform_upgrade_mock.assert_awaited_once_with(
             log_path="/tmp/deepagents-update.log",
             include_prereleases=True,
+            target_version="99.0.0rc1",
         )
 
     def test_prerelease_unsupported_install_refuses_before_pypi(

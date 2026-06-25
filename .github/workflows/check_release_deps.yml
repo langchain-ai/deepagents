@@ -49,15 +49,10 @@ jobs:
 
       - name: "🔍 Resolve changed release package dependencies"
         id: resolve
-        continue-on-error: true
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: uv run --no-project --with packaging python .github/scripts/check_release_deps.py
-
-      - name: "❌ Fail on unresolved release dependencies"
-        if: steps.resolve.outcome == 'failure'
-        run: exit 1
 
   manage-release-deps-comment:
     name: "manage release dependency PR comment"
@@ -127,12 +122,12 @@ jobs:
                 core.info('Created release dependency warning comment.');
               }
             } catch (err) {
-              // Fork PRs run with a read-only token, so the issues:write calls
-              // 403. Commenting is best-effort cosmetics on top of the real gate
-              // (the check-release-deps job) — degrade to a warning rather than
-              // failing this job. Surface anything else.
+              // Commenting is best-effort cosmetics on top of the real gate
+              // (the check-release-deps job). If the token cannot write comments,
+              // degrade to a warning rather than failing this job. Surface anything
+              // else.
               if (err.status === 403) {
-                core.warning(`Skipping release-deps PR comment (no write access, e.g. fork PR): ${err.message}`);
+                core.warning(`Skipping release-deps PR comment (token cannot write comments): ${err.message}`);
                 return;
               }
               throw err;

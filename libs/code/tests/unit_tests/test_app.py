@@ -11931,6 +11931,10 @@ class TestNotificationCenterIntegration:
                 return_value="",
             ),
             patch(
+                "deepagents_code.update_check.release_requires_prereleases",
+                return_value=False,
+            ),
+            patch(
                 "deepagents_code.update_check.upgrade_command",
                 return_value="uv tool upgrade deepagents-code",
             ),
@@ -11940,6 +11944,55 @@ class TestNotificationCenterIntegration:
                 await app._check_for_updates()
                 await pilot.pause()
                 assert isinstance(app.screen, UpdateAvailableScreen)
+
+    async def test_update_check_preserves_prerelease_channel_in_command(self) -> None:
+        """Prerelease users get a prerelease-capable update command in notices."""
+        from deepagents_code.notifications import UpdateAvailablePayload
+        from deepagents_code.widgets.update_available import UpdateAvailableScreen
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(True, "9.9.9rc2"),
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.should_notify_update",
+                return_value=True,
+            ),
+            patch("deepagents_code.update_check.mark_update_notified"),
+            patch(
+                "deepagents_code.update_check.release_requires_prereleases",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.upgrade_command",
+                return_value="uv tool install -U deepagents-code --prerelease allow",
+            ) as upgrade_command_mock,
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._check_for_updates()
+                await pilot.pause()
+                assert isinstance(app.screen, UpdateAvailableScreen)
+
+        upgrade_command_mock.assert_called_once_with(
+            include_prereleases=None,
+            version=None,
+        )
+        entry = app._notice_registry.get("update:available")
+        assert entry is not None
+        assert isinstance(entry.payload, UpdateAvailablePayload)
+        assert "--prerelease allow" in entry.payload.upgrade_cmd
 
     async def test_periodic_update_check_toasts_without_opening_modal(self) -> None:
         """Hourly rechecks surface updates without interrupting the session."""
@@ -11982,6 +12035,10 @@ class TestNotificationCenterIntegration:
             patch(
                 "deepagents_code.update_check.format_installed_age_suffix",
                 return_value="",
+            ),
+            patch(
+                "deepagents_code.update_check.release_requires_prereleases",
+                return_value=False,
             ),
             patch(
                 "deepagents_code.update_check.upgrade_command",

@@ -1,0 +1,20 @@
+.github/workflows/evals.yml
+  s_3c31b0a433abf6::t_0413be28840e9d 39-43
+  s_3c31b0a433abf6::t_0008b3ca9af248 180-182,184-195,201,216-217,219-223,229-238
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "02c4d18773d38b15391ad0b5ff8612dc7ec2b96f",
+  "prompts": {},
+  "sessions": {
+    "s_3c31b0a433abf6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9e7d9735-7298-4614-8ae0-43f406aa30f9",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

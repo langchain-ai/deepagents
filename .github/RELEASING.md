@@ -47,7 +47,7 @@ To release a package:
 4. Merge the release PR — this triggers the pre-release checks, PyPI publish, and GitHub release
 
 > [!IMPORTANT]
-> `deepagents-code` pins an exact `deepagents==` version in `libs/code/pyproject.toml`. Bump this pin as part of any PR that depends on new SDK functionality — don't defer it to release time. The pin should always reflect the minimum SDK version `deepagents-code` actually requires. See [Release Failed: Code SDK Pin Mismatch](#release-failed-code-sdk-pin-mismatch) for recovery if a mismatch slips through.
+> `deepagents-code` pins an exact `deepagents==` version in `libs/code/pyproject.toml`. Bump this pin as part of any PR that depends on new SDK functionality — don't defer it to release time. The pin should always reflect the minimum SDK version `deepagents-code` actually requires. See [Release Failed: Code SDK Pin Is Older Than SDK](#release-failed-code-sdk-pin-is-older-than-sdk) for recovery if a stale pin slips through.
 
 ### Version Bumping
 
@@ -327,7 +327,7 @@ Alpha releases use a **throwaway branch** + [manual release](#manual-release). T
    - Package: `<PACKAGE>`
    - Version: `<VERSION>` (e.g. `0.0.35a1`) — required input; surfaces in the run name
    - Enable `dangerous-nonmain-release` ✓
-   - For `deepagents-code`: leave `dangerous-skip-sdk-pin-check` unchecked (unless the SDK pin is intentionally behind)
+   - For `deepagents-code`: leave `dangerous-skip-sdk-pin-check` unchecked (unless the SDK pin is intentionally older than the workspace SDK)
 
 5. **Verify the GitHub release** — the workflow automatically detects PEP 440 pre-release versions (`a`, `b`, `rc`, `.dev`) and marks the GitHub release as a **pre-release**. Pre-releases are never set as the repository's "Latest" release. The release body will contain a warning banner, contributor shoutouts (no changelog or git log), and — because the branch is not `main` — a "Released from" line linking the originating branch and the release commit.
 
@@ -667,17 +667,17 @@ This is a **GitHub UI quirk** caused by force pushes/rebasing, not actual commit
 
 Other commits shown are just the base that the PR branch was rebased onto. This is normal behavior and doesn't indicate unauthorized access.
 
-### Release Failed: Code SDK Pin Mismatch
+### Release Failed: Code SDK Pin Is Older Than SDK
 
-If the release workflow fails at the "Verify package pins latest SDK version" step with:
+If the release workflow fails at the "Verify package pins SDK at or ahead of workspace version" step with:
 
 ```txt
-deepagents-code SDK pin does not match SDK version!
+deepagents-code SDK pin is older than the workspace SDK version!
 SDK version (libs/deepagents/pyproject.toml): 0.4.2
 deepagents-code SDK pin (libs/code/pyproject.toml): 0.4.1
 ```
 
-This means `deepagents-code`'s pinned `deepagents` dependency in `libs/code/pyproject.toml` doesn't match the current SDK version. This can happen when the SDK is released independently and the pin isn't updated before the `deepagents-code` release PR is merged.
+This means `deepagents-code`'s pinned `deepagents` dependency in `libs/code/pyproject.toml` is older than the current SDK version. This can happen when the SDK is released independently and the pin isn't updated before the `deepagents-code` release PR is merged. A pin ahead of the workspace SDK is allowed for intentional prerelease coordination.
 
 **To fix:**
 

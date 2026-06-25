@@ -852,44 +852,53 @@ jobs:
           name: dist
           path: ${{ env.WORKING_DIR }}/dist/
 
-      - name: Verify package pins latest SDK version
+      - name: Verify package pins SDK at or ahead of workspace version
         if: |
           needs.build.outputs.pkg-name == 'deepagents-code'
           && !inputs.dangerous-skip-sdk-pin-check
         env:
           PKG_NAME: ${{ needs.build.outputs.pkg-name }}
         run: |
-          case "$PKG_NAME" in
-            deepagents-code) PKG_PYPROJECT="libs/code/pyproject.toml" ;;
-            *)
-              echo "::error::Unexpected pkg-name for SDK pin check: $PKG_NAME"
-              exit 1
-              ;;
-          esac
+          python - <<'PY'
+          import importlib.util
+          import os
+          from pathlib import Path
 
-          SDK_VERSION=$(sed -nE 's/^version = "([^"]*)".*/\1/p' libs/deepagents/pyproject.toml | head -1)
-          if [ -z "$SDK_VERSION" ]; then
-            echo "::error file=libs/deepagents/pyproject.toml::Failed to extract SDK version. Expected a line matching: version = \"X.Y.Z\""
-            exit 1
-          fi
+          pkg_name = os.environ["PKG_NAME"]
+          root = Path.cwd()
+          script = root / ".github" / "scripts" / "check_sdk_pin.py"
+          spec = importlib.util.spec_from_file_location("check_sdk_pin", script)
+          if spec is None or spec.loader is None:
+              print(f"::error::Could not load {script}")
+              raise SystemExit(1)
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
 
-          PKG_SDK_PIN=$(sed -nE 's/.*deepagents==([^", <>=;]+).*/\1/p' "$PKG_PYPROJECT" | head -1)
-          if [ -z "$PKG_SDK_PIN" ]; then
-            echo "::error file=${PKG_PYPROJECT}::Failed to extract SDK pin. Expected a dependency matching: deepagents==<version>"
-            exit 1
-          fi
+          try:
+              sdk_version = module._sdk_version(root)
+              pkg_pin = module._code_pin(root)
+              comparison = module.compare_versions(pkg_pin, sdk_version)
+          except ValueError as e:
+              print(
+                  "::error file=.github/scripts/check_sdk_pin.py::"
+                  f"Could not determine {pkg_name} SDK pin status: {e}"
+              )
+              raise SystemExit(1) from None
 
-          if [ "$SDK_VERSION" != "$PKG_SDK_PIN" ]; then
-            echo "::error::${PKG_NAME} SDK pin does not match SDK version!"
-            echo "SDK version (libs/deepagents/pyproject.toml): $SDK_VERSION"
-            echo "${PKG_NAME} SDK pin (${PKG_PYPROJECT}): $PKG_SDK_PIN"
-            echo ""
-            echo "Update the deepagents dependency in ${PKG_PYPROJECT} to deepagents==$SDK_VERSION"
-            echo "Or re-run with 'dangerous-skip-sdk-pin-check' enabled to bypass."
-            exit 1
-          else
-            echo "${PKG_NAME} SDK pin matches SDK version: $SDK_VERSION"
-          fi
+          if comparison < 0:
+              print(f"::error::{pkg_name} SDK pin is older than the workspace SDK version!")
+              print(f"SDK version (libs/deepagents/pyproject.toml): {sdk_version}")
+              print(f"{pkg_name} SDK pin (libs/code/pyproject.toml): {pkg_pin}")
+              print("")
+              print(f"Update the deepagents dependency in libs/code/pyproject.toml to deepagents=={sdk_version}")
+              print("Or re-run with 'dangerous-skip-sdk-pin-check' enabled to bypass.")
+              raise SystemExit(1)
+
+          if comparison > 0:
+              print(f"{pkg_name} SDK pin is ahead of workspace SDK: {pkg_pin} >= {sdk_version}")
+          else:
+              print(f"{pkg_name} SDK pin matches SDK version: {sdk_version}")
+          PY
 
       - name: Import dist package
         shell: bash

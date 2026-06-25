@@ -1351,6 +1351,7 @@ class TextualSessionState:
         """
         self.auto_approve = auto_approve
         self.thread_id = thread_id or _new_thread_id()
+        self.approval_mode_key: str | None = None
 
     def reset_thread(self) -> str:
         """Reset to a new thread.
@@ -1359,6 +1360,7 @@ class TextualSessionState:
             The new thread_id.
         """
         self.thread_id = _new_thread_id()
+        self.approval_mode_key = None
         return self.thread_id
 
 
@@ -5553,7 +5555,35 @@ class DeepAgentsApp(App):
             )
         await self._mount_approval_widget(menu, result_future)
 
-    def _on_auto_approve_enabled(self) -> None:
+    async def _write_live_approval_mode(self) -> bool:
+        """Persist the current approval mode for the active thread.
+
+        Returns:
+            `True` when no write was needed or the write succeeded, otherwise
+            `False`.
+        """
+        if self._session_state is None or self._agent is None:
+            return True
+        from deepagents_code.approval_mode import awrite_approval_mode
+
+        try:
+            live_key = await awrite_approval_mode(
+                self._agent,
+                self._session_state.thread_id,
+                auto_approve=bool(self._session_state.auto_approve),
+            )
+        except Exception:
+            self._session_state.approval_mode_key = None
+            logger.warning("Failed to write live approval-mode state", exc_info=True)
+            return False
+        self._session_state.approval_mode_key = live_key
+        return True
+
+    def _warn_live_approval_mode_unavailable(self, message: str) -> None:
+        """Surface live approval-mode degradation to the user."""
+        self.notify(message, severity="warning", timeout=8, markup=False)
+
+    async def _on_auto_approve_enabled(self) -> None:
         """Handle auto-approve being enabled via the HITL approval menu.
 
         Called when the user selects "Auto-approve all" from an approval
@@ -5566,6 +5596,11 @@ class DeepAgentsApp(App):
             self._status_bar.set_auto_approve(enabled=True)
         if self._session_state:
             self._session_state.auto_approve = True
+            if not await self._write_live_approval_mode():
+                self._warn_live_approval_mode_unavailable(
+                    "Auto-approve could not sync to the running agent; "
+                    "approval prompts may continue."
+                )
 
     async def _remove_ask_user_widget(  # noqa: PLR6301  # Shared helper used by ask_user event handlers
         self,
@@ -9329,7 +9364,7 @@ class DeepAgentsApp(App):
         restore_iterm_cursor_guide()
         super().exit(result=result, return_code=return_code, message=message)
 
-    def action_toggle_auto_approve(self) -> None:
+    async def action_toggle_auto_approve(self) -> None:
         """Toggle auto-approve mode for the current session.
 
         When enabled, all tool calls (shell execution, file writes/edits,
@@ -9387,6 +9422,26 @@ class DeepAgentsApp(App):
             self._status_bar.set_auto_approve(enabled=self._auto_approve)
         if self._session_state:
             self._session_state.auto_approve = self._auto_approve
+            if not await self._write_live_approval_mode():
+                if self._auto_approve:
+                    self._warn_live_approval_mode_unavailable(
+                        "Auto-approve could not sync to the running agent; "
+                        "approval prompts may continue."
+                    )
+                elif self._agent_running:
+                    # Switching to manual mid-run, but the agent never saw it:
+                    # cancel the active run rather than let it keep auto-approving.
+                    self._session_state.approval_mode_key = None
+                    self._warn_live_approval_mode_unavailable(
+                        "Manual approval could not sync to the running agent; "
+                        "the active run was cancelled for safety."
+                    )
+                    self._force_interrupt_active_work()
+                else:
+                    self._warn_live_approval_mode_unavailable(
+                        "Manual approval could not sync to the running agent; "
+                        "start a new run before continuing."
+                    )
 
     def action_toggle_tool_output(self) -> None:
         """Toggle expand/collapse of the most recent tool output or skill body."""

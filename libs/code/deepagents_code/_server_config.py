@@ -101,6 +101,32 @@ def _read_env_optional_bool(suffix: str) -> bool | None:
     return raw.lower() == "true"
 
 
+def _resolve_enable_interpreter(
+    enable_interpreter: bool | None, sandbox_type: str | None
+) -> bool:
+    """Resolve the interpreter's tri-state caller option to a concrete boolean.
+
+    Args:
+        enable_interpreter: Explicit caller preference, or `None` to use the
+            sandbox-aware default.
+        sandbox_type: Sandbox backend identifier, or `None`/`"none"` for local
+            execution.
+
+    Returns:
+        The explicit `enable_interpreter` value when not `None`; `False` for
+            remote-sandbox defaults; otherwise the configured local default
+            (`settings.enable_interpreter`).
+    """
+    if enable_interpreter is not None:
+        return enable_interpreter
+    if sandbox_type and sandbox_type != "none":
+        return False
+
+    from deepagents_code.config import settings
+
+    return settings.enable_interpreter
+
+
 @dataclass(frozen=True)
 class ServerConfig:
     """Full configuration payload passed from the app to the server subprocess.
@@ -152,7 +178,7 @@ class ServerConfig:
     enable_skills: bool = True
     """Enable the skills subsystem (SKILL.md loading and skill tools)."""
 
-    enable_interpreter: bool = False
+    enable_interpreter: bool = True
     """Enable `CodeInterpreterMiddleware` (`js_eval` REPL) on the main agent.
 
     Local-mode only; the server graph raises if a sandbox is configured and
@@ -304,7 +330,7 @@ class ServerConfig:
             enable_ask_user=_read_env_bool("ENABLE_ASK_USER"),
             enable_memory=_read_env_bool("ENABLE_MEMORY", default=True),
             enable_skills=_read_env_bool("ENABLE_SKILLS", default=True),
-            enable_interpreter=_read_env_bool("ENABLE_INTERPRETER"),
+            enable_interpreter=_read_env_bool("ENABLE_INTERPRETER", default=True),
             interpreter_ptc=_read_env_json("INTERPRETER_PTC"),
             interpreter_ptc_acknowledge_unsafe=_read_env_bool(
                 "INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE"
@@ -341,7 +367,7 @@ class ServerConfig:
         sandbox_setup: str | None,
         enable_shell: bool,
         enable_ask_user: bool,
-        enable_interpreter: bool = False,
+        enable_interpreter: bool | None = None,
         interpreter_ptc: str | list[str] | None = None,
         interpreter_ptc_acknowledge_unsafe: bool = False,
         mcp_config_path: str | None,
@@ -373,7 +399,7 @@ class ServerConfig:
             enable_shell: Enable shell execution tools.
             enable_ask_user: Enable ask_user tool.
             enable_interpreter: Enable `CodeInterpreterMiddleware` on the main
-                agent.
+                agent. `None` uses the sandbox-aware default.
             interpreter_ptc: Override for `settings.interpreter_ptc`.
             interpreter_ptc_acknowledge_unsafe: Mirror of
                 `settings.interpreter_ptc_acknowledge_unsafe`.
@@ -387,6 +413,10 @@ class ServerConfig:
         """
         normalized_mcp = _normalize_path(mcp_config_path, project_context, "MCP config")
 
+        resolved_enable_interpreter = _resolve_enable_interpreter(
+            enable_interpreter, sandbox_type
+        )
+
         return cls(
             model=model_name,
             model_params=model_params,
@@ -397,7 +427,7 @@ class ServerConfig:
             interactive=interactive,
             enable_shell=enable_shell,
             enable_ask_user=enable_ask_user,
-            enable_interpreter=enable_interpreter,
+            enable_interpreter=resolved_enable_interpreter,
             interpreter_ptc=interpreter_ptc,
             interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
             sandbox_type=sandbox_type,

@@ -16980,7 +16980,7 @@ class TestNotifyInterpreterToolsWithoutInterpreter:
 
         notify_mock.assert_called_once()
         assert (
-            "--interpreter-tools has no effect unless --interpreter is set"
+            "--interpreter-tools has no effect when the interpreter is disabled"
             in notify_mock.call_args.args[0]
         )
         assert notify_mock.call_args.kwargs.get("severity") == "warning"

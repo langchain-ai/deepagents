@@ -50,12 +50,12 @@ logger = logging.getLogger(__name__)
 # These are the single source of truth for `[interpreter]` defaults. The
 # `Settings` dataclass references them so the default is defined once.
 
-INTERPRETER_ENABLE_DEFAULT = False
+INTERPRETER_ENABLE_DEFAULT = True
 INTERPRETER_TIMEOUT_SECONDS_DEFAULT = 5.0
 INTERPRETER_MEMORY_LIMIT_MB_DEFAULT = 64
 INTERPRETER_MAX_PTC_CALLS_DEFAULT = 256
 INTERPRETER_MAX_RESULT_CHARS_DEFAULT = 4000
-INTERPRETER_PTC_DEFAULT: str | bool | list[str] = False
+INTERPRETER_PTC_DEFAULT: str | bool | list[str] = "safe"
 INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT = False
 
 LANGSMITH_PROJECT_DEFAULT = "deepagents-code"
@@ -949,7 +949,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.BOOL,
         default=INTERPRETER_ENABLE_DEFAULT,
         toml_keys=("interpreter", "enable_interpreter"),
-        cli_flag="--enable-interpreter",
+        cli_flag="--interpreter",
         settings_field="enable_interpreter",
     ),
     ConfigOption(

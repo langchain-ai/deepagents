@@ -2204,22 +2204,135 @@ class TestParseInterpreterToolsFlag:
         assert exc_info.value.code == 2
 
 
+class TestInterpreterFlagParsing:
+    """`--interpreter` is a tri-state `BooleanOptionalAction` (default `None`)."""
+
+    def test_default_is_none(self, mock_argv: MockArgvType) -> None:
+        with mock_argv("-n", "task"):
+            args = parse_args()
+        assert args.interpreter is None
+
+    def test_explicit_flag_is_true(self, mock_argv: MockArgvType) -> None:
+        with mock_argv("-n", "task", "--interpreter"):
+            args = parse_args()
+        assert args.interpreter is True
+
+    def test_no_flag_is_false(self, mock_argv: MockArgvType) -> None:
+        with mock_argv("-n", "task", "--no-interpreter"):
+            args = parse_args()
+        assert args.interpreter is False
+
+
+class TestResolveInterpreterEnabled:
+    """Tests for `_resolve_interpreter_enabled`."""
+
+    def test_local_mode_uses_config_default(self, mock_argv: MockArgvType) -> None:
+        from deepagents_code.config import settings
+        from deepagents_code.main import _resolve_interpreter_enabled
+
+        with mock_argv("-n", "task"):
+            args = parse_args()
+        with patch.object(settings, "enable_interpreter", False):
+            assert _resolve_interpreter_enabled(args) is False
+        with patch.object(settings, "enable_interpreter", True):
+            assert _resolve_interpreter_enabled(args) is True
+
+    def test_sandbox_defaults_disabled(self, mock_argv: MockArgvType) -> None:
+        from deepagents_code.config import settings
+        from deepagents_code.main import _resolve_interpreter_enabled
+
+        with mock_argv("-n", "task", "--sandbox", "daytona"):
+            args = parse_args()
+        with patch.object(settings, "enable_interpreter", True):
+            assert _resolve_interpreter_enabled(args) is False
+
+    def test_explicit_flag_overrides_sandbox_default(
+        self, mock_argv: MockArgvType
+    ) -> None:
+        from deepagents_code.main import _resolve_interpreter_enabled
+
+        with mock_argv("-n", "task", "--sandbox", "daytona", "--interpreter"):
+            args = parse_args()
+        assert _resolve_interpreter_enabled(args) is True
+
+    def test_explicit_no_flag_overrides_local_default(
+        self, mock_argv: MockArgvType
+    ) -> None:
+        from deepagents_code.config import settings
+        from deepagents_code.main import _resolve_interpreter_enabled
+
+        with mock_argv("-n", "task", "--no-interpreter"):
+            args = parse_args()
+        with patch.object(settings, "enable_interpreter", True):
+            assert _resolve_interpreter_enabled(args) is False
+
+
+class TestRunTextualCliAsyncInterpreterDefault:
+    """Tests for TUI helper interpreter tri-state forwarding."""
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            (None, None),
+            (True, True),
+            (False, False),
+        ],
+    )
+    async def test_forwards_interpreter_tri_state(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        value: bool | None,
+        expected: bool | None,
+    ) -> None:
+        from deepagents_code.app import AppResult
+        from deepagents_code.main import run_textual_cli_async
+
+        run_textual_app = AsyncMock(
+            return_value=AppResult(return_code=0, thread_id="thread")
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config._get_default_model_spec",
+            lambda: "test-model",
+        )
+        monkeypatch.setattr("deepagents_code.config.detect_provider", lambda _: "")
+        monkeypatch.setattr(
+            "deepagents_code.onboarding.should_run_onboarding",
+            lambda: False,
+        )
+        monkeypatch.setattr("deepagents_code.app.run_textual_app", run_textual_app)
+
+        if value is not None:
+            await run_textual_cli_async(
+                assistant_id="agent",
+                sandbox_type="daytona",
+                enable_interpreter=value,
+            )
+        else:
+            await run_textual_cli_async(
+                assistant_id="agent",
+                sandbox_type="daytona",
+            )
+
+        server_kwargs = run_textual_app.call_args.kwargs["server_kwargs"]
+        assert server_kwargs["enable_interpreter"] is expected
+
+
 class TestWarnInterpreterToolsWithoutInterpreter:
     """Tests for `_warn_if_interpreter_tools_without_interpreter`."""
 
-    def test_warns_without_interpreter(
+    def test_warns_when_interpreter_disabled(
         self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """--interpreter-tools without --interpreter warns and does not exit."""
+        """--interpreter-tools with --no-interpreter warns and does not exit."""
         from deepagents_code.main import (
             _warn_if_interpreter_tools_without_interpreter,
         )
 
-        with mock_argv("-n", "task", "--interpreter-tools", "safe"):
+        with mock_argv("-n", "task", "--no-interpreter", "--interpreter-tools", "safe"):
             args = parse_args()
-        _warn_if_interpreter_tools_without_interpreter(args)
+        _warn_if_interpreter_tools_without_interpreter(args, enable_interpreter=False)
         assert (
-            "--interpreter-tools has no effect unless --interpreter is set"
+            "--interpreter-tools has no effect when the interpreter is disabled"
             in capsys.readouterr().err
         )
 
@@ -2233,7 +2346,7 @@ class TestWarnInterpreterToolsWithoutInterpreter:
 
         with mock_argv("-n", "task", "--interpreter", "--interpreter-tools", "safe"):
             args = parse_args()
-        _warn_if_interpreter_tools_without_interpreter(args)
+        _warn_if_interpreter_tools_without_interpreter(args, enable_interpreter=True)
         assert capsys.readouterr().err == ""
 
     def test_no_warning_without_flag(
@@ -2246,13 +2359,13 @@ class TestWarnInterpreterToolsWithoutInterpreter:
 
         with mock_argv("-n", "task"):
             args = parse_args()
-        _warn_if_interpreter_tools_without_interpreter(args)
+        _warn_if_interpreter_tools_without_interpreter(args, enable_interpreter=True)
         assert capsys.readouterr().err == ""
 
     def test_cli_main_emits_warning_on_non_interactive_path(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """End-to-end: `-n --interpreter-tools` without `--interpreter` warns.
+        """End-to-end: `-n --no-interpreter --interpreter-tools` warns.
 
         Guards the wiring (not just the helper): a dropped or misplaced call
         site, or an earlier `sys.exit` swallowing the warning, fails here.
@@ -2263,7 +2376,16 @@ class TestWarnInterpreterToolsWithoutInterpreter:
         mock_stdin.isatty.return_value = True
         with (
             patch.object(
-                sys, "argv", ["deepagents", "-n", "task", "--interpreter-tools", "safe"]
+                sys,
+                "argv",
+                [
+                    "deepagents",
+                    "-n",
+                    "task",
+                    "--no-interpreter",
+                    "--interpreter-tools",
+                    "safe",
+                ],
             ),
             patch.object(sys, "stdin", mock_stdin),
             patch("deepagents_code.main.check_optional_tools", return_value=[]),
@@ -2282,6 +2404,6 @@ class TestWarnInterpreterToolsWithoutInterpreter:
 
         assert exc_info.value.code == 0
         assert (
-            "--interpreter-tools has no effect unless --interpreter is set"
+            "--interpreter-tools has no effect when the interpreter is disabled"
             in capsys.readouterr().err
         )

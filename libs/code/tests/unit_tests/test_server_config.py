@@ -17,6 +17,7 @@ from deepagents_code._server_config import (
     _read_env_optional_bool,
     _read_env_str,
 )
+from deepagents_code.config import settings
 
 # ------------------------------------------------------------------
 # _read_env_bool
@@ -184,6 +185,71 @@ class TestServerConfigPostInit:
     def test_sandbox_type_none_value_preserved(self) -> None:
         config = ServerConfig(sandbox_type=None)
         assert config.sandbox_type is None
+
+
+class TestServerConfigInterpreterDefault:
+    """Tests for sandbox-aware interpreter default resolution."""
+
+    @staticmethod
+    def _build(*, sandbox_type: str, enable_interpreter: bool | None) -> ServerConfig:
+        """Build a `ServerConfig` exercising only the interpreter resolution."""
+        return ServerConfig.from_cli_args(
+            project_context=None,
+            model_name=None,
+            model_params=None,
+            assistant_id="agent",
+            auto_approve=False,
+            sandbox_type=sandbox_type,
+            sandbox_id=None,
+            sandbox_snapshot_name=None,
+            sandbox_setup=None,
+            enable_shell=True,
+            enable_ask_user=False,
+            enable_interpreter=enable_interpreter,
+            mcp_config_path=None,
+            no_mcp=False,
+            trust_project_mcp=None,
+            interactive=True,
+        )
+
+    def test_local_none_false_uses_settings_default(self) -> None:
+        with patch.object(settings, "enable_interpreter", False):
+            config = self._build(sandbox_type="none", enable_interpreter=None)
+
+        assert config.enable_interpreter is False
+
+    def test_local_none_true_uses_settings_default(self) -> None:
+        with patch.object(settings, "enable_interpreter", True):
+            config = self._build(sandbox_type="none", enable_interpreter=None)
+
+        assert config.enable_interpreter is True
+
+    def test_local_explicit_false_is_preserved(self) -> None:
+        # An explicit `False` must win over a `True` config default rather than
+        # falling through to the settings lookup.
+        with patch.object(settings, "enable_interpreter", True):
+            config = self._build(sandbox_type="none", enable_interpreter=False)
+
+        assert config.enable_interpreter is False
+
+    def test_empty_sandbox_is_treated_as_local(self) -> None:
+        # An empty-string sandbox is falsy and must not be mistaken for a remote
+        # backend, which would silently disable the interpreter.
+        with patch.object(settings, "enable_interpreter", True):
+            config = self._build(sandbox_type="", enable_interpreter=None)
+
+        assert config.enable_interpreter is True
+
+    def test_remote_none_disables_interpreter(self) -> None:
+        with patch.object(settings, "enable_interpreter", True):
+            config = self._build(sandbox_type="daytona", enable_interpreter=None)
+
+        assert config.enable_interpreter is False
+
+    def test_remote_explicit_true_is_preserved_for_validation(self) -> None:
+        config = self._build(sandbox_type="daytona", enable_interpreter=True)
+
+        assert config.enable_interpreter is True
 
 
 # ------------------------------------------------------------------

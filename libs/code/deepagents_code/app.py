@@ -2491,7 +2491,7 @@ class DeepAgentsApp(App):
             logger.exception("Failed to surface orphaned-tracing disabled notice")
 
     def _notify_interpreter_tools_without_interpreter(self) -> None:
-        """Toast when `--interpreter-tools` was set without `--interpreter`.
+        """Toast when `--interpreter-tools` was set while the interpreter is off.
 
         The PTC allowlist applies only when the interpreter middleware is
         enabled, so the flag is a no-op on its own. This is the TUI counterpart
@@ -2509,7 +2509,7 @@ class DeepAgentsApp(App):
         if server_kwargs.get("enable_interpreter"):
             return
         self.notify(
-            "--interpreter-tools has no effect unless --interpreter is set.",
+            "--interpreter-tools has no effect when the interpreter is disabled.",
             severity="warning",
             markup=False,
         )
@@ -4366,7 +4366,7 @@ class DeepAgentsApp(App):
     async def _handle_install_command(self, command: str) -> None:
         """Handle the `/install <extra>` slash command.
 
-        Adds an optional extra (e.g. `quickjs`, `daytona`) to the installed
+        Adds an optional extra (e.g. `daytona`, `fireworks`) to the installed
         dcode tool by re-running
         `uv tool install --reinstall -U 'deepagents-code[<extra>]'`.
         Refuses unknown extras unless the user passes a `--force` token.
@@ -4389,7 +4389,7 @@ class DeepAgentsApp(App):
                 AppMessage(
                     "Usage: /install <extra> [--force]\n"
                     "       /install <package> --package [--force]\n"
-                    "Example: /install quickjs\n\n"
+                    "Example: /install daytona\n\n"
                     f"{format_known_extras()}",
                 ),
             )
@@ -4422,7 +4422,7 @@ class DeepAgentsApp(App):
         a one-keypress restart for restart-capable extras.
 
         Args:
-            extra: The extra name to install (e.g. `"baseten"`, `"quickjs"`).
+            extra: The extra name to install (e.g. `"baseten"`, `"daytona"`).
             force: Skip the "unknown extra" guard for valid-but-unlisted names.
             auto_restart: Restart the app-owned server immediately after a
                 restart-capable install. Used only when the user selected a model
@@ -4586,10 +4586,8 @@ class DeepAgentsApp(App):
 
         # Model-provider and sandbox extras are imported by the langgraph
         # server subprocess; `/restart` respawns that subprocess and picks
-        # them up without exiting the TUI. `quickjs` (and other
-        # STANDALONE_EXTRAS) are wired into the parent process at startup
-        # (`verify_interpreter_deps` gates `--interpreter`), so a full
-        # relaunch is required.
+        # them up without exiting the TUI. STANDALONE_EXTRAS are wired into
+        # the parent process at startup, so a full relaunch is required.
         restart_capable = extra in MODEL_PROVIDER_EXTRAS or extra in SANDBOX_EXTRAS
         if restart_capable and auto_restart:
             if self._restart_after_install_is_unneeded():
@@ -4621,17 +4619,7 @@ class DeepAgentsApp(App):
             return False
 
         if not restart_capable:
-            if extra == "quickjs":
-                # `quickjs` only does anything behind `--interpreter`, a
-                # launch-only flag with a startup-time dependency gate, so a
-                # `/restart` (which reuses the original launch settings) can't
-                # enable it — a full relaunch with the flag is required.
-                next_step = (
-                    "Exit and relaunch dcode with `--interpreter` to use it — "
-                    "see `dcode --help`."
-                )
-            else:
-                next_step = "Exit and relaunch dcode to use the new dependencies."
+            next_step = "Exit and relaunch dcode to use the new dependencies."
             await self._mount_message(
                 AppMessage(f"Installed extra '{extra}'. {next_step}"),
             )

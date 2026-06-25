@@ -359,6 +359,85 @@ jobs:
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       coverage-python-version: "3.11"
 
+  # Catch SDK -> quickjs prompt-snapshot drift: when the deepagents SDK
+  # changes but the quickjs partner is untouched, the full test-quickjs suite
+  # does NOT run (it gates on the quickjs filter), so nothing would validate
+  # quickjs's vendored system-prompt snapshots against the new SDK. This job
+  # fills that gap by re-running just the prompt smoke tests against the
+  # editable local SDK (resolved via [tool.uv.sources] in quickjs).
+  #
+  # Skipped when:
+  #   - deepagents != 'true': the SDK is unchanged, so there is no new prompt
+  #     wording for the snapshots to drift against.
+  #   - quickjs == 'true': the full test-quickjs suite already runs these
+  #     snapshots via `make test`, so this would be redundant.
+  #   - push: test-quickjs runs on every push regardless of the filter, so
+  #     the full suite covers the snapshots there too.
+  test-quickjs-sdk-smoke:
+    name: "🧪 Test quickjs SDK smoke"
+    needs: changes
+    if: >-
+      github.event_name != 'push' &&
+      needs.changes.outputs.deepagents == 'true' &&
+      needs.changes.outputs.quickjs != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    # Match the canonical test path (_test.yml) and the quickjs Makefile:
+    # freeze against uv.lock so `uv sync` cannot rewrite the lockfile (which
+    # would dirty the tree and trip the clean-working-directory check below).
+    # The editable SDK path dep still reflects the checkout regardless.
+    env:
+      UV_FROZEN: "true"
+    defaults:
+      run:
+        working-directory: "libs/partners/quickjs"
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: "🐍 Set up Python 3.11 + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.11"
+          cache-suffix: test-quickjs-sdk-smoke
+          working-directory: "libs/partners/quickjs"
+
+      - name: "📦 Install Test Dependencies"
+        shell: bash
+        run: uv sync --group test
+
+      # Fail loudly if the smoke test file is moved or renamed. Because any
+      # change under libs/partners/quickjs/** flips the quickjs filter to
+      # 'true' (skipping this job), such a rename lands on a PR that never
+      # runs this job — so without this guard a stale path would silently
+      # collect zero tests on some later SDK-only PR instead of failing here.
+      - name: "🔍 Verify Smoke Test Path"
+        shell: bash
+        run: |
+          set -eu
+          test -f tests/unit_tests/smoke_tests/test_system_prompt.py || {
+            echo "::error::quickjs smoke test file moved or renamed; update its path in ci.yml"
+            exit 1
+          }
+
+      - name: "🧪 Run quickjs prompt smoke tests"
+        shell: bash
+        run: >-
+          uv run --group test pytest
+          --disable-socket
+          --allow-unix-socket
+          tests/unit_tests/smoke_tests/test_system_prompt.py
+
+      - name: "🧹 Verify Clean Working Directory"
+        shell: bash
+        run: |
+          set -eu
+          STATUS="$(git status)"
+          echo "$STATUS"
+          echo "$STATUS" | grep 'nothing to commit, working tree clean'
+
   # Run CodSpeed benchmarks on SDK changes
   benchmark-deepagents:
     name: "⏱️ Benchmark deepagents"
@@ -435,6 +514,7 @@ jobs:
       - test-runloop
       - test-vercel
       - test-quickjs
+      - test-quickjs-sdk-smoke
       - check-release-options
     if: always()
     runs-on: ubuntu-latest

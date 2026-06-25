@@ -158,6 +158,55 @@ async def test_ensure_ripgrep_short_circuits_when_system_installer(
         assert await managed_tools.ensure_ripgrep() is None
 
 
+async def test_ensure_ripgrep_system_installer_ignores_current_managed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    bin_dir = tmp_path / "managed-bin"
+    bin_dir.mkdir()
+    managed = bin_dir / "rg"
+    managed.write_bytes(b"current-managed")
+    monkeypatch.setattr(managed_tools, "BIN_DIR", bin_dir)
+    monkeypatch.setattr(managed_tools, "managed_rg_path", lambda: managed)
+    monkeypatch.delenv(OFFLINE, raising=False)
+    monkeypatch.setenv(RIPGREP_INSTALLER, "system")
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    with (
+        mock.patch("shutil.which", return_value=None),
+        mock.patch.object(
+            subprocess,
+            "run",
+            side_effect=AssertionError("managed rg must not be version-probed"),
+        ),
+    ):
+        assert await managed_tools.ensure_ripgrep() is None
+
+
+async def test_ensure_ripgrep_system_installer_uses_non_managed_path_entry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    bin_dir = tmp_path / "managed-bin"
+    system_bin = tmp_path / "system-bin"
+    bin_dir.mkdir()
+    system_bin.mkdir()
+    managed = bin_dir / "rg"
+    system_rg = system_bin / "rg"
+    managed.write_bytes(b"current-managed")
+    monkeypatch.setattr(managed_tools, "BIN_DIR", bin_dir)
+    monkeypatch.setattr(managed_tools, "managed_rg_path", lambda: managed)
+    monkeypatch.delenv(OFFLINE, raising=False)
+    monkeypatch.setenv(RIPGREP_INSTALLER, "system")
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{system_bin}")
+
+    def _which(cmd: str, path: str | None = None) -> str | None:
+        assert cmd == "rg"
+        assert path == str(system_bin)
+        return str(system_rg)
+
+    with mock.patch("shutil.which", side_effect=_which):
+        assert await managed_tools.ensure_ripgrep() == system_rg
+
+
 async def test_ensure_ripgrep_short_circuits_on_android(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

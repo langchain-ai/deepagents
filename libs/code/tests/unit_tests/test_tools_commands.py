@@ -45,12 +45,13 @@ class TestToolsInstall:
         args = argparse.Namespace(tools_command="install", output_format="text")
         with (
             patch.object(managed_tools, "ensure_ripgrep", return_value=system_rg),
-            patch.object(managed_tools, "prepend_managed_bin_to_path"),
+            patch.object(managed_tools, "prepend_managed_bin_to_path") as prepend,
             patch.object(managed_tools, "managed_rg_path", return_value=managed),
         ):
             code, output = _run_text(args)
         assert code == 0
         assert "already on PATH" in output
+        prepend.assert_not_called()
 
     def test_install_json_success(self, tmp_path: Path, capsys) -> None:
         installed = tmp_path / "rg"

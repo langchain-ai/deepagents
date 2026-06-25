@@ -90,8 +90,8 @@ def _run_tools_install(args: argparse.Namespace) -> int:
         )
 
     if installed is not None:
-        prepend_managed_bin_to_path()
         if installed == managed_target:
+            prepend_managed_bin_to_path()
             message = f"Managed ripgrep {RIPGREP_VERSION} ready at {installed}"
         else:
             message = f"Using ripgrep already on PATH at {installed}"

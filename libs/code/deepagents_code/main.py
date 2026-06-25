@@ -701,6 +701,7 @@ def _auto_install_ripgrep_cli(
     from deepagents_code.managed_tools import (
         ChecksumMismatchError,
         ensure_ripgrep,
+        managed_rg_path,
         prepend_managed_bin_to_path,
     )
 
@@ -727,7 +728,8 @@ def _auto_install_ripgrep_cli(
     if installed is None:
         return missing_tools
 
-    prepend_managed_bin_to_path()
+    if installed == managed_rg_path():
+        prepend_managed_bin_to_path()
     return [tool for tool in missing_tools if tool != "ripgrep"]
 
 

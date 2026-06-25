@@ -2809,6 +2809,7 @@ class DeepAgentsApp(App):
                 from deepagents_code.managed_tools import (
                     ChecksumMismatchError,
                     ensure_ripgrep,
+                    managed_rg_path,
                     prepend_managed_bin_to_path,
                 )
             except ImportError:
@@ -2855,7 +2856,8 @@ class DeepAgentsApp(App):
                 )
 
             if installed is not None:
-                prepend_managed_bin_to_path()
+                if installed == managed_rg_path():
+                    prepend_managed_bin_to_path()
                 self._ripgrep_ensured.set()
                 return True
 

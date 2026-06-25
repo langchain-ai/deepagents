@@ -16721,6 +16721,10 @@ class TestEnsureManagedRipgrep:
             ),
             patch("deepagents_code.managed_tools.ensure_ripgrep", ensure),
             patch(
+                "deepagents_code.managed_tools.managed_rg_path",
+                return_value=Path("/managed/rg"),
+            ),
+            patch(
                 "deepagents_code.managed_tools.prepend_managed_bin_to_path",
                 prepend,
             ),
@@ -16750,6 +16754,10 @@ class TestEnsureManagedRipgrep:
                 return_value=True,
             ),
             patch("deepagents_code.managed_tools.ensure_ripgrep", ensure),
+            patch(
+                "deepagents_code.managed_tools.managed_rg_path",
+                return_value=Path("/managed/rg"),
+            ),
             patch(
                 "deepagents_code.managed_tools.prepend_managed_bin_to_path",
                 prepend,

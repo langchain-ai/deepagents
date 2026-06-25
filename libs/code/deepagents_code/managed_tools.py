@@ -160,6 +160,21 @@ def prepend_managed_bin_to_path() -> None:
     os.environ["PATH"] = os.pathsep.join(parts)
 
 
+def _path_without_managed_bin() -> str | None:
+    """Return `PATH` with `BIN_DIR` removed."""
+    current = os.environ.get("PATH")
+    if not current:
+        return None
+
+    managed_dir = BIN_DIR.resolve()
+    parts = [
+        part
+        for part in current.split(os.pathsep)
+        if not part or Path(part).resolve() != managed_dir
+    ]
+    return os.pathsep.join(parts)
+
+
 def _managed_binary_is_current(binary: Path) -> bool:
     """Return whether the on-disk managed `rg` matches `RIPGREP_VERSION`.
 
@@ -403,17 +418,19 @@ async def ensure_ripgrep() -> Path | None:
 
     Resolution order:
 
-    1. If a managed `rg` exists *and* matches `RIPGREP_VERSION`, return it.
-    2. Otherwise, if a system `rg` is on `PATH` and no managed binary
+    1. If the `system` installer is selected, return a non-managed `rg`
+        found on `PATH`, or `None` when only the managed binary is present.
+    2. If a managed `rg` exists *and* matches `RIPGREP_VERSION`, return it.
+    3. Otherwise, if a system `rg` is on `PATH` and no managed binary
         exists, return its resolved path. This is gated on the *absence*
         of a managed binary: once a managed `rg` exists, the pinned
         version always wins, so a stale managed binary is re-fetched
         rather than deferring to a system `rg` and the resolved version
         stays deterministic.
-    3. If offline, the `system` installer is selected, on an unsupported
-        platform, or no asset matches the platform/arch, return `None` so
-        callers fall back to the existing notification + slow path.
-    4. Otherwise download → SHA-256 verify → extract → install →
+    4. If offline, on an unsupported platform, or no asset matches the
+        platform/arch, return `None` so callers fall back to the existing
+        notification + slow path.
+    5. Otherwise download → SHA-256 verify → extract → install →
         prepend `BIN_DIR` to `PATH` → return the installed path. On a
         checksum mismatch, raises `ChecksumMismatchError` so callers can
         surface a loud notice; other failures log and return `None`.
@@ -436,6 +453,17 @@ async def ensure_ripgrep() -> Path | None:
 
     managed = managed_rg_path()
     managed_exists = managed.exists()
+    if prefers_system_ripgrep():
+        system_rg = shutil.which("rg", path=_path_without_managed_bin())
+        if system_rg is not None:
+            return Path(system_rg)
+        logger.debug(
+            "Skipping managed ripgrep download: %s=%s",
+            RIPGREP_INSTALLER,
+            INSTALLER_SYSTEM,
+        )
+        return None
+
     if managed_exists and _managed_binary_is_current(managed):
         return managed
 
@@ -446,13 +474,6 @@ async def ensure_ripgrep() -> Path | None:
 
     if is_offline():
         logger.debug("Skipping ripgrep install: %s is set", OFFLINE)
-        return None
-    if prefers_system_ripgrep():
-        logger.debug(
-            "Skipping managed ripgrep download: %s=%s",
-            RIPGREP_INSTALLER,
-            INSTALLER_SYSTEM,
-        )
         return None
     if sys.platform == "android":
         logger.debug("Skipping ripgrep install: unsupported platform 'android'")

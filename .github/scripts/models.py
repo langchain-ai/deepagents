@@ -840,6 +840,45 @@ contract.
 _ARTIFACT_KEY_RE = re.compile(r"[^a-zA-Z0-9._-]+")
 """Characters disallowed in GHA artifact names (model specs use `:` and `/`)."""
 
+OOLONG_ARMS = ("plain", "code_interpreter")
+"""Allowlisted OOLONG eval arms.
+
+Crossing the model matrix with these arms lets the OOLONG long-context
+aggregation eval run both configurations (subagents vs. code interpreter) as
+concurrent jobs, each its own LangSmith experiment. Values are validated
+against this allowlist before they reach `OOLONG_ARM` env / `--sub-model`
+plumbing in `_eval.yml`, so an arbitrary dispatch input can never flow
+unchecked into a shell step.
+"""
+
+
+def _resolve_oolong_arms(value: str) -> list[str] | None:
+    """Parse a comma-separated OOLONG arm selection into a validated list.
+
+    Args:
+        value: Raw `OOLONG_ARMS` env value (e.g. `"plain,code_interpreter"`).
+            Empty/whitespace means "no arm crossing".
+
+    Returns:
+        An order-preserving, deduped list of allowlisted arms, or ``None`` when
+        no arms are requested (the matrix is then built exactly as before —
+        no `arm` field, unchanged `artifact_key`).
+
+    Raises:
+        ValueError: If any requested arm is not in `OOLONG_ARMS`.
+    """
+    arms = [a.strip() for a in value.split(",") if a.strip()]
+    if not arms:
+        return None
+    invalid = [a for a in arms if a not in OOLONG_ARMS]
+    if invalid:
+        msg = (
+            f"Invalid OOLONG arm(s): {', '.join(repr(a) for a in invalid)}. "
+            f"Allowed: {', '.join(OOLONG_ARMS)}"
+        )
+        raise ValueError(msg)
+    return list(dict.fromkeys(arms))
+
 
 def _filter_by_tag(prefix: str, tag: str | None) -> list[str]:
     """Return model specs matching a tag filter, in REGISTRY order."""
@@ -895,16 +934,30 @@ def _artifact_key(model_spec: str) -> str:
     return _ARTIFACT_KEY_RE.sub("-", model_spec).strip("-")
 
 
-def _matrix_entry(model_spec: str) -> dict[str, str]:
-    """Build one GitHub Actions matrix entry for a model."""
-    return {
+def _matrix_entry(model_spec: str, arm: str | None = None) -> dict[str, str]:
+    """Build one GitHub Actions matrix entry for a model.
+
+    Args:
+        model_spec: The `provider:model` spec.
+        arm: Optional OOLONG arm. When given, it is appended to `artifact_key`
+            (keeping per-arm cache/artifact scopes distinct) and surfaced as an
+            `arm` field the per-provider job forwards to `_eval.yml`. When
+            ``None`` the entry is identical to the pre-OOLONG shape.
+    """
+    entry = {
         "model": model_spec,
         "provider": _provider(model_spec),
         "artifact_key": _artifact_key(model_spec),
     }
+    if arm is not None:
+        entry["artifact_key"] = f"{entry['artifact_key']}-{arm}"
+        entry["arm"] = arm
+    return entry
 
 
-def _matrix_outputs(workflow: str, models: list[str]) -> dict[str, object]:
+def _matrix_outputs(
+    workflow: str, models: list[str], arms: list[str] | None = None
+) -> dict[str, object]:
     """Build matrix outputs consumed by GitHub Actions workflows.
 
     The evals workflow needs one matrix per provider so each provider can use
@@ -917,11 +970,19 @@ def _matrix_outputs(workflow: str, models: list[str]) -> dict[str, object]:
     Args:
         workflow: "eval" or "harbor".
         models: Ordered model specs selected for the workflow.
+        arms: Optional OOLONG arms to cross with every model (e.g.
+            ``["plain", "code_interpreter"]``). ``None`` (the default) builds
+            the matrix exactly as before — one entry per model, no `arm`
+            field. When given, every model is crossed with every arm so the
+            arms run as concurrent jobs.
 
     Returns:
         Mapping of GitHub output names to JSON-serializable values.
     """
-    entries = [_matrix_entry(model) for model in models]
+    if arms:
+        entries = [_matrix_entry(model, arm) for model in models for arm in arms]
+    else:
+        entries = [_matrix_entry(model) for model in models]
     # Tripwire: `_resolve_models` dedupes raw specs, and our `provider:model`
     # convention plus the registry's canonical specs make it effectively
     # impossible for two distinct specs to collapse to the same slug. If this
@@ -1005,7 +1066,10 @@ def main() -> None:
     env_var, _ = _WORKFLOW_CONFIG[workflow]
     selection = os.environ.get(env_var, "all")
     models = _resolve_models(workflow, selection)
-    outputs = _matrix_outputs(workflow, models)
+    # OOLONG arm crossing is eval-only and opt-in: with `OOLONG_ARMS` unset the
+    # matrix is byte-identical to the pre-OOLONG shape.
+    arms = _resolve_oolong_arms(os.environ.get("OOLONG_ARMS", "")) if workflow == "eval" else None
+    outputs = _matrix_outputs(workflow, models, arms)
 
     github_output = os.environ.get("GITHUB_OUTPUT")
     if github_output:

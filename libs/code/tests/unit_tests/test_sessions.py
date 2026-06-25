@@ -449,6 +449,13 @@ class TestFormatRelativeTimestamp:
         result = sessions.format_relative_timestamp(ts)
         assert result.endswith("s ago")
 
+    def test_boundary_360_to_364_days_shows_months(self) -> None:
+        """360-364 days old should show months, never the bogus '0y ago'."""
+        for days in (360, 362, 364):
+            ts = (datetime.now(tz=UTC) - timedelta(days=days, hours=1)).isoformat()
+            result = sessions.format_relative_timestamp(ts)
+            assert result == "12mo ago"
+
 
 class TestFormatPath:
     """Tests for format_path helper."""

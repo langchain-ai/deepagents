@@ -3461,11 +3461,18 @@ class DeepAgentsApp(App):
                 )
             else:
                 from deepagents_code.extras_info import ExtrasIntrospectionError
-                from deepagents_code.update_check import install_package_command
+                from deepagents_code.update_check import (
+                    ToolRequirementIntrospectionError,
+                    install_package_command,
+                )
 
                 try:
                     install_cmd = install_package_command(missing.package)
-                except (ValueError, ExtrasIntrospectionError) as exc:
+                except (
+                    ValueError,
+                    ExtrasIntrospectionError,
+                    ToolRequirementIntrospectionError,
+                ) as exc:
                     logger.debug(
                         "install_package_command failed; falling back to "
                         "manual hint: %s",
@@ -4313,7 +4320,8 @@ class DeepAgentsApp(App):
         """Handle the `/install <extra>` slash command.
 
         Adds an optional extra (e.g. `quickjs`, `daytona`) to the installed
-        dcode tool by re-running `uv tool install -U 'deepagents-code[<extra>]'`.
+        dcode tool by re-running
+        `uv tool install --reinstall -U 'deepagents-code[<extra>]'`.
         Refuses unknown extras unless the user passes a `--force` token.
 
         Args:
@@ -6975,7 +6983,8 @@ class DeepAgentsApp(App):
                 AppMessage(
                     "The `langsmith` package is not installed. "
                     "Install it with "
-                    "`uv tool install -U deepagents-code --with langsmith` "
+                    "`uv tool install --reinstall -U deepagents-code "
+                    "--with langsmith` "
                     "to enable `/trace`.",
                 ),
             )
@@ -11799,7 +11808,7 @@ class DeepAgentsApp(App):
     def _ensure_restart_prompt_loaded() -> None:
         """Load the restart-prompt modal before any in-place self-upgrade.
 
-        `/install` runs `uv tool install -U 'deepagents-code[...]'`, which
+        `/install` runs `uv tool install --reinstall -U 'deepagents-code[...]'`, which
         rewrites deepagents-code's own on-disk package tree while this process
         is running. Modules already in `sys.modules` keep working from memory,
         but a *first* import after the rewrite reads the mutated (or
@@ -11836,11 +11845,11 @@ class DeepAgentsApp(App):
         redundant hint:
 
         - Owned + idle: show the prompt (its button is the call to action). If
-          the prompt can't be shown, fall back to a `/restart` hint.
+            the prompt can't be shown, fall back to a `/restart` hint.
         - Owned + busy/connecting: a restart cancels in-flight work, so point
-          at `/restart` for once the current task finishes.
+            at `/restart` for once the current task finishes.
         - No owned subprocess (remote server): `/restart` can't respawn it, so a
-          full relaunch is the only way to load the package.
+            full relaunch is the only way to load the package.
 
         Args:
             label: Installed extra/package name, surfaced in the prompt title.
@@ -11866,8 +11875,9 @@ class DeepAgentsApp(App):
         try:
             from deepagents_code.widgets.restart_prompt import RestartPromptScreen
         except ModuleNotFoundError:
-            # `/install` runs `uv tool install -U 'deepagents-code[...]'`, which
-            # can rewrite deepagents-code's own on-disk package tree mid-session
+            # `/install` runs `uv tool install --reinstall -U
+            # 'deepagents-code[...]'`, which can rewrite deepagents-code's own
+            # on-disk package tree mid-session
             # (see `_ensure_restart_prompt_loaded`). A first import of the modal
             # here may then fail with `ModuleNotFoundError`. Degrade to the
             # manual `/restart` hint instead of crashing the TUI. The catch is

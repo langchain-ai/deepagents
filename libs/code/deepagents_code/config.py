@@ -3426,11 +3426,18 @@ def _create_model_via_init(
                 )
             else:
                 from deepagents_code.extras_info import ExtrasIntrospectionError
-                from deepagents_code.update_check import install_package_command
+                from deepagents_code.update_check import (
+                    ToolRequirementIntrospectionError,
+                    install_package_command,
+                )
 
                 try:
                     install_cmd = install_package_command(package)
-                except (ValueError, ExtrasIntrospectionError) as exc:
+                except (
+                    ValueError,
+                    ExtrasIntrospectionError,
+                    ToolRequirementIntrospectionError,
+                ) as exc:
                     logger.debug(
                         "install_package_command failed; falling back to "
                         "manual hint: %s",

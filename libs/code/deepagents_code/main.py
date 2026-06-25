@@ -2372,7 +2372,7 @@ def cli_main() -> None:
             except ImportError as exc:
                 msg = (
                     f"ACP dependencies not available: {exc}\n"
-                    "Install with: uv tool install -U deepagents-code "
+                    "Install with: uv tool install --reinstall -U deepagents-code "
                     "--with deepagents-acp\n"
                 )
                 sys.stderr.write(msg)

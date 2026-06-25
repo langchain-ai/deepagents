@@ -726,7 +726,7 @@ class AssistantMessage(Vertical):
         self._markdown = self.query_one("#assistant-content", Markdown)
 
     def on_mouse_move(self, event: MouseMove) -> None:
-        """Show a grab pointer over markdown links, text cursor elsewhere.
+        """Show a pointer cursor over markdown links, text cursor elsewhere.
 
         The pointer is set on the inner `Markdown` widget because it carries a
         non-default (`text`) pointer in CSS, so the screen resolves its shape
@@ -734,7 +734,7 @@ class AssistantMessage(Vertical):
         """
         if self._markdown is not None:
             self._markdown.styles.pointer = (
-                "grab" if event_targets_link(event) else "text"
+                "pointer" if event_targets_link(event) else "text"
             )
 
     def on_leave(self) -> None:

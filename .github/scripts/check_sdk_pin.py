@@ -113,6 +113,31 @@ def compare_versions(left: str, right: str) -> int:
     return 0
 
 
+def is_prerelease(version: str) -> bool:
+    """Return whether a version is a prerelease or dev release.
+
+    Derives the answer from the qualifier key `_parse_version` already
+    computes, so prerelease classification stays in lock-step with the
+    parser's grammar rather than duplicating it. The qualifier's first
+    element is negative for dev releases and 0/1/2 for `a`/`b`/`rc`
+    prereleases (`< 3`); final (`3`) and post (`4`) releases are not
+    prereleases.
+
+    Args:
+        version: A PEP 440 version string.
+
+    Returns:
+        `True` for prerelease (`aN`/`bN`/`rcN`) or dev (`.devN`) versions.
+
+    Raises:
+        ValueError: If `version` is not a supported format (validated via
+            `_parse_version`, which fails closed on epochs, local versions,
+            and combined qualifiers).
+    """
+    _, qualifier = _parse_version(version)
+    return qualifier[0] < 3
+
+
 def main(repo_root: Path | None = None) -> int:
     """Compare the pin to the SDK version; return 1 when the pin is stale."""
     root = repo_root or Path(__file__).resolve().parents[2]

@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from check_sdk_pin import compare_versions, main
+from check_sdk_pin import compare_versions, is_prerelease, main
 
 
 def _write_repo(tmp_path: Path, sdk_version: str, pin: str) -> Path:
@@ -105,6 +105,32 @@ def test_ahead_prerelease_pin(tmp_path) -> None:
 def test_dev_release_pin(tmp_path) -> None:
     """A dev release pin compares ahead of an older final release."""
     assert main(_write_repo(tmp_path, "0.6.11", "0.7.0.dev1")) == 0
+
+
+def test_prerelease_detection() -> None:
+    """Prerelease and dev pins are flagged for advisory comments."""
+    assert is_prerelease("0.7.0a2")
+    assert is_prerelease("0.7.0b1")
+    assert is_prerelease("0.7.0rc1")
+    assert is_prerelease("0.7.0.dev1")
+    assert not is_prerelease("0.7.0")
+    assert not is_prerelease("0.7.0.post1")
+
+
+@pytest.mark.parametrize(
+    "version",
+    ["0.7.0a2.dev1", "0.7.0.post1.dev1", "1!1.0.0", "1.0.0+local"],
+)
+def test_is_prerelease_rejects_unsupported(version: str) -> None:
+    """`is_prerelease` fails closed on unsupported formats.
+
+    The `_parse_version` guard is the function's load-bearing contract: a
+    malformed pin must surface as `ValueError` (exit 2 in the workflow), not
+    be silently classified as a non-prerelease. Guards against a refactor
+    that drops the validating call as apparently dead code.
+    """
+    with pytest.raises(ValueError, match="Unsupported version format"):
+        is_prerelease(version)
 
 
 def test_two_segment_pin_recognized(tmp_path) -> None:

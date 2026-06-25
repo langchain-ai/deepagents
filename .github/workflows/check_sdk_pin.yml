@@ -69,6 +69,7 @@ jobs:
               sdk_version = module._sdk_version(root)
               pkg_pin = module._code_pin(root)
               stale = module.compare_versions(pkg_pin, sdk_version) < 0
+              prerelease = module.is_prerelease(pkg_pin)
           except ValueError as e:
               print(
                   "::error file=.github/scripts/check_sdk_pin.py::"
@@ -80,6 +81,7 @@ jobs:
           print(f"sdk_version={sdk_version}")
           print(f"pkg_pin={pkg_pin}")
           print(f"stale={'true' if stale else 'false'}")
+          print(f"prerelease={'true' if prerelease else 'false'}")
           PY
 
       - name: Manage PR comment
@@ -88,6 +90,7 @@ jobs:
           SDK_VERSION: ${{ steps.check.outputs.sdk_version }}
           PKG_PIN: ${{ steps.check.outputs.pkg_pin }}
           PIN_STALE: ${{ steps.check.outputs.stale }}
+          PIN_PRERELEASE: ${{ steps.check.outputs.prerelease }}
           PKG_NAME: ${{ steps.pkg.outputs.name }}
           PKG_LABEL: ${{ steps.pkg.outputs.label }}
           PKG_PYPROJECT: ${{ steps.pkg.outputs.pyproject }}
@@ -112,6 +115,7 @@ jobs:
             const existing = comments.find(c => (c.body ?? '').includes(marker));
 
             const stale = process.env.PIN_STALE === 'true';
+            const prerelease = process.env.PIN_PRERELEASE === 'true';
             const sdkVersion = process.env.SDK_VERSION;
             const pkgPin = process.env.PKG_PIN;
 
@@ -123,28 +127,10 @@ jobs:
               return;
             }
 
-            if (!stale && existing) {
-              try {
-                await github.rest.issues.deleteComment({
-                  owner, repo,
-                  comment_id: existing.id,
-                });
-                core.info('Pin is not stale — removed stale warning comment.');
-              } catch (error) {
-                // 404 = comment was already deleted (concurrent run or manual removal)
-                if (error.status === 404) {
-                  core.info('Stale comment already deleted.');
-                } else {
-                  core.warning(
-                    `Failed to delete stale SDK pin warning comment (${error.status}): ${error.message}. ` +
-                    'The outdated warning may still be visible on the PR.'
-                  );
-                }
-              }
-            } else if (!stale) {
-              core.info(`${pkgLabel} SDK pin is at or ahead of workspace SDK (${pkgPin} >= ${sdkVersion}). No action needed.`);
-            } else {
-              const body = [
+            let body = null;
+            let warning = null;
+            if (stale) {
+              body = [
                 marker,
                 '> [!WARNING]',
                 `> **Stale SDK pin** — the ${pkgLabel} release workflow will fail at the "Verify package pins SDK at or ahead of workspace version" step until this is resolved.`,
@@ -160,7 +146,39 @@ jobs:
                 '>',
                 '> See [`.github/RELEASING.md`](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#release-failed-code-sdk-pin-is-older-than-sdk) for the full recovery procedure.',
               ].join('\n');
+              warning = `${pkgLabel} has a stale SDK pin: deepagents==${pkgPin} but SDK is ${sdkVersion}`;
+            } else if (prerelease) {
+              body = [
+                marker,
+                '> [!WARNING]',
+                `> **Prerelease SDK pin** — ${pkgLabel} currently pins \`deepagents==${pkgPin}\`, which is a prerelease.`,
+                '>',
+                '> This is allowed and does not block the release workflow as long as the pin is not older than the workspace SDK. Please verify this prerelease pin is intentional before merging.',
+              ].join('\n');
+              warning = `${pkgLabel} pins prerelease SDK deepagents==${pkgPin}; verify this is intentional.`;
+            }
 
+            if (body === null && existing) {
+              try {
+                await github.rest.issues.deleteComment({
+                  owner, repo,
+                  comment_id: existing.id,
+                });
+                core.info('Pin needs no warning — removed existing warning comment.');
+              } catch (error) {
+                // 404 = comment was already deleted (concurrent run or manual removal)
+                if (error.status === 404) {
+                  core.info('Stale comment already deleted.');
+                } else {
+                  core.warning(
+                    `Failed to delete stale SDK pin warning comment (${error.status}): ${error.message}. ` +
+                    'The outdated warning may still be visible on the PR.'
+                  );
+                }
+              }
+            } else if (body === null) {
+              core.info(`${pkgLabel} SDK pin is stable and at or ahead of workspace SDK (${pkgPin} >= ${sdkVersion}). No action needed.`);
+            } else {
               try {
                 // Update silently (no workflow annotation) to avoid repeated warnings on re-pushes.
                 if (existing) {
@@ -180,9 +198,9 @@ jobs:
               } catch (error) {
                 core.warning(
                   `Could not post/update PR comment (status ${error.status}): ${error.message}. ` +
-                  `The stale pin still exists: ${pkgLabel} pins deepagents==${pkgPin} but SDK is ${sdkVersion}.`
+                  warning
                 );
               }
               // Always emit annotation regardless of comment success.
-              core.warning(`${pkgLabel} has a stale SDK pin: deepagents==${pkgPin} but SDK is ${sdkVersion}`);
+              core.warning(warning);
             }

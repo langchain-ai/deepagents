@@ -30,6 +30,11 @@ from deepagents_code.main import (
     run_textual_cli_async,
 )
 
+# Most unit tests set `DEEPAGENTS_CODE_NO_UPDATE_CHECK=1` and patch
+# `is_update_check_enabled()` to avoid accidental PyPI/DNS work. This module
+# tests startup update behavior itself, so each test must control those values.
+pytestmark = pytest.mark.self_managed_update_check
+
 
 class TestStartupAutoUpdate:
     """Tests for startup auto-update behavior."""

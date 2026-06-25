@@ -941,6 +941,7 @@ def upgrade_command(
     method: InstallMethod | None = None,
     *,
     include_prereleases: bool | None = None,
+    version: str | None = None,
 ) -> str:
     """Return the shell command to upgrade `deepagents-code`.
 
@@ -954,8 +955,15 @@ def upgrade_command(
             `None`, follows the installed version's channel. When `True`,
             returns the uv pre-release command regardless of `method`, since
             only uv can be steered onto the pre-release channel.
+        version: Optional exact `deepagents-code` version pin for uv guidance.
     """
     include_prereleases = _resolve_include_prereleases(include_prereleases)
+    if version is not None:
+        requirement = _dcode_extras_requirement((), version=version)
+        cmd = f"uv tool install -U {requirement}"
+        if include_prereleases:
+            cmd += " --prerelease allow"
+        return cmd
     if include_prereleases:
         return _UV_PRERELEASE_UPGRADE_COMMAND
     if method is None:
@@ -1522,12 +1530,14 @@ async def perform_upgrade(
             "manager originally used for this install."
         )
     resolved_include_prereleases = _resolve_include_prereleases(include_prereleases)
+    pin_target_version: str | None = None
     if (
         not resolved_include_prereleases
         and include_prereleases is None
         and release_requires_prereleases(target_version)
     ):
         resolved_include_prereleases = True
+        pin_target_version = target_version
     if resolved_include_prereleases:
         supported, reason = prerelease_upgrade_supported(method)
         if not supported:
@@ -1547,6 +1557,7 @@ async def perform_upgrade(
         try:
             cmd = upgrade_install_command(
                 include_prereleases=resolved_include_prereleases,
+                version=pin_target_version,
             )
         except (ExtrasIntrospectionError, ToolRequirementIntrospectionError) as exc:
             logger.warning(
@@ -1560,6 +1571,7 @@ async def perform_upgrade(
             cmd = upgrade_command(
                 method,
                 include_prereleases=resolved_include_prereleases,
+                version=pin_target_version,
             )
     else:
         cmd = upgrade_command(
@@ -2078,8 +2090,9 @@ def upgrade_install_command(
     *,
     include_prereleases: bool | None = None,
     distribution_name: str = "deepagents-code",
+    version: str | None = None,
 ) -> str:
-    """Return the uv command that upgrades dcode while clearing any version pin.
+    """Return the uv command that upgrades dcode while clearing stale pins.
 
     Built specifically to avoid the `uv tool upgrade` receipt-pin trap: when
     the tool was originally installed via `uv tool install deepagents-code==X.Y.Z`
@@ -2088,15 +2101,19 @@ def upgrade_install_command(
     re-resolve *within* that pin and silently keep the user on the same
     version. Re-running `uv tool install -U deepagents-code[<extras>]` (no
     version pin) rewrites the receipt's requirement to unpinned so the next
-    upgrade can actually move forward. Installed extras and `--with`
-    packages are preserved to mirror `dependency_refresh_command`; only the
-    version pin is intentionally stripped.
+    upgrade can actually move forward. Callers can still pass `version` when
+    the resolver must allow pre-release dependencies for a stable app target;
+    that prevents the root `deepagents-code` package from floating to a newer
+    app pre-release. Installed extras and `--with` packages are preserved to
+    mirror `dependency_refresh_command`.
 
     Args:
         include_prereleases: Whether to include alpha/beta/rc releases. When
             `None`, follows the installed version's channel.
         distribution_name: Name of the installed distribution to inspect for
             already-installed extras.
+        version: Optional exact target version. Use only when pre-release
+            dependency resolution must not also select a root app pre-release.
 
     Returns:
         Shell command string suitable for execution via the shell.
@@ -2110,7 +2127,7 @@ def upgrade_install_command(
     user-facing warning.
     """
     return _uv_tool_install_command(
-        version=None,
+        version=version,
         include_prereleases=include_prereleases,
         distribution_name=distribution_name,
     )

@@ -3867,7 +3867,10 @@ class DeepAgentsApp(App):
                 release_requires_prereleases,
                 latest,
             )
-            cmd = upgrade_command(include_prereleases=update_needs_prereleases)
+            cmd = upgrade_command(
+                include_prereleases=True if update_needs_prereleases else None,
+                version=latest if update_needs_prereleases else None,
+            )
             release_age = await asyncio.to_thread(
                 format_release_age_parenthetical,
                 latest,
@@ -4072,21 +4075,13 @@ class DeepAgentsApp(App):
                 )
                 return
             upgrade_include_prereleases = include_prereleases
+            pin_upgrade_version: str | None = None
             if include_prereleases is None and await asyncio.to_thread(
                 release_requires_prereleases,
                 latest,
             ):
                 upgrade_include_prereleases = True
-            if upgrade_include_prereleases is True:
-                supported, reason = await asyncio.to_thread(
-                    prerelease_upgrade_supported,
-                )
-                if not supported:
-                    await self._mount_message(
-                        AppMessage(reason or _PRERELEASE_UNSUPPORTED_MESSAGE),
-                    )
-                    return
-
+                pin_upgrade_version = latest
             if not available:
                 if deps_only:
                     await self._refresh_dependencies(
@@ -4154,6 +4149,16 @@ class DeepAgentsApp(App):
                     )
                     return
 
+            if upgrade_include_prereleases is True:
+                supported, reason = await asyncio.to_thread(
+                    prerelease_upgrade_supported,
+                )
+                if not supported:
+                    await self._mount_message(
+                        AppMessage(reason or _PRERELEASE_UNSUPPORTED_MESSAGE),
+                    )
+                    return
+
             release_age = await asyncio.to_thread(
                 format_release_age_parenthetical,
                 latest,
@@ -4215,7 +4220,10 @@ class DeepAgentsApp(App):
                         ),
                     )
             else:
-                cmd = upgrade_command(include_prereleases=upgrade_include_prereleases)
+                cmd = upgrade_command(
+                    include_prereleases=upgrade_include_prereleases,
+                    version=pin_upgrade_version,
+                )
                 detail = f": {output[:200]}" if output else ""
                 await self._mount_message(
                     AppMessage(f"Auto-update failed{detail}\nRun manually: {cmd}"),

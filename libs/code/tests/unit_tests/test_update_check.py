@@ -1702,7 +1702,46 @@ class TestUpdateLogs:
         await_args = run_mock.await_args
         assert await_args is not None
         assert await_args.args[0] == (
-            "uv tool install -U deepagents-code --prerelease allow"
+            "uv tool install -U deepagents-code==1.1.0 --prerelease allow"
+        )
+
+    async def test_perform_upgrade_fallback_pins_target_with_prerelease_deps(
+        self, cache_file
+    ) -> None:
+        """The bare fallback also avoids floating stable targets to app prereleases."""
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "release_requires_prereleases": {"1.1.0": True},
+                    "checked_at": time.time(),
+                }
+            ),
+            encoding="utf-8",
+        )
+        with (
+            patch("deepagents_code.update_check.__version__", "1.0.0"),
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.extras_info.installed_extra_names",
+                side_effect=ExtrasIntrospectionError("metadata unreadable"),
+            ),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as run_mock,
+        ):
+            success, _output = await perform_upgrade(target_version="1.1.0")
+
+        assert success is True
+        run_mock.assert_awaited_once()
+        await_args = run_mock.await_args
+        assert await_args is not None
+        assert await_args.args[0] == (
+            "uv tool install -U deepagents-code==1.1.0 --prerelease allow"
         )
 
     async def test_perform_upgrade_follows_installed_prerelease_channel(self) -> None:
@@ -1921,6 +1960,16 @@ class TestUpdateLogs:
         assert (
             upgrade_command(include_prereleases=True)
             == "uv tool install -U deepagents-code --prerelease allow"
+        )
+
+    def test_upgrade_command_pins_target_with_prerelease_deps(self) -> None:
+        """Manual fallback pins root dcode when prerelease deps are allowed."""
+        assert (
+            upgrade_command(
+                include_prereleases=True,
+                version="1.1.0",
+            )
+            == "uv tool install -U deepagents-code==1.1.0 --prerelease allow"
         )
 
     def test_dependency_refresh_command_pins_current_version(
@@ -2313,6 +2362,21 @@ class TestUpgradeInstallCommand:
             return_value=frozenset(),
         ):
             assert upgrade_install_command() == "uv tool install -U deepagents-code"
+
+    def test_pins_target_version_when_requested(self, tmp_path, monkeypatch) -> None:
+        """Target pins prevent prerelease dependency mode from floating the app."""
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        with patch(
+            "deepagents_code.extras_info.installed_extra_names",
+            return_value=frozenset({"openai"}),
+        ):
+            assert upgrade_install_command(
+                version="1.1.0",
+                include_prereleases=True,
+            ) == (
+                "uv tool install -U 'deepagents-code[openai]==1.1.0' --prerelease allow"
+            )
 
     def test_preserves_extras_and_prerelease(self, tmp_path, monkeypatch) -> None:
         """Installed extras survive the unpinned reinstall; prerelease opt-in too."""

@@ -1155,7 +1155,7 @@ async def test_update_already_current_reports_dependency_check_failure() -> None
 
 
 async def test_update_already_current_skips_prompt_when_refresh_unsupported() -> None:
-    """brew/other installs aren't prompted for a refresh that can't run."""
+    """brew/other installs aren't prompted for a refresh or prerelease support."""
     from deepagents_code.app import DeepAgentsApp
     from deepagents_code.widgets.messages import AppMessage
 
@@ -1171,6 +1171,14 @@ async def test_update_already_current_skips_prompt_when_refresh_unsupported() ->
                 "deepagents_code.update_check.is_update_available",
                 return_value=(False, "1.0.0"),
             ),
+            patch(
+                "deepagents_code.update_check.release_requires_prereleases",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.prerelease_upgrade_supported",
+                return_value=(False, "Pre-release updates aren't supported"),
+            ) as prerelease_supported_mock,
             patch(
                 "deepagents_code.update_check.dependency_refresh_supported",
                 return_value=(False, "Homebrew install detected — ..."),
@@ -1190,6 +1198,7 @@ async def test_update_already_current_skips_prompt_when_refresh_unsupported() ->
 
         confirm_mock.assert_not_awaited()
         refresh_mock.assert_not_awaited()
+        prerelease_supported_mock.assert_not_called()
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         assert "Already on the latest version" in str(app_msgs[-1]._content)
 

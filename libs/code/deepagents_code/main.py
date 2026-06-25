@@ -244,8 +244,10 @@ def _run_startup_auto_update(console: "Console") -> None:
             # reports as available: the install did not change the running
             # version. Bail out instead of upgrading and restarting forever
             # (this runs before the TUI, so there is no in-app way to stop it).
+            update_needs_prereleases = release_requires_prereleases(latest)
             cmd = upgrade_command(
-                include_prereleases=release_requires_prereleases(latest)
+                include_prereleases=True if update_needs_prereleases else None,
+                version=latest if update_needs_prereleases else None,
             )
             console.print(
                 f"[bold yellow]Warning:[/bold yellow] v{latest} still reports as "
@@ -350,7 +352,11 @@ def _run_startup_auto_update(console: "Console") -> None:
                     highlight=False,
                 )
             return
-        cmd = upgrade_command()
+        update_needs_prereleases = release_requires_prereleases(latest)
+        cmd = upgrade_command(
+            include_prereleases=True if update_needs_prereleases else None,
+            version=latest if update_needs_prereleases else None,
+        )
         detail = f": {escape(output[:200])}" if output else ""
         console.print(
             f"[bold red]Auto-update failed{detail}[/bold red]\n"
@@ -2634,8 +2640,10 @@ def cli_main() -> None:
                     )
                     sys.exit(0)
 
+                pin_upgrade_version: str | None = None
                 if include_prereleases is None and release_requires_prereleases(latest):
                     include_prereleases = True
+                    pin_upgrade_version = latest
                 if include_prereleases is True:
                     supported, reason = prerelease_upgrade_supported()
                     if not supported:
@@ -2672,7 +2680,10 @@ def cli_main() -> None:
                 if success:
                     console.print(f"[green]Updated to v{latest}.[/green]")
                 else:
-                    cmd = upgrade_command(include_prereleases=include_prereleases)
+                    cmd = upgrade_command(
+                        include_prereleases=include_prereleases,
+                        version=pin_upgrade_version,
+                    )
                     detail = f": {escape(output[:200])}" if output else ""
                     console.print(
                         f"[bold red]Auto-update failed{detail}[/bold red]\n"

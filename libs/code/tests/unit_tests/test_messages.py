@@ -290,6 +290,44 @@ class TestAssistantMessageMarkdownRendering:
         assert msg._content == "```python\nnew content\n```"
 
 
+class TestAssistantMessageLinkPointer:
+    """Tests for the grab pointer shown when hovering markdown links."""
+
+    @staticmethod
+    def _move_event(*, meta: dict | None = None) -> MagicMock:
+        event = MagicMock()
+        event.style.link = None
+        event.style.meta = meta or {}
+        return event
+
+    def test_hovering_link_sets_grab_pointer(self) -> None:
+        """A markdown link span switches the pointer to grab."""
+        msg = AssistantMessage()
+        msg._markdown = MagicMock()
+
+        msg.on_mouse_move(self._move_event(meta={"@click": "link('https://x')"}))
+
+        assert msg._markdown.styles.pointer == "grab"
+
+    def test_hovering_text_sets_text_pointer(self) -> None:
+        """Plain markdown text keeps the text pointer."""
+        msg = AssistantMessage()
+        msg._markdown = MagicMock()
+
+        msg.on_mouse_move(self._move_event())
+
+        assert msg._markdown.styles.pointer == "text"
+
+    def test_leave_resets_pointer(self) -> None:
+        """Leaving the message resets the pointer to text."""
+        msg = AssistantMessage()
+        msg._markdown = MagicMock()
+
+        msg.on_leave()
+
+        assert msg._markdown.styles.pointer == "text"
+
+
 class _AssistantMessageApp(App[None]):
     """Minimal app that mounts an AssistantMessage for timer-based tests."""
 

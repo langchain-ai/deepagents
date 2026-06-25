@@ -239,6 +239,7 @@ class TextualUIAdapter:
             | None
         ) = None,
         on_tool_complete: Callable[[], None] | None = None,
+        on_subagent_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         """Initialize the adapter."""
         self._mount_message = mount_message
@@ -279,6 +280,14 @@ class TextualUIAdapter:
         The app uses this to refresh the footer's git branch as soon as an
         agent-executed tool (e.g. `git checkout`) returns, instead of waiting
         for the full turn to finish.
+        """
+
+        self._on_subagent_event = on_subagent_event
+        """Sync callback fired for each validated `subagent` custom-stream event.
+
+        Drives the live subagent fan-out panel. Events originate from the
+        QuickJS `task()` bridge during a `js_eval` call; payload strings are
+        LLM/JS-authored and treated as untrusted by the panel renderer.
         """
 
         # State tracking
@@ -372,6 +381,23 @@ def _read_mentioned_file(file_path: Path, max_embed_bytes: int) -> str:
         )
     content = file_path.read_text(encoding="utf-8")
     return f"\n### {file_path.name}\nPath: `{file_path}`\n```\n{content}\n```"
+
+
+def _is_renderable_subagent_event(data: Any, *, is_main_agent: bool) -> bool:  # noqa: ANN401  # custom-stream payload is dynamic
+    """Whether a `custom` payload is a subagent event this UI can render.
+
+    Guards the live panel against unrelated/malformed custom events and against
+    nested (subagent-to-subagent) emissions.
+
+    Args:
+        data: The `custom` stream payload.
+        is_main_agent: Whether the event came from the main agent's namespace
+            (the empty namespace). Nested emissions are ignored.
+
+    Returns:
+        True only for a well-formed subagent event from the main agent.
+    """
+    return is_main_agent and isinstance(data, dict) and data.get("type") == "subagent"
 
 
 async def execute_task_textual(
@@ -582,7 +608,7 @@ async def execute_task_textual(
 
             async for chunk in agent.astream(
                 stream_input,
-                stream_mode=["messages", "updates"],
+                stream_mode=["messages", "updates", "custom"],
                 subgraphs=True,
                 config=config,
                 context=context,
@@ -601,6 +627,25 @@ async def execute_task_textual(
                 # namespace). Subagents run via Task tool and should only
                 # report back to the main agent
                 is_main_agent = ns_key == ()
+
+                # Handle CUSTOM stream - live subagent fan-out events emitted by
+                # the QuickJS task() bridge during a js_eval call. Validate at
+                # this boundary before forwarding so unrelated/malformed or
+                # nested custom events never reach the panel; forwarding must
+                # never raise into the stream loop.
+                if current_stream_mode == "custom":
+                    if (
+                        adapter._on_subagent_event is not None
+                        and _is_renderable_subagent_event(
+                            data, is_main_agent=is_main_agent
+                        )
+                    ):
+                        try:
+                            adapter._on_subagent_event(data)
+                        except Exception:
+                            # Panel rendering must never crash the stream loop.
+                            logger.exception("subagent panel event handler failed")
+                    continue
 
                 # Handle UPDATES stream - for interrupts and todos
                 if current_stream_mode == "updates":
@@ -1522,6 +1567,11 @@ async def _handle_interrupt_cleanup(
         captured_output_tokens: Output tokens captured before interrupt.
         turn_stats: Stats for the current turn.
         start_time: Monotonic timestamp when the turn began.
+
+    Raises:
+        ValueError: If proactive remote-run cancellation is attempted without a
+            `thread_id` in `config` (a contract violation rather than a
+            transient remote failure).
     """
     from langchain_core.messages import HumanMessage
 
@@ -1549,7 +1599,14 @@ async def _handle_interrupt_cleanup(
     if cancel_active_runs is not None:
         try:
             await cancel_active_runs(config)
+        except ValueError:
+            # A missing thread_id is a contract violation (a bug), not a
+            # transient remote failure — surface it rather than downgrading it
+            # to a warning alongside the swallowed network errors below.
+            raise
         except Exception:
+            # Remote cancel is best-effort defense-in-depth; transient remote
+            # failures here are recovered by aupdate_state's 409 retry below.
             logger.warning(
                 "Failed to cancel active remote runs for thread %s",
                 config.get("configurable", {}).get("thread_id"),

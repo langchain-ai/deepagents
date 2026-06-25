@@ -91,6 +91,7 @@ from deepagents_code.widgets.messages import (
     UserMessage,
 )
 from deepagents_code.widgets.status import StatusBar
+from deepagents_code.widgets.subagent_panel import SubagentPanel
 from deepagents_code.widgets.welcome import WelcomeBanner
 
 logger = logging.getLogger(__name__)
@@ -970,6 +971,20 @@ def _format_model_params(extra_kwargs: dict[str, Any] | None) -> str:
     return f" with model params {json.dumps(extra_kwargs, sort_keys=True)}"
 
 
+def _display_model_label(spec: str | None) -> str | None:
+    """Strip the provider prefix from a model spec for display.
+
+    `anthropic:opus` becomes `opus`; only the first colon splits, so a model
+    name that itself contains a colon is preserved. A spec without a colon (or
+    an empty/`None` spec) is returned unchanged. This is a cosmetic label only,
+    so a malformed spec degrades to a slightly-off label rather than an error.
+
+    Returns:
+        The display label, or the spec unchanged when there is no prefix.
+    """
+    return spec.split(":", 1)[1] if spec and ":" in spec else spec
+
+
 InputMode = Literal["normal", "shell", "shell_incognito", "command"]
 
 _RECONNECT_FORCE_TOKENS: frozenset[str] = frozenset({"force", "--force", "-f"})
@@ -1480,6 +1495,7 @@ class DeepAgentsApp(App):
         ),
         Binding("ctrl+d", "quit_app", "Quit", show=False, priority=True),
         Binding("ctrl+t", "toggle_auto_approve", "Toggle Auto-Approve", show=False),
+        Binding("ctrl+g", "toggle_subagent_panel", "Toggle Subagents", show=False),
         Binding(
             "shift+tab",
             "toggle_auto_approve",
@@ -2351,6 +2367,9 @@ class DeepAgentsApp(App):
             )
             yield Container(id="messages")
         with Container(id="bottom-app-container"):
+            # Live fan-out panel for subagents spawned from js_eval. Hidden
+            # until the first spawn event; sits just above the input.
+            yield SubagentPanel(id="subagent-panel")
             yield ChatInput(
                 cwd=self._cwd,
                 image_tracker=self._image_tracker,
@@ -2670,6 +2689,7 @@ class DeepAgentsApp(App):
             sync_message_content=self._sync_message_content,
             request_ask_user=self._request_ask_user,
             on_tool_complete=self._schedule_git_branch_refresh,
+            on_subagent_event=self._on_subagent_event,
         )
         # Wire token display callbacks
         self._ui_adapter._on_tokens_update = self._on_tokens_update
@@ -7283,6 +7303,10 @@ class DeepAgentsApp(App):
             self._queued_widgets.clear()
             self._sync_status_queued()
             await self._clear_messages()
+            # A fresh conversation drops any prior subagent fan-out too.
+            subagent_panel = self._get_subagent_panel()
+            if subagent_panel is not None:
+                subagent_panel.reset()
             self._context_tokens = 0
             self._tokens_approximate = False
             self._update_tokens(0)
@@ -8070,6 +8094,16 @@ class DeepAgentsApp(App):
         turn_stats = SessionStats()
         self._inflight_turn_stats = turn_stats
         self._inflight_turn_start = time.monotonic()
+
+        # Arm the subagent fan-out panel for this turn, seeding the session
+        # model that labels each row. The panel persists across turns and only
+        # clears when this turn's first subagent actually starts, so a turn that
+        # spawns none leaves the previous workflow's results on screen.
+        panel = self._get_subagent_panel()
+        if panel is not None:
+            spec = self._effective_model_spec()
+            panel.prepare_turn(model_label=_display_model_label(spec))
+
         try:
             await execute_task_textual(
                 user_input=message,
@@ -8133,6 +8167,13 @@ class DeepAgentsApp(App):
             if self._inflight_turn_stats is not None:
                 self._session_stats.merge(turn_stats)
                 self._inflight_turn_stats = None
+            # Finalize any subagent rows left "running" — an interrupt cancels
+            # the worker before the bridge emits terminal events (a cancel is a
+            # BaseException, which the bridge's `except Exception` skips), so the
+            # panel would otherwise spin forever. No-op when nothing's running.
+            subagent_panel = self._get_subagent_panel()
+            if subagent_panel is not None:
+                subagent_panel.finalize_running()
             await self._cleanup_agent_task()
 
     async def _process_next_from_queue(self) -> None:
@@ -9374,6 +9415,33 @@ class DeepAgentsApp(App):
             )
         restore_iterm_cursor_guide()
         super().exit(result=result, return_code=return_code, message=message)
+
+    def _get_subagent_panel(self) -> SubagentPanel | None:
+        """Return the subagent fan-out panel, or None if not yet mounted.
+
+        Returns:
+            The mounted `SubagentPanel`, or None during early startup.
+        """
+        try:
+            return self.query_one("#subagent-panel", SubagentPanel)
+        except Exception:  # noqa: BLE001 — not mounted during early startup
+            return None
+
+    def _on_subagent_event(self, event: dict[str, Any]) -> None:
+        """Forward a validated subagent custom-stream event to the panel.
+
+        Runs on the Textual event loop (same loop as the stream consumer), so
+        the panel widget can be updated directly.
+        """
+        panel = self._get_subagent_panel()
+        if panel is not None:
+            panel.on_subagent_event(event)
+
+    def action_toggle_subagent_panel(self) -> None:
+        """Expand or collapse the subagent fan-out panel."""
+        panel = self._get_subagent_panel()
+        if panel is not None:
+            panel.toggle()
 
     async def action_toggle_auto_approve(self) -> None:
         """Toggle auto-approve mode for the current session.

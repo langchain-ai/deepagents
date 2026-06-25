@@ -43,6 +43,7 @@ from deepagents_code.app import (
     QueuedMessage,
     TextualSessionState,
     _build_whats_new_message,
+    _display_model_label,
     _extra_is_ready,
 )
 from deepagents_code.event_bus import ExternalEvent
@@ -78,6 +79,29 @@ def _closing_run_worker_mock(
     if inspect.iscoroutine(work):
         work.close()
     return MagicMock()
+
+
+class TestDisplayModelLabel:
+    """Tests for stripping the provider prefix off a model spec for display."""
+
+    @pytest.mark.parametrize(
+        ("spec", "expected"),
+        [
+            ("anthropic:opus", "opus"),
+            ("openai:gpt-5.1", "gpt-5.1"),
+            # No prefix: shown verbatim.
+            ("opus", "opus"),
+            # Only the first colon splits, so a colon in the model name survives.
+            ("anthropic:claude:opus", "claude:opus"),
+            # Falsy specs pass through unchanged rather than raising.
+            ("", ""),
+            (None, None),
+        ],
+    )
+    def test_strips_provider_prefix(
+        self, spec: str | None, expected: str | None
+    ) -> None:
+        assert _display_model_label(spec) == expected
 
 
 class TestWhatsNewMessage:

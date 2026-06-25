@@ -36,9 +36,11 @@ on:
   workflow_dispatch:
     inputs:
       models:
-        description: "Model set to evaluate. Set definitions:
-          libs/evals/MODEL_GROUPS.md. Leave empty to use models_override
-          instead. Defaults to all models if both are empty."
+        description: "Model set to evaluate. Standard run: leave every field on
+          this form blank and click Run — that evaluates all models, all
+          categories, all tiers. Use the fields below only to narrow the run.
+          Set definitions: libs/evals/MODEL_GROUPS.md. Leave empty to use
+          models_override instead; if both are empty, all models run."
         required: false
         default: ""
         type: choice
@@ -175,6 +177,42 @@ on:
         required: false
         default: ""
         type: string
+      openai_reasoning_effort:
+        description: "Reasoning effort for OpenAI models (applied as the
+          `reasoning_effort` model kwarg). Only applies to openai: models."
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - minimal
+          - low
+          - medium
+          - high
+          - xhigh
+      repl:
+        description: "REPL middleware for tests marked with @pytest.mark.repl. Empty =
+          bind tools directly (native tool calling)."
+        required: false
+        default: ""
+        type: choice
+        options:
+          - ""
+          - quickjs
+      openrouter_provider:
+        description: "Pin OpenRouter to one or more providers (comma-separated
+          allowlist). E.g. 'MiniMax' or 'MiniMax,Fireworks'. Only applies to
+          openrouter: models."
+        required: false
+        default: ""
+        type: string
+      openrouter_allow_fallbacks:
+        description: "Soft allowlist: prefer the providers in `openrouter_provider` but
+          allow OpenRouter to fall back to any other provider hosting the model.
+          Off (default) = strict pin."
+        required: false
+        default: false
+        type: boolean
       analyze_failures:
         description: "Run the LLM failure-analysis step after evals."
         required: false
@@ -198,42 +236,6 @@ on:
           - "openai:o4-mini"
           - "google_genai:gemini-3-flash-preview"
           - "google_genai:gemini-3.1-flash-lite-preview"
-      openrouter_provider:
-        description: "Pin OpenRouter to one or more providers (comma-separated
-          allowlist). E.g. 'MiniMax' or 'MiniMax,Fireworks'. Only applies to
-          openrouter: models."
-        required: false
-        default: ""
-        type: string
-      openrouter_allow_fallbacks:
-        description: "Soft allowlist: prefer the providers in `openrouter_provider` but
-          allow OpenRouter to fall back to any other provider hosting the model.
-          Off (default) = strict pin."
-        required: false
-        default: false
-        type: boolean
-      openai_reasoning_effort:
-        description: "Reasoning effort for OpenAI models (applied as the
-          `reasoning_effort` model kwarg). Only applies to openai: models."
-        required: false
-        default: ""
-        type: choice
-        options:
-          - ""
-          - minimal
-          - low
-          - medium
-          - high
-          - xhigh
-      repl:
-        description: "REPL middleware for tests marked with @pytest.mark.repl. Empty =
-          bind tools directly (native tool calling)."
-        required: false
-        default: ""
-        type: choice
-        options:
-          - ""
-          - quickjs
       notes:
         description: "Free-text notes for this dispatch (e.g. hypothesis being tested,
           retry reason). Shown on the run summary; does not affect eval

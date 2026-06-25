@@ -54,12 +54,14 @@ def _item_value(item: object) -> object:
     return getattr(item, "value", None)
 
 
-def read_approval_mode_from_store(store: object, key: object) -> bool | None:
+def read_approval_mode_from_store(store: object, key: str | None) -> bool | None:
     """Read a live approval mode from the server-side LangGraph Store.
 
     Args:
         store: `request.runtime.store` from the graph server.
-        key: Store key produced by `approval_mode_key`.
+        key: Store key produced by `approval_mode_key`. The `isinstance` guard
+            below still rejects non-string keys as defense-in-depth, since the
+            value crosses the JSON/RemoteGraph boundary before reaching here.
 
     Returns:
         `True` or `False` when the store contains a valid mode, otherwise

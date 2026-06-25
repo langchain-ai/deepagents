@@ -13299,6 +13299,8 @@ class TestLiveApprovalModeWrites:
 
         force.assert_not_called()
         notify.assert_called_once()
+        # The idle branch emits a distinct message from the cancel branch.
+        assert "start a new run" in notify.call_args.args[0]
 
     async def test_toggle_on_failed_write_does_not_cancel_running_agent(self) -> None:
         app = DeepAgentsApp(auto_approve=False)
@@ -13324,6 +13326,8 @@ class TestLiveApprovalModeWrites:
         assert app._session_state.auto_approve is True
         force.assert_not_called()
         notify.assert_called_once()
+        # Toggling on emits the auto-approve warning, not the manual one.
+        assert "Auto-approve could not sync" in notify.call_args.args[0]
 
     async def test_auto_approve_all_failed_write_warns(self) -> None:
         app = DeepAgentsApp(auto_approve=False)

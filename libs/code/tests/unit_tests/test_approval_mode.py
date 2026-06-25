@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -73,19 +73,31 @@ def test_read_approval_mode_from_store_accepts_attribute_item() -> None:
     ("store", "key"),
     [
         (None, approval_mode_key("thread-1")),
+        (object(), approval_mode_key("thread-1")),  # store has no get()
         (_Store(None), approval_mode_key("thread-1")),
         (_Store(_StoreItem(["not", "a", "mapping"])), approval_mode_key("thread-1")),
         (_Store(_StoreItem({"auto_approve": "yes"})), approval_mode_key("thread-1")),
         (_Store(_StoreItem({"auto_approve": 1})), approval_mode_key("thread-1")),
         (_Store(_StoreItem({"auto_approve": True})), ""),
-        (_Store(_StoreItem({"auto_approve": True})), object()),
+        (_Store(_StoreItem({"auto_approve": True})), None),
     ],
 )
 def test_read_approval_mode_from_store_fails_closed(
     store: object,
-    key: object,
+    key: str | None,
 ) -> None:
     assert read_approval_mode_from_store(store, key) is None
+
+
+def test_read_approval_mode_from_store_non_string_key_fails_closed() -> None:
+    """A non-string key still fails closed via the runtime guard.
+
+    The declared `key` type is `str | None`, but the value crosses the
+    JSON/RemoteGraph boundary, so the `isinstance` guard remains as
+    defense-in-depth against a malformed payload.
+    """
+    item = _StoreItem({"auto_approve": True})
+    assert read_approval_mode_from_store(_Store(item), cast("str", object())) is None
 
 
 def test_read_approval_mode_from_store_exception_fails_closed(

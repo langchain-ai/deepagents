@@ -1031,7 +1031,24 @@ def _is_auto_approve_enabled(value: object) -> bool:
 
 
 def _read_live_auto_approve(store: object, key: str | None) -> bool | None:
-    """Return live approval mode from the LangGraph Store when configured."""
+    """Return live approval mode from the LangGraph Store when configured.
+
+    Args:
+        store: `request.runtime.store` from the graph server.
+        key: Live approval-mode store key, or `None` when this run has no live
+            control record.
+
+    Returns:
+        `None` when no live key is configured for this run — the caller should
+            fall back to the static `auto_approve` context snapshot.
+        `True` or `False` when a live key is configured: these reflect
+            the stored mode, and `False` is also returned when the key
+            is configured but the store is unreadable (missing item,
+            malformed value, read error), so an unreadable live mode fails
+            closed and interrupts.
+        `None` therefore means "feature not in play," the opposite of the store
+            reader's `None` ("unreadable, be careful").
+    """
     if not key:
         return None
     from deepagents_code.approval_mode import read_approval_mode_from_store

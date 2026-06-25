@@ -543,8 +543,10 @@ async def execute_task_textual(
             # Carry the current approval mode into run context so the
             # `interrupt_on` `when` predicate can suppress interrupts at the
             # source. Also write the live store item that the server-side
-            # predicate re-reads on each tool call, so toggling auto-approve off
-            # mid-stream takes effect before the current stream returns.
+            # predicate re-reads on each tool call, so toggling approval mode
+            # mid-stream (either direction) takes effect before the current
+            # stream returns. Turning auto-approve off is the safety-critical
+            # direction, but the same store write also propagates turning it on.
             if context is None:
                 context = CLIContext()
             auto_approve = bool(session_state.auto_approve)

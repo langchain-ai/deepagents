@@ -3,7 +3,7 @@
 import asyncio
 import sys
 from asyncio import Future
-from collections.abc import AsyncIterator, Generator
+from collections.abc import AsyncIterator, Awaitable, Callable, Generator
 from datetime import datetime
 from importlib.metadata import PackageNotFoundError
 from io import StringIO
@@ -863,12 +863,17 @@ class TestExecuteTaskTextualAutoApproveInput:
             update_status=_noop_status,
             request_approval=_mock_approval,
         )
+        session_state = SimpleNamespace(
+            thread_id="thread-1",
+            auto_approve=True,
+            approval_mode_key="stale",
+        )
 
         await execute_task_textual(
             user_input="hi",
             agent=agent,
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            session_state=session_state,
             adapter=adapter,
         )
 
@@ -877,9 +882,13 @@ class TestExecuteTaskTextualAutoApproveInput:
         assert agent.contexts[0]["auto_approve"] is False
         assert "approval_mode_key" not in agent.contexts[0]
         assert agent.store_items == []
+        # The stale key must be cleared so later turns don't reuse it.
+        assert session_state.approval_mode_key is None
 
+    @pytest.mark.parametrize("use_async_callback", [True, False])
     async def test_mid_turn_auto_approve_all_propagates_to_resume_context(
         self,
+        use_async_callback: bool,
     ) -> None:
         """Choosing "auto-approve all" mid-turn flips the resuming stream's context.
 
@@ -889,6 +898,10 @@ class TestExecuteTaskTextualAutoApproveInput:
         carries `auto_approve=True`. Guards against hoisting the refresh out of
         the stream loop (which would leave the first-iteration value frozen and
         keep interrupting the rest of the turn).
+
+        Parametrized over an async and a sync `on_auto_approve_enabled` callback
+        to cover the `Awaitable[None] | None` union the adapter awaits only when
+        the result is non-`None`.
         """
         action_requests = [{"name": "execute", "args": {"command": "echo hi"}}]
         agent = _SequencedAgent(
@@ -931,9 +944,20 @@ class TestExecuteTaskTextualAutoApproveInput:
 
         callback_seen: list[bool] = []
 
-        async def on_auto_approve_enabled() -> None:
-            await asyncio.sleep(0)
-            callback_seen.append(True)
+        on_auto_approve_enabled: Callable[[], Awaitable[None] | None]
+        if use_async_callback:
+
+            async def _async_callback() -> None:
+                await asyncio.sleep(0)
+                callback_seen.append(True)
+
+            on_auto_approve_enabled = _async_callback
+        else:
+
+            def _sync_callback() -> None:
+                callback_seen.append(True)
+
+            on_auto_approve_enabled = _sync_callback
 
         adapter = TextualUIAdapter(
             mount_message=_mock_mount,

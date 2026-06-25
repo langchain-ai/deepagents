@@ -170,6 +170,66 @@ def test_should_interrupt_tool_call_prefers_live_approval_mode() -> None:
     )
 
 
+async def test_live_approval_round_trip_flips_interrupt_decision() -> None:
+    """A mode written via `awrite_approval_mode` is read back by the predicate.
+
+    Exercises the full writer -> store -> reader contract across the shared
+    `approval_mode_key` seam. The isolated write- and read-side tests would both
+    stay green even if the two ever derived the key differently; only crossing
+    the seam catches that — a key mismatch would surface here as an unexpected
+    fail-closed interrupt.
+    """
+    from deepagents_code.approval_mode import approval_mode_key, awrite_approval_mode
+
+    store = _FakeStore()
+
+    class _StoreWriter:
+        """Agent double whose store writer feeds the same store the reader uses."""
+
+        async def aput_store_item(
+            self,
+            namespace: tuple[str, ...],
+            key: str,
+            value: Mapping[str, Any],
+        ) -> None:
+            store.put(namespace, key, value)
+
+    agent = _StoreWriter()
+    key = approval_mode_key("thread-1")
+
+    written = await awrite_approval_mode(agent, "thread-1", auto_approve=True)
+    assert written == key
+    # Live auto-approve suppresses the interrupt even though the context
+    # snapshot still says manual.
+    assert not _should_interrupt_tool_call(
+        _request_with_context(
+            {"auto_approve": False, "approval_mode_key": key},
+            store=store,
+        )
+    )
+
+    await awrite_approval_mode(agent, "thread-1", auto_approve=False)
+    # Flipping the stored mode to manual interrupts despite an auto context.
+    assert _should_interrupt_tool_call(
+        _request_with_context(
+            {"auto_approve": True, "approval_mode_key": key},
+            store=store,
+        )
+    )
+
+
+def test_cli_context_schema_fields_mirror_typed_dict() -> None:
+    """`CLIContextSchema` and `CLIContext` must stay structurally identical.
+
+    The two shapes carry the same payload across the API boundary (dataclass
+    in-process, dict over RemoteGraph). A field added to one but not the other
+    would silently drop across that boundary; this pins the documented mirror.
+    """
+    from deepagents_code._cli_context import CLIContext
+
+    assert {f.name for f in fields(CLIContextSchema)} == set(CLIContext.__annotations__)
+
+
 def test_should_interrupt_tool_call_fails_closed_when_live_mode_missing() -> None:
     """A configured but missing live mode should interrupt for safety."""
     from deepagents_code.approval_mode import approval_mode_key

@@ -1,3 +1,21 @@
+"""Snapshot smoke tests for the quickjs system prompt.
+
+These tests render the system prompt that `CodeInterpreterMiddleware` injects
+into a `create_deep_agent` agent and compare it against committed snapshots in
+`snapshots/`. Their purpose is to catch *drift in the deepagents SDK* that
+silently changes the prompt the quickjs middleware composes — wording the
+middleware does not own but depends on (e.g. the built-in `write_todos`
+prompt, tool-listing format, or harness scaffolding).
+
+Because the quickjs partner can be untouched while the SDK changes, CI runs
+this file as a dedicated `test-quickjs-sdk-smoke` job (see `ci.yml`) whenever
+the SDK changes but quickjs does not — the full quickjs suite would otherwise
+not run and the drift would land unnoticed.
+
+Run `pytest ... --update-snapshots` to regenerate the snapshots after an
+intentional prompt change.
+"""
+
 from __future__ import annotations
 
 import re

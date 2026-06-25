@@ -289,7 +289,7 @@ async def start_server_and_get_agent(
     trust_project_mcp: bool | None = None,
     interactive: bool = True,
     host: str = "127.0.0.1",
-    port: int = 2024,
+    port: int = 0,
 ) -> tuple[RemoteAgent, ServerProcess, MCPSessionManager | None]:
     """Start a LangGraph server and return a connected remote agent client.
 
@@ -316,7 +316,8 @@ async def start_server_and_get_agent(
         trust_project_mcp: Trust project MCP servers.
         interactive: Whether the agent is interactive.
         host: Server host.
-        port: Server port.
+        port: Server port. Defaults to 0, letting the server pick a free
+            ephemeral port instead of the well-known `langgraph dev` port 2024.
 
     Returns:
         Tuple of `(remote_agent, server_process, mcp_session_manager)`.
@@ -414,7 +415,7 @@ async def server_session(
     trust_project_mcp: bool | None = None,
     interactive: bool = True,
     host: str = "127.0.0.1",
-    port: int = 2024,
+    port: int = 0,
 ) -> AsyncIterator[tuple[RemoteAgent, ServerProcess]]:
     """Async context manager that starts a server and guarantees cleanup.
 
@@ -444,7 +445,8 @@ async def server_session(
         trust_project_mcp: Trust project MCP servers.
         interactive: Whether the agent is interactive.
         host: Server host.
-        port: Server port.
+        port: Server port. Defaults to 0, letting the server pick a free
+            ephemeral port instead of the well-known `langgraph dev` port 2024.
 
     Yields:
         Tuple of `(remote_agent, server_process)`.

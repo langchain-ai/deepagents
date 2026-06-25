@@ -27,7 +27,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_HOST = "127.0.0.1"
-_DEFAULT_PORT = 2024
+_EPHEMERAL_PORT = 0
+"""Sentinel port meaning "let `start()` pick a free ephemeral port".
+
+The server is internal and ephemeral — callers reach it via `ServerProcess.url`,
+never a typed-in address — so it deliberately avoids binding the well-known
+`langgraph dev` default (2024). Leaving 2024 free lets users run their own
+`langgraph dev` projects alongside `deepagents-code` without a port collision.
+"""
 _HEALTH_POLL_INTERVAL_LOCAL = 0.1
 _HEALTH_POLL_INTERVAL_REMOTE = 0.3
 _HEALTH_TIMEOUT = 60
@@ -104,7 +111,7 @@ def _find_free_port(host: str) -> int:
         return s.getsockname()[1]
 
 
-def get_server_url(host: str = _DEFAULT_HOST, port: int = _DEFAULT_PORT) -> str:
+def get_server_url(host: str = _DEFAULT_HOST, port: int = _EPHEMERAL_PORT) -> str:
     """Build the server base URL.
 
     Args:
@@ -364,7 +371,7 @@ class ServerProcess:
         self,
         *,
         host: str = _DEFAULT_HOST,
-        port: int = _DEFAULT_PORT,
+        port: int = _EPHEMERAL_PORT,
         config_dir: str | Path | None = None,
         owns_config_dir: bool = False,
         scaffold: Callable[[Path], None] | None = None,
@@ -373,10 +380,12 @@ class ServerProcess:
 
         Args:
             host: Host to bind the server to.
-            port: Initial port to bind the server to.
+            port: Initial port to bind the server to. Defaults to
+                `_EPHEMERAL_PORT` (0), so `start()` picks a free port and avoids
+                squatting the well-known `langgraph dev` default (2024).
 
-                May be reassigned automatically by `start()` if the port is
-                already in use.
+                An explicit port is honored, but `start()` still falls back to a
+                free port if it is already in use.
             config_dir: Directory containing `langgraph.json`.
             owns_config_dir: When `True`, the server will delete `config_dir`
                 on `stop()`.
@@ -482,9 +491,12 @@ class ServerProcess:
                 )
             raise RuntimeError(msg)
 
-        if _port_in_use(self.host, self.port):
+        if self.port == _EPHEMERAL_PORT:
             self.port = _find_free_port(self.host)
-            logger.info("Default port in use, using port %d instead", self.port)
+            logger.info("Using ephemeral port %d for langgraph dev server", self.port)
+        elif _port_in_use(self.host, self.port):
+            self.port = _find_free_port(self.host)
+            logger.info("Requested port in use, using port %d instead", self.port)
 
         cmd = _build_server_cmd(config_path, host=self.host, port=self.port)
         env = _build_server_env()

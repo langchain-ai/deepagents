@@ -721,6 +721,69 @@ class TestToolExclusionWiring:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
+    def test_tool_exclusion_middleware_is_last_in_stack(self) -> None:
+        """_ToolExclusionMiddleware is appended after custom middleware so it strips tools last."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "exclprov",
+                HarnessProfile(excluded_tools=frozenset({"write_file"})),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+            custom = _named_mw("CustomMW")
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(model="exclprov:some-model", middleware=[custom])
+            mw_stack = mock_create.call_args.kwargs["middleware"]
+            custom_idx = next(i for i, m in enumerate(mw_stack) if m is custom)
+            excl_idx = next(i for i, m in enumerate(mw_stack) if isinstance(m, _ToolExclusionMiddleware))
+            assert excl_idx > custom_idx, "_ToolExclusionMiddleware must come after custom middleware"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_tool_exclusion_middleware_is_last_in_subagent_stack(self) -> None:
+        """_ToolExclusionMiddleware is appended after subagent custom middleware."""
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "exclprov",
+                HarnessProfile(
+                    excluded_tools=frozenset({"write_file"}),
+                    general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
+                ),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+            custom = _named_mw("CustomSubMW")
+            subagent: SubAgent = {
+                "name": "worker",
+                "description": "A worker subagent",
+                "system_prompt": "You are a worker.",
+                "model": "exclprov:some-model",
+                "middleware": [custom],
+            }
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(model="exclprov:some-model", subagents=[subagent])
+            main_stack = mock_create.call_args.kwargs["middleware"]
+            sub_mw = next(m for m in main_stack if isinstance(m, SubAgentMiddleware))
+            worker_spec = next(s for s in sub_mw._subagents if s.get("name") == "worker")
+            subagent_stack = worker_spec["middleware"]
+            custom_idx = next(i for i, m in enumerate(subagent_stack) if m is custom)
+            excl_idx = next(i for i, m in enumerate(subagent_stack) if isinstance(m, _ToolExclusionMiddleware))
+            assert excl_idx > custom_idx, "_ToolExclusionMiddleware must come after custom middleware in subagent"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
 
 class _StubMW(AgentMiddleware[Any, Any, Any]):
     """Minimal real `AgentMiddleware` subclass so langchain's agent factory accepts it."""

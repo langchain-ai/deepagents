@@ -708,8 +708,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
             # Harness-profile middleware for this subagent's model
             subagent_middleware.extend(_subagent_profile.materialize_extra_middleware())
-            if _subagent_profile.excluded_tools:
-                subagent_middleware.append(_ToolExclusionMiddleware(excluded=_subagent_profile.excluded_tools))
 
             _append_prompt_caching_middleware(subagent_middleware)
 
@@ -741,6 +739,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 required_classes=_REQUIRED_MIDDLEWARE_CLASSES,
                 required_names=_REQUIRED_MIDDLEWARE_NAMES,
             )
+            if _subagent_profile.excluded_tools:
+                subagent_middleware.append(_ToolExclusionMiddleware(excluded=_subagent_profile.excluded_tools))
 
             subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
             subagent_interrupt_on = _merge_fs_interrupt_on(
@@ -795,6 +795,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         if _profile.excluded_tools:
             gp_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
         _append_prompt_caching_middleware(gp_middleware)
+        # Prompt caching is unconditional: "ignore" silently skips non-Anthropic models
+        gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
 
         gp_middleware = _apply_excluded_middleware(
             gp_middleware,
@@ -802,6 +804,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             matched_classes=_main_matched_classes,
             matched_names=_main_matched_names,
         )
+        # Tool exclusion runs last so excluded tool names are stripped after all
+        # tool-injecting middleware has run.
+        if _profile.excluded_tools:
+            gp_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
 
         general_purpose_spec: SubAgent = {
             **GENERAL_PURPOSE_SUBAGENT,
@@ -906,6 +912,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         matched_classes=_main_matched_classes,
         matched_names=_main_matched_names,
     )
+    # Tool exclusion runs after custom middleware so excluded tool names are
+    # stripped last and cannot be restored by a custom wrap_model_call.
+    if _profile.excluded_tools:
+        deepagent_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
     private_state_keys = private_state_field_names(*(mw.state_schema for mw in deepagent_middleware if getattr(mw, "state_schema", None) is not None))
     if sub_agent_middleware is not None:
         sub_agent_middleware.private_state_keys = private_state_keys

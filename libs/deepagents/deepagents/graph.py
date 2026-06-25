@@ -236,7 +236,7 @@ def _apply_custom_middleware(
 
     For each custom entry:
 
-    - If its ``.name`` matches a name still present in ``base``: replace in-place,
+    - If its `.name` matches a name still present in `base`: replace in-place,
       preserving stack order.
     - If it matches a middleware that was excluded, insert it where that middleware
     originally appeared.

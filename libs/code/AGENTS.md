@@ -69,7 +69,7 @@ Casts are acceptable when the type violation is the point of the test (for examp
 
 ## SDK dependency pin
 
-`deepagents-code` pins an exact `deepagents==X.Y.Z` version in `pyproject.toml`. When developing features that depend on new SDK functionality, bump this pin as part of the same PR. A CI check verifies the pin matches the current SDK version at release time (unless bypassed with `dangerous-skip-sdk-pin-check`).
+`deepagents-code` pins an exact `deepagents==X.Y.Z` version in `pyproject.toml`. When developing features that depend on new SDK functionality, bump this pin as part of the same PR. A CI check verifies the pin is not older than the current SDK version at release time (unless bypassed with `dangerous-skip-sdk-pin-check`); pins ahead of the workspace SDK are allowed for intentional prerelease coordination.
 
 For a persistent editable `dcode-dev` install that stays separate from a released install, see [Local dev installs](./DEVELOPMENT.md#local-dev-installs) in the development guide.
 

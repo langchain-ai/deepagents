@@ -6414,12 +6414,23 @@ class DeepAgentsApp(App):
     def _build_launch_dependencies_prompt(
         self,
     ) -> tuple[ModalScreen, asyncio.Future[tuple[bool, tuple[str, str] | None]]]:
-        """Build the dependency/model prompt screen and result future.
+        """Build the first post-name onboarding screen and its result future.
+
+        The integrations summary screen is disabled by default (the model
+        selector already surfaces and installs uninstalled providers), so the
+        model selector is normally the first screen. Setting
+        `DEEPAGENTS_CODE_ONBOARDING_INTEGRATIONS_SCREEN` re-inserts the
+        `LaunchDependenciesScreen` ahead of it.
 
         Returns:
-            The dependency screen and a future resolved when the dependency or
-            model screen finishes.
+            The first onboarding screen and a future resolved when the
+            dependency or model screen finishes.
         """
+        from deepagents_code._env_vars import (
+            ONBOARDING_INTEGRATIONS_SCREEN,
+            is_env_truthy,
+        )
+
         loop = asyncio.get_running_loop()
         result_future: asyncio.Future[tuple[bool, tuple[str, str] | None]] = (
             loop.create_future()
@@ -6442,6 +6453,9 @@ class DeepAgentsApp(App):
             curated=True,
             result_callback=handle_model,
         )
+        if not is_env_truthy(ONBOARDING_INTEGRATIONS_SCREEN):
+            return model_screen, result_future
+
         dependency_screen = self._build_launch_dependencies_screen(
             continue_screen=model_screen,
             on_done=handle_dependencies,
@@ -9661,7 +9675,8 @@ class DeepAgentsApp(App):
             description=(
                 "These models have performed well in Deep Agents evals and are "
                 "a solid starting set. You can explore the full model list "
-                "later with /model."
+                "later with /model. Sandboxes and other integrations install "
+                "anytime with /install."
                 if curated
                 else None
             ),

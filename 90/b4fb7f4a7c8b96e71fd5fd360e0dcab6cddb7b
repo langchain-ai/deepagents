@@ -1,0 +1,24 @@
+libs/code/tests/unit_tests/test_messages.py
+  s_678e75946a7a07::t_cb7b047c5b5fbf 343
+  s_678e75946a7a07::t_ca3d93c2bfccd8 294-302,307-322,324-326,328-331,335-338,340-341,345-346,348-351,354,356-357,359-362,366-371
+  s_678e75946a7a07::t_05e5838b4f68ad 333,352
+  s_678e75946a7a07::t_1dc3f4ed1ce9d0 323
+  s_678e75946a7a07::t_7ea3251ffa3128 364
+  s_678e75946a7a07::t_efa033ac349a2c 4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "90b4fb7f4a7c8b96e71fd5fd360e0dcab6cddb7b",
+  "prompts": {},
+  "sessions": {
+    "s_678e75946a7a07": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dc4cbce8-1326-4503-b472-eaf15a7ec694",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

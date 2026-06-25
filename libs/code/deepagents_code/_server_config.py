@@ -109,8 +109,8 @@ def _resolve_enable_interpreter(
     Args:
         enable_interpreter: Explicit caller preference, or `None` to use the
             sandbox-aware default.
-        sandbox_type: Sandbox backend identifier, or `None`/`"none"` for local
-            execution.
+        sandbox_type: Sandbox backend identifier. Any falsy value (`None`, `""`)
+            or `"none"` is treated as local execution.
 
     Returns:
         The explicit `enable_interpreter` value when not `None`; `False` for
@@ -125,6 +125,35 @@ def _resolve_enable_interpreter(
     from deepagents_code.config import settings
 
     return settings.enable_interpreter
+
+
+def _interpreter_suppressed_by_sandbox(
+    *, enable_interpreter: bool, sandbox_type: str | None, local_default: bool
+) -> bool:
+    """Whether a remote sandbox suppressed the otherwise-default interpreter.
+
+    Used to decide whether to surface an advisory: returns `True` only when the
+    interpreter ended up disabled, a remote sandbox is active, and the local
+    default would have enabled it — i.e. the sandbox (not an explicit
+    `--no-interpreter` opt-out, which the caller resolves the same way, nor a
+    disabled `[interpreter]` config) is why `js_eval` is unavailable.
+
+    Args:
+        enable_interpreter: The already-resolved interpreter state.
+        sandbox_type: Sandbox backend identifier. Any falsy value (`None`, `""`)
+            or `"none"` is treated as local execution.
+        local_default: The local-mode default (`settings.enable_interpreter`);
+            gating on it keeps the advisory quiet for users who disabled the
+            interpreter in config.
+
+    Returns:
+        `True` when the advisory should be shown, otherwise `False`.
+    """
+    if enable_interpreter:
+        return False
+    if not (sandbox_type and sandbox_type != "none"):
+        return False
+    return local_default
 
 
 @dataclass(frozen=True)
@@ -180,6 +209,13 @@ class ServerConfig:
 
     enable_interpreter: bool = False
     """Enable `CodeInterpreterMiddleware` (`js_eval` REPL) on the main agent.
+
+    Always the resolved concrete value: `from_cli_args` collapses the tri-state
+    caller option via `_resolve_enable_interpreter` before constructing the
+    config, so the `bool | None` "defer to default" sentinel never reaches this
+    field. The `False` default here is only the bare-constructor/`from_env`
+    fallback; the user-facing default (on in local mode) lives in
+    `settings.enable_interpreter`.
 
     Local-mode only; the server graph raises if a sandbox is configured and
     this flag is `True`.

@@ -2471,6 +2471,7 @@ class DeepAgentsApp(App):
         # Non-essential advisory: defer past first paint so it never delays
         # the initial frame.
         self.call_after_refresh(self._notify_interpreter_tools_without_interpreter)
+        self.call_after_refresh(self._notify_interpreter_disabled_by_sandbox)
         self.call_after_refresh(self._notify_orphaned_tracing_disabled)
 
     def _notify_orphaned_tracing_disabled(self) -> None:
@@ -2510,6 +2511,36 @@ class DeepAgentsApp(App):
             return
         self.notify(
             "--interpreter-tools has no effect when the interpreter is disabled.",
+            severity="warning",
+            markup=False,
+        )
+
+    def _notify_interpreter_disabled_by_sandbox(self) -> None:
+        """Toast when a remote sandbox suppressed the otherwise-default interpreter.
+
+        `js_eval` is on by default in local mode but unsupported under a remote
+        sandbox, so a `--sandbox` run silently drops it. A stderr line would be
+        clobbered by the alternate screen, so the advisory is surfaced here as a
+        startup notification — the TUI counterpart of the non-interactive warning
+        in `main._warn_if_interpreter_disabled_by_sandbox`.
+
+        Reads the resolved interpreter state from `self._server_kwargs` and the
+        local default from `settings`; gating on the default keeps the toast
+        quiet for users who disabled the interpreter in config.
+        """
+        from deepagents_code._server_config import _interpreter_suppressed_by_sandbox
+        from deepagents_code.config import settings
+
+        server_kwargs = self._server_kwargs or {}
+        if not _interpreter_suppressed_by_sandbox(
+            enable_interpreter=bool(server_kwargs.get("enable_interpreter")),
+            sandbox_type=self._sandbox_type,
+            local_default=settings.enable_interpreter,
+        ):
+            return
+        self.notify(
+            "JS interpreter (js_eval) is unavailable under a remote sandbox; "
+            "it runs in local mode only.",
             severity="warning",
             markup=False,
         )

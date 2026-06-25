@@ -11,6 +11,7 @@ import pytest
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import (
     ServerConfig,
+    _interpreter_suppressed_by_sandbox,
     _normalize_path,
     _read_env_bool,
     _read_env_json,
@@ -257,6 +258,45 @@ class TestServerConfigInterpreterDefault:
         assert config.enable_interpreter is True
 
 
+class TestInterpreterSuppressedBySandbox:
+    """Tests for the `_interpreter_suppressed_by_sandbox` advisory predicate."""
+
+    def test_suppressed_when_remote_and_default_on(self) -> None:
+        assert _interpreter_suppressed_by_sandbox(
+            enable_interpreter=False, sandbox_type="daytona", local_default=True
+        )
+
+    def test_not_suppressed_when_enabled(self) -> None:
+        # Explicit/forced `True` (e.g. `--interpreter` on a sandbox) is not a
+        # silent drop — the server raises a clear error instead.
+        assert not _interpreter_suppressed_by_sandbox(
+            enable_interpreter=True, sandbox_type="daytona", local_default=True
+        )
+
+    def test_not_suppressed_when_local(self) -> None:
+        assert not _interpreter_suppressed_by_sandbox(
+            enable_interpreter=False, sandbox_type=None, local_default=True
+        )
+
+    def test_not_suppressed_when_sandbox_none_string(self) -> None:
+        assert not _interpreter_suppressed_by_sandbox(
+            enable_interpreter=False, sandbox_type="none", local_default=True
+        )
+
+    def test_empty_sandbox_treated_as_local(self) -> None:
+        # An empty-string sandbox is falsy and must count as local, so the
+        # advisory does not fire spuriously.
+        assert not _interpreter_suppressed_by_sandbox(
+            enable_interpreter=False, sandbox_type="", local_default=True
+        )
+
+    def test_not_suppressed_when_default_off(self) -> None:
+        # A user who disabled the interpreter in config should not be nagged.
+        assert not _interpreter_suppressed_by_sandbox(
+            enable_interpreter=False, sandbox_type="daytona", local_default=False
+        )
+
+
 # ------------------------------------------------------------------
 # ServerConfig round-trip edge cases
 # ------------------------------------------------------------------
@@ -274,6 +314,35 @@ class TestServerConfigEdgeCases:
             restored = ServerConfig.from_env()
 
         assert restored.trust_project_mcp is False
+
+    def test_enable_interpreter_true_round_trips(self) -> None:
+        """A resolved-`True` interpreter must survive the env boundary.
+
+        The "on by default" intent rides entirely on this round-trip: the
+        dataclass and `from_env` defaults are both `False`, so if `to_env` ever
+        dropped the key the subprocess would silently disable `js_eval`.
+        """
+        original = ServerConfig(enable_interpreter=True)
+        env_dict = original.to_env()
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored.enable_interpreter is True
+
+    def test_enable_interpreter_false_round_trips(self) -> None:
+        """A resolved-`False` interpreter must survive (not flip to the default)."""
+        original = ServerConfig(enable_interpreter=False)
+        env_dict = original.to_env()
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored.enable_interpreter is False
 
     def test_sandbox_type_none_string_round_trips(self) -> None:
         """sandbox_type='none' normalizes to None and survives round-trip."""

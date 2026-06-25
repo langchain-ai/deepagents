@@ -17031,6 +17031,72 @@ class TestNotifyInterpreterToolsWithoutInterpreter:
         notify_mock.assert_not_called()
 
 
+class TestNotifyInterpreterDisabledBySandbox:
+    """Tests for `_notify_interpreter_disabled_by_sandbox` (TUI advisory)."""
+
+    def test_toasts_when_sandbox_suppresses_default(self) -> None:
+        """A remote sandbox with the default-on interpreter warns once."""
+        from deepagents_code.config import settings
+
+        app = DeepAgentsApp(
+            server_kwargs={
+                "assistant_id": "agent",
+                "model_name": None,
+                "sandbox_type": "daytona",
+                "enable_interpreter": False,
+            },
+        )
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        with patch.object(settings, "enable_interpreter", True):
+            app._notify_interpreter_disabled_by_sandbox()
+
+        notify_mock.assert_called_once()
+        assert "unavailable under a remote sandbox" in notify_mock.call_args.args[0]
+        assert notify_mock.call_args.kwargs.get("severity") == "warning"
+        assert notify_mock.call_args.kwargs.get("markup") is False
+
+    def test_no_toast_in_local_mode(self) -> None:
+        """Local mode keeps the interpreter, so there is nothing to warn about."""
+        from deepagents_code.config import settings
+
+        app = DeepAgentsApp(
+            server_kwargs={
+                "assistant_id": "agent",
+                "model_name": None,
+                "enable_interpreter": True,
+            },
+        )
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        with patch.object(settings, "enable_interpreter", True):
+            app._notify_interpreter_disabled_by_sandbox()
+
+        notify_mock.assert_not_called()
+
+    def test_no_toast_when_config_default_off(self) -> None:
+        """A user who disabled the interpreter in config is not nagged."""
+        from deepagents_code.config import settings
+
+        app = DeepAgentsApp(
+            server_kwargs={
+                "assistant_id": "agent",
+                "model_name": None,
+                "sandbox_type": "daytona",
+                "enable_interpreter": False,
+            },
+        )
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        with patch.object(settings, "enable_interpreter", False):
+            app._notify_interpreter_disabled_by_sandbox()
+
+        notify_mock.assert_not_called()
+
+
 class TestNotifyOrphanedTracingDisabled:
     """Tests for `_notify_orphaned_tracing_disabled` (TUI advisory)."""
 

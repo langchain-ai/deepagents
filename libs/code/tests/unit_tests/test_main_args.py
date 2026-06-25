@@ -2266,6 +2266,22 @@ class TestResolveInterpreterEnabled:
         with patch.object(settings, "enable_interpreter", True):
             assert _resolve_interpreter_enabled(args) is False
 
+    def test_empty_sandbox_treated_as_local(self) -> None:
+        """An empty-string sandbox is falsy and must resolve as local mode.
+
+        Parity with the `_resolve_enable_interpreter` edge case (the CLI resolver
+        delegates to it); a regression in the falsy-sandbox guard must fail here
+        too, not only at the server-config layer.
+        """
+        import argparse
+
+        from deepagents_code.config import settings
+        from deepagents_code.main import _resolve_interpreter_enabled
+
+        args = argparse.Namespace(interpreter=None, sandbox="")
+        with patch.object(settings, "enable_interpreter", True):
+            assert _resolve_interpreter_enabled(args) is True
+
 
 class TestRunTextualCliAsyncInterpreterDefault:
     """Tests for TUI helper interpreter tri-state forwarding."""
@@ -2407,3 +2423,115 @@ class TestWarnInterpreterToolsWithoutInterpreter:
             "--interpreter-tools has no effect when the interpreter is disabled"
             in capsys.readouterr().err
         )
+
+
+class TestWarnInterpreterDisabledBySandbox:
+    """Tests for `_warn_if_interpreter_disabled_by_sandbox` (stderr advisory)."""
+
+    def test_warns_when_sandbox_suppresses_default(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A `--sandbox` run with the default-on interpreter warns on stderr."""
+        from deepagents_code.config import settings
+        from deepagents_code.main import (
+            _resolve_interpreter_enabled,
+            _warn_if_interpreter_disabled_by_sandbox,
+        )
+
+        with mock_argv("-n", "task", "--sandbox", "daytona"):
+            args = parse_args()
+        with patch.object(settings, "enable_interpreter", True):
+            enable_interpreter = _resolve_interpreter_enabled(args)
+            _warn_if_interpreter_disabled_by_sandbox(
+                args, enable_interpreter=enable_interpreter
+            )
+        assert enable_interpreter is False
+        assert "unavailable under a remote sandbox" in capsys.readouterr().err
+
+    def test_silent_in_local_mode(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Local mode keeps the interpreter, so there is nothing to warn about."""
+        from deepagents_code.config import settings
+        from deepagents_code.main import _warn_if_interpreter_disabled_by_sandbox
+
+        with mock_argv("-n", "task"):
+            args = parse_args()
+        with patch.object(settings, "enable_interpreter", True):
+            _warn_if_interpreter_disabled_by_sandbox(args, enable_interpreter=True)
+        assert capsys.readouterr().err == ""
+
+    def test_silent_when_config_default_off(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A user who disabled the interpreter in config is not nagged."""
+        from deepagents_code.config import settings
+        from deepagents_code.main import _warn_if_interpreter_disabled_by_sandbox
+
+        with mock_argv("-n", "task", "--sandbox", "daytona"):
+            args = parse_args()
+        with patch.object(settings, "enable_interpreter", False):
+            _warn_if_interpreter_disabled_by_sandbox(args, enable_interpreter=False)
+        assert capsys.readouterr().err == ""
+
+    def test_cli_main_forwards_enabled_interpreter_in_local_mode(self) -> None:
+        """End-to-end: bare `-n task` resolves the interpreter on and forwards it.
+
+        Guards the `cli_main` -> `run_non_interactive` wiring: a dropped or
+        reverted assignment (e.g. back to a hard-coded `False`) fails here.
+        """
+        from deepagents_code.config import settings
+        from deepagents_code.main import cli_main
+
+        run_mock = AsyncMock(return_value=0)
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(sys, "argv", ["deepagents", "-n", "task"]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch.object(settings, "enable_interpreter", True),
+            patch("deepagents_code.non_interactive.run_non_interactive", run_mock),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        assert run_mock.call_args.kwargs["enable_interpreter"] is True
+
+    def test_cli_main_warns_and_disables_under_sandbox(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """End-to-end: `-n --sandbox` forwards the disabled interpreter and warns."""
+        from deepagents_code.config import settings
+        from deepagents_code.main import cli_main
+
+        run_mock = AsyncMock(return_value=0)
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys, "argv", ["deepagents", "-n", "task", "--sandbox", "daytona"]
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.integrations.sandbox_factory.verify_sandbox_deps",
+            ),
+            patch.object(settings, "enable_interpreter", True),
+            patch("deepagents_code.non_interactive.run_non_interactive", run_mock),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        assert run_mock.call_args.kwargs["enable_interpreter"] is False
+        assert "unavailable under a remote sandbox" in capsys.readouterr().err

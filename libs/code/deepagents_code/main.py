@@ -494,18 +494,46 @@ def _parse_interpreter_tools_flag(
 def _resolve_interpreter_enabled(args: argparse.Namespace) -> bool:
     """Return whether the JS interpreter should run for these CLI args.
 
-    The default comes from `[interpreter].enable_interpreter` in local mode and
-    is disabled for remote sandboxes, where `CodeInterpreterMiddleware` is
-    unsupported. Explicit `--interpreter` or `--no-interpreter` values override
-    the local-mode default.
+    Delegates to `_resolve_enable_interpreter` so the CLI pre-flight gate and the
+    stored `ServerConfig` share one resolution rule and cannot drift. The default
+    comes from `[interpreter].enable_interpreter` in local mode and is disabled
+    for remote sandboxes, where `CodeInterpreterMiddleware` is unsupported;
+    explicit `--interpreter`/`--no-interpreter` overrides the default.
+
+    `args.sandbox` is already normalized by `parse_args` (the bare-flag sentinel
+    is resolved to a provider name), so the resolver sees the concrete value.
     """
-    if args.interpreter is not None:
-        return bool(args.interpreter)
-    if args.sandbox and args.sandbox != "none":
-        return False
+    from deepagents_code._server_config import _resolve_enable_interpreter
+
+    return _resolve_enable_interpreter(args.interpreter, args.sandbox)
+
+
+def _warn_if_interpreter_disabled_by_sandbox(
+    args: argparse.Namespace, *, enable_interpreter: bool
+) -> None:
+    """Warn that a remote sandbox suppressed the otherwise-default interpreter.
+
+    With `js_eval` on by default in local mode, a `--sandbox` run silently drops
+    it (the middleware is unsupported under a remote sandbox). This prints to
+    stderr on the non-interactive (`-n`) path; the interactive TUI surfaces the
+    same advisory as a startup notification (see
+    `DeepAgentsApp._notify_interpreter_disabled_by_sandbox`).
+    """
+    from deepagents_code._server_config import _interpreter_suppressed_by_sandbox
     from deepagents_code.config import settings
 
-    return settings.enable_interpreter
+    if not _interpreter_suppressed_by_sandbox(
+        enable_interpreter=enable_interpreter,
+        sandbox_type=args.sandbox,
+        local_default=settings.enable_interpreter,
+    ):
+        return
+    from rich.console import Console as _Console
+
+    _Console(stderr=True).print(
+        "[yellow]Warning:[/yellow] JS interpreter (`js_eval`) is unavailable "
+        "under a remote sandbox; it runs in local mode only."
+    )
 
 
 def _warn_if_interpreter_tools_without_interpreter(
@@ -2257,11 +2285,13 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
 
 
 def _verify_interpreter_or_exit() -> None:
-    """Run the `--interpreter` pre-flight check; print and exit on failure.
+    """Run the interpreter pre-flight check; print and exit on failure.
 
     Called before spawning the langgraph dev server subprocess so a missing
     `langchain-quickjs` dependency surfaces a one-line, actionable hint instead
-    of an opaque "Server process exited with code N" downstream.
+    of an opaque "Server process exited with code N" downstream. Gated on the
+    resolved interpreter state (`_resolve_interpreter_enabled`), not the
+    `--interpreter` flag alone, since the interpreter is now on by default.
     """
     from deepagents_code.extras_info import verify_interpreter_deps
 
@@ -3141,6 +3171,9 @@ def cli_main() -> None:
                 getattr(args, "interpreter_tools", None)
             )
             _warn_if_interpreter_tools_without_interpreter(
+                args, enable_interpreter=enable_interpreter
+            )
+            _warn_if_interpreter_disabled_by_sandbox(
                 args, enable_interpreter=enable_interpreter
             )
 

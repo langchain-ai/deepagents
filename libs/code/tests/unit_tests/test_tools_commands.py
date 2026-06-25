@@ -27,7 +27,7 @@ class TestToolsInstall:
     """Tests for `dcode tools install` dispatch."""
 
     def test_install_success_text(self, tmp_path: Path) -> None:
-        installed = tmp_path / "rg"
+        installed = tmp_path / "[/green]" / "rg"
         args = argparse.Namespace(tools_command="install", output_format="text")
         with (
             patch.object(managed_tools, "ensure_ripgrep", return_value=installed),

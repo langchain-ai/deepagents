@@ -166,6 +166,6 @@ def _emit_install_result(
         from deepagents_code.config import console
 
         style = "green" if ok else "bold red"
-        console.print(f"[{style}]{message}[/{style}]", markup=True)
+        console.print(message, style=style, markup=False)
 
     return 0 if ok else 1

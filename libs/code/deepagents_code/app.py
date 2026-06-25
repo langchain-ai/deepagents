@@ -1352,6 +1352,7 @@ class TextualSessionState:
         """
         self.auto_approve = auto_approve
         self.thread_id = thread_id or _new_thread_id()
+        self.approval_mode_key: str | None = None
 
     def reset_thread(self) -> str:
         """Reset to a new thread.
@@ -1360,6 +1361,7 @@ class TextualSessionState:
             The new thread_id.
         """
         self.thread_id = _new_thread_id()
+        self.approval_mode_key = None
         return self.thread_id
 
 
@@ -1750,6 +1752,22 @@ class DeepAgentsApp(App):
 
         self._launch_init_requested = launch_init
         """Whether startup should show onboarding during the initial paint."""
+
+        self._onboarding_session = launch_init
+        """Whether onboarding runs this session (constant for the session).
+
+        Unlike `_launch_init_requested`, which is cleared once the flow starts,
+        this stays set so background workers (e.g. the optional-tools check)
+        can register missing-dependency notices silently instead of toasting
+        over the onboarding modals.
+
+        Intentionally never reset, including on onboarding completion: the
+        optional-tools check is scheduled once at startup and may not have run
+        by the time the flow finishes, so clearing this would let that check
+        toast the very "Web search disabled" notice onboarding means to defer.
+        Leaving it set for the whole session is harmless because the check runs
+        exactly once.
+        """
 
         self._launch_init_running = False
         """Re-entry guard for launch init modals."""
@@ -2915,7 +2933,13 @@ class DeepAgentsApp(App):
         # update (already notified within CACHE_TTL) does not open the
         # modal, so toasts must still fire or returning users never
         # see the warning.
-        suppress_toasts = self._update_modal_pending.is_set()
+        # Onboarding suppresses too: the flow covers integrations (and
+        # prompts for a Tavily key) itself, so a "Web search disabled"
+        # toast over the onboarding modals is noise. Entries stay
+        # reachable via ctrl+n.
+        suppress_toasts = (
+            self._update_modal_pending.is_set() or self._onboarding_session
+        )
 
         for tool in missing:
             notification = build_missing_tool_notification(tool)
@@ -3467,11 +3491,18 @@ class DeepAgentsApp(App):
                 )
             else:
                 from deepagents_code.extras_info import ExtrasIntrospectionError
-                from deepagents_code.update_check import install_package_command
+                from deepagents_code.update_check import (
+                    ToolRequirementIntrospectionError,
+                    install_package_command,
+                )
 
                 try:
                     install_cmd = install_package_command(missing.package)
-                except (ValueError, ExtrasIntrospectionError) as exc:
+                except (
+                    ValueError,
+                    ExtrasIntrospectionError,
+                    ToolRequirementIntrospectionError,
+                ) as exc:
                     logger.debug(
                         "install_package_command failed; falling back to "
                         "manual hint: %s",
@@ -4319,7 +4350,8 @@ class DeepAgentsApp(App):
         """Handle the `/install <extra>` slash command.
 
         Adds an optional extra (e.g. `quickjs`, `daytona`) to the installed
-        dcode tool by re-running `uv tool install -U 'deepagents-code[<extra>]'`.
+        dcode tool by re-running
+        `uv tool install --reinstall -U 'deepagents-code[<extra>]'`.
         Refuses unknown extras unless the user passes a `--force` token.
 
         Args:
@@ -5529,7 +5561,43 @@ class DeepAgentsApp(App):
             )
         await self._mount_approval_widget(menu, result_future)
 
-    def _on_auto_approve_enabled(self) -> None:
+    async def _write_live_approval_mode(self) -> bool:
+        """Persist the current approval mode for the active thread.
+
+        Returns:
+            `True` when no write was needed or the write succeeded, otherwise
+            `False`.
+        """
+        if self._session_state is None or self._agent is None:
+            return True
+        from deepagents_code.approval_mode import awrite_approval_mode
+
+        try:
+            live_key = await awrite_approval_mode(
+                self._agent,
+                self._session_state.thread_id,
+                auto_approve=bool(self._session_state.auto_approve),
+            )
+        except Exception:
+            self._session_state.approval_mode_key = None
+            logger.warning("Failed to write live approval-mode state", exc_info=True)
+            return False
+        if live_key is None:
+            # No store writer on the agent (a local/in-process agent rather
+            # than a RemoteAgent). This is an expected configuration, not a
+            # fault, so — unlike the except branch above — we clear the stale
+            # key and fail closed without logging, to avoid noise on every
+            # toggle. The run-context path persists the mode for local agents.
+            self._session_state.approval_mode_key = None
+            return False
+        self._session_state.approval_mode_key = live_key
+        return True
+
+    def _warn_live_approval_mode_unavailable(self, message: str) -> None:
+        """Surface live approval-mode degradation to the user."""
+        self.notify(message, severity="warning", timeout=8, markup=False)
+
+    async def _on_auto_approve_enabled(self) -> None:
         """Handle auto-approve being enabled via the HITL approval menu.
 
         Called when the user selects "Auto-approve all" from an approval
@@ -5542,6 +5610,11 @@ class DeepAgentsApp(App):
             self._status_bar.set_auto_approve(enabled=True)
         if self._session_state:
             self._session_state.auto_approve = True
+            if not await self._write_live_approval_mode():
+                self._warn_live_approval_mode_unavailable(
+                    "Auto-approve could not sync to the running agent; "
+                    "approval prompts may continue."
+                )
 
     async def _remove_ask_user_widget(  # noqa: PLR6301  # Shared helper used by ask_user event handlers
         self,
@@ -6108,6 +6181,7 @@ class DeepAgentsApp(App):
                 return
 
             model_spec, provider = result
+            await self._prompt_launch_tavily()
             if self._connecting:
                 # Bound the wait so a stuck server never traps onboarding.
                 # Server startup typically completes in seconds; a minute is
@@ -6191,6 +6265,59 @@ class DeepAgentsApp(App):
                 await self._install_extra_then_switch(extra, model_spec)
                 return
         await self._switch_model(model_spec, announce_unchanged=False)
+
+    async def _prompt_launch_tavily(self) -> None:
+        """Optionally collect and store a Tavily web-search key during onboarding.
+
+        Skipped when a Tavily key is already configured (env or stored). A
+        blank submission or Escape stores nothing; a non-empty key is persisted
+        via the same `auth_store` path `/auth` uses. The key is also exported to
+        the process environment (`apply_stored_service_credentials`) so a server
+        respawn this session picks it up; the already-running server keeps its
+        spawn-time tools, so web search takes full effect on the next launch (or
+        after a restart).
+        """
+        from deepagents_code.config import settings
+
+        if settings.has_tavily:
+            return
+
+        from deepagents_code.widgets.auth import AuthPromptScreen, AuthResult
+
+        result = await self._push_screen_wait(
+            AuthPromptScreen(
+                "tavily",
+                "TAVILY_API_KEY",
+                reason=(
+                    "Web search is optional but strongly recommended to enhance "
+                    "your agent's capabilities."
+                ),
+                allow_empty_submit=True,
+                input_placeholder="Tavily API key (optional)",
+                submit_label="Enter save/skip",
+            )
+        )
+        if result is not AuthResult.SAVED:
+            return
+
+        from deepagents_code.model_config import apply_stored_service_credentials
+
+        apply_stored_service_credentials()
+
+        # `apply_stored_service_credentials` is best-effort: it swallows a
+        # corrupt-store read with only a `logger.warning`, which is invisible
+        # inside a Textual session. The user just saw the key accepted, so
+        # confirm it actually reached the environment; if not, say so rather
+        # than letting web search silently stay disabled. Reaching this branch
+        # means `has_tavily` was False at bootstrap, so a populated
+        # `TAVILY_API_KEY` here can only come from the export above.
+        if not os.environ.get("TAVILY_API_KEY"):
+            self.notify(
+                "Saved your Tavily key, but couldn't activate it this "
+                "session. Restart Deep Agents Code, or re-add it with /auth.",
+                severity="warning",
+                markup=False,
+            )
 
     async def _finish_launch_init(self, *, name: str | None) -> None:
         """Persist onboarding completion and, when given, mount the welcome.
@@ -6301,12 +6428,23 @@ class DeepAgentsApp(App):
     def _build_launch_dependencies_prompt(
         self,
     ) -> tuple[ModalScreen, asyncio.Future[tuple[bool, tuple[str, str] | None]]]:
-        """Build the dependency/model prompt screen and result future.
+        """Build the first post-name onboarding screen and its result future.
+
+        The integrations summary screen is disabled by default (the model
+        selector already surfaces and installs uninstalled providers), so the
+        model selector is normally the first screen. Setting
+        `DEEPAGENTS_CODE_ONBOARDING_INTEGRATIONS_SCREEN` re-inserts the
+        `LaunchDependenciesScreen` ahead of it.
 
         Returns:
-            The dependency screen and a future resolved when the dependency or
-            model screen finishes.
+            The first onboarding screen and a future resolved when the
+            dependency or model screen finishes.
         """
+        from deepagents_code._env_vars import (
+            ONBOARDING_INTEGRATIONS_SCREEN,
+            is_env_truthy,
+        )
+
         loop = asyncio.get_running_loop()
         result_future: asyncio.Future[tuple[bool, tuple[str, str] | None]] = (
             loop.create_future()
@@ -6329,6 +6467,9 @@ class DeepAgentsApp(App):
             curated=True,
             result_callback=handle_model,
         )
+        if not is_env_truthy(ONBOARDING_INTEGRATIONS_SCREEN):
+            return model_screen, result_future
+
         dependency_screen = self._build_launch_dependencies_screen(
             continue_screen=model_screen,
             on_done=handle_dependencies,
@@ -6981,7 +7122,8 @@ class DeepAgentsApp(App):
                 AppMessage(
                     "The `langsmith` package is not installed. "
                     "Install it with "
-                    "`uv tool install -U deepagents-code --with langsmith` "
+                    "`uv tool install --reinstall -U deepagents-code "
+                    "--with langsmith` "
                     "to enable `/trace`.",
                 ),
             )
@@ -9285,7 +9427,7 @@ class DeepAgentsApp(App):
         if panel is not None:
             panel.toggle()
 
-    def action_toggle_auto_approve(self) -> None:
+    async def action_toggle_auto_approve(self) -> None:
         """Toggle auto-approve mode for the current session.
 
         When enabled, all tool calls (shell execution, file writes/edits,
@@ -9343,6 +9485,26 @@ class DeepAgentsApp(App):
             self._status_bar.set_auto_approve(enabled=self._auto_approve)
         if self._session_state:
             self._session_state.auto_approve = self._auto_approve
+            if not await self._write_live_approval_mode():
+                if self._auto_approve:
+                    self._warn_live_approval_mode_unavailable(
+                        "Auto-approve could not sync to the running agent; "
+                        "approval prompts may continue."
+                    )
+                elif self._agent_running:
+                    # Switching to manual mid-run, but the agent never saw it:
+                    # cancel the active run rather than let it keep auto-approving.
+                    self._session_state.approval_mode_key = None
+                    self._warn_live_approval_mode_unavailable(
+                        "Manual approval could not sync to the running agent; "
+                        "the active run was cancelled for safety."
+                    )
+                    self._force_interrupt_active_work()
+                else:
+                    self._warn_live_approval_mode_unavailable(
+                        "Manual approval could not sync to the running agent; "
+                        "start a new run before continuing."
+                    )
 
     def action_toggle_tool_output(self) -> None:
         """Toggle expand/collapse of the most recent tool output or skill body."""
@@ -9576,7 +9738,8 @@ class DeepAgentsApp(App):
             description=(
                 "These models have performed well in Deep Agents evals and are "
                 "a solid starting set. You can explore the full model list "
-                "later with /model."
+                "later with /model. Sandboxes and other integrations install "
+                "anytime with /install."
                 if curated
                 else None
             ),
@@ -11854,7 +12017,7 @@ class DeepAgentsApp(App):
     def _ensure_restart_prompt_loaded() -> None:
         """Load the restart-prompt modal before any in-place self-upgrade.
 
-        `/install` runs `uv tool install -U 'deepagents-code[...]'`, which
+        `/install` runs `uv tool install --reinstall -U 'deepagents-code[...]'`, which
         rewrites deepagents-code's own on-disk package tree while this process
         is running. Modules already in `sys.modules` keep working from memory,
         but a *first* import after the rewrite reads the mutated (or
@@ -11891,11 +12054,11 @@ class DeepAgentsApp(App):
         redundant hint:
 
         - Owned + idle: show the prompt (its button is the call to action). If
-          the prompt can't be shown, fall back to a `/restart` hint.
+            the prompt can't be shown, fall back to a `/restart` hint.
         - Owned + busy/connecting: a restart cancels in-flight work, so point
-          at `/restart` for once the current task finishes.
+            at `/restart` for once the current task finishes.
         - No owned subprocess (remote server): `/restart` can't respawn it, so a
-          full relaunch is the only way to load the package.
+            full relaunch is the only way to load the package.
 
         Args:
             label: Installed extra/package name, surfaced in the prompt title.
@@ -11921,8 +12084,9 @@ class DeepAgentsApp(App):
         try:
             from deepagents_code.widgets.restart_prompt import RestartPromptScreen
         except ModuleNotFoundError:
-            # `/install` runs `uv tool install -U 'deepagents-code[...]'`, which
-            # can rewrite deepagents-code's own on-disk package tree mid-session
+            # `/install` runs `uv tool install --reinstall -U
+            # 'deepagents-code[...]'`, which can rewrite deepagents-code's own
+            # on-disk package tree mid-session
             # (see `_ensure_restart_prompt_loaded`). A first import of the modal
             # here may then fail with `ModuleNotFoundError`. Degrade to the
             # manual `/restart` hint instead of crashing the TUI. The catch is

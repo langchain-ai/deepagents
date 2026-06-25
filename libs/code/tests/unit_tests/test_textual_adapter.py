@@ -3,13 +3,13 @@
 import asyncio
 import sys
 from asyncio import Future
-from collections.abc import AsyncIterator, Generator
+from collections.abc import AsyncIterator, Awaitable, Callable, Generator
 from datetime import datetime
 from importlib.metadata import PackageNotFoundError
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -20,6 +20,7 @@ from rich.console import Console
 
 from deepagents_code import config as config_module
 from deepagents_code._ask_user_types import AskUserWidgetResult, Question
+from deepagents_code.approval_mode import APPROVAL_MODE_NAMESPACE, approval_mode_key
 from deepagents_code.config import build_stream_config
 from deepagents_code.textual_adapter import (
     ModelStats,
@@ -37,6 +38,9 @@ from deepagents_code.widgets.messages import (
     SummarizationMessage,
     ToolCallMessage,
 )
+
+if TYPE_CHECKING:
+    from langchain_core.runnables import RunnableConfig
 
 
 async def _mock_mount(widget: object) -> None:
@@ -262,6 +266,100 @@ class TestInterruptCleanup:
         assistant_msg.stop_stream.assert_awaited_once_with()
         sync_message_content.assert_called_once_with("asst-1", "partial response")
         assert assistant_messages == {}
+
+    async def test_interrupt_cancels_active_remote_runs_before_state_writes(
+        self,
+    ) -> None:
+        """Remote runs should be interrupted before recovery state is persisted."""
+        calls: list[str] = []
+
+        # Sync side effects are fine: the AsyncMock wrapping them is awaitable,
+        # and recording into `calls` is enough to assert relative ordering.
+        def cancel_runs(_config: object) -> None:
+            calls.append("cancel")
+
+        def update_state(_config: object, _values: dict[str, Any]) -> None:
+            calls.append("update")
+
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+        agent = SimpleNamespace(
+            acancel_active_runs=AsyncMock(side_effect=cancel_runs),
+            aupdate_state=AsyncMock(side_effect=update_state),
+        )
+        config: RunnableConfig = {"configurable": {"thread_id": "t-1"}}
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config=config,
+            pending_text_by_namespace={},
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        agent.acancel_active_runs.assert_awaited_once_with(config)
+        assert calls == ["cancel", "update"]
+
+    async def test_remote_run_cancel_failure_does_not_skip_state_writes(self) -> None:
+        """Interrupt cleanup remains best-effort when remote cancel fails."""
+        agent = SimpleNamespace(
+            acancel_active_runs=AsyncMock(side_effect=RuntimeError("down")),
+            aupdate_state=AsyncMock(),
+        )
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={},
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        agent.acancel_active_runs.assert_awaited_once()
+        agent.aupdate_state.assert_awaited_once()
+
+    async def test_local_agent_without_cancel_method_still_writes_state(self) -> None:
+        """Local agents lack `acancel_active_runs`; cleanup must skip it cleanly."""
+        agent = SimpleNamespace(aupdate_state=AsyncMock())
+        assert not hasattr(agent, "acancel_active_runs")
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={},
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        agent.aupdate_state.assert_awaited_once()
 
     async def test_disables_tracing_during_state_save(self) -> None:
         """Interrupt-cleanup `aupdate_state` calls must run with tracing disabled.
@@ -772,6 +870,16 @@ class _SequencedAgent:
         self._streams_by_call = streams_by_call
         self.stream_inputs: list[dict | Command] = []
         self.contexts: list[Any] = []
+        self.store_items: list[tuple[tuple[str, ...], str, dict[str, Any]]] = []
+
+    async def aput_store_item(
+        self,
+        namespace: tuple[str, ...],
+        key: str,
+        value: dict[str, Any],
+    ) -> None:
+        """Record store writes requested by `execute_task_textual`."""
+        self.store_items.append((namespace, key, value))
 
     async def astream(
         self,
@@ -792,6 +900,21 @@ class _SequencedAgent:
         chunks = self._streams_by_call.pop(0) if self._streams_by_call else []
         for chunk in chunks:
             yield chunk
+
+
+class _FailingApprovalStoreAgent(_SequencedAgent):
+    """Agent test double whose approval-mode store writes fail."""
+
+    async def aput_store_item(
+        self,
+        namespace: tuple[str, ...],
+        key: str,
+        value: dict[str, Any],
+    ) -> None:
+        """Raise while preserving the production store-writer signature."""
+        _ = (namespace, key, value)
+        msg = "approval-mode store unavailable"
+        raise RuntimeError(msg)
 
 
 class TestExecuteTaskTextualAutoApproveInput:
@@ -823,9 +946,46 @@ class TestExecuteTaskTextualAutoApproveInput:
         assert not isinstance(stream_input, Command)
         assert stream_input == {"messages": [{"role": "user", "content": "hi"}]}
         assert agent.contexts[0]["auto_approve"] is True
+        key = approval_mode_key("thread-1")
+        assert agent.contexts[0]["approval_mode_key"] == key
+        assert agent.store_items == [
+            (APPROVAL_MODE_NAMESPACE, key, {"auto_approve": True})
+        ]
 
+    async def test_live_approval_write_failure_fails_closed_context(self) -> None:
+        """A failed live-mode write must not reuse a stale approval key."""
+        agent = _FailingApprovalStoreAgent([[]])
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        session_state = SimpleNamespace(
+            thread_id="thread-1",
+            auto_approve=True,
+            approval_mode_key="stale",
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=session_state,
+            adapter=adapter,
+        )
+
+        stream_input = agent.stream_inputs[0]
+        assert not isinstance(stream_input, Command)
+        assert agent.contexts[0]["auto_approve"] is False
+        assert "approval_mode_key" not in agent.contexts[0]
+        assert agent.store_items == []
+        # The stale key must be cleared so later turns don't reuse it.
+        assert session_state.approval_mode_key is None
+
+    @pytest.mark.parametrize("use_async_callback", [True, False])
     async def test_mid_turn_auto_approve_all_propagates_to_resume_context(
         self,
+        use_async_callback: bool,
     ) -> None:
         """Choosing "auto-approve all" mid-turn flips the resuming stream's context.
 
@@ -835,6 +995,10 @@ class TestExecuteTaskTextualAutoApproveInput:
         carries `auto_approve=True`. Guards against hoisting the refresh out of
         the stream loop (which would leave the first-iteration value frozen and
         keep interrupting the rest of the turn).
+
+        Parametrized over an async and a sync `on_auto_approve_enabled` callback
+        to cover the `Awaitable[None] | None` union the adapter awaits only when
+        the result is non-`None`.
         """
         action_requests = [{"name": "execute", "args": {"command": "echo hi"}}]
         agent = _SequencedAgent(
@@ -875,10 +1039,28 @@ class TestExecuteTaskTextualAutoApproveInput:
             future.set_result({"type": "auto_approve_all"})
             return future
 
+        callback_seen: list[bool] = []
+
+        on_auto_approve_enabled: Callable[[], Awaitable[None] | None]
+        if use_async_callback:
+
+            async def _async_callback() -> None:
+                await asyncio.sleep(0)
+                callback_seen.append(True)
+
+            on_auto_approve_enabled = _async_callback
+        else:
+
+            def _sync_callback() -> None:
+                callback_seen.append(True)
+
+            on_auto_approve_enabled = _sync_callback
+
         adapter = TextualUIAdapter(
             mount_message=_mock_mount,
             update_status=_noop_status,
             request_approval=request_approval,
+            on_auto_approve_enabled=on_auto_approve_enabled,
         )
         session_state = SimpleNamespace(thread_id="thread-1", auto_approve=False)
 
@@ -895,6 +1077,14 @@ class TestExecuteTaskTextualAutoApproveInput:
         assert len(agent.contexts) == 2
         assert agent.contexts[0]["auto_approve"] is False
         assert agent.contexts[1]["auto_approve"] is True
+        key = approval_mode_key("thread-1")
+        assert agent.contexts[0]["approval_mode_key"] == key
+        assert agent.contexts[1]["approval_mode_key"] == key
+        assert agent.store_items == [
+            (APPROVAL_MODE_NAMESPACE, key, {"auto_approve": False}),
+            (APPROVAL_MODE_NAMESPACE, key, {"auto_approve": True}),
+        ]
+        assert callback_seen == [True]
         assert session_state.auto_approve is True
 
 

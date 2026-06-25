@@ -2558,7 +2558,7 @@ class TestInstallExtraCommand:
         )
 
         assert install_extra_recovery_command("quickjs") == (
-            "uv tool install -U --python '/opt/Python 3.13/bin/python' "
+            "uv tool install --reinstall -U --python '/opt/Python 3.13/bin/python' "
             "'deepagents-code[nvidia,quickjs]' --with langchain-custom"
         )
 
@@ -2618,7 +2618,7 @@ class TestInstallExtraCommand:
             _install_extra_uv_tool_command(
                 "baseten", distribution_name="deepagents-code"
             )
-            == "uv tool install -U 'deepagents-code[baseten,nvidia]'"
+            == "uv tool install --reinstall -U 'deepagents-code[baseten,nvidia]'"
         )
 
     def test_uv_install_extra_command_dedupes_existing_extra(
@@ -2639,7 +2639,7 @@ class TestInstallExtraCommand:
             _install_extra_uv_tool_command(
                 "nvidia", distribution_name="deepagents-code"
             )
-            == "uv tool install -U 'deepagents-code[nvidia]'"
+            == "uv tool install --reinstall -U 'deepagents-code[nvidia]'"
         )
 
     def test_uv_install_extra_command_drops_composite_extras(
@@ -2665,7 +2665,7 @@ class TestInstallExtraCommand:
             _install_extra_uv_tool_command(
                 "baseten", distribution_name="deepagents-code"
             )
-            == "uv tool install -U 'deepagents-code[baseten,nvidia]'"
+            == "uv tool install --reinstall -U 'deepagents-code[baseten,nvidia]'"
         )
 
     def test_uv_install_extra_command_preserves_receipt_python_and_with_packages(
@@ -2691,7 +2691,7 @@ class TestInstallExtraCommand:
         )
 
         assert command == (
-            "uv tool install -U --python '/opt/Python 3.13/bin/python' "
+            "uv tool install --reinstall -U --python '/opt/Python 3.13/bin/python' "
             "'deepagents-code[baseten,nvidia]' --with langchain-custom"
         )
 
@@ -2730,37 +2730,43 @@ class TestInstallPackageCommand:
 
     def test_basic_no_extras(self, tmp_path, monkeypatch) -> None:
         """Clean metadata with no installed extras yields a plain requirement."""
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
         _write_dist_info(
             tmp_path,
             "deepagents-code",
             requires=('definitely-absent-dcode-test-quickjs-xyz; extra == "quickjs"',),
         )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
         monkeypatch.syspath_prepend(str(tmp_path))
 
         assert (
             install_package_command(
                 "langchain-custom", distribution_name="deepagents-code"
             )
-            == "uv tool install -U deepagents-code --with langchain-custom"
+            == "uv tool install --reinstall -U deepagents-code --with langchain-custom"
         )
 
     def test_allows_pep508_name_separators(self, tmp_path, monkeypatch) -> None:
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
         _write_dist_info(
             tmp_path,
             "deepagents-code",
             requires=('definitely-absent-dcode-test-quickjs-xyz; extra == "quickjs"',),
         )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
         monkeypatch.syspath_prepend(str(tmp_path))
 
         assert (
             install_package_command(
                 "langchain.custom_provider", distribution_name="deepagents-code"
             )
-            == "uv tool install -U deepagents-code --with langchain.custom_provider"
+            == "uv tool install --reinstall -U deepagents-code "
+            "--with langchain.custom_provider"
         )
 
     def test_preserves_installed_extras(self, tmp_path, monkeypatch) -> None:
         """Adding a package keeps already-installed extras selected."""
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
         _write_dist_info(tmp_path, "definitely-present-dcode-test-nvidia")
         _write_dist_info(
             tmp_path,
@@ -2770,6 +2776,7 @@ class TestInstallPackageCommand:
                 'definitely-absent-dcode-test-baseten-xyz; extra == "baseten"',
             ),
         )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
         monkeypatch.syspath_prepend(str(tmp_path))
 
         assert installed_extra_names("deepagents-code") == {"nvidia"}
@@ -2777,8 +2784,157 @@ class TestInstallPackageCommand:
             install_package_command(
                 "langchain-custom", distribution_name="deepagents-code"
             )
-            == "uv tool install -U 'deepagents-code[nvidia]' --with langchain-custom"
+            == "uv tool install --reinstall -U 'deepagents-code[nvidia]' "
+            "--with langchain-custom"
         )
+
+    def test_preserves_receipt_python_and_with_packages(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Adding a package keeps uv receipt interpreter and `--with` packages."""
+        _write_uv_receipt(
+            tmp_path,
+            '{ name = "deepagents-code" }, { name = "langchain-first" }',
+            python="/opt/Python 3.13/bin/python",
+        )
+        _write_dist_info(tmp_path, "definitely-present-dcode-test-nvidia")
+        _write_dist_info(
+            tmp_path,
+            "deepagents-code",
+            requires=('definitely-present-dcode-test-nvidia; extra == "nvidia"',),
+        )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        command = install_package_command(
+            "langchain-second", distribution_name="deepagents-code"
+        )
+
+        assert command == (
+            "uv tool install --reinstall -U --python '/opt/Python 3.13/bin/python' "
+            "'deepagents-code[nvidia]' --with langchain-first "
+            "--with langchain-second"
+        )
+
+    def test_does_not_duplicate_existing_receipt_package(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Reinstalling an existing package does not emit duplicate `--with` args."""
+        _write_uv_receipt(
+            tmp_path,
+            '{ name = "deepagents-code" }, { name = "langchain-custom" }',
+        )
+        _write_dist_info(tmp_path, "deepagents-code")
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        command = install_package_command(
+            "LangChain_Custom", distribution_name="deepagents-code"
+        )
+
+        assert (
+            command
+            == "uv tool install --reinstall -U deepagents-code --with langchain-custom"
+        )
+
+    def test_preserves_prerelease_channel(self, tmp_path, monkeypatch) -> None:
+        """Adding a package to a pre-release install keeps the pre-release channel.
+
+        The `--reinstall` rebuild re-resolves the unpinned `deepagents-code`
+        requirement from scratch; without `--prerelease allow` uv would resolve
+        to the latest stable and silently downgrade a pre-release user.
+        """
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
+        _write_dist_info(tmp_path, "deepagents-code")
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        with patch("deepagents_code.update_check.__version__", "1.0.0a1"):
+            command = install_package_command(
+                "langchain-custom", distribution_name="deepagents-code"
+            )
+
+        assert command == (
+            "uv tool install --reinstall -U deepagents-code "
+            "--with langchain-custom --prerelease allow"
+        )
+
+    def test_stable_channel_omits_prerelease_flag(self, tmp_path, monkeypatch) -> None:
+        """A stable install does not add `--prerelease allow` for a package add.
+
+        The negative companion to `test_preserves_prerelease_channel`: pins that
+        the channel is *inferred* from the installed version, so an inverted
+        condition that always emitted `--prerelease allow` would fail here.
+        """
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
+        _write_dist_info(tmp_path, "deepagents-code")
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        with patch("deepagents_code.update_check.__version__", "1.0.0"):
+            command = install_package_command(
+                "langchain-custom", distribution_name="deepagents-code"
+            )
+
+        assert command == (
+            "uv tool install --reinstall -U deepagents-code --with langchain-custom"
+        )
+
+    def test_appends_new_with_package_after_sorted_receipt_packages(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A new `--with` package is appended after preserved ones, not re-sorted.
+
+        Preserved receipt packages come back sorted, and the new package is
+        appended afterward regardless of where it would sort. Using a new name
+        (`langchain-alpha`) that sorts *before* the receipt's (`langchain-zeta`)
+        distinguishes this append-after-preserved contract from a plain
+        alphabetical sort of the union, which the same-order cases cannot.
+        """
+        _write_uv_receipt(
+            tmp_path,
+            '{ name = "deepagents-code" }, { name = "langchain-zeta" }',
+        )
+        _write_dist_info(tmp_path, "deepagents-code")
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        command = install_package_command(
+            "langchain-alpha", distribution_name="deepagents-code"
+        )
+
+        assert command == (
+            "uv tool install --reinstall -U deepagents-code "
+            "--with langchain-zeta --with langchain-alpha"
+        )
+
+    def test_unpreservable_receipt_with_requirement_raises(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A `--with` requirement uv can't re-express by name aborts the build.
+
+        Exercises the `unsupported_keys` arm through `install_package_command`'s
+        newly-added receipt read: a source-pinned `--with` entry (e.g. an
+        editable install) carries keys beyond `name`, so it cannot be safely
+        re-expressed as a `--with <name>` and must raise rather than be silently
+        dropped from the rebuilt command.
+        """
+        _write_uv_receipt(
+            tmp_path,
+            '{ name = "deepagents-code" }, '
+            '{ name = "langchain-custom", editable = true }',
+        )
+        _write_dist_info(tmp_path, "deepagents-code")
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        with pytest.raises(
+            ToolRequirementIntrospectionError,
+            match="cannot be preserved automatically",
+        ):
+            install_package_command(
+                "langchain-new", distribution_name="deepagents-code"
+            )
 
     def test_refuses_missing_distribution(self) -> None:
         """Reinstalls must not drop extras when metadata is unavailable."""
@@ -2968,7 +3124,8 @@ class TestIsValidPackageName:
     def test_rejects_option_injection_leading_dash(self) -> None:
         """A leading dash would smuggle uv options into `--with <name>`.
 
-        The command is `uv tool install -U deepagents-code --with <name>`; a name
+        The command is `uv tool install --reinstall -U deepagents-code --with
+        <name>`; a name
         like `-rreqs.txt` or `--editable` would be parsed by uv as a flag, not a
         package. The validator must reject these regardless of `--force`/`--yes`.
         """
@@ -3118,6 +3275,40 @@ class TestPerformInstallPackage:
         assert "metadata unreadable" in output
         assert "introspect installed extras" in caplog.text
 
+    async def test_uv_receipt_failure_is_reported_and_logged(
+        self, tmp_path, monkeypatch, caplog
+    ) -> None:
+        """An unreadable uv receipt surfaces as a reported, logged error.
+
+        `install_package_command` now reads the uv tool receipt to preserve the
+        interpreter and `--with` packages, so a malformed receipt raises
+        `ToolRequirementIntrospectionError`. The executor must report it rather
+        than let it escape unhandled — narrowing back to `except
+        ExtrasIntrospectionError` would let the error crash the caller.
+        """
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }, "bad"')
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check.shutil.which",
+                return_value="/usr/bin/uv",
+            ),
+            patch(
+                "deepagents_code.extras_info.installed_extra_names",
+                return_value=frozenset(),
+            ),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
+        ):
+            success, output = await perform_install_package("langchain-custom")
+        assert success is False
+        assert "ToolRequirementIntrospectionError" in output
+        assert "non-table requirement" in output
+        assert "uv receipt" in caplog.text
+
 
 class TestRunInstallSubprocessFailureModes:
     """Failure-mode coverage routed through `perform_install_extra`.
@@ -3166,7 +3357,9 @@ class TestRunInstallSubprocessFailureModes:
             ),
             patch(
                 "deepagents_code.update_check._install_extra_uv_tool_command",
-                return_value="uv tool install -U 'deepagents-code[quickjs]'",
+                return_value=(
+                    "uv tool install --reinstall -U 'deepagents-code[quickjs]'"
+                ),
             ),
             patch("asyncio.create_subprocess_shell", side_effect=_raise),
         ):

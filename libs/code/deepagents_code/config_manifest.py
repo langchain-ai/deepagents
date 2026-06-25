@@ -840,6 +840,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=False,
         env_var=_env_vars.NO_TERMINAL_ESCAPE,
     ),
+    ConfigOption(
+        key="display.onboarding_integrations_screen",
+        group="Display",
+        summary="Show the integrations summary screen during first-run onboarding.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.ONBOARDING_INTEGRATIONS_SCREEN,
+    ),
     # --- Models --------------------------------------------------------
     ConfigOption(
         key="models.default",

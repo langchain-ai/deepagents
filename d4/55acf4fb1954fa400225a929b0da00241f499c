@@ -1,0 +1,21 @@
+libs/evals/deepagents_evals/cl_proxy/task_logic.py
+  s_ff1d954e22bc10::t_9b02d748174016 3-9,26-27,29-30,52-63,65-66,70-72,91-96
+libs/evals/tests/unit_tests/cl_proxy/test_task_logic.py
+  s_ff1d954e22bc10::t_566412c0809841 14,35-50,56,58,61,64,66-67,84-90
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "d455acf4fb1954fa400225a929b0da00241f499c",
+  "prompts": {},
+  "sessions": {
+    "s_ff1d954e22bc10": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e85341e2-a6d5-4077-a245-b6953a292cae",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

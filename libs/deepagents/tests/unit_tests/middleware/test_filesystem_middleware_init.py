@@ -4,6 +4,7 @@ from typing import Any
 
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
+from langchain.tools import ToolRuntime
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.store.memory import InMemoryStore
@@ -19,6 +20,17 @@ from tests.unit_tests.chat_model import GenericFakeChatModel
 
 def build_composite_state_backend(*, routes: dict[str, Any]) -> CompositeBackend:
     return CompositeBackend(default=StateBackend(), routes=routes)
+
+
+def build_tool_runtime() -> ToolRuntime[None, Any]:
+    return ToolRuntime(
+        state={},
+        context=None,
+        tool_call_id="test-call",
+        store=None,
+        stream_writer=lambda _: None,
+        config={},
+    )
 
 
 class TestDynamicSystemPromptCache:
@@ -65,6 +77,38 @@ class TestDynamicSystemPromptCache:
 
         assert len(captured) == 1
         assert captured[0].system_prompt == expected
+
+
+class TestEmptyFilesystemResults:
+    """Empty `ls` and `glob` outputs should be readable to agents."""
+
+    def test_sync_ls_and_glob_return_no_files_found_for_empty_results(self) -> None:
+        backend = StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("filesystem",))
+        middleware = FilesystemMiddleware(backend=backend)
+        runtime = build_tool_runtime()
+
+        ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
+        glob_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+
+        ls_result = ls_tool.invoke({"runtime": runtime, "path": "/"})
+        glob_result = glob_tool.invoke({"runtime": runtime, "pattern": "*", "path": "/"})
+
+        assert ls_result.content == "No files found"
+        assert glob_result.content == "No files found"
+
+    async def test_async_ls_and_glob_return_no_files_found_for_empty_results(self) -> None:
+        backend = StoreBackend(store=InMemoryStore(), namespace=lambda _rt: ("filesystem",))
+        middleware = FilesystemMiddleware(backend=backend)
+        runtime = build_tool_runtime()
+
+        ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
+        glob_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+
+        ls_result = await ls_tool.ainvoke({"runtime": runtime, "path": "/"})
+        glob_result = await glob_tool.ainvoke({"runtime": runtime, "pattern": "*", "path": "/"})
+
+        assert ls_result.content == "No files found"
+        assert glob_result.content == "No files found"
 
 
 class TestFilesystemMiddlewareInit:

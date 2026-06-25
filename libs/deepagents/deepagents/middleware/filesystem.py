@@ -235,8 +235,16 @@ def _apply_permissions_to_glob_results(
 
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
+EMPTY_FILE_LIST_MESSAGE = "No files found"
 GLOB_TIMEOUT = 20.0  # seconds
 LINE_NUMBER_WIDTH = 6
+
+
+def _format_file_list_result(paths: list[str]) -> str:
+    """Format filesystem path lists for tool message content."""
+    if not paths:
+        return EMPTY_FILE_LIST_MESSAGE
+    return str(truncate_if_too_long(paths))
 
 
 def _glob_timeout_message() -> str:
@@ -991,7 +999,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             infos = ls_result.entries or []
             paths = _apply_permissions_to_ls_results(self._permissions, infos)
             return ToolMessage(
-                content=str(truncate_if_too_long(paths)),
+                content=_format_file_list_result(paths),
                 tool_call_id=runtime.tool_call_id,
                 name="ls",
                 status="success",
@@ -1030,7 +1038,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             infos = ls_result.entries or []
             paths = _apply_permissions_to_ls_results(self._permissions, infos)
             return ToolMessage(
-                content=str(truncate_if_too_long(paths)),
+                content=_format_file_list_result(paths),
                 tool_call_id=runtime.tool_call_id,
                 name="ls",
                 status="success",
@@ -1493,7 +1501,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             infos = glob_result.matches or []
             paths = _apply_permissions_to_glob_results(self._permissions, infos)
             return ToolMessage(
-                content=str(truncate_if_too_long(paths)),
+                content=_format_file_list_result(paths),
                 tool_call_id=runtime.tool_call_id,
                 name="glob",
                 status="success",
@@ -1557,7 +1565,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             infos = glob_result.matches or []
             paths = _apply_permissions_to_glob_results(self._permissions, infos)
             return ToolMessage(
-                content=str(truncate_if_too_long(paths)),
+                content=_format_file_list_result(paths),
                 tool_call_id=runtime.tool_call_id,
                 name="glob",
                 status="success",

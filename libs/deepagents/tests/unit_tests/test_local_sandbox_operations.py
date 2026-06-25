@@ -1696,10 +1696,14 @@ class TestExecuteCaptureOffload:
 
         execute_tool, _ = tools
         rt = self._runtime("c_cap")
-        # ~250 KB of output, well over the cap.
-        result = execute_tool.invoke({"command": _BIG_OUTPUT_CMD, "runtime": rt})
+        # ~250 KB of output over the cap, but the command exits 0. The cap drains
+        # the excess instead of SIGPIPE-killing the producer, so the command's real
+        # exit code survives -- a regression guard: closing the pipe early would
+        # report this successful command as failed.
+        result = execute_tool.invoke({"command": f"{_BIG_OUTPUT_CMD}; exit 0", "runtime": rt})
 
         assert "exceeded the capture size limit" in result.content
+        assert "succeeded with exit code 0" in result.content
         # The on-disk capture file is bounded at the cap regardless of total output.
         size = sandbox.execute(f"wc -c < {self._capture_path('c_cap')}").output.strip()
         assert size == str(cap)

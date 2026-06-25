@@ -601,13 +601,15 @@ inline budget so legitimately large output is still preserved in full; output
 beyond the cap is truncated and flagged.
 """
 
-# The captured stream is piped through `head -c` so the on-disk file can never
-# exceed the cap regardless of how the command behaves. Because that puts the
-# command in a pipeline, its real exit code is recovered from a sidecar file
-# rather than `$?` (which would be `head`'s). The command runs in a subshell so a
-# command `exit` cannot abort the wrapper, and `eval` preserves the backend's own
-# shell/env. The command is embedded via a quoted heredoc with a random delimiter
-# to avoid shell-quoting issues; the (internal, sanitized) path is shell-quoted.
+# The captured stream is piped into `head -c` (caps the on-disk file) followed by
+# `cat > /dev/null` (drains the rest), so the file can never exceed the cap yet the
+# command still reaches EOF and exits normally -- closing the pipe early would
+# SIGPIPE-kill it and corrupt its exit code. Because the command is in a pipeline,
+# its real exit code is recovered from a sidecar file rather than `$?` (which would
+# be the pipeline's). The command runs in a subshell so a command `exit` cannot
+# abort the wrapper, and `eval` preserves the backend's own shell/env. The command
+# is embedded via a quoted heredoc with a random delimiter to avoid shell-quoting
+# issues; the (internal, sanitized) path is shell-quoted.
 _EXECUTE_CAPTURE_CMD_TEMPLATE = """# ===== deepagents capture-at-source offload (auto-generated wrapper) =====
 # Runs the requested command below, capturing its combined output to a file in
 # the sandbox: returned inline when small, or as a head/tail preview when large
@@ -622,7 +624,7 @@ __COMMAND__
 __DELIM__
 )
 # ----- end requested command; everything below is offload machinery -----
-{ ( eval "$__da_cmd" ); echo "$?" > "$__da_ecf"; } 2>&1 | head -c __MAXBYTES__ > "$__da_f"
+{ ( eval "$__da_cmd" ); echo "$?" > "$__da_ecf"; } 2>&1 | { head -c __MAXBYTES__ > "$__da_f"; cat > /dev/null; }
 __da_ec=$(cat "$__da_ecf" 2>/dev/null)
 : "${__da_ec:=1}"
 rm -f "$__da_ecf"

@@ -23,6 +23,13 @@ jobs:
     # On that run github.actor is the App's bot identity -- not
     # dependabot[bot] -- so the actor guard skips it. Do not loosen the actor
     # check without adding an explicit loop breaker.
+    #
+    # The head.ref prefix is deliberately scoped to 'dependabot/uv/': this job
+    # only regenerates uv lockfiles, so other ecosystems (e.g. github-actions,
+    # whose branches are 'dependabot/github_actions/...') have nothing to fix
+    # and would only hit the changed-file guard and fail. Do not re-widen this
+    # to 'dependabot/' -- the narrow scope keeps the contents:write token path
+    # reachable only by uv Dependabot PRs.
     if: >
       github.actor == 'dependabot[bot]' &&
       github.event.pull_request.user.login == 'dependabot[bot]' &&

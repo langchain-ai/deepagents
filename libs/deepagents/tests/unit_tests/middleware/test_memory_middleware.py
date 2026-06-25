@@ -18,13 +18,15 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables.config import var_child_runnable_config
+from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.constants import CONF
 from langgraph.runtime import CONFIG_KEY_RUNTIME, Runtime, ServerInfo
+from langgraph.store.memory import InMemoryStore
+from langgraph.types import Command
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
-from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.state import StateBackend
@@ -797,9 +799,10 @@ def test_create_deep_agent_with_memory_default_backend() -> None:
     should receive a StateBackend factory and be able to load memory from state files.
     """
     checkpointer = InMemorySaver()
+    fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="Working with default backend.")]))
     agent = create_deep_agent(
         memory=["/user/.deepagents/AGENTS.md"],
-        model=GenericFakeChatModel(messages=iter([AIMessage(content="Working with default backend.")])),
+        model=fake_model,
         checkpointer=checkpointer,
     )
 
@@ -829,12 +832,69 @@ def test_create_deep_agent_with_memory_default_backend() -> None:
 
     assert len(result["messages"]) > 0
 
-    # Verify memory was loaded. Use get_state() — UntrackedValue channels are never
-    # written to checkpoint["channel_values"], so inspect reconstructed state instead.
     state_values = agent.get_state(config).values
     assert "/user/.deepagents/AGENTS.md" in state_values["files"]
-    assert "memory_contents" in state_values
-    assert "/user/.deepagents/AGENTS.md" in state_values["memory_contents"]
+    checkpoint = agent.checkpointer.get(config)
+    assert "memory_contents" not in checkpoint["channel_values"]
+
+    first_call = fake_model.call_history[0]
+    system_message = first_call["messages"][0]
+    assert system_message.type == "system"
+    assert "Be helpful and concise" in system_message.text
+
+
+def test_memory_contents_restored_after_interrupt() -> None:
+    """Untracked memory content must be reloaded after HITL resume."""
+    checkpointer = InMemorySaver()
+    memory_content = make_memory_content("User Memory", "- Remember interrupt resume context")
+    timestamp = datetime.now(UTC).isoformat()
+    memory_files = {
+        "/user/.deepagents/AGENTS.md": {
+            "content": memory_content.split("\n"),
+            "created_at": timestamp,
+            "modified_at": timestamp,
+        }
+    }
+
+    @tool
+    def needs_approval(value: str) -> str:
+        """Return the approved value."""
+        return value
+
+    fake_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[{"id": "call_1", "name": "needs_approval", "args": {"value": "ok"}}],
+                ),
+                AIMessage(content="done"),
+            ]
+        )
+    )
+    agent = create_deep_agent(
+        memory=["/user/.deepagents/AGENTS.md"],
+        tools=[needs_approval],
+        interrupt_on={"needs_approval": True},
+        model=fake_model,
+        checkpointer=checkpointer,
+    )
+    config: RunnableConfig = {"configurable": {"thread_id": "memory-interrupt-restore"}}
+
+    agent.invoke(
+        {"messages": [HumanMessage(content="Use the approved tool.")], "files": memory_files},
+        config,
+    )
+    checkpoint = agent.checkpointer.get(config)
+    assert "memory_contents" not in checkpoint["channel_values"]
+
+    agent.invoke(Command(resume={"decisions": [{"type": "approve"}]}), config)
+
+    assert len(fake_model.call_history) == 2
+    resumed_messages = fake_model.call_history[1]["messages"]
+    resumed_system = resumed_messages[0]
+    assert resumed_system.type == "system"
+    assert "Remember interrupt resume context" in resumed_system.text
 
 
 def test_memory_middleware_order_matters(tmp_path: Path) -> None:

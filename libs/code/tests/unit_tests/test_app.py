@@ -13370,6 +13370,35 @@ class TestLiveApprovalModeWrites:
         notify.assert_called_once()
         assert notify.call_args.kwargs["severity"] == "warning"
 
+    async def test_toggle_off_no_writer_cancels_running_agent(self) -> None:
+        # Unlike the test above, this drives a *real* writer-less agent
+        # (no `aput_store_item`) so the False return originates from the
+        # `live_key is None` branch rather than a mock, proving that the
+        # no-writer condition actually reaches the mid-run cancel path.
+        app = DeepAgentsApp(auto_approve=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = object()
+            app._session_state = TextualSessionState(
+                thread_id="thread-1",
+                auto_approve=True,
+            )
+            app._session_state.approval_mode_key = "stale"
+            app._agent_running = True
+            with (
+                patch.object(app, "_force_interrupt_active_work") as force,
+                patch.object(app, "notify") as notify,
+            ):
+                await app.action_toggle_auto_approve()
+
+        assert app._auto_approve is False
+        assert app._session_state.auto_approve is False
+        assert app._session_state.approval_mode_key is None
+        force.assert_called_once()
+        notify.assert_called_once()
+        assert notify.call_args.kwargs["severity"] == "warning"
+        assert "cancelled for safety" in notify.call_args.args[0]
+
     async def test_toggle_off_failed_write_does_not_cancel_when_idle(self) -> None:
         app = DeepAgentsApp(auto_approve=True)
         async with app.run_test() as pilot:

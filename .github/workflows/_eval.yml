@@ -4,7 +4,7 @@
 # upstream by `prep` (`_SAFE_SPEC_RE` in `.github/scripts/models.py`); this
 # workflow trusts that contract.
 
-name: "📊 Eval"
+name: "🔧 Eval run (internal)"
 
 on:
   workflow_call:

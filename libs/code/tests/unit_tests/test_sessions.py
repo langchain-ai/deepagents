@@ -507,6 +507,17 @@ class TestTextualSessionState:
         assert uuid.UUID(new_id).version == 7
         assert state.thread_id == new_id
 
+    def test_reset_thread_clears_approval_mode_key(self):
+        """A new thread must not inherit the prior thread's live approval key.
+
+        The key is hashed per thread; leaving a stale key would point the
+        interrupt predicate at the previous thread's mode.
+        """
+        state = TextualSessionState(thread_id="original")
+        state.approval_mode_key = "stale"
+        state.reset_thread()
+        assert state.approval_mode_key is None
+
 
 class TestFindSimilarThreads:
     """Tests for find_similar_threads function."""

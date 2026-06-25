@@ -34,6 +34,12 @@ from deepagents_code.config_manifest import (
 )
 from deepagents_code.model_config import PROVIDER_API_KEY_ENV
 
+# Most unit tests set `DEEPAGENTS_CODE_NO_UPDATE_CHECK=1` to avoid accidental
+# PyPI/DNS work. This module checks whether update settings came from the env,
+# config file, or built-in defaults; adding the env var here would hide the
+# config/default cases these tests are trying to verify.
+pytestmark = pytest.mark.self_managed_update_check
+
 
 def _declared_deepagents_env_vars() -> set[str]:
     """Every `DEEPAGENTS_CODE_*` constant declared in `_env_vars`."""

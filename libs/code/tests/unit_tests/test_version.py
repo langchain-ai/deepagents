@@ -41,6 +41,10 @@ def _block_sdk_pypi_fetch(tmp_path: Path) -> Iterator[None]:
             "deepagents_code.update_check.is_update_available",
             return_value=(False, None),
         ),
+        patch(
+            "deepagents_code.update_check.release_requires_prereleases",
+            return_value=False,
+        ),
         # Pin the post-upgrade shadow check to a clean "no shadow" for the
         # whole module. Several `/update` tests pin `detect_install_method`
         # to `"uv"` to exercise pre-release handling, which would otherwise
@@ -504,7 +508,10 @@ async def test_update_slash_command_omitted_prerelease_preserves_channel() -> No
             bypass_cache=True,
             include_prereleases=None,
         )
-        perform_upgrade_mock.assert_awaited_once_with(include_prereleases=None)
+        perform_upgrade_mock.assert_awaited_once_with(
+            include_prereleases=None,
+            target_version="99.0.0",
+        )
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         assert "Updated to v99.0.0" in str(app_msgs[-1]._content)
 
@@ -546,7 +553,10 @@ async def test_update_slash_command_prerelease_updates_channel() -> None:
             bypass_cache=True,
             include_prereleases=True,
         )
-        perform_upgrade_mock.assert_awaited_once_with(include_prereleases=True)
+        perform_upgrade_mock.assert_awaited_once_with(
+            include_prereleases=True,
+            target_version="99.0.0rc1",
+        )
         user_msgs = list(app.query(UserMessage))
         assert str(user_msgs[-1]._content) == "/update --prerelease"
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
@@ -831,7 +841,10 @@ async def test_update_deps_skips_refresh_prompt_when_refresh_unsupported() -> No
 
         confirm_mock.assert_not_awaited()
         refresh_mock.assert_not_awaited()
-        perform_upgrade_mock.assert_awaited_once_with(include_prereleases=None)
+        perform_upgrade_mock.assert_awaited_once_with(
+            include_prereleases=None,
+            target_version="1.1.0",
+        )
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         content = str(app_msgs[-1]._content)
         assert "Updated to v1.1.0" in content

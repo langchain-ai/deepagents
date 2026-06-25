@@ -75,6 +75,7 @@ from deepagents_code.update_check import (
     perform_install_package,
     perform_upgrade,
     prerelease_upgrade_supported,
+    release_requires_prereleases,
     set_auto_update,
     should_announce_auto_update_default,
     should_notify_update,
@@ -103,6 +104,7 @@ def _mock_pypi_response(
     version: str = "99.0.0",
     releases: Mapping[str, Sequence[Mapping[str, object]]] | None = None,
     release_times: dict[str, str] | None = None,
+    requires_dist: Sequence[str] | None = None,
 ) -> MagicMock:
     if releases is None:
         releases = {version: [{"filename": "fake.tar.gz"}]}
@@ -116,9 +118,12 @@ def _mock_pypi_response(
         files = releases_data.get(ver)
         if files:
             files[0]["upload_time_iso_8601"] = iso
+    info: dict[str, object] = {"version": version}
+    if requires_dist is not None:
+        info["requires_dist"] = list(requires_dist)
     resp = MagicMock()
     resp.json.return_value = {
-        "info": {"version": version},
+        "info": info,
         "releases": releases_data,
     }
     resp.raise_for_status = MagicMock()
@@ -296,6 +301,24 @@ class TestGetLatestVersion:
         data = json.loads(cache_file.read_text())
         assert data["version"] == "2.0.0"
         assert "checked_at" in data
+
+    def test_fresh_fetch_caches_prerelease_dependency_requirement(
+        self, cache_file
+    ) -> None:
+        """Stable dcode releases can intentionally pin pre-release dependencies."""
+        with patch(
+            "requests.get",
+            return_value=_mock_pypi_response(
+                "2.0.0",
+                requires_dist=("deepagents==0.7.0a2",),
+            ),
+        ):
+            result = get_latest_version()
+
+        assert result == "2.0.0"
+        assert release_requires_prereleases("2.0.0") is True
+        data = json.loads(cache_file.read_text())
+        assert data["release_requires_prereleases"] == {"2.0.0": True}
 
     def test_fresh_fetch_prerelease(self, cache_file) -> None:
         """PyPI fetch with include_prereleases returns pre-release version."""
@@ -1626,6 +1649,53 @@ class TestUpdateLogs:
             ) as run_mock,
         ):
             success, _output = await perform_upgrade(include_prereleases=True)
+
+        assert success is True
+        run_mock.assert_awaited_once()
+        await_args = run_mock.await_args
+        assert await_args is not None
+        assert await_args.args[0] == (
+            "uv tool install -U deepagents-code --prerelease allow"
+        )
+
+    async def test_perform_upgrade_allows_prereleases_for_target_dependency(
+        self, cache_file
+    ) -> None:
+        """A stable target that pins an alpha dependency opts uv into prereleases."""
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "release_requires_prereleases": {"1.1.0": True},
+                    "checked_at": time.time(),
+                }
+            ),
+            encoding="utf-8",
+        )
+        with (
+            patch("deepagents_code.update_check.__version__", "1.0.0"),
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.extras_info.installed_extra_names",
+                return_value=frozenset(),
+            ),
+            patch(
+                "deepagents_code.update_check._uv_tool_python",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.update_check._uv_tool_with_packages",
+                return_value=(),
+            ),
+            patch(
+                "deepagents_code.update_check._run_install_subprocess",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as run_mock,
+        ):
+            success, _output = await perform_upgrade(target_version="1.1.0")
 
         assert success is True
         run_mock.assert_awaited_once()

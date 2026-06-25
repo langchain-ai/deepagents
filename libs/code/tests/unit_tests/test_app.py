@@ -11931,6 +11931,10 @@ class TestNotificationCenterIntegration:
                 return_value="",
             ),
             patch(
+                "deepagents_code.update_check.release_requires_prereleases",
+                return_value=False,
+            ),
+            patch(
                 "deepagents_code.update_check.upgrade_command",
                 return_value="uv tool upgrade deepagents-code",
             ),
@@ -11982,6 +11986,10 @@ class TestNotificationCenterIntegration:
             patch(
                 "deepagents_code.update_check.format_installed_age_suffix",
                 return_value="",
+            ),
+            patch(
+                "deepagents_code.update_check.release_requires_prereleases",
+                return_value=False,
             ),
             patch(
                 "deepagents_code.update_check.upgrade_command",

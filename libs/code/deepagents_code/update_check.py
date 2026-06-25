@@ -29,6 +29,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, TextIO
 
+from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
@@ -68,6 +69,9 @@ INSTALLED_AGE_NOTICE_DAYS = 7
 
 _SDK_RELEASE_TIMES_KEY = "sdk_release_times"
 """`CACHE_FILE` key for cached SDK upload timestamps, keyed by version string."""
+
+_RELEASE_PRERELEASE_DEPS_KEY = "release_requires_prereleases"
+"""`CACHE_FILE` key for release versions that require pre-release dependencies."""
 
 InstallMethod = Literal["uv", "brew", "other", "unknown"]
 
@@ -248,6 +252,56 @@ def get_cached_update_available() -> tuple[bool, str | None]:
         return False, None
 
 
+def _requires_prerelease_dependency(requirements: Sequence[object] | None) -> bool:
+    """Return whether any requirement specifier names a pre-release version."""
+    if not requirements:
+        return False
+    for raw in requirements:
+        if not isinstance(raw, str):
+            continue
+        try:
+            requirement = Requirement(raw)
+        except InvalidRequirement:
+            logger.debug("Skipping unparseable Requires-Dist entry: %r", raw)
+            continue
+        for specifier in requirement.specifier:
+            try:
+                version = Version(specifier.version)
+            except InvalidVersion:
+                logger.debug(
+                    "Skipping unparseable requirement version: %r",
+                    specifier.version,
+                )
+                continue
+            if version.is_prerelease:
+                return True
+    return False
+
+
+def _write_release_requires_prereleases(version: str, requires: bool) -> None:
+    """Cache whether a release needs uv's pre-release resolver opt-in."""
+    try:
+        data: dict[str, Any]
+        if CACHE_FILE.exists():
+            loaded = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+            data = loaded if isinstance(loaded, dict) else {}
+        else:
+            data = {}
+        values = data.get(_RELEASE_PRERELEASE_DEPS_KEY)
+        if not isinstance(values, dict):
+            values = {}
+        values[version] = requires
+        data[_RELEASE_PRERELEASE_DEPS_KEY] = values
+        data.setdefault("checked_at", time.time())
+        CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        CACHE_FILE.write_text(json.dumps(data), encoding="utf-8")
+    except (OSError, json.JSONDecodeError, TypeError):
+        logger.debug(
+            "Failed to write release pre-release dependency cache",
+            exc_info=True,
+        )
+
+
 def get_latest_version(
     *,
     bypass_cache: bool = False,
@@ -304,11 +358,22 @@ def get_latest_version(
         )
         resp.raise_for_status()
         payload = resp.json()
-        stable: str = payload["info"]["version"]
+        info = payload.get("info")
+        if not isinstance(info, dict):
+            logger.debug("PyPI response missing object 'info' key")
+            return cached_version
+        value = info.get("version")
+        if not isinstance(value, str):
+            logger.debug("PyPI response missing string 'info.version' key")
+            return cached_version
+        stable = value
         releases: dict[str, list[object]] = payload.get("releases", {})
         if not releases:
             logger.debug("PyPI response missing or empty 'releases' key")
         prerelease = _latest_from_releases(releases, include_prereleases=True)
+        stable_requires_prereleases = _requires_prerelease_dependency(
+            info.get("requires_dist")
+        )
     except (requests.RequestException, OSError, KeyError, json.JSONDecodeError):
         logger.debug("Failed to fetch latest version from PyPI", exc_info=True)
         return cached_version
@@ -325,6 +390,7 @@ def get_latest_version(
                     "version": stable,
                     "version_prerelease": prerelease,
                     "release_times": release_times,
+                    _RELEASE_PRERELEASE_DEPS_KEY: {stable: stable_requires_prereleases},
                     "checked_at": time.time(),
                 }
             ),
@@ -334,6 +400,64 @@ def get_latest_version(
         logger.debug("Failed to write update-check cache", exc_info=True)
 
     return prerelease if include_prereleases else stable
+
+
+def release_requires_prereleases(
+    version: str | None,
+    *,
+    bypass_cache: bool = False,
+) -> bool:
+    """Return whether installing `version` needs uv pre-release resolution.
+
+    Args:
+        version: `deepagents-code` version to inspect.
+        bypass_cache: Skip cached release metadata and fetch PyPI directly.
+
+    Returns:
+        `True` when the release metadata pins or bounds a pre-release dependency.
+    """
+    if not version:
+        return False
+    try:
+        if not bypass_cache and CACHE_FILE.exists():
+            data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                values = data.get(_RELEASE_PRERELEASE_DEPS_KEY)
+                if isinstance(values, dict) and isinstance(values.get(version), bool):
+                    return values[version]
+    except (OSError, json.JSONDecodeError, TypeError):
+        logger.debug(
+            "Failed to read release pre-release dependency cache",
+            exc_info=True,
+        )
+
+    try:
+        import requests
+    except ImportError:
+        logger.debug("requests unavailable — release dependency lookup disabled")
+        return False
+
+    try:
+        url = f"{PYPI_URL.removesuffix('/json')}/{version}/json"
+        resp = requests.get(
+            url,
+            headers={"User-Agent": USER_AGENT},
+            timeout=3,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        info = payload.get("info")
+        requires = info.get("requires_dist") if isinstance(info, dict) else None
+        result = _requires_prerelease_dependency(requires)
+    except (requests.RequestException, OSError, json.JSONDecodeError):
+        logger.debug(
+            "Failed to fetch release dependency metadata from PyPI",
+            exc_info=True,
+        )
+        return False
+
+    _write_release_requires_prereleases(version, result)
+    return result
 
 
 def _extract_release_times(
@@ -1367,6 +1491,7 @@ async def perform_upgrade(
     progress: UpgradeProgressCallback | None = None,
     log_path: Path | None = None,
     include_prereleases: bool | None = None,
+    target_version: str | None = None,
 ) -> tuple[bool, str]:
     """Attempt to upgrade `deepagents-code` using the detected install method.
 
@@ -1377,8 +1502,11 @@ async def perform_upgrade(
         progress: Optional callback invoked for each output line.
         log_path: Optional path to persist command output.
         include_prereleases: Whether to include alpha/beta/rc releases. When
-            `None`, follows the installed version's channel. Pre-release
-            upgrades require the uv install method; returns failure otherwise.
+            `None`, follows the installed version's channel and the target
+            release's dependency metadata. Pre-release upgrades require the uv
+            install method; returns failure otherwise.
+        target_version: Release version being installed, used to detect stable
+            dcode releases that intentionally depend on pre-release packages.
 
     Returns:
         `(success, output)` — *output* is the combined stdout/stderr.
@@ -1394,6 +1522,12 @@ async def perform_upgrade(
             "manager originally used for this install."
         )
     resolved_include_prereleases = _resolve_include_prereleases(include_prereleases)
+    if (
+        not resolved_include_prereleases
+        and include_prereleases is None
+        and release_requires_prereleases(target_version)
+    ):
+        resolved_include_prereleases = True
     if resolved_include_prereleases:
         supported, reason = prerelease_upgrade_supported(method)
         if not supported:

@@ -1,0 +1,21 @@
+libs/code/tests/unit_tests/conftest.py
+  s_ead929141d2bda::t_74083d8f8438f3 163-165,173-174,181
+  s_ead929141d2bda::t_8766cf2f1c6ba7 16-29
+  s_ead929141d2bda::t_5bf17f3ad5b7c5 194-195,197
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "cbb75f99859fa3cce67de018f6b87a77bb88dec4",
+  "prompts": {},
+  "sessions": {
+    "s_ead929141d2bda": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5b75f411-5a91-4a95-af79-ac4979ce8f1d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

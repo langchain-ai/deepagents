@@ -1072,15 +1072,18 @@ class TestStartupSequence:
         app._prompt_launch_tavily.assert_awaited_once_with()  # ty: ignore
         assert order == ["tavily", "switch"]
 
-    async def test_launch_init_wires_name_screen_to_dependency_screen(self) -> None:
-        """On mount, submitting the name switches straight into the deps screen.
+    async def test_launch_init_wires_name_screen_to_model_selector(self) -> None:
+        """On mount, submitting the name switches straight into the selector.
 
-        Regression guard for the no-flash wiring: the mount path must set the
-        name screen's `continue_screen` and pass a `dependency_result` future. If
-        it regressed to the old `LaunchNameScreen()` with no continue screen,
-        onboarding would fall back to the double-modal flow and the post-submit
-        screen would not be the dependency summary.
+        The integrations summary screen is off by default, so onboarding goes
+        name -> model selector. Regression guard for the no-flash wiring: the
+        mount path must set the name screen's `continue_screen` and pass a
+        `dependency_result` future. If it regressed to the old
+        `LaunchNameScreen()` with no continue screen, onboarding would fall back
+        to the double-modal flow.
         """
+        from deepagents_code.widgets.model_selector import ModelSelectorScreen
+
         app = DeepAgentsApp(launch_init=True)
         app._prewarm_deferred_imports = MagicMock()  # ty: ignore
         app._resolve_git_branch_and_continue = AsyncMock()  # ty: ignore
@@ -1089,8 +1092,48 @@ class TestStartupSequence:
             await pilot.pause()
 
             assert isinstance(app.screen, LaunchNameScreen)
-            # The name screen is pre-wired to continue into the dependency
-            # summary rather than dismissing back to the base app.
+            # The name screen is pre-wired to continue into the model selector
+            # rather than dismissing back to the base app.
+            assert isinstance(
+                app.screen._continue_screen,  # ty: ignore
+                ModelSelectorScreen,
+            )
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert isinstance(app.screen, ModelSelectorScreen)
+
+            launch_task = app._launch_init_task
+            assert launch_task is not None
+            app.screen.action_cancel()
+            await asyncio.wait_for(launch_task, timeout=2)
+            await pilot.pause()
+
+    async def test_launch_init_integrations_flag_inserts_dependency_screen(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """With the opt-in flag set, the integrations summary precedes selection.
+
+        Exercises the full flag-on chain: name -> integrations summary ->
+        model selector. Continuing past the integrations screen must switch
+        into the model selector wired as its `continue_screen`; if that wiring
+        regressed (e.g. `continue_screen` dropped), the user would never reach
+        the selector.
+        """
+        from deepagents_code._env_vars import ONBOARDING_INTEGRATIONS_SCREEN
+        from deepagents_code.widgets.model_selector import ModelSelectorScreen
+
+        monkeypatch.setenv(ONBOARDING_INTEGRATIONS_SCREEN, "1")
+        app = DeepAgentsApp(launch_init=True)
+        app._prewarm_deferred_imports = MagicMock()  # ty: ignore
+        app._resolve_git_branch_and_continue = AsyncMock()  # ty: ignore
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            assert isinstance(app.screen, LaunchNameScreen)
             assert isinstance(
                 app.screen._continue_screen,  # ty: ignore
                 LaunchDependenciesScreen,
@@ -1101,14 +1144,51 @@ class TestStartupSequence:
 
             assert isinstance(app.screen, LaunchDependenciesScreen)
 
+            # Continuing past the integrations summary lands on the model
+            # selector it was built with as `continue_screen`.
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert isinstance(app.screen, ModelSelectorScreen)
+
             launch_task = app._launch_init_task
             assert launch_task is not None
             app.screen.action_cancel()
             await asyncio.wait_for(launch_task, timeout=2)
             await pilot.pause()
 
-    async def test_launch_init_finishes_when_dependency_switch_fails(self) -> None:
-        """A failed name-to-dependencies switch should skip the rest of setup."""
+    async def test_build_launch_dependencies_prompt_screen_tracks_flag(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The first onboarding screen returned tracks the opt-in flag.
+
+        Locks the return contract of `_build_launch_dependencies_prompt`
+        directly: the model selector is first by default, the integrations
+        summary is first when the flag is set, and the result future starts
+        unresolved in both cases.
+        """
+        from deepagents_code._env_vars import ONBOARDING_INTEGRATIONS_SCREEN
+        from deepagents_code.widgets.model_selector import ModelSelectorScreen
+
+        app = DeepAgentsApp(launch_init=True)
+
+        monkeypatch.delenv(ONBOARDING_INTEGRATIONS_SCREEN, raising=False)
+        screen, result_future = app._build_launch_dependencies_prompt()
+        assert isinstance(screen, ModelSelectorScreen)
+        assert isinstance(result_future, asyncio.Future)
+        assert not result_future.done()
+
+        monkeypatch.setenv(ONBOARDING_INTEGRATIONS_SCREEN, "1")
+        screen, result_future = app._build_launch_dependencies_prompt()
+        assert isinstance(screen, LaunchDependenciesScreen)
+        assert isinstance(result_future, asyncio.Future)
+        assert not result_future.done()
+
+    async def test_launch_init_finishes_when_first_screen_switch_fails(self) -> None:
+        """A failed name-to-selector switch should skip the rest of setup."""
+        from deepagents_code.widgets.model_selector import ModelSelectorScreen
+
         app = DeepAgentsApp(launch_init=True)
         app._prewarm_deferred_imports = MagicMock()  # ty: ignore
         app._resolve_git_branch_and_continue = AsyncMock()  # ty: ignore
@@ -1119,8 +1199,8 @@ class TestStartupSequence:
         app._switch_or_install_launch_model = switch_or_install  # ty: ignore
         original_switch_screen = app.switch_screen
 
-        def fail_dependency_switch(screen: ModalScreen[Any] | str) -> None:
-            if isinstance(screen, LaunchDependenciesScreen):
+        def fail_first_screen_switch(screen: ModalScreen[Any] | str) -> None:
+            if isinstance(screen, ModelSelectorScreen):
                 msg = "stack torn down"
                 raise ScreenStackError(msg)
             original_switch_screen(screen)
@@ -1131,7 +1211,7 @@ class TestStartupSequence:
             assert isinstance(app.screen, LaunchNameScreen)
             launch_task = app._launch_init_task
             assert launch_task is not None
-            app.switch_screen = fail_dependency_switch  # ty: ignore
+            app.switch_screen = fail_first_screen_switch  # ty: ignore
 
             await pilot.press("a", "d", "a", "enter")
             await pilot.pause()
@@ -1604,7 +1684,8 @@ class TestStartupSequence:
             screen._description
             == "These models have performed well in Deep Agents evals and are "
             "a solid starting set. You can explore the full model list "
-            "later with /model."
+            "later with /model. Sandboxes and other integrations install "
+            "anytime with /install."
         )
 
 
@@ -13185,6 +13266,170 @@ class TestForceInterruptActiveWork:
             app._pending_approval_widget = widget
             # Must not raise: best-effort interruption.
             app._force_interrupt_active_work()
+
+
+class _ApprovalModeWriter:
+    def __init__(self) -> None:
+        self.item: tuple[tuple[str, ...], str, dict[str, Any]] | None = None
+
+    async def aput_store_item(
+        self,
+        namespace: tuple[str, ...],
+        key: str,
+        value: dict[str, Any],
+    ) -> None:
+        self.item = (namespace, key, value)
+
+
+class _FailingApprovalModeWriter:
+    async def aput_store_item(
+        self,
+        namespace: tuple[str, ...],
+        key: str,
+        value: dict[str, Any],
+    ) -> None:
+        _ = (namespace, key, value)
+        msg = "store unavailable"
+        raise RuntimeError(msg)
+
+
+class TestLiveApprovalModeWrites:
+    """Verify live approval-mode write and toggle failure behavior."""
+
+    async def test_write_live_approval_mode_records_key(self) -> None:
+        from deepagents_code.approval_mode import (
+            APPROVAL_MODE_NAMESPACE,
+            approval_mode_key,
+        )
+
+        app = DeepAgentsApp()
+        writer = _ApprovalModeWriter()
+        app._agent = cast("Any", writer)
+        app._session_state = TextualSessionState(
+            thread_id="thread-1",
+            auto_approve=True,
+        )
+
+        assert await app._write_live_approval_mode()
+        assert app._session_state.approval_mode_key == approval_mode_key("thread-1")
+        assert writer.item == (
+            APPROVAL_MODE_NAMESPACE,
+            approval_mode_key("thread-1"),
+            {"auto_approve": True},
+        )
+
+    async def test_write_live_approval_mode_clears_key_on_failure(self) -> None:
+        app = DeepAgentsApp()
+        app._agent = cast("Any", _FailingApprovalModeWriter())
+        app._session_state = TextualSessionState(
+            thread_id="thread-1",
+            auto_approve=False,
+        )
+        app._session_state.approval_mode_key = "stale"
+
+        assert not await app._write_live_approval_mode()
+        assert app._session_state.approval_mode_key is None
+
+    async def test_toggle_off_failed_write_cancels_running_agent(self) -> None:
+        app = DeepAgentsApp(auto_approve=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(
+                thread_id="thread-1",
+                auto_approve=True,
+            )
+            app._session_state.approval_mode_key = "stale"
+            app._agent_running = True
+            with (
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(return_value=False),
+                ),
+                patch.object(app, "_force_interrupt_active_work") as force,
+                patch.object(app, "notify") as notify,
+            ):
+                await app.action_toggle_auto_approve()
+
+        assert app._auto_approve is False
+        assert app._session_state.auto_approve is False
+        assert app._session_state.approval_mode_key is None
+        force.assert_called_once()
+        notify.assert_called_once()
+        assert notify.call_args.kwargs["severity"] == "warning"
+
+    async def test_toggle_off_failed_write_does_not_cancel_when_idle(self) -> None:
+        app = DeepAgentsApp(auto_approve=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(
+                thread_id="thread-1",
+                auto_approve=True,
+            )
+            app._agent_running = False
+            with (
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(return_value=False),
+                ),
+                patch.object(app, "_force_interrupt_active_work") as force,
+                patch.object(app, "notify") as notify,
+            ):
+                await app.action_toggle_auto_approve()
+
+        force.assert_not_called()
+        notify.assert_called_once()
+        # The idle branch emits a distinct message from the cancel branch.
+        assert "start a new run" in notify.call_args.args[0]
+
+    async def test_toggle_on_failed_write_does_not_cancel_running_agent(self) -> None:
+        app = DeepAgentsApp(auto_approve=False)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(
+                thread_id="thread-1",
+                auto_approve=False,
+            )
+            app._agent_running = True
+            with (
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(return_value=False),
+                ),
+                patch.object(app, "_force_interrupt_active_work") as force,
+                patch.object(app, "notify") as notify,
+            ):
+                await app.action_toggle_auto_approve()
+
+        assert app._auto_approve is True
+        assert app._session_state.auto_approve is True
+        force.assert_not_called()
+        notify.assert_called_once()
+        # Toggling on emits the auto-approve warning, not the manual one.
+        assert "Auto-approve could not sync" in notify.call_args.args[0]
+
+    async def test_auto_approve_all_failed_write_warns(self) -> None:
+        app = DeepAgentsApp(auto_approve=False)
+        app._session_state = TextualSessionState(
+            thread_id="thread-1",
+            auto_approve=False,
+        )
+        with (
+            patch.object(
+                app,
+                "_write_live_approval_mode",
+                new=AsyncMock(return_value=False),
+            ),
+            patch.object(app, "notify") as notify,
+        ):
+            await app._on_auto_approve_enabled()
+
+        assert app._auto_approve is True
+        assert app._session_state.auto_approve is True
+        notify.assert_called_once()
+        assert notify.call_args.kwargs["severity"] == "warning"
 
 
 class TestExternalBypassFieldHonored:

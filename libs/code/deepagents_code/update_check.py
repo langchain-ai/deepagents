@@ -129,6 +129,9 @@ since that one-liner is the path we promote.
 _UPGRADE_TIMEOUT = 120  # seconds
 """Wall-clock cap for `perform_upgrade` and `perform_install_extra`."""
 
+INSTALL_SCRIPT_COMMAND = "curl -LsSf https://langch.in/dcode | bash"
+"""Promoted public install command for Deep Agents Code."""
+
 UPDATE_LOG_DIR: Path = DEFAULT_STATE_DIR / "update_logs"
 """Directory for persisted update command logs."""
 
@@ -288,7 +291,8 @@ def get_latest_version(
     except ImportError:
         logger.warning(
             "requests package not installed — update checks disabled. "
-            "Install with: uv tool install -U deepagents-code --with requests"
+            "Install with: uv tool install --reinstall -U deepagents-code "
+            "--with requests"
         )
         return cached_version
 
@@ -1872,30 +1876,63 @@ def _uv_tool_install_command(
     version: str | None,
     include_prereleases: bool | None,
     distribution_name: str,
+    extras_to_add: Iterable[str] = (),
+    with_packages_to_add: Iterable[str] = (),
+    reinstall: bool = False,
 ) -> str:
     """Return the receipt-preserving `uv tool install -U` command.
+
+    Args:
+        version: Optional exact `deepagents-code` version pin.
+        include_prereleases: Whether to include alpha/beta/rc releases. When
+            `None`, follows the installed version's channel.
+        distribution_name: Name of the installed distribution to inspect.
+        extras_to_add: Extra names to merge with already-installed extras.
+        with_packages_to_add: Package names to merge with the receipt's existing
+            `--with` packages. Names already present (compared canonically) are
+            not duplicated; genuinely new names are appended after the preserved
+            ones. Callers must validate these names before passing them — the
+            builder only `shlex.quote`-s them.
+        reinstall: When `True`, add `--reinstall` so uv rebuilds the tool
+            environment from scratch instead of patching it in place. An
+            in-place `-U` upgrade can leave stale files behind (e.g. an old
+            `tools.py` or its cached bytecode), which has been observed to
+            produce a half-updated env that crashes the next server start with
+            an `ImportError`; the preserved `--python` interpreter and `--with`
+            packages still apply, so the rebuild keeps the existing tool
+            context.
 
     Raises:
         ExtrasIntrospectionError: If a metadata-sourced extra name fails PEP 508
             validation.
+
+    Propagates `ToolRequirementIntrospectionError` if the uv tool receipt's
+    interpreter or `--with` packages cannot be determined safely from the tool
+    receipt.
     """
     from deepagents_code.extras_info import (
         ExtrasIntrospectionError,
         installed_extra_names,
     )
 
-    extras = installed_extra_names(distribution_name, strict=True)
+    extras = set(installed_extra_names(distribution_name, strict=True))
+    extras.update(extras_to_add)
     try:
         requirement = _dcode_extras_requirement(extras, version=version)
     except ValueError as exc:
         msg = f"Distribution metadata yielded an invalid extra name: {exc}"
         raise ExtrasIntrospectionError(msg) from exc
-    cmd = "uv tool install -U"
+    cmd = "uv tool install --reinstall -U" if reinstall else "uv tool install -U"
     python = _uv_tool_python()
     if python is not None:
         cmd += f" --python {shlex.quote(python)}"
     cmd += f" {requirement}"
-    with_packages = _uv_tool_with_packages(distribution_name=distribution_name)
+    with_packages = list(_uv_tool_with_packages(distribution_name=distribution_name))
+    known = {canonicalize_name(package) for package in with_packages}
+    for package in with_packages_to_add:
+        if canonicalize_name(package) not in known:
+            with_packages.append(package)
+            known.add(canonicalize_name(package))
     for package in with_packages:
         cmd += f" --with {shlex.quote(package)}"
     if _resolve_include_prereleases(include_prereleases):
@@ -2031,30 +2068,42 @@ def install_package_command(
 
     The result is built for *execution* (via `perform_install_package`), not for
     display — surfacing raw `uv tool` invocations to the user is intentionally
-    avoided. `package` is validated and then `shlex.quote`-d: the validation
-    already blocks shell metacharacters, so the quoting is defense in depth that
-    keeps the command safe even if the pattern is later loosened.
+    avoided. `package` is validated here against PEP 508 grammar and then
+    `shlex.quote`-d by the shared builder: the validation already blocks shell
+    metacharacters, so the quoting is defense in depth that keeps the command
+    safe even if the pattern is later loosened.
 
-    Already-installed extras are folded into the `deepagents-code[...]`
-    requirement via the shared `_dcode_extras_requirement` helper, the same way
-    `install_extras_command` builds its requirement. Without this the reinstall
-    would replace the tool with a plain `deepagents-code`, silently dropping any
-    extras the user added through `/install <extra>`.
+    Delegates to `_uv_tool_install_command` (the same builder the extras path
+    uses), passing the new package as a `--with` requirement. That builder folds
+    already-installed extras into the `deepagents-code[...]` requirement, and
+    preserves the uv-managed Python interpreter, the receipt's existing `--with`
+    packages, and the installed pre-release channel. Without this, reinstalling
+    to add a second package would replace the tool with a plain `deepagents-code`
+    (dropping extras the user added through `/install <extra>`), rebuild with
+    only the newest `--with` package (dropping previously configured custom
+    providers), or silently downgrade a pre-release install to the latest stable.
+
+    Like the extras path (`_install_extra_uv_tool_command`), passes
+    `reinstall=True` so the upgrade rebuilds the tool environment cleanly; see
+    `_uv_tool_install_command`'s `reinstall` parameter for why an in-place
+    upgrade is unsafe.
 
     Args:
         package: Package name to install into the existing tool environment.
         distribution_name: Name of the installed distribution to inspect for
-            already-installed extras.
+            already-installed extras and uv receipt requirements.
 
     Returns:
         Shell command string suitable for execution via the shell.
 
     Raises:
-        ExtrasIntrospectionError: If installed extras cannot be determined
-            safely from distribution metadata (refused rather than risk
-            dropping them).
-        ValueError: If `package` or any already-installed extra fails PEP 508
-            validation.
+        ValueError: If `package` fails PEP 508 validation.
+
+    Propagates `ExtrasIntrospectionError` if installed extras cannot be
+    determined safely from distribution metadata (or a metadata-sourced extra
+    name fails PEP 508 validation), and `ToolRequirementIntrospectionError` if
+    the uv tool receipt's interpreter or `--with` packages cannot be determined
+    safely.
     """
     if not _PACKAGE_NAME_RE.fullmatch(package):
         msg = (
@@ -2062,22 +2111,17 @@ def install_package_command(
             f"({_PACKAGE_NAME_RE.pattern})"
         )
         raise ValueError(msg)
-    from deepagents_code.extras_info import (
-        ExtrasIntrospectionError,
-        installed_extra_names,
+    return _uv_tool_install_command(
+        version=None,
+        include_prereleases=None,
+        distribution_name=distribution_name,
+        with_packages_to_add=(package,),
+        reinstall=True,
     )
-
-    try:
-        extras = installed_extra_names(distribution_name, strict=True)
-    except ExtrasIntrospectionError as exc:
-        msg = str(exc)
-        raise ExtrasIntrospectionError(msg) from exc
-    requirement = _dcode_extras_requirement(extras)
-    return f"uv tool install -U {requirement} --with {shlex.quote(package)}"
 
 
 def install_extras_command(extras: Iterable[str]) -> str:
-    """Return the uv command that installs the exact set of dcode extras.
+    """Return the install-script command that installs dcode extras.
 
     Args:
         extras: Extra names to include in the tool reinstall. Validated by
@@ -2085,10 +2129,16 @@ def install_extras_command(extras: Iterable[str]) -> str:
             that fails PEP 508 validation.
 
     Returns:
-        Shell command string suitable for display in error messages and
-            execution via `perform_install_extra`.
+        Shell command string suitable for display in error messages.
     """
-    return f"uv tool install -U {_dcode_extras_requirement(extras)}"
+    names = sorted(extras)
+    _dcode_extras_requirement(names)
+    if not names:
+        return INSTALL_SCRIPT_COMMAND
+    extras_env = shlex.quote(",".join(names))
+    return (
+        f"curl -LsSf https://langch.in/dcode | DEEPAGENTS_CODE_EXTRAS={extras_env} bash"
+    )
 
 
 def install_extra_command(
@@ -2096,11 +2146,13 @@ def install_extra_command(
     *,
     distribution_name: str = "deepagents-code",
 ) -> str:
-    """Return the shell command that adds `extra` to the installed dcode tool.
+    """Return the install-script command that adds `extra` to dcode.
 
-    The documented install path is `uv tool install` (see
-    `scripts/install.sh`), so extras must be preserved across reinstalls.
-    Single-quoting the bracket form keeps zsh from globbing it.
+    The promoted install path is the install script (see `scripts/install.sh`).
+    This helper is display-only and avoids uv receipt introspection so
+    unsupported installs can surface method-specific guidance before any uv
+    receipt is read. Already-detected extras from distribution metadata are
+    included when available, so following the command does not drop them.
 
     Args:
         extra: The extra name (e.g. `'quickjs'`, `'daytona'`, `'fireworks'`).
@@ -2110,33 +2162,86 @@ def install_extra_command(
             already-installed extras.
 
     Returns:
-        Shell command string suitable for display in error messages and
-            for execution via `perform_install_extra`.
+        Shell command string suitable for display in error messages.
 
     Raises:
-        ExtrasIntrospectionError: If installed extras cannot be determined
-            safely from distribution metadata.
-        ValueError: If `extra` or any already-installed extra fails PEP 508
-            validation.
+        ValueError: If `extra` fails PEP 508 validation.
     """
-    from deepagents_code.extras_info import (
-        ExtrasIntrospectionError,
-        installed_extra_names,
-    )
-
     if not is_valid_extra_name(extra):
         msg = (
             f"Invalid extra name {extra!r}: must match PEP 508 "
             f"({_EXTRA_NAME_RE.pattern})"
         )
         raise ValueError(msg)
-    try:
-        extras = installed_extra_names(distribution_name, strict=True)
-    except ExtrasIntrospectionError as exc:
-        msg = str(exc)
-        raise ExtrasIntrospectionError(msg) from exc
+    from deepagents_code.extras_info import installed_extra_names
+
+    extras = installed_extra_names(distribution_name)
     extras.add(extra)
     return install_extras_command(extras)
+
+
+def install_extra_recovery_command(extra: str) -> str:
+    """Return a manual recovery command for the current install method.
+
+    uv-managed installs can preserve the uv receipt's Python interpreter and
+    `--with` requirements, so their recovery command uses the same uv path as
+    the automatic installer. Unsupported methods keep the install-script command
+    and deliberately avoid reading uv receipts.
+
+    Args:
+        extra: Extra name to add.
+
+    Returns:
+        Shell command string suitable for display in error messages.
+
+    Propagates `ValueError` if `extra` fails PEP 508 validation, and (on the uv
+    path) `ExtrasIntrospectionError` if installed extras cannot be determined
+    safely or `ToolRequirementIntrospectionError` if the uv receipt's
+    interpreter or `--with` packages cannot be preserved safely.
+    """
+    if detect_install_method() == "uv":
+        return _install_extra_uv_tool_command(extra)
+    return install_extra_command(extra)
+
+
+def _install_extra_uv_tool_command(
+    extra: str,
+    *,
+    distribution_name: str = "deepagents-code",
+) -> str:
+    """Return the receipt-preserving uv command that installs one dcode extra.
+
+    Passes `reinstall=True` so the upgrade rebuilds the tool environment from
+    scratch rather than patching it in place; see `_uv_tool_install_command`'s
+    `reinstall` parameter for why an in-place upgrade is unsafe.
+
+    Args:
+        extra: The extra name to add. Validated against PEP 508 grammar before
+            interpolation into the shell command.
+        distribution_name: Name of the installed distribution to inspect for
+            already-installed extras and uv receipt requirements.
+
+    Raises:
+        ValueError: If `extra` fails PEP 508 validation.
+
+    Propagates `ExtrasIntrospectionError` if installed extras cannot be
+    determined safely from distribution metadata, and
+    `ToolRequirementIntrospectionError` if the uv tool receipt's interpreter or
+    `--with` packages cannot be preserved safely.
+    """
+    if not is_valid_extra_name(extra):
+        msg = (
+            f"Invalid extra name {extra!r}: must match PEP 508 "
+            f"({_EXTRA_NAME_RE.pattern})"
+        )
+        raise ValueError(msg)
+    return _uv_tool_install_command(
+        version=None,
+        include_prereleases=None,
+        distribution_name=distribution_name,
+        extras_to_add=(extra,),
+        reinstall=True,
+    )
 
 
 def editable_extra_hint(extra: str) -> str:
@@ -2176,11 +2281,11 @@ async def perform_install_extra(
 ) -> tuple[bool, str]:
     """Add `extra` to the installed dcode tool environment.
 
-    Runs `uv tool install -U 'deepagents-code[<extras>]'`, preserving any
-    extras that are already installed. Editable installs are refused — the
-    caller should rerun their `uv tool install --editable` command with `--with
-    'deepagents-code[<extra>]'` added so the extra is resolved against the
-    editable source.
+    Runs `uv tool install --reinstall -U 'deepagents-code[<extras>]'`,
+    preserving any extras that are already installed. Editable installs are
+    refused — the caller should rerun their `uv tool install --editable` command
+    with `--with 'deepagents-code[<extra>]'` added so the extra is resolved
+    against the editable source.
 
     Args:
         extra: The extra name to install. Must satisfy `is_valid_extra_name`;
@@ -2209,15 +2314,15 @@ async def perform_install_extra(
         # right escape hatch but would conflict with the brew-managed binary.
         return False, (
             "Homebrew install detected — extras are not supported via brew. "
-            "Reinstall with `uv tool install -U 'deepagents-code["
-            f"{extra}]'` to switch to a uv-managed tool install with extras."
+            f"Reinstall with `{install_extra_command(extra)}` to switch to a "
+            "uv-managed tool install with extras."
         )
     if method == "other":
         return False, (
             "Unsupported install method detected — cannot add extras without "
             "knowing which environment provides `dcode`. Reinstall with "
-            f"`uv tool install -U 'deepagents-code[{extra}]'` to switch to a "
-            "uv-managed tool install with extras."
+            f"`{install_extra_command(extra)}` to switch to a uv-managed tool "
+            "install with extras."
         )
 
     if not shutil.which("uv"):
@@ -2229,8 +2334,12 @@ async def perform_install_extra(
     from deepagents_code.extras_info import ExtrasIntrospectionError
 
     try:
-        cmd = install_extra_command(extra)
-    except (ExtrasIntrospectionError, ValueError) as exc:
+        cmd = _install_extra_uv_tool_command(extra)
+    except (
+        ExtrasIntrospectionError,
+        ToolRequirementIntrospectionError,
+        ValueError,
+    ) as exc:
         return False, f"{type(exc).__name__}: {exc}"
     return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
 
@@ -2243,10 +2352,11 @@ async def perform_install_package(
 ) -> tuple[bool, str]:
     """Add an arbitrary `package` to the installed dcode tool environment.
 
-    Runs `uv tool install -U 'deepagents-code[<extras>]' --with <package>`, the
-    escape hatch for a provider whose package is not a `deepagents-code` extra
-    (e.g. a custom or in-house `class_path` model). Already-installed extras are
-    preserved so the reinstall does not drop them. Editable installs are refused
+    Runs `uv tool install --reinstall -U 'deepagents-code[<extras>]' --with
+    <package>`, the escape hatch for a provider whose package is not a
+    `deepagents-code` extra (e.g. a custom or in-house `class_path` model).
+    Already-installed extras are preserved so the reinstall does not drop them.
+    Editable installs are refused
     — the caller should rerun their `uv tool install --editable` command with
     `--with <package>` added so it resolves against the editable source.
 
@@ -2302,12 +2412,14 @@ async def perform_install_package(
         cmd = install_package_command(package)
     except ValueError as exc:
         return False, f"{type(exc).__name__}: {exc}"
-    except ExtrasIntrospectionError as exc:
+    except (ExtrasIntrospectionError, ToolRequirementIntrospectionError) as exc:
         # Distinct from a malformed package name: the running distribution's own
-        # metadata could not be read or parsed. Leave a breadcrumb so the cause
-        # is recoverable from logs, even though the user message is unchanged.
+        # metadata, or the uv tool receipt, could not be read or parsed. Leave a
+        # breadcrumb so the cause is recoverable from logs, even though the user
+        # message is unchanged.
         logger.warning(
-            "Could not introspect installed extras for package install of %r",
+            "Could not introspect installed extras or uv receipt for package "
+            "install of %r",
             package,
             exc_info=True,
         )
@@ -2507,6 +2619,32 @@ def mark_auto_update_default_acknowledged() -> bool:
     return _write_update_state({"auto_update_default_acknowledged": True})
 
 
+def _note_install_baseline() -> None:
+    """Pre-acknowledge the auto-update default notice for a fresh install.
+
+    The migration notice (`should_announce_auto_update_default`) is intended to
+    warn users who ran dcode *before* auto-update became the opt-out default; a
+    brand-new install never experienced the old behavior, so the notice is
+    meaningless to it. Call this on the first launch ever (see
+    `should_show_whats_new`) so the notice never leaks into a new install — the
+    notice itself fires pre-TUI in `_run_startup_auto_update`.
+
+    Writes nothing when the user already set an explicit preference.
+    """
+    if is_auto_update_explicitly_set():
+        return
+    if not mark_auto_update_default_acknowledged():
+        # Fail-soft: the same unwritable state dir also drops the adjacent
+        # `seen_version` write, so the install stays "first run ever" and the
+        # stamp is retried next launch. Log the operation for context — the
+        # generic write warning in `_write_update_state` can't say which write
+        # failed when both fire back-to-back.
+        logger.debug(
+            "Could not stamp install baseline; the auto-update default notice "
+            "will be re-evaluated on the next launch",
+        )
+
+
 # ---------------------------------------------------------------------------
 # "What's new" tracking
 # ---------------------------------------------------------------------------
@@ -2527,7 +2665,11 @@ def should_show_whats_new() -> bool:
     """Return `True` if this is the first launch on a newer version."""
     seen = get_seen_version()
     if seen is None:
-        # First run ever — mark current as seen, don't show banner.
+        # First run ever — mark current as seen, don't show banner. This is the
+        # canonical fresh-install signal, so also pre-acknowledge the
+        # auto-update default migration notice (which only applies to users who
+        # predate the opt-out default) before it can fire on a later launch.
+        _note_install_baseline()
         mark_version_seen(__version__)
         return False
     try:

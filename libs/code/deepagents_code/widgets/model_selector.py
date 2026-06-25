@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical, VerticalScroll
 from textual.content import Content
+from textual.css.query import NoMatches
 from textual.events import (
     Click,  # noqa: TC002 - needed at runtime for Textual event dispatch
 )
@@ -42,6 +43,17 @@ from deepagents_code.model_config import (
 
 logger = logging.getLogger(__name__)
 
+_MODEL_LIST_MAX_HEIGHT = 16
+"""Upper bound (in cells) for the model selector list.
+
+Keep in sync with the `max-height: 16` in the `.model-list` CSS below; Textual
+CSS cannot reference Python constants, so the static cap and the runtime
+`_fit_model_list` clamp must agree.
+"""
+
+_MODEL_LIST_MIN_HEIGHT = 1
+"""Floor (in cells) so the model selector list never collapses to zero."""
+
 _RECENT_SECTION_LABEL = "Recent"
 """Header label for the MRU pseudo-provider section pinned at the top of `/model`.
 
@@ -55,12 +67,11 @@ _RECOMMENDED_MODELS: frozenset[str] = frozenset(
     {
         "anthropic:claude-opus-4-6",
         "anthropic:claude-opus-4-7",
+        "anthropic:claude-opus-4-8",
         "anthropic:claude-sonnet-4-6",
         "baseten:deepseek-ai/DeepSeek-V4-Pro",
-        "baseten:moonshotai/Kimi-K2.6",
         "baseten:moonshotai/Kimi-K2.7-Code",
         "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
-        "baseten:zai-org/GLM-5",
         "baseten:zai-org/GLM-5.2",
         "fireworks:accounts/fireworks/models/deepseek-v4-pro",
         "fireworks:accounts/fireworks/models/glm-5p1",
@@ -71,13 +82,13 @@ _RECOMMENDED_MODELS: frozenset[str] = frozenset(
         "fireworks:accounts/fireworks/models/minimax-m3",
         "fireworks:accounts/fireworks/models/qwen3p6-plus",
         "fireworks:accounts/fireworks/models/qwen3p7-plus",
-        "google_genai:gemini-3-flash-preview",
+        "google_genai:gemini-3.5-flash",
         "google_genai:gemini-3.1-pro-preview",
         "ollama:deepseek-v4-flash:cloud",
         "ollama:deepseek-v4-pro:cloud",
-        "ollama:glm-5.1:cloud",
-        "ollama:kimi-k2.6:cloud",
-        "ollama:minimax-m2.7:cloud",
+        "ollama:glm-5.2:cloud",
+        "ollama:kimi-k2.7-code:cloud",
+        "ollama:minimax-m3:cloud",
         "openai:gpt-5.4",
         "openai:gpt-5.4-mini",
         "openai:gpt-5.4-pro",
@@ -91,14 +102,14 @@ _RECOMMENDED_MODELS: frozenset[str] = frozenset(
         "openrouter:anthropic/claude-opus-4.6",
         "openrouter:anthropic/claude-opus-4.7",
         "openrouter:anthropic/claude-opus-4.7-fast",
+        "openrouter:anthropic/claude-opus-4.8",
         "openrouter:anthropic/claude-sonnet-4.6",
         "openrouter:deepseek/deepseek-v4-flash",
         "openrouter:deepseek/deepseek-v4-flash:free",
         "openrouter:deepseek/deepseek-v4-pro",
-        "openrouter:google/gemini-3-flash-preview",
+        "openrouter:google/gemini-3.5-flash",
         "openrouter:google/gemini-3.1-pro-preview",
         "openrouter:minimax/minimax-m2.7",
-        "openrouter:moonshotai/kimi-k2.6",
         "openrouter:moonshotai/kimi-k2.7-code",
         "openrouter:openai/gpt-5.4",
         "openrouter:openai/gpt-5.4-mini",
@@ -107,8 +118,6 @@ _RECOMMENDED_MODELS: frozenset[str] = frozenset(
         "openrouter:openai/gpt-5.5-pro",
         "openrouter:openrouter/fusion",
         "openrouter:qwen/qwen3.7-plus",
-        "openrouter:z-ai/glm-5",
-        "openrouter:z-ai/glm-5.1",
         "openrouter:z-ai/glm-5.2",
     }
 )
@@ -116,9 +125,9 @@ _RECOMMENDED_MODELS: frozenset[str] = frozenset(
 
 Used by the onboarding picker (`curated=True`) and by the in-`/model`
 "Recommended only" toggle (Ctrl+R). Same model IDs may appear under multiple
-providers (e.g. Kimi-K2.6 via `baseten`, `ollama`, and `openrouter`) and are
-listed under each provider intentionally so the user can pick whichever
-provider they have credentials for.
+providers (e.g. Kimi-K2.7-Code via `baseten`, `fireworks`, `ollama`, and
+`openrouter`) and are listed under each provider intentionally so the user
+can pick whichever provider they have credentials for.
 """
 
 
@@ -251,9 +260,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     }
 
     ModelSelectorScreen > Vertical {
-        width: 80;
+        width: 76;
         max-width: 90%;
-        height: 80%;
+        height: auto;
         background: $surface;
         border: solid $primary;
         padding: 1 2;
@@ -288,8 +297,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     }
 
     ModelSelectorScreen .model-list {
-        height: 1fr;
-        min-height: 5;
+        height: auto;
+        min-height: 1;
+        max-height: 16;  /* keep in sync with `_MODEL_LIST_MAX_HEIGHT` */
         scrollbar-gutter: stable;
         background: $background;
     }
@@ -441,9 +451,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     def _help_text(self) -> str:
         """Build the footer help text.
 
-        Curated/onboarding mode omits the Ctrl+R toggle and the Esc hint;
-        Escape stays bound but is not advertised. Standard mode shows
-        "Esc cancel".
+        Curated/onboarding mode omits the Ctrl+S and Ctrl+R hints. Escape stays
+        bound but is not advertised so the footer does not wrap awkwardly.
 
         Returns:
             The bullet-separated help line.
@@ -451,11 +460,11 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         glyphs = get_glyphs()
         parts = [
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate",
+            "Tab autocomplete",
             "Enter select",
-            "Ctrl+S set default",
         ]
         if not self._curated:
-            parts.extend(("Ctrl+R recommended", "Esc cancel"))
+            parts.extend(("Ctrl+S set default", "Ctrl+R recommended"))
         sep = f" {glyphs.bullet} "
         return sep.join(parts)
 
@@ -473,6 +482,12 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             if model_spec == current_spec:
                 return i
         return 0
+
+    def _initial_selected_index(self) -> int:
+        """Return the default highlighted row for the current selector mode."""
+        if self._curated:
+            return 0
+        return self._find_current_model_index()
 
     def compose(self) -> ComposeResult:
         """Compose the screen layout.
@@ -526,6 +541,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         cli_override: dict[str, Any] | None,
         *,
         include_uninstalled: bool = True,
+        include_recent: bool = True,
     ) -> _ModelData:
         """Gather model discovery data synchronously.
 
@@ -539,8 +555,13 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 integration isn't installed, added as greyed-out
                 install-required rows; (2) the provider is installed but its
                 upstream profiles omit the model, added as normal selectable
-                rows. Onboarding sets this `False` because it has a dedicated
-                dependency-install step.
+                rows.
+            include_recent: When `True`, load the recent-models MRU so the
+                pinned "Recent" section can render. Onboarding sets this
+                `False`: first-run users have never picked a model, and the
+                startup default-fallback resolution writes its auto-detected
+                pick into the MRU, which would otherwise surface as a bogus
+                "Recent" entry the user never chose.
 
         Returns:
             A `_ModelData` bundle of the discovered models, default spec,
@@ -566,6 +587,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             # frozenset iterated once), so this entry guard is the only dedup
             # needed and the set never has to grow inside the loop.
             existing_specs = {spec for spec, _ in all_models}
+            installed_recommended: list[tuple[str, str]] = []
+            uninstalled_recommended: list[tuple[str, str]] = []
             for spec in sorted(_RECOMMENDED_MODELS):
                 if spec in existing_specs:
                     continue
@@ -594,15 +617,17 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     # or filtered out). Add it as a normal selectable row so the
                     # hardcoded recommendation isn't silently dropped when the
                     # profile list lags.
-                    all_models.append((spec, provider))
+                    installed_recommended.append((spec, provider))
                     continue
                 if extra is None or provider_installed:
                     continue
                 install_extras[provider] = extra
-                all_models.append((spec, provider))
+                uninstalled_recommended.append((spec, provider))
+            all_models.extend(installed_recommended)
+            all_models.extend(uninstalled_recommended)
 
         profiles = get_model_profiles(cli_override=cli_override)
-        recent_specs = load_recent_models()
+        recent_specs = load_recent_models() if include_recent else []
         return _ModelData(
             all_models,
             config.default_model,
@@ -678,6 +703,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             colors = theme.get_theme_colors(self)
             container = self.query_one(Vertical)
             container.styles.border = ("ascii", colors.success)
+        self.call_after_refresh(self._fit_model_list)
 
         # Focus the filter input immediately so the user can start typing
         # while model data loads.
@@ -689,7 +715,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             data = await asyncio.to_thread(
                 self._load_model_data,
                 self._cli_profile_override,
-                include_uninstalled=not self._curated,
+                include_uninstalled=True,
+                include_recent=not self._curated,
             )
         except Exception:
             logger.exception("Failed to load model data for /model selector")
@@ -717,7 +744,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._install_extras = data.install_extras
         self._all_models = self._apply_subset(self._unfiltered_models)
         self._filtered_models = list(self._all_models)
-        self._selected_index = self._find_current_model_index()
+        self._selected_index = self._initial_selected_index()
         self._loaded = True
 
         # Re-apply any filter text the user typed while data was loading
@@ -726,6 +753,40 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         await self._update_display()
         self._update_footer()
+
+    def on_resize(self) -> None:
+        """Refit the model list when terminal dimensions change."""
+        self.call_after_refresh(self._fit_model_list)
+
+    def _fit_model_list(self) -> None:
+        """Cap the model list so modal controls stay visible."""
+        try:
+            container = self.query_one(Vertical)
+        except NoMatches:
+            # This runs deferred via `call_after_refresh`/`on_resize`; the
+            # screen may have been popped before it fires (e.g. a resize racing
+            # dismissal). Sizing is cosmetic, so skip quietly but leave a
+            # breadcrumb rather than letting it surface in the event loop.
+            logger.debug(
+                "Skipping model-list refit; screen not mounted",
+                exc_info=True,
+            )
+            return
+        # The screen is still mounted, so `.model-list` (always composed) must
+        # exist; a missing body here is a structural regression, not the
+        # teardown race, so let `NoMatches` surface rather than silently
+        # rendering an uncapped list.
+        body = self.query_one(".model-list", VerticalScroll)
+        non_body_height = max(0, container.region.height - body.region.height)
+        available_height = self.size.height - non_body_height
+        max_height = max(
+            _MODEL_LIST_MIN_HEIGHT,
+            min(_MODEL_LIST_MAX_HEIGHT, available_height),
+        )
+        current = body.styles.max_height
+        if current is not None and current.cells == max_height:
+            return
+        body.styles.max_height = max_height
 
     def on_input_changed(self, event: Input.Changed) -> None:
         """Filter models as user types.
@@ -771,7 +832,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         query = self._filter_text.strip()
         if not query:
             self._filtered_models = list(self._all_models)
-            self._selected_index = self._find_current_model_index()
+            self._selected_index = self._initial_selected_index()
             return
 
         tokens = query.split()
@@ -792,7 +853,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 exc_info=True,
             )
             self._filtered_models = list(search_models)
-            self._selected_index = self._find_current_model_index()
+            self._selected_index = self._initial_selected_index()
             return
 
         self._filtered_models = [
@@ -887,6 +948,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     empty_content = Content.styled("No matching models", "dim")
             await self._options_container.mount(Static(empty_content))
             self._update_footer()
+            self.call_after_refresh(self._fit_model_list)
             return
 
         has_filter = bool(self._filter_text.strip())
@@ -1056,6 +1118,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 selected_widget.scroll_visible(animate=False)
 
         self._update_footer()
+        self.call_after_refresh(self._fit_model_list)
 
     @staticmethod
     def _format_auth_indicator(
@@ -1466,18 +1529,20 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             self._dismiss_with_result((model_spec, provider))
             return
 
-        # Onboarding (`_curated`) runs its own dependency-install step and never
-        # surfaces uninstalled providers, so skip install routing there.
-        if not self._curated:
-            from deepagents_code.config_manifest import (
-                is_provider_package_installed,
-                provider_install_extra,
-            )
+        from deepagents_code.config_manifest import (
+            is_provider_package_installed,
+            provider_install_extra,
+        )
 
-            extra = provider_install_extra(provider)
-            if extra is not None and not is_provider_package_installed(provider):
-                self._prompt_install_provider(model_spec, provider, extra)
+        extra = provider_install_extra(provider)
+        if extra is not None and not is_provider_package_installed(provider):
+            if self._curated:
+                # Onboarding installs first, then prompts for credentials from the
+                # launch flow, matching the dependency screen's auto-install copy.
+                self._dismiss_with_result((model_spec, provider))
                 return
+            self._prompt_install_provider(model_spec, provider, extra)
+            return
 
         status = get_provider_auth_status(provider)
         if not status.blocks_start:

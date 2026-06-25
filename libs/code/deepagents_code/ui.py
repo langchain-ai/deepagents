@@ -690,6 +690,7 @@ def show_auth_help() -> None:
     console.print()
     console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
     console.print("  --from-env VAR        With `set`, copy the key from env var VAR")
+    console.print("  --project NAME        With `set langsmith`, set the trace project")
     console.print("  -h, --help            Show this help message")
     console.print()
     console.print(
@@ -703,6 +704,9 @@ def show_auth_help() -> None:
     console.print("  dcode auth list")
     console.print("  echo $ANTHROPIC_API_KEY | dcode auth set anthropic")
     console.print("  dcode auth set openai --from-env OPENAI_API_KEY")
+    console.print(
+        "  echo $LANGSMITH_API_KEY | dcode auth set langsmith --project my-app"
+    )
     console.print("  dcode auth status anthropic")
     console.print("  dcode auth remove anthropic")
     console.print("  dcode auth path")

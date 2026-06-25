@@ -63,10 +63,10 @@ from deepagents_code.config import (
     get_default_coding_instructions,
     get_glyphs,
     get_langsmith_project_name,
+    restore_user_tracing_env,
     settings,
 )
 from deepagents_code.configurable_model import ConfigurableModelMiddleware
-from deepagents_code.filesystem_empty_result import _FilesystemEmptyResultMiddleware
 from deepagents_code.integrations.sandbox_factory import get_default_working_dir
 from deepagents_code.local_context import (
     LocalContextMiddleware,
@@ -1030,6 +1030,38 @@ def _is_auto_approve_enabled(value: object) -> bool:
     return isinstance(value, bool) and value
 
 
+def _read_live_auto_approve(store: object, key: str | None) -> bool | None:
+    """Return live approval mode from the LangGraph Store when configured.
+
+    Args:
+        store: `request.runtime.store` from the graph server.
+        key: Live approval-mode store key, or `None` when this run has no live
+            control record.
+
+    Returns:
+        `None` when no live key is configured for this run — the caller should
+            fall back to the static `auto_approve` context snapshot.
+        `True` or `False` when a live key is configured: these reflect
+            the stored mode, and `False` is also returned when the key
+            is configured but the store is unreadable (missing item,
+            malformed value, read error), so an unreadable live mode fails
+            closed and interrupts.
+        `None` therefore means "feature not in play," the opposite of the store
+            reader's `None` ("unreadable, be careful").
+    """
+    if not key:
+        return None
+    from deepagents_code.approval_mode import read_approval_mode_from_store
+
+    value = read_approval_mode_from_store(store, key)
+    if value is None:
+        logger.warning(
+            "Approval-mode store item is unavailable; interrupting for safety"
+        )
+        return False
+    return value
+
+
 def _should_interrupt_tool_call(request: ToolCallRequest) -> bool:
     """Decide whether a gated tool call should pause for human approval.
 
@@ -1052,9 +1084,16 @@ def _should_interrupt_tool_call(request: ToolCallRequest) -> bool:
     """
     runtime = getattr(request, "runtime", None)
     ctx = getattr(runtime, "context", None)
+    store = getattr(runtime, "store", None)
     if isinstance(ctx, CLIContextSchema):
+        if (live := _read_live_auto_approve(store, ctx.approval_mode_key)) is not None:
+            return not live
         return not _is_auto_approve_enabled(ctx.auto_approve)
     if isinstance(ctx, dict):
+        raw_key = ctx.get("approval_mode_key")
+        key = raw_key if isinstance(raw_key, str) else None
+        if (live := _read_live_auto_approve(store, key)) is not None:
+            return not live
         # Type-checked (not truthiness) check: over the JSON/RemoteGraph boundary a
         # malformed payload (e.g. "yes", 1) must fail closed and interrupt, not
         # silently auto-approve. Only a genuine boolean `True` suppresses.
@@ -1419,7 +1458,6 @@ def create_cli_agent(
     # Build middleware stack based on enabled features
     agent_middleware: list[AgentMiddleware[Any, Any]] = [
         ConfigurableModelMiddleware(),
-        _FilesystemEmptyResultMiddleware(),
     ]
 
     # Resume state: declares the `_context_tokens` and `_model_spec` channels
@@ -1523,6 +1561,7 @@ def create_cli_agent(
                 shell_env["LANGSMITH_PROJECT"] = settings.user_langchain_project
             else:
                 shell_env.pop("LANGSMITH_PROJECT", None)
+            restore_user_tracing_env(shell_env)
             # Re-apply a launch-time PYTHONPATH that was stripped from the server
             # interpreter but relayed for approval-gated `execute` commands.
             _apply_inherited_pythonpath(shell_env)

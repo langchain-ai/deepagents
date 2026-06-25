@@ -729,7 +729,7 @@ wheels = [
 
 [[package]]
 name = "deepagents-code"
-version = "0.1.21"
+version = "0.1.23"
 source = { editable = "../code" }
 dependencies = [
     { name = "aiosqlite" },
@@ -830,6 +830,7 @@ provides-extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fir
 [package.metadata.requires-dev]
 test = [
     { name = "build", specifier = ">=1.5.0,<2.0.0" },
+    { name = "hatchling", specifier = ">=1.27.0,<2.0.0" },
     { name = "langchain-quickjs", editable = "../partners/quickjs" },
     { name = "pytest", specifier = ">=9.1.1,<10.0.0" },
     { name = "pytest-asyncio", specifier = ">=1.4.0,<2.0.0" },

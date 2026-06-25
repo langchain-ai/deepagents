@@ -354,7 +354,14 @@ ASSUME_YES="${DEEPAGENTS_CODE_YES:-0}"
 # pinned, SHA-256-verified binary into ~/.deepagents/bin via `dcode tools
 # install`; "system" keeps the interactive package-manager path below. Any
 # value other than "system" normalizes to "managed".
-RIPGREP_INSTALLER="${DEEPAGENTS_CODE_RIPGREP_INSTALLER:-managed}"
+#
+# Lowercase and strip whitespace first so this matches the `.strip().lower()`
+# normalization in managed_tools.ripgrep_installer(). Without this, a value
+# like "System" would parse as "managed" here but "system" in dcode, and the
+# eager `dcode tools install` would skip silently while this script also
+# skipped the package-manager path — leaving ripgrep unprovisioned.
+RIPGREP_INSTALLER="$(printf '%s' "${DEEPAGENTS_CODE_RIPGREP_INSTALLER:-managed}" \
+  | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
 case "$RIPGREP_INSTALLER" in
   system) RIPGREP_INSTALLER="system" ;;
   *)      RIPGREP_INSTALLER="managed" ;;

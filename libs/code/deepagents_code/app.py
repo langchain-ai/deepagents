@@ -2796,9 +2796,10 @@ class DeepAgentsApp(App):
         `_ripgrep_ensured` instead of installing again.
 
         Returns:
-            `True` when a usable managed `rg` is on `PATH`, `False` when the
-            install was skipped or failed (caller should surface the missing
-            tool and fall back to the slow path).
+            `True` when a usable `rg` is resolved — the managed binary (with
+            `BIN_DIR` prepended to `PATH`) or a system `rg` already on `PATH` —
+            `False` when the install was skipped or failed (caller should
+            surface the missing tool and fall back to the slow path).
         """
         async with self._ripgrep_ensure_lock:
             if self._ripgrep_ensured.is_set():

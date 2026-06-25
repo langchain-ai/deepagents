@@ -120,6 +120,22 @@ class TestToolsInstall:
         assert code == 1
         assert "SHA-256" in output
 
+    def test_install_unexpected_error_returns_nonzero(self, tmp_path: Path) -> None:
+        """An unexpected exception degrades to a clean error, not a traceback."""
+        args = argparse.Namespace(tools_command="install", output_format="text")
+        with (
+            patch.object(
+                managed_tools,
+                "ensure_ripgrep",
+                side_effect=OSError("boom"),
+            ),
+            patch.object(managed_tools, "managed_rg_path", return_value=tmp_path / "x"),
+        ):
+            code, output = _run_text(args)
+        assert code == 1
+        assert "unexpectedly" in output
+        assert "boom" not in output  # internals stay in the logs, not stdout
+
     def test_no_subcommand_shows_help(self) -> None:
         args = argparse.Namespace(tools_command=None)
         with patch("deepagents_code.ui.show_tools_help") as show_help:

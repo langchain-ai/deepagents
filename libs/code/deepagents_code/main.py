@@ -695,8 +695,9 @@ def _auto_install_ripgrep_cli(
         missing_tools: Tool names reported missing by `check_optional_tools`.
 
     Returns:
-        `missing_tools` with `"ripgrep"` removed once a usable managed binary
-        is on `PATH`, otherwise the list unchanged.
+        `missing_tools` with `"ripgrep"` removed once a usable `rg` is
+        resolved — the managed binary (with `BIN_DIR` prepended to `PATH`) or a
+        system `rg` already on `PATH` — otherwise the list unchanged.
     """
     from deepagents_code.managed_tools import (
         ChecksumMismatchError,
@@ -936,8 +937,8 @@ def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
 
     Short-circuits before `console`/`settings` are imported so help-only
     invocations stay snappy. Mirrors the dispatch in `cli_main` for the
-    `help`, `agents`, `skills`, `threads`, `mcp`, `config`, and `auth` commands
-    when no subcommand was given.
+    `help`, `agents`, `skills`, `threads`, `mcp`, `config`, `auth`, and `tools`
+    commands when no subcommand was given.
 
     Args:
         args: Namespace from `parse_args()`. Only `command` and the per-group

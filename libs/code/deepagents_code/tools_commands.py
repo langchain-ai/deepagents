@@ -15,14 +15,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from deepagents_code.output import write_json
 
 if TYPE_CHECKING:
     import argparse
 
+    from deepagents_code.output import OutputFormat
+
 logger = logging.getLogger(__name__)
+
+InstallStatus = Literal["ok", "skipped", "error"]
+"""Stable machine token for the `tools install` outcome, surfaced via `--json`.
+
+`ok` (installed or already current), `skipped` (intentional opt-out), and
+`error` (an install was expected but failed). Only `error` is unhealthy, so it
+alone drives a non-zero exit code."""
 
 
 def run_tools_command(args: argparse.Namespace) -> int:
@@ -70,7 +79,7 @@ def _run_tools_install(args: argparse.Namespace) -> int:
         prepend_managed_bin_to_path,
     )
 
-    output_format = getattr(args, "output_format", "text")
+    output_format: OutputFormat = getattr(args, "output_format", "text")
     managed_target = managed_rg_path()
 
     try:
@@ -82,11 +91,23 @@ def _run_tools_install(args: argparse.Namespace) -> int:
         return _emit_install_result(
             output_format,
             status="error",
-            ok=False,
             message=(
                 "ripgrep install aborted: the downloaded archive failed SHA-256 "
                 "verification. Refusing to install."
             ),
+        )
+    except Exception:
+        # Backstop for a clean exit instead of a raw traceback.
+        # `ensure_ripgrep` is defensive internally, but this is the only
+        # `ensure_ripgrep` caller wired into `scripts/install.sh`, so an
+        # unexpected escape must degrade to a structured error + exit 1
+        # (matching the broad backstops in `app.py` / `main.py`) rather than
+        # dumping a traceback and breaking the `--json` envelope.
+        logger.warning("ripgrep install failed unexpectedly", exc_info=True)
+        return _emit_install_result(
+            output_format,
+            status="error",
+            message="ripgrep install failed unexpectedly. See logs for details.",
         )
 
     if installed is not None:
@@ -98,7 +119,6 @@ def _run_tools_install(args: argparse.Namespace) -> int:
         return _emit_install_result(
             output_format,
             status="ok",
-            ok=True,
             message=message,
             path=str(installed),
         )
@@ -109,7 +129,6 @@ def _run_tools_install(args: argparse.Namespace) -> int:
         return _emit_install_result(
             output_format,
             status="skipped",
-            ok=True,
             message=(
                 "Skipped managed ripgrep install: DEEPAGENTS_CODE_RIPGREP_INSTALLER"
                 "=system. Install ripgrep with your package manager, or unset the "
@@ -120,7 +139,6 @@ def _run_tools_install(args: argparse.Namespace) -> int:
         return _emit_install_result(
             output_format,
             status="skipped",
-            ok=True,
             message=(
                 "Skipped managed ripgrep install: DEEPAGENTS_CODE_OFFLINE is set. "
                 "Unset it to download the managed binary."
@@ -129,7 +147,6 @@ def _run_tools_install(args: argparse.Namespace) -> int:
     return _emit_install_result(
         output_format,
         status="error",
-        ok=False,
         message=(
             "Could not install ripgrep (unsupported platform or download failure). "
             "See logs, or install ripgrep manually."
@@ -138,25 +155,28 @@ def _run_tools_install(args: argparse.Namespace) -> int:
 
 
 def _emit_install_result(
-    output_format: str,
+    output_format: OutputFormat,
     *,
-    status: str,
-    ok: bool,
+    status: InstallStatus,
     message: str,
     path: str | None = None,
 ) -> int:
     """Print the install outcome as text or JSON and return its exit code.
 
+    `ok` is derived from `status` (only `"error"` is unhealthy) so the JSON
+    envelope and exit code cannot disagree and no illegal `(status, ok)` pair
+    is representable.
+
     Args:
         output_format: `"json"` for machine-readable output, else text.
         status: Stable machine token (`"ok"`, `"skipped"`, or `"error"`).
-        ok: Whether the outcome is healthy (drives the `0`/`1` exit code).
         message: Human-readable summary line.
         path: Resolved `rg` path when one is available.
 
     Returns:
-        `0` when `ok`, otherwise `1`.
+        `0` for `"ok"`/`"skipped"`, `1` for `"error"`.
     """
+    ok = status != "error"
     if output_format == "json":
         payload: dict[str, object] = {"status": status, "ok": ok, "message": message}
         if path is not None:

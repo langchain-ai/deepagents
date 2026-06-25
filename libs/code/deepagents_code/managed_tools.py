@@ -15,7 +15,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from deepagents_code._env_vars import OFFLINE, RIPGREP_INSTALLER, is_env_truthy
 
@@ -110,19 +110,24 @@ def is_offline() -> bool:
     return is_env_truthy(OFFLINE)
 
 
-INSTALLER_MANAGED = "managed"
+RipgrepInstaller = Literal["managed", "system"]
+"""The two recognized ripgrep installer modes."""
+
+INSTALLER_MANAGED: RipgrepInstaller = "managed"
 """Default installer mode: fetch the pinned, checksummed upstream binary."""
 
-INSTALLER_SYSTEM = "system"
+INSTALLER_SYSTEM: RipgrepInstaller = "system"
 """Installer mode that defers ripgrep to the system package manager / `PATH`."""
 
 
-def ripgrep_installer() -> str:
+def ripgrep_installer() -> RipgrepInstaller:
     """Return the configured ripgrep installer mode.
 
     Reads `RIPGREP_INSTALLER` and normalizes it to `INSTALLER_MANAGED` or
     `INSTALLER_SYSTEM`, falling back to `INSTALLER_MANAGED` for unset or
-    unrecognized values.
+    unrecognized values. The `strip().lower()` normalization must stay in
+    sync with the `case` block in `scripts/install.sh` so both layers agree
+    on the parsed mode.
     """
     raw = os.environ.get(RIPGREP_INSTALLER, "").strip().lower()
     if raw == INSTALLER_SYSTEM:
@@ -140,7 +145,11 @@ def ripgrep_installer() -> str:
 
 
 def prefers_system_ripgrep() -> bool:
-    """Return whether the user opted into system-managed ripgrep."""
+    """Return whether the user opted into the `system` ripgrep installer.
+
+    In `system` mode ripgrep is provisioned by the OS package manager or an
+    existing `PATH` entry rather than the managed download.
+    """
     return ripgrep_installer() == INSTALLER_SYSTEM
 
 

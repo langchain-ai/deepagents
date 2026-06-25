@@ -86,6 +86,11 @@ on:
         required: false
         default: ""
         type: string
+      oolong_n_repeats:
+        description: "OOLONG repetitions per example (`OOLONG_N_REPEATS`). Empty = 1. Only used when `oolong_arm` is set."
+        required: false
+        default: ""
+        type: string
       oolong_dataset:
         description: "OOLONG input subset (`OOLONG_DATASET`), e.g. `agnews` or `trec_coarse`. Only used when `oolong_arm` is set."
         required: false
@@ -278,6 +283,7 @@ jobs:
           SUB_MODEL_IN: ${{ inputs.sub_model }}
           OOLONG_N_EXAMPLES_IN: ${{ inputs.oolong_n_examples }}
           OOLONG_CONTEXT_LEN_IN: ${{ inputs.oolong_context_len }}
+          OOLONG_N_REPEATS_IN: ${{ inputs.oolong_n_repeats }}
           OOLONG_DATASET_IN: ${{ inputs.oolong_dataset }}
           MODEL_IN: ${{ inputs.model }}
         run: |
@@ -305,7 +311,7 @@ jobs:
           fi
 
           # Numeric knobs: integers only (empty = use the test's default).
-          for pair in "OOLONG_N_EXAMPLES:${OOLONG_N_EXAMPLES_IN}" "OOLONG_CONTEXT_LEN:${OOLONG_CONTEXT_LEN_IN}"; do
+          for pair in "OOLONG_N_EXAMPLES:${OOLONG_N_EXAMPLES_IN}" "OOLONG_CONTEXT_LEN:${OOLONG_CONTEXT_LEN_IN}" "OOLONG_N_REPEATS:${OOLONG_N_REPEATS_IN}"; do
             val="${pair#*:}"
             name="${pair%%:*}"
             if [ -n "$val" ] && ! printf '%s' "$val" | grep -Eq '^[0-9]+$'; then
@@ -338,6 +344,7 @@ jobs:
             printf 'OOLONG_ARM=%s\n' "$OOLONG_ARM_IN"
             [ -n "$OOLONG_N_EXAMPLES_IN" ] && printf 'OOLONG_N_EXAMPLES=%s\n' "$OOLONG_N_EXAMPLES_IN"
             [ -n "$OOLONG_CONTEXT_LEN_IN" ] && printf 'OOLONG_CONTEXT_LEN=%s\n' "$OOLONG_CONTEXT_LEN_IN"
+            [ -n "$OOLONG_N_REPEATS_IN" ] && printf 'OOLONG_N_REPEATS=%s\n' "$OOLONG_N_REPEATS_IN"
             [ -n "$OOLONG_DATASET_IN" ] && printf 'OOLONG_DATASET=%s\n' "$OOLONG_DATASET_IN"
             # Log OOLONG experiments to the OSS LangSmith workspace.
             printf 'LANGSMITH_WORKSPACE_ID=495db4ef-0b85-4f00-8deb-326a2ec006ec\n'
@@ -347,7 +354,11 @@ jobs:
             printf 'LANGSMITH_EXPERIMENT=%s-oolong-%s-%s\n' "$MODEL_IN" "$OOLONG_ARM_IN" "$CTX_LABEL"
           } >> "$GITHUB_ENV"
 
-          printf 'PYTEST_ADDOPTS=%s --sub-model %s\n' "${PYTEST_ADDOPTS}" "$SUB_MODEL_IN" >> "$GITHUB_ENV"
+          # Per-test hang guard (pytest-timeout). The timeout covers the whole
+          # test item — i.e. ALL repetitions of one example — so it is generous
+          # (50 min): it kills a truly stuck run without nuking a legitimate
+          # slow rep-loop. The 6h job cap remains the overall backstop.
+          printf 'PYTEST_ADDOPTS=%s --sub-model %s --timeout=3000\n' "${PYTEST_ADDOPTS}" "$SUB_MODEL_IN" >> "$GITHUB_ENV"
 
       - name: "📊 Run Evals"
         env:

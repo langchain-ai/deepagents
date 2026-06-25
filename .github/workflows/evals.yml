@@ -274,6 +274,12 @@ on:
         required: false
         default: ""
         type: string
+      oolong_n_repeats:
+        description: "OOLONG repetitions per example (`OOLONG_N_REPEATS`, native
+          langsmith repetitions). Empty = 1. Only used when oolong_arms is set."
+        required: false
+        default: ""
+        type: string
       notes:
         description: "Free-text notes for this dispatch (e.g. hypothesis being tested,
           retry reason). Shown on the run summary; does not affect eval
@@ -654,6 +660,7 @@ jobs:
       oolong_n_examples: ${{ inputs.oolong_n_examples }}
       oolong_context_len: ${{ inputs.oolong_context_len }}
       oolong_dataset: ${{ inputs.oolong_dataset }}
+      oolong_n_repeats: ${{ inputs.oolong_n_repeats }}
     secrets: inherit
 
   eval-baseten:
@@ -685,6 +692,7 @@ jobs:
       oolong_n_examples: ${{ inputs.oolong_n_examples }}
       oolong_context_len: ${{ inputs.oolong_context_len }}
       oolong_dataset: ${{ inputs.oolong_dataset }}
+      oolong_n_repeats: ${{ inputs.oolong_n_repeats }}
     secrets: inherit
 
   eval-fireworks:
@@ -716,6 +724,7 @@ jobs:
       oolong_n_examples: ${{ inputs.oolong_n_examples }}
       oolong_context_len: ${{ inputs.oolong_context_len }}
       oolong_dataset: ${{ inputs.oolong_dataset }}
+      oolong_n_repeats: ${{ inputs.oolong_n_repeats }}
     secrets: inherit
 
   eval-google-genai:
@@ -747,6 +756,7 @@ jobs:
       oolong_n_examples: ${{ inputs.oolong_n_examples }}
       oolong_context_len: ${{ inputs.oolong_context_len }}
       oolong_dataset: ${{ inputs.oolong_dataset }}
+      oolong_n_repeats: ${{ inputs.oolong_n_repeats }}
     secrets: inherit
 
   eval-groq:
@@ -778,6 +788,7 @@ jobs:
       oolong_n_examples: ${{ inputs.oolong_n_examples }}
       oolong_context_len: ${{ inputs.oolong_context_len }}
       oolong_dataset: ${{ inputs.oolong_dataset }}
+      oolong_n_repeats: ${{ inputs.oolong_n_repeats }}
     secrets: inherit
 
   eval-nvidia:
@@ -809,6 +820,7 @@ jobs:
       oolong_n_examples: ${{ inputs.oolong_n_examples }}
       oolong_context_len: ${{ inputs.oolong_context_len }}
       oolong_dataset: ${{ inputs.oolong_dataset }}
+      oolong_n_repeats: ${{ inputs.oolong_n_repeats }}
     secrets: inherit
 
   eval-ollama:
@@ -840,6 +852,7 @@ jobs:
       oolong_n_examples: ${{ inputs.oolong_n_examples }}
       oolong_context_len: ${{ inputs.oolong_context_len }}
       oolong_dataset: ${{ inputs.oolong_dataset }}
+      oolong_n_repeats: ${{ inputs.oolong_n_repeats }}
     secrets: inherit
 
   eval-openai:
@@ -871,6 +884,7 @@ jobs:
       oolong_n_examples: ${{ inputs.oolong_n_examples }}
       oolong_context_len: ${{ inputs.oolong_context_len }}
       oolong_dataset: ${{ inputs.oolong_dataset }}
+      oolong_n_repeats: ${{ inputs.oolong_n_repeats }}
     secrets: inherit
 
   eval-openrouter:
@@ -902,6 +916,7 @@ jobs:
       oolong_n_examples: ${{ inputs.oolong_n_examples }}
       oolong_context_len: ${{ inputs.oolong_context_len }}
       oolong_dataset: ${{ inputs.oolong_dataset }}
+      oolong_n_repeats: ${{ inputs.oolong_n_repeats }}
     secrets: inherit
 
   eval-xai:
@@ -933,6 +948,7 @@ jobs:
       oolong_n_examples: ${{ inputs.oolong_n_examples }}
       oolong_context_len: ${{ inputs.oolong_context_len }}
       oolong_dataset: ${{ inputs.oolong_dataset }}
+      oolong_n_repeats: ${{ inputs.oolong_n_repeats }}
     secrets: inherit
 
   eval-other:
@@ -964,6 +980,7 @@ jobs:
       oolong_n_examples: ${{ inputs.oolong_n_examples }}
       oolong_context_len: ${{ inputs.oolong_context_len }}
       oolong_dataset: ${{ inputs.oolong_dataset }}
+      oolong_n_repeats: ${{ inputs.oolong_n_repeats }}
     secrets: inherit
 
   aggregate:

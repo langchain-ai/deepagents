@@ -48,10 +48,20 @@ if TYPE_CHECKING:
     from tests.evals.oolong_benchmarks import OolongExample
 
 
+def _oolong_repeats() -> int:
+    """Repetitions per example (``OOLONG_N_REPEATS``, default 1).
+
+    Uses the langsmith pytest plugin's native `repetitions`, so each example
+    runs N times within a single experiment (proper per-example variance view).
+    """
+    raw = os.environ.get("OOLONG_N_REPEATS", "1")
+    return int(raw) if raw and raw.isdigit() and int(raw) >= 1 else 1
+
+
 pytestmark = [
     pytest.mark.eval_category("long_context_aggregation"),
     pytest.mark.eval_tier("hillclimb"),
-    pytest.mark.langsmith,
+    pytest.mark.langsmith(repetitions=_oolong_repeats()),
 ]
 """All cases in this module are long-context aggregation, hillclimb-tier."""
 

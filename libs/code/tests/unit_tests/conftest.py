@@ -138,24 +138,34 @@ def _clear_onboarding_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _clear_update_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def _clear_update_env(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Prevent update debug/loop-guard and toggle env vars from affecting tests.
 
     `DEEPAGENTS_CODE_DEBUG_UPDATE` short-circuits the install path, and the
     internal `DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE` sentinel suppresses
-    auto-update to break a restart loop. `DEEPAGENTS_CODE_NO_UPDATE_CHECK` and
-    `DEEPAGENTS_CODE_AUTO_UPDATE` are read directly from the environment by the
-    startup gate (`is_update_check_enabled` / `is_auto_update_enabled`), so a
-    developer who exports either to opt out would otherwise make the auto-update
-    tests fail or pass spuriously. Any of these leaking in (from a developer
-    shell, or a prior test exercising the production code that sets the
-    sentinel) would make the startup auto-update tests non-deterministic. Tests
-    that need a specific value set them explicitly via `monkeypatch`/`patch`.
+    auto-update to break a restart loop. `DEEPAGENTS_CODE_AUTO_UPDATE` is read
+    directly from the environment by `is_auto_update_enabled`, so a developer who
+    exports it would otherwise make auto-update tests fail or pass spuriously.
+
+    Most unit tests should not run the app startup PyPI update check at all: it
+    performs DNS in a background worker, which pytest-socket reports under
+    `--disable-socket` even when the app swallows the failure. Set the production
+    opt-out env var by default so subprocess tests inherit the same no-network
+    behavior. Tests that cover the update-check gate patch it directly and opt
+    out of this default below.
     """
     monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG_UPDATE", raising=False)
     monkeypatch.delenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", raising=False)
-    monkeypatch.delenv("DEEPAGENTS_CODE_NO_UPDATE_CHECK", raising=False)
     monkeypatch.delenv("DEEPAGENTS_CODE_AUTO_UPDATE", raising=False)
+
+    module_name = request.module.__name__.rsplit(".", 1)[-1]
+    if module_name in {"test_config_manifest", "test_main"}:
+        monkeypatch.delenv("DEEPAGENTS_CODE_NO_UPDATE_CHECK", raising=False)
+    else:
+        monkeypatch.setenv("DEEPAGENTS_CODE_NO_UPDATE_CHECK", "1")
 
 
 @pytest.fixture(autouse=True)

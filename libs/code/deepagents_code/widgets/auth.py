@@ -972,6 +972,13 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             project = ""
         if not cleaned:
             if self._allow_empty_submit:
+                # Optional prompts (e.g. the Tavily onboarding step) treat an
+                # empty submit as an intentional skip. We deliberately reuse
+                # `CANCELLED` rather than add a `SKIPPED` outcome: every caller
+                # that allows empty submit wants identical "did not save"
+                # handling for skip and Escape, so the distinction would be
+                # dead weight. Revisit if a caller ever needs to tell a
+                # deliberate decline from an accidental dismissal.
                 self.dismiss(AuthResult.CANCELLED)
                 return
             self._show_error("API key cannot be empty.")

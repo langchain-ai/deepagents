@@ -1756,6 +1756,13 @@ class DeepAgentsApp(App):
         this stays set so background workers (e.g. the optional-tools check)
         can register missing-dependency notices silently instead of toasting
         over the onboarding modals.
+
+        Intentionally never reset, including on onboarding completion: the
+        optional-tools check is scheduled once at startup and may not have run
+        by the time the flow finishes, so clearing this would let that check
+        toast the very "Web search disabled" notice onboarding means to defer.
+        Leaving it set for the whole session is harmless because the check runs
+        exactly once.
         """
 
         self._launch_init_running = False
@@ -6239,6 +6246,21 @@ class DeepAgentsApp(App):
         from deepagents_code.model_config import apply_stored_service_credentials
 
         apply_stored_service_credentials()
+
+        # `apply_stored_service_credentials` is best-effort: it swallows a
+        # corrupt-store read with only a `logger.warning`, which is invisible
+        # inside a Textual session. The user just saw the key accepted, so
+        # confirm it actually reached the environment; if not, say so rather
+        # than letting web search silently stay disabled. Reaching this branch
+        # means `has_tavily` was False at bootstrap, so a populated
+        # `TAVILY_API_KEY` here can only come from the export above.
+        if not os.environ.get("TAVILY_API_KEY"):
+            self.notify(
+                "Saved your Tavily key, but couldn't activate it this "
+                "session. Restart Deep Agents Code, or re-add it with /auth.",
+                severity="warning",
+                markup=False,
+            )
 
     async def _finish_launch_init(self, *, name: str | None) -> None:
         """Persist onboarding completion and, when given, mount the welcome.

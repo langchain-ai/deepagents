@@ -1,0 +1,19 @@
+.github/workflows/_eval.yml
+  s_943638c4b69b44::t_23db228dee252b 357-361
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "c53336ba7dafe637a93f8db52f7f35ececda9f4c",
+  "prompts": {},
+  "sessions": {
+    "s_943638c4b69b44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0385a0ed-b687-4fe3-8e00-f4dc75345399",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

@@ -962,7 +962,9 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
     # DEEPAGENTS_CODE_RIPGREP_INSTALLER=system, reporting what it did.
     echo ""
     log_info "Setting up ripgrep (managed; opt out with DEEPAGENTS_CODE_RIPGREP_INSTALLER=system)..."
-    if ! "$DCODE_BIN" tools install; then
+    if "$DCODE_BIN" tools install; then
+      fix_owner "${HOME}/.deepagents/bin"
+    else
       log_warn "Managed ripgrep setup did not complete; the grep tool will use a slower fallback."
       ripgrep_manual_hint
     fi

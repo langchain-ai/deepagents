@@ -1,0 +1,16 @@
+libs/partners/quickjs/pyproject.toml
+  h_9f69767fa5fabf 26
+libs/partners/quickjs/CHANGELOG.md
+  h_9f69767fa5fabf 9,13-14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "8d2743bcea93b5f95f11f01fe320d972d26919eb",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

@@ -1116,6 +1116,22 @@ class ChatTextArea(TextArea):
         elif event.key != "enter":
             self._reset_paste_burst_run()
 
+        # A mode trigger (`!`, `!!`, `/`) typed at the very start of an
+        # unselected input switches modes. Handle it before TextArea inserts the
+        # character so the trigger never flashes on screen for a frame before
+        # the change handler would strip it.
+        if (
+            event.is_printable
+            and event.character is not None
+            and self.cursor_location == (0, 0)
+            and self.selection.is_empty
+            and self._chat_input_owner is not None
+            and self._chat_input_owner.handle_mode_prefix_keystroke(event.character)
+        ):
+            event.prevent_default()
+            event.stop()
+            return
+
         # Some terminals (e.g. VSCode built-in) send a literal backslash
         # followed by enter for shift+enter.  When enter arrives shortly
         # after a backslash, delete the backslash and insert a newline.
@@ -1767,19 +1783,8 @@ class ChatInput(Vertical):
         if self._stripping_prefix:
             self._stripping_prefix = False
         elif detected_prefix := detect_mode_prefix(text):
-            prefix, detected = detected_prefix
-            strip_length = len(prefix)
-            if self.mode == "shell" and detected == "shell":
-                # First `!` was stripped on entry to shell mode, so the
-                # currently-visible `!` is the second bang of `!!`. Promote to
-                # incognito and consume it.
-                detected = "shell_incognito"
-            elif self.mode == "shell_incognito" and detected == "shell":
-                # Already in incognito; an extra `!` is part of the command
-                # body. Skip the strip-and-demote path that would otherwise
-                # drop us back to plain shell mode.
-                detected = "shell_incognito"
-                strip_length = 0
+            prefix, raw_detected = detected_prefix
+            detected, strip_length = self._resolve_prefix_mode(prefix, raw_detected)
             if prefix == "/" and is_path_payload:
                 # Absolute dropped paths stay normal input, not slash-command mode.
                 if self.mode != "normal":
@@ -1942,6 +1947,56 @@ class ChatInput(Vertical):
             candidate = f"/{text.lstrip('/')}"
             return self._is_existing_path_payload(candidate)
         return False
+
+    def _resolve_prefix_mode(self, prefix: str, detected: str) -> tuple[str, int]:
+        """Resolve target mode and strip length for a detected mode prefix.
+
+        Applies the `!`/`!!` state machine relative to the current mode.
+
+        Returns:
+            Tuple of `(target_mode, strip_length)`.
+        """
+        strip_length = len(prefix)
+        if self.mode == "shell" and detected == "shell":
+            # First `!` was stripped on entry to shell mode, so this `!` is the
+            # second bang of `!!`. Promote to incognito and consume it.
+            detected = "shell_incognito"
+        elif self.mode == "shell_incognito" and detected == "shell":
+            # Already in incognito; an extra `!` is part of the command body.
+            # Skip the strip-and-demote path that would drop back to shell mode.
+            detected = "shell_incognito"
+            strip_length = 0
+        return detected, strip_length
+
+    def handle_mode_prefix_keystroke(self, char: str) -> bool:
+        """Switch input mode for a mode trigger typed at the start of the input.
+
+        Handles the switch before `TextArea` inserts the character so the
+        trigger (`!`, `!!`, `/`) never flashes on screen for a frame before the
+        change handler would strip it.
+
+        Returns:
+            True if the keystroke was consumed (mode handled without inserting
+            the character), otherwise False.
+        """
+        detected_prefix = detect_mode_prefix(char)
+        if detected_prefix is None:
+            return False
+        prefix, raw_detected = detected_prefix
+        detected, strip_length = self._resolve_prefix_mode(prefix, raw_detected)
+        if not strip_length:
+            # An extra `!` inside an incognito command body is literal text.
+            return False
+        if self.mode != detected:
+            self.mode = detected
+        # No text changed, so run the same hint/completion refresh that
+        # on_text_area_changed performs after stripping a typed prefix.
+        self._update_argument_hint()
+        if self._completion_manager and self._text_area:
+            vtext, vcursor = self._completion_text_and_cursor()
+            self._completion_manager.on_text_changed(vtext, vcursor)
+        self.scroll_visible()
+        return True
 
     def _strip_mode_prefix(self, length: int = 1) -> None:
         """Remove the mode trigger from the text area.

@@ -1569,6 +1569,93 @@ class TestModePrefixStripping:
             assert chat.mode == "command"
             assert chat._text_area.text == ""
 
+    async def test_handle_mode_prefix_keystroke_switches_without_text_change(
+        self,
+    ) -> None:
+        """A typed trigger switches mode without inserting the character.
+
+        Regression guard for the `!`-flash: `handle_mode_prefix_keystroke`
+        consumes the keystroke and flips the mode directly, so the trigger is
+        never inserted (and thus never flashes for a frame before stripping).
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            assert chat.handle_mode_prefix_keystroke("!") is True
+            await pilot.pause()
+            assert chat.mode == "shell"
+            assert chat._text_area.text == ""
+
+            # Second bang promotes to incognito, still without inserted text.
+            assert chat.handle_mode_prefix_keystroke("!") is True
+            await pilot.pause()
+            assert chat.mode == "shell_incognito"
+            assert chat._text_area.text == ""
+
+            # A third bang in incognito is literal body text — not consumed.
+            assert chat.handle_mode_prefix_keystroke("!") is False
+            # Non-trigger characters are never consumed.
+            assert chat.handle_mode_prefix_keystroke("a") is False
+
+    async def test_typed_bang_keystroke_skips_strip_round_trip(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pressing `!` enters shell mode without an insert-then-strip round trip."""
+        strip_calls: list[int] = []
+        original = ChatInput._strip_mode_prefix
+
+        def _spy(self: ChatInput, length: int = 1) -> None:
+            strip_calls.append(length)
+            original(self, length)
+
+        monkeypatch.setattr(ChatInput, "_strip_mode_prefix", _spy)
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "shell"
+            assert chat._text_area.text == ""
+            assert strip_calls == []
+
+    async def test_typed_slash_keystroke_enters_command_mode_with_completions(
+        self,
+    ) -> None:
+        """Pressing `/` enters command mode and activates completions, no flash."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("/")
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "command"
+            assert chat._text_area.text == ""
+            assert chat._completion_manager is not None
+            assert chat._completion_manager._active is not None
+
+    async def test_typed_bang_not_at_start_is_literal(self) -> None:
+        """A `!` typed mid-text is body content, not a mode switch."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("ab")
+            await pilot.pause()
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == "ab!"
+
     async def test_mode_stays_on_empty_text(self) -> None:
         """Clearing text after entering shell mode should stay in mode."""
         app = _ChatInputTestApp()

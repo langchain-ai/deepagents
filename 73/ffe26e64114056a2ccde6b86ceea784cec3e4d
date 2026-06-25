@@ -1,0 +1,33 @@
+.github/workflows/release.yml
+  s_1881809c49a6c6::t_ca5d38c160192b 871-875,877-886,895
+libs/code/Makefile
+  s_1881809c49a6c6::t_11272ccc9b5867 111
+.github/scripts/test_check_sdk_pin.py
+  s_1881809c49a6c6::t_ec9d9ee229afcf 53
+  s_1881809c49a6c6::t_056853dc24d306 3-5,9
+  s_1881809c49a6c6::t_ad567c7fdf6a9a 123-196
+  s_1881809c49a6c6::t_7293ca23b22107 89-90
+.github/workflows/check_sdk_pin.yml
+  s_1881809c49a6c6::t_56aa74766d463c 53-78
+.github/RELEASING.md
+  s_1881809c49a6c6::t_384646bb6abd02 50
+.github/scripts/check_sdk_pin.py
+  s_1881809c49a6c6::t_2fecaf2815a1a4 144-146
+  s_1881809c49a6c6::t_15e5d7c7dfd7bc 61-103
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "73ffe26e64114056a2ccde6b86ceea784cec3e4d",
+  "prompts": {},
+  "sessions": {
+    "s_1881809c49a6c6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5eb9121e-cbe8-4f7f-b70d-d0379f6ec890",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

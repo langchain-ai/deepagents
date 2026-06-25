@@ -456,6 +456,12 @@ class TestFormatRelativeTimestamp:
             result = sessions.format_relative_timestamp(ts)
             assert result == "12mo ago"
 
+    def test_boundary_365_days_shows_years(self) -> None:
+        """At exactly 365 days, the year bucket takes over with '1y ago'."""
+        ts = (datetime.now(tz=UTC) - timedelta(days=365, hours=1)).isoformat()
+        result = sessions.format_relative_timestamp(ts)
+        assert result == "1y ago"
+
 
 class TestFormatPath:
     """Tests for format_path helper."""

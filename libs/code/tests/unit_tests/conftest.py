@@ -13,18 +13,12 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-# Modules that manage the app-startup update-check gate themselves: `test_main`
-# patches `is_update_check_enabled` directly and `test_config_manifest` sets
-# `DEEPAGENTS_CODE_NO_UPDATE_CHECK` explicitly to assert env/config precedence.
-# The autouse update-env fixtures opt these out of their defaults so they don't
-# clobber that per-test setup. Keep both fixtures reading this one set so a new
-# self-managing module only has to be added in a single place.
-_UPDATE_CHECK_SELF_MANAGED_MODULES = frozenset({"test_config_manifest", "test_main"})
+_UPDATE_CHECK_SELF_MANAGED_MARK = "self_managed_update_check"
 
 
-def _bare_module_name(request: pytest.FixtureRequest) -> str:
-    """Return the unqualified module name for the test under `request`."""
-    return request.module.__name__.rsplit(".", 1)[-1]
+def _self_manages_update_check(request: pytest.FixtureRequest) -> bool:
+    """Return whether the test owns app-startup update-check setup."""
+    return request.node.get_closest_marker(_UPDATE_CHECK_SELF_MANAGED_MARK) is not None
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -170,15 +164,14 @@ def _clear_update_env(
     performs DNS in a background worker, which pytest-socket reports under
     `--disable-socket` even when the app swallows the failure. Set the production
     opt-out env var by default so subprocess tests inherit the same no-network
-    behavior. Modules that cover the update-check gate manage it themselves (by
-    patching `is_update_check_enabled` or setting the env var explicitly) and opt
-    out of this default below.
+    behavior. Tests marked `self_managed_update_check` cover the update-check
+    gate directly, so they opt out of this default below.
     """
     monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG_UPDATE", raising=False)
     monkeypatch.delenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", raising=False)
     monkeypatch.delenv("DEEPAGENTS_CODE_AUTO_UPDATE", raising=False)
 
-    if _bare_module_name(request) in _UPDATE_CHECK_SELF_MANAGED_MODULES:
+    if _self_manages_update_check(request):
         monkeypatch.delenv("DEEPAGENTS_CODE_NO_UPDATE_CHECK", raising=False)
     else:
         monkeypatch.setenv("DEEPAGENTS_CODE_NO_UPDATE_CHECK", "1")
@@ -191,10 +184,10 @@ def _disable_app_startup_update_checks(
 ) -> None:
     """Keep app startup tests from racing PyPI or user update config.
 
-    The modules in `_UPDATE_CHECK_SELF_MANAGED_MODULES` manage the gate
-    themselves, so leave `is_update_check_enabled` untouched for them.
+    Tests marked `self_managed_update_check` manage the gate themselves, so leave
+    `is_update_check_enabled` untouched for them.
     """
-    if _bare_module_name(request) in _UPDATE_CHECK_SELF_MANAGED_MODULES:
+    if _self_manages_update_check(request):
         return
     monkeypatch.setattr(
         "deepagents_code.update_check.is_update_check_enabled",

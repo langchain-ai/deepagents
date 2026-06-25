@@ -695,12 +695,14 @@ def _auto_install_ripgrep_cli(
         missing_tools: Tool names reported missing by `check_optional_tools`.
 
     Returns:
-        `missing_tools` with `"ripgrep"` removed once a usable managed binary
-        is on `PATH`, otherwise the list unchanged.
+        `missing_tools` with `"ripgrep"` removed once a usable `rg` is
+        resolved — the managed binary (with `BIN_DIR` prepended to `PATH`) or a
+        system `rg` already on `PATH` — otherwise the list unchanged.
     """
     from deepagents_code.managed_tools import (
         ChecksumMismatchError,
         ensure_ripgrep,
+        managed_rg_path,
         prepend_managed_bin_to_path,
     )
 
@@ -727,7 +729,8 @@ def _auto_install_ripgrep_cli(
     if installed is None:
         return missing_tools
 
-    prepend_managed_bin_to_path()
+    if installed == managed_rg_path():
+        prepend_managed_bin_to_path()
     return [tool for tool in missing_tools if tool != "ripgrep"]
 
 
@@ -910,6 +913,7 @@ _HELP_SPECS: dict[str, tuple[str | None, str]] = {
     "mcp": ("mcp_command", "show_mcp_help"),
     "config": ("config_command", "show_config_help"),
     "auth": ("auth_command", "show_auth_help"),
+    "tools": ("tools_command", "show_tools_help"),
 }
 """Maps top-level command names to their startup-fast-path help dispatch.
 
@@ -933,8 +937,8 @@ def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
 
     Short-circuits before `console`/`settings` are imported so help-only
     invocations stay snappy. Mirrors the dispatch in `cli_main` for the
-    `help`, `agents`, `skills`, `threads`, `mcp`, `config`, and `auth` commands
-    when no subcommand was given.
+    `help`, `agents`, `skills`, `threads`, `mcp`, `config`, `auth`, and `tools`
+    commands when no subcommand was given.
 
     Args:
         args: Namespace from `parse_args()`. Only `command` and the per-group
@@ -1211,6 +1215,23 @@ def parse_args() -> argparse.Namespace:
         parents=help_parent(_lazy_help("show_doctor_help")),
     )
     add_json_output_arg(doctor_parser)
+
+    tools_parser = subparsers.add_parser(
+        "tools",
+        help="Manage managed external tools (e.g. ripgrep)",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_tools_help")),
+    )
+    add_json_output_arg(tools_parser)
+    tools_sub = tools_parser.add_subparsers(dest="tools_command")
+
+    tools_install = tools_sub.add_parser(
+        "install",
+        help="Install or repair the managed ripgrep binary",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_tools_install_help")),
+    )
+    add_json_output_arg(tools_install)
 
     # Default interactive mode — argument order here determines the
     # usage line printed by argparse; keep in sync with ui.show_help().
@@ -2292,6 +2313,11 @@ def cli_main() -> None:
             from deepagents_code.doctor import run_doctor_command
 
             sys.exit(run_doctor_command(args))
+
+        if command == "tools":
+            from deepagents_code.tools_commands import run_tools_command
+
+            sys.exit(run_tools_command(args))
 
         # Best-effort, idempotent migration. Placed after parse_args and the
         # bare-help fast path so --help / --version / `deepagents <group>`

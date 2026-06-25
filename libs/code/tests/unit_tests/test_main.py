@@ -1445,6 +1445,10 @@ class TestAutoInstallRipgrepCli:
                 AsyncMock(return_value=Path("/managed/rg")),
             ),
             patch(
+                "deepagents_code.managed_tools.managed_rg_path",
+                return_value=Path("/managed/rg"),
+            ),
+            patch(
                 "deepagents_code.managed_tools.prepend_managed_bin_to_path",
                 prepend,
             ),
@@ -1453,6 +1457,29 @@ class TestAutoInstallRipgrepCli:
 
         assert result == ["tavily"]
         prepend.assert_called_once()
+
+    def test_system_rg_drops_ripgrep_without_prepending(self) -> None:
+        """A system `rg` is usable without prepending the managed binary dir."""
+        console = MagicMock()
+        prepend = MagicMock()
+        with (
+            patch(
+                "deepagents_code.managed_tools.ensure_ripgrep",
+                AsyncMock(return_value=Path("/usr/bin/rg")),
+            ),
+            patch(
+                "deepagents_code.managed_tools.managed_rg_path",
+                return_value=Path("/managed/rg"),
+            ),
+            patch(
+                "deepagents_code.managed_tools.prepend_managed_bin_to_path",
+                prepend,
+            ),
+        ):
+            result = _auto_install_ripgrep_cli(console, ["ripgrep", "tavily"])
+
+        assert result == ["tavily"]
+        prepend.assert_not_called()
 
     def test_install_returns_none_keeps_ripgrep(self) -> None:
         """A skipped/failed install leaves `ripgrep` in the missing list."""

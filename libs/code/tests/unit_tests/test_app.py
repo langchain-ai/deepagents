@@ -16721,6 +16721,10 @@ class TestEnsureManagedRipgrep:
             ),
             patch("deepagents_code.managed_tools.ensure_ripgrep", ensure),
             patch(
+                "deepagents_code.managed_tools.managed_rg_path",
+                return_value=Path("/managed/rg"),
+            ),
+            patch(
                 "deepagents_code.managed_tools.prepend_managed_bin_to_path",
                 prepend,
             ),
@@ -16730,6 +16734,40 @@ class TestEnsureManagedRipgrep:
 
         ensure.assert_awaited_once()
         prepend.assert_called_once()
+        assert app._ripgrep_ensured.is_set()
+        assert app._ripgrep_install_failed is False
+
+    async def test_system_rg_resolved_without_prepending(self) -> None:
+        """A resolved system `rg` must not prepend the managed bin dir.
+
+        `ensure_ripgrep` can return a system `rg` (system-installer mode or a
+        pre-existing binary). Prepending `BIN_DIR` then would pollute the
+        langgraph subprocess's `PATH` with a managed dir holding no binary, so
+        the gate must compare against `managed_rg_path()` before prepending.
+        """
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        ensure = AsyncMock(return_value=Path("/usr/bin/rg"))
+        prepend = MagicMock()
+        with (
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=True,
+            ),
+            patch("deepagents_code.managed_tools.ensure_ripgrep", ensure),
+            patch(
+                "deepagents_code.managed_tools.managed_rg_path",
+                return_value=Path("/managed/rg"),
+            ),
+            patch(
+                "deepagents_code.managed_tools.prepend_managed_bin_to_path",
+                prepend,
+            ),
+        ):
+            assert await app._ensure_managed_ripgrep() is True
+
+        ensure.assert_awaited_once()
+        prepend.assert_not_called()
         assert app._ripgrep_ensured.is_set()
         assert app._ripgrep_install_failed is False
 
@@ -16750,6 +16788,10 @@ class TestEnsureManagedRipgrep:
                 return_value=True,
             ),
             patch("deepagents_code.managed_tools.ensure_ripgrep", ensure),
+            patch(
+                "deepagents_code.managed_tools.managed_rg_path",
+                return_value=Path("/managed/rg"),
+            ),
             patch(
                 "deepagents_code.managed_tools.prepend_managed_bin_to_path",
                 prepend,

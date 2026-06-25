@@ -1071,6 +1071,14 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         default=False,
         env_var=_env_vars.OFFLINE,
     ),
+    ConfigOption(
+        key="runtime.ripgrep_installer",
+        group="Runtime",
+        summary="Select ripgrep provisioning mode ('managed' or 'system').",
+        kind=OptionKind.STR,
+        default="managed",
+        env_var=_env_vars.RIPGREP_INSTALLER,
+    ),
     # --- Debug / Development -------------------------------------------
     ConfigOption(
         key="debug.enabled",

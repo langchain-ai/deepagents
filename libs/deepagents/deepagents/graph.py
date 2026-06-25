@@ -43,6 +43,7 @@ from deepagents.middleware._state import private_state_field_names
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
+from deepagents.middleware.gateway_error import LLMGatewayErrorMiddleware
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
@@ -833,6 +834,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     )
     if main_interrupt_on is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=main_interrupt_on))
+    # Append last so it runs innermost in the wrap_model_call chain and sees the
+    # raw model response before any other middleware transforms it.
+    deepagent_middleware.append(LLMGatewayErrorMiddleware())
     deepagent_middleware = _apply_excluded_middleware(
         deepagent_middleware,
         _profile,

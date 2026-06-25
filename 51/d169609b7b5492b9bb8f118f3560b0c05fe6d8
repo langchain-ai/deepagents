@@ -1,0 +1,22 @@
+libs/evals/deepagents_harness_opt/gate.py
+  s_be045b46d84183::t_daae6ee5aa6222 1-14,16-20
+  s_be045b46d84183::t_536a6ede56cb18 15
+libs/evals/tests/unit_tests/harness_opt/test_gate.py
+  s_be045b46d84183::t_72956e37a5ed9b 1-27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "51d169609b7b5492b9bb8f118f3560b0c05fe6d8",
+  "prompts": {},
+  "sessions": {
+    "s_be045b46d84183": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cade71c4-e821-4a02-888b-b70674466c73",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

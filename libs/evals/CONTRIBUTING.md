@@ -406,6 +406,11 @@ export LANGSMITH_ENDPOINT="https://api.smith.langchain.com"  # Optional: Default
 
 ### Running benchmarks
 
+Harbor now runs Deep Agents through its built-in LangGraph agent. The previous
+custom `deepagents_harbor:DeepAgentsWrapper` import path was removed; commands
+that pass `--agent-import-path deepagents_harbor:DeepAgentsWrapper` will fail.
+Use `--agent langgraph` with the checked-in LangGraph project instead.
+
 ```bash
 # Stage checked-out Deep Agents packages for LangGraph's sandbox install
 make stage-harbor-local-deps
@@ -440,7 +445,29 @@ uv run harbor run \
   --plugin langsmith \
   --plugin-kwarg dataset_name=terminal-bench/terminal-bench-2 \
   --plugin-kwarg experiment_name=deepagents-baseline-v1
+
+# Direct migration for older DeepAgentsWrapper-based terminal-bench commands
+uv run harbor run \
+  --agent langgraph \
+  --agent-kwarg project_path=deepagents_harbor/langgraph_project \
+  --agent-kwarg config=langgraph.json \
+  --agent-kwarg graph=deepagent \
+  --agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}' \
+  --agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}' \
+  --agent-env 'LANGSMITH_TRACING=true' \
+  --dataset terminal-bench/terminal-bench-2 \
+  --model anthropic:claude-opus-4-8 \
+  -n 10 \
+  -l 10 \
+  --jobs-dir harbor-jobs/terminal-bench \
+  --env langsmith \
+  --plugin langsmith \
+  --plugin-kwarg dataset_name=terminal-bench/terminal-bench-2 \
+  --plugin-kwarg experiment_name=harbor-deepagents
 ```
+
+Add environment-specific kwargs such as `--ek idle_ttl_seconds=0` and
+`--ek delete_after_stop_seconds=7200` when needed for a sandbox backend.
 
 ### Available environments
 

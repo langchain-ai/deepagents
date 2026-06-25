@@ -1,0 +1,29 @@
+libs/deepagents/tests/unit_tests/middleware/test_continual_learning.py
+  s_ff1d954e22bc10::t_f58c4fa6d6991d 6
+  s_ff1d954e22bc10::t_0e91ae65e0dd5f 69-70
+  s_ff1d954e22bc10::t_e1b01e9d8272b2 36
+  s_ff1d954e22bc10::t_aab7791abdd787 7
+  s_ff1d954e22bc10::t_43c9155e960f0e 66-68
+libs/deepagents/deepagents/middleware/__init__.py
+  s_ff1d954e22bc10::t_397f197006b965 51
+  s_ff1d954e22bc10::t_e1b01e9d8272b2 87
+libs/deepagents/deepagents/__init__.py
+  s_ff1d954e22bc10::t_6715c002561f72 6
+  s_ff1d954e22bc10::t_e1b01e9d8272b2 30
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "41f7a6fd575a364275002a5c5f36f3d538e273b3",
+  "prompts": {},
+  "sessions": {
+    "s_ff1d954e22bc10": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e85341e2-a6d5-4077-a245-b6953a292cae",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

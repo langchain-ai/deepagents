@@ -77,13 +77,14 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     assert 'default: "dcode"' in workflow
     assert "          - dcode" in workflow
     assert "dataset:" in workflow
-    assert "Benchmark to run (primary selector)" in workflow
-    assert '- "clbench"' in workflow
+    assert "Terminal-bench dataset to run through Harbor." in workflow
+    assert '- "terminal-bench/terminal-bench-2"' in workflow
+    assert '- "terminal-bench/terminal-bench-2-1"' in workflow
     assert '- "sierra-research/tau3-bench"' in workflow
     assert "dataset_override:" in workflow
     assert "          - tau3" in workflow
     assert "include_tasks:" in workflow
-    assert "space-separated task-name globs" in workflow
+    assert "Space-separated task-name globs" in workflow
     assert "rollouts_per_task:" in workflow
     assert 'default: "1"' in workflow
     assert "HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}" in workflow

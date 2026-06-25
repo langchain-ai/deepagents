@@ -2640,11 +2640,12 @@ def cli_main() -> None:
                     )
                     sys.exit(0)
 
+                upgrade_include_prereleases = include_prereleases
                 pin_upgrade_version: str | None = None
                 if include_prereleases is None and release_requires_prereleases(latest):
-                    include_prereleases = True
+                    upgrade_include_prereleases = True
                     pin_upgrade_version = latest
-                if include_prereleases is True:
+                if upgrade_include_prereleases is True:
                     supported, reason = prerelease_upgrade_supported()
                     if not supported:
                         console.print(
@@ -2681,7 +2682,7 @@ def cli_main() -> None:
                     console.print(f"[green]Updated to v{latest}.[/green]")
                 else:
                     cmd = upgrade_command(
-                        include_prereleases=include_prereleases,
+                        include_prereleases=upgrade_include_prereleases,
                         version=pin_upgrade_version,
                     )
                     detail = f": {escape(output[:200])}" if output else ""

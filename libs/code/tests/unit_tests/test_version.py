@@ -516,6 +516,45 @@ async def test_update_slash_command_omitted_prerelease_preserves_channel() -> No
         assert "Updated to v99.0.0" in str(app_msgs[-1]._content)
 
 
+async def test_update_slash_command_stable_prerelease_deps_keep_intent_none() -> None:
+    """Stable releases with pre-release deps let `perform_upgrade` pin the app."""
+    from deepagents_code.app import DeepAgentsApp
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(True, "99.0.0"),
+            ),
+            patch(
+                "deepagents_code.update_check.release_requires_prereleases",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as perform_upgrade_mock,
+        ):
+            await app._handle_command("/update")
+            await pilot.pause()
+
+    perform_upgrade_mock.assert_awaited_once_with(
+        include_prereleases=None,
+        target_version="99.0.0",
+    )
+
+
 async def test_update_slash_command_prerelease_updates_channel() -> None:
     """`/update --prerelease` opts into alpha/beta/rc releases."""
     from deepagents_code.app import DeepAgentsApp

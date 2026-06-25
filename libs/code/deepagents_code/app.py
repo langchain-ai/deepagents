@@ -4180,7 +4180,7 @@ class DeepAgentsApp(App):
                 )
                 return
             success, output = await perform_upgrade(
-                include_prereleases=upgrade_include_prereleases,
+                include_prereleases=include_prereleases,
                 target_version=latest,
             )
             if success:

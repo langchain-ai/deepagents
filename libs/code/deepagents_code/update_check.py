@@ -20,6 +20,7 @@ import re
 import shlex
 import shutil
 import sys
+import tempfile
 import time
 import tomllib
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -253,7 +254,21 @@ def get_cached_update_available() -> tuple[bool, str | None]:
 
 
 def _requires_prerelease_dependency(requirements: Sequence[object] | None) -> bool:
-    """Return whether any requirement specifier names a pre-release version."""
+    """Return whether any requirement specifier names a pre-release version.
+
+    Accepts the raw `Requires-Dist` list from PyPI metadata, which may contain
+    non-string or non-PEP-508 junk; such entries are skipped rather than raising
+    so one malformed line cannot poison the whole check.
+
+    The check is intentionally operator- and marker-agnostic: it returns `True`
+    if *any* specifier across *any* requirement pins a pre-release version,
+    regardless of the operator (`==`, `>=`, even `!=`) or environment markers
+    (extras, `python_version`). This errs toward `True`, which is the safe
+    direction — opting `uv` into `--prerelease allow` still resolves stable
+    releases correctly, so a false positive only widens the candidate set and
+    never strands a user. Do not "tighten" this to the dangerous direction
+    without revisiting the fallback asymmetry in `release_requires_prereleases`.
+    """
     if not requirements:
         return False
     for raw in requirements:
@@ -278,6 +293,33 @@ def _requires_prerelease_dependency(requirements: Sequence[object] | None) -> bo
     return False
 
 
+def _atomic_write_cache(data: dict[str, Any]) -> None:
+    """Write `data` to `CACHE_FILE` as JSON atomically.
+
+    A plain `write_text` truncates the file before writing, so a crash or a
+    concurrent reader/writer can observe a half-written cache. Serializing to a
+    sibling temp file and `os.replace`-ing it into place makes the swap atomic,
+    so readers always see either the old or new contents — never a partial one.
+
+    Raises:
+        OSError: If the cache directory or temp file cannot be written, or the
+            atomic replace fails. Callers handle reporting.
+    """
+    CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=CACHE_FILE.parent, prefix=".latest_version-", suffix=".tmp"
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(data, handle)
+        tmp_path.replace(CACHE_FILE)
+    except OSError:
+        with suppress(OSError):
+            tmp_path.unlink()
+        raise
+
+
 def _write_release_requires_prereleases(version: str, requires: bool) -> None:
     """Cache whether a release needs uv's pre-release resolver opt-in."""
     try:
@@ -293,8 +335,7 @@ def _write_release_requires_prereleases(version: str, requires: bool) -> None:
         values[version] = requires
         data[_RELEASE_PRERELEASE_DEPS_KEY] = values
         data.setdefault("checked_at", time.time())
-        CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        CACHE_FILE.write_text(json.dumps(data), encoding="utf-8")
+        _atomic_write_cache(data)
     except (OSError, json.JSONDecodeError, TypeError):
         logger.debug(
             "Failed to write release pre-release dependency cache",
@@ -382,19 +423,32 @@ def get_latest_version(
         payload, stable=stable, prerelease=prerelease, installed=__version__
     )
 
+    # Preserve per-version pre-release-dependency entries written by
+    # `_write_release_requires_prereleases` for *other* versions; this refresh
+    # only knows the answer for `stable`, so merge rather than overwrite the map
+    # (otherwise a routine check would evict a cached answer and force a re-fetch
+    # that, on a PyPI hiccup, falls back to the unsafe stable-only default).
+    prerelease_deps: dict[str, Any] = {}
     try:
-        CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        CACHE_FILE.write_text(
-            json.dumps(
-                {
-                    "version": stable,
-                    "version_prerelease": prerelease,
-                    "release_times": release_times,
-                    _RELEASE_PRERELEASE_DEPS_KEY: {stable: stable_requires_prereleases},
-                    "checked_at": time.time(),
-                }
-            ),
-            encoding="utf-8",
+        if CACHE_FILE.exists():
+            existing = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+            if isinstance(existing, dict):
+                cached_deps = existing.get(_RELEASE_PRERELEASE_DEPS_KEY)
+                if isinstance(cached_deps, dict):
+                    prerelease_deps = cached_deps
+    except (OSError, json.JSONDecodeError, TypeError):
+        logger.debug("Failed to read cached pre-release deps before refresh")
+    prerelease_deps[stable] = stable_requires_prereleases
+
+    try:
+        _atomic_write_cache(
+            {
+                "version": stable,
+                "version_prerelease": prerelease,
+                "release_times": release_times,
+                _RELEASE_PRERELEASE_DEPS_KEY: prerelease_deps,
+                "checked_at": time.time(),
+            }
         )
     except OSError:
         logger.debug("Failed to write update-check cache", exc_info=True)
@@ -415,6 +469,18 @@ def release_requires_prereleases(
 
     Returns:
         `True` when the release metadata pins or bounds a pre-release dependency.
+
+    Note:
+        On any lookup failure (no `requests`, network/parse error) this returns
+        `False` — i.e. "stable-only resolution". That is deliberately
+        conservative rather than fail-safe: the truly safe default would be to
+        allow pre-releases, but a spurious `True` would make
+        `prerelease_upgrade_supported` *refuse* the upgrade outright on non-uv
+        installs (Homebrew/other), regressing the common case. `False` keeps
+        those installs upgradable; the cost is that, during a PyPI outage, a
+        stable release that genuinely pins a pre-release dependency may be
+        installed stable-only. Failures are logged at `warning` so the blind
+        decision is at least visible.
     """
     if not version:
         return False
@@ -434,7 +500,11 @@ def release_requires_prereleases(
     try:
         import requests
     except ImportError:
-        logger.debug("requests unavailable — release dependency lookup disabled")
+        logger.warning(
+            "requests package not installed — cannot check whether v%s pins a "
+            "pre-release dependency; assuming stable-only resolution",
+            version,
+        )
         return False
 
     try:
@@ -449,9 +519,11 @@ def release_requires_prereleases(
         info = payload.get("info")
         requires = info.get("requires_dist") if isinstance(info, dict) else None
         result = _requires_prerelease_dependency(requires)
-    except (requests.RequestException, OSError, json.JSONDecodeError):
-        logger.debug(
-            "Failed to fetch release dependency metadata from PyPI",
+    except (requests.RequestException, OSError, KeyError, json.JSONDecodeError):
+        logger.warning(
+            "Failed to fetch dependency metadata for v%s from PyPI; assuming "
+            "stable-only resolution",
+            version,
             exc_info=True,
         )
         return False

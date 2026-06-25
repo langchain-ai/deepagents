@@ -29,6 +29,7 @@ from deepagents_code.update_check import (
     _latest_from_releases,
     _note_install_baseline,
     _parse_version,
+    _requires_prerelease_dependency,
     _uv_tool_bin_dir,
     cleanup_update_logs,
     clear_update_notified,
@@ -486,6 +487,160 @@ class TestGetLatestVersion:
             result = get_latest_version()
 
         assert result == "3.0.0"
+
+    def test_fresh_fetch_preserves_other_release_prerelease_entries(
+        self, cache_file
+    ) -> None:
+        """A refresh keeps cached pre-release answers for unrelated versions."""
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "release_requires_prereleases": {"1.0.0": True},
+                    "checked_at": time.time(),
+                }
+            ),
+            encoding="utf-8",
+        )
+        with patch("requests.get", return_value=_mock_pypi_response("2.0.0")):
+            result = get_latest_version()
+
+        assert result == "2.0.0"
+        data = json.loads(cache_file.read_text())
+        assert data["release_requires_prereleases"] == {"1.0.0": True, "2.0.0": False}
+
+    def test_fresh_fetch_non_dict_info_returns_cached(self, cache_file) -> None:
+        """A PyPI payload whose `info` is not an object falls back to cache."""
+        resp = MagicMock()
+        resp.json.return_value = {"info": "not-a-dict", "releases": {}}
+        resp.raise_for_status = MagicMock()
+        with patch("requests.get", return_value=resp):
+            result = get_latest_version()
+
+        assert result is None
+        assert not cache_file.exists()
+
+    def test_fresh_fetch_non_str_version_returns_cached(self, cache_file) -> None:
+        """A PyPI payload whose `info.version` is not a string falls back."""
+        resp = MagicMock()
+        resp.json.return_value = {"info": {"version": 123}, "releases": {}}
+        resp.raise_for_status = MagicMock()
+        with patch("requests.get", return_value=resp):
+            result = get_latest_version()
+
+        assert result is None
+        assert not cache_file.exists()
+
+
+class TestRequiresPrereleaseDependency:
+    """Unit tests for the `Requires-Dist` pre-release detection helper."""
+
+    @pytest.mark.parametrize(
+        ("requirements", "expected"),
+        [
+            (None, False),
+            ((), False),
+            (("deepagents==0.7.0",), False),
+            (("deepagents==0.7.0a2",), True),
+            (("deepagents>=0.7.0a2",), True),
+            (("deepagents~=0.7.0a2",), True),
+            # Operator-agnostic by design: even an exclusion of a pre-release
+            # flags the release. Errs toward enabling --prerelease (safe).
+            (("deepagents!=0.7.0a1",), True),
+            # Marker-gated pre-release pins still flag the release (conservative).
+            (('deepagents==0.7.0a2; extra=="x"',), True),
+            (("deepagents>=0.7.0,<0.8",), False),
+            (("deepagents",), False),  # no version specifier
+            (("requests>=2", "deepagents==0.7.0a2"), True),  # one of many
+            (("not a valid requirement !!!",), False),  # unparseable -> skipped
+            (("deepagents===not.a.version",), False),  # unparseable version
+            ((123, "deepagents==0.7.0a2"), True),  # non-str entry skipped
+            ((123, 456), False),  # all non-str entries
+        ],
+    )
+    def test_detects_prerelease_specifiers(self, requirements, expected) -> None:
+        assert _requires_prerelease_dependency(requirements) is expected
+
+
+class TestReleaseRequiresPrereleases:
+    """Unit tests for `release_requires_prereleases`."""
+
+    def test_none_version_is_false(self) -> None:
+        """A missing version never needs the pre-release resolver."""
+        assert release_requires_prereleases(None) is False
+
+    def test_cache_hit_true(self, cache_file) -> None:
+        """A cached `True` short-circuits without a network call."""
+        cache_file.write_text(
+            json.dumps({"release_requires_prereleases": {"1.1.0": True}}),
+            encoding="utf-8",
+        )
+        with patch("requests.get") as get_mock:
+            assert release_requires_prereleases("1.1.0") is True
+        get_mock.assert_not_called()
+
+    def test_cache_hit_false(self, cache_file) -> None:
+        """A cached `False` short-circuits without a network call."""
+        cache_file.write_text(
+            json.dumps({"release_requires_prereleases": {"1.1.0": False}}),
+            encoding="utf-8",
+        )
+        with patch("requests.get") as get_mock:
+            assert release_requires_prereleases("1.1.0") is False
+        get_mock.assert_not_called()
+
+    def test_cache_miss_fetches_and_writes(self, cache_file) -> None:
+        """A cache miss fetches per-version metadata and caches the result."""
+        with patch(
+            "requests.get",
+            return_value=_mock_pypi_response(
+                "1.1.0", requires_dist=("deepagents==0.7.0a2",)
+            ),
+        ) as get_mock:
+            assert release_requires_prereleases("1.1.0") is True
+        assert get_mock.call_args.args[0].endswith("/deepagents-code/1.1.0/json")
+        data = json.loads(cache_file.read_text())
+        assert data["release_requires_prereleases"]["1.1.0"] is True
+
+    def test_bypass_cache_forces_fetch(self, cache_file) -> None:
+        """`bypass_cache` re-fetches even when a cached value exists."""
+        cache_file.write_text(
+            json.dumps({"release_requires_prereleases": {"1.1.0": False}}),
+            encoding="utf-8",
+        )
+        with patch(
+            "requests.get",
+            return_value=_mock_pypi_response(
+                "1.1.0", requires_dist=("deepagents==0.7.0a2",)
+            ),
+        ) as get_mock:
+            result = release_requires_prereleases("1.1.0", bypass_cache=True)
+        assert result is True
+        get_mock.assert_called_once()
+
+    def test_network_failure_returns_false(self, cache_file) -> None:
+        """A PyPI failure conservatively reports stable-only resolution."""
+        import requests
+
+        with patch("requests.get", side_effect=requests.RequestException("boom")):
+            assert release_requires_prereleases("1.1.0") is False
+        # Nothing cached, so a later successful lookup can still self-correct.
+        assert not cache_file.exists()
+
+    def test_missing_requests_returns_false(self, cache_file) -> None:
+        """Without `requests`, the lookup degrades to stable-only resolution."""
+        with patch.dict(sys.modules, {"requests": None}):
+            assert release_requires_prereleases("1.1.0") is False
+        assert not cache_file.exists()
+
+    def test_malformed_info_returns_false(self, cache_file) -> None:
+        """A payload with a non-object `info` is treated as no requirement."""
+        resp = MagicMock()
+        resp.json.return_value = {"info": "not-a-dict"}
+        resp.raise_for_status = MagicMock()
+        with patch("requests.get", return_value=resp):
+            assert release_requires_prereleases("1.1.0") is False
+        data = json.loads(cache_file.read_text())
+        assert data["release_requires_prereleases"]["1.1.0"] is False
 
 
 class TestIsUpdateAvailable:

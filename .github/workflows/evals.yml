@@ -71,6 +71,7 @@ on:
           - "anthropic:claude-opus-4-6"
           - "anthropic:claude-opus-4-7"
           - "baseten:zai-org/GLM-5"
+          - "baseten:zai-org/GLM-5.2"
           - "baseten:MiniMaxAI/MiniMax-M2.5"
           - "baseten:moonshotai/Kimi-K2.5"
           - "baseten:moonshotai/Kimi-K2.6"

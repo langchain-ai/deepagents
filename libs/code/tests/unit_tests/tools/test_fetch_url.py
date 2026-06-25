@@ -88,6 +88,7 @@ def test_fetch_url_success() -> None:
         "http://example.com",
         body="<html><body><h1>Test</h1><p>Content</p></body></html>",
         status=200,
+        content_type="text/html",
     )
 
     result = fetch_url("http://example.com")
@@ -96,6 +97,71 @@ def test_fetch_url_success() -> None:
     assert "Test" in result["markdown_content"]
     assert result["url"].startswith("http://example.com")
     assert result["content_length"] > 0
+
+
+@responses.activate
+@pytest.mark.usefixtures("resolve_public")
+def test_fetch_url_non_html_content_type_skips_markdownify(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-HTML content types short-circuit before markdownify is called."""
+    import sys
+    import types
+
+    responses.add(
+        responses.GET,
+        "http://example.com/paper.pdf",
+        body=b"%PDF-1.4 binary garbage",
+        status=200,
+        content_type="application/pdf",
+    )
+
+    def _boom(*_args: Any, **_kwargs: Any) -> str:
+        msg = "markdownify should not be called for non-HTML content"
+        raise AssertionError(msg)
+
+    fake = types.ModuleType("markdownify")
+    fake.markdownify = _boom  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "markdownify", fake)
+
+    result = fetch_url("http://example.com/paper.pdf")
+
+    assert result["category"] == "unsupported_content_type"
+    assert result["status_code"] == 200
+    assert result["content_type"].startswith("application/pdf")
+    assert "not text/html" in result["error"]
+    assert "markdown_content" in result
+
+
+@responses.activate
+@pytest.mark.usefixtures("resolve_public")
+def test_fetch_url_recursion_error_returns_structured_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """RecursionError from markdownify is caught and returned as a structured error."""
+    import sys
+    import types
+
+    responses.add(
+        responses.GET,
+        "http://example.com",
+        body="<html><body>deeply nested</body></html>",
+        status=200,
+        content_type="text/html",
+    )
+
+    def _raise_recursion(*_args: Any, **_kwargs: Any) -> str:
+        raise RecursionError
+
+    fake = types.ModuleType("markdownify")
+    fake.markdownify = _raise_recursion  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "markdownify", fake)
+
+    result = fetch_url("http://example.com")
+
+    assert result["category"] == "conversion"
+    assert "too deeply nested" in result["error"]
+    assert result["url"].startswith("http://example.com")
 
 
 @responses.activate
@@ -417,6 +483,7 @@ def test_fetch_url_follows_relative_redirect_to_success(
         "http://example.com/landing",
         body="<html><body><h1>Landed</h1></body></html>",
         status=200,
+        content_type="text/html",
     )
 
     result = fetch_url("http://example.com/redir")

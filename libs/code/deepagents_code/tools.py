@@ -356,7 +356,34 @@ def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:
     except requests.exceptions.RequestException as e:
         return {"error": f"Fetch URL error: {e!s}", "url": url, "category": "network"}
 
-    markdown_content = markdownify(response.text)
+    content_type = response.headers.get("Content-Type", "")
+    if not content_type.lower().startswith("text/html"):
+        truncated = response.text[:10000]
+        return {
+            "url": str(response.url),
+            "markdown_content": truncated,
+            "status_code": response.status_code,
+            "content_length": len(response.text),
+            "content_type": content_type,
+            "category": "unsupported_content_type",
+            "error": (
+                f"Fetch URL error: response content-type is {content_type!r}, "
+                "not text/html; markdown conversion skipped. Try a different URL "
+                "or a tool designed for this content type."
+            ),
+        }
+
+    try:
+        markdown_content = markdownify(response.text)
+    except RecursionError:
+        return {
+            "error": (
+                "Fetch URL error: page HTML too deeply nested to convert to "
+                "markdown — try a different URL or a smaller subset."
+            ),
+            "url": str(response.url),
+            "category": "conversion",
+        }
     return {
         "url": str(response.url),
         "markdown_content": markdown_content,

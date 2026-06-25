@@ -83,6 +83,7 @@ Follow Conventional Commits. See `.github/workflows/pr_lint.yml` for allowed typ
 - Start the text after `type(scope):` with a lowercase letter, unless the first word is a proper noun (e.g. `Azure`, `GitHub`, `OpenAI`) or a named entity (class, function, method, parameter, or variable name).
 - Wrap named entities in backticks so they render as code. Proper nouns are left unadorned.
 - Keep titles short and descriptive — save detail for the body.
+- For version-branch sync PRs, use a title like `chore(repo): sync main into vX.Y`. Do not use `release` as the scope; PR title lint reserves `release` for the type and disallows it as a scope.
 
 Examples:
 

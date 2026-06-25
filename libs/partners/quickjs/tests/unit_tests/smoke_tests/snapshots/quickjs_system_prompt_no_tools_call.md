@@ -144,6 +144,7 @@ flow, and synthesis - in plain JavaScript.
 await task({
   description,      // full autonomous task prompt
   subagentType,     // configured subagent name
+  label,            // optional short UI label for this dispatch
   responseSchema,   // optional JSON Schema for structured output
 }); // -> Promise<unknown>
 ```
@@ -160,6 +161,10 @@ symbol names — not as pasted file contents. If you already read a file while
 exploring, still pass its path and let the subagent read it; do not paste back
 what you read. Each dispatch is stateless from the caller's perspective; you
 cannot send follow-up messages to the same subagent run.
+
+`label` is optional: when provided, it is shown in the live progress UI
+instead of the default description-derived fallback. It is not sent to the
+subagent and does not affect execution.
 
 `responseSchema` is optional, but set it on any dispatch whose result feeds
 later code. A deterministic, typed shape is what lets you compose the next
@@ -335,8 +340,10 @@ const findings = auditResults.flatMap((r) =>
   r.findings.map((f) => ({ ...f, file: r.file }))
 );
 const verified = await Promise.all(findings.map((f) =>
-  task({ description: "Verify this finding: " + f.evidence, subagentType: "verifier" })
-    .then((v) => ({ ...f, ...v }))
+  task({
+    description: "Verify this finding: " + f.evidence,
+    subagentType: "verifier",
+  }).then((v) => ({ ...f, ...v }))
 ));
 ```
 

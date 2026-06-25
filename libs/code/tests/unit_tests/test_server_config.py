@@ -259,41 +259,52 @@ class TestServerConfigInterpreterDefault:
 
 
 class TestInterpreterSuppressedBySandbox:
-    """Tests for the `_interpreter_suppressed_by_sandbox` advisory predicate."""
+    """Tests for the `_interpreter_suppressed_by_sandbox` advisory predicate.
+
+    The predicate takes the *raw* tri-state intent: only the unset default
+    (`None`) can be silently suppressed by a sandbox.
+    """
 
     def test_suppressed_when_remote_and_default_on(self) -> None:
+        # Unset intent + remote sandbox + default-on = a silent drop worth a heads-up.
         assert _interpreter_suppressed_by_sandbox(
-            enable_interpreter=False, sandbox_type="daytona", local_default=True
+            enable_interpreter=None, sandbox_type="daytona", local_default=True
         )
 
-    def test_not_suppressed_when_enabled(self) -> None:
-        # Explicit/forced `True` (e.g. `--interpreter` on a sandbox) is not a
-        # silent drop — the server raises a clear error instead.
+    def test_not_suppressed_on_explicit_enable(self) -> None:
+        # `--interpreter` on a sandbox is the user's choice; the server raises a
+        # clear error instead of a silent drop.
         assert not _interpreter_suppressed_by_sandbox(
             enable_interpreter=True, sandbox_type="daytona", local_default=True
         )
 
+    def test_not_suppressed_on_explicit_opt_out(self) -> None:
+        # `--no-interpreter` is an explicit opt-out, not a sandbox-imposed drop.
+        assert not _interpreter_suppressed_by_sandbox(
+            enable_interpreter=False, sandbox_type="daytona", local_default=True
+        )
+
     def test_not_suppressed_when_local(self) -> None:
         assert not _interpreter_suppressed_by_sandbox(
-            enable_interpreter=False, sandbox_type=None, local_default=True
+            enable_interpreter=None, sandbox_type=None, local_default=True
         )
 
     def test_not_suppressed_when_sandbox_none_string(self) -> None:
         assert not _interpreter_suppressed_by_sandbox(
-            enable_interpreter=False, sandbox_type="none", local_default=True
+            enable_interpreter=None, sandbox_type="none", local_default=True
         )
 
     def test_empty_sandbox_treated_as_local(self) -> None:
         # An empty-string sandbox is falsy and must count as local, so the
         # advisory does not fire spuriously.
         assert not _interpreter_suppressed_by_sandbox(
-            enable_interpreter=False, sandbox_type="", local_default=True
+            enable_interpreter=None, sandbox_type="", local_default=True
         )
 
     def test_not_suppressed_when_default_off(self) -> None:
         # A user who disabled the interpreter in config should not be nagged.
         assert not _interpreter_suppressed_by_sandbox(
-            enable_interpreter=False, sandbox_type="daytona", local_default=False
+            enable_interpreter=None, sandbox_type="daytona", local_default=False
         )
 
 

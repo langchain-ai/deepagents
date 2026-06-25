@@ -17035,7 +17035,7 @@ class TestNotifyInterpreterDisabledBySandbox:
     """Tests for `_notify_interpreter_disabled_by_sandbox` (TUI advisory)."""
 
     def test_toasts_when_sandbox_suppresses_default(self) -> None:
-        """A remote sandbox with the default-on interpreter warns once."""
+        """A remote sandbox with the unset, default-on interpreter warns once."""
         from deepagents_code.config import settings
 
         app = DeepAgentsApp(
@@ -17045,6 +17045,7 @@ class TestNotifyInterpreterDisabledBySandbox:
                 "sandbox_type": "daytona",
                 "enable_interpreter": False,
             },
+            interpreter_arg=None,
         )
         notify_mock = MagicMock()
         app.notify = notify_mock  # ty: ignore
@@ -17067,6 +17068,28 @@ class TestNotifyInterpreterDisabledBySandbox:
                 "model_name": None,
                 "enable_interpreter": True,
             },
+            interpreter_arg=None,
+        )
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        with patch.object(settings, "enable_interpreter", True):
+            app._notify_interpreter_disabled_by_sandbox()
+
+        notify_mock.assert_not_called()
+
+    def test_no_toast_on_explicit_opt_out(self) -> None:
+        """An explicit `--no-interpreter` opt-out under a sandbox is not announced."""
+        from deepagents_code.config import settings
+
+        app = DeepAgentsApp(
+            server_kwargs={
+                "assistant_id": "agent",
+                "model_name": None,
+                "sandbox_type": "daytona",
+                "enable_interpreter": False,
+            },
+            interpreter_arg=False,
         )
         notify_mock = MagicMock()
         app.notify = notify_mock  # ty: ignore
@@ -17087,6 +17110,7 @@ class TestNotifyInterpreterDisabledBySandbox:
                 "sandbox_type": "daytona",
                 "enable_interpreter": False,
             },
+            interpreter_arg=None,
         )
         notify_mock = MagicMock()
         app.notify = notify_mock  # ty: ignore

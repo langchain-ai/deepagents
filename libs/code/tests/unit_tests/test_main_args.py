@@ -2433,19 +2433,12 @@ class TestWarnInterpreterDisabledBySandbox:
     ) -> None:
         """A `--sandbox` run with the default-on interpreter warns on stderr."""
         from deepagents_code.config import settings
-        from deepagents_code.main import (
-            _resolve_interpreter_enabled,
-            _warn_if_interpreter_disabled_by_sandbox,
-        )
+        from deepagents_code.main import _warn_if_interpreter_disabled_by_sandbox
 
         with mock_argv("-n", "task", "--sandbox", "daytona"):
             args = parse_args()
         with patch.object(settings, "enable_interpreter", True):
-            enable_interpreter = _resolve_interpreter_enabled(args)
-            _warn_if_interpreter_disabled_by_sandbox(
-                args, enable_interpreter=enable_interpreter
-            )
-        assert enable_interpreter is False
+            _warn_if_interpreter_disabled_by_sandbox(args)
         assert "unavailable under a remote sandbox" in capsys.readouterr().err
 
     def test_silent_in_local_mode(
@@ -2458,7 +2451,20 @@ class TestWarnInterpreterDisabledBySandbox:
         with mock_argv("-n", "task"):
             args = parse_args()
         with patch.object(settings, "enable_interpreter", True):
-            _warn_if_interpreter_disabled_by_sandbox(args, enable_interpreter=True)
+            _warn_if_interpreter_disabled_by_sandbox(args)
+        assert capsys.readouterr().err == ""
+
+    def test_silent_on_explicit_opt_out_under_sandbox(
+        self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """An explicit `--no-interpreter` is the user's choice, not a drop."""
+        from deepagents_code.config import settings
+        from deepagents_code.main import _warn_if_interpreter_disabled_by_sandbox
+
+        with mock_argv("-n", "task", "--sandbox", "daytona", "--no-interpreter"):
+            args = parse_args()
+        with patch.object(settings, "enable_interpreter", True):
+            _warn_if_interpreter_disabled_by_sandbox(args)
         assert capsys.readouterr().err == ""
 
     def test_silent_when_config_default_off(
@@ -2471,7 +2477,7 @@ class TestWarnInterpreterDisabledBySandbox:
         with mock_argv("-n", "task", "--sandbox", "daytona"):
             args = parse_args()
         with patch.object(settings, "enable_interpreter", False):
-            _warn_if_interpreter_disabled_by_sandbox(args, enable_interpreter=False)
+            _warn_if_interpreter_disabled_by_sandbox(args)
         assert capsys.readouterr().err == ""
 
     def test_cli_main_forwards_enabled_interpreter_in_local_mode(self) -> None:
@@ -2535,3 +2541,45 @@ class TestWarnInterpreterDisabledBySandbox:
         assert exc_info.value.code == 0
         assert run_mock.call_args.kwargs["enable_interpreter"] is False
         assert "unavailable under a remote sandbox" in capsys.readouterr().err
+
+    def test_cli_main_silent_on_explicit_opt_out_under_sandbox(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """End-to-end: `-n --sandbox --no-interpreter` disables without an advisory."""
+        from deepagents_code.config import settings
+        from deepagents_code.main import cli_main
+
+        run_mock = AsyncMock(return_value=0)
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "deepagents",
+                    "-n",
+                    "task",
+                    "--sandbox",
+                    "daytona",
+                    "--no-interpreter",
+                ],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.integrations.sandbox_factory.verify_sandbox_deps",
+            ),
+            patch.object(settings, "enable_interpreter", True),
+            patch("deepagents_code.non_interactive.run_non_interactive", run_mock),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        assert run_mock.call_args.kwargs["enable_interpreter"] is False
+        assert "unavailable under a remote sandbox" not in capsys.readouterr().err

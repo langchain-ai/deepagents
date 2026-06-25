@@ -128,18 +128,24 @@ def _resolve_enable_interpreter(
 
 
 def _interpreter_suppressed_by_sandbox(
-    *, enable_interpreter: bool, sandbox_type: str | None, local_default: bool
+    *, enable_interpreter: bool | None, sandbox_type: str | None, local_default: bool
 ) -> bool:
     """Whether a remote sandbox suppressed the otherwise-default interpreter.
 
     Used to decide whether to surface an advisory: returns `True` only when the
-    interpreter ended up disabled, a remote sandbox is active, and the local
+    user made no explicit choice, a remote sandbox is active, and the local
     default would have enabled it — i.e. the sandbox (not an explicit
-    `--no-interpreter` opt-out, which the caller resolves the same way, nor a
-    disabled `[interpreter]` config) is why `js_eval` is unavailable.
+    `--no-interpreter` opt-out, nor a disabled `[interpreter]` config) is why
+    `js_eval` is unavailable.
+
+    Takes the *raw* tri-state caller intent rather than the resolved boolean: a
+    sandbox-suppressed default and an explicit `--no-interpreter` both resolve to
+    `False`, so the resolved value cannot distinguish them. Any explicit choice
+    (`not None`) is the user's own decision and is left unannounced.
 
     Args:
-        enable_interpreter: The already-resolved interpreter state.
+        enable_interpreter: The raw tri-state caller intent (`--interpreter` →
+            `True`, `--no-interpreter` → `False`, unset → `None`).
         sandbox_type: Sandbox backend identifier. Any falsy value (`None`, `""`)
             or `"none"` is treated as local execution.
         local_default: The local-mode default (`settings.enable_interpreter`);
@@ -149,7 +155,7 @@ def _interpreter_suppressed_by_sandbox(
     Returns:
         `True` when the advisory should be shown, otherwise `False`.
     """
-    if enable_interpreter:
+    if enable_interpreter is not None:
         return False
     if not (sandbox_type and sandbox_type != "none"):
         return False

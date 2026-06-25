@@ -1582,6 +1582,7 @@ class DeepAgentsApp(App):
         mcp_preload_kwargs: dict[str, Any] | None = None,
         model_kwargs: dict[str, Any] | None = None,
         model_explicitly_set: bool = False,
+        interpreter_arg: bool | None = None,
         defer_server_start: bool = False,
         title: str | None = None,
         sub_title: str | None = None,
@@ -1640,6 +1641,11 @@ class DeepAgentsApp(App):
 
                 When `True`, an explicit choice wins over the model persisted
                 in a resumed thread (no resume adoption).
+            interpreter_arg: The raw `--interpreter`/`--no-interpreter` tri-state
+                (`True`/`False`/`None`). Used only to distinguish an explicit
+                opt-out from a sandbox-suppressed default when surfacing the
+                disabled-by-sandbox advisory; the resolved value travels in
+                `server_kwargs`.
             defer_server_start: Whether to keep app-owned server startup paused
                 until the user configures credentials or explicitly picks a model.
             title: Override the Textual `App.title` shown in the optional
@@ -1880,6 +1886,8 @@ class DeepAgentsApp(App):
         """
 
         self._model_explicitly_set = model_explicitly_set
+        self._interpreter_arg = interpreter_arg
+        """Raw `--interpreter`/`--no-interpreter` tri-state for advisory gating."""
         """Whether `--model` was passed on the command line.
 
         Suppresses adopting a resumed thread's persisted model.
@@ -2524,16 +2532,16 @@ class DeepAgentsApp(App):
         startup notification — the TUI counterpart of the non-interactive warning
         in `main._warn_if_interpreter_disabled_by_sandbox`.
 
-        Reads the resolved interpreter state from `self._server_kwargs` and the
-        local default from `settings`; gating on the default keeps the toast
-        quiet for users who disabled the interpreter in config.
+        Gated on the raw `--interpreter` tri-state (`self._interpreter_arg`) so an
+        explicit `--no-interpreter` opt-out stays quiet, and on the local default
+        from `settings` so users who disabled the interpreter in config are not
+        nagged.
         """
         from deepagents_code._server_config import _interpreter_suppressed_by_sandbox
         from deepagents_code.config import settings
 
-        server_kwargs = self._server_kwargs or {}
         if not _interpreter_suppressed_by_sandbox(
-            enable_interpreter=bool(server_kwargs.get("enable_interpreter")),
+            enable_interpreter=self._interpreter_arg,
             sandbox_type=self._sandbox_type,
             local_default=settings.enable_interpreter,
         ):
@@ -13617,6 +13625,7 @@ async def run_textual_app(
     mcp_preload_kwargs: dict[str, Any] | None = None,
     model_kwargs: dict[str, Any] | None = None,
     model_explicitly_set: bool = False,
+    interpreter_arg: bool | None = None,
     defer_server_start: bool = False,
     title: str | None = None,
     sub_title: str | None = None,
@@ -13668,6 +13677,9 @@ async def run_textual_app(
 
             When `True`, the explicit choice wins over a resumed thread's
             persisted model (no resume adoption).
+        interpreter_arg: The raw `--interpreter`/`--no-interpreter` tri-state,
+            forwarded to the app so the disabled-by-sandbox advisory can tell an
+            explicit opt-out from a sandbox-suppressed default.
         defer_server_start: Whether to keep app-owned server startup paused
             until credentials or a model are configured from inside the TUI.
         title: Override the Textual `App.title` shown in the optional header
@@ -13698,6 +13710,7 @@ async def run_textual_app(
         mcp_preload_kwargs=mcp_preload_kwargs,
         model_kwargs=model_kwargs,
         model_explicitly_set=model_explicitly_set,
+        interpreter_arg=interpreter_arg,
         defer_server_start=defer_server_start,
         title=title,
         sub_title=sub_title,

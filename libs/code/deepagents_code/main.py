@@ -508,9 +508,7 @@ def _resolve_interpreter_enabled(args: argparse.Namespace) -> bool:
     return _resolve_enable_interpreter(args.interpreter, args.sandbox)
 
 
-def _warn_if_interpreter_disabled_by_sandbox(
-    args: argparse.Namespace, *, enable_interpreter: bool
-) -> None:
+def _warn_if_interpreter_disabled_by_sandbox(args: argparse.Namespace) -> None:
     """Warn that a remote sandbox suppressed the otherwise-default interpreter.
 
     With `js_eval` on by default in local mode, a `--sandbox` run silently drops
@@ -518,12 +516,16 @@ def _warn_if_interpreter_disabled_by_sandbox(
     stderr on the non-interactive (`-n`) path; the interactive TUI surfaces the
     same advisory as a startup notification (see
     `DeepAgentsApp._notify_interpreter_disabled_by_sandbox`).
+
+    Keyed on the raw `args.interpreter` tri-state so an explicit
+    `--no-interpreter` opt-out stays silent (the predicate only fires for the
+    unset default).
     """
     from deepagents_code._server_config import _interpreter_suppressed_by_sandbox
     from deepagents_code.config import settings
 
     if not _interpreter_suppressed_by_sandbox(
-        enable_interpreter=enable_interpreter,
+        enable_interpreter=args.interpreter,
         sandbox_type=args.sandbox,
         local_default=settings.enable_interpreter,
     ):
@@ -1685,6 +1687,7 @@ async def run_textual_cli_async(
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
     enable_interpreter: bool | None = None,
+    interpreter_arg: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
 ) -> "AppResult":
@@ -1734,6 +1737,10 @@ async def run_textual_cli_async(
             `True` to allow, `False` to deny, `None` to check trust store.
         enable_interpreter: Enable `CodeInterpreterMiddleware` (`js_eval`) on
             the main agent. `None` defers to the sandbox-aware/config default.
+        interpreter_arg: The raw `--interpreter`/`--no-interpreter` tri-state,
+            forwarded so the app can tell an explicit opt-out from a
+            sandbox-suppressed default when surfacing the disabled-by-sandbox
+            advisory.
         interpreter_ptc: Override for `settings.interpreter_ptc` (PTC allowlist
             for `js_eval`).
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
@@ -1843,6 +1850,7 @@ async def run_textual_cli_async(
             mcp_preload_kwargs=mcp_preload_kwargs,
             model_kwargs=model_kwargs,
             model_explicitly_set=model_name is not None,
+            interpreter_arg=interpreter_arg,
             defer_server_start=defer_server_start,
         )
     except Exception as e:
@@ -3173,9 +3181,7 @@ def cli_main() -> None:
             _warn_if_interpreter_tools_without_interpreter(
                 args, enable_interpreter=enable_interpreter
             )
-            _warn_if_interpreter_disabled_by_sandbox(
-                args, enable_interpreter=enable_interpreter
-            )
+            _warn_if_interpreter_disabled_by_sandbox(args)
 
             timeout = getattr(args, "timeout", None)
             try:
@@ -3302,6 +3308,7 @@ def cli_main() -> None:
                         no_mcp=getattr(args, "no_mcp", False),
                         trust_project_mcp=mcp_trust_decision,
                         enable_interpreter=enable_interpreter,
+                        interpreter_arg=args.interpreter,
                         interpreter_ptc=interpreter_ptc,
                     )
                 )

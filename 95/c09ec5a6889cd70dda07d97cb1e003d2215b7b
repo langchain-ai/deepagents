@@ -1,0 +1,28 @@
+docs/superpowers/specs/2026-06-25-harness-eval-engine-design.md
+  s_be045b46d84183::t_95ae3ed03649ab 304-312
+  s_be045b46d84183::t_d0809cbe703023 396
+  s_be045b46d84183::t_1919be887a9983 419-422
+docs/superpowers/plans/2026-06-25-harness-eval-engine.md
+  s_be045b46d84183::t_ef79e25024ddad 1431-1433,1439-1451
+  s_be045b46d84183::t_a36123c6b23db9 1498-1503,1511-1513,1522-1523,1542-1548
+  s_be045b46d84183::t_84b7b7d8cdc015 1604
+  s_be045b46d84183::t_e06fb528684d2f 1612
+  s_be045b46d84183::t_052a08ccb35df6 1387
+  s_be045b46d84183::t_c3c11a32f4f17b 130-144
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "95c09ec5a6889cd70dda07d97cb1e003d2215b7b",
+  "prompts": {},
+  "sessions": {
+    "s_be045b46d84183": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cade71c4-e821-4a02-888b-b70674466c73",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

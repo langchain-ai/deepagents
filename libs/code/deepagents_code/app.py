@@ -4131,8 +4131,7 @@ class DeepAgentsApp(App):
                     await self._mount_message(
                         AppMessage(
                             f"Updated to v{latest}. Quit and relaunch dcode "
-                            "to use the new version (`/restart` only restarts "
-                            "the server, not the CLI)."
+                            "to use the new version."
                         ),
                     )
                 else:
@@ -11166,8 +11165,7 @@ class DeepAgentsApp(App):
                         return
                     self.notify(
                         f"Updated to v{payload.latest}. "
-                        "Quit and relaunch dcode to use the new version "
-                        "(/restart only restarts the server, not the CLI).",
+                        "Quit and relaunch dcode to use the new version.",
                         severity="information",
                         timeout=10,
                         markup=False,

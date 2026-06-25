@@ -1102,25 +1102,56 @@ def _build_invoke_inputs(
 def _build_logged_inputs(
     model: BaseChatModel,
     eval_metadata: dict[str, object] | None,
-) -> dict[str, Any]:
-    """Build the LangSmith input payload for the current test run."""
+    eval_inputs: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build the LangSmith ``(example_inputs, run_metadata)`` for the test run.
+
+    When ``eval_inputs`` is provided, those task-specific fields (e.g. the
+    question) become the example inputs *verbatim* — nothing else is folded in.
+    ``model`` / ``test_name`` / ``eval_metadata`` (the arm, sub-model, …) travel
+    separately as **run metadata**. This separation is load-bearing: if the arm
+    were embedded in the inputs, each arm would hash to a *different* dataset
+    example and the two experiments would never line up in the compare view.
+
+    When ``eval_inputs`` is omitted, the legacy ``{test_name, model,
+    eval_metadata}`` input payload is preserved (and no extra run metadata is
+    emitted), so existing evals keep their current logged shape.
+    """
     run_tree = get_current_run_tree()
     model_str = str(getattr(model, "model", None) or getattr(model, "model_name", ""))
-    logged_inputs: dict[str, Any] = {
-        "test_name": run_tree.name if run_tree else "unknown",
-        "model": model_str,
-    }
+    test_name = run_tree.name if run_tree else "unknown"
+
+    if eval_inputs is not None:
+        run_metadata = dict(eval_metadata or {})
+        run_metadata.setdefault("model", model_str)
+        run_metadata.setdefault("test_name", test_name)
+        return dict(eval_inputs), run_metadata
+
+    logged_inputs: dict[str, Any] = {"test_name": test_name, "model": model_str}
     if eval_metadata is not None:
         logged_inputs["eval_metadata"] = eval_metadata
-    return logged_inputs
+    return logged_inputs, {}
 
 
-def _log_run_inputs(logged_inputs: dict[str, Any]) -> None:
-    """Replace LangSmith auto-captured inputs with a minimal eval payload."""
+def _log_run_inputs(
+    logged_inputs: dict[str, Any], run_metadata: dict[str, Any] | None = None
+) -> None:
+    """Replace LangSmith auto-captured inputs and attach run metadata.
+
+    ``run_metadata`` is written to ``run_tree.extra["metadata"]`` (where
+    LangSmith reads per-run metadata from) rather than into the inputs, keeping
+    the dataset example identical across experiment arms.
+    """
     t.log_inputs(logged_inputs)
     run_tree = get_current_run_tree()
     if run_tree is not None:
         run_tree.inputs = logged_inputs
+        if run_metadata:
+            extra = run_tree.extra if run_tree.extra is not None else {}
+            metadata = dict(extra.get("metadata") or {})
+            metadata.update(run_metadata)
+            extra["metadata"] = metadata
+            run_tree.extra = extra
     else:
         logger.debug(
             "run_tree is None; run_tree.inputs will not be overridden "
@@ -1137,7 +1168,9 @@ def run_agent(
     scorer: TrajectoryScorer | None = None,
     thread_id: str | None = None,
     eval_metadata: dict[str, object] | None = None,
+    eval_inputs: dict[str, Any] | None = None,
     extra_state: dict[str, Any] | None = None,
+    log_result_as_output: bool = True,
 ) -> AgentTrajectory:
     """Run agent eval against the given query.
 
@@ -1149,8 +1182,16 @@ def run_agent(
         scorer: Optional trajectory expectations to validate.
         thread_id: Optional thread ID for the invocation.
         eval_metadata: Optional metadata to attach to the logged inputs.
+        eval_inputs: Optional task-specific fields (e.g. the question) to log as
+            the LangSmith example input instead of the default
+            `{test_name, model}` payload. The model folds into `eval_metadata`.
         extra_state: Optional extra fields merged into the invoke input
             (e.g. `{"rubric": "..."}` for `RubricMiddleware`).
+        log_result_as_output: When True (default), log the raw agent result as
+            the run outputs. Set False when the caller logs its own structured
+            outputs via `t.log_outputs` — `RunTree.add_outputs` *merges*, so
+            logging the raw result too would pollute those clean outputs with
+            the full agent state.
 
     Returns:
         The resulting `AgentTrajectory`.
@@ -1164,10 +1205,11 @@ def run_agent(
         thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}
 
-    logged_inputs = _build_logged_inputs(model, eval_metadata)
-    _log_run_inputs(logged_inputs)
+    _logged_inputs, _run_metadata = _build_logged_inputs(model, eval_metadata, eval_inputs)
+    _log_run_inputs(_logged_inputs, _run_metadata)
     result = agent.invoke(invoke_inputs, config)
-    t.log_outputs(result)
+    if log_result_as_output:
+        t.log_outputs(result)
 
     if not isinstance(result, Mapping):
         msg = f"Expected invoke result to be Mapping, got {type(result)}"
@@ -1188,6 +1230,7 @@ async def run_agent_async(
     scorer: TrajectoryScorer | None = None,
     thread_id: str | None = None,
     eval_metadata: dict[str, object] | None = None,
+    eval_inputs: dict[str, Any] | None = None,
     extra_state: dict[str, Any] | None = None,
 ) -> AgentTrajectory:
     """Run agent eval asynchronously against the given query.
@@ -1200,6 +1243,9 @@ async def run_agent_async(
         scorer: Optional trajectory expectations to validate.
         thread_id: Optional thread ID for the invocation.
         eval_metadata: Optional metadata to attach to the logged inputs.
+        eval_inputs: Optional task-specific fields (e.g. the question) to log as
+            the LangSmith example input instead of the default
+            `{test_name, model}` payload. The model folds into `eval_metadata`.
         extra_state: Optional extra fields merged into the invoke input
             (e.g. `{"rubric": "..."}` for `RubricMiddleware`).
 
@@ -1215,8 +1261,8 @@ async def run_agent_async(
         thread_id = str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}
 
-    logged_inputs = _build_logged_inputs(model, eval_metadata)
-    _log_run_inputs(logged_inputs)
+    _logged_inputs, _run_metadata = _build_logged_inputs(model, eval_metadata, eval_inputs)
+    _log_run_inputs(_logged_inputs, _run_metadata)
     result = await agent.ainvoke(invoke_inputs, config)
     t.log_outputs(result)
 

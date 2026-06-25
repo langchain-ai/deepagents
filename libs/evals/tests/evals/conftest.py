@@ -131,6 +131,18 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=None,
         help="Optional REPL middleware for tests marked with @pytest.mark.repl. If omitted, those tests bind their tools directly instead of routing through a REPL.",
     )
+    parser.addoption(
+        "--sub-model",
+        action="store",
+        default="openai:gpt-5-mini",
+        help=(
+            "Sub-model id for tests that use recursive / sub-LLM calls "
+            "(e.g. the OOLONG RLM-vs-subagents eval). Used as the model "
+            "behind the `llm()` REPL callable in the RLM arm and the "
+            "general-purpose subagent in the subagents arm. Defaults to "
+            "`openai:gpt-5-mini`, matching the RLM paper."
+        ),
+    )
 
 
 def _filter_by_marker(
@@ -277,3 +289,24 @@ def model(model_name: str, request: pytest.FixtureRequest) -> BaseChatModel:
             raise ValueError(msg)
         kwargs["reasoning_effort"] = reasoning_effort
     return init_chat_model(model_name, **kwargs)
+
+
+@pytest.fixture
+def sub_model_name(request: pytest.FixtureRequest) -> str:
+    """The `provider:model` id used for recursive / sub-LLM calls."""
+    return str(request.config.getoption("--sub-model"))
+
+
+@pytest.fixture
+def sub_model(sub_model_name: str) -> BaseChatModel:
+    """Pre-built chat model for sub-LLM calls.
+
+    Mirrors the minimal subset of provider-specific kwargs the `model`
+    fixture applies — currently just the OpenAI Responses-API toggle.
+    Sub-model usage doesn't go through the OpenRouter allowlist or
+    reasoning-effort options, so we don't replicate those here.
+    """
+    kwargs: dict[str, Any] = {}
+    if sub_model_name.startswith("openai:"):
+        kwargs["use_responses_api"] = True
+    return init_chat_model(sub_model_name, **kwargs)

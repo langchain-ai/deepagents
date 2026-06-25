@@ -148,11 +148,30 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         client = ls_client.Client()
         dataset = _get_test_suite(client, test_suite_name)
 
+        model_opt = session.config.getoption("--model") or ""
+        date_str = datetime.now(tz=UTC).strftime("%Y-%m-%d")
+
         experiment_metadata = {
-            "model": session.config.getoption("--model"),
-            "date": datetime.now(tz=UTC).strftime("%Y-%m-%d"),
+            "model": model_opt,
+            "date": date_str,
             "deepagents_version": __version__,
         }
+
+        # Auto-generate a descriptive LANGSMITH_EXPERIMENT prefix if the caller
+        # didn't set one explicitly. The prefix drives _get_experiment_name, which
+        # appends a short random suffix, so the full name stays unique.
+        if not os.environ.get("LANGSMITH_EXPERIMENT"):
+            # Sanitize: keep only alphanumerics, hyphens, and dots; collapse runs
+            # of other chars to a single hyphen. Prevents shell metacharacters from
+            # reaching subprocess environments.
+            import re as _re  # noqa: PLC0415
+
+            def _slug(s: str) -> str:
+                return _re.sub(r"[^A-Za-z0-9.\-]+", "-", s).strip("-")
+
+            suite_slug = _slug(test_suite_name)
+            model_slug = _slug(model_opt) if model_opt else "unknown-model"
+            os.environ["LANGSMITH_EXPERIMENT"] = f"{suite_slug}-{model_slug}-{date_str}"
 
         experiment = _start_experiment(client, dataset, experiment_metadata)
     except Exception as exc:  # noqa: BLE001

@@ -354,11 +354,11 @@ jobs:
             printf 'LANGSMITH_EXPERIMENT=%s-oolong-%s-%s\n' "$MODEL_IN" "$OOLONG_ARM_IN" "$CTX_LABEL"
           } >> "$GITHUB_ENV"
 
-          # Per-test hang guard (pytest-timeout). The timeout covers the whole
-          # test item — i.e. ALL repetitions of one example — so it is generous
-          # (50 min): it kills a truly stuck run without nuking a legitimate
-          # slow rep-loop. The 6h job cap remains the overall backstop.
-          printf 'PYTEST_ADDOPTS=%s --sub-model %s --timeout=3000\n' "${PYTEST_ADDOPTS}" "$SUB_MODEL_IN" >> "$GITHUB_ENV"
+          # NOTE: no per-test pytest-timeout — that plugin isn't in the evals
+          # `test` dependency group, so `--timeout` is an unrecognized pytest
+          # arg and crashes the run. The 6h job cap + LangGraph recursion limits
+          # are the runaway backstops.
+          printf 'PYTEST_ADDOPTS=%s --sub-model %s\n' "${PYTEST_ADDOPTS}" "$SUB_MODEL_IN" >> "$GITHUB_ENV"
 
       - name: "📊 Run Evals"
         env:

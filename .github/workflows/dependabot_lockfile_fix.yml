@@ -29,7 +29,7 @@ jobs:
       github.event.pull_request.user.type == 'Bot' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.base.repo.full_name == github.repository &&
-      startsWith(github.event.pull_request.head.ref, 'dependabot/')
+      startsWith(github.event.pull_request.head.ref, 'dependabot/uv/')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

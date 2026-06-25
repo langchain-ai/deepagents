@@ -67,7 +67,6 @@ from deepagents_code.config import (
     settings,
 )
 from deepagents_code.configurable_model import ConfigurableModelMiddleware
-from deepagents_code.filesystem_empty_result import _FilesystemEmptyResultMiddleware
 from deepagents_code.integrations.sandbox_factory import get_default_working_dir
 from deepagents_code.local_context import (
     LocalContextMiddleware,
@@ -1420,7 +1419,6 @@ def create_cli_agent(
     # Build middleware stack based on enabled features
     agent_middleware: list[AgentMiddleware[Any, Any]] = [
         ConfigurableModelMiddleware(),
-        _FilesystemEmptyResultMiddleware(),
     ]
 
     # Resume state: declares the `_context_tokens` and `_model_spec` channels

@@ -1,0 +1,23 @@
+libs/evals/deepagents_harness_opt/splits.py
+  s_be045b46d84183::t_11908c19240362 9,11-13,27,43-58,78
+  s_be045b46d84183::t_62f0a0c5de0c46 34
+  s_be045b46d84183::t_8bd52405b746d7 1-8,10,14-26,28-33,35-42,59-77,79-91
+libs/evals/tests/unit_tests/harness_opt/test_splits.py
+  s_be045b46d84183::t_65b26a8ca74af4 1-43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "dfc3a324f0d8426186e767a6d8ceb1272638e9cc",
+  "prompts": {},
+  "sessions": {
+    "s_be045b46d84183": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cade71c4-e821-4a02-888b-b70674466c73",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

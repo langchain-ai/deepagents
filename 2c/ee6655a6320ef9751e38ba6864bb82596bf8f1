@@ -1,0 +1,30 @@
+libs/evals/tests/evals/test_oolong_rlm_vs_subagents.py
+  s_943638c4b69b44::t_7a3a90bb67897a 51-60,64
+.github/workflows/_eval.yml
+  s_943638c4b69b44::t_b807b09d265812 89-93
+  s_943638c4b69b44::t_a51fd935e7bdb4 357-361
+  s_943638c4b69b44::t_ec02e424d21b51 314
+  s_943638c4b69b44::t_1399a3e680b261 286
+  s_943638c4b69b44::t_ab44ab927aac1a 347
+libs/evals/EVAL_CATALOG.md
+  s_943638c4b69b44::t_50738eb315cb16 159
+.github/workflows/evals.yml
+  s_943638c4b69b44::t_99aaff0ef6a8a5 277-282
+  s_943638c4b69b44::t_730ca2783b12de 663,695,727,759,791,823,855,887,919,951,983
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "2cee6655a6320ef9751e38ba6864bb82596bf8f1",
+  "prompts": {},
+  "sessions": {
+    "s_943638c4b69b44": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0385a0ed-b687-4fe3-8e00-f4dc75345399",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

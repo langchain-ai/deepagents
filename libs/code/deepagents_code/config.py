@@ -1409,6 +1409,14 @@ def _parse_interpreter_ptc(
                     "(optionally with the 'safe' preset)."
                 )
                 raise ValueError(msg)
+            if cleaned.lower() == "task":
+                msg = (
+                    "`interpreter_ptc` cannot include 'task' — the subagent "
+                    "`task` tool is reserved and is always available as the "
+                    "top-level `task()` global inside the REPL. Remove 'task' "
+                    "from `interpreter_ptc`."
+                )
+                raise ValueError(msg)
             names.append(cleaned)
         return names
     msg = (

@@ -350,6 +350,14 @@ def _resolve_ptc_option(
                 for member in sorted(INTERPRETER_PTC_SAFE_PRESET):
                     _add(member)
                 continue
+            if name.strip().lower() == "task":
+                msg = (
+                    "interpreter_ptc cannot include 'task' — the subagent "
+                    "`task` tool is reserved and is always available as the "
+                    "top-level task() global inside the REPL. Remove 'task' "
+                    "from interpreter_ptc."
+                )
+                raise ValueError(msg)
             _add(name)
 
         # Explicit names are passed through unvalidated: the middleware resolves

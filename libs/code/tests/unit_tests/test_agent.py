@@ -3506,30 +3506,65 @@ class TestResolvePtcOption:
         from deepagents_code.agent import _resolve_ptc_option
 
         result = _resolve_ptc_option(
-            ["safe", "task"],
+            ["safe", "read_file"],
             tools=self._tools_with_task(),
             acknowledge_unsafe=False,
             auto_approve=False,
         )
-        assert result == ["glob", "grep", "read_file", "task"]
+        assert result == ["glob", "grep", "read_file"]
 
     def test_safe_in_list_dedupes_preserving_order(self) -> None:
         from deepagents_code.agent import _resolve_ptc_option
 
         result = _resolve_ptc_option(
-            ["grep", "safe", "task", "grep"],
+            ["grep", "safe", "read_file", "grep"],
             tools=self._tools_with_task(),
             acknowledge_unsafe=False,
             auto_approve=False,
         )
-        assert result == ["grep", "glob", "read_file", "task"]
+        assert result == ["grep", "glob", "read_file"]
 
     def test_all_in_list_raises(self) -> None:
         from deepagents_code.agent import _resolve_ptc_option
 
         with pytest.raises(ValueError, match="cannot include 'all'"):
             _resolve_ptc_option(
-                ["all", "task"],
+                ["all", "read_file"],
+                tools=self._tools_with_task(),
+                acknowledge_unsafe=False,
+                auto_approve=False,
+            )
+
+    def test_task_in_list_raises(self) -> None:
+        from deepagents_code.agent import _resolve_ptc_option
+
+        with pytest.raises(ValueError, match="task") as excinfo:
+            _resolve_ptc_option(
+                ["task"],
+                tools=[],
+                acknowledge_unsafe=False,
+                auto_approve=False,
+            )
+        assert "interpreter_ptc" in str(excinfo.value)
+
+    def test_task_in_list_case_insensitive_raises(self) -> None:
+        from deepagents_code.agent import _resolve_ptc_option
+
+        for variant in ("Task", "TASK", " task "):
+            with pytest.raises(ValueError, match="task"):
+                _resolve_ptc_option(
+                    [variant],
+                    tools=[],
+                    acknowledge_unsafe=False,
+                    auto_approve=False,
+                )
+
+    def test_task_combined_with_safe_raises(self) -> None:
+        from deepagents_code.agent import _resolve_ptc_option
+
+        with pytest.raises(ValueError, match="task"):
+            _resolve_ptc_option(
+                ["safe", "task"],
                 tools=self._tools_with_task(),
                 acknowledge_unsafe=False,
                 auto_approve=False,
@@ -3567,24 +3602,24 @@ class TestResolvePtcOption:
         from deepagents_code.agent import _resolve_ptc_option
 
         result = _resolve_ptc_option(
-            ["SAFE", "task"],
+            ["SAFE", "read_file"],
             tools=self._tools_with_task(),
             acknowledge_unsafe=False,
             auto_approve=False,
         )
-        assert result == ["glob", "grep", "read_file", "task"]
+        assert result == ["glob", "grep", "read_file"]
 
     def test_safe_sentinel_is_whitespace_tolerant(self) -> None:
         """Whitespace around the `"safe"` sentinel is tolerated and expanded."""
         from deepagents_code.agent import _resolve_ptc_option
 
         result = _resolve_ptc_option(
-            [" safe ", "task"],
+            [" safe ", "read_file"],
             tools=self._tools_with_task(),
             acknowledge_unsafe=False,
             auto_approve=False,
         )
-        assert result == ["glob", "grep", "read_file", "task"]
+        assert result == ["glob", "grep", "read_file"]
 
     def test_explicit_names_are_not_normalized(self) -> None:
         """Only the `"safe"`/`"all"` sentinels are normalized; names pass verbatim.
@@ -3597,21 +3632,21 @@ class TestResolvePtcOption:
         from deepagents_code.agent import _resolve_ptc_option
 
         result = _resolve_ptc_option(
-            ["safe", " task "],
+            ["safe", " read_file "],
             tools=self._tools_with_task(),
             acknowledge_unsafe=False,
             auto_approve=False,
         )
-        assert result == ["glob", "grep", "read_file", " task "]
+        assert result == ["glob", "grep", "read_file", " read_file "]
 
     def test_resolves_builtins_absent_from_passed_tools(self) -> None:
         """Reproduce the server path: built-in names resolve without being in `tools`.
 
         In server/non-interactive mode `create_cli_agent` only receives custom
-        tools (e.g. `fetch_url` + MCP); the filesystem and `task` tools are
-        injected by `create_deep_agent` middleware. The PTC allowlist must
-        still resolve `safe`/`task` against those runtime built-ins rather than
-        raising "Unknown tool names".
+        tools (e.g. `fetch_url` + MCP); the filesystem tools are injected by
+        `create_deep_agent` middleware. The PTC allowlist must still resolve
+        `safe` against those runtime built-ins rather than raising "Unknown
+        tool names".
         """
         from langchain_core.tools import tool
 
@@ -3623,24 +3658,24 @@ class TestResolvePtcOption:
             return ""
 
         result = _resolve_ptc_option(
-            ["safe", "task"],
+            ["safe", "fetch_url"],
             tools=[fetch_url],
             acknowledge_unsafe=False,
             auto_approve=False,
         )
-        assert result == ["glob", "grep", "read_file", "task"]
+        assert result == ["glob", "grep", "read_file", "fetch_url"]
 
     def test_duplicate_safe_tokens_dedupe(self) -> None:
         """Repeated `"safe"` tokens expand once; members are not duplicated."""
         from deepagents_code.agent import _resolve_ptc_option
 
         result = _resolve_ptc_option(
-            ["safe", "safe", "task"],
+            ["safe", "safe", "read_file"],
             tools=self._tools_with_task(),
             acknowledge_unsafe=False,
             auto_approve=False,
         )
-        assert result == ["glob", "grep", "read_file", "task"]
+        assert result == ["glob", "grep", "read_file"]
 
     def test_safe_excludes_hitl_gated_tools(self) -> None:
         """`"safe"` must never expose tools that are HITL-gated outside the REPL.

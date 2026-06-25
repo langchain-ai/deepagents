@@ -4810,13 +4810,13 @@ ptc = [""]
         config_path.write_text(
             """
 [interpreter]
-ptc = ["safe", "task"]
+ptc = ["safe", "read_file"]
 """
         )
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
             settings_obj = Settings.from_environment(start_path=tmp_path)
 
-        assert settings_obj.interpreter_ptc == ["safe", "task"]
+        assert settings_obj.interpreter_ptc == ["safe", "read_file"]
 
     def test_ptc_list_with_all_falls_back(self, tmp_path: Path) -> None:
         """`"all"` inside a list is rejected, falling back to the default."""
@@ -4824,13 +4824,61 @@ ptc = ["safe", "task"]
         config_path.write_text(
             """
 [interpreter]
-ptc = ["all", "task"]
+ptc = ["all", "read_file"]
 """
         )
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
             settings_obj = Settings.from_environment(start_path=tmp_path)
 
         assert settings_obj.interpreter_ptc == "safe"
+
+    def test_ptc_list_with_task_falls_back(self, tmp_path: Path) -> None:
+        """`"task"` inside a list is rejected, falling back to the default."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            """
+[interpreter]
+ptc = ["read_file", "task"]
+"""
+        )
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            settings_obj = Settings.from_environment(start_path=tmp_path)
+
+        assert settings_obj.interpreter_ptc == "safe"
+
+
+class TestParseInterpreterPtc:
+    """Direct tests for `_parse_interpreter_ptc` reserved-name validation."""
+
+    def test_task_in_list_raises(self) -> None:
+        from deepagents_code.config import _parse_interpreter_ptc
+
+        with pytest.raises(ValueError, match="task") as excinfo:
+            _parse_interpreter_ptc(["task"])
+        assert "interpreter_ptc" in str(excinfo.value)
+
+    def test_task_case_variants_raise(self) -> None:
+        from deepagents_code.config import _parse_interpreter_ptc
+
+        for variant in ("Task", "TASK", "tAsK"):
+            with pytest.raises(ValueError, match="task"):
+                _parse_interpreter_ptc([variant])
+
+    def test_task_combined_with_other_entries_raises(self) -> None:
+        from deepagents_code.config import _parse_interpreter_ptc
+
+        with pytest.raises(ValueError, match="task"):
+            _parse_interpreter_ptc(["read_file", "task"])
+
+    def test_safe_string_still_accepted(self) -> None:
+        from deepagents_code.config import _parse_interpreter_ptc
+
+        assert _parse_interpreter_ptc("safe") == "safe"
+
+    def test_explicit_list_without_task_round_trips(self) -> None:
+        from deepagents_code.config import _parse_interpreter_ptc
+
+        assert _parse_interpreter_ptc(["read_file", "grep"]) == ["read_file", "grep"]
 
 
 class TestCreateModelCodex:

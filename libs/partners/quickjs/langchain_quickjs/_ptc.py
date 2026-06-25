@@ -71,7 +71,10 @@ def filter_tools_for_ptc(
     The subagent `task` tool is reserved and may not appear in `config`
     (by name or instance) — it is always available as the `task()` global,
     so a `tools.task` PTC variant would be a conflicting, degraded duplicate.
-    A `"task"` entry raises `ValueError`.
+    A `"task"` entry raises `ValueError`. This check is a backstop — callers
+    in `deepagents_code` validate `interpreter_ptc` at config-parse and
+    agent-build time, so a misconfigured `"task"` entry should never reach
+    this function in normal usage.
 
     Warning:
         PTC tool calls execute through the REPL bridge and currently do

@@ -1,0 +1,22 @@
+.github/workflows/ci.yml
+  s_054402d407fc68::t_3d630abf5b1532 370-371
+  s_054402d407fc68::t_6422a3e4941c5f 409-422
+libs/partners/quickjs/tests/unit_tests/smoke_tests/test_system_prompt.py
+  s_054402d407fc68::t_8d61becb5cab24 145
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "ccc84bfef4e532705bedbece38e3c08532b7088e",
+  "prompts": {},
+  "sessions": {
+    "s_054402d407fc68": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e51d0be1-4b06-4d68-936b-577b1971b690",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

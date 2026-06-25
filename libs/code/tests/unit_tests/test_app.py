@@ -1114,8 +1114,16 @@ class TestStartupSequence:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """With the opt-in flag set, the integrations summary precedes selection."""
+        """With the opt-in flag set, the integrations summary precedes selection.
+
+        Exercises the full flag-on chain: name -> integrations summary ->
+        model selector. Continuing past the integrations screen must switch
+        into the model selector wired as its `continue_screen`; if that wiring
+        regressed (e.g. `continue_screen` dropped), the user would never reach
+        the selector.
+        """
         from deepagents_code._env_vars import ONBOARDING_INTEGRATIONS_SCREEN
+        from deepagents_code.widgets.model_selector import ModelSelectorScreen
 
         monkeypatch.setenv(ONBOARDING_INTEGRATIONS_SCREEN, "1")
         app = DeepAgentsApp(launch_init=True)
@@ -1136,11 +1144,46 @@ class TestStartupSequence:
 
             assert isinstance(app.screen, LaunchDependenciesScreen)
 
+            # Continuing past the integrations summary lands on the model
+            # selector it was built with as `continue_screen`.
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert isinstance(app.screen, ModelSelectorScreen)
+
             launch_task = app._launch_init_task
             assert launch_task is not None
             app.screen.action_cancel()
             await asyncio.wait_for(launch_task, timeout=2)
             await pilot.pause()
+
+    async def test_build_launch_dependencies_prompt_screen_tracks_flag(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The first onboarding screen returned tracks the opt-in flag.
+
+        Locks the return contract of `_build_launch_dependencies_prompt`
+        directly: the model selector is first by default, the integrations
+        summary is first when the flag is set, and the result future starts
+        unresolved in both cases.
+        """
+        from deepagents_code._env_vars import ONBOARDING_INTEGRATIONS_SCREEN
+        from deepagents_code.widgets.model_selector import ModelSelectorScreen
+
+        app = DeepAgentsApp(launch_init=True)
+
+        monkeypatch.delenv(ONBOARDING_INTEGRATIONS_SCREEN, raising=False)
+        screen, result_future = app._build_launch_dependencies_prompt()
+        assert isinstance(screen, ModelSelectorScreen)
+        assert isinstance(result_future, asyncio.Future)
+        assert not result_future.done()
+
+        monkeypatch.setenv(ONBOARDING_INTEGRATIONS_SCREEN, "1")
+        screen, result_future = app._build_launch_dependencies_prompt()
+        assert isinstance(screen, LaunchDependenciesScreen)
+        assert isinstance(result_future, asyncio.Future)
+        assert not result_future.done()
 
     async def test_launch_init_finishes_when_first_screen_switch_fails(self) -> None:
         """A failed name-to-selector switch should skip the rest of setup."""

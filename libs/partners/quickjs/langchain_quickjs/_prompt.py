@@ -45,7 +45,7 @@ flow, and synthesis - in plain JavaScript.
 await task({
   description,      // full autonomous task prompt
   subagentType,     // configured subagent name
-  label,            // short, clear label of what this dispatch is doing
+  label,            // optional short UI label for this dispatch
   responseSchema,   // optional JSON Schema for structured output
 }); // -> Promise<unknown>
 ```
@@ -63,14 +63,9 @@ exploring, still pass its path and let the subagent read it; do not paste back
 what you read. Each dispatch is stateless from the caller's perspective; you
 cannot send follow-up messages to the same subagent run.
 
-`label` is required: a short, human-readable label for THIS dispatch, shown in
-the live progress UI (it is not sent to the subagent — display only). Keep it to
-a few words, but make it clear enough that someone watching can tell what this
-subagent is doing: favor a brief action plus the distinguishing detail
-(`"SQLi review auth.ts"`, `"classify utils.ts"`, `"verify finding #3"`) over a
-bare identifier like `"auth.ts"` or a generic `"review"` repeated for every
-dispatch. When you fan out many similar dispatches, the label is what tells them
-apart at a glance.
+`label` is optional: when provided, it is shown in the live progress UI
+instead of the default description-derived fallback. It is not sent to the
+subagent and does not affect execution.
 
 `responseSchema` is optional, but set it on any dispatch whose result feeds
 later code. A deterministic, typed shape is what lets you compose the next
@@ -122,7 +117,6 @@ for (let i = 0; i < files.length; i += batchSize) {
       description: "Read " + file + " and review it for SQL injection. " +
         "Cite line numbers.",
       subagentType: "reviewer",
-      label: "SQLi review " + file,
       responseSchema: {
         type: "object",
         properties: {
@@ -193,7 +187,6 @@ const tagged = await Promise.all(files.map((file) =>
     description: "Read " + file + " and classify it as handler, util, " +
       "test, or config.",
     subagentType: "reviewer",
-    label: "classify " + file,
     responseSchema: {
       type: "object",
       properties: { kind: { type: "string" }, risky: { type: "boolean" } },
@@ -207,7 +200,6 @@ const deepReviews = await Promise.all(riskyHandlers.map((it) =>
   task({
     description: "Deep security review of " + it.file + ". Cite line numbers.",
     subagentType: "reviewer",
-    label: "deep review " + it.file,
   }).then((review) => ({ ...it, review }))
 ));
 ```
@@ -252,7 +244,6 @@ const verified = await Promise.all(findings.map((f) =>
   task({
     description: "Verify this finding: " + f.evidence,
     subagentType: "verifier",
-    label: "verify " + f.file,
   }).then((v) => ({ ...f, ...v }))
 ));
 ```

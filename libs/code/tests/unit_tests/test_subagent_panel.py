@@ -48,17 +48,20 @@ class _FakeClick:
         self.stopped = True
 
 
-def _start(sub_id: str, eval_id: str, desc: str = "task", label: str = "work") -> dict:
-    # `label` is required on real events, so the helper always sets it.
-    return {
+def _start(
+    sub_id: str, eval_id: str, desc: str = "task", label: str | None = "work"
+) -> dict:
+    event = {
         "type": "subagent",
         "phase": "start",
         "id": sub_id,
         "eval_id": eval_id,
         "subagent_type": "research",
         "description": desc,
-        "label": label,
     }
+    if label is not None:
+        event["label"] = label
+    return event
 
 
 def _complete(sub_id: str, eval_id: str, duration_ms: int = 100) -> dict:
@@ -121,6 +124,15 @@ class TestLifecycle:
             await pilot.pause()
             assert panel._batch_complete is True
             assert panel._counts() == (2, 2)
+
+    async def test_missing_label_falls_back_to_short_description(self) -> None:
+        async with PanelApp().run_test(size=(200, 24)) as pilot:
+            panel = pilot.app.query_one("#panel", SubagentPanel)
+            description = "Review\n" + "a" * 100
+            panel.on_subagent_event(_start("a", "E1", desc=description, label=None))
+            await pilot.pause()
+            rows = _render(pilot.app.query_one("#subagent-agents", Static))
+            assert ("Review " + "a" * 100)[:60] in rows
 
     async def test_error_shows_full_reason_in_task_column(self) -> None:
         async with PanelApp().run_test(size=(200, 24)) as pilot:

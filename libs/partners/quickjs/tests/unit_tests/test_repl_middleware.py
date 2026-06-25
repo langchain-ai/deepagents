@@ -1042,8 +1042,7 @@ async def test_async_task_global_invokes_runner(repl: _ThreadREPL) -> None:
         "}"
         "JSON.stringify(await task({"
         "description: 'work', "
-        "subagentType: 'worker', "
-        "label: 'lbl'"
+        "subagentType: 'worker'"
         "}))",
         outer_runtime=_subagent_runtime(runnable),
     )
@@ -1086,8 +1085,8 @@ async def test_async_task_global_not_installed_when_disabled(
             "task() requires non-empty string field `subagentType`",
         ),
         (
-            "await task({description: 'work', subagentType: 'worker'})",
-            "task() requires non-empty string field `label`",
+            "await task({description: 'work', subagentType: 'worker', label: 123})",
+            "task() field `label` must be a string when provided",
         ),
         (
             "await task({"

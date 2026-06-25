@@ -49,6 +49,7 @@ _MIN_BODY_HEIGHT = 3
 _MAX_BODY_HEIGHT = 12
 _AGENTS_CHROME_LINES = 1
 _TICK_INTERVAL = 0.1
+_LABEL_FALLBACK_MAX_CHARS = 60
 
 
 def _right_block_width() -> int:
@@ -360,7 +361,12 @@ class SubagentPanel(Vertical):
             The combined `"<type>: <label>"` string for the task column.
         """
         sub_type = event.get("subagent_type", "subagent")
-        return f"{sub_type}: {event.get('label', '')}"
+        label = event.get("label")
+        if not isinstance(label, str) or not label:
+            description = event.get("description")
+            label = description if isinstance(description, str) else ""
+            label = " ".join(label.split())[:_LABEL_FALLBACK_MAX_CHARS]
+        return f"{sub_type}: {label}"
 
     @staticmethod
     def _event_model(event: dict[str, Any]) -> str | None:

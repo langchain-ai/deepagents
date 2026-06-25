@@ -534,7 +534,7 @@ class _ThreadREPL:
     @staticmethod
     def _validate_task_payload(
         payload: dict[str, Any],
-    ) -> tuple[str, str, str, dict[str, Any] | None]:
+    ) -> tuple[str, str, str | None, dict[str, Any] | None]:
         """Validate JS `task()` input and return its typed fields."""
         description = payload.get("description")
         if not isinstance(description, str) or not description:
@@ -546,10 +546,13 @@ class _ThreadREPL:
             msg = "task() requires non-empty string field `subagentType`"
             raise ValueError(msg)
 
-        label = payload.get("label")
-        if not isinstance(label, str) or not label:
-            msg = "task() requires non-empty string field `label`"
+        raw_label = payload.get("label")
+        if raw_label is not None and not isinstance(raw_label, str):
+            msg = "task() field `label` must be a string when provided"
             raise ValueError(msg)
+        label = raw_label.strip() if isinstance(raw_label, str) else None
+        if label == "":
+            label = None
 
         response_schema = payload.get("responseSchema")
         if response_schema is not None and not isinstance(response_schema, dict):

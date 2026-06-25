@@ -123,6 +123,22 @@ async def test_description_is_truncated_in_event() -> None:
     assert len(rec.events[0]["description"]) == 200
 
 
+async def test_missing_label_falls_back_to_short_description() -> None:
+    rec = _Recorder()
+    runtime = _FakeRuntime(stream_writer=rec)
+    description = "Review\n\n" + "a" * 100
+
+    await call_subagent_task_tool(
+        _FakeTaskTool("r"),
+        description=description,
+        subagent_type="t",
+        response_schema=None,
+        runtime=runtime,
+    )
+
+    assert rec.events[0]["label"] == ("Review " + "a" * 100)[:60]
+
+
 async def test_label_is_truncated_in_event() -> None:
     rec = _Recorder()
     runtime = _FakeRuntime(stream_writer=rec)

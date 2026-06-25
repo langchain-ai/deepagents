@@ -34,6 +34,7 @@ _SCHEMA_MAX_PROPERTIES = 32
 _SUBAGENT_TASK_TOOL_FIELDS = frozenset({"description", "subagent_type"})
 _EVENT_DESCRIPTION_MAX_CHARS = 200
 _EVENT_LABEL_MAX_CHARS = 120
+_EVENT_LABEL_FALLBACK_MAX_CHARS = 60
 
 
 class SubagentStreamEvent(TypedDict):
@@ -73,6 +74,14 @@ def _emit_subagent_event(stream_writer: Any, payload: dict[str, Any]) -> None:
         logger.debug("Failed to emit subagent stream event", exc_info=True)
 
 
+def _event_label(label: str | None, description: str) -> str:
+    """Return the explicit label or a compact description fallback."""
+    explicit = " ".join(label.split()) if label else ""
+    if explicit:
+        return explicit[:_EVENT_LABEL_MAX_CHARS]
+    return " ".join(description.split())[:_EVENT_LABEL_FALLBACK_MAX_CHARS]
+
+
 def find_subagent_task_tool(tools: Sequence[BaseTool]) -> BaseTool | None:
     """Return the Deep Agents task tool that backs top-level `task()`."""
     for tool in tools:
@@ -104,9 +113,9 @@ async def call_subagent_task_tool(
     *,
     description: str,
     subagent_type: str,
-    label: str,
     response_schema: dict[str, Any] | None,
     runtime: Any,
+    label: str | None = None,
 ) -> Any:
     """Call the Deep Agents task tool and return a JavaScript-friendly value.
 
@@ -136,7 +145,7 @@ async def call_subagent_task_tool(
             "id": subagent_id,
             "eval_id": eval_id,
             "subagent_type": subagent_type,
-            "label": label[:_EVENT_LABEL_MAX_CHARS],
+            "label": _event_label(label, description),
             "description": description[:_EVENT_DESCRIPTION_MAX_CHARS],
         },
     )

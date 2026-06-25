@@ -20,6 +20,7 @@ import re
 import shlex
 import shutil
 import sys
+import tempfile
 import time
 import tomllib
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -29,6 +30,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, TextIO
 
+from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
 
@@ -68,6 +70,9 @@ INSTALLED_AGE_NOTICE_DAYS = 7
 
 _SDK_RELEASE_TIMES_KEY = "sdk_release_times"
 """`CACHE_FILE` key for cached SDK upload timestamps, keyed by version string."""
+
+_RELEASE_PRERELEASE_DEPS_KEY = "release_requires_prereleases"
+"""`CACHE_FILE` key for release versions that require pre-release dependencies."""
 
 InstallMethod = Literal["uv", "brew", "other", "unknown"]
 
@@ -248,6 +253,96 @@ def get_cached_update_available() -> tuple[bool, str | None]:
         return False, None
 
 
+def _requires_prerelease_dependency(requirements: Sequence[object] | None) -> bool:
+    """Return whether any requirement specifier names a pre-release version.
+
+    Accepts the raw `Requires-Dist` list from PyPI metadata, which may contain
+    non-string or non-PEP-508 junk; such entries are skipped rather than raising
+    so one malformed line cannot poison the whole check.
+
+    The check is intentionally operator- and marker-agnostic: it returns `True`
+    if *any* specifier across *any* requirement pins a pre-release version,
+    regardless of the operator (`==`, `>=`, even `!=`) or environment markers
+    (extras, `python_version`). This errs toward `True`, which is the safe
+    direction — opting `uv` into `--prerelease allow` still resolves stable
+    releases correctly, so a false positive only widens the candidate set and
+    never strands a user. Do not "tighten" this to the dangerous direction
+    without revisiting the fallback asymmetry in `release_requires_prereleases`.
+    """
+    if not requirements:
+        return False
+    for raw in requirements:
+        if not isinstance(raw, str):
+            continue
+        try:
+            requirement = Requirement(raw)
+        except InvalidRequirement:
+            logger.debug("Skipping unparseable Requires-Dist entry: %r", raw)
+            continue
+        for specifier in requirement.specifier:
+            try:
+                version = Version(specifier.version)
+            except InvalidVersion:
+                logger.debug(
+                    "Skipping unparseable requirement version: %r",
+                    specifier.version,
+                )
+                continue
+            if version.is_prerelease:
+                return True
+    return False
+
+
+def _atomic_write_cache(data: dict[str, Any]) -> None:
+    """Write `data` to `CACHE_FILE` as JSON atomically.
+
+    A plain `write_text` truncates the file before writing, so a crash or a
+    concurrent reader/writer can observe a half-written cache. Serializing to a
+    sibling temp file and `os.replace`-ing it into place makes the swap atomic,
+    so readers always see either the old or new contents — never a partial one.
+
+    Raises:
+        OSError: If the cache directory or temp file cannot be written, or the
+            atomic replace fails. Callers handle reporting.
+    """
+    CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=CACHE_FILE.parent, prefix=".latest_version-", suffix=".tmp"
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(data, handle)
+        tmp_path.replace(CACHE_FILE)
+    except OSError:
+        with suppress(OSError):
+            tmp_path.unlink()
+        raise
+
+
+def _write_release_requires_prereleases(version: str, requires: bool) -> None:
+    """Cache whether a release needs uv's pre-release resolver opt-in."""
+    try:
+        data: dict[str, Any]
+        if CACHE_FILE.exists():
+            loaded = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+            data = loaded if isinstance(loaded, dict) else {}
+        else:
+            data = {}
+        values = data.get(_RELEASE_PRERELEASE_DEPS_KEY)
+        if not isinstance(values, dict):
+            values = {}
+        values[version] = requires
+        data[_RELEASE_PRERELEASE_DEPS_KEY] = values
+        data.setdefault("checked_at", time.time())
+        _atomic_write_cache(data)
+    except (OSError, json.JSONDecodeError, TypeError):
+        logger.debug(
+            "Failed to write release pre-release dependency cache",
+            exc_info=True,
+        )
+
+
 def get_latest_version(
     *,
     bypass_cache: bool = False,
@@ -304,11 +399,22 @@ def get_latest_version(
         )
         resp.raise_for_status()
         payload = resp.json()
-        stable: str = payload["info"]["version"]
+        info = payload.get("info")
+        if not isinstance(info, dict):
+            logger.debug("PyPI response missing object 'info' key")
+            return cached_version
+        value = info.get("version")
+        if not isinstance(value, str):
+            logger.debug("PyPI response missing string 'info.version' key")
+            return cached_version
+        stable = value
         releases: dict[str, list[object]] = payload.get("releases", {})
         if not releases:
             logger.debug("PyPI response missing or empty 'releases' key")
         prerelease = _latest_from_releases(releases, include_prereleases=True)
+        stable_requires_prereleases = _requires_prerelease_dependency(
+            info.get("requires_dist")
+        )
     except (requests.RequestException, OSError, KeyError, json.JSONDecodeError):
         logger.debug("Failed to fetch latest version from PyPI", exc_info=True)
         return cached_version
@@ -317,23 +423,113 @@ def get_latest_version(
         payload, stable=stable, prerelease=prerelease, installed=__version__
     )
 
+    # Preserve per-version pre-release-dependency entries written by
+    # `_write_release_requires_prereleases` for *other* versions; this refresh
+    # only knows the answer for `stable`, so merge rather than overwrite the map
+    # (otherwise a routine check would evict a cached answer and force a re-fetch
+    # that, on a PyPI hiccup, falls back to the unsafe stable-only default).
+    prerelease_deps: dict[str, Any] = {}
     try:
-        CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        CACHE_FILE.write_text(
-            json.dumps(
-                {
-                    "version": stable,
-                    "version_prerelease": prerelease,
-                    "release_times": release_times,
-                    "checked_at": time.time(),
-                }
-            ),
-            encoding="utf-8",
+        if CACHE_FILE.exists():
+            existing = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+            if isinstance(existing, dict):
+                cached_deps = existing.get(_RELEASE_PRERELEASE_DEPS_KEY)
+                if isinstance(cached_deps, dict):
+                    prerelease_deps = cached_deps
+    except (OSError, json.JSONDecodeError, TypeError):
+        logger.debug("Failed to read cached pre-release deps before refresh")
+    prerelease_deps[stable] = stable_requires_prereleases
+
+    try:
+        _atomic_write_cache(
+            {
+                "version": stable,
+                "version_prerelease": prerelease,
+                "release_times": release_times,
+                _RELEASE_PRERELEASE_DEPS_KEY: prerelease_deps,
+                "checked_at": time.time(),
+            }
         )
     except OSError:
         logger.debug("Failed to write update-check cache", exc_info=True)
 
     return prerelease if include_prereleases else stable
+
+
+def release_requires_prereleases(
+    version: str | None,
+    *,
+    bypass_cache: bool = False,
+) -> bool:
+    """Return whether installing `version` needs uv pre-release resolution.
+
+    Args:
+        version: `deepagents-code` version to inspect.
+        bypass_cache: Skip cached release metadata and fetch PyPI directly.
+
+    Returns:
+        `True` when the release metadata pins or bounds a pre-release dependency.
+
+    Note:
+        On any lookup failure (no `requests`, network/parse error) this returns
+        `False` — i.e. "stable-only resolution". That is deliberately
+        conservative rather than fail-safe: the truly safe default would be to
+        allow pre-releases, but a spurious `True` would make
+        `prerelease_upgrade_supported` *refuse* the upgrade outright on non-uv
+        installs (Homebrew/other), regressing the common case. `False` keeps
+        those installs upgradable; the cost is that, during a PyPI outage, a
+        stable release that genuinely pins a pre-release dependency may be
+        installed stable-only. Failures are logged at `warning` so the blind
+        decision is at least visible.
+    """
+    if not version:
+        return False
+    try:
+        if not bypass_cache and CACHE_FILE.exists():
+            data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                values = data.get(_RELEASE_PRERELEASE_DEPS_KEY)
+                if isinstance(values, dict) and isinstance(values.get(version), bool):
+                    return values[version]
+    except (OSError, json.JSONDecodeError, TypeError):
+        logger.debug(
+            "Failed to read release pre-release dependency cache",
+            exc_info=True,
+        )
+
+    try:
+        import requests
+    except ImportError:
+        logger.warning(
+            "requests package not installed — cannot check whether v%s pins a "
+            "pre-release dependency; assuming stable-only resolution",
+            version,
+        )
+        return False
+
+    try:
+        url = f"{PYPI_URL.removesuffix('/json')}/{version}/json"
+        resp = requests.get(
+            url,
+            headers={"User-Agent": USER_AGENT},
+            timeout=3,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        info = payload.get("info")
+        requires = info.get("requires_dist") if isinstance(info, dict) else None
+        result = _requires_prerelease_dependency(requires)
+    except (requests.RequestException, OSError, KeyError, json.JSONDecodeError):
+        logger.warning(
+            "Failed to fetch dependency metadata for v%s from PyPI; assuming "
+            "stable-only resolution",
+            version,
+            exc_info=True,
+        )
+        return False
+
+    _write_release_requires_prereleases(version, result)
+    return result
 
 
 def _extract_release_times(
@@ -817,6 +1013,7 @@ def upgrade_command(
     method: InstallMethod | None = None,
     *,
     include_prereleases: bool | None = None,
+    version: str | None = None,
 ) -> str:
     """Return the shell command to upgrade `deepagents-code`.
 
@@ -830,8 +1027,15 @@ def upgrade_command(
             `None`, follows the installed version's channel. When `True`,
             returns the uv pre-release command regardless of `method`, since
             only uv can be steered onto the pre-release channel.
+        version: Optional exact `deepagents-code` version pin for uv guidance.
     """
     include_prereleases = _resolve_include_prereleases(include_prereleases)
+    if version is not None:
+        requirement = _dcode_extras_requirement((), version=version)
+        cmd = f"uv tool install -U {requirement}"
+        if include_prereleases:
+            cmd += " --prerelease allow"
+        return cmd
     if include_prereleases:
         return _UV_PRERELEASE_UPGRADE_COMMAND
     if method is None:
@@ -1367,6 +1571,7 @@ async def perform_upgrade(
     progress: UpgradeProgressCallback | None = None,
     log_path: Path | None = None,
     include_prereleases: bool | None = None,
+    target_version: str | None = None,
 ) -> tuple[bool, str]:
     """Attempt to upgrade `deepagents-code` using the detected install method.
 
@@ -1377,8 +1582,11 @@ async def perform_upgrade(
         progress: Optional callback invoked for each output line.
         log_path: Optional path to persist command output.
         include_prereleases: Whether to include alpha/beta/rc releases. When
-            `None`, follows the installed version's channel. Pre-release
-            upgrades require the uv install method; returns failure otherwise.
+            `None`, follows the installed version's channel and the target
+            release's dependency metadata. Pre-release upgrades require the uv
+            install method; returns failure otherwise.
+        target_version: Release version being installed, used to detect stable
+            dcode releases that intentionally depend on pre-release packages.
 
     Returns:
         `(success, output)` — *output* is the combined stdout/stderr.
@@ -1394,6 +1602,14 @@ async def perform_upgrade(
             "manager originally used for this install."
         )
     resolved_include_prereleases = _resolve_include_prereleases(include_prereleases)
+    pin_target_version: str | None = None
+    if (
+        not resolved_include_prereleases
+        and include_prereleases is None
+        and release_requires_prereleases(target_version)
+    ):
+        resolved_include_prereleases = True
+        pin_target_version = target_version
     if resolved_include_prereleases:
         supported, reason = prerelease_upgrade_supported(method)
         if not supported:
@@ -1413,6 +1629,7 @@ async def perform_upgrade(
         try:
             cmd = upgrade_install_command(
                 include_prereleases=resolved_include_prereleases,
+                version=pin_target_version,
             )
         except (ExtrasIntrospectionError, ToolRequirementIntrospectionError) as exc:
             logger.warning(
@@ -1426,6 +1643,7 @@ async def perform_upgrade(
             cmd = upgrade_command(
                 method,
                 include_prereleases=resolved_include_prereleases,
+                version=pin_target_version,
             )
     else:
         cmd = upgrade_command(
@@ -1944,8 +2162,9 @@ def upgrade_install_command(
     *,
     include_prereleases: bool | None = None,
     distribution_name: str = "deepagents-code",
+    version: str | None = None,
 ) -> str:
-    """Return the uv command that upgrades dcode while clearing any version pin.
+    """Return the uv command that upgrades dcode while clearing stale pins.
 
     Built specifically to avoid the `uv tool upgrade` receipt-pin trap: when
     the tool was originally installed via `uv tool install deepagents-code==X.Y.Z`
@@ -1954,15 +2173,19 @@ def upgrade_install_command(
     re-resolve *within* that pin and silently keep the user on the same
     version. Re-running `uv tool install -U deepagents-code[<extras>]` (no
     version pin) rewrites the receipt's requirement to unpinned so the next
-    upgrade can actually move forward. Installed extras and `--with`
-    packages are preserved to mirror `dependency_refresh_command`; only the
-    version pin is intentionally stripped.
+    upgrade can actually move forward. Callers can still pass `version` when
+    the resolver must allow pre-release dependencies for a stable app target;
+    that prevents the root `deepagents-code` package from floating to a newer
+    app pre-release. Installed extras and `--with` packages are preserved to
+    mirror `dependency_refresh_command`.
 
     Args:
         include_prereleases: Whether to include alpha/beta/rc releases. When
             `None`, follows the installed version's channel.
         distribution_name: Name of the installed distribution to inspect for
             already-installed extras.
+        version: Optional exact target version. Use only when pre-release
+            dependency resolution must not also select a root app pre-release.
 
     Returns:
         Shell command string suitable for execution via the shell.
@@ -1976,7 +2199,7 @@ def upgrade_install_command(
     user-facing warning.
     """
     return _uv_tool_install_command(
-        version=None,
+        version=version,
         include_prereleases=include_prereleases,
         distribution_name=distribution_name,
     )

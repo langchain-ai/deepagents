@@ -3833,6 +3833,7 @@ class DeepAgentsApp(App):
                 format_installed_age_suffix,
                 format_release_age_parenthetical,
                 mark_update_notified,
+                release_requires_prereleases,
                 should_notify_update,
             )
 
@@ -3862,7 +3863,14 @@ class DeepAgentsApp(App):
             if not await asyncio.to_thread(should_notify_update, latest):
                 return
 
-            cmd = upgrade_command()
+            update_needs_prereleases = await asyncio.to_thread(
+                release_requires_prereleases,
+                latest,
+            )
+            cmd = upgrade_command(
+                include_prereleases=True if update_needs_prereleases else None,
+                version=latest if update_needs_prereleases else None,
+            )
             release_age = await asyncio.to_thread(
                 format_release_age_parenthetical,
                 latest,
@@ -4026,6 +4034,7 @@ class DeepAgentsApp(App):
                 perform_dependency_refresh_dry_run,
                 perform_upgrade,
                 prerelease_upgrade_supported,
+                release_requires_prereleases,
                 upgrade_command,
             )
 
@@ -4065,6 +4074,14 @@ class DeepAgentsApp(App):
                     ),
                 )
                 return
+            upgrade_include_prereleases = include_prereleases
+            pin_upgrade_version: str | None = None
+            if include_prereleases is None and await asyncio.to_thread(
+                release_requires_prereleases,
+                latest,
+            ):
+                upgrade_include_prereleases = True
+                pin_upgrade_version = latest
             if not available:
                 if deps_only:
                     await self._refresh_dependencies(
@@ -4132,6 +4149,16 @@ class DeepAgentsApp(App):
                     )
                     return
 
+            if upgrade_include_prereleases is True:
+                supported, reason = await asyncio.to_thread(
+                    prerelease_upgrade_supported,
+                )
+                if not supported:
+                    await self._mount_message(
+                        AppMessage(reason or _PRERELEASE_UNSUPPORTED_MESSAGE),
+                    )
+                    return
+
             release_age = await asyncio.to_thread(
                 format_release_age_parenthetical,
                 latest,
@@ -4154,6 +4181,7 @@ class DeepAgentsApp(App):
                 return
             success, output = await perform_upgrade(
                 include_prereleases=include_prereleases,
+                target_version=latest,
             )
             if success:
                 self._update_available = (False, None)
@@ -4192,7 +4220,10 @@ class DeepAgentsApp(App):
                         ),
                     )
             else:
-                cmd = upgrade_command(include_prereleases=include_prereleases)
+                cmd = upgrade_command(
+                    include_prereleases=upgrade_include_prereleases,
+                    version=pin_upgrade_version,
+                )
                 detail = f": {output[:200]}" if output else ""
                 await self._mount_message(
                     AppMessage(f"Auto-update failed{detail}\nRun manually: {cmd}"),
@@ -11115,7 +11146,6 @@ class DeepAgentsApp(App):
             format_shadowed_dcode_warning,
             mark_update_notified,
             perform_upgrade,
-            upgrade_command,
         )
 
         if action_id == ActionId.INSTALL:
@@ -11132,7 +11162,7 @@ class DeepAgentsApp(App):
 
             from deepagents_code.widgets.update_progress import UpdateProgressScreen
 
-            cmd = upgrade_command()
+            cmd = payload.upgrade_cmd
             log_path = create_update_log_path()
             screen = UpdateProgressScreen(
                 latest=payload.latest,
@@ -11163,6 +11193,7 @@ class DeepAgentsApp(App):
                 success, output = await perform_upgrade(
                     progress=screen.append_line,
                     log_path=log_path,
+                    target_version=payload.latest,
                 )
                 if success:
                     self._notice_registry.remove(entry.key)

@@ -333,8 +333,10 @@ class CompletionPopup(VerticalScroll):
         # Increment generation so stale callbacks from prior calls are skipped.
         self._rebuild_generation += 1
         gen = self._rebuild_generation
-        # show() deferred to _rebuild_options to avoid a flash of stale content.
-        self.call_after_refresh(lambda: self._rebuild_options(gen))
+        # show() is still deferred to _rebuild_options to avoid stale content,
+        # but the rebuild runs before the next paint so prompt and popup changes
+        # appear in the same frame.
+        self.call_next(lambda: self._rebuild_options(gen))
 
     async def _rebuild_options(self, generation: int) -> None:
         """Rebuild option widgets from pending suggestions.
@@ -2442,14 +2444,15 @@ class ChatInput(Vertical):
             event.key == "backspace"
             and self.mode != "normal"
             and self._get_cursor_offset() == 0
+            and not self._text_area.text
         ):
-            # Defer the popup reset so it coalesces with the glyph update
-            # that watch_mode schedules via call_after_refresh.
+            # Schedule the popup reset alongside the prompt/style update so both
+            # visual changes land before the next paint.
             def _deferred_reset() -> None:
                 if self._completion_manager is not None:
                     self._completion_manager.reset()
 
-            self.call_after_refresh(_deferred_reset)
+            self.call_next(_deferred_reset)
             self.mode = "normal"
             event.prevent_default()
             event.stop()
@@ -2505,9 +2508,9 @@ class ChatInput(Vertical):
     def watch_mode(self, mode: str) -> None:
         """Post mode changed message and update prompt indicator.
 
-        The prompt glyph update is deferred via `call_after_refresh` so that
-        callers which also schedule deferred work (e.g. the completion popup)
-        can coalesce both visual changes into a single refresh.
+        The prompt glyph update is scheduled for the next message-loop turn so
+        callers which also schedule popup work can coalesce both visual changes
+        before the next paint.
         """
         # Keep inline argument hints in sync for mode-only transitions
         # (for example, exiting command mode via Escape or backspace).
@@ -2554,7 +2557,7 @@ class ChatInput(Vertical):
                     "incognito" if mode == "shell_incognito" else None
                 )
 
-        self.call_after_refresh(_apply)
+        self.call_next(_apply)
         self.post_message(self.ModeChanged(mode))
 
     def focus_input(self) -> None:

@@ -850,6 +850,62 @@ class TestPromptIndicator:
             assert any(m.mode == "shell" for m in messages)
 
 
+class TestModeSwitchNoJitter:
+    """Regression tests: mode glyph and completion popup update atomically.
+
+    Switching modes (e.g. `/` → `!` or `!` → `/`) must change the prompt glyph
+    and completion popup visibility in the same frame. A deferred ordering that
+    closes the popup one frame before the glyph changes (or vice versa) creates
+    visible jitter.
+    """
+
+    async def test_slash_to_bang_updates_glyph_and_popup_same_frame(self) -> None:
+        """Switching from command mode to shell mode atomically hides popup."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            prompt = chat.query_one("#prompt", Static)
+            popup = chat.query_one(CompletionPopup)
+            assert chat._text_area is not None
+
+            # Enter command mode — popup visible, glyph is "/"
+            await pilot.press("/")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+            assert _prompt_text(prompt) == "/"
+            assert popup.styles.display == "block"
+
+            # Switch to shell mode — popup hidden AND glyph is "$" after one pause
+            await pilot.press("!")
+            await pilot.pause()
+            assert chat.mode == "shell"
+            assert _prompt_text(prompt) == "$"
+            assert popup.styles.display == "none"
+
+    async def test_bang_to_slash_updates_glyph_and_popup_same_frame(self) -> None:
+        """Switching from shell mode to command mode atomically shows popup."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            prompt = chat.query_one("#prompt", Static)
+            popup = chat.query_one(CompletionPopup)
+            assert chat._text_area is not None
+
+            # Enter shell mode first — popup hidden, glyph is "$"
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell"
+            assert _prompt_text(prompt) == "$"
+            assert popup.styles.display == "none"
+
+            # Switch to command mode — popup visible AND glyph is "/" after one pause
+            await pilot.press("/")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+            assert _prompt_text(prompt) == "/"
+            assert popup.styles.display == "block"
+
+
 class TestHistoryNavigationFlag:
     """Test that _skip_history_change_events resets when history is exhausted."""
 

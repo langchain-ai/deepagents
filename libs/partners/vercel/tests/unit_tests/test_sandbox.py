@@ -152,6 +152,26 @@ def test_execute_truncates_combined_stdout_and_stderr() -> None:
     assert result.truncated is True
 
 
+def test_execute_truncates_on_utf8_byte_budget() -> None:
+    # Multibyte output: code-point slicing would overshoot the documented byte
+    # budget (each "€" is 3 UTF-8 bytes). Truncation must measure UTF-8 bytes
+    # and never split a multibyte sequence.
+    sandbox = _Sandbox()
+    sandbox.detached_command = _Command(stdout="€" * MAX_OUTPUT_BYTES)
+
+    result = sandbox.as_backend().execute("python emit_unicode.py")
+
+    notice = f"\n\n... Output truncated at {MAX_OUTPUT_BYTES} bytes."
+    assert result.truncated is True
+    assert result.output.endswith(notice)
+    captured = result.output[: -len(notice)]
+    # Captured payload honors the byte budget, not the code-point count...
+    assert len(captured.encode("utf-8")) <= MAX_OUTPUT_BYTES
+    # ...and remains valid text: no replacement char from a split sequence.
+    assert "�" not in captured
+    assert set(captured) == {"€"}
+
+
 def test_execute_enforces_timeout_and_kills_command() -> None:
     sandbox = _Sandbox()
     pending = _Command(exit_code=None)

@@ -119,8 +119,14 @@ class VercelSandbox(BaseSandbox):
             output += f"\n<stderr>{stderr.strip()}</stderr>"
 
         truncated = False
-        if len(output) > MAX_OUTPUT_BYTES:
-            output = output[:MAX_OUTPUT_BYTES]
+        encoded = output.encode("utf-8")
+        if len(encoded) > MAX_OUTPUT_BYTES:
+            # Truncate on the UTF-8 byte budget rather than the code-point count:
+            # `output` is a `str`, so `output[:MAX_OUTPUT_BYTES]` would slice by
+            # code points and overshoot the documented byte limit for multibyte
+            # text. `errors="ignore"` drops a partial trailing multibyte sequence
+            # so the result is always valid text.
+            output = encoded[:MAX_OUTPUT_BYTES].decode("utf-8", errors="ignore")
             output += f"\n\n... Output truncated at {MAX_OUTPUT_BYTES} bytes."
             truncated = True
 

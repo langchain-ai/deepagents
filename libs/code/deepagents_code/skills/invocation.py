@@ -38,6 +38,7 @@ def discover_skills_and_roots(
     """
     from deepagents_code.config import settings
     from deepagents_code.skills.load import list_skills
+    from deepagents_code.skills.trust import load_trusted_skill_dirs
 
     skills = list_skills(
         built_in_skills_dir=settings.get_built_in_skills_dir(),
@@ -62,6 +63,10 @@ def discover_skills_and_roots(
         if path is not None
     ]
     roots.extend(path.resolve() for path in settings.get_extra_skills_dirs())
+    # Persisted in-the-moment approvals extend the containment allowlist just
+    # like the declarative `extra_allowed_dirs`, but are managed by the trust
+    # store rather than hand-edited config.
+    roots.extend(path.resolve() for path in load_trusted_skill_dirs())
     return skills, roots
 
 

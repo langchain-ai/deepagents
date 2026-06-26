@@ -853,6 +853,74 @@ def _delete(
     )
 
 
+def _trust(args: argparse.Namespace) -> None:
+    """Handle `skills trust list|revoke|clear`.
+
+    Args:
+        args: Parsed arguments with a `trust_command` attribute.
+    """
+    from deepagents_code.config import console, get_glyphs
+    from deepagents_code.skills.trust import (
+        clear_trusted_skill_dirs,
+        list_trusted_skill_dirs,
+        revoke_skill_dir_trust,
+    )
+
+    command = getattr(args, "trust_command", None)
+    output_format = getattr(args, "output_format", "text")
+    checkmark = get_glyphs().checkmark
+
+    if command in {"list", "ls"}:
+        dirs = list_trusted_skill_dirs()
+        if output_format == "json":
+            from deepagents_code.output import write_json
+
+            write_json("skills trust list", dirs)
+            return
+        if not dirs:
+            console.print()
+            console.print("[yellow]No trusted skill directories.[/yellow]")
+            console.print(
+                "[dim]Directories are trusted when you approve a skill that "
+                "resolves outside the standard skill roots.[/dim]",
+                style=theme.MUTED,
+            )
+            console.print()
+            return
+        console.print(
+            "\n[bold]Trusted skill directories:[/bold]\n", style=theme.PRIMARY
+        )
+        for path in dirs:
+            console.print(f"  {path}")
+        console.print()
+    elif command == "revoke":
+        target = args.dir
+        if revoke_skill_dir_trust(target):
+            console.print(
+                f"{checkmark} Revoked trust for: {target}", style=theme.PRIMARY
+            )
+        else:
+            console.print(
+                f"[bold red]Error:[/bold red] Could not revoke trust for: {target}"
+            )
+            raise SystemExit(1)
+    elif command == "clear":
+        if clear_trusted_skill_dirs():
+            console.print(
+                f"{checkmark} Cleared all trusted skill directories.",
+                style=theme.PRIMARY,
+            )
+        else:
+            console.print(
+                "[bold red]Error:[/bold red] Could not clear trusted directories."
+            )
+            raise SystemExit(1)
+    else:
+        from deepagents_code.ui import show_skills_trust_help
+
+        show_skills_trust_help()
+
+
 def setup_skills_parser(
     subparsers: Any,  # noqa: ANN401  # argparse subparsers uses dynamic typing
     *,
@@ -1012,6 +1080,41 @@ def setup_skills_parser(
         action="store_true",
         help="Show what would happen without making changes",
     )
+
+    # Skills trust — manage directories approved to be read outside the
+    # standard skill roots (the persistent counterpart to the in-TUI prompt).
+    trust_parser = skills_subparsers.add_parser(
+        "trust",
+        help="Manage trusted skill directories",
+        description=(
+            "List, revoke, or clear skill directories that have been trusted "
+            "to be read even though they resolve outside the standard skill "
+            "roots (for example, symlink targets approved at invocation time)."
+        ),
+        add_help=False,
+        parents=help_parent(_lazy_help("show_skills_trust_help")),
+    )
+    if add_output_args is not None:
+        add_output_args(trust_parser)
+    trust_subparsers = trust_parser.add_subparsers(
+        dest="trust_command", help="Trust command"
+    )
+    trust_list_parser = trust_subparsers.add_parser(
+        "list",
+        aliases=["ls"],
+        help="List trusted skill directories",
+    )
+    if add_output_args is not None:
+        add_output_args(trust_list_parser)
+    revoke_parser = trust_subparsers.add_parser(
+        "revoke",
+        help="Revoke trust for a directory",
+    )
+    revoke_parser.add_argument("dir", help="Directory path to revoke")
+    trust_subparsers.add_parser(
+        "clear",
+        help="Remove all trusted skill directories",
+    )
     return skills_parser
 
 
@@ -1026,8 +1129,14 @@ def execute_skills_command(args: argparse.Namespace) -> None:
     """
     from deepagents_code.config import console
 
+    # The `trust` subcommand manages directory paths, not agent-scoped skills,
+    # so it has no `--agent` and is dispatched before agent validation.
+    if args.skills_command == "trust":
+        _trust(args)
+        return
+
     # validate agent argument
-    if args.agent:
+    if getattr(args, "agent", None):
         is_valid, error_msg = _validate_name(args.agent)
         if not is_valid:
             console.print(

@@ -1,0 +1,23 @@
+libs/evals/deepagents_harness_opt/runner.py
+  s_835b4f54a887d4::t_f2f87196aad44a 133-135
+  s_835b4f54a887d4::t_c0226fdd4b49ee 9
+  s_835b4f54a887d4::t_5ab889fd6c81ad 106-111
+libs/evals/datasets/hillclimb-smoke/format-1/tests/test.sh
+  s_835b4f54a887d4::t_4c0c38ca6f1df1 8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "d9456a7b4c3578650cd6e300c29df055f818c64f",
+  "prompts": {},
+  "sessions": {
+    "s_835b4f54a887d4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "309be8cc-8b32-4d74-a6b9-4d4c7b0bb936",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

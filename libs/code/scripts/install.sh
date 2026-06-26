@@ -458,29 +458,54 @@ install_uv() {
   fi
 }
 
-if ! command -v uv >/dev/null 2>&1; then
+# Resolve uv binary: honor UV_BIN override, then PATH, the env file written by
+# uv's installer, then the default install location (~/.local/bin). MDM and cron
+# jobs often run with a minimal PATH, so an existing uv in ~/.local/bin must
+# count as installed before we invoke the upstream installer.
+resolve_uv_bin() {
+  if [ -n "${UV_BIN:-}" ]; then
+    case "$UV_BIN" in
+      */*) [ -f "$UV_BIN" ] && [ -x "$UV_BIN" ] ;;
+      *)   command -v "$UV_BIN" >/dev/null 2>&1 ;;
+    esac
+    return $?
+  fi
+
+  if command -v uv >/dev/null 2>&1; then
+    UV_BIN="uv"
+    return 0
+  fi
+
+  if [ -f "${HOME}/.local/bin/env" ]; then
+    set +e +u
+    # shellcheck source=/dev/null
+    . "${HOME}/.local/bin/env"
+    set -e -u
+    if command -v uv >/dev/null 2>&1; then
+      UV_BIN="uv"
+      return 0
+    fi
+  fi
+
+  if [ -x "${HOME}/.local/bin/uv" ]; then
+    UV_BIN="${HOME}/.local/bin/uv"
+    return 0
+  fi
+
+  return 1
+}
+
+if ! resolve_uv_bin; then
+  if [ -n "${UV_BIN:-}" ]; then
+    log_error "UV_BIN is set but does not point to an executable uv: ${UV_BIN}"
+    exit 1
+  fi
   log_info "uv not found — installing..."
   install_uv
   fix_owner "${HOME}/.local/bin"  # root installs: restore user ownership
-fi
-
-# Resolve uv binary: honor UV_BIN override, then PATH, then the default
-# install location (~/.local/bin). A fresh install may not have updated PATH
-# in the current session, so we source the env file the installer creates.
-if [ -z "${UV_BIN:-}" ]; then
-  UV_BIN="uv"
-  if ! command -v "$UV_BIN" >/dev/null 2>&1; then
-    if [ -f "${HOME}/.local/bin/env" ]; then
-      # shellcheck source=/dev/null
-      . "${HOME}/.local/bin/env"
-    fi
-  fi
-  if ! command -v uv >/dev/null 2>&1; then
-    UV_BIN="${HOME}/.local/bin/uv"
-    if [ ! -x "$UV_BIN" ]; then
-      log_error "uv not found after installation. Restart your shell or add ~/.local/bin to PATH."
-      exit 1
-    fi
+  if ! resolve_uv_bin; then
+    log_error "uv not found after installation. Restart your shell or add ~/.local/bin to PATH."
+    exit 1
   fi
 fi
 

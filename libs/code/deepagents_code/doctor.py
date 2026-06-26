@@ -267,7 +267,9 @@ def _format_tracing_project(status: TracingStatus) -> str:
 def _collect_tracing() -> DiagnosticSection:
     """Collect LangSmith tracing status from env and profile (offline).
 
-    Credentials are reported as configured/not configured only — the API key
+    Tracing reads `enabled` when a flag is truthy, `disabled` only when a flag
+    is explicitly set to a falsy value, and `not configured` when no flag is set.
+    Credentials are reported as configured/not set only — the API key
     value is never read or printed. The `Credentials` item is flagged as a
     problem only when tracing is enabled without a key and without a custom
     endpoint, mirroring the runtime's orphaned-tracing guard (a keyless
@@ -280,11 +282,17 @@ def _collect_tracing() -> DiagnosticSection:
 
     status = get_tracing_status()
     creds_required = status.enabled and status.endpoint is None
+    if status.enabled:
+        tracing_value = "enabled"
+    elif status.explicitly_disabled:
+        tracing_value = "disabled"
+    else:
+        tracing_value = "not configured"
     items = [
-        DiagnosticItem("Tracing", "enabled" if status.enabled else "disabled"),
+        DiagnosticItem("Tracing", tracing_value),
         DiagnosticItem(
             "Credentials",
-            "configured" if status.has_credentials else "not configured",
+            "configured" if status.has_credentials else "not set",
             ok=status.has_credentials or not creds_required,
         ),
         DiagnosticItem("Project", _format_tracing_project(status)),

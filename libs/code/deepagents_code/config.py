@@ -2731,6 +2731,47 @@ def _tracing_enabled_from(env: dict[str, str]) -> bool:
     )
 
 
+def _tracing_explicitly_disabled_from(env: dict[str, str]) -> bool:
+    """Return whether a tracing flag is explicitly set to a recognized off value.
+
+    True only when tracing is not enabled and at least one tracing-enable flag
+    carries a falsy token (`0`/`false`/`no`/`off`). An empty flag usually reads
+    as "not configured" rather than "disabled", except when an empty prefixed
+    bridged flag shadows a canonical truthy flag and therefore disables tracing.
+
+    Args:
+        env: Environment mapping to read.
+    """
+    from deepagents_code._env_vars import classify_env_bool
+    from deepagents_code.model_config import _ENV_PREFIX
+
+    if _tracing_enabled_from(env):
+        return False
+
+    def _is_off(raw: str | None) -> bool:
+        if raw is None or not raw.strip():
+            return False
+        return classify_env_bool(raw) is False
+
+    def _empty_prefixed_shadow_disables(var: str) -> bool:
+        prefixed = f"{_ENV_PREFIX}{var}"
+        if prefixed not in env or env[prefixed].strip():
+            return False
+        canonical = env.get(var)
+        return canonical is not None and classify_env_bool(canonical) is True
+
+    for var in _TRACING_BRIDGED_ENABLE_ENV_VARS:
+        if _is_off(_resolve_env_var_from(env, var)) or _empty_prefixed_shadow_disables(
+            var
+        ):
+            return True
+    return any(
+        _is_off(env.get(var))
+        for var in _TRACING_ENABLE_ENV_VARS
+        if var not in _TRACING_BRIDGED_ENABLE_ENV_VARS
+    )
+
+
 def _tracing_enabled() -> bool:
     """Return whether tracing is (or will be) enabled, prefix-aware."""
     return _tracing_enabled_from(dict(os.environ))
@@ -2821,6 +2862,9 @@ class TracingStatus:
     enabled: bool
     """Whether a tracing flag is truthy in the environment."""
 
+    explicitly_disabled: bool
+    """Whether a tracing flag is explicitly set to a falsy value (vs. unset)."""
+
     has_credentials: bool
     """Whether an API key or profile credential is resolvable."""
 
@@ -2835,6 +2879,21 @@ class TracingStatus:
 
     replica_project: str | None
     """Extra project agent runs are mirrored to, if configured."""
+
+    def __post_init__(self) -> None:
+        """Reject the contradictory enabled/explicitly-disabled pair.
+
+        `enabled` and `explicitly_disabled` model a tri-state (enabled /
+        explicitly disabled / not configured), so both being true is
+        meaningless. Fail loud at construction rather than letting the illegal
+        state flow through to the `dcode doctor` renderer.
+
+        Raises:
+            ValueError: If both `enabled` and `explicitly_disabled` are true.
+        """
+        if self.enabled and self.explicitly_disabled:
+            msg = "tracing cannot be both enabled and explicitly disabled"
+            raise ValueError(msg)
 
 
 def get_tracing_status() -> TracingStatus:
@@ -2855,6 +2914,7 @@ def get_tracing_status() -> TracingStatus:
     project, project_is_default = _resolve_tracing_project_from(env)
     return TracingStatus(
         enabled=enabled,
+        explicitly_disabled=_tracing_explicitly_disabled_from(env),
         has_credentials=has_credentials,
         endpoint=endpoint,
         project=project,

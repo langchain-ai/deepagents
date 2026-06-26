@@ -47,6 +47,18 @@ def _print_startup_error(message: str) -> None:
     )
 
 
+def _warm_mcp_adapter_imports() -> None:
+    """Eagerly import MCP adapter modules whose first import may block.
+
+    Called via `asyncio.to_thread` before MCP loading; kept as a small helper so
+    tests can patch it and assert the warmup stays off the server event loop.
+    """
+    from langchain_mcp_adapters import (
+        sessions as _sessions,  # noqa: F401
+        tools as _tools,  # noqa: F401
+    )
+
+
 def _get_mcp_session_manager() -> Any:  # noqa: ANN401
     """Return the process-wide MCP session manager singleton.
 
@@ -80,7 +92,8 @@ async def _build_tools(
     `asyncio.run` (which raises inside a running loop). `stateless=True` ensures
     discovery only uses throwaway sessions, while the shared runtime session
     manager binds real sessions lazily inside the server loop on first tool
-    invocation.
+    invocation. MCP adapter imports are warmed in a worker thread first because
+    first import can perform blocking package-resource scans.
 
     Args:
         config: Deserialized server configuration.
@@ -103,6 +116,8 @@ async def _build_tools(
     mcp_server_info: list[Any] | None = None
     if not config.no_mcp:
         from deepagents_code.mcp_tools import resolve_and_load_mcp_tools
+
+        await asyncio.to_thread(_warm_mcp_adapter_imports)
 
         try:
             mcp_tools, _, mcp_server_info = await resolve_and_load_mcp_tools(
@@ -206,37 +221,42 @@ async def _make_graph() -> Any:  # noqa: ANN401
             )
             sys.exit(1)
 
-    async_subagents = load_async_subagents() or None
+    def _create_cli_agent_sync() -> Any:  # noqa: ANN401
+        async_subagents = load_async_subagents() or None
 
-    if config.interpreter_ptc is not None:
-        settings.interpreter_ptc = config.interpreter_ptc
-    if config.interpreter_ptc_acknowledge_unsafe:
-        settings.interpreter_ptc_acknowledge_unsafe = True
-    if config.enable_interpreter:
-        settings.enable_interpreter = True
+        # These process-global settings writes are safe here because `make_graph`
+        # is lock-serialized and caches one graph for the server process lifetime.
+        if config.interpreter_ptc is not None:
+            settings.interpreter_ptc = config.interpreter_ptc
+        if config.interpreter_ptc_acknowledge_unsafe:
+            settings.interpreter_ptc_acknowledge_unsafe = True
+        if config.enable_interpreter:
+            settings.enable_interpreter = True
 
-    agent, _ = create_cli_agent(
-        model=result.model,
-        assistant_id=config.assistant_id,
-        tools=tools,
-        sandbox=sandbox_backend,
-        sandbox_type=config.sandbox_type,
-        system_prompt=config.system_prompt,
-        interactive=config.interactive,
-        auto_approve=config.auto_approve,
-        interrupt_shell_only=config.interrupt_shell_only,
-        shell_allow_list=config.shell_allow_list,
-        enable_ask_user=config.enable_ask_user,
-        enable_memory=config.enable_memory,
-        enable_skills=config.enable_skills,
-        enable_shell=config.enable_shell,
-        enable_interpreter=config.enable_interpreter,
-        mcp_server_info=mcp_server_info,
-        cwd=project_context.user_cwd if project_context is not None else config.cwd,
-        project_context=project_context,
-        async_subagents=async_subagents,
-    )
-    return agent
+        agent, _ = create_cli_agent(
+            model=result.model,
+            assistant_id=config.assistant_id,
+            tools=tools,
+            sandbox=sandbox_backend,
+            sandbox_type=config.sandbox_type,
+            system_prompt=config.system_prompt,
+            interactive=config.interactive,
+            auto_approve=config.auto_approve,
+            interrupt_shell_only=config.interrupt_shell_only,
+            shell_allow_list=config.shell_allow_list,
+            enable_ask_user=config.enable_ask_user,
+            enable_memory=config.enable_memory,
+            enable_skills=config.enable_skills,
+            enable_shell=config.enable_shell,
+            enable_interpreter=config.enable_interpreter,
+            mcp_server_info=mcp_server_info,
+            cwd=project_context.user_cwd if project_context is not None else config.cwd,
+            project_context=project_context,
+            async_subagents=async_subagents,
+        )
+        return agent
+
+    return await asyncio.to_thread(_create_cli_agent_sync)
 
 
 def _build_graph_factory() -> Callable[[], Awaitable[Any]]:

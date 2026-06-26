@@ -1,0 +1,23 @@
+libs/evals/tests/unit_tests/harness_opt/hillclimb/test_validation.py
+  s_835b4f54a887d4::t_cd104e2d0031e1 1-23
+libs/evals/deepagents_harness_opt/hillclimb/__init__.py
+  s_835b4f54a887d4::t_16ef1cc94b890d 1-3
+libs/evals/deepagents_harness_opt/hillclimb/validation.py
+  s_835b4f54a887d4::t_ea1e3e5411f952 1-23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "6520384c3e7f2eb6a874e97c205631a1e357e0bb",
+  "prompts": {},
+  "sessions": {
+    "s_835b4f54a887d4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "309be8cc-8b32-4d74-a6b9-4d4c7b0bb936",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

@@ -317,6 +317,29 @@ class TestLoadMCPConfig:
         with pytest.raises(json.JSONDecodeError):
             load_mcp_config(str(path))
 
+    def test_trailing_comma_error_has_hint_and_snippet(self, tmp_path: Path) -> None:
+        """A trailing comma surfaces an actionable hint plus a caret snippet."""
+        path = tmp_path / "bad.json"
+        path.write_text(
+            '{\n  "mcpServers": {\n    "fs": {\n      "command": "x",\n    },\n  }\n}'
+        )
+        with pytest.raises(json.JSONDecodeError) as exc_info:
+            load_mcp_config(str(path))
+        message = str(exc_info.value)
+        assert "Invalid JSON in MCP config file" in message
+        assert "trailing commas" in message
+        assert "^" in message
+        assert "line" in message
+        assert "column" in message
+
+    def test_comment_error_has_hint(self, tmp_path: Path) -> None:
+        """A JSON file with a comment surfaces a comment-specific hint."""
+        path = tmp_path / "bad.json"
+        path.write_text('{\n  // not allowed\n  "mcpServers": {}\n}')
+        with pytest.raises(json.JSONDecodeError) as exc_info:
+            load_mcp_config(str(path))
+        assert "comments" in str(exc_info.value)
+
     def test_missing_mcpservers_field(self, write_config: Callable[..., str]) -> None:
         """Config without `mcpServers` field is rejected."""
         path = write_config({"other": {}})

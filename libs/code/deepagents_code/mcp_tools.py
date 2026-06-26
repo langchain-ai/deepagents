@@ -604,6 +604,69 @@ def _validate_tool_filter_fields(
             raise ValueError(error_msg)
 
 
+def _looks_like_comment(doc: str, lineno: int) -> bool:
+    """Return `True` if the offending line opens a `//` or `/*` comment.
+
+    Scoped to the failing line and ignores `://` so URL schemes (common in
+    remote-server `url` fields) do not trigger a false comment hint.
+    """
+    lines = doc.splitlines()
+    if lineno < 1 or lineno > len(lines):
+        return False
+    stripped = lines[lineno - 1].lstrip()
+    return stripped.startswith(("//", "/*"))
+
+
+def _json_error_hint(exc: json.JSONDecodeError) -> str | None:
+    """Return an actionable hint for a common JSON mistake, or `None`."""
+    msg = exc.msg.lower()
+    if "trailing comma" in msg:
+        return (
+            "Hint: JSON does not allow trailing commas. Remove the comma "
+            "before the closing '}' or ']'."
+        )
+    if _looks_like_comment(exc.doc, exc.lineno):
+        return "Hint: JSON does not allow comments (// or /* */). Remove them."
+    if "expecting property name" in msg:
+        return (
+            "Hint: check for a trailing comma, a missing key, or an unquoted "
+            "property name near this position."
+        )
+    if "expecting value" in msg:
+        return (
+            "Hint: check for a missing value, an extra comma, or unquoted text "
+            "near this position."
+        )
+    if "delimiter" in msg:
+        return (
+            "Hint: check for a missing comma, ':', or closing bracket near "
+            "this position."
+        )
+    return None
+
+
+def _json_error_snippet(doc: str, lineno: int, colno: int) -> str | None:
+    """Build a caret snippet pointing at a JSON error location.
+
+    Args:
+        doc: Full source text that failed to parse.
+        lineno: 1-based line number of the error.
+        colno: 1-based column number of the error.
+
+    Returns:
+        A two-line `<source line>` + caret string, or `None` when the line
+        is out of range or blank.
+    """
+    lines = doc.splitlines()
+    if lineno < 1 or lineno > len(lines):
+        return None
+    source = lines[lineno - 1].rstrip()
+    if not source:
+        return None
+    caret_col = max(0, min(colno - 1, len(source)))
+    return f"    {source}\n    {' ' * caret_col}^"
+
+
 def load_mcp_config(config_path: str) -> dict[str, Any]:
     """Load and validate MCP configuration from a JSON file.
 
@@ -647,7 +710,17 @@ def load_mcp_config(config_path: str) -> dict[str, Any]:
         with path.open(encoding="utf-8") as file_obj:
             config = json.load(file_obj)
     except json.JSONDecodeError as exc:
-        error_msg = f"Invalid JSON in MCP config file: {exc.msg}"
+        # Build a layered message: core reason, an actionable hint for common
+        # mistakes, then a caret snippet last so the auto-appended
+        # "line X column Y" suffix reads as the location of the caret.
+        parts = [f"Invalid JSON in MCP config file: {exc.msg}"]
+        hint = _json_error_hint(exc)
+        if hint is not None:
+            parts.append(hint)
+        snippet = _json_error_snippet(exc.doc, exc.lineno, exc.colno)
+        if snippet is not None:
+            parts.append(snippet)
+        error_msg = "\n".join(parts)
         raise json.JSONDecodeError(error_msg, exc.doc, exc.pos) from exc
 
     if "mcpServers" not in config:

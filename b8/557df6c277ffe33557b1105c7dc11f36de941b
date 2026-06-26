@@ -1,0 +1,20 @@
+libs/deepagents/deepagents/middleware/continual_learning.py
+  s_ff1d954e22bc10::t_5fca2db01c31d7 31
+  s_ff1d954e22bc10::t_8cf5d9620fbc8a 21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "b8557df6c277ffe33557b1105c7dc11f36de941b",
+  "prompts": {},
+  "sessions": {
+    "s_ff1d954e22bc10": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e85341e2-a6d5-4077-a245-b6953a292cae",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

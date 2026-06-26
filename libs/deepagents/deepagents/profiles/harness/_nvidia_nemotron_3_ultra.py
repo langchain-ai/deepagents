@@ -125,25 +125,6 @@ class NemotronToolMessageShim(AgentMiddleware):
         return self._normalize(await handler(request))
 
 
-def _message_text(content: str | list[Any] | None) -> str:
-    """Return readable text from common LangChain message content shapes."""
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for block in content:
-            if isinstance(block, dict):
-                text = block.get("text")
-                if isinstance(text, str):
-                    parts.append(text)
-            elif isinstance(block, str):
-                parts.append(block)
-        return "\n".join(parts)
-    return str(content)
-
-
 _READ_NOTICE_DEFAULT_LIMIT = 100  # Deep Agents default read limit (FilesystemMiddleware).
 
 
@@ -167,7 +148,7 @@ class ReadFileContinuationNoticeMiddleware(AgentMiddleware):
             return result
         if request.tool_call.get("name") != "read_file":
             return result
-        content = _message_text(result.content)
+        content = result.text
         if not content or content.startswith("Error"):
             return result
         args = request.tool_call.get("args", {}) or {}

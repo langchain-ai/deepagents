@@ -97,9 +97,12 @@ class HistoryManager:
             text: The command text to add
         """
         text = text.strip()
-        # Skip empty or non-skill slash commands.
-        # Skill invocations (/skill:<name>) are kept so users can recall them
-        # with up-arrow; other slash commands are ephemeral UI actions.
+        # Skip empty input and slash commands, except the explicit
+        # `/skill:<name>` form (case-insensitive), which is kept so users can
+        # recall it with up-arrow. Note: history stores the raw submitted text
+        # *before* app-layer alias rewriting, so convenience aliases such as
+        # `/remember` (later rewritten to `/skill:remember`) are dropped here
+        # despite being skill invocations.
         lower_text = text.lower()
         if not text or (text.startswith("/") and not lower_text.startswith("/skill:")):
             return

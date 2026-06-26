@@ -1079,7 +1079,7 @@ wheels = [
 
 [[package]]
 name = "deepagents-code"
-version = "0.1.26"
+version = "0.1.27"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },

@@ -1973,6 +1973,26 @@ def get_credential_env_var(provider: str) -> str | None:
     return PROVIDER_API_KEY_ENV.get(provider)
 
 
+def get_base_url_env_vars(provider: str) -> tuple[str, ...]:
+    """Return base-URL env var names for a provider in resolution order.
+
+    Checks the config file's `base_url_env` first (user override), then falls
+    back to the hardcoded `PROVIDER_BASE_URL_ENV` map.
+
+    Args:
+        provider: Provider name.
+
+    Returns:
+        Environment variable names, or an empty tuple if the provider has no
+        base-URL env var (config-declared or built-in).
+    """
+    config = ModelConfig.load()
+    config_env = config.get_base_url_env(provider)
+    if config_env:
+        return (config_env,)
+    return PROVIDER_BASE_URL_ENV.get(provider, ())
+
+
 def get_base_url_env_var(provider: str) -> str | None:
     """Return the canonical base-URL env var name for a provider.
 
@@ -1987,11 +2007,8 @@ def get_base_url_env_var(provider: str) -> str | None:
         Environment variable name, or None if the provider has no base-URL env
         var (config-declared or built-in).
     """
-    config = ModelConfig.load()
-    config_env = config.get_base_url_env(provider)
-    if config_env:
-        return config_env
-    return _canonical_base_url_env(provider)
+    env_vars = get_base_url_env_vars(provider)
+    return env_vars[0] if env_vars else None
 
 
 def get_default_base_url_env(provider: str) -> str | None:
@@ -2015,11 +2032,11 @@ def get_default_base_url_env(provider: str) -> str | None:
         The `DEEPAGENTS_CODE_`-prefixed env var name still in effect after a
         blank save, or `None`.
     """
-    env_var = get_base_url_env_var(provider)
-    if not env_var:
-        return None
-    prefixed = f"{_ENV_PREFIX}{env_var}"
-    return prefixed if os.environ.get(prefixed) else None
+    for env_var in get_base_url_env_vars(provider):
+        prefixed = f"{_ENV_PREFIX}{env_var}"
+        if os.environ.get(prefixed):
+            return prefixed
+    return None
 
 
 def is_service(name: str) -> bool:

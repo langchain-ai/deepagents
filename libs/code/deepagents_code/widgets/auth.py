@@ -58,6 +58,7 @@ from deepagents_code.model_config import (
     clear_caches,
     get_available_models,
     get_base_url_env_var,
+    get_base_url_env_vars,
     get_credential_env_var,
     get_default_base_url_env,
     get_provider_auth_status,
@@ -875,22 +876,25 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             Content describing blank behavior and env-var precedence.
         """
         surviving_base_url_env = get_default_base_url_env(self._provider)
-        endpoint_env = get_base_url_env_var(self._provider)
-        if surviving_base_url_env and endpoint_env:
+        endpoint_envs = get_base_url_env_vars(self._provider)
+        env_order = ", then ".join(
+            item for env in endpoint_envs for item in (f"DEEPAGENTS_CODE_{env}", env)
+        )
+        if surviving_base_url_env and env_order:
             return Content.from_markup(
                 "Override the provider endpoint for this stored key. "
                 "Leave blank to use [bold]$prefixed[/bold].\n"
-                "Env override order: [bold]$prefixed[/bold], then [bold]$plain[/bold].",
+                "Env override order: [bold]$order[/bold].",
                 prefixed=surviving_base_url_env,
-                plain=endpoint_env,
+                order=env_order,
             )
-        if endpoint_env:
+        endpoint_env = get_base_url_env_var(self._provider)
+        if endpoint_env and env_order:
             return Content.from_markup(
                 "Override the provider endpoint for this stored key. "
                 "Leave blank to use the provider default.\n"
-                "Env override order: [bold]$prefixed[/bold], then [bold]$plain[/bold].",
-                prefixed=f"DEEPAGENTS_CODE_{endpoint_env}",
-                plain=endpoint_env,
+                "Env override order: [bold]$order[/bold].",
+                order=env_order,
             )
         return Content.from_markup(
             "Override the provider endpoint for this stored key. "

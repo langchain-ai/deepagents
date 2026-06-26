@@ -2785,7 +2785,7 @@ def _resolve_tracing_project_from(env: dict[str, str]) -> tuple[str, bool]:
 
     Returns:
         The resolved project name and whether it fell back to the default
-        because no project was explicitly configured.
+            because no project was explicitly configured.
     """
     from deepagents_code._env_vars import LANGSMITH_PROJECT
     from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT

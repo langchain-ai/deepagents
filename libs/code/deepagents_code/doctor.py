@@ -255,7 +255,7 @@ def _format_tracing_project(status: TracingStatus) -> str:
 
     Returns:
         The project name with a `(default)` suffix when it is the built-in
-        fallback rather than an explicit setting, or `(unset)` when absent.
+            fallback rather than an explicit setting, or `(unset)` when absent.
     """
     if not status.project:
         return "(unset)"

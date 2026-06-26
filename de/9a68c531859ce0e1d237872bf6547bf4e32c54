@@ -1,0 +1,19 @@
+docs/superpowers/plans/2026-06-26-hill-climbing-harness-agent.md
+  s_835b4f54a887d4::t_8e93b47e9cd682 1-568
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "de9a68c531859ce0e1d237872bf6547bf4e32c54",
+  "prompts": {},
+  "sessions": {
+    "s_835b4f54a887d4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "309be8cc-8b32-4d74-a6b9-4d4c7b0bb936",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

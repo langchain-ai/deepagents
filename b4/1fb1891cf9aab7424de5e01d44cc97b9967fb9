@@ -1,0 +1,60 @@
+libs/code/tests/unit_tests/test_server_manager.py
+  s_306fb1404b4a25::t_dc0908d1f9f7c7 152,179,198,222-262
+  s_306fb1404b4a25::t_6b7cf1629c0061 263
+libs/code/tests/unit_tests/test_server_graph.py
+  s_c3fb7e3bc6908e::t_ad560bb1c22cb5 34,39-43,45,47-69
+  s_c3fb7e3bc6908e::t_5f3d9a2d20f3a8 11-12
+  s_306fb1404b4a25::t_a7a696135c608f 35-38,44,46
+  s_c3fb7e3bc6908e::t_9ba4d2659a390e 148
+libs/code/deepagents_code/server_graph.py
+  s_c3fb7e3bc6908e::t_f92af30128972e 69,78-83
+  s_c3fb7e3bc6908e::t_8816757d394704 108-114
+  s_c3fb7e3bc6908e::t_a0600ccb9c08f4 242-243,245-248,251-252,254-288
+  s_c3fb7e3bc6908e::t_27ef995ffa1c8b 154,157-161
+  s_c3fb7e3bc6908e::t_bb0a82330da081 18,27-29
+  s_c3fb7e3bc6908e::t_5ff695a235458e 132
+  s_c3fb7e3bc6908e::t_4ef826c5b09eef 14
+  s_306fb1404b4a25::t_146da192c48670 244
+libs/code/deepagents_code/server.py
+  s_c3fb7e3bc6908e::t_2e7cf63c3af70a 148-149
+  s_306fb1404b4a25::t_e18398309b3dfa 550
+  s_306fb1404b4a25::t_456761e5690dac 563-578
+  s_306fb1404b4a25::t_25ddb7ce8fa2da 21,522-549,551-562,579-598
+  s_306fb1404b4a25::t_dd36dbd80212cf 599
+libs/code/deepagents_code/server_manager.py
+  s_306fb1404b4a25::t_ba807f1c708d34 377
+libs/code/tests/unit_tests/test_server.py
+  s_306fb1404b4a25::t_4008012f709ba5 8,55-67,74,77
+  s_306fb1404b4a25::t_2131b09cc4c25d 68-73
+  s_306fb1404b4a25::t_a7b87addc25ddd 75-76,269-277,279-294
+  s_306fb1404b4a25::t_39f3afd0408a6c 233
+  s_306fb1404b4a25::t_3704e4ab80528e 234-268,295-297
+  s_306fb1404b4a25::t_fd6813b99eda4c 278
+  s_306fb1404b4a25::t_0d216985b05a81 78-79
+libs/code/scripts/check_imports.py
+  s_c3fb7e3bc6908e::t_3a050ffa200c75 23-27,29-31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "b41fb1891cf9aab7424de5e01d44cc97b9967fb9",
+  "prompts": {},
+  "sessions": {
+    "s_306fb1404b4a25": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f01f5-a942-7450-90ee-661c628bff9f",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    },
+    "s_c3fb7e3bc6908e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6725b82d-4ed2-4a30-ae83-9ad118d06cfb",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

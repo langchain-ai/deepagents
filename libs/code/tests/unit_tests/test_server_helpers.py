@@ -102,17 +102,20 @@ class TestBuildServerEnv:
             env = _build_server_env()
         assert env[_INHERITED_PYTHONPATH_ENV] == ""
 
-    def test_pythonpath_blocked_from_both_server_and_dotenv(self) -> None:
-        """`PYTHONPATH` (and its carrier) must stay blocked on both ingress paths.
-
-        The server interpreter must never inherit `PYTHONPATH`, and a project
-        `.env` must not inject either `PYTHONPATH` or the carrier var used to
-        relay it to `execute`. Guards against a future re-merge or denylist edit
-        silently re-opening the startup-shadowing vector.
-        """
+    def test_startup_hijack_keys_blocked_from_dotenv(self) -> None:
+        """Project `.env` files must not inject interpreter startup hooks."""
         assert "PYTHONPATH" in _SERVER_ENV_DENYLIST
-        assert "PYTHONPATH" in _DOTENV_DENIED_ENV_KEYS
-        assert _INHERITED_PYTHONPATH_ENV in _DOTENV_DENIED_ENV_KEYS
+        for key in (
+            "BASH_ENV",
+            "BASHOPTS",
+            "CDPATH",
+            "ENV",
+            "GLOBIGNORE",
+            "PYTHONPATH",
+            "SHELLOPTS",
+            _INHERITED_PYTHONPATH_ENV,
+        ):
+            assert key in _DOTENV_DENIED_ENV_KEYS
 
 
 class TestPythonpathRelayRoundTrip:

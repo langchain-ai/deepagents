@@ -158,6 +158,15 @@ and `/api/show`. See `_ollama_discovery_enabled` for accepted truthy/falsy
 values.
 """
 
+ONBOARDING_INTEGRATIONS_SCREEN = "DEEPAGENTS_CODE_ONBOARDING_INTEGRATIONS_SCREEN"
+"""Show the "Installed Integrations" summary screen during first-run onboarding.
+
+Off by default: onboarding goes straight from the name prompt to the model
+selector, which already surfaces (and installs) uninstalled model providers.
+Set to a truthy value to bring the standalone integrations screen back into the
+flow. Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
+"""
+
 RESTARTED_AFTER_UPDATE = "DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE"
 """Internal sentinel recording the target version immediately before the
 startup auto-update re-execs the process.
@@ -167,6 +176,16 @@ still reports as available (a no-op upgrade that did not change the running
 version), skips auto-updating to break out of an otherwise endless
 upgrade/restart loop. Set and read internally across `os.execv`.
 """
+
+RIPGREP_INSTALLER = "DEEPAGENTS_CODE_RIPGREP_INSTALLER"
+"""Select how ripgrep is provisioned: `managed` (default) or `system`.
+
+`managed` downloads the pinned, SHA-256-verified upstream binary into
+`~/.deepagents/bin` (no sudo). `system` skips that download so power users can
+rely on their distro package / existing toolchain instead; the install script's
+`system` mode keeps the brew/apt/cargo path. A system `rg` already on `PATH` is
+reused under either setting. Unrecognized values fall back to `managed`. See
+`managed_tools.ripgrep_installer`."""
 
 SERVER_ENV_PREFIX = "DEEPAGENTS_CODE_SERVER_"
 """Environment variable prefix used to pass CLI config to the server subprocess."""

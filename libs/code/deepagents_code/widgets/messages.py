@@ -43,7 +43,7 @@ from deepagents_code.widgets._js_eval_display import (
     JsEvalStdout,
     parse_js_eval_blocks,
 )
-from deepagents_code.widgets._links import open_style_link
+from deepagents_code.widgets._links import event_targets_link, open_style_link
 from deepagents_code.widgets.diff import compose_diff_lines
 
 if TYPE_CHECKING:
@@ -53,6 +53,7 @@ if TYPE_CHECKING:
         RenderResult,
     )
     from textual.app import ComposeResult
+    from textual.events import MouseMove
     from textual.timer import Timer
     from textual.widgets import Markdown
     from textual.widgets._markdown import MarkdownStream
@@ -111,6 +112,7 @@ _TOOLS_WITH_HEADER_INFO: set[str] = {
     "read_file",
     "write_file",
     "edit_file",
+    "delete",
     "glob",
     "grep",
     "execute",  # sandbox shell
@@ -723,6 +725,23 @@ class AssistantMessage(Vertical):
         from textual.widgets import Markdown
 
         self._markdown = self.query_one("#assistant-content", Markdown)
+
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Show a pointer cursor over markdown links, text cursor elsewhere.
+
+        The pointer is set on the inner `Markdown` widget because it carries a
+        non-default (`text`) pointer in CSS, so the screen resolves its shape
+        before reaching this container.
+        """
+        if self._markdown is not None:
+            self._markdown.styles.pointer = (
+                "pointer" if event_targets_link(event) else "text"
+            )
+
+    def on_leave(self) -> None:
+        """Reset the markdown pointer shape when the mouse leaves the message."""
+        if self._markdown is not None:
+            self._markdown.styles.pointer = "text"
 
     def _get_markdown(self) -> Markdown:
         """Get the markdown widget, querying if not cached.

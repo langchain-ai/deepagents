@@ -23,6 +23,7 @@ from deepagents.graph import (
     BASE_AGENT_PROMPT,
     DeepAgentState,
     _apply_custom_middleware,
+    _create_bedrock_prompt_caching_middleware,
     create_deep_agent,
     get_default_model,
 )
@@ -348,6 +349,88 @@ class TestGeneralPurposeSubagentProfileWiring:
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
+
+
+class TestPromptCachingWiring:
+    """Tests for provider-specific prompt caching middleware wiring."""
+
+    def test_main_and_general_purpose_agents_get_bedrock_prompt_caching(self) -> None:
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        gp_cache = MagicMock()
+        main_cache = MagicMock()
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.graph._create_bedrock_prompt_caching_middleware", side_effect=[gp_cache, main_cache]),
+            patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            result = create_deep_agent(model=model)
+
+        assert result == "compiled-agent"
+        subagents = mock_subagents.call_args.kwargs["subagents"]
+        general_purpose = next(spec for spec in subagents if spec["name"] == "general-purpose")
+        assert gp_cache in general_purpose["middleware"]
+        assert main_cache in mock_create.call_args.kwargs["middleware"]
+
+    def test_bedrock_explicit_subagent_gets_prompt_caching(self) -> None:
+        main_model = GenericFakeChatModel(messages=iter([AIMessage(content="main")]))
+        bedrock_model = GenericFakeChatModel(messages=iter([AIMessage(content="sub")]))
+        bedrock_model._get_ls_params = MagicMock(return_value={"ls_provider": "amazon_bedrock"})
+        subagent_cache = MagicMock()
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch("deepagents.graph._create_bedrock_prompt_caching_middleware", return_value=subagent_cache),
+            patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+            patch("deepagents.graph.create_agent", return_value=fake_agent),
+        ):
+            create_deep_agent(
+                model=main_model,
+                subagents=[
+                    {
+                        "name": "bedrock-worker",
+                        "description": "Uses Bedrock.",
+                        "system_prompt": "Help with Bedrock tasks.",
+                        "model": bedrock_model,
+                    }
+                ],
+            )
+
+        subagents = mock_subagents.call_args.kwargs["subagents"]
+        bedrock_worker = next(spec for spec in subagents if spec["name"] == "bedrock-worker")
+        assert subagent_cache in bedrock_worker["middleware"]
+
+    def test_bedrock_prompt_caching_is_optional_when_middleware_unavailable(self) -> None:
+        bedrock_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        bedrock_model._get_ls_params = MagicMock(return_value={"ls_provider": "amazon_bedrock"})
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+
+        with (
+            patch(
+                "deepagents.graph.import_module",
+                side_effect=ModuleNotFoundError(name="langchain_aws.middleware.prompt_caching"),
+            ),
+            patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            result = create_deep_agent(model=bedrock_model)
+
+        assert result == "compiled-agent"
+        subagents = mock_subagents.call_args.kwargs["subagents"]
+        general_purpose = next(spec for spec in subagents if spec["name"] == "general-purpose")
+        assert None not in general_purpose["middleware"]
+        assert None not in mock_create.call_args.kwargs["middleware"]
+
+    def test_bedrock_prompt_caching_preserves_unrelated_import_errors(self) -> None:
+        with (
+            patch("deepagents.graph.import_module", side_effect=ImportError(name="missing_transitive")),
+            pytest.raises(ImportError),
+        ):
+            _create_bedrock_prompt_caching_middleware()
 
 
 class TestSystemPromptAssembly:

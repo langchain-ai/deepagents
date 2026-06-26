@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig
 from deepagents_code.project_utils import ProjectContext
+from deepagents_code.server import _EPHEMERAL_PORT
 
 logger = logging.getLogger(__name__)
 _DISTRIBUTION_NAME = "deepagents-code"
@@ -110,7 +111,7 @@ def _scaffold_workspace(work_dir: Path) -> None:
     # here breaks Windows because importlib treats backslash paths as module names.
     generate_langgraph_json(
         work_dir,
-        graph_ref="./server_graph.py:graph",
+        graph_ref="./server_graph.py:make_graph",
         checkpointer_path="./checkpointer.py:create_checkpointer",
     )
 
@@ -281,7 +282,7 @@ async def start_server_and_get_agent(
     sandbox_setup: str | None = None,
     enable_shell: bool = True,
     enable_ask_user: bool = False,
-    enable_interpreter: bool = False,
+    enable_interpreter: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
     mcp_config_path: str | None = None,
@@ -289,7 +290,7 @@ async def start_server_and_get_agent(
     trust_project_mcp: bool | None = None,
     interactive: bool = True,
     host: str = "127.0.0.1",
-    port: int = 2024,
+    port: int = _EPHEMERAL_PORT,
 ) -> tuple[RemoteAgent, ServerProcess, MCPSessionManager | None]:
     """Start a LangGraph server and return a connected remote agent client.
 
@@ -307,7 +308,7 @@ async def start_server_and_get_agent(
         enable_shell: Enable shell execution tools.
         enable_ask_user: Enable ask_user tool.
         enable_interpreter: Enable the JS interpreter (`js_eval`) middleware on
-            the main agent. Local-mode only.
+            the main agent. `None` uses the sandbox-aware default.
         interpreter_ptc: Override for `settings.interpreter_ptc` (PTC allowlist).
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
@@ -316,7 +317,9 @@ async def start_server_and_get_agent(
         trust_project_mcp: Trust project MCP servers.
         interactive: Whether the agent is interactive.
         host: Server host.
-        port: Server port.
+        port: Server port. Defaults to `_EPHEMERAL_PORT` (0), letting the server
+            pick a free ephemeral port instead of the well-known `langgraph dev`
+            port 2024.
 
     Returns:
         Tuple of `(remote_agent, server_process, mcp_session_manager)`.
@@ -374,6 +377,7 @@ async def start_server_and_get_agent(
     )
     try:
         await server.start()
+        await server.wait_for_graph_ready("agent")
     except Exception:
         server.stop()
         raise
@@ -406,7 +410,7 @@ async def server_session(
     sandbox_setup: str | None = None,
     enable_shell: bool = True,
     enable_ask_user: bool = False,
-    enable_interpreter: bool = False,
+    enable_interpreter: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
     mcp_config_path: str | None = None,
@@ -414,7 +418,7 @@ async def server_session(
     trust_project_mcp: bool | None = None,
     interactive: bool = True,
     host: str = "127.0.0.1",
-    port: int = 2024,
+    port: int = _EPHEMERAL_PORT,
 ) -> AsyncIterator[tuple[RemoteAgent, ServerProcess]]:
     """Async context manager that starts a server and guarantees cleanup.
 
@@ -435,7 +439,7 @@ async def server_session(
         enable_shell: Enable shell execution tools.
         enable_ask_user: Enable ask_user tool.
         enable_interpreter: Enable the JS interpreter (`js_eval`) middleware on
-            the main agent. Local-mode only.
+            the main agent. `None` uses the sandbox-aware default.
         interpreter_ptc: Override for `settings.interpreter_ptc` (PTC allowlist).
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
@@ -444,7 +448,9 @@ async def server_session(
         trust_project_mcp: Trust project MCP servers.
         interactive: Whether the agent is interactive.
         host: Server host.
-        port: Server port.
+        port: Server port. Defaults to `_EPHEMERAL_PORT` (0), letting the server
+            pick a free ephemeral port instead of the well-known `langgraph dev`
+            port 2024.
 
     Yields:
         Tuple of `(remote_agent, server_process)`.

@@ -12,6 +12,7 @@ import pytest
 
 from deepagents_code import _git as git_module, model_config
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
+from deepagents_code._version import __version__
 from deepagents_code.config import (
     CLI_MAX_RETRIES_KEY,
     RECOMMENDED_SAFE_SHELL_COMMANDS,
@@ -3905,8 +3906,20 @@ class TestCreateModelViaInitImportError:
             _create_model_via_init("nemotron", "nvidia", {})
 
     @patch("langchain.chat_models.init_chat_model")
-    def test_unknown_provider_fallback_package_name(self, mock_init: Mock) -> None:
-        """Unknown provider falls back to langchain-{provider} package name."""
+    def test_unknown_provider_fallback_package_name(
+        self, mock_init: Mock, tmp_path, monkeypatch
+    ) -> None:
+        """Unknown provider falls back to langchain-{provider} package name.
+
+        `install_package_command` reads the uv tool receipt, so it is isolated to
+        a temporary tool root here; otherwise the hint degrades to the manual
+        fallback (see the sibling unreadable-receipt test).
+        """
+        tmp_path.joinpath("uv-receipt.toml").write_text(
+            '[tool]\nrequirements = [{ name = "deepagents-code" }]\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
         mock_init.side_effect = ImportError("no module")
         with (
             patch("importlib.util.find_spec", return_value=None),
@@ -3917,9 +3930,37 @@ class TestCreateModelViaInitImportError:
             pytest.raises(
                 ModelConfigError,
                 match=(
-                    "Install with: uv tool install -U deepagents-code "
-                    "--with langchain-custom_provider"
+                    "Install with: uv tool install --reinstall -U "
+                    f"deepagents-code=={__version__} "
+                    "--with langchain-custom_provider --prerelease allow"
                 ),
+            ),
+        ):
+            _create_model_via_init("some-model", "custom_provider", {})
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_unknown_provider_receipt_failure_falls_back_to_manual(
+        self, mock_init: Mock, tmp_path, monkeypatch
+    ) -> None:
+        """An unreadable uv receipt degrades to the manual-install hint.
+
+        Exercises the `ToolRequirementIntrospectionError` arm of the fallback:
+        `install_package_command` reads the uv tool receipt, and a missing
+        receipt must surface an actionable message instead of letting the error
+        leak out of hint construction.
+        """
+        # tmp_path has no uv-receipt.toml, so the receipt read raises.
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        mock_init.side_effect = ImportError("no module")
+        with (
+            patch("importlib.util.find_spec", return_value=None),
+            patch(
+                "deepagents_code.extras_info.installed_extra_names",
+                return_value=set(),
+            ),
+            pytest.raises(
+                ModelConfigError,
+                match="Install the 'langchain-custom_provider' package manually",
             ),
         ):
             _create_model_via_init("some-model", "custom_provider", {})
@@ -4706,12 +4747,12 @@ class TestInterpreterSettings:
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
             settings_obj = Settings.from_environment(start_path=tmp_path)
 
-        assert settings_obj.enable_interpreter is False
+        assert settings_obj.enable_interpreter is True
         assert settings_obj.interpreter_timeout_seconds == pytest.approx(5.0)
         assert settings_obj.interpreter_memory_limit_mb == 64
         assert settings_obj.interpreter_max_ptc_calls == 256
         assert settings_obj.interpreter_max_result_chars == 4000
-        assert settings_obj.interpreter_ptc is False
+        assert settings_obj.interpreter_ptc == "safe"
         assert settings_obj.interpreter_ptc_acknowledge_unsafe is False
 
     def test_round_trip_through_toml(self, tmp_path: Path) -> None:
@@ -4763,7 +4804,7 @@ ptc = [""]
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
             settings_obj = Settings.from_environment(start_path=tmp_path)
 
-        assert settings_obj.interpreter_ptc is False
+        assert settings_obj.interpreter_ptc == "safe"
 
     def test_ptc_list_with_safe_preset_round_trip(self, tmp_path: Path) -> None:
         """`"safe"` is preserved as a list entry until agent-build expansion."""
@@ -4791,7 +4832,7 @@ ptc = ["all", "task"]
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
             settings_obj = Settings.from_environment(start_path=tmp_path)
 
-        assert settings_obj.interpreter_ptc is False
+        assert settings_obj.interpreter_ptc == "safe"
 
 
 class TestCreateModelCodex:

@@ -1,9 +1,9 @@
 """Unit tests for agent formatting functions."""
 
 import warnings
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import fields
+from dataclasses import dataclass, fields
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -24,6 +24,7 @@ from deepagents_code.agent import (
     DEFAULT_AGENT_NAME,
     _add_interrupt_on,
     _apply_inherited_pythonpath,
+    _format_delete_description,
     _format_edit_file_description,
     _format_execute_description,
     _format_fetch_url_description,
@@ -43,6 +44,27 @@ from deepagents_code.agent import (
 from deepagents_code.config import Settings, get_glyphs
 from deepagents_code.managed_tools import BIN_DIR
 from deepagents_code.project_utils import ProjectContext
+
+
+@dataclass
+class _StoreItem:
+    value: dict[str, Any]
+
+
+class _FakeStore:
+    def __init__(self) -> None:
+        self.items: dict[tuple[tuple[str, ...], str], _StoreItem] = {}
+
+    def put(
+        self,
+        namespace: tuple[str, ...],
+        key: str,
+        value: Mapping[str, Any],
+    ) -> None:
+        self.items[namespace, key] = _StoreItem(dict(value))
+
+    def get(self, namespace: tuple[str, ...], key: str) -> _StoreItem | None:
+        return self.items.get((namespace, key))
 
 
 def _make_fake_chat_model() -> GenericFakeChatModel:
@@ -81,10 +103,14 @@ def test_add_interrupt_on_attaches_auto_approve_predicate() -> None:
         assert config.get("when") is _should_interrupt_tool_call
 
 
-def _request_with_context(context: object) -> "ToolCallRequest":
+def _request_with_context(
+    context: object,
+    *,
+    store: object | None = None,
+) -> "ToolCallRequest":
     return cast(
         "ToolCallRequest",
-        SimpleNamespace(runtime=SimpleNamespace(context=context)),
+        SimpleNamespace(runtime=SimpleNamespace(context=context, store=store)),
     )
 
 
@@ -101,6 +127,130 @@ def test_should_interrupt_tool_call_respects_auto_approve_context() -> None:
     assert _should_interrupt_tool_call(_request_with_context({"auto_approve": False}))
     assert not _should_interrupt_tool_call(
         _request_with_context({"auto_approve": True})
+    )
+
+
+def test_should_interrupt_tool_call_prefers_live_approval_mode() -> None:
+    """A live manual toggle overrides an auto-approve run-context snapshot."""
+    from deepagents_code.approval_mode import (
+        APPROVAL_MODE_NAMESPACE,
+        approval_mode_key,
+        approval_mode_payload,
+    )
+
+    store = _FakeStore()
+    key = approval_mode_key("thread-1")
+    store.put(
+        APPROVAL_MODE_NAMESPACE,
+        key,
+        approval_mode_payload(auto_approve=False),
+    )
+    assert _should_interrupt_tool_call(
+        _request_with_context(
+            {"auto_approve": True, "approval_mode_key": key},
+            store=store,
+        )
+    )
+    assert _should_interrupt_tool_call(
+        _request_with_context(
+            CLIContextSchema(auto_approve=True, approval_mode_key=key),
+            store=store,
+        )
+    )
+
+    store.put(
+        APPROVAL_MODE_NAMESPACE,
+        key,
+        approval_mode_payload(auto_approve=True),
+    )
+    assert not _should_interrupt_tool_call(
+        _request_with_context(
+            {"auto_approve": False, "approval_mode_key": key},
+            store=store,
+        )
+    )
+
+
+async def test_live_approval_round_trip_flips_interrupt_decision() -> None:
+    """A mode written via `awrite_approval_mode` is read back by the predicate.
+
+    Exercises the full writer -> store -> reader contract across the shared
+    `approval_mode_key` seam. The isolated write- and read-side tests would both
+    stay green even if the two ever derived the key differently; only crossing
+    the seam catches that — a key mismatch would surface here as an unexpected
+    fail-closed interrupt.
+    """
+    from deepagents_code.approval_mode import approval_mode_key, awrite_approval_mode
+
+    store = _FakeStore()
+
+    class _StoreWriter:
+        """Agent double whose store writer feeds the same store the reader uses."""
+
+        async def aput_store_item(
+            self,
+            namespace: tuple[str, ...],
+            key: str,
+            value: Mapping[str, Any],
+        ) -> None:
+            store.put(namespace, key, value)
+
+    agent = _StoreWriter()
+    key = approval_mode_key("thread-1")
+
+    written = await awrite_approval_mode(agent, "thread-1", auto_approve=True)
+    assert written == key
+    # Live auto-approve suppresses the interrupt even though the context
+    # snapshot still says manual.
+    assert not _should_interrupt_tool_call(
+        _request_with_context(
+            {"auto_approve": False, "approval_mode_key": key},
+            store=store,
+        )
+    )
+
+    await awrite_approval_mode(agent, "thread-1", auto_approve=False)
+    # Flipping the stored mode to manual interrupts despite an auto context.
+    assert _should_interrupt_tool_call(
+        _request_with_context(
+            {"auto_approve": True, "approval_mode_key": key},
+            store=store,
+        )
+    )
+
+
+def test_cli_context_schema_fields_mirror_typed_dict() -> None:
+    """`CLIContextSchema` and `CLIContext` must stay structurally identical.
+
+    The two shapes carry the same payload across the API boundary (dataclass
+    in-process, dict over RemoteGraph). A field added to one but not the other
+    would silently drop across that boundary; this pins the documented mirror.
+    """
+    from deepagents_code._cli_context import CLIContext
+
+    assert {f.name for f in fields(CLIContextSchema)} == set(CLIContext.__annotations__)
+
+
+def test_should_interrupt_tool_call_fails_closed_when_live_mode_missing() -> None:
+    """A configured but missing live mode should interrupt for safety."""
+    from deepagents_code.approval_mode import approval_mode_key
+
+    assert _should_interrupt_tool_call(
+        _request_with_context(
+            {"auto_approve": True, "approval_mode_key": approval_mode_key("thread-1")},
+            store=_FakeStore(),
+        )
+    )
+
+
+def test_should_interrupt_tool_call_fails_closed_without_live_mode_store() -> None:
+    """A configured live-mode key with no runtime store should interrupt."""
+    from deepagents_code.approval_mode import approval_mode_key
+
+    assert _should_interrupt_tool_call(
+        _request_with_context(
+            {"auto_approve": True, "approval_mode_key": approval_mode_key("thread-1")}
+        )
     )
 
 
@@ -268,6 +418,30 @@ def test_format_edit_file_description_all_occurrences():
 
     assert "Action: Replace text (all occurrences)" in description
     assert "File:" not in description
+
+
+def test_format_delete_description() -> None:
+    """Test delete description for approval prompts."""
+    tool_call = cast(
+        "ToolCall",
+        {"name": "delete", "args": {"file_path": "/path/to/file.py"}, "id": "call-5"},
+    )
+
+    description = _format_delete_description(
+        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
+    )
+
+    assert "Action: Delete file or directory" in description
+
+
+def test_add_interrupt_on_gates_delete() -> None:
+    """The destructive delete tool is approval-gated like other write tools."""
+    interrupt_map = _add_interrupt_on()
+
+    assert "delete" in interrupt_map
+    assert interrupt_map["delete"]["allowed_decisions"] == ["approve", "reject"]
+    assert interrupt_map["delete"]["description"] is _format_delete_description
+    assert interrupt_map["delete"]["when"] is _should_interrupt_tool_call
 
 
 def test_format_web_search_description():
@@ -3264,11 +3438,16 @@ class TestResolvePtcOption:
             return ""
 
         @tool
+        def delete(path: str) -> str:  # noqa: ARG001
+            """Delete."""
+            return ""
+
+        @tool
         def grep(pattern: str) -> str:  # noqa: ARG001
             """Search."""
             return ""
 
-        return [read_file, write_file, grep]
+        return [read_file, write_file, delete, grep]
 
     def test_false_returns_none(self) -> None:
         from deepagents_code.agent import _resolve_ptc_option
@@ -3325,7 +3504,7 @@ class TestResolvePtcOption:
         assert result is not None
         # `all` enumerates only the tools passed to `create_cli_agent`; SDK
         # runtime built-ins are injected later and are not enumerable here.
-        assert sorted(result) == ["grep", "read_file", "write_file"]
+        assert sorted(result) == ["delete", "grep", "read_file", "write_file"]
 
     @staticmethod
     def _tools_with_task() -> list:

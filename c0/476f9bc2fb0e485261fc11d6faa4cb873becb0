@@ -1,0 +1,42 @@
+libs/evals/deepagents_harbor/oolong/generate_oolong_tasks.py
+  s_5504ef8276333c::t_9b8ed352f7ea2a 39
+  s_5504ef8276333c::t_483c24acea172b 41
+  s_5504ef8276333c::t_2ca6694268e4b7 368,372
+  s_5504ef8276333c::t_2f7f8aaf1083b3 321
+  s_5504ef8276333c::t_494cab32ad7747 390-392
+libs/evals/tests/unit_tests/test_harbor_langgraph_agent.py
+  s_5504ef8276333c::t_3394ad11179d0e 22-23
+libs/evals/deepagents_harbor/oolong/official_scorer.py
+  s_5504ef8276333c::t_1cbeb5d86ec539 28-30
+libs/evals/pyproject.toml
+  s_5504ef8276333c::t_1f9a803c73f6e4 143
+  s_5504ef8276333c::t_819f5aaef0ab75 126
+  s_5504ef8276333c::t_e2fd8736fb3243 201-203
+  s_5504ef8276333c::t_5c8e4923a8465f 127-132
+  s_5504ef8276333c::t_8225b6ff0e09a7 137-142,144
+libs/evals/deepagents_harbor/langgraph_project/oolong_graph.py
+  s_5504ef8276333c::t_494cab32ad7747 187
+  s_5504ef8276333c::t_9a370415c46957 37-38
+  s_5504ef8276333c::t_7bddff3205bc50 25
+  s_5504ef8276333c::t_80ea38b6df84e3 222
+  s_5504ef8276333c::t_aadf320dc59f33 183
+libs/evals/tests/unit_tests/test_harbor_langsmith_integration.py
+  s_5504ef8276333c::t_b4e92092ca0f51 121-123,125-126
+  s_5504ef8276333c::t_2a14aa2da00ee2 131-134
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "c0476f9bc2fb0e485261fc11d6faa4cb873becb0",
+  "prompts": {},
+  "sessions": {
+    "s_5504ef8276333c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3da33537-a26f-40fe-8463-52091416dc5b",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

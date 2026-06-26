@@ -2359,6 +2359,23 @@ class TestGetTracingStatus:
         assert status.project == "prefixed-proj"
         assert status.project_is_default is False
 
+    def test_explicit_default_name_is_not_marked_default(self) -> None:
+        """Explicitly setting the default name still counts as configured.
+
+        `project_is_default` tracks provenance (was anything set), not a string
+        match against the default. A user who sets the project to the same name
+        as the built-in default must not get the `(default)` marker.
+        """
+        from deepagents_code.config import get_tracing_status
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+        env = dict(self._CLEAN)
+        env["DEEPAGENTS_CODE_LANGSMITH_PROJECT"] = LANGSMITH_PROJECT_DEFAULT
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.project == LANGSMITH_PROJECT_DEFAULT
+        assert status.project_is_default is False
+
     def test_dotenv_values_are_detected(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2519,6 +2536,7 @@ class TestGetTracingStatus:
         with patch.dict("os.environ", env, clear=False):
             status = get_tracing_status()
         assert status.project == "prod"
+        assert status.project_is_default is False
 
     def test_reports_first_replica_project(self) -> None:
         """Only the first replica project is reported (server mirrors one)."""

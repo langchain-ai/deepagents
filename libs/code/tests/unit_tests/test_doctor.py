@@ -127,6 +127,12 @@ class TestCollectTracing:
         labels = {item.label: item.value for item in section.items}
         assert labels["Project"] == "deepagents-code"
 
+    def test_unset_project_renders_unset(self) -> None:
+        """A missing project renders the `(unset)` placeholder."""
+        section = self._section(project=None)
+        labels = {item.label: item.value for item in section.items}
+        assert labels["Project"] == "(unset)"
+
     def test_enabled_without_credentials_is_unhealthy(self) -> None:
         """Tracing on with no key and no endpoint is a genuine problem."""
         section = self._section(enabled=True, has_credentials=False)

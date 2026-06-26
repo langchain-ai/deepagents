@@ -2810,7 +2810,7 @@ def _tracing_diagnostic_env() -> dict[str, str]:
     return _preview_dotenv_environ(start_path=ctx.user_cwd if ctx else None)
 
 
-@dataclass
+@dataclass(frozen=True)
 class TracingStatus:
     """Offline snapshot of LangSmith tracing configuration for diagnostics.
 

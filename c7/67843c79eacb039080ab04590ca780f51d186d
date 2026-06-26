@@ -1,0 +1,21 @@
+libs/evals/deepagents_clbench/task/contextual_opponent/task.py
+  s_ff1d954e22bc10::t_c35d61bbb7b78a 1-139
+libs/evals/deepagents_clbench/task/contextual_opponent/__init__.py
+  s_ff1d954e22bc10::t_1ac42cec693fc5 1-13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "c767843c79eacb039080ab04590ca780f51d186d",
+  "prompts": {},
+  "sessions": {
+    "s_ff1d954e22bc10": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e85341e2-a6d5-4077-a245-b6953a292cae",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

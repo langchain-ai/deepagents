@@ -221,3 +221,32 @@ async def test_update_progress_screen_warning_without_copy_text_copies_log_path(
         await pilot.pause()
 
         assert copied == [str(log_path)]
+
+
+async def test_update_progress_screen_quit_waits_until_done(tmp_path) -> None:
+    """Q is ignored while updating and quits the app after completion."""
+    screen = UpdateProgressScreen(
+        latest="2.0.0",
+        command="uv tool upgrade deepagents-code",
+        log_path=tmp_path / "update.log",
+    )
+
+    app = App()
+    async with app.run_test() as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+
+        help_text = screen.query(Static).filter(".up-help").first()
+        assert "q quit" not in str(help_text.render())
+
+        await pilot.press("q")
+        await pilot.pause()
+        assert app.is_running
+
+        screen.mark_success()
+        await pilot.pause()
+        assert "q quit" in str(help_text.render())
+
+        await pilot.press("q")
+        await pilot.pause()
+        assert not app.is_running

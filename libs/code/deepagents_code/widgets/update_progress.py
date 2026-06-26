@@ -27,6 +27,7 @@ class UpdateProgressScreen(ModalScreen[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("d", "toggle_details", "Details", show=False),
         Binding("c", "copy_log_path", "Copy log path", show=False),
+        Binding("q", "quit_app", "Quit", show=False),
         Binding("escape", "cancel", "Close", show=False),
     ]
 
@@ -255,6 +256,11 @@ class UpdateProgressScreen(ModalScreen[None]):
         if self._done:
             self.dismiss(None)
 
+    def action_quit_app(self) -> None:
+        """Quit the app once the update command has finished."""
+        if self._done:
+            self.app.exit()
+
     def action_copy_log_path(self) -> None:
         """Copy warning action text or the persisted log path."""
         copy_text = self._copy_text
@@ -311,6 +317,8 @@ class UpdateProgressScreen(ModalScreen[None]):
             parts.insert(1, f"c copy {self._copy_label}")
         elif self._details_visible:
             parts.insert(1, "c copy log path")
+        if self._done:
+            parts.append("q quit")
         return f" {glyphs.bullet} ".join(parts)
 
     def _update_spinner(self) -> None:

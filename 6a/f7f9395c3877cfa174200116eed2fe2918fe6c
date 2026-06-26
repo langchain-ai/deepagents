@@ -1,0 +1,32 @@
+docs/superpowers/specs/2026-06-26-hill-climbing-harness-agent-design.md
+  s_835b4f54a887d4::t_420cc209ed76ec 164-175
+  s_835b4f54a887d4::t_cd3ac7e0833e7c 120
+  s_835b4f54a887d4::t_b3c5738bf4a4b8 275-279
+  s_835b4f54a887d4::t_c606a1e26a6c84 316-327
+  s_835b4f54a887d4::t_b8c973c45b9f64 90-92,96-99,101-108
+  s_835b4f54a887d4::t_f7d3363509f427 50-53,57-58,61,65-67,72-73
+  s_835b4f54a887d4::t_289b9dd0391b23 215-217
+  s_835b4f54a887d4::t_b408c9f239e5f5 136-139
+  s_835b4f54a887d4::t_b029bc47025bf2 272-273
+  s_835b4f54a887d4::t_fde636b534391d 222-243,246-248
+  s_835b4f54a887d4::t_3117a41503bdef 294-300
+  s_835b4f54a887d4::t_2bc6bc582f537b 257-258
+  s_835b4f54a887d4::t_ee7e98a90402b5 42-44
+  s_835b4f54a887d4::t_1f10fa84387551 346-348
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "6af7f9395c3877cfa174200116eed2fe2918fe6c",
+  "prompts": {},
+  "sessions": {
+    "s_835b4f54a887d4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "309be8cc-8b32-4d74-a6b9-4d4c7b0bb936",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

@@ -12,7 +12,13 @@ from typing import Annotated, Any, Required, cast
 
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
-from langchain.agents.middleware.types import AgentMiddleware, InputAgentState, OutputAgentState, ResponseT
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    InputAgentState,
+    OutputAgentState,
+    ResponseT,
+    StateT_co,
+)
 from langchain.agents.structured_output import ResponseFormat
 from langchain_anthropic import ChatAnthropic
 from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
@@ -262,7 +268,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
     *,
     system_prompt: str | SystemMessage | None = None,
-    middleware: Sequence[AgentMiddleware] = (),
+    middleware: Sequence[AgentMiddleware[StateT_co, ContextT]] = (),
     subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
     skills: list[str] | None = None,
     memory: list[str] | None = None,

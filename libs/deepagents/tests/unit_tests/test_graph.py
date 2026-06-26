@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import logging
+import shutil
+import subprocess
+import sys
 import warnings
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock, patch
 
@@ -2164,3 +2168,29 @@ class TestBuildDefaultModelContract:
         msg = str(deprecations[0].message)
         assert "deprecated" in msg
         assert "https://docs.langchain.com/oss/python/deepagents/models" in msg
+
+
+class TestMiddlewareTyping:
+    """Type-level coverage for `create_deep_agent`'s `middleware` parameter."""
+
+    def test_context_aware_middleware_type_checks(self) -> None:
+        """Context-aware middleware must type-check under `context_schema` (#4051).
+
+        Runs `ty` over a fixture that passes an
+        `AgentMiddleware[AgentState, Context]` alongside `context_schema=Context`.
+        Before the fix the `middleware` parameter pinned `ContextT=None`, so the
+        type checker rejected the call.
+        """
+        if shutil.which("ty") is None:
+            pytest.skip("ty is not installed in this environment")
+
+        package_root = Path(__file__).parents[2]
+        fixture = Path(__file__).parent / "_typing_fixtures" / "context_aware_middleware.py"
+        result = subprocess.run(  # noqa: S603  # fixed args, no user input
+            [sys.executable, "-m", "ty", "check", str(fixture)],
+            cwd=package_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, f"ty reported diagnostics:\n{result.stdout}\n{result.stderr}"

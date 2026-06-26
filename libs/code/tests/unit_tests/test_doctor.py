@@ -4,6 +4,7 @@ import argparse
 import io
 import json
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -94,6 +95,7 @@ class TestCollectTracing:
 
         defaults: dict[str, object] = {
             "enabled": False,
+            "explicitly_disabled": False,
             "has_credentials": False,
             "endpoint": None,
             "project": None,
@@ -105,15 +107,23 @@ class TestCollectTracing:
         with patch("deepagents_code.config.get_tracing_status", return_value=status):
             return _collect_tracing()
 
-    def test_disabled_is_healthy(self) -> None:
-        """A disabled, keyless setup is informational, not a failure."""
+    def test_not_configured_is_healthy(self) -> None:
+        """An unconfigured, keyless setup is informational, not a failure."""
         section = self._section(enabled=False, project="deepagents-code")
         assert section.title == "Tracing"
         assert section.ok is True
         labels = {item.label: item.value for item in section.items}
-        assert labels["Tracing"] == "disabled"
-        assert labels["Credentials"] == "not configured"
+        assert labels["Tracing"] == "not configured"
+        assert labels["Credentials"] == "not set"
         assert labels["Project"] == "deepagents-code"
+
+    def test_explicitly_disabled_reads_disabled(self) -> None:
+        """An explicit opt-out reads `disabled`, not `not configured`."""
+        section = self._section(enabled=False, explicitly_disabled=True)
+        assert section.ok is True
+        labels = {item.label: item.value for item in section.items}
+        assert labels["Tracing"] == "disabled"
+        assert labels["Credentials"] == "not set"
 
     def test_default_project_is_marked(self) -> None:
         """An unconfigured project shows the default marker."""
@@ -183,6 +193,64 @@ class TestCollectTracing:
         )
         labels = {item.label: item.value for item in section.items}
         assert labels["Replica project"] == "replica"
+
+
+class TestCollectUpdates:
+    """Tests for the Updates diagnostic section."""
+
+    def _labels(self, cache_file: Path) -> dict[str, str]:
+        """Collect the Updates labels, reading `checked_at` from `cache_file`.
+
+        Patches `CACHE_FILE` rather than `get_last_update_check_time` so the
+        section flows through the genuine reader and the epoch -> ISO ->
+        relative-time conversion, not a stub.
+        """
+        from deepagents_code.doctor import _collect_updates
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(False, "1.0.0"),
+            ),
+            patch("deepagents_code.update_check.CACHE_FILE", cache_file),
+        ):
+            section = _collect_updates()
+        return {item.label: item.value for item in section.items}
+
+    def test_last_checked_shows_relative_time(self, tmp_path: Path) -> None:
+        """A check stamped an hour ago renders as `1h ago` via the real read."""
+        cache = tmp_path / "latest_version.json"
+        cache.write_text(
+            json.dumps({"checked_at": time.time() - 3600}), encoding="utf-8"
+        )
+        assert self._labels(cache)["Last checked"] == "1h ago"
+
+    def test_last_checked_just_now_on_future_stamp(self, tmp_path: Path) -> None:
+        """A future stamp (clock skew) renders as `just now`, not a crash."""
+        cache = tmp_path / "latest_version.json"
+        cache.write_text(
+            json.dumps({"checked_at": time.time() + 3600}), encoding="utf-8"
+        )
+        assert self._labels(cache)["Last checked"] == "just now"
+
+    def test_last_checked_never_without_cache(self, tmp_path: Path) -> None:
+        """An absent cache reports `never` rather than crashing."""
+        assert self._labels(tmp_path / "latest_version.json")["Last checked"] == "never"
+
+    def test_last_checked_never_on_corrupt_stamp(self, tmp_path: Path) -> None:
+        """A non-finite stamp fails soft to `never` instead of crashing doctor."""
+        cache = tmp_path / "latest_version.json"
+        cache.write_text(json.dumps({"checked_at": float("nan")}), encoding="utf-8")
+        assert self._labels(cache)["Last checked"] == "never"
 
 
 class TestCommitHash:

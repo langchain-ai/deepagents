@@ -218,9 +218,33 @@ def _collect_updates() -> DiagnosticSection:
         update_status = f"v{latest} available"
     else:
         update_status = "up to date"
-    items.append(DiagnosticItem("Latest version", update_status))
+    items.extend(
+        (
+            DiagnosticItem("Latest version", update_status),
+            DiagnosticItem("Last checked", _format_last_checked()),
+        )
+    )
 
     return DiagnosticSection(title="Updates", items=items)
+
+
+def _format_last_checked() -> str:
+    """Return a relative description of the last update check, or `never`.
+
+    `never` covers both the no-check-recorded case and, defensively, a stamp
+    that cannot be formatted. `get_last_update_check_time` only returns finite,
+    in-range epochs, so the formatting path does not raise here.
+    """
+    from datetime import UTC, datetime
+
+    from deepagents_code.sessions import format_relative_timestamp
+    from deepagents_code.update_check import get_last_update_check_time
+
+    checked_at = get_last_update_check_time()
+    if checked_at is None:
+        return "never"
+    iso = datetime.fromtimestamp(checked_at, tz=UTC).isoformat()
+    return format_relative_timestamp(iso) or "never"
 
 
 def _sanitize_endpoint(endpoint: str) -> str:
@@ -267,7 +291,9 @@ def _format_tracing_project(status: TracingStatus) -> str:
 def _collect_tracing() -> DiagnosticSection:
     """Collect LangSmith tracing status from env and profile (offline).
 
-    Credentials are reported as configured/not configured only — the API key
+    Tracing reads `enabled` when a flag is truthy, `disabled` only when a flag
+    is explicitly set to a falsy value, and `not configured` when no flag is set.
+    Credentials are reported as configured/not set only — the API key
     value is never read or printed. The `Credentials` item is flagged as a
     problem only when tracing is enabled without a key and without a custom
     endpoint, mirroring the runtime's orphaned-tracing guard (a keyless
@@ -280,11 +306,17 @@ def _collect_tracing() -> DiagnosticSection:
 
     status = get_tracing_status()
     creds_required = status.enabled and status.endpoint is None
+    if status.enabled:
+        tracing_value = "enabled"
+    elif status.explicitly_disabled:
+        tracing_value = "disabled"
+    else:
+        tracing_value = "not configured"
     items = [
-        DiagnosticItem("Tracing", "enabled" if status.enabled else "disabled"),
+        DiagnosticItem("Tracing", tracing_value),
         DiagnosticItem(
             "Credentials",
-            "configured" if status.has_credentials else "not configured",
+            "configured" if status.has_credentials else "not set",
             ok=status.has_credentials or not creds_required,
         ),
         DiagnosticItem("Project", _format_tracing_project(status)),

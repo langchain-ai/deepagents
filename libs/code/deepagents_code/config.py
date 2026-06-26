@@ -12,7 +12,7 @@ import shlex
 import shutil
 import sys
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution, version
 from pathlib import Path
@@ -41,8 +41,26 @@ logger = logging.getLogger(__name__)
 # callers that never touch `settings` (e.g. `deepagents --help`).
 # ---------------------------------------------------------------------------
 
-_bootstrap_done = False
-"""Whether `_ensure_bootstrap()` has executed."""
+
+@dataclass
+class _BootstrapState:
+    """Mutable state captured by `_ensure_bootstrap()`."""
+
+    done: bool = False
+    """Whether `_ensure_bootstrap()` has executed."""
+
+    start_path: Path | None = None
+    """Working directory captured at bootstrap time for dotenv and discovery."""
+
+    original_langsmith_project: str | None = None
+    """Caller's `LANGSMITH_PROJECT` before the app overrides it for traces."""
+
+    original_tracing_env: dict[str, str | None] = dataclass_field(default_factory=dict)
+    """Caller's tracing-enable env before Deep Agents Code mutates flags."""
+
+
+_bootstrap_state = _BootstrapState()
+"""State captured and mutated by lazy bootstrap."""
 
 _bootstrap_lock = threading.Lock()
 """Guards `_ensure_bootstrap()` against concurrent access from the main thread
@@ -50,16 +68,6 @@ and the prewarm worker thread."""
 
 _singleton_lock = threading.Lock()
 """Guards lazy singleton construction in `_get_console` / `_get_settings`."""
-
-_bootstrap_start_path: Path | None = None
-"""Working directory captured at bootstrap time for dotenv and project discovery."""
-
-_original_langsmith_project: str | None = None
-"""Caller's `LANGSMITH_PROJECT` value before the app overrides it for agent traces.
-
-Captured inside `_ensure_bootstrap()` after dotenv loading but before the
-`LANGSMITH_PROJECT` override, so `.env`-only values are visible.
-"""
 
 _dotenv_loaded_values: dict[str, str] = {}
 """Environment values injected by our dotenv loader and safe to refresh later."""
@@ -79,9 +87,14 @@ re-applied only to the approval-gated shell backend's `execute` subprocesses by
 
 _DOTENV_DENIED_ENV_KEYS = frozenset(
     {
+        "BASH_ENV",
+        "BASHOPTS",
+        "CDPATH",
         "DYLD_INSERT_LIBRARIES",
         "DYLD_LIBRARY_PATH",
+        "ENV",
         "GIT_ASKPASS",
+        "GLOBIGNORE",
         "LD_AUDIT",
         "LD_LIBRARY_PATH",
         "LD_PRELOAD",
@@ -91,15 +104,42 @@ _DOTENV_DENIED_ENV_KEYS = frozenset(
         "PYTHONHOME",
         "PYTHONPATH",
         "PYTHONSTARTUP",
+        "SHELLOPTS",
         "SSH_ASKPASS",
         _INHERITED_PYTHONPATH_ENV,
     }
 )
 """Environment keys that project `.env` files must not inject.
 
+A project `.env` is untrusted (it travels with a cloned repo), so it must not be
+able to set variables that turn loading the `.env` into code execution in the
+subprocesses Deep Agents Code spawns. The set spans four threat categories;
+every entry is here for one of these reasons, so do not remove one without
+checking which category it belongs to:
+
+- Dynamic-linker preload/audit (`DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`,
+    `LD_AUDIT`, `LD_LIBRARY_PATH`, `LD_PRELOAD`): force a loader to map an
+    attacker-supplied shared object into every spawned binary.
+- Interpreter startup/path (`NODE_OPTIONS`, `PATH`, `PYTHONEXECUTABLE`,
+    `PYTHONHOME`, `PYTHONPATH`, `PYTHONSTARTUP`, `_INHERITED_PYTHONPATH_ENV`):
+    hijack which interpreter/binary runs or what it imports at startup.
+- Shell startup hooks (`BASH_ENV`, `ENV`, `BASHOPTS`, `SHELLOPTS`, `CDPATH`,
+    `GLOBIGNORE`): `BASH_ENV`/`ENV` source a file on every non-interactive shell;
+    `SHELLOPTS`/`BASHOPTS` can force `xtrace`/alias expansion; `CDPATH`/
+    `GLOBIGNORE` alter path/glob resolution. The agent runs detection and
+    `execute` commands through non-interactive shells, so these are live vectors.
+- Askpass hijack (`GIT_ASKPASS`, `SSH_ASKPASS`): point credential prompts at an
+    attacker-controlled binary.
+
 `_INHERITED_PYTHONPATH_ENV` is denied so a project `.env` cannot smuggle a
 `PYTHONPATH` into agent `execute` commands through the carrier var; the carrier
-is only meant to relay a value the user set in their launch environment."""
+is only meant to relay a value the user set in their launch environment.
+
+Matching is exact and case-sensitive: the protected consumers (the dynamic
+linker, bash, CPython) read these names only in their canonical case, so a
+lowercase `bash_env` injected into the environment is inert. Any future entry
+that some consumer reads case-insensitively would need a different check.
+"""
 
 
 def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
@@ -161,8 +201,13 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
             )
             return
         for key, value in values.items():
-            if value is not None and key not in env:
-                env[key] = value
+            if value is None or key in env:
+                continue
+            if key in _DOTENV_DENIED_ENV_KEYS:
+                # Log the key only — the value is attacker-controlled.
+                logger.debug("Ignoring denied env key %r from %s", key, dotenv_path)
+                continue
+            env[key] = value
 
     project_dotenv: Path | None = None
     try:
@@ -257,7 +302,11 @@ def _load_dotenv(
         values = dotenv.dotenv_values(dotenv_path=dotenv_path)
         applied = False
         for key, value in values.items():
-            if value is None or key in os.environ or key in _DOTENV_DENIED_ENV_KEYS:
+            if value is None or key in os.environ:
+                continue
+            if key in _DOTENV_DENIED_ENV_KEYS:
+                # Log the key only — the value is attacker-controlled.
+                logger.debug("Ignoring denied env key %r from %s", key, dotenv_path)
                 continue
             os.environ[key] = value
             _dotenv_loaded_values[key] = value
@@ -438,6 +487,31 @@ def _tracing_enabled() -> bool:
     )
 
 
+def _disable_set_tracing_flags() -> list[str]:
+    """Set every configured tracing-enable flag to `false`.
+
+    Returns:
+        Env var names that were disabled.
+    """
+    disabled = [var for var in _TRACING_ENABLE_ENV_VARS if var in os.environ]
+    for var in disabled:
+        os.environ[var] = "false"
+    return disabled
+
+
+def restore_user_tracing_env(env: dict[str, str]) -> None:
+    """Restore caller tracing flags in an environment passed to user code.
+
+    Args:
+        env: Environment mapping prepared for a child/user subprocess.
+    """
+    for var, value in _bootstrap_state.original_tracing_env.items():
+        if value is None:
+            env.pop(var, None)
+        else:
+            env[var] = value
+
+
 def _disable_orphaned_tracing() -> None:
     """Disable LangSmith tracing when enabled without a usable API key.
 
@@ -471,9 +545,7 @@ def _disable_orphaned_tracing() -> None:
     if has_key or _has_langsmith_profile_credentials():
         return
 
-    disabled = [var for var in _TRACING_ENABLE_ENV_VARS if var in os.environ]
-    for var in disabled:
-        os.environ[var] = "false"
+    disabled = _disable_set_tracing_flags()
     _orphaned_tracing_disabled_notice = _build_orphaned_tracing_disabled_notice()
     logger.warning(
         "LangSmith tracing is enabled (%s) but no API key is set; disabling "
@@ -503,6 +575,101 @@ def _apply_default_langsmith_project() -> None:
     os.environ["LANGSMITH_PROJECT"] = LANGSMITH_PROJECT_DEFAULT
 
 
+def apply_stored_langsmith_auth(*, replace_project: bool = False) -> None:
+    """Apply a `/auth`-stored LangSmith key and tracing settings now.
+
+    Args:
+        replace_project: Whether the stored LangSmith project should replace
+            the current process `LANGSMITH_PROJECT`. Startup leaves this false
+            so an explicit environment value remains authoritative; the `/auth`
+            save path sets it true because the saved project is the newest user
+            choice for the already-running session.
+    """
+    from deepagents_code.model_config import apply_stored_service_credentials
+
+    apply_stored_service_credentials()
+    _apply_stored_langsmith_tracing(replace_project=replace_project)
+    _disable_orphaned_tracing()
+    _apply_default_langsmith_project()
+
+
+def _apply_stored_langsmith_tracing(*, replace_project: bool = False) -> None:
+    """Enable tracing (and apply a custom project) for a `/auth`-stored key.
+
+    Storing a LangSmith key via `/auth` is a deliberate opt-in to tracing, but
+    a key alone never starts tracing — the SDK only traces when a tracing-enable
+    flag is truthy. So when a key is stored, turn tracing on by default.
+
+    The opt-out is intentionally non-destructive and session-scoped: an explicit
+    falsy tracing flag (most simply `DEEPAGENTS_CODE_LANGSMITH_TRACING=false`,
+    which bootstrap bridges to `LANGSMITH_TRACING`) is honored and tracing stays
+    off, so the stored key can be paused without deleting it. A custom stored
+    project is applied to `LANGSMITH_PROJECT` when the user has not set one,
+    unless `replace_project` is set for the immediate `/auth` save path.
+
+    No-op when no LangSmith key is stored, so a key supplied only through the
+    environment keeps the prior behavior (tracing stays off unless a flag is
+    set).
+
+    A stored key is trusted by *presence*, not validity: this never pings
+    LangSmith (a network round-trip at startup would fight the package's
+    startup-perf budget). So a stored-but-invalid key (typo'd, revoked, or for
+    the wrong workspace) still force-enables tracing, and its traces are then
+    silently dropped at ingest with only SDK-internal 401s — which
+    `_quiet_sdk_tracing_logging` routes away from the TUI. `_disable_orphaned_tracing`
+    and `consume_orphaned_tracing_disabled_notice` guard only the *absent*-key
+    case, not the invalid-key case. If traces never appear, the key is the first
+    thing to re-check via `/auth`.
+
+    The store is read exactly once: a single corrupt-file `RuntimeError` is
+    logged and treated as "no stored key" rather than being raised (bootstrap
+    must never crash the app) or partially applied.
+    """
+    from deepagents_code import auth_store
+    from deepagents_code._env_vars import classify_env_bool
+    from deepagents_code.model_config import LANGSMITH_SERVICE
+
+    try:
+        creds = auth_store.load_credentials()
+    except RuntimeError:
+        logger.warning(
+            "Could not read the stored LangSmith credential; the credential file "
+            "may be corrupt. Re-add the key via /auth."
+        )
+        return
+    entry = creds.get(LANGSMITH_SERVICE)
+    # No-op unless a LangSmith API key was stored via `/auth`. A key supplied
+    # only through the environment never lands here, keeping its prior behavior
+    # (tracing stays off unless a flag is set).
+    if entry is None or entry["type"] != "api_key" or not entry["key"]:
+        return
+
+    # The key was bridged onto LANGSMITH_API_KEY by
+    # `apply_stored_service_credentials`. Decide whether to enable tracing.
+    flags = [
+        classify_env_bool(os.environ[var])
+        for var in _TRACING_ENABLE_ENV_VARS
+        if var in os.environ
+    ]
+    if any(flag is False for flag in flags):
+        # Explicit, deliberate opt-out — keep the key but make the opt-out
+        # authoritative over sibling SDK tracing flags.
+        _disable_set_tracing_flags()
+        return
+    if not any(flag is True for flag in flags):
+        os.environ["LANGSMITH_TRACING"] = "true"
+
+    project = entry.get("project") or None
+    if replace_project:
+        if project:
+            os.environ["LANGSMITH_PROJECT"] = project
+        else:
+            os.environ.pop("LANGSMITH_PROJECT", None)
+        return
+    if project and not os.environ.get("LANGSMITH_PROJECT"):
+        os.environ["LANGSMITH_PROJECT"] = project
+
+
 def _ensure_bootstrap() -> None:
     """Run one-time bootstrap: dotenv loading and `LANGSMITH_PROJECT` override.
 
@@ -514,13 +681,11 @@ def _ensure_bootstrap() -> None:
     loops. Exceptions are caught and logged at ERROR level; the app proceeds
     with the environment as-is.
     """
-    global _bootstrap_done, _bootstrap_start_path, _original_langsmith_project  # noqa: PLW0603
-
-    if _bootstrap_done:
+    if _bootstrap_state.done:
         return
 
     with _bootstrap_lock:
-        if _bootstrap_done:  # double-check after acquiring lock
+        if _bootstrap_state.done:  # double-check after acquiring lock
             return
 
         try:
@@ -529,8 +694,8 @@ def _ensure_bootstrap() -> None:
             )
 
             ctx = _get_server_project_context()
-            _bootstrap_start_path = ctx.user_cwd if ctx else None
-            _load_dotenv(start_path=_bootstrap_start_path)
+            _bootstrap_state.start_path = ctx.user_cwd if ctx else None
+            _load_dotenv(start_path=_bootstrap_state.start_path)
 
             # `configure_debug_logging` already ran at import, before the `.env`
             # above was loaded. Re-run it so a `DEEPAGENTS_CODE_DEBUG` set only in
@@ -546,7 +711,12 @@ def _ensure_bootstrap() -> None:
 
             # Capture AFTER dotenv loading so .env-only values are visible,
             # but BEFORE the override below replaces it.
-            _original_langsmith_project = os.environ.get("LANGSMITH_PROJECT")
+            _bootstrap_state.original_langsmith_project = os.environ.get(
+                "LANGSMITH_PROJECT"
+            )
+            _bootstrap_state.original_tracing_env = {
+                var: os.environ.get(var) for var in _TRACING_ENABLE_ENV_VARS
+            }
 
             # CRITICAL: Override LANGSMITH_PROJECT to route agent traces to a
             # separate project. LangSmith reads LANGSMITH_PROJECT at invocation
@@ -589,29 +759,18 @@ def _ensure_bootstrap() -> None:
                         canonical,
                     )
 
-            # Tracing enabled without a key floods the TUI with 401 ingest
-            # errors; disable it before any traced run starts.
-            _disable_orphaned_tracing()
-
-            # If tracing is still active but no project is configured, default
-            # to `deepagents-code` so ingestion matches the name we display and
-            # look up. Runs after `_disable_orphaned_tracing` so a keyless setup
-            # (tracing already turned off) is left untouched.
-            _apply_default_langsmith_project()
-
-            # Bridge stored service keys (e.g. Tavily web search, entered via
-            # `/auth`) onto their canonical env vars before settings detection,
-            # so a stored key activates the feature without exporting the var.
-            from deepagents_code.model_config import apply_stored_service_credentials
-
-            apply_stored_service_credentials()
+            # Bridge stored service keys, apply stored LangSmith tracing defaults,
+            # disable orphaned tracing, and route active tracing to the displayed
+            # project. Keeping this in one helper lets `/auth` save apply the same
+            # state immediately inside an already-running TUI session.
+            apply_stored_langsmith_auth()
         except Exception:
             logger.exception(
                 "Bootstrap failed; .env values and LANGSMITH_PROJECT override "
                 "may be missing. The app will proceed with environment as-is.",
             )
         finally:
-            _bootstrap_done = True
+            _bootstrap_state.done = True
 
 
 if TYPE_CHECKING:
@@ -1699,7 +1858,7 @@ class Settings:
     agent. Local-mode only; raises `ValueError` at agent-build time when a
     remote sandbox is active. Subagents never receive the interpreter in v1.
 
-    The `quickjs` optional extra must be installed when this flag is `True`.
+    `langchain-quickjs` is installed as a core dependency.
 
     Defaults are owned by `config_manifest` (the canonical config surface) so
     they are defined in exactly one place.
@@ -1728,7 +1887,7 @@ class Settings:
     Accepted values:
 
     - `False` or `[]`: pure REPL, no `tools.*` bridge.
-    - `"safe"`: expand to `INTERPRETER_PTC_SAFE_PRESET`.
+    - `"safe"`: expand to `INTERPRETER_PTC_SAFE_PRESET` (the default).
     - `"all"`: every tool passed to `create_cli_agent` is exposed. Requires
         `interpreter_ptc_acknowledge_unsafe=True` when `auto_approve` is `False`.
     - `list[str]`: explicit tool names. The list may also include the `"safe"`
@@ -1783,7 +1942,9 @@ class Settings:
         )
 
         deepagents_langchain_project = resolve_env_var(LANGSMITH_PROJECT)
-        user_langchain_project = _original_langsmith_project  # Use saved original!
+        # Use the saved original, not the current `LANGSMITH_PROJECT` that
+        # bootstrap may have overridden for agent traces.
+        user_langchain_project = _bootstrap_state.original_langsmith_project
 
         # Detect project
         from deepagents_code.project_utils import find_project_root
@@ -1987,8 +2148,10 @@ class Settings:
             # re-apply the default so ingestion keeps matching the name
             # `get_langsmith_project_name` displays (the default is a no-op when
             # tracing is off, so a disabled setup is left unset).
-            if _original_langsmith_project:
-                os.environ["LANGSMITH_PROJECT"] = _original_langsmith_project
+            if _bootstrap_state.original_langsmith_project:
+                os.environ["LANGSMITH_PROJECT"] = (
+                    _bootstrap_state.original_langsmith_project
+                )
             else:
                 os.environ.pop("LANGSMITH_PROJECT", None)
                 _apply_default_langsmith_project()
@@ -2568,6 +2731,47 @@ def _tracing_enabled_from(env: dict[str, str]) -> bool:
     )
 
 
+def _tracing_explicitly_disabled_from(env: dict[str, str]) -> bool:
+    """Return whether a tracing flag is explicitly set to a recognized off value.
+
+    True only when tracing is not enabled and at least one tracing-enable flag
+    carries a falsy token (`0`/`false`/`no`/`off`). An empty flag usually reads
+    as "not configured" rather than "disabled", except when an empty prefixed
+    bridged flag shadows a canonical truthy flag and therefore disables tracing.
+
+    Args:
+        env: Environment mapping to read.
+    """
+    from deepagents_code._env_vars import classify_env_bool
+    from deepagents_code.model_config import _ENV_PREFIX
+
+    if _tracing_enabled_from(env):
+        return False
+
+    def _is_off(raw: str | None) -> bool:
+        if raw is None or not raw.strip():
+            return False
+        return classify_env_bool(raw) is False
+
+    def _empty_prefixed_shadow_disables(var: str) -> bool:
+        prefixed = f"{_ENV_PREFIX}{var}"
+        if prefixed not in env or env[prefixed].strip():
+            return False
+        canonical = env.get(var)
+        return canonical is not None and classify_env_bool(canonical) is True
+
+    for var in _TRACING_BRIDGED_ENABLE_ENV_VARS:
+        if _is_off(_resolve_env_var_from(env, var)) or _empty_prefixed_shadow_disables(
+            var
+        ):
+            return True
+    return any(
+        _is_off(env.get(var))
+        for var in _TRACING_ENABLE_ENV_VARS
+        if var not in _TRACING_BRIDGED_ENABLE_ENV_VARS
+    )
+
+
 def _tracing_enabled() -> bool:
     """Return whether tracing is (or will be) enabled, prefix-aware."""
     return _tracing_enabled_from(dict(os.environ))
@@ -2608,7 +2812,7 @@ def _tracing_endpoint_from(env: dict[str, str]) -> str | None:
     return None
 
 
-def _resolve_tracing_project_from(env: dict[str, str]) -> str:
+def _resolve_tracing_project_from(env: dict[str, str]) -> tuple[str, bool]:
     """Resolve the project agent traces would route to, without bootstrap.
 
     The reported project matches the `tracing.langsmith_project` manifest
@@ -2621,7 +2825,8 @@ def _resolve_tracing_project_from(env: dict[str, str]) -> str:
         env: Environment mapping to read.
 
     Returns:
-        The resolved project name, or the default when none is configured.
+        The resolved project name and whether it fell back to the default
+            because no project was explicitly configured.
     """
     from deepagents_code._env_vars import LANGSMITH_PROJECT
     from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
@@ -2629,8 +2834,8 @@ def _resolve_tracing_project_from(env: dict[str, str]) -> str:
     for name in (LANGSMITH_PROJECT, "LANGSMITH_PROJECT"):
         value = env.get(name)
         if value:
-            return value
-    return LANGSMITH_PROJECT_DEFAULT
+            return value, False
+    return LANGSMITH_PROJECT_DEFAULT, True
 
 
 def _tracing_diagnostic_env() -> dict[str, str]:
@@ -2646,7 +2851,7 @@ def _tracing_diagnostic_env() -> dict[str, str]:
     return _preview_dotenv_environ(start_path=ctx.user_cwd if ctx else None)
 
 
-@dataclass
+@dataclass(frozen=True)
 class TracingStatus:
     """Offline snapshot of LangSmith tracing configuration for diagnostics.
 
@@ -2657,6 +2862,9 @@ class TracingStatus:
     enabled: bool
     """Whether a tracing flag is truthy in the environment."""
 
+    explicitly_disabled: bool
+    """Whether a tracing flag is explicitly set to a falsy value (vs. unset)."""
+
     has_credentials: bool
     """Whether an API key or profile credential is resolvable."""
 
@@ -2666,8 +2874,26 @@ class TracingStatus:
     project: str | None
     """Resolved configured project name, independent of active trace ingestion."""
 
+    project_is_default: bool
+    """Whether `project` is the built-in default rather than an explicit setting."""
+
     replica_project: str | None
     """Extra project agent runs are mirrored to, if configured."""
+
+    def __post_init__(self) -> None:
+        """Reject the contradictory enabled/explicitly-disabled pair.
+
+        `enabled` and `explicitly_disabled` model a tri-state (enabled /
+        explicitly disabled / not configured), so both being true is
+        meaningless. Fail loud at construction rather than letting the illegal
+        state flow through to the `dcode doctor` renderer.
+
+        Raises:
+            ValueError: If both `enabled` and `explicitly_disabled` are true.
+        """
+        if self.enabled and self.explicitly_disabled:
+            msg = "tracing cannot be both enabled and explicitly disabled"
+            raise ValueError(msg)
 
 
 def get_tracing_status() -> TracingStatus:
@@ -2685,11 +2911,14 @@ def get_tracing_status() -> TracingStatus:
     enabled = _tracing_enabled_from(env)
     has_credentials = _tracing_has_credentials_from(env)
     endpoint = _tracing_endpoint_from(env)
+    project, project_is_default = _resolve_tracing_project_from(env)
     return TracingStatus(
         enabled=enabled,
+        explicitly_disabled=_tracing_explicitly_disabled_from(env),
         has_credentials=has_credentials,
         endpoint=endpoint,
-        project=_resolve_tracing_project_from(env),
+        project=project,
+        project_is_default=project_is_default,
         replica_project=_get_first_langsmith_replica_project(
             _get_langsmith_replica_projects_from(env)
         ),
@@ -3304,11 +3533,18 @@ def _create_model_via_init(
                 )
             else:
                 from deepagents_code.extras_info import ExtrasIntrospectionError
-                from deepagents_code.update_check import install_package_command
+                from deepagents_code.update_check import (
+                    ToolRequirementIntrospectionError,
+                    install_package_command,
+                )
 
                 try:
                     install_cmd = install_package_command(package)
-                except (ValueError, ExtrasIntrospectionError) as exc:
+                except (
+                    ValueError,
+                    ExtrasIntrospectionError,
+                    ToolRequirementIntrospectionError,
+                ) as exc:
                     logger.debug(
                         "install_package_command failed; falling back to "
                         "manual hint: %s",
@@ -3788,11 +4024,11 @@ def _get_settings() -> Settings:
             return cached
         _ensure_bootstrap()
         try:
-            inst = Settings.from_environment(start_path=_bootstrap_start_path)
+            inst = Settings.from_environment(start_path=_bootstrap_state.start_path)
         except Exception:
             logger.exception(
                 "Failed to initialize settings from environment (start_path=%s)",
-                _bootstrap_start_path,
+                _bootstrap_state.start_path,
             )
             raise
         globals()["settings"] = inst

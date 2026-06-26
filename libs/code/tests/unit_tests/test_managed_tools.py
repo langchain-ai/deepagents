@@ -7,6 +7,7 @@ import io
 import os
 import subprocess
 import tarfile
+import warnings
 import zipfile
 from pathlib import Path
 from unittest import mock
@@ -14,7 +15,7 @@ from unittest import mock
 import pytest
 
 from deepagents_code import managed_tools
-from deepagents_code._env_vars import OFFLINE
+from deepagents_code._env_vars import OFFLINE, RIPGREP_INSTALLER
 from deepagents_code.managed_tools import ChecksumMismatchError
 
 _EXPECTED_PLATFORM_ARCHS = {
@@ -117,6 +118,155 @@ async def test_ensure_ripgrep_short_circuits_when_offline(
     monkeypatch.setattr(managed_tools, "managed_rg_path", lambda: tmp_path / "absent")
     with mock.patch("shutil.which", return_value=None):
         assert await managed_tools.ensure_ripgrep() is None
+
+
+def test_ripgrep_installer_defaults_to_managed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(RIPGREP_INSTALLER, raising=False)
+    assert managed_tools.ripgrep_installer() == managed_tools.INSTALLER_MANAGED
+    assert managed_tools.prefers_system_ripgrep() is False
+
+
+def test_ripgrep_installer_system(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(RIPGREP_INSTALLER, "System")
+    assert managed_tools.ripgrep_installer() == managed_tools.INSTALLER_SYSTEM
+    assert managed_tools.prefers_system_ripgrep() is True
+
+
+def test_ripgrep_installer_unrecognized_falls_back_to_managed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(RIPGREP_INSTALLER, "bogus")
+    assert managed_tools.ripgrep_installer() == managed_tools.INSTALLER_MANAGED
+
+
+async def test_ensure_ripgrep_short_circuits_when_system_installer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`RIPGREP_INSTALLER=system` skips the managed download (no system rg)."""
+    monkeypatch.delenv(OFFLINE, raising=False)
+    monkeypatch.setenv(RIPGREP_INSTALLER, "system")
+    monkeypatch.setattr(managed_tools, "managed_rg_path", lambda: tmp_path / "absent")
+
+    def _no_download(_url: str, _dest: Path) -> None:
+        msg = "_download_to must not be called in system installer mode"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(managed_tools, "_download_to", _no_download)
+    with mock.patch("shutil.which", return_value=None):
+        assert await managed_tools.ensure_ripgrep() is None
+
+
+async def test_ensure_ripgrep_system_installer_ignores_current_managed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    bin_dir = tmp_path / "managed-bin"
+    bin_dir.mkdir()
+    managed = bin_dir / "rg"
+    managed.write_bytes(b"current-managed")
+    monkeypatch.setattr(managed_tools, "BIN_DIR", bin_dir)
+    monkeypatch.setattr(managed_tools, "managed_rg_path", lambda: managed)
+    monkeypatch.delenv(OFFLINE, raising=False)
+    monkeypatch.setenv(RIPGREP_INSTALLER, "system")
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    with (
+        mock.patch("shutil.which", return_value=None),
+        mock.patch.object(
+            subprocess,
+            "run",
+            side_effect=AssertionError("managed rg must not be version-probed"),
+        ),
+    ):
+        assert await managed_tools.ensure_ripgrep() is None
+
+
+async def test_ensure_ripgrep_system_installer_uses_non_managed_path_entry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    bin_dir = tmp_path / "managed-bin"
+    system_bin = tmp_path / "system-bin"
+    bin_dir.mkdir()
+    system_bin.mkdir()
+    managed = bin_dir / "rg"
+    system_rg = system_bin / "rg"
+    managed.write_bytes(b"current-managed")
+    monkeypatch.setattr(managed_tools, "BIN_DIR", bin_dir)
+    monkeypatch.setattr(managed_tools, "managed_rg_path", lambda: managed)
+    monkeypatch.delenv(OFFLINE, raising=False)
+    monkeypatch.setenv(RIPGREP_INSTALLER, "system")
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{system_bin}")
+
+    def _which(cmd: str, path: str | None = None) -> str | None:
+        assert cmd == "rg"
+        assert path == str(system_bin)
+        return str(system_rg)
+
+    with mock.patch("shutil.which", side_effect=_which):
+        assert await managed_tools.ensure_ripgrep() == system_rg
+
+
+def test_path_without_managed_bin_returns_none_when_path_unset(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An unset/empty `PATH` yields `None` so `shutil.which` uses its default."""
+    monkeypatch.setattr(managed_tools, "BIN_DIR", tmp_path / "managed-bin")
+    monkeypatch.delenv("PATH", raising=False)
+    assert managed_tools._path_without_managed_bin() is None
+
+
+def test_path_without_managed_bin_leaves_other_entries(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A `PATH` without the managed dir is returned unchanged."""
+    bin_dir = tmp_path / "managed-bin"
+    other = tmp_path / "usr-bin"
+    monkeypatch.setattr(managed_tools, "BIN_DIR", bin_dir)
+    monkeypatch.setenv("PATH", str(other))
+    assert managed_tools._path_without_managed_bin() == str(other)
+
+
+def test_path_without_managed_bin_removes_managed_entry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The managed dir is dropped while sibling entries survive."""
+    bin_dir = tmp_path / "managed-bin"
+    other = tmp_path / "usr-bin"
+    monkeypatch.setattr(managed_tools, "BIN_DIR", bin_dir)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{other}")
+    assert managed_tools._path_without_managed_bin() == str(other)
+
+
+def test_path_without_managed_bin_removes_non_canonical_alias(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An entry that differs textually but `resolve()`s equal is still removed.
+
+    Guards the `Path(part).resolve()` comparison against a regression to a
+    plain string compare, which would miss `.../managed-bin/.` and friends.
+    """
+    bin_dir = tmp_path / "managed-bin"
+    other = tmp_path / "usr-bin"
+    alias = f"{bin_dir}{os.sep}."
+    monkeypatch.setattr(managed_tools, "BIN_DIR", bin_dir)
+    monkeypatch.setenv("PATH", f"{alias}{os.pathsep}{other}")
+    assert managed_tools._path_without_managed_bin() == str(other)
+
+
+def test_path_without_managed_bin_preserves_empty_entries(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Empty `PATH` components are kept verbatim, not resolved to cwd.
+
+    Resolving an empty entry would collapse it to the current directory, which
+    could spuriously match `BIN_DIR`; the `not part` short-circuit avoids that.
+    """
+    bin_dir = tmp_path / "managed-bin"
+    other = tmp_path / "usr-bin"
+    monkeypatch.setattr(managed_tools, "BIN_DIR", bin_dir)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.pathsep}{other}")
+    assert managed_tools._path_without_managed_bin() == f"{os.pathsep}{other}"
 
 
 async def test_ensure_ripgrep_short_circuits_on_android(
@@ -230,7 +380,13 @@ def _patch_legacy_tar_extractall(monkeypatch: pytest.MonkeyPatch) -> None:
         if "filter" in kwargs:
             msg = "TarFile.extractall() got an unexpected keyword argument 'filter'"
             raise TypeError(msg)
-        original(self, path, members=members, numeric_owner=numeric_owner)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="Python 3.14 will, by default, filter extracted tar archives",
+                category=DeprecationWarning,
+            )
+            original(self, path, members=members, numeric_owner=numeric_owner)
 
     monkeypatch.setattr(tarfile.TarFile, "extractall", _legacy_extractall)
 

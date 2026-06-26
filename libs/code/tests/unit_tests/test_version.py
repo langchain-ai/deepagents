@@ -41,6 +41,21 @@ def _block_sdk_pypi_fetch(tmp_path: Path) -> Iterator[None]:
             "deepagents_code.update_check.is_update_available",
             return_value=(False, None),
         ),
+        patch(
+            "deepagents_code.update_check.release_requires_prereleases",
+            return_value=False,
+        ),
+        # Pin the post-upgrade shadow check to a clean "no shadow" for the
+        # whole module. Several `/update` tests pin `detect_install_method`
+        # to `"uv"` to exercise pre-release handling, which would otherwise
+        # make the real `detect_shadowed_dcode` run against the test
+        # runner's filesystem and replace the expected success message
+        # with the shadow warning. The dedicated shadow-present tests in
+        # this file override this patch with their own.
+        patch(
+            "deepagents_code.update_check.detect_shadowed_dcode",
+            return_value=None,
+        ),
     ):
         yield
 
@@ -493,9 +508,51 @@ async def test_update_slash_command_omitted_prerelease_preserves_channel() -> No
             bypass_cache=True,
             include_prereleases=None,
         )
-        perform_upgrade_mock.assert_awaited_once_with(include_prereleases=None)
+        perform_upgrade_mock.assert_awaited_once_with(
+            include_prereleases=None,
+            target_version="99.0.0",
+        )
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         assert "Updated to v99.0.0" in str(app_msgs[-1]._content)
+
+
+async def test_update_slash_command_stable_prerelease_deps_keep_intent_none() -> None:
+    """Stable releases with pre-release deps let `perform_upgrade` pin the app."""
+    from deepagents_code.app import DeepAgentsApp
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(True, "99.0.0"),
+            ),
+            patch(
+                "deepagents_code.update_check.release_requires_prereleases",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as perform_upgrade_mock,
+        ):
+            await app._handle_command("/update")
+            await pilot.pause()
+
+    perform_upgrade_mock.assert_awaited_once_with(
+        include_prereleases=None,
+        target_version="99.0.0",
+    )
 
 
 async def test_update_slash_command_prerelease_updates_channel() -> None:
@@ -535,11 +592,75 @@ async def test_update_slash_command_prerelease_updates_channel() -> None:
             bypass_cache=True,
             include_prereleases=True,
         )
-        perform_upgrade_mock.assert_awaited_once_with(include_prereleases=True)
+        perform_upgrade_mock.assert_awaited_once_with(
+            include_prereleases=True,
+            target_version="99.0.0rc1",
+        )
         user_msgs = list(app.query(UserMessage))
         assert str(user_msgs[-1]._content) == "/update --prerelease"
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         assert "Updated to v99.0.0rc1" in str(app_msgs[-1]._content)
+
+
+async def test_update_slash_command_replaces_success_with_shadow_warning() -> None:
+    """A shadowed `dcode` after a successful upgrade swaps success line for warning.
+
+    Regression guard for the inverted-conditional bug class: showing the
+    user a green "relaunch to use the new version" line and then *also*
+    warning that relaunching will keep the old version is the exact UX
+    this branch exists to prevent. The shadow path must mount an
+    `ErrorMessage` with the warning and skip the success `AppMessage`
+    entirely; a regression that flipped the `if/else` (or kept the
+    success line unconditionally) would ship a reassuring success line
+    over a broken upgrade.
+    """
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.update_check import ShadowedDcode
+    from deepagents_code.widgets.messages import AppMessage, ErrorMessage
+
+    shadow = ShadowedDcode(
+        shadowing_bin=Path("/opt/stale/bin/dcode"),
+        upgraded_bin_dir=Path("/home/user/.local/bin"),
+    )
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(True, "99.0.0"),
+            ),
+            patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ),
+            # Override the module-level autouse `None` patch with the
+            # positive case. Innermost patch wins.
+            patch(
+                "deepagents_code.update_check.detect_shadowed_dcode",
+                return_value=shadow,
+            ),
+        ):
+            await app._handle_command("/update")
+            await pilot.pause()
+
+        plain_msgs = [
+            str(m._content) for m in app.query(AppMessage) if not m._is_markdown
+        ]
+        # The shadow path must NOT mount the success line, because relaunching
+        # would not actually use the new version. A regression that kept the
+        # success line would show both messages, contradicting itself.
+        assert not any("Updated to v99.0.0" in m for m in plain_msgs)
+        # The warning is mounted as an `ErrorMessage` (red), not a generic
+        # `AppMessage`, so it visually stands apart from neutral status text.
+        error_msgs = [str(m._content) for m in app.query(ErrorMessage)]
+        assert any("/opt/stale/bin/dcode" in m for m in error_msgs)
+        assert any("/home/user/.local/bin" in m for m in error_msgs)
 
 
 async def test_update_slash_command_prerelease_unsupported_install_refuses() -> None:
@@ -759,7 +880,10 @@ async def test_update_deps_skips_refresh_prompt_when_refresh_unsupported() -> No
 
         confirm_mock.assert_not_awaited()
         refresh_mock.assert_not_awaited()
-        perform_upgrade_mock.assert_awaited_once_with(include_prereleases=None)
+        perform_upgrade_mock.assert_awaited_once_with(
+            include_prereleases=None,
+            target_version="1.1.0",
+        )
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         content = str(app_msgs[-1]._content)
         assert "Updated to v1.1.0" in content
@@ -1070,7 +1194,7 @@ async def test_update_already_current_reports_dependency_check_failure() -> None
 
 
 async def test_update_already_current_skips_prompt_when_refresh_unsupported() -> None:
-    """brew/other installs aren't prompted for a refresh that can't run."""
+    """brew/other installs aren't prompted for a refresh or prerelease support."""
     from deepagents_code.app import DeepAgentsApp
     from deepagents_code.widgets.messages import AppMessage
 
@@ -1086,6 +1210,14 @@ async def test_update_already_current_skips_prompt_when_refresh_unsupported() ->
                 "deepagents_code.update_check.is_update_available",
                 return_value=(False, "1.0.0"),
             ),
+            patch(
+                "deepagents_code.update_check.release_requires_prereleases",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.prerelease_upgrade_supported",
+                return_value=(False, "Pre-release updates aren't supported"),
+            ) as prerelease_supported_mock,
             patch(
                 "deepagents_code.update_check.dependency_refresh_supported",
                 return_value=(False, "Homebrew install detected — ..."),
@@ -1105,6 +1237,7 @@ async def test_update_already_current_skips_prompt_when_refresh_unsupported() ->
 
         confirm_mock.assert_not_awaited()
         refresh_mock.assert_not_awaited()
+        prerelease_supported_mock.assert_not_called()
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         assert "Already on the latest version" in str(app_msgs[-1]._content)
 

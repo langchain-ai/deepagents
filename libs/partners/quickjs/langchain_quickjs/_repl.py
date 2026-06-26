@@ -531,6 +531,41 @@ class _ThreadREPL:
         self._active_tool_names = target_names
         self._tools_installed = True
 
+    @staticmethod
+    def _validate_task_payload(
+        payload: dict[str, Any],
+    ) -> tuple[str, str, str | None, dict[str, Any] | None]:
+        """Validate JS `task()` input and return its typed fields.
+
+        JS callers pass camelCase keys (`subagentType`, `responseSchema`) as
+        documented in the system prompt; the returned tuple is snake_case for
+        the Python dispatch path.
+        """
+        description = payload.get("description")
+        if not isinstance(description, str) or not description:
+            msg = "task() requires non-empty string field `description`"
+            raise ValueError(msg)
+
+        subagent_type = payload.get("subagentType")
+        if not isinstance(subagent_type, str) or not subagent_type:
+            msg = "task() requires non-empty string field `subagentType`"
+            raise ValueError(msg)
+
+        raw_label = payload.get("label")
+        if raw_label is not None and not isinstance(raw_label, str):
+            msg = "task() field `label` must be a string when provided"
+            raise ValueError(msg)
+        label = raw_label.strip() if isinstance(raw_label, str) else None
+        if label == "":
+            label = None
+
+        response_schema = payload.get("responseSchema")
+        if response_schema is not None and not isinstance(response_schema, dict):
+            msg = "task() field `responseSchema` must be an object when provided"
+            raise ValueError(msg)
+
+        return description, subagent_type, label, response_schema
+
     async def _ainvoke_task_on_outer_loop(
         self,
         payload: dict[str, Any],
@@ -543,22 +578,8 @@ class _ThreadREPL:
         should execute on the parent LangGraph loop when one exists so callbacks,
         context, and async loop affinity match normal tool execution.
         """
-        description = payload.get("description")
-        if not isinstance(description, str) or not description:
-            msg = "task() requires non-empty string field `description`"
-            raise ValueError(msg)
-
-        # JS callers use camelCase keys (`subagentType`, `responseSchema`) as
-        # documented in the system prompt.
-        subagent_type = payload.get("subagentType")
-        if not isinstance(subagent_type, str) or not subagent_type:
-            msg = "task() requires non-empty string field `subagentType`"
-            raise ValueError(msg)
-
-        response_schema = payload.get("responseSchema")
-        if response_schema is not None and not isinstance(response_schema, dict):
-            msg = "task() field `responseSchema` must be an object when provided"
-            raise ValueError(msg)
+        validated = self._validate_task_payload(payload)
+        description, subagent_type, label, response_schema = validated
 
         async def _call() -> Any:
             runtime = state.outer_runtime
@@ -575,6 +596,7 @@ class _ThreadREPL:
                 subagent_type=subagent_type,
                 response_schema=response_schema,
                 runtime=runtime,
+                label=label,
             )
 
         outer_loop = state.outer_loop

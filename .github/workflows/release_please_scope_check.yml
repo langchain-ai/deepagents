@@ -29,11 +29,29 @@
 #     from release-please-config.json by the helper script — see
 #     .github/scripts/check_lockfile_release_scope.py for the rationale.
 #
+# Trust model:
+#   - The detector and release-please-config.json run from the PR *base*
+#     revision, not the PR head, so a PR cannot edit *those* to self-bypass the
+#     gate. Only the PR title (event payload) and changed-file list (API) come
+#     from the PR.
+#   - This base checkout closes the detector/config edit vector but does not by
+#     itself make the gate un-bypassable: under `pull_request` the workflow file
+#     itself is taken from the PR head, so a PR that edits this workflow can
+#     still neuter the check. Gate integrity therefore also relies on branch
+#     protection (this job as a required status check) and review of
+#     `.github/workflows/` edits.
+#
 # Limitations:
 #   - Runs under `pull_request` (not `pull_request_target`), so PRs from forks
 #     get the read-only token and the comment is surfaced to the job summary
 #     instead (same fallback as release_please_parse_check.yml). No secrets are
 #     exposed to PR-author-controlled code.
+#   - The detector and config run from base, so a PR that itself *adds* a new
+#     release-please package is checked against the base config that does not
+#     yet know that package: a lockfile-only fan-out into the just-added package
+#     path is not flagged until the package exists on base. Reading head config
+#     instead would reopen the self-bypass the base checkout closes, so this is
+#     the deliberate tradeoff; the next PR touching the package is gated normally.
 
 name: "🔍 Release-please scope check"
 
@@ -53,11 +71,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
-      - name: "📋 Checkout Code"
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - name: "📋 Checkout base revision"
+        # Check out the PR *base* (trusted), never the PR head. The detector and
+        # release-please-config.json are executed from this tree, so the PR under
+        # test cannot edit check_lockfile_release_scope.py or the config to print
+        # "[]" and self-bypass the gate. The PR title (event payload) and
+        # changed-file list (API) are fed in separately and are authoritative
+        # regardless of this checkout.
+        #
+        # `persist-credentials: false` so the job token is not written into the
+        # checkout's git config; the detector needs no git credentials, and the
+        # github-script steps receive their own token directly.
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
 
       - name: "🐍 Setup Python 3.11"
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.11"
 
@@ -80,7 +111,13 @@ jobs:
             // or hide a lockfile past the cap (false pass). Fail closed if the
             // collected count doesn't match the PR's reported total.
             const expected = context.payload.pull_request.changed_files;
-            if (typeof expected === 'number' && files.length !== expected) {
+            // Without a numeric reported total we cannot verify completeness, so
+            // fail closed rather than proceeding on a possibly-truncated list.
+            if (typeof expected !== 'number') {
+              core.setFailed(`PR payload missing numeric changed_files (got ${JSON.stringify(expected)}); cannot verify the changed-file list is complete. Failing closed.`);
+              return;
+            }
+            if (files.length !== expected) {
               core.setFailed(`Changed-file list is incomplete (${files.length} of ${expected}); cannot determine release scope reliably. Failing closed.`);
               return;
             }
@@ -95,10 +132,29 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
-          # A config-read error in the detector exits non-zero; under `set -e`
-          # the command substitution propagates it and this step fails, so the
-          # comment step (default `if: success()`) is skipped — fail closed.
-          offenders=$(python .github/scripts/check_lockfile_release_scope.py "$PR_TITLE" < changed_files.txt)
+          detector=".github/scripts/check_lockfile_release_scope.py"
+          if [[ ! -f "$detector" ]]; then
+            # The detector does not exist on the base revision: the bootstrapping
+            # PR that first introduces this check, or a branch cut from before it
+            # existed. There is no trusted gate on base to enforce, so treat as
+            # clean. This is not a self-bypass vector: presence is read from
+            # trusted base, and an author cannot strip the detector from a base
+            # that has it (head edits never change base). An author *can* target
+            # an old base that never had it, but gains nothing — that base never
+            # gated anything, so there is nothing to evade.
+            #
+            # The residual risk is operator error, not attack: if the detector is
+            # renamed/moved on base without updating the path above, this branch
+            # silently disables the gate. Emit a *warning* (not a notice) so the
+            # desync surfaces in the Checks UI rather than only the fold-out log.
+            echo "::warning::Detector '$detector' absent on base revision; scope check is NOT enforcing. Expected only on the bootstrapping PR or a pre-gate branch — otherwise the detector path here may be out of sync with the repo."
+            offenders="[]"
+          else
+            # A config-read error in the detector exits non-zero; under `set -e`
+            # the command substitution propagates it and this step fails, so the
+            # comment step (default `if: success()`) is skipped — fail closed.
+            offenders=$(python "$detector" "$PR_TITLE" < changed_files.txt)
+          fi
           # Heredoc form so a multi-line value can never corrupt $GITHUB_OUTPUT.
           {
             echo "offenders<<__SCOPE_EOF__"
@@ -171,7 +227,7 @@ jobs:
               } catch (commentErr) {
                 // Fork PRs run with a restricted token; surface to the job
                 // summary so the fan-out is still visible alongside the red check.
-                core.warning(`Could not post sticky comment (fork PR token, rate limit, or transient API error): ${commentErr.message}`);
+                core.warning(`Could not post sticky comment (fork PR token, rate limit, or transient API error) [status=${commentErr.status ?? 'n/a'}]: ${commentErr.message}`);
                 // Guard the summary write too: if it throws (unwritable summary,
                 // size limit) it must not escape upsertSticky and preempt the
                 // caller's core.setFailed — the red check is the load-bearing signal.
@@ -181,7 +237,7 @@ jobs:
                     .addRaw(`Affected components: ${offenders.join(', ')}`)
                     .write();
                 } catch (summaryErr) {
-                  core.warning(`Could not write job summary fallback: ${summaryErr.message}`);
+                  core.warning(`Could not write job summary fallback [status=${summaryErr.status ?? 'n/a'}]: ${summaryErr.message}`);
                 }
               }
             }
@@ -192,7 +248,7 @@ jobs:
               try {
                 await deleteSticky();
               } catch (cleanupErr) {
-                core.warning(`Could not clean up prior scope-check comment: ${cleanupErr.message}`);
+                core.warning(`Could not clean up prior scope-check comment (stale comment may persist on a now-passing PR) [status=${cleanupErr.status ?? 'n/a'}]: ${cleanupErr.message}`);
               }
               core.info('No lockfile-only release fan-out detected.');
               return;

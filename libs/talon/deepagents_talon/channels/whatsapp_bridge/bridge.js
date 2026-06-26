@@ -12,8 +12,7 @@ const sessionDir = path.resolve(process.env.WHATSAPP_SESSION_DIR || path.join(pr
 const mediaDir = path.resolve(process.env.WHATSAPP_MEDIA_DIR || path.join(sessionDir, "..", "media"));
 const botHeader = process.env.WHATSAPP_BOT_HEADER || "deepagents bot";
 const bridgeToken = process.env.WHATSAPP_BRIDGE_TOKEN || "";
-const rawMaxMediaBytes = Number(process.env.WHATSAPP_MAX_MEDIA_BYTES || String(64 * 1024 * 1024));
-const maxMediaBytes = Number.isFinite(rawMaxMediaBytes) && rawMaxMediaBytes > 0 ? rawMaxMediaBytes : 64 * 1024 * 1024;
+const maxMediaBytes = Number(process.env.WHATSAPP_MAX_MEDIA_BYTES) || (64 * 1024 * 1024);
 const webVersionCacheUrl =
   process.env.WHATSAPP_WEB_VERSION_CACHE_URL ||
   "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1026029003.html";
@@ -276,11 +275,18 @@ async function downloadMessageMedia(message) {
     return [];
   }
   try {
+    const messageId = serializedId(message.id) || String(Date.now());
+    const expectedSize = messageMediaSize(message);
+    if (expectedSize !== null && expectedSize > maxMediaBytes) {
+      console.log(
+        `[bridge] Skipping oversized media ${messageId}: ${expectedSize} bytes exceeds ${maxMediaBytes}`,
+      );
+      return [];
+    }
     const media = await message.downloadMedia();
     if (!media || !media.data) {
       return [];
     }
-    const messageId = serializedId(message.id) || String(Date.now());
     const extension = mediaExtension(media.mimetype, message.type);
     const fileName = `${Date.now()}_${messageId.replace(/[^A-Za-z0-9]/g, "_")}.${extension}`;
     const filePath = path.join(mediaDir, fileName);
@@ -329,6 +335,18 @@ function messageMimeType(message, media) {
   }
   const data = message && message._data ? message._data : {};
   return String(message.mimetype || data.mimetype || data.mimetypeOverride || "").toLowerCase();
+}
+
+function messageMediaSize(message) {
+  const data = message && message._data ? message._data : {};
+  const candidates = [data.size, data.fileSize];
+  for (const candidate of candidates) {
+    const parsed = Number(candidate);
+    if (Number.isFinite(parsed) && parsed >= 0) {
+      return parsed;
+    }
+  }
+  return null;
 }
 
 function mediaExtension(mimeType, messageType) {

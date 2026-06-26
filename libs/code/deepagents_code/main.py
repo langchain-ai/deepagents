@@ -195,13 +195,16 @@ def _run_startup_auto_update(console: "Console") -> None:
     from deepagents_code.config import _is_editable_install
     from deepagents_code.update_check import (
         create_update_log_path,
+        detect_shadowed_dcode_safe,
         format_release_age_parenthetical,
+        format_shadowed_dcode_warning,
         get_cached_update_available,
         is_auto_update_enabled,
         is_installed_version_at_least,
         is_update_check_enabled,
         mark_auto_update_default_acknowledged,
         perform_upgrade,
+        release_requires_prereleases,
         should_announce_auto_update_default,
         upgrade_command,
     )
@@ -241,7 +244,11 @@ def _run_startup_auto_update(console: "Console") -> None:
             # reports as available: the install did not change the running
             # version. Bail out instead of upgrading and restarting forever
             # (this runs before the TUI, so there is no in-app way to stop it).
-            cmd = upgrade_command()
+            update_needs_prereleases = release_requires_prereleases(latest)
+            cmd = upgrade_command(
+                include_prereleases=True if update_needs_prereleases else None,
+                version=latest if update_needs_prereleases else None,
+            )
             console.print(
                 f"[bold yellow]Warning:[/bold yellow] v{latest} still reports as "
                 "available after an automatic update; skipping auto-update to "
@@ -293,8 +300,35 @@ def _run_startup_auto_update(console: "Console") -> None:
             highlight=False,
             markup=False,
         )
-        success, output = asyncio.run(perform_upgrade(log_path=log_path))
+        success, output = asyncio.run(
+            perform_upgrade(log_path=log_path, target_version=latest)
+        )
         if success:
+            # If a stale `dcode` is earlier on PATH, the auto-restart would
+            # re-exec into the old binary and the user would silently keep
+            # running the pre-upgrade version. Detect that *before* the
+            # re-exec so the warning isn't immediately wiped by the new
+            # process's startup, and skip the restart — re-exec'ing into
+            # an unchanged version would also trip the `restarted_for`
+            # no-op loop guard on the next launch. Use the never-raises
+            # wrapper so a detector defect can't crash startup after an
+            # otherwise-successful upgrade.
+            shadow = detect_shadowed_dcode_safe()
+            if shadow is not None:
+                # The warning embeds filesystem paths from `shutil.which`,
+                # which can legally contain `[` (macOS/Linux). With
+                # `markup=True` those would be parsed as Rich style tags,
+                # so escape the warning before interpolation; the sibling
+                # auto-update failure branch at the bottom of this function
+                # escapes its uv output the same way.
+                warning = format_shadowed_dcode_warning(shadow)
+                console.print(
+                    f"[bold yellow]Warning:[/bold yellow] {escape(warning)}\n"
+                    f"Continuing with v{cli_version}.",
+                    highlight=False,
+                    markup=True,
+                )
+                return
             console.print(
                 f"[green]Updated to v{latest}. Launching...[/green]",
                 highlight=False,
@@ -318,7 +352,11 @@ def _run_startup_auto_update(console: "Console") -> None:
                     highlight=False,
                 )
             return
-        cmd = upgrade_command()
+        update_needs_prereleases = release_requires_prereleases(latest)
+        cmd = upgrade_command(
+            include_prereleases=True if update_needs_prereleases else None,
+            version=latest if update_needs_prereleases else None,
+        )
         detail = f": {escape(output[:200])}" if output else ""
         console.print(
             f"[bold red]Auto-update failed{detail}[/bold red]\n"
@@ -464,15 +502,57 @@ def _parse_interpreter_tools_flag(
     return names
 
 
-def _warn_if_interpreter_tools_without_interpreter(args: argparse.Namespace) -> None:
-    """Warn that `--interpreter-tools` is a no-op without `--interpreter`.
+def _resolve_interpreter_enabled(args: argparse.Namespace) -> bool:
+    """Return whether the JS interpreter should run for these CLI args.
 
-    The PTC allowlist applies only when the interpreter middleware is enabled,
-    and on the CLI that gate is the `--interpreter` flag alone (`args.interpreter`).
-    `[interpreter]` config is not consulted: `config.toml`'s `enable_interpreter`
-    does not currently enable the middleware on this path, so a missing
-    `--interpreter` always means the flag has no effect. If that ever changes,
-    this check must consider config to avoid a false-positive warning.
+    Delegates to `_resolve_enable_interpreter` so the CLI pre-flight gate and the
+    stored `ServerConfig` share one resolution rule and cannot drift. The default
+    comes from `[interpreter].enable_interpreter` in local mode and is disabled
+    for remote sandboxes, where `CodeInterpreterMiddleware` is unsupported;
+    explicit `--interpreter`/`--no-interpreter` overrides the default.
+
+    `args.sandbox` is already normalized by `parse_args` (the bare-flag sentinel
+    is resolved to a provider name), so the resolver sees the concrete value.
+    """
+    from deepagents_code._server_config import _resolve_enable_interpreter
+
+    return _resolve_enable_interpreter(args.interpreter, args.sandbox)
+
+
+def _warn_if_interpreter_disabled_by_sandbox(args: argparse.Namespace) -> None:
+    """Warn that a remote sandbox suppressed the otherwise-default interpreter.
+
+    With `js_eval` on by default in local mode, a `--sandbox` run silently drops
+    it (the middleware is unsupported under a remote sandbox). This prints to
+    stderr on the non-interactive (`-n`) path; the interactive TUI surfaces the
+    same advisory as a startup notification (see
+    `DeepAgentsApp._notify_interpreter_disabled_by_sandbox`).
+
+    Keyed on the raw `args.interpreter` tri-state so an explicit
+    `--no-interpreter` opt-out stays silent (the predicate only fires for the
+    unset default).
+    """
+    from deepagents_code._server_config import _interpreter_suppressed_by_sandbox
+    from deepagents_code.config import settings
+
+    if not _interpreter_suppressed_by_sandbox(
+        enable_interpreter=args.interpreter,
+        sandbox_type=args.sandbox,
+        local_default=settings.enable_interpreter,
+    ):
+        return
+    from rich.console import Console as _Console
+
+    _Console(stderr=True).print(
+        "[yellow]Warning:[/yellow] JS interpreter (`js_eval`) is unavailable "
+        "under a remote sandbox; it runs in local mode only."
+    )
+
+
+def _warn_if_interpreter_tools_without_interpreter(
+    args: argparse.Namespace, *, enable_interpreter: bool
+) -> None:
+    """Warn that `--interpreter-tools` is a no-op without the interpreter.
 
     This drives the non-interactive (`-n`) path and prints to stderr. The
     interactive TUI surfaces the same advisory as a startup notification (see
@@ -483,13 +563,13 @@ def _warn_if_interpreter_tools_without_interpreter(args: argparse.Namespace) -> 
     """
     if args.interpreter_tools is None:
         return
-    if args.interpreter:
+    if enable_interpreter:
         return
     from rich.console import Console as _Console
 
     _Console(stderr=True).print(
         "[yellow]Warning:[/yellow] --interpreter-tools has no effect "
-        "unless --interpreter is set."
+        "when the interpreter is disabled."
     )
 
 
@@ -668,12 +748,14 @@ def _auto_install_ripgrep_cli(
         missing_tools: Tool names reported missing by `check_optional_tools`.
 
     Returns:
-        `missing_tools` with `"ripgrep"` removed once a usable managed binary
-        is on `PATH`, otherwise the list unchanged.
+        `missing_tools` with `"ripgrep"` removed once a usable `rg` is
+        resolved — the managed binary (with `BIN_DIR` prepended to `PATH`) or a
+        system `rg` already on `PATH` — otherwise the list unchanged.
     """
     from deepagents_code.managed_tools import (
         ChecksumMismatchError,
         ensure_ripgrep,
+        managed_rg_path,
         prepend_managed_bin_to_path,
     )
 
@@ -700,7 +782,8 @@ def _auto_install_ripgrep_cli(
     if installed is None:
         return missing_tools
 
-    prepend_managed_bin_to_path()
+    if installed == managed_rg_path():
+        prepend_managed_bin_to_path()
     return [tool for tool in missing_tools if tool != "ripgrep"]
 
 
@@ -883,6 +966,7 @@ _HELP_SPECS: dict[str, tuple[str | None, str]] = {
     "mcp": ("mcp_command", "show_mcp_help"),
     "config": ("config_command", "show_config_help"),
     "auth": ("auth_command", "show_auth_help"),
+    "tools": ("tools_command", "show_tools_help"),
 }
 """Maps top-level command names to their startup-fast-path help dispatch.
 
@@ -906,8 +990,8 @@ def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
 
     Short-circuits before `console`/`settings` are imported so help-only
     invocations stay snappy. Mirrors the dispatch in `cli_main` for the
-    `help`, `agents`, `skills`, `threads`, `mcp`, `config`, and `auth` commands
-    when no subcommand was given.
+    `help`, `agents`, `skills`, `threads`, `mcp`, `config`, `auth`, and `tools`
+    commands when no subcommand was given.
 
     Args:
         args: Namespace from `parse_args()`. Only `command` and the per-group
@@ -1185,6 +1269,23 @@ def parse_args() -> argparse.Namespace:
     )
     add_json_output_arg(doctor_parser)
 
+    tools_parser = subparsers.add_parser(
+        "tools",
+        help="Manage managed external tools (e.g. ripgrep)",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_tools_help")),
+    )
+    add_json_output_arg(tools_parser)
+    tools_sub = tools_parser.add_subparsers(dest="tools_command")
+
+    tools_install = tools_sub.add_parser(
+        "install",
+        help="Install or repair the managed ripgrep binary",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_tools_install_help")),
+    )
+    add_json_output_arg(tools_install)
+
     # Default interactive mode — argument order here determines the
     # usage line printed by argparse; keep in sync with ui.show_help().
     parser.add_argument(
@@ -1414,9 +1515,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--interpreter",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=None,
         help="Enable the JS interpreter (`js_eval`) middleware on the main agent. "
-        "Local mode only; requires the `quickjs` optional extra.",
+        "Enabled by default when not using a sandbox; use --no-interpreter to disable.",
     )
     parser.add_argument(
         "--interpreter-tools",
@@ -1424,7 +1526,7 @@ def parse_args() -> argparse.Namespace:
         metavar="VALUE",
         help="PTC allowlist for `js_eval`: 'safe', 'all', or a comma-separated "
         "list of tool names (which may include the 'safe' preset, e.g. "
-        "'safe,task'). Default is no PTC (pure REPL).",
+        "'safe,task'). Default is 'safe' (read-only file tools).",
     )
 
     parser.add_argument(
@@ -1445,7 +1547,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--install",
         metavar="NAME",
-        help="Install an optional extra (e.g. quickjs, daytona, fireworks), then exit",
+        help="Install an optional extra (e.g. daytona, fireworks), then exit",
     )
     parser.add_argument(
         "--package",
@@ -1595,7 +1697,8 @@ async def run_textual_cli_async(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
-    enable_interpreter: bool = False,
+    enable_interpreter: bool | None = None,
+    interpreter_arg: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
 ) -> "AppResult":
@@ -1644,7 +1747,11 @@ async def run_textual_cli_async(
 
             `True` to allow, `False` to deny, `None` to check trust store.
         enable_interpreter: Enable `CodeInterpreterMiddleware` (`js_eval`) on
-            the main agent. Local-mode only.
+            the main agent. `None` defers to the sandbox-aware/config default.
+        interpreter_arg: The raw `--interpreter`/`--no-interpreter` tri-state,
+            forwarded so the app can tell an explicit opt-out from a
+            sandbox-suppressed default when surfacing the disabled-by-sandbox
+            advisory.
         interpreter_ptc: Override for `settings.interpreter_ptc` (PTC allowlist
             for `js_eval`).
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
@@ -1754,6 +1861,7 @@ async def run_textual_cli_async(
             mcp_preload_kwargs=mcp_preload_kwargs,
             model_kwargs=model_kwargs,
             model_explicitly_set=model_name is not None,
+            interpreter_arg=interpreter_arg,
             defer_server_start=defer_server_start,
         )
     except Exception as e:
@@ -2196,11 +2304,13 @@ def _check_mcp_project_trust(*, trust_flag: bool = False) -> bool | None:
 
 
 def _verify_interpreter_or_exit() -> None:
-    """Run the `--interpreter` pre-flight check; print and exit on failure.
+    """Run the interpreter pre-flight check; print and exit on failure.
 
     Called before spawning the langgraph dev server subprocess so a missing
-    `langchain-quickjs` extra surfaces a one-line install hint instead of an
-    opaque "Server process exited with code N" downstream.
+    `langchain-quickjs` dependency surfaces a one-line, actionable hint instead
+    of an opaque "Server process exited with code N" downstream. Gated on the
+    resolved interpreter state (`_resolve_interpreter_enabled`), not the
+    `--interpreter` flag alone, since the interpreter is now on by default.
     """
     from deepagents_code.extras_info import verify_interpreter_deps
 
@@ -2265,6 +2375,11 @@ def cli_main() -> None:
             from deepagents_code.doctor import run_doctor_command
 
             sys.exit(run_doctor_command(args))
+
+        if command == "tools":
+            from deepagents_code.tools_commands import run_tools_command
+
+            sys.exit(run_tools_command(args))
 
         # Best-effort, idempotent migration. Placed after parse_args and the
         # bare-help fast path so --help / --version / `deepagents <group>`
@@ -2345,7 +2460,7 @@ def cli_main() -> None:
             except ImportError as exc:
                 msg = (
                     f"ACP dependencies not available: {exc}\n"
-                    "Install with: uv tool install -U deepagents-code "
+                    "Install with: uv tool install --reinstall -U deepagents-code "
                     "--with deepagents-acp\n"
                 )
                 sys.stderr.write(msg)
@@ -2480,6 +2595,7 @@ def cli_main() -> None:
                     is_update_available,
                     perform_upgrade,
                     prerelease_upgrade_supported,
+                    release_requires_prereleases,
                     upgrade_command,
                 )
 
@@ -2524,6 +2640,20 @@ def cli_main() -> None:
                     )
                     sys.exit(0)
 
+                upgrade_include_prereleases = include_prereleases
+                pin_upgrade_version: str | None = None
+                if include_prereleases is None and release_requires_prereleases(latest):
+                    upgrade_include_prereleases = True
+                    pin_upgrade_version = latest
+                if upgrade_include_prereleases is True:
+                    supported, reason = prerelease_upgrade_supported()
+                    if not supported:
+                        console.print(
+                            "[bold red]Error:[/bold red] "
+                            f"{reason or _PRERELEASE_UNSUPPORTED_MESSAGE}"
+                        )
+                        sys.exit(1)
+
                 release_age = format_release_age_parenthetical(latest)
                 installed_age = format_installed_age_suffix(cli_version)
                 console.print(
@@ -2545,12 +2675,16 @@ def cli_main() -> None:
                     perform_upgrade(
                         log_path=log_path,
                         include_prereleases=include_prereleases,
+                        target_version=latest,
                     )
                 )
                 if success:
                     console.print(f"[green]Updated to v{latest}.[/green]")
                 else:
-                    cmd = upgrade_command(include_prereleases=include_prereleases)
+                    cmd = upgrade_command(
+                        include_prereleases=upgrade_include_prereleases,
+                        version=pin_upgrade_version,
+                    )
                     detail = f": {escape(output[:200])}" if output else ""
                     console.print(
                         f"[bold red]Auto-update failed{detail}[/bold red]\n"
@@ -2695,11 +2829,17 @@ def cli_main() -> None:
             from rich.markup import escape
 
             from deepagents_code.config import _is_editable_install
-            from deepagents_code.extras_info import KNOWN_EXTRAS
+            from deepagents_code.extras_info import (
+                KNOWN_EXTRAS,
+                ExtrasIntrospectionError,
+            )
             from deepagents_code.update_check import (
+                ToolRequirementIntrospectionError,
                 create_update_log_path,
                 editable_extra_hint,
                 install_extra_command,
+                install_extra_recovery_command,
+                install_extras_command,
                 is_valid_extra_name,
                 perform_install_extra,
             )
@@ -2772,10 +2912,24 @@ def cli_main() -> None:
                 # Tail the last 200 chars — uv resolver prints the resolved
                 # error at the end, not the beginning.
                 detail = f": {output[-200:]}" if output else ""
+                try:
+                    manual_cmd = install_extra_recovery_command(extra)
+                except (
+                    ExtrasIntrospectionError,
+                    ToolRequirementIntrospectionError,
+                    ValueError,
+                ):
+                    logger.warning(
+                        "--install recovery command failed (install reported failure)",
+                        exc_info=True,
+                    )
+                    # Keep the install-script command bound above; fall back to a
+                    # bare extras command only if that was never set.
+                    manual_cmd = manual_cmd or install_extras_command((extra,))
                 console.print(
                     f"[bold red]Install failed[/bold red]{escape(detail)}\n"
                     f"Log: {log_path}\n"
-                    f"Run manually: [cyan]{manual_cmd}[/cyan]",
+                    f"Run manually: [cyan]{escape(manual_cmd)}[/cyan]",
                     markup=True,
                     highlight=False,
                 )
@@ -2786,9 +2940,19 @@ def cli_main() -> None:
             except Exception as exc:
                 logger.warning("--install failed", exc_info=True)
                 log_line = f"\nLog: {log_path}" if log_path else ""
-                fallback_cmd = (
-                    manual_cmd or f"uv tool install -U 'deepagents-code[{extra}]'"
-                )
+                # This is the catch-all for any unexpected install failure, so
+                # the recovery-hint guard is intentionally broad too: it must
+                # never raise a second error over the original one. `manual_cmd`
+                # may be unset here (the failure could predate its assignment),
+                # so fall back to a bare extras command.
+                try:
+                    fallback_cmd = install_extra_recovery_command(extra)
+                except Exception:  # best-effort hint, never re-raise here
+                    logger.warning(
+                        "--install recovery command failed (unexpected error)",
+                        exc_info=True,
+                    )
+                    fallback_cmd = manual_cmd or install_extras_command((extra,))
                 console.print(
                     f"[bold red]Error:[/bold red] "
                     f"{type(exc).__name__}: {escape(str(exc))}"
@@ -3034,7 +3198,8 @@ def cli_main() -> None:
                     console.print(f"[bold red]Error:[/bold red] {escape(str(exc))}")
                     sys.exit(1)
 
-            if getattr(args, "interpreter", False):
+            enable_interpreter = _resolve_interpreter_enabled(args)
+            if enable_interpreter:
                 _verify_interpreter_or_exit()
 
             # Non-interactive mode - execute single task and exit
@@ -3043,7 +3208,10 @@ def cli_main() -> None:
             interpreter_ptc = _parse_interpreter_tools_flag(
                 getattr(args, "interpreter_tools", None)
             )
-            _warn_if_interpreter_tools_without_interpreter(args)
+            _warn_if_interpreter_tools_without_interpreter(
+                args, enable_interpreter=enable_interpreter
+            )
+            _warn_if_interpreter_disabled_by_sandbox(args)
 
             timeout = getattr(args, "timeout", None)
             try:
@@ -3066,7 +3234,7 @@ def cli_main() -> None:
                             mcp_config_path=getattr(args, "mcp_config", None),
                             no_mcp=getattr(args, "no_mcp", False),
                             trust_project_mcp=getattr(args, "trust_project_mcp", False),
-                            enable_interpreter=getattr(args, "interpreter", False),
+                            enable_interpreter=enable_interpreter,
                             interpreter_ptc=interpreter_ptc,
                             max_turns=getattr(args, "max_turns", None),
                         ),
@@ -3128,7 +3296,8 @@ def cli_main() -> None:
                     console.print(f"[bold red]Error:[/bold red] {escape(str(exc))}")
                     sys.exit(1)
 
-            if getattr(args, "interpreter", False):
+            enable_interpreter = _resolve_interpreter_enabled(args)
+            if enable_interpreter:
                 _verify_interpreter_or_exit()
 
             # Check project MCP trust before launching TUI
@@ -3168,7 +3337,8 @@ def cli_main() -> None:
                         mcp_config_path=getattr(args, "mcp_config", None),
                         no_mcp=getattr(args, "no_mcp", False),
                         trust_project_mcp=mcp_trust_decision,
-                        enable_interpreter=getattr(args, "interpreter", False),
+                        enable_interpreter=enable_interpreter,
+                        interpreter_arg=args.interpreter,
                         interpreter_ptc=interpreter_ptc,
                     )
                 )

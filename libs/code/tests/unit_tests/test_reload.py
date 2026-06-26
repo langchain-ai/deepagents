@@ -392,17 +392,29 @@ class TestReloadFromEnvironment:
 
         project_env = tmp_path / ".env"
         project_env.write_text(
+            "BASH_ENV=/tmp/evil.sh\n"
+            "BASHOPTS=expand_aliases\n"
+            "CDPATH=/tmp\n"
+            "ENV=/tmp/evil.sh\n"
+            "GLOBIGNORE=*\n"
             "LD_PRELOAD=/tmp/evil.so\n"
             "PYTHONPATH=/tmp/evil\n"
             "PATH=/tmp/evil\n"
             "NODE_OPTIONS=--require /tmp/evil.js\n"
+            "SHELLOPTS=xtrace\n"
             "DEEPAGENTS_INHERITED_PYTHONPATH=/tmp/evil\n"
             "OPENAI_API_KEY=sk-ok\n"
         )
         for key in (
+            "BASH_ENV",
+            "BASHOPTS",
+            "CDPATH",
+            "ENV",
+            "GLOBIGNORE",
             "LD_PRELOAD",
             "PYTHONPATH",
             "NODE_OPTIONS",
+            "SHELLOPTS",
             "DEEPAGENTS_INHERITED_PYTHONPATH",
             "OPENAI_API_KEY",
         ):
@@ -410,9 +422,15 @@ class TestReloadFromEnvironment:
 
         _load_dotenv(start_path=tmp_path)
 
+        assert "BASH_ENV" not in os.environ
+        assert "BASHOPTS" not in os.environ
+        assert "CDPATH" not in os.environ
+        assert "ENV" not in os.environ
+        assert "GLOBIGNORE" not in os.environ
         assert "LD_PRELOAD" not in os.environ
         assert "PYTHONPATH" not in os.environ
         assert "NODE_OPTIONS" not in os.environ
+        assert "SHELLOPTS" not in os.environ
         # The carrier var must not be injectable from `.env`, or a project could
         # smuggle a PYTHONPATH into agent `execute` commands through it.
         assert "DEEPAGENTS_INHERITED_PYTHONPATH" not in os.environ
@@ -490,6 +508,52 @@ class TestReloadFromEnvironment:
         env = _preview_dotenv_environ(start_path=tmp_path)
 
         assert env["TEST_PREVIEW_KEY2"] == "project-value"
+
+    def test_preview_dotenv_denies_environment_hijack_keys(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Preview env mirrors `_load_dotenv`: denied keys are omitted.
+
+        Exercises the full shell-startup-hook set so the preview path stays
+        visibly parallel to the mutating path, and asserts the debug breadcrumb
+        names the denied key (and only the key, never its value).
+        """
+        from deepagents_code.config import _preview_dotenv_environ
+
+        denied_keys = (
+            "BASH_ENV",
+            "BASHOPTS",
+            "CDPATH",
+            "ENV",
+            "GLOBIGNORE",
+            "SHELLOPTS",
+        )
+        evil_value = "/tmp/evil.sh"  # test fixture value, never read
+
+        monkeypatch.setattr(
+            "deepagents_code.config._GLOBAL_DOTENV_PATH",
+            tmp_path / "nonexistent" / ".env",
+        )
+        dotenv_lines = [f"{key}={evil_value}\n" for key in denied_keys]
+        dotenv_lines.append("OPENAI_API_KEY=sk-ok\n")
+        (tmp_path / ".env").write_text("".join(dotenv_lines))
+        for key in (*denied_keys, "OPENAI_API_KEY"):
+            monkeypatch.delenv(key, raising=False)
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.config"):
+            env = _preview_dotenv_environ(start_path=tmp_path)
+
+        for key in denied_keys:
+            assert key not in env
+        assert env["OPENAI_API_KEY"] == "sk-ok"
+
+        # The breadcrumb names each denied key but never leaks the value.
+        for key in denied_keys:
+            assert any(key in record.getMessage() for record in caplog.records)
+        assert evil_value not in caplog.text
 
     def test_preview_reports_api_key_masked_without_mutating(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

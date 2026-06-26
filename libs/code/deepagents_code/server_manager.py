@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig
 from deepagents_code.project_utils import ProjectContext
+from deepagents_code.server import _EPHEMERAL_PORT
 
 logger = logging.getLogger(__name__)
 _DISTRIBUTION_NAME = "deepagents-code"
@@ -289,7 +290,7 @@ async def start_server_and_get_agent(
     trust_project_mcp: bool | None = None,
     interactive: bool = True,
     host: str = "127.0.0.1",
-    port: int = 0,
+    port: int = _EPHEMERAL_PORT,
 ) -> tuple[RemoteAgent, ServerProcess, MCPSessionManager | None]:
     """Start a LangGraph server and return a connected remote agent client.
 
@@ -316,8 +317,9 @@ async def start_server_and_get_agent(
         trust_project_mcp: Trust project MCP servers.
         interactive: Whether the agent is interactive.
         host: Server host.
-        port: Server port. Defaults to 0, letting the server pick a free
-            ephemeral port instead of the well-known `langgraph dev` port 2024.
+        port: Server port. Defaults to `_EPHEMERAL_PORT` (0), letting the server
+            pick a free ephemeral port instead of the well-known `langgraph dev`
+            port 2024.
 
     Returns:
         Tuple of `(remote_agent, server_process, mcp_session_manager)`.
@@ -415,7 +417,7 @@ async def server_session(
     trust_project_mcp: bool | None = None,
     interactive: bool = True,
     host: str = "127.0.0.1",
-    port: int = 0,
+    port: int = _EPHEMERAL_PORT,
 ) -> AsyncIterator[tuple[RemoteAgent, ServerProcess]]:
     """Async context manager that starts a server and guarantees cleanup.
 
@@ -445,8 +447,9 @@ async def server_session(
         trust_project_mcp: Trust project MCP servers.
         interactive: Whether the agent is interactive.
         host: Server host.
-        port: Server port. Defaults to 0, letting the server pick a free
-            ephemeral port instead of the well-known `langgraph dev` port 2024.
+        port: Server port. Defaults to `_EPHEMERAL_PORT` (0), letting the server
+            pick a free ephemeral port instead of the well-known `langgraph dev`
+            port 2024.
 
     Yields:
         Tuple of `(remote_agent, server_process)`.

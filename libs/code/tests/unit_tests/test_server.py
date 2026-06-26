@@ -167,11 +167,15 @@ class TestServerPortSelection:
             ),
             patch("deepagents_code.server.subprocess.Popen", return_value=process),
             patch("deepagents_code.server.wait_for_server_healthy", new=AsyncMock()),
-            patch("deepagents_code.server._port_in_use", return_value=True),
-            patch("deepagents_code.server._find_free_port", return_value=43210),
+            patch("deepagents_code.server._port_in_use", return_value=True) as in_use,
+            patch(
+                "deepagents_code.server._find_free_port", return_value=43210
+            ) as find_free,
         ):
             await server.start()
 
+        in_use.assert_called_once_with("127.0.0.1", 2024)
+        find_free.assert_called_once_with("127.0.0.1")
         assert server.port == 43210
 
 

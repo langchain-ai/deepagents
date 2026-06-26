@@ -2435,10 +2435,14 @@ class ChatInput(Vertical):
         if not self._completion_manager or not self._text_area:
             return
 
-        # Backspace on an empty mode prompt exits the current mode. Prefix
+        # Backspace at the start of a mode prompt exits the current mode. Prefix
         # characters are mode selectors, not hidden draft text, so exiting the
         # mode does not restore `/`, `!`, or `!!` into the input.
-        if event.key == "backspace" and self.mode != "normal" and not self.value:
+        if (
+            event.key == "backspace"
+            and self.mode != "normal"
+            and self._get_cursor_offset() == 0
+        ):
             # Defer the popup reset so it coalesces with the glyph update
             # that watch_mode schedules via call_after_refresh.
             def _deferred_reset() -> None:

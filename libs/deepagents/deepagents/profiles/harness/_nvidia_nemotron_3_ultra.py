@@ -58,9 +58,6 @@ _NEMOTRON_ULTRA_MODEL_SPECS: tuple[str, ...] = (
     "fireworks:accounts/fireworks/models/nemotron-3-ultra-bf16",
     "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
     "openrouter:nvidia/nemotron-3-ultra-550b-a55b",
-    # OpenRouter's ":free" variant (openrouter:nvidia/...:free) is intentionally
-    # omitted: a model id with a second colon fails the `provider:model` key
-    # format (one colon only), and a raising registration would break bootstrap.
 )
 """Model specs that receive the Nemotron 3 Ultra harness profile.
 

@@ -1081,6 +1081,29 @@ class TestFuzzyFileControllerScope:
 
         assert controller._file_cache == ["main.py"]
 
+    async def test_warm_cache_force_refreshes_populated_cache(
+        self, mock_view, monkeypatch, tmp_path
+    ):
+        """warm_cache(force=True) re-walks and swaps in a fresh list."""
+        project_root = tmp_path
+        (project_root / ".git").mkdir()
+
+        files = ["main.py"]
+        monkeypatch.setattr(
+            autocomplete_module, "_get_project_files", lambda _root: list(files)
+        )
+
+        controller = FuzzyFileController(mock_view, cwd=project_root)
+        await controller.warm_cache()
+        assert controller._file_cache == ["main.py"]
+
+        files.append("added.py")
+        await controller.warm_cache()
+        assert controller._file_cache == ["main.py"]
+
+        await controller.warm_cache(force=True)
+        assert controller._file_cache == ["main.py", "added.py"]
+
     def test_excludes_sibling_with_shared_prefix(
         self, mock_view, monkeypatch, tmp_path
     ):

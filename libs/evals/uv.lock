@@ -1585,7 +1585,7 @@ wheels = [
 
 [[package]]
 name = "langchain-quickjs"
-version = "0.3.2"
+version = "0.4.0"
 source = { editable = "../partners/quickjs" }
 dependencies = [
     { name = "bsdiff4", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },

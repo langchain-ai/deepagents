@@ -1206,10 +1206,14 @@ class TestNemotronUltraProfile:
         [
             "NVIDIA:nvidia/nemotron-3-ultra-550b-a55b",
             "nvidia:nvidia/nemotron-3-ultra-550b-a55b",
+            "fireworks:accounts/fireworks/models/nemotron-3-ultra-nvfp4",
+            "fireworks:accounts/fireworks/models/nemotron-3-ultra-bf16",
+            "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
+            "openrouter:nvidia/nemotron-3-ultra-550b-a55b",
         ],
     )
     def test_nemotron_ultra_has_harness_profile(self, model_key: str) -> None:
-        """Both provider casings resolve to a non-empty Nemotron 3 Ultra profile."""
+        """Each registered key resolves to a non-empty Nemotron 3 Ultra profile."""
         profile = _get_harness_profile(model_key)
         assert profile is not None
         assert profile.system_prompt_suffix

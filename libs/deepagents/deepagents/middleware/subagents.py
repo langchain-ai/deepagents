@@ -3,7 +3,7 @@
 import contextlib
 import dataclasses
 import json
-from collections.abc import Awaitable, Callable, Generator, Sequence
+from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
 from typing import Any, NotRequired, TypedDict, cast
 
 from langchain.agents import create_agent
@@ -511,6 +511,129 @@ def create_sub_agent(
     return create_agent(model, **create_agent_kwargs)
 
 
+def compile_subagent_spec(
+    spec: SubAgent | CompiledSubAgent,
+    *,
+    state_schema: type | None = None,
+    response_format: ResponseFormat[Any] | type | dict[str, Any] | None = None,
+) -> CompiledSubAgent:
+    """Compile one raw `SubAgent` spec or configure one provided runnable.
+
+    Shared by the `task` tool ([`SubAgentMiddleware`][deepagents.middleware.subagents.SubAgentMiddleware])
+    and the `workflow` tool ([`WorkflowMiddleware`][deepagents.middleware.workflow.WorkflowMiddleware])
+    so both expose the same subagent runnables and result semantics.
+
+    Args:
+        spec: A declarative `SubAgent` spec or a pre-built `CompiledSubAgent`.
+        state_schema: Base graph state schema forwarded to raw `SubAgent` specs.
+        response_format: Optional response-format override (raw specs only).
+
+    Returns:
+        A `CompiledSubAgent` with a ready-to-invoke `runnable`.
+
+    Raises:
+        ValueError: If `response_format` is supplied for a `CompiledSubAgent`.
+    """
+    if "runnable" in spec:
+        if response_format is not None:
+            msg = f'response_schema cannot be used with compiled subagent "{spec["name"]}"; dynamic schemas require a raw SubAgent spec.'
+            raise ValueError(msg)
+
+        # Use with_config (not attribute mutation) so the original runnable is
+        # untouched and a shared instance can be registered under multiple names.
+        compiled = cast("CompiledSubAgent", spec)
+        runnable = compiled["runnable"].with_config(
+            {
+                "metadata": {"lc_agent_name": spec["name"]},
+                "run_name": spec["name"],
+            }
+        )
+        return {
+            "name": spec["name"],
+            "description": spec["description"],
+            "runnable": runnable,
+        }
+    return {
+        "name": spec["name"],
+        "description": spec["description"],
+        "runnable": create_sub_agent(
+            spec,
+            state_schema=state_schema,
+            response_format=response_format,
+        ),
+    }
+
+
+def extract_subagent_text(result: dict) -> str:
+    """Return the textual result from a subagent's final state.
+
+    Prefers a JSON-serialized `structured_response` when present; otherwise
+    walks back to the last non-empty `AIMessage` text. Anthropic occasionally
+    emits a trailing empty `end_turn` `AIMessage` after a successful final tool
+    call, which is why we skip empty messages.
+    """
+    structured = result.get("structured_response")
+    if structured is not None:
+        if hasattr(structured, "model_dump_json"):
+            return structured.model_dump_json()
+        if dataclasses.is_dataclass(structured) and not isinstance(structured, type):
+            return json.dumps(dataclasses.asdict(structured))
+        return json.dumps(structured)
+    for msg in reversed(result.get("messages", [])):
+        if isinstance(msg, AIMessage):
+            text = msg.text.rstrip() if msg.text else ""
+            if text:
+                return text
+    return ""
+
+
+def subagent_state_delta(result: dict) -> dict:
+    """Return subagent state updates safe to merge into the parent state.
+
+    Excludes `messages` (handled explicitly by the caller), `todos`, and
+    `structured_response` (no defined cross-agent reducer / meaning).
+    """
+    return {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS}
+
+
+def prepare_subagent_state(
+    state: Mapping[str, Any],
+    description: str,
+    *,
+    private_state_keys: frozenset[str] = frozenset(),
+) -> dict:
+    """Build a fresh subagent input state from filtered parent state.
+
+    Strips excluded and agent-private keys, then seeds a single `HumanMessage`
+    carrying the task `description`.
+    """
+    subagent_state = {k: v for k, v in state.items() if k not in _EXCLUDED_STATE_KEYS}
+    subagent_state = {k: v for k, v in subagent_state.items() if k not in private_state_keys}
+    subagent_state["messages"] = [HumanMessage(content=description)]
+    return subagent_state
+
+
+def _return_command_with_state_update(result: dict, tool_call_id: str) -> Command:
+    """Build the `Command` returned to the parent from a subagent's final state."""
+    # Validate that the result contains a 'messages' key
+    if "messages" not in result:
+        error_msg = (
+            "CompiledSubAgent must return a state containing a 'messages' key. "
+            "Custom StateGraphs used with CompiledSubAgent should include 'messages' "
+            "in their state schema to communicate results back to the main agent."
+        )
+        raise ValueError(error_msg)
+
+    state_update = subagent_state_delta(result)
+    content = extract_subagent_text(result)
+    return Command(
+        update={
+            **state_update,
+            "messages": [ToolMessage(content, tool_call_id=tool_call_id)],
+        }
+    )
+
+
 def _get_subagent_response_format(
     runtime: ToolRuntime,
 ) -> ResponseFormat[Any] | type | dict[str, Any] | None:
@@ -525,7 +648,7 @@ def _get_subagent_response_format(
     return value
 
 
-def _build_task_tool(  # noqa: C901, PLR0915
+def _build_task_tool(  # noqa: C901
     subagents: Sequence[SubAgent | CompiledSubAgent],
     task_description: str | None = None,
     *,
@@ -545,43 +668,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
     Returns:
         A StructuredTool that can invoke subagents by type.
     """
-
-    def _compile_spec(
-        spec: SubAgent | CompiledSubAgent,
-        *,
-        response_format: ResponseFormat[Any] | type | dict[str, Any] | None = None,
-    ) -> CompiledSubAgent:
-        """Compile one raw spec or configure one provided runnable."""
-        if "runnable" in spec:
-            if response_format is not None:
-                msg = f'response_schema cannot be used with compiled subagent "{spec["name"]}"; dynamic schemas require a raw SubAgent spec.'
-                raise ValueError(msg)
-
-            # Use with_config (not attribute mutation) so the original runnable is
-            # untouched and a shared instance can be registered under multiple names.
-            compiled = cast("CompiledSubAgent", spec)
-            runnable = compiled["runnable"].with_config(
-                {
-                    "metadata": {"lc_agent_name": spec["name"]},
-                    "run_name": spec["name"],
-                }
-            )
-            return {
-                "name": spec["name"],
-                "description": spec["description"],
-                "runnable": runnable,
-            }
-        return {
-            "name": spec["name"],
-            "description": spec["description"],
-            "runnable": create_sub_agent(
-                spec,
-                state_schema=state_schema,
-                response_format=response_format,
-            ),
-        }
-
-    compiled_subagents = [_compile_spec(spec) for spec in subagents]
+    compiled_subagents = [compile_subagent_spec(spec, state_schema=state_schema) for spec in subagents]
     subagents_by_name = {spec["name"]: spec for spec in subagents}
 
     # Build the graphs dict and descriptions from the unified spec list
@@ -597,46 +684,6 @@ def _build_task_tool(  # noqa: C901, PLR0915
     else:
         description = task_description
 
-    def _return_command_with_state_update(result: dict, tool_call_id: str) -> Command:
-        # Validate that the result contains a 'messages' key
-        if "messages" not in result:
-            error_msg = (
-                "CompiledSubAgent must return a state containing a 'messages' key. "
-                "Custom StateGraphs used with CompiledSubAgent should include 'messages' "
-                "in their state schema to communicate results back to the main agent."
-            )
-            raise ValueError(error_msg)
-
-        state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS}
-
-        structured = result.get("structured_response")
-        if structured is not None:
-            if hasattr(structured, "model_dump_json"):
-                content: str = structured.model_dump_json()
-            elif dataclasses.is_dataclass(structured) and not isinstance(structured, type):
-                content = json.dumps(dataclasses.asdict(structured))
-            else:
-                content = json.dumps(structured)
-        else:
-            # Walk back to the last AIMessage with non-empty text. Anthropic
-            # occasionally emits a trailing empty `end_turn` AIMessage after a
-            # successful final tool call, which would otherwise be forwarded
-            # as an empty ToolMessage.
-            content = ""
-            for msg in reversed(result["messages"]):
-                if isinstance(msg, AIMessage):
-                    text = msg.text.rstrip() if msg.text else ""
-                    if text:
-                        content = text
-                        break
-
-        return Command(
-            update={
-                **state_update,
-                "messages": [ToolMessage(content, tool_call_id=tool_call_id)],
-            }
-        )
-
     def _select_subagent(
         subagent_type: str,
         runtime: ToolRuntime,
@@ -644,8 +691,9 @@ def _build_task_tool(  # noqa: C901, PLR0915
         """Return the runnable to use for this task invocation."""
         response_format = _get_subagent_response_format(runtime)
         if response_format is not None:
-            new_spec = _compile_spec(
+            new_spec = compile_subagent_spec(
                 subagents_by_name[subagent_type],
+                state_schema=state_schema,
                 response_format=response_format,
             )
             return new_spec["runnable"]
@@ -660,9 +708,11 @@ def _build_task_tool(  # noqa: C901, PLR0915
         """Prepare state for invocation."""
         subagent = _select_subagent(subagent_type, runtime)
         # Create a new state dict to avoid mutating the original
-        subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
-        subagent_state = {k: v for k, v in subagent_state.items() if k not in private_state_keys}
-        subagent_state["messages"] = [HumanMessage(content=description)]
+        subagent_state = prepare_subagent_state(
+            runtime.state,
+            description,
+            private_state_keys=private_state_keys,
+        )
         return subagent, subagent_state
 
     def task(

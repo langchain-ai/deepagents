@@ -53,6 +53,7 @@ from deepagents.middleware.subagents import (
     SubAgentMiddleware,
 )
 from deepagents.middleware.summarization import create_summarization_middleware
+from deepagents.middleware.workflow import WorkflowMiddleware
 from deepagents.profiles.harness.harness_profiles import (
     GeneralPurposeSubagentProfile,
     _apply_profile_prompt,
@@ -264,6 +265,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     system_prompt: str | SystemMessage | None = None,
     middleware: Sequence[AgentMiddleware] = (),
     subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
+    workflow_mode: bool = False,
+    workflow_model: str | BaseChatModel | None = None,
     skills: list[str] | None = None,
     memory: list[str] | None = None,
     permissions: list[FilesystemPermission] | None = None,
@@ -424,6 +427,37 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             subagents in play — none passed and the default disabled via
             `general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)`
             — the `task` tool is not exposed. Async subagents are independent.
+
+        workflow_mode: Enable the declarative multi-agent `workflow` tool.
+
+            When `True`, the agent gains a `workflow` tool
+            ([`WorkflowMiddleware`][deepagents.middleware.workflow.WorkflowMiddleware])
+            that lets it author a phase/step DAG of subagent invocations in a
+            single call. Phases run sequentially; steps within a phase run
+            concurrently (fan-out); a later step consumes earlier outputs via
+            `{{step_id}}` templating (fan-in / pipeline). The engine runs the
+            plan autonomously and returns only the final result, keeping the
+            orchestrator's context small for large multi-stage tasks.
+
+            The workflow tool delegates to the same subagents reachable through
+            `task`, so it requires at least one synchronous subagent to be in
+            play (the auto-added `general-purpose` subagent satisfies this by
+            default). When no synchronous subagent is available, enabling
+            `workflow_mode` has no effect and a warning is logged. Defaults to
+            `False` (the tool is not exposed), preserving existing behavior.
+
+        workflow_model: Optional model for the workflow's step runners (the
+            sub-agents that execute workflow steps), used only when
+            `workflow_mode=True`.
+
+            Accepts a `provider:model` string or a pre-initialized
+            [`BaseChatModel`][langchain.chat_models.BaseChatModel]. When set, the
+            declarative (raw `SubAgent`) steps run on this model instead of the
+            main agent's model — handy for running the workers on a cheaper or
+            faster model while the orchestrator stays on a stronger one.
+            `CompiledSubAgent` steps keep the model they were compiled with.
+            When `None` (default), workflow steps use the deep agent's model,
+            preserving existing behavior.
 
         skills: List of skill source paths (e.g., `["/skills/user/", "/skills/project/"]`).
 
@@ -796,6 +830,28 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             state_schema=state_schema,
         )
         deepagent_middleware.append(sub_agent_middleware)
+
+    # Workflow mode adds a declarative multi-agent `workflow` tool backed by the
+    # same synchronous subagents the `task` tool uses. Without any synchronous
+    # subagents there is nothing to orchestrate, so the tool is not exposed.
+    workflow_middleware: WorkflowMiddleware | None = None
+    if workflow_mode:
+        if inline_subagents:
+            resolved_workflow_model = resolve_model(workflow_model) if workflow_model is not None else None
+            workflow_middleware = WorkflowMiddleware(
+                subagents=inline_subagents,
+                description=_profile.tool_description_overrides.get("workflow"),
+                state_schema=state_schema,
+                model=resolved_workflow_model,
+            )
+            deepagent_middleware.append(workflow_middleware)
+        else:
+            logger.warning(
+                "workflow_mode=True but no synchronous subagents are available "
+                "(the default general-purpose subagent is disabled and none were "
+                "passed via subagents=). The `workflow` tool will not be exposed.",
+            )
+
     deepagent_middleware.extend(
         [
             create_summarization_middleware(model, backend),
@@ -842,6 +898,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     private_state_keys = private_state_field_names(*(mw.state_schema for mw in deepagent_middleware if getattr(mw, "state_schema", None) is not None))
     if sub_agent_middleware is not None:
         sub_agent_middleware.private_state_keys = private_state_keys
+    if workflow_middleware is not None:
+        workflow_middleware.private_state_keys = private_state_keys
     # Verify every main-profile exclusion matched at least one middleware in
     # either the main agent stack or the GP subagent stack. An entry that
     # matched nothing across both is almost certainly a typo or a stale

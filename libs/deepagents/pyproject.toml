@@ -126,6 +126,19 @@ ignore-var-parameters = true
     "BLE001",  # Blind exception catch — resilience in standalone scripts
     "INP001",  # Missing `__init__.py` — scripts are standalone
 ]
+# Examples: runnable demos — allow prints, missing docstrings, standalone shape
+"examples/**" = [
+    "ARG002",  # Unused method argument — demo stubs / overrides
+    "BLE001",  # Blind exception catch — display helpers must not abort the demo
+    "D1",      # Missing docstrings
+    "E501",    # Line too long — readable inline data tables / prompts
+    "EXE001",  # Shebang present but file not executable
+    "INP001",  # Missing `__init__.py` — examples are standalone
+    "RUF001",  # Ambiguous unicode in strings — intentional log glyphs (→, ·, ✓)
+    "RUF002",  # Ambiguous unicode in docstrings
+    "RUF003",  # Ambiguous unicode in comments
+    "T201",    # `print` found — demos print to stdout
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

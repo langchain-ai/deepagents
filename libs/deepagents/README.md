@@ -30,6 +30,7 @@ Deep Agents is an open source agent harness — an opinionated agent that runs o
 **Features include:**
 
 - **Sub-agents** — delegate tasks to agents with isolated context windows
+- **Workflow mode** — opt-in `workflow` tool that runs a declarative multi-agent plan (parallel fan-out, then fan-in) in a single call
 - **Filesystem** — read, write, edit, or search over pluggable local, sandboxed, or remote backends
 - **Context management** — summarize long threads and offload tool outputs to disk
 - **Shell access** — run commands in your sandbox of choice
@@ -50,6 +51,47 @@ result = agent.invoke({"messages": "Research LangGraph and write a summary"})
 ```
 
 The agent can plan, read/write files, and manage its own context. Add your own tools, swap models, customize prompts, configure sub-agents, and more. For a full overview and quickstart of Deep Agents, the best resource is our [docs](https://docs.langchain.com/oss/python/deepagents/overview).
+
+### Workflow mode
+
+Set `workflow_mode=True` to give the agent a `workflow` tool. Instead of delegating to sub-agents one `task` call at a time, the agent can author a whole multi-stage plan in a single call: a list of **phases** that run sequentially, where the **steps** inside each phase run concurrently (fan-out). A later step consumes an earlier step's output by embedding `{{step_id}}` in its prompt (fan-in / pipeline). The engine runs the plan autonomously and returns only the final result, keeping the orchestrator's context small.
+
+```python
+agent = create_deep_agent(model="openai:gpt-5.5", workflow_mode=True)
+```
+
+The agent might then emit a workflow like:
+
+```json
+{
+  "phases": [
+    {"title": "Research", "steps": [
+      {"id": "a", "subagent_type": "general-purpose", "description": "Research topic A", "prompt": "Research topic A."},
+      {"id": "b", "subagent_type": "general-purpose", "description": "Research topic B", "prompt": "Research topic B."}
+    ]},
+    {"title": "Synthesize", "steps": [
+      {"id": "s", "subagent_type": "general-purpose", "description": "Synthesize A and B", "depends_on": ["a", "b"],
+       "prompt": "Compare and synthesize:\n\nA: {{a}}\n\nB: {{b}}"}
+    ]}
+  ]
+}
+```
+
+Each step takes an optional `description` (shown in a plan preview before the workflow runs). Workflow steps delegate to the same sub-agents the `task` tool uses, so any sub-agent you configure is also available as a workflow step.
+
+Pass `workflow_model=...` to run the workflow's worker sub-agents on a different (e.g. cheaper or faster) model than the orchestrator; it defaults to the deep agent's model:
+
+```python
+agent = create_deep_agent(
+    model="openai:gpt-5.5",          # orchestrator
+    workflow_mode=True,
+    workflow_model="openai:gpt-5.4-mini",  # workflow step runners
+)
+```
+
+Why it helps: without workflow mode a single agent runs every step in one conversation, so each tool call's output piles into a growing context that the model re-sends on every turn — more tokens, and more room for it to drift or hallucinate as stale prior-step detail accumulates. Workflow mode runs each step in a fresh, isolated sub-agent that only sees its own task (plus any results passed in via `{{step_id}}`), so no single context carries everything.
+
+See `examples/workflow_mode_demo.py` for a runnable demo that builds a small Python library (writing files and running tests in a real shell) two ways — a plain DeepAgent and a DeepAgent in workflow mode — and compares them on tokens, context behavior, and the final answer.
 
 **Acknowledgements: This project was primarily inspired by Claude Code, and initially was largely an attempt to see what made Claude Code general purpose, and make it even more so.**
 

@@ -174,6 +174,9 @@ class TestServerGraph:
         assert warm_import_thread_ids[0] != loop_thread_id
         assert create_cli_agent_thread_ids
         assert create_cli_agent_thread_ids[0] != loop_thread_id
+        # `create_model` must run off the loop thread: it does blocking disk IO
+        # for some providers (e.g. the `openai_codex` token store calls
+        # `os.mkdir`), which `blockbuster` rejects on the server event loop.
         assert create_model_thread_ids
         assert create_model_thread_ids[0] != loop_thread_id
         kwargs = resolve_mcp_tools.await_args_list[0].kwargs

@@ -47,6 +47,7 @@ WORKDIR /opt/deepagents-src
 
 COPY libs/deepagents ./libs/deepagents
 COPY libs/code ./libs/code
+COPY libs/partners/quickjs ./libs/partners/quickjs
 COPY libs/talon ./libs/talon
 COPY examples/talon/AGENTS.md /opt/deepagents-talon/AGENTS.md
 

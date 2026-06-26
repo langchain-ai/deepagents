@@ -780,7 +780,7 @@ wheels = [
 
 [[package]]
 name = "deepagents-code"
-version = "0.1.24"
+version = "0.1.25"
 source = { editable = "../code" }
 dependencies = [
     { name = "aiosqlite" },
@@ -803,6 +803,7 @@ dependencies = [
     { name = "packaging" },
     { name = "pillow" },
     { name = "prompt-toolkit" },
+    { name = "pydantic" },
     { name = "pyperclip" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
@@ -865,6 +866,7 @@ requires-dist = [
     { name = "packaging", specifier = ">=26.2" },
     { name = "pillow", specifier = ">=12.2.0,<13.0.0" },
     { name = "prompt-toolkit", specifier = ">=3.0.52,<4.0.0" },
+    { name = "pydantic", specifier = ">=2.7.4,<2.14.0a0" },
     { name = "pyperclip", specifier = ">=1.11.0,<2.0.0" },
     { name = "python-dotenv", specifier = ">=1.2.2,<2.0.0" },
     { name = "pyyaml", specifier = ">=6.0.3" },

@@ -210,6 +210,16 @@ class ConfigOption:
     install_extra: str | None = None
     """Optional `deepagents-code[...]` extra that provides `dependency_module`."""
 
+    provider: str | None = None
+    """Provider/service name a credential option authenticates, or `None`.
+
+    Set only for `Credentials`-group options (e.g. `"anthropic"`, `"tavily"`),
+    where it is the key `/auth` stores the credential under and the name passed
+    to `model_config.is_service`. Carrying it as a structured field lets
+    `config show`/`get` look up the stored credential without re-parsing it out
+    of `key`. `None` for every other option.
+    """
+
     def __post_init__(self) -> None:
         """Reject a `default` that contradicts `kind` at construction time.
 
@@ -740,6 +750,7 @@ def _credential_options() -> tuple[ConfigOption, ...]:
                 kind=OptionKind.STR,
                 env_var=env_var,
                 redacted=redacted,
+                provider=name,
                 settings_field=_CREDENTIAL_SETTINGS_FIELD.get(env_var),
                 dependency_module=dependency[0] if dependency else None,
                 install_extra=dependency[1] if dependency else None,

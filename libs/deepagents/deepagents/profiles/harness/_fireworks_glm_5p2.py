@@ -48,6 +48,14 @@ Before treating a task as done:
   make it work, it will fail elsewhere. Confirm it from a brand-new shell —
   restart the service, open a fresh session, re-run the script — not just where
   you built it.
+
+- Keep the solution simple and bounded. Prefer the simplest approach that
+  satisfies every requirement with margin: don't tune a value to its
+  breaking-point edge, enumerate-and-pick an extremal candidate, or rewrite
+  shared or immutable state (version history, schemas, running services) the
+  task didn't ask you to touch. Once your output is computed and cross-checked,
+  record it and stop — don't launch another long run just to re-confirm a result
+  you've already validated.
 </verification_discipline>
 
 <work_in_batches>
@@ -56,7 +64,10 @@ much as possible per command rather than one probe per turn. Script the whole
 cycle (build, run, check) so it prints one consolidated result you can act on,
 instead of running a command, reading a single value, and stopping. When
 inspecting an unknown file, binary, or data structure, extract the specific
-values you need in one pass rather than querying them one at a time.
+values you need in one pass rather than querying them one at a time. If one step
+is unavoidably long (a large training, sampling, or build run), start it in the
+background with a timeout and poll for completion, rather than blocking on a
+single multi-minute command.
 </work_in_batches>"""
 """Text appended to the assembled base system prompt."""
 

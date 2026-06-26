@@ -36,7 +36,7 @@ from deepagents._messages_reducer import _messages_delta_reducer
 from deepagents._models import resolve_model
 from deepagents._tools import _apply_tool_description_overrides
 from deepagents._version import __version__
-from deepagents.backends import StateBackend
+from deepagents.backends import StateBackend, persists_to_filesystem
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._fs_interrupt import _build_interrupt_on_from_permissions
 from deepagents.middleware._state import private_state_field_names
@@ -882,6 +882,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 "ls_integration": "deepagents",
                 "lc_versions": {"deepagents": __version__},
                 "lc_agent_name": name,
+                "persists_to_filesystem": persists_to_filesystem(backend),
             },
         }
     )

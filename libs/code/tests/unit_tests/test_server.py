@@ -524,6 +524,7 @@ class TestServerProcess:
 
         with (
             patch("deepagents_code.server._find_free_port", return_value=12345),
+            patch("deepagents_code.server._port_in_use", return_value=False),
             patch(
                 "deepagents_code.server.tempfile.NamedTemporaryFile",
                 return_value=log_file,
@@ -566,6 +567,7 @@ class TestServerProcess:
 
         with (
             patch("deepagents_code.server._find_free_port", return_value=12345),
+            patch("deepagents_code.server._port_in_use", return_value=False),
             patch(
                 "deepagents_code.server.tempfile.NamedTemporaryFile",
                 return_value=log_file,

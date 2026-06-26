@@ -48,7 +48,16 @@ Before treating a task as done:
   make it work, it will fail elsewhere. Confirm it from a brand-new shell —
   restart the service, open a fresh session, re-run the script — not just where
   you built it.
-</verification_discipline>"""
+</verification_discipline>
+
+<work_in_batches>
+When iterating — building, testing, debugging, or reverse-engineering — do as
+much as possible per command rather than one probe per turn. Script the whole
+cycle (build, run, check) so it prints one consolidated result you can act on,
+instead of running a command, reading a single value, and stopping. When
+inspecting an unknown file, binary, or data structure, extract the specific
+values you need in one pass rather than querying them one at a time.
+</work_in_batches>"""
 """Text appended to the assembled base system prompt."""
 
 

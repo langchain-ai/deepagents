@@ -179,7 +179,11 @@ def _find_delete_deny_patterns(rules: list[FilesystemPermission], target: str) -
                 #    wildcards after the anchor ("/work/*/secrets",
                 #    "/work/**/secrets") could match descendants of the target,
                 #    so we fail closed for those.
-                if anchor == "/" or wcglob.globmatch(target, pattern, flags=_FS_WCMATCH_FLAGS) or PurePosixPath(anchor).is_relative_to(PurePosixPath(target)):
+                if (
+                    anchor == "/"
+                    or wcglob.globmatch(target, pattern, flags=_FS_WCMATCH_FLAGS)
+                    or PurePosixPath(anchor).is_relative_to(PurePosixPath(target))
+                ):
                     overlaps = True
                 elif PurePosixPath(target).is_relative_to(PurePosixPath(anchor)):
                     # Target is below anchor. Safe to allow only when the pattern
@@ -189,7 +193,7 @@ def _find_delete_deny_patterns(rules: list[FilesystemPermission], target: str) -
                     # match descendants of target, so fail closed for those.
                     anchor_parts = PurePosixPath(anchor).parts
                     pattern_parts = PurePosixPath(pattern).parts
-                    suffix = pattern_parts[len(anchor_parts):]
+                    suffix = pattern_parts[len(anchor_parts) :]
                     single_filename_glob = len(suffix) == 1 and "**" not in suffix[0]
                     overlaps = not single_filename_glob
                 else:

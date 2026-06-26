@@ -111,8 +111,10 @@ def test_make_graph_builds_headless_local_deepagent(
     assert captured_create[0]["enable_memory"] is False
     assert captured_create[0]["enable_skills"] is False
     assert captured_create[0]["enable_shell"] is True
-    assert captured_create[0]["enable_finalize"] is True
-    assert captured_create[0]["enable_anti_ramble"] is True
+    # Finalize + anti-ramble are no longer create_cli_agent flags; they are
+    # attached via the GLM-5.2 harness profile, so they must not be passed here.
+    assert "enable_finalize" not in captured_create[0]
+    assert "enable_anti_ramble" not in captured_create[0]
     assert isinstance(captured_create[0]["system_prompt"], str)
     assert "autonomous coding agent" in captured_create[0]["system_prompt"]
 

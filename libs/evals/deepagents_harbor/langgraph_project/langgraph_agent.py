@@ -192,8 +192,9 @@ def make_graph(config: dict[str, object] | None = None) -> object:
             enable_memory=False,
             enable_skills=False,
             enable_shell=True,
-            enable_finalize=True,
-            enable_anti_ramble=True,
+            # Finalize + anti-ramble middleware now come from the GLM-5.2 harness
+            # profile (deepagents.profiles.harness), applied for the fireworks
+            # glm-5p2 model this harness runs.
             cwd=_workdir(configurable),
         )
     return graph

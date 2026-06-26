@@ -1,0 +1,19 @@
+libs/evals/deepagents_harness_opt/NEXT_STEPS.md
+  s_be045b46d84183::t_175363b0be2d75 58-73
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "98abbf5b8c0f6fed4cc0a3778ae847fc0bf2fd49",
+  "prompts": {},
+  "sessions": {
+    "s_be045b46d84183": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cade71c4-e821-4a02-888b-b70674466c73",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

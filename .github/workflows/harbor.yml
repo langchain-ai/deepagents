@@ -161,7 +161,12 @@ permissions:
 env:
   UV_NO_SYNC: "true"
   HARBOR_DATASET: ${{ inputs.dataset || 'terminal-bench/terminal-bench-2' }}
-  HARBOR_PACKAGE_OVERRIDE: "harbor[langsmith] @ git+https://github.com/nick-hollon-lc/harbor.git@nh/integration"
+  # Pinned to the exact commit (not the moving nh/integration branch) so the uv
+  # cache key tracks the build and CI can't reuse a stale pre-fix wheel. 403f989
+  # carries the PEP-668-safe agent bootstrap (astral uv installer + uv-managed
+  # Python); the branch ref previously served a cached pre-fix build that ran
+  # `pip install --upgrade uv` into externally-managed system Python and failed.
+  HARBOR_PACKAGE_OVERRIDE: "harbor[langsmith] @ git+https://github.com/nick-hollon-lc/harbor.git@403f98997cb305448624a9193aba894e894db2d6"
 
 jobs:
   prep:
@@ -321,7 +326,8 @@ jobs:
 
       - name: "⚓ Install Harbor override"
         if: env.HARBOR_PACKAGE_OVERRIDE != ''
-        run: uv pip install "$HARBOR_PACKAGE_OVERRIDE"
+        # --reinstall --refresh defeats any stale cached wheel for this git ref.
+        run: uv pip install --reinstall --refresh "$HARBOR_PACKAGE_OVERRIDE"
 
       - name: "🔇 Suppress Harbor first-run tips"
         run: |

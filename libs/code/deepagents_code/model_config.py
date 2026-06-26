@@ -660,13 +660,13 @@ PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
     #   together      ChatTogether reads TOGETHER_API_BASE (alias base_url).
     #   xai           ChatXAI reads XAI_API_BASE (alias base_url).
     #
-    # OpenAI-compatible providers (deepseek, openrouter, together, xai)
+    # OpenAI-compatible providers (deepseek, openrouter, together, xai, baseten)
     # sit on the openai SDK, whose only base-URL env var is the shared
     # OPENAI_BASE_URL. That name is intentionally NOT listed under those
     # providers: writing or clearing it under another provider's name would
-    # clobber the user's real OpenAI endpoint. In practice the integration always
-    # passes base_url explicitly, so the shared fallback never fires. Baseten has
-    # its own dedicated names, so it is listed separately above.
+    # clobber the user's real OpenAI endpoint. Each is listed above under its own
+    # dedicated name(s) instead. In practice the integration always passes
+    # base_url explicitly, so the shared fallback never fires.
     #
     # Omitted (no dedicated, provider-specific endpoint env var): litellm
     # (api_base arg, per-provider env), google_vertexai (endpoint derived from the

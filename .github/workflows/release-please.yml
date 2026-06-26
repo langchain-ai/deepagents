@@ -40,22 +40,35 @@ jobs:
             echo "Single-commit history; skipping empty-commit guard."
             exit 0
           fi
-          CHANGED=$(git diff-tree --no-commit-id --name-only -r HEAD)
+          COMMIT_MSG=$(git log -1 --format=%s HEAD)
+          SHA=$(git rev-parse HEAD)
+          PARENT_COUNT=$(git show --no-patch --format=%P HEAD | wc -w | tr -d ' ')
+          if [ "$PARENT_COUNT" -gt 2 ]; then
+            echo "::error::Octopus merge detected on main: $SHA \"$COMMIT_MSG\""
+            echo "::error::The empty-commit guard only supports one- or two-parent commits. Recreate this as a normal two-parent merge."
+            exit 1
+          fi
+
+          # `git diff-tree` reports no paths for merge commits unless given -m.
+          # Compare merges to their first parent so non-empty merges pass before
+          # the repo-hotfix history-repair exception below.
+          if [ "$PARENT_COUNT" -eq 2 ]; then
+            CHANGED=$(git diff --name-only HEAD^1 HEAD)
+          else
+            CHANGED=$(git diff-tree --no-commit-id --name-only -r HEAD)
+          fi
           if [ -n "$CHANGED" ]; then
             echo "HEAD touches files; proceeding."
             exit 0
           fi
 
-          COMMIT_MSG=$(git log -1 --format=%s HEAD)
-          SHA=$(git rev-parse HEAD)
-          PARENT_COUNT=$(git show --no-patch --format=%P HEAD | wc -w | tr -d ' ')
-          if [ "$PARENT_COUNT" -ge 2 ]; then
+          if [ "$PARENT_COUNT" -eq 2 ]; then
             case "$COMMIT_MSG" in
               "hotfix(repo):"*) ;;
               *)
                 echo "::error::Empty merge commit detected on main: $SHA \"$COMMIT_MSG\""
                 echo "::error::Only repo-scoped hotfix merge commits may use the history-repair exception."
-                echo "::error::release-please scopes commits to packages by changed file paths. Empty commits have none, so every package gets bumped."
+                echo "::error::See .github/RELEASING.md -> \"Empty commit fan-out\"."
                 exit 1
                 ;;
             esac
@@ -64,13 +77,19 @@ jobs:
             if [ -z "$MERGED_COMMITS" ]; then
               echo "::error::Empty merge commit detected on main: $SHA \"$COMMIT_MSG\""
               echo "::error::The merge commit does not introduce any second-parent commits."
+              echo "::error::See .github/RELEASING.md -> \"Empty commit fan-out\"."
               exit 1
             fi
 
             EMPTY_MERGED_COMMITS=""
             for COMMIT in $MERGED_COMMITS; do
               COMMIT_PARENT_COUNT=$(git show --no-patch --format=%P "$COMMIT" | wc -w | tr -d ' ')
-              if [ "$COMMIT_PARENT_COUNT" -ge 2 ]; then
+              if [ "$COMMIT_PARENT_COUNT" -gt 2 ]; then
+                echo "::error::Octopus merge detected in merged branch: $COMMIT"
+                echo "::error::The empty-commit guard only supports one- or two-parent commits. Recreate this as normal two-parent merges."
+                exit 1
+              fi
+              if [ "$COMMIT_PARENT_COUNT" -eq 2 ]; then
                 COMMIT_CHANGED=$(git diff --name-only "$COMMIT^1" "$COMMIT")
               else
                 COMMIT_CHANGED=$(git diff-tree --no-commit-id --name-only -r "$COMMIT")
@@ -86,7 +105,8 @@ jobs:
             fi
             echo "::error::Empty merge commit detected on main: $SHA \"$COMMIT_MSG\""
             echo "::error::The merged branch contains empty commits:$EMPTY_MERGED_COMMITS"
-            echo "::error::release-please scopes commits to packages by changed file paths. Empty commits have none, so every package gets bumped."
+            echo "::error::Every commit in a history-repair branch must touch files so release-please can scope it."
+            echo "::error::See .github/RELEASING.md -> \"Empty commit fan-out\"."
             exit 1
           fi
 

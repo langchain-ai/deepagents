@@ -7,11 +7,14 @@
 # Install an exact pre-release version:
 #   curl -LsSf https://langch.in/dcode | DEEPAGENTS_CODE_VERSION="0.1.0rc1" bash
 #
-# Allow uv to consider alpha/beta/rc releases when resolving the latest version:
+# Override uv's pre-release strategy when resolving the latest version:
 #   curl -LsSf https://langch.in/dcode | DEEPAGENTS_CODE_PRERELEASE="allow" bash
 #
-# DEEPAGENTS_CODE_VERSION and DEEPAGENTS_CODE_PRERELEASE are mutually exclusive:
-# an exact pin already selects a single version, so setting both is an error.
+# By default, the installer uses uv's `if-necessary` pre-release strategy so
+# stable deepagents-code releases that pin a pre-release dependency can resolve.
+# DEEPAGENTS_CODE_VERSION and an explicit DEEPAGENTS_CODE_PRERELEASE are mutually
+# exclusive: an exact pin already selects a single version, so setting both is an
+# error.
 #
 # Already installed?
 #   Safe to re-run. If a newer version exists, it asks before upgrading — or
@@ -47,8 +50,8 @@
 #     (mutually exclusive with DEEPAGENTS_CODE_PRERELEASE)
 #   DEEPAGENTS_CODE_PRERELEASE — uv pre-release strategy applied when
 #     resolving the latest version: disallow, allow, if-necessary, explicit,
-#     or if-necessary-or-explicit (mutually exclusive with
-#     DEEPAGENTS_CODE_VERSION)
+#     or if-necessary-or-explicit (default: if-necessary; explicitly setting it
+#     is mutually exclusive with DEEPAGENTS_CODE_VERSION)
 #   DEEPAGENTS_CODE_PYTHON — Python version to use (default: 3.13)
 #   DEEPAGENTS_CODE_YES — set to 1 to accept an available update without
 #     prompting (assume "yes"). Exists so automated runs that still attach a
@@ -341,7 +344,8 @@ copy_install_log() {
 # ---------------------------------------------------------------------------
 EXTRAS="${DEEPAGENTS_CODE_EXTRAS:-}"
 VERSION="${DEEPAGENTS_CODE_VERSION:-}"
-PRERELEASE="${DEEPAGENTS_CODE_PRERELEASE:-}"
+PRERELEASE_REQUESTED="${DEEPAGENTS_CODE_PRERELEASE:-}"
+PRERELEASE="${PRERELEASE_REQUESTED:-if-necessary}"
 PYTHON_REQUESTED=false
 if [[ -n "${DEEPAGENTS_CODE_PYTHON:-}" ]]; then
   PYTHON_REQUESTED=true
@@ -383,11 +387,12 @@ if [[ -n "$EXTRAS" ]]; then
   EXTRAS="[${EXTRAS}]"
 fi
 
-# An exact pin already selects a single version, so a pre-release strategy
-# (which only affects how a range resolves) is redundant at best and
-# contradictory at worst (e.g. an rc pin with "disallow"). Reject the combo
-# up front rather than forwarding an ambiguous request to uv.
-if [[ -n "$VERSION" && -n "$PRERELEASE" ]]; then
+# An exact pin already selects a single version, so an explicitly requested
+# pre-release strategy (which only affects how a range resolves) is redundant at
+# best and contradictory at worst (e.g. an rc pin with "disallow"). Reject only
+# user-provided combinations; the installer's default `if-necessary` strategy is
+# not forwarded when a version is pinned.
+if [[ -n "$VERSION" && -n "$PRERELEASE_REQUESTED" ]]; then
   log_error "DEEPAGENTS_CODE_VERSION and DEEPAGENTS_CODE_PRERELEASE are mutually exclusive."
   log_error "Pin an exact version, or set a pre-release strategy — not both."
   exit 1
@@ -555,7 +560,7 @@ if [ "$IS_EDITABLE" = true ]; then
     log_info "deepagents-code ${pre_label} found (editable install from local source)."
   fi
   log_info "  Replacing with a standard install from PyPI — the existing environment will be rebuilt."
-elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE" ]; then
+elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" ]; then
   # Default path with an existing install: probe PyPI and prompt before
   # upgrading, rather than silently pulling the latest version every run.
   # A pinned version or pre-release strategy (handled by the branches above and
@@ -609,8 +614,8 @@ fi
 #      instead of upgrading in place (e.g., Python interpreter mismatch, or
 #      editable↔regular install swap).
 #   2. Drop uv's per-step timing lines ("Resolved N packages in...", etc.)
-#      and the trailing "Installed N executables:" line — we already show
-#      a Verified line with the binary name and version.
+#      download/build progress, and the trailing "Installed N executables:" line
+#      — we already show a concise install/update summary.
 #   3. Reformat the `- pkg==X` / `+ pkg==Y` diff into an aligned
 #      "pkg  X → Y" table under a single header.
 #   4. Detect whether uv actually moved any packages (those same
@@ -652,7 +657,7 @@ if [ -n "$cache_root" ]; then
     fi
   fi
 fi
-if [[ -n "$PRERELEASE" ]]; then
+if [[ -z "$VERSION" ]]; then
   "$UV_BIN" tool install -U --python "$PYTHON_VERSION" \
     --prerelease "$PRERELEASE" "$PACKAGE" 2>"$uv_stderr" || uv_rc=$?
 else
@@ -665,12 +670,16 @@ if [ "$VERBOSE" != "1" ] && command -v awk >/dev/null 2>&1; then
       print "⚠ Existing environment uses a different Python — rebuilding from scratch (this is normal)."
       next
     }
-    /^Resolved [0-9]+ packages? in /    { next }
-    /^Prepared [0-9]+ packages? in /    { next }
-    /^Uninstalled [0-9]+ packages? in / { next }
-    /^Installed [0-9]+ packages? in /   { next }
-    /^Audited [0-9]+ packages? in /     { next }
-    /^Checked [0-9]+ packages? in /     { next }
+    /^Resolved( [0-9]+ packages?)? in /     { next }
+    /^Prepared [0-9]+ packages?( |$)/       { next }
+    /^Uninstalled [0-9]+ packages? in /     { next }
+    /^Installed [0-9]+ packages? in /       { next }
+    /^Audited( [0-9]+ packages?)? in /      { next }
+    /^Checked( [0-9]+ packages?)? in /      { next }
+    /^[[:space:]]*Downloading /         { next }
+    /^[[:space:]]*Downloaded /          { next }
+    /^[[:space:]]*Building /            { next }
+    /^[[:space:]]*Built /                { next }
     /^Installed [0-9]+ executables?:/   { next }
     /^ - / {
       s = $0; sub(/^ - /, "", s); n = index(s, "==")
@@ -968,7 +977,7 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
     # PATH and honors DEEPAGENTS_CODE_OFFLINE and
     # DEEPAGENTS_CODE_RIPGREP_INSTALLER=system, reporting what it did.
     echo ""
-    log_info "Setting up ripgrep (managed; opt out with DEEPAGENTS_CODE_RIPGREP_INSTALLER=system)..."
+    log_info "Setting up ripgrep..."
     if "$DCODE_BIN" tools install; then
       fix_owner "${HOME}/.deepagents/bin"
     else

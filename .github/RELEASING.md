@@ -477,7 +477,7 @@ This most commonly bites when someone tries to "fix up" a merged PR's changelog 
 
 The `guard-empty-commit` job in [`release-please.yml`](https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/release-please.yml) blocks this at CI time: any push to `main` whose `HEAD` commit changes zero files fails fast with a clear error before the release-please action runs.
 
-There is one narrow exception for history repair: an empty merge commit titled `hotfix(repo): ...` may pass if the branch being merged contains real, file-changing commits. Use this only when the file tree intentionally stays the same but the individual commits must be restored for release metadata, such as repairing an accidental squash merge of a version-line cutover. Merge that repair PR with a merge commit so the second-parent commits remain visible; do not squash or rebase it.
+There is one narrow exception for history repair: an empty merge commit titled `hotfix(repo): ...` may pass if the branch being merged contains real, file-changing commits. This covers cases where the final file tree is intentionally unchanged, but preserving the individual commits matters for release metadata or audit history.
 
 **If you need to amend a release note for a commit that already merged**, see [Overriding a Merged Commit's Changelog Entry](#overriding-a-merged-commits-changelog-entry) below. Do not push empty commits to `main`.
 

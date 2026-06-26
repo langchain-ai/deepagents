@@ -1,0 +1,20 @@
+docs/superpowers/specs/2026-06-26-hillclimb-smoke-dataset-design.md
+  s_835b4f54a887d4::t_717ee2c522c7fd 1-148,150-194,196-222
+  s_835b4f54a887d4::t_f25b36cf70eeeb 149,195
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "91a7e84678046f2dbd9547df49efaa8eced1a9ac",
+  "prompts": {},
+  "sessions": {
+    "s_835b4f54a887d4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "309be8cc-8b32-4d74-a6b9-4d4c7b0bb936",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

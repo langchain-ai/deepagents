@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib
 import os
-import subprocess
 import sys
 import threading
 from types import ModuleType, SimpleNamespace
@@ -317,50 +316,60 @@ class TestServerGraph:
             "enable_interpreter": True,
         }
 
-    def test_mcp_adapter_import_warmup_avoids_blockbuster(self) -> None:
-        """MCP-enabled graph readiness must not import adapters on the event loop."""
-        script = """
-import asyncio
+    async def test_mcp_adapter_warmup_runs_before_mcp_resolver(self) -> None:
+        """MCP imports must be warmed before resolver imports adapter modules."""
+        events: list[str] = []
+        fetch_tool = object()
+        thread_tool = object()
 
-from blockbuster import blockbuster_ctx
-from deepagents_code import mcp_disabled, mcp_tools, server_graph
-from deepagents_code._server_config import ServerConfig
-from deepagents_code.config import settings
-import deepagents_code.tools
+        def resolve_mcp_tools(
+            **_: object,
+        ) -> tuple[list[object], None, list[object]]:
+            events.append("resolver")
+            return [], None, []
 
-_ = settings.has_tavily
-mcp_tools.discover_mcp_configs = lambda *, project_context=None: []
-mcp_tools.load_mcp_config = lambda _path: {
-    "mcpServers": {"missing": {"command": "dcode-missing-mcp-cmd"}}
-}
-
-
-def fail_stdio_check(_server_name, _server_config):
-    raise RuntimeError("missing command")
-
-
-mcp_tools._check_stdio_server = fail_stdio_check
-mcp_disabled.get_disabled_servers = lambda: set()
-
-async def main() -> None:
-    config = ServerConfig(no_mcp=False, mcp_config_path="dummy.json")
-    with blockbuster_ctx():
-        tools, server_infos = await server_graph._build_tools(config, None)
-    assert tools
-    assert len(server_infos or []) == 1
-    assert server_infos[0].status == "error"
-
-asyncio.run(main())
-"""
-        result = subprocess.run(
-            [sys.executable, "-c", script],
-            capture_output=True,
-            text=True,
-            timeout=20,
-            check=False,
+        config_module = _module_with_attrs(
+            "deepagents_code.config",
+            settings=SimpleNamespace(has_tavily=False),
+        )
+        tools_module = _module_with_attrs(
+            "deepagents_code.tools",
+            fetch_url=fetch_tool,
+            get_current_thread_id=thread_tool,
+            web_search=object(),
         )
 
-        assert result.returncode == 0, result.stderr
+        class FakeSessionManager:
+            pass
+
+        mcp_module = _module_with_attrs(
+            "deepagents_code.mcp_tools",
+            MCPSessionManager=FakeSessionManager,
+            resolve_and_load_mcp_tools=AsyncMock(side_effect=resolve_mcp_tools),
+        )
+
+        with patch.dict(
+            sys.modules,
+            {
+                "deepagents_code.config": config_module,
+                "deepagents_code.tools": tools_module,
+                "deepagents_code.mcp_tools": mcp_module,
+            },
+        ):
+            module = _import_fresh_server_graph()
+
+            def warm_imports() -> None:
+                events.append("warmup")
+
+            with patch.object(module, "_warm_mcp_adapter_imports", warm_imports):
+                tools, mcp_server_info = await module._build_tools(
+                    ServerConfig(no_mcp=False),
+                    None,
+                )
+
+        assert events == ["warmup", "resolver"]
+        assert tools == [fetch_tool, thread_tool]
+        assert mcp_server_info == []
 
 
 class TestStartupErrorMarker:

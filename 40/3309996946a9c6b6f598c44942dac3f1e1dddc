@@ -1,0 +1,979 @@
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000038/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000048/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/langgraph_project/oolong_graph.py
+  s_5504ef8276333c::t_fb5834f33ba1c1 196-200
+  s_5504ef8276333c::t_8b05b53437fa9e 69-83
+  s_5504ef8276333c::t_8e64c788451954 1,3-15,17-20
+  s_5504ef8276333c::t_df6dea5051a1ef 2,16,21-68,84-149,157,159-160,163-168,171-195,202,204
+  s_5504ef8276333c::t_3ada74b22127f7 150-156,158,161-162,169-170,201,203,205-228
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000000/tests/datapoint.json
+  s_5504ef8276333c::t_f5184a8844a951 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000000/tests/score.py
+  s_5504ef8276333c::t_f5184a8844a951 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000005/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000034/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000038/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000029/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000049/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000047/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000012/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000003/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000042/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000030/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000019/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000016/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000033/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000040/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000045/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000030/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000031/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000034/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000015/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000015/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000018/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000035/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000014/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000037/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000014/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000043/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000022/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000004/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000043/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000021/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000030/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000028/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000019/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000010/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000031/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000028/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000007/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000035/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000043/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000040/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000024/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000039/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/Makefile
+  s_5504ef8276333c::t_f089856d162d50 1
+  s_5504ef8276333c::t_8f2b7df033b25f 62-68
+  s_5504ef8276333c::t_7bc35e6b1c9cb4 49
+  s_5504ef8276333c::t_f469248b24b18e 59-60
+  s_5504ef8276333c::t_cc876388903779 61
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000030/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000001/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000035/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000003/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000001/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000004/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000037/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000017/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000036/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000010/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000009/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000033/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000018/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000032/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000019/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000025/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/loader.py
+  s_5504ef8276333c::t_7cb5e2bfaf6e24 1-252
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000048/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000018/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000021/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000026/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000011/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000011/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000026/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000022/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000029/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000004/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000013/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000008/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000009/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000047/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000007/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000003/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000008/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000007/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000039/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000042/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000031/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000033/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000037/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000044/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000038/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000044/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000048/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/metric.py
+  s_5504ef8276333c::t_f5184a8844a951 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000044/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000039/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000024/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000042/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000046/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000009/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000025/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000047/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000022/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000013/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000013/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000012/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000034/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000006/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000000/tests/official_scorer.py
+  s_5504ef8276333c::t_f5184a8844a951 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000004/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000031/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000034/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000047/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000034/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000045/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000013/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000025/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000046/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000012/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000036/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000007/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000035/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000044/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000043/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000049/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000010/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000011/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000017/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000027/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000046/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000008/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000020/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000037/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000007/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000015/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000007/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000030/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000006/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000046/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000036/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000025/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000009/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000003/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000011/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000018/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000016/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000028/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000015/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000040/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000016/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000022/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000005/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000008/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000032/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000032/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000015/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000020/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000002/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000002/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000010/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000026/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000028/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000016/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000039/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000018/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000007/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000004/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000018/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000010/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000029/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000006/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000038/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000004/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000017/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000021/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000033/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000045/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000041/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000040/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000042/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000048/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000049/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000018/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000020/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000030/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000021/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000046/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000021/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000022/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000023/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000035/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000020/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000041/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000008/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000003/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000005/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000002/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/README.md
+  s_5504ef8276333c::t_66b8f68a0380c6 1-81,139-140,144-146
+  s_5504ef8276333c::t_2e8149a2afb47e 104
+  s_5504ef8276333c::t_f7a9a9ae30a74c 82,84-93,101,108-111
+  s_5504ef8276333c::t_74d38af339273e 128-130
+  s_5504ef8276333c::t_f7b82f94fa84a1 83,94-99,102-103,105-107,112-115,131-138,141-143
+  s_5504ef8276333c::t_d68d8716f48771 100,116-127
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000009/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000034/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000043/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000026/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000000/environment/context.txt
+  s_5504ef8276333c::t_f5184a8844a951 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000032/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000042/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000025/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000047/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000033/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000043/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000048/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000049/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000041/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000015/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000045/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000045/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000020/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000042/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/.gitignore
+  s_5504ef8276333c::t_afdca3127bc61d 3-4
+  s_5504ef8276333c::t_88c24e82c82ae2 1-2
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000018/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000026/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000039/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000029/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000033/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000001/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000031/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000016/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000035/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000024/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000024/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000031/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000014/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000019/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000003/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000011/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000017/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000034/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000033/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000041/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000010/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000027/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000041/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000032/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000033/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000048/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000031/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000019/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000005/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000016/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000038/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000014/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000017/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000020/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000022/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000002/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000010/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000025/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000033/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000035/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000016/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000039/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000006/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000025/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000027/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000023/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000014/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000015/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000023/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000028/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000040/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000027/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/official_scorer.py
+  s_5504ef8276333c::t_497c0c9732502e 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000019/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000000/environment/Dockerfile
+  s_5504ef8276333c::t_533134d5bcfcdc 8
+  s_5504ef8276333c::t_f5184a8844a951 1-7
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000036/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000043/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000009/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000027/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/__init__.py
+  s_5504ef8276333c::t_e4c403758fb8b1 1-7
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000023/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000024/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000001/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000019/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000015/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000005/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000021/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000044/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000047/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000025/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/langgraph_project/langgraph.json
+  s_5504ef8276333c::t_e864774032af6e 23
+  s_5504ef8276333c::t_94da6e480f8d8e 24
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000036/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000040/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000014/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000014/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000004/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000012/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000023/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000030/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000047/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000001/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000044/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000000/task.toml
+  s_5504ef8276333c::t_c292625a203a40 26
+  s_5504ef8276333c::t_f5184a8844a951 1-25
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000047/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000026/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000049/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000048/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000042/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000013/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000009/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000048/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000032/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000016/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000029/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000002/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000028/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000005/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000007/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000049/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000028/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000008/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000027/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000045/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000030/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000041/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000011/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000042/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000032/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000005/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000003/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000007/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000031/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000041/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000006/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000024/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000017/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000011/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000049/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000008/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000038/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000043/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000021/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000017/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000026/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000026/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000011/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000043/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000035/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000006/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000022/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000026/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000009/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000037/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000049/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000041/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000027/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000006/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000045/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000005/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000006/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000002/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000010/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000019/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000022/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000021/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000046/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000037/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000012/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000048/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000014/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000004/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000029/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000012/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000036/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000027/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000023/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000044/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000029/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000039/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000017/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000020/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000001/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000002/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000025/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000012/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000040/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000013/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000044/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000027/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000037/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000022/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000031/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000042/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000036/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000018/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000010/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000034/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000004/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000036/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/dataset.toml
+  s_5504ef8276333c::t_f5184a8844a951 1-6
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000006/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000032/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000041/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000000/solution/solve.sh
+  s_5504ef8276333c::t_f5184a8844a951 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000036/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000001/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000024/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/generate_oolong_tasks.py
+  s_5504ef8276333c::t_1852d4bd206e49 35-39
+  s_5504ef8276333c::t_013e7dfe2f090f 180
+  s_5504ef8276333c::t_3497fc85faa896 386
+  s_5504ef8276333c::t_deb1ba870c0af3 1-34,40-91,100-104,124-144,146-151,153-159,161-179,181-272,275-282,286-335,351-357,359-384,387-394
+  s_5504ef8276333c::t_92d00429d9f907 273
+  s_5504ef8276333c::t_2f7b9160389a70 92-96,98-99
+  s_5504ef8276333c::t_2879e131745e68 283-285
+  s_5504ef8276333c::t_9da0ee1593139f 336-345,348
+  s_5504ef8276333c::t_a24f0f558df90f 160
+  s_5504ef8276333c::t_f39b0eca3dc8d4 346-347,349-350
+  s_5504ef8276333c::t_37d4ad8618de99 358
+  s_5504ef8276333c::t_bb3641f3fb0e61 97,105-123,145,152
+  s_5504ef8276333c::t_3f340246f86018 274
+  s_5504ef8276333c::t_4658c47c41ac2c 385
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000011/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000003/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000023/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000039/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000030/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+.github/workflows/harbor.yml
+  s_5504ef8276333c::t_f09caf1ce211e4 149-150
+  s_5504ef8276333c::t_413e1b967fb41e 471-473
+  s_5504ef8276333c::t_66ee2536badc7c 454-460
+  s_5504ef8276333c::t_4f879dcbe9f249 382-393
+  s_5504ef8276333c::t_8e8c8daea94ae3 482
+  s_5504ef8276333c::t_11159f48c7a6be 439-446
+  s_5504ef8276333c::t_1a041f4a14f346 493-500,506
+  s_5504ef8276333c::t_969532e20c2bcb 38
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000002/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000046/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000012/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000019/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000037/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000045/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000000/instruction.md
+  s_5504ef8276333c::t_f5184a8844a951 1-2
+  s_5504ef8276333c::t_533134d5bcfcdc 3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000046/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000020/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000024/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000046/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000049/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000001/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000015/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000040/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000008/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000016/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000013/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000020/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000003/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000009/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000032/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000047/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000000/tests/test.sh
+  s_5504ef8276333c::t_f5184a8844a951 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000001/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000017/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000028/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000035/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000037/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000029/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000008/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000028/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000038/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000044/tests/datapoint.json
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000014/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000040/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000023/tests/test.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000005/instruction.md
+  s_5504ef8276333c::t_b5c73fb3395985 1-3
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000034/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000012/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000002/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000021/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000038/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000029/tests/score.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-31
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000024/environment/context.txt
+  s_5504ef8276333c::t_b5c73fb3395985 1-22
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000013/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000038/solution/solve.sh
+  s_5504ef8276333c::t_b5c73fb3395985 1-4
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000023/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000039/environment/Dockerfile
+  s_5504ef8276333c::t_b5c73fb3395985 1-8
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000045/tests/official_scorer.py
+  s_5504ef8276333c::t_b5c73fb3395985 1-109
+libs/evals/deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000013/task.toml
+  s_5504ef8276333c::t_b5c73fb3395985 1-26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "403309996946a9c6b6f598c44942dac3f1e1dddc",
+  "prompts": {},
+  "sessions": {
+    "s_5504ef8276333c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3da33537-a26f-40fe-8463-52091416dc5b",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

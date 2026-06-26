@@ -49,15 +49,27 @@ if TYPE_CHECKING:
     from langgraph.types import Command
 
 _NEMOTRON_ULTRA_MODEL_SPECS: tuple[str, ...] = (
+    # NVIDIA's own API (ChatNVIDIA): instance form is capitalized `NVIDIA`,
+    # the init_chat_model spec form is lowercase `nvidia`.
     "NVIDIA:nvidia/nemotron-3-ultra-550b-a55b",
     "nvidia:nvidia/nemotron-3-ultra-550b-a55b",
+    # Nemotron 3 Ultra as served by other providers.
+    "fireworks:accounts/fireworks/models/nemotron-3-ultra-nvfp4",
+    "fireworks:accounts/fireworks/models/nemotron-3-ultra-bf16",
+    "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
+    "openrouter:nvidia/nemotron-3-ultra-550b-a55b",
+    # OpenRouter's ":free" variant (openrouter:nvidia/...:free) is intentionally
+    # omitted: a model id with a second colon fails the `provider:model` key
+    # format (one colon only), and a raising registration would break bootstrap.
 )
 """Model specs that receive the Nemotron 3 Ultra harness profile.
 
-`ChatNVIDIA`'s LangSmith provider is `NVIDIA` (capitalized), so a constructed
-instance resolves to `NVIDIA:<model id>`; an `init_chat_model("nvidia:...")` spec
-resolves to `nvidia:<model id>`. Both are registered so the profile applies
-regardless of how the model was provided.
+Registered per-model (not provider-wide), so other models on these providers are
+unchanged. Each key is `<ls_provider>:<model id>`, and the provider segment must
+match what the chat-model client reports as its LangSmith provider, so casing
+matters: `ChatNVIDIA` reports `NVIDIA`, while an `init_chat_model("nvidia:...")`
+spec is lowercase `nvidia` (both are registered). Covers NVIDIA's own API plus
+Nemotron 3 Ultra as served by Fireworks, Baseten, and OpenRouter.
 """
 
 _FILESYSTEM_TOOLS: tuple[str, ...] = ("ls", "read_file", "write_file", "edit_file", "glob", "grep")

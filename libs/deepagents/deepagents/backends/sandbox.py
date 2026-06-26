@@ -648,7 +648,12 @@ else
   fi
 fi
 """
-"""Pure POSIX sh wrapper for capture-at-source `execute`. See the comment above."""
+# Pure POSIX sh wrapper for capture-at-source `execute`; see the comment above the template.
+
+
+def _new_heredoc_delim() -> str:
+    """Return a random heredoc delimiter, e.g. `__DEEPAGENTS_CMD_<80 random bits>__`."""
+    return "__DEEPAGENTS_CMD_" + base64.b32encode(os.urandom(10)).decode("ascii").rstrip("=") + "__"
 
 
 def _build_capture_execute_cmd(command: str, capture_path: str, *, inline_budget: int, max_capture_bytes: int | None = None) -> str:
@@ -661,7 +666,12 @@ def _build_capture_execute_cmd(command: str, capture_path: str, *, inline_budget
     overridable/patchable); beyond that it is truncated and flagged.
     """
     cap = max_capture_bytes if max_capture_bytes is not None else _EXECUTE_CAPTURE_MAX_BYTES
-    delim = "__DEEPAGENTS_CMD_" + base64.b32encode(os.urandom(10)).decode("ascii").rstrip("=") + "__"
+    # The command is embedded in a quoted heredoc; guarantee the delimiter cannot
+    # appear in it so the command can never terminate the heredoc early. The
+    # delimiter is 80 random bits, so this regenerates only astronomically rarely.
+    delim = _new_heredoc_delim()
+    while delim in command:
+        delim = _new_heredoc_delim()
     # __COMMAND__ is substituted last so command content can never collide with a
     # remaining placeholder token.
     return (
@@ -679,18 +689,30 @@ def _build_capture_execute_cmd(command: str, capture_path: str, *, inline_budget
 
 
 def _parse_capture_execute_output(output: str, *, backend_truncated: bool = False) -> tuple[bool, ExecuteResponse]:
-    """Parse capture-wrapper stdout into `(offloaded, ExecuteResponse)`.
+    r"""Parse capture-wrapper stdout into `(offloaded, ExecuteResponse)`.
+
+    The wrapper emits a meta line followed by the body:
+
+        <sentinel> <exit_code> <offloaded> <capped>\n<inline output or preview>
+
+    i.e. four space-separated fields on the first line — the sentinel, the
+    command's exit code, `1`/`0` for whether output was offloaded to the capture
+    file, and `1`/`0` for whether it hit the size cap — then everything after the
+    first newline is the body (full output when inline, head/tail preview when
+    offloaded).
 
     `offloaded` is kept separate from `ExecuteResponse` because it describes the
     capture mechanism, not the command result (an ordinary `execute` never sets
-    it). Falls back to `(False, raw output)` when the meta line is absent — e.g.
-    if the backend truncated transport; the caller must not re-run the command in
-    that case. `ExecuteResponse.truncated` is set when the captured output hit the
-    size cap (the saved file is incomplete) or `backend_truncated` is passed
-    through from the underlying `execute`.
+    it). Falls back to `(False, raw output)` when the meta line is absent or
+    malformed — e.g. if the backend truncated transport; the caller must not
+    re-run the command in that case. `ExecuteResponse.truncated` is set when the
+    captured output hit the size cap (the saved file is incomplete) or
+    `backend_truncated` is passed through from the underlying `execute`.
     """
     first, _, body = output.partition("\n")
     parts = first.split(" ")
+    # Expect exactly the four meta fields described above; anything else is not
+    # our wrapper's output, so fall back to returning it verbatim.
     if len(parts) != 4 or parts[0] != _EXECUTE_CAPTURE_SENTINEL:  # noqa: PLR2004
         offloaded = False
         return offloaded, ExecuteResponse(output=output, truncated=backend_truncated)

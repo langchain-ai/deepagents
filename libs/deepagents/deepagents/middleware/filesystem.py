@@ -1822,19 +1822,24 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         )
 
     def _resolve_capture(self, resolved_backend: BackendProtocol, tool_call_id: str | None) -> tuple[BaseSandbox, str] | None:
-        """Resolve `(executor, capture_path)` for capture-at-source, or `None` to skip.
+        """Resolve the executing sandbox and offload path for capture-at-source.
 
         Capture-at-source writes output to a literal path via the sandbox shell
-        and later reads it back through the backend, so it is only sound when
-        `execute()` and `read_file` share one filesystem at that path. Only
-        `BaseSandbox` guarantees this, so it is gated on it (a stub or host-shell
-        backend falls back to plain execute plus generic eviction). Also returns
-        `None` when eviction is disabled, the tool call has no id, or the offload
-        path would route to a different backend.
+        and later reads it back through the backend, which requires `execute()`
+        and `read_file` to resolve to the same filesystem at that path. Only
+        `BaseSandbox` provides that guarantee, so it is gated on it; the offload
+        path must also route to the executing backend rather than a different
+        composite route.
 
         Whether capture is actually applied is left to the executor's
         `execute_with_offload` (which honors `enable_capture_offload`); this only
-        decides whether the offload path is sound to attempt.
+        decides whether the offload path is valid to attempt.
+
+        Returns:
+            `(executor, capture_path)` when capture-at-source can be attempted, or
+            `None` to skip it (eviction disabled, no tool-call id, the backend is
+            not a `BaseSandbox`, or the offload path routes elsewhere) — in which
+            case the caller uses plain execute plus generic eviction.
         """
         if not self._tool_token_limit_before_evict or not tool_call_id:
             return None

@@ -140,6 +140,7 @@ Reddit = "https://www.reddit.com/r/LangChain/"
 test = [
     "textual-dev>=1.8.0,<2.0.0",
     "build>=1.5.0,<2.0.0",
+    "blockbuster>=1.5.26,<2.0.0",
     # Build backend; imported by tests that exercise the `hatch_build.py` hook.
     "hatchling>=1.27.0,<2.0.0",
     "ruff>=0.15.18,<1.0.0",

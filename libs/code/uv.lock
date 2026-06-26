@@ -1223,6 +1223,7 @@ xai = [
 
 [package.dev-dependencies]
 test = [
+    { name = "blockbuster" },
     { name = "build" },
     { name = "hatchling" },
     { name = "pytest" },
@@ -1307,6 +1308,7 @@ provides-extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fir
 
 [package.metadata.requires-dev]
 test = [
+    { name = "blockbuster", specifier = ">=1.5.26,<2.0.0" },
     { name = "build", specifier = ">=1.5.0,<2.0.0" },
     { name = "hatchling", specifier = ">=1.27.0,<2.0.0" },
     { name = "pytest", specifier = ">=9.1.1,<10.0.0" },

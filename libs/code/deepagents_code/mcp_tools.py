@@ -605,10 +605,20 @@ def _validate_tool_filter_fields(
 
 
 def _looks_like_comment(doc: str, lineno: int) -> bool:
-    """Return `True` if the offending line opens a `//` or `/*` comment.
+    """Return `True` if the offending line *begins* with `//` or `/*`.
 
-    Scoped to the failing line and ignores `://` so URL schemes (common in
-    remote-server `url` fields) do not trigger a false comment hint.
+    Only the failing line is checked, and only its leading characters (after
+    stripping indentation). A `url` value such as `"url": "https://..."`
+    begins with a quote, not `//`, so a URL scheme inside a quoted string
+    never triggers a false comment hint.
+
+    Args:
+        doc: Full source text that failed to parse.
+        lineno: 1-based line number of the error; out-of-range values
+            return `False`.
+
+    Returns:
+        `True` when the stripped failing line starts with `//` or `/*`.
     """
     lines = doc.splitlines()
     if lineno < 1 or lineno > len(lines):
@@ -618,7 +628,19 @@ def _looks_like_comment(doc: str, lineno: int) -> bool:
 
 
 def _json_error_hint(exc: json.JSONDecodeError) -> str | None:
-    """Return an actionable hint for a common JSON mistake, or `None`."""
+    """Return an actionable hint for a common JSON mistake, or `None`.
+
+    Checks are ordered most-specific-first (trailing comma, then comment,
+    then generic decoder-message keywords) so a more precise hint wins when
+    several could apply.
+
+    Args:
+        exc: The decode error to classify.
+
+    Returns:
+        A hint string for a recognized mistake, or `None` when no specific
+            guidance applies.
+    """
     msg = exc.msg.lower()
     if "trailing comma" in msg:
         return (

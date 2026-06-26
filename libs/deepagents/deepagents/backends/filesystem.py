@@ -12,8 +12,6 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-import wcmatch.glob as wcglob
-
 from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends.protocol import (
     DEFAULT_GREP_TIMEOUT,
@@ -39,6 +37,7 @@ from deepagents.backends.protocol import (
 from deepagents.backends.utils import (
     _get_file_type,
     check_empty_content,
+    compile_grep_include_glob,
     perform_string_replacement,
 )
 
@@ -800,7 +799,7 @@ class FilesystemBackend(BackendProtocol):
                 should treat such results as incomplete.
         """
         deadline = time.monotonic() + timeout
-        glob_matcher = wcglob.compile(include_glob, flags=wcglob.BRACE | wcglob.GLOBSTAR) if include_glob else None
+        glob_matcher = compile_grep_include_glob(include_glob) if include_glob else None
 
         results: dict[str, list[tuple[int, str]]] = {}
         file_errors: list[str] = []
@@ -845,8 +844,8 @@ class FilesystemBackend(BackendProtocol):
                 except (PermissionError, OSError, RuntimeError):
                     continue
                 if glob_matcher is not None:
-                    rel_path = str(fp.relative_to(root))
-                    if not glob_matcher.match(rel_path):
+                    rel_path = fp.relative_to(root).as_posix()
+                    if not glob_matcher(rel_path):
                         continue
                 try:
                     if fp.stat().st_size > self.max_file_size_bytes:

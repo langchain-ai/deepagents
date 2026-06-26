@@ -8,9 +8,9 @@ enable composition without fragile string parsing.
 import functools
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 from typing import Any, Literal, overload
 
 import wcmatch.glob as wcglob
@@ -74,9 +74,38 @@ GrepMatch = _GrepMatch
 
 
 @functools.lru_cache(maxsize=256)
-def _compile_glob(pattern: str) -> wcglob.WcMatcher:
-    """Compile a glob pattern once and cache it (BRACE flag)."""
-    return wcglob.compile(pattern, flags=wcglob.BRACE)
+def compile_grep_include_glob(pattern: str) -> Callable[[str], bool]:
+    """Compile a grep include-glob into a matcher with ripgrep-like semantics.
+
+    Provides one shared include-glob behavior for every backend so the same
+    `grep(..., glob=...)` call matches the same files regardless of backend or
+    whether ripgrep is installed:
+
+    - Patterns without a `/` match the basename at any depth. Example: `*.py`
+      matches `src/app/main.py`.
+    - Patterns containing a `/` match the path relative to the grep search
+      root, with `**` support. Example: `src/**/*.py` matches `src/app/main.py`.
+
+    Args:
+        pattern: Glob include pattern.
+
+    Returns:
+        Predicate accepting a search-root-relative POSIX path; returns True when
+        the path is included by `pattern`.
+    """
+    flags = wcglob.BRACE | wcglob.GLOBSTAR
+    compiled = wcglob.compile(pattern, flags=flags)
+
+    if "/" in pattern:
+
+        def matcher(rel_path: str) -> bool:
+            return bool(compiled.match(rel_path))
+    else:
+
+        def matcher(rel_path: str) -> bool:
+            return bool(compiled.match(PurePosixPath(rel_path).name))
+
+    return matcher
 
 
 def _normalize_content(file_data: FileData) -> str:
@@ -591,6 +620,23 @@ def _filter_files_by_path(files: dict[str, Any], normalized_path: str) -> dict[s
     return {fp: fd for fp, fd in files.items() if fp.startswith(dir_prefix)}
 
 
+def _relative_to_root(file_path: str, normalized_path: str) -> str:
+    """Return `file_path` relative to a normalized grep/glob search root.
+
+    Args:
+        file_path: Absolute file path (e.g. "/src/app/main.py").
+        normalized_path: Normalized search root from `_normalize_path`.
+
+    Returns:
+        POSIX path relative to the search root (e.g. "src/app/main.py").
+    """
+    if normalized_path == "/":
+        return file_path[1:]
+    if file_path == normalized_path:
+        return file_path.rsplit("/", maxsplit=1)[-1]
+    return file_path[len(normalized_path) + 1 :]
+
+
 def _glob_search_files(
     files: dict[str, Any],
     pattern: str,
@@ -709,8 +755,8 @@ def grep_matches_from_files(
     filtered = _filter_files_by_path(files, normalized_path)
 
     if glob:
-        matcher = _compile_glob(glob)
-        filtered = {fp: fd for fp, fd in filtered.items() if matcher.match(Path(fp).name)}
+        matcher = compile_grep_include_glob(glob)
+        filtered = {fp: fd for fp, fd in filtered.items() if matcher(_relative_to_root(fp, normalized_path))}
 
     matches: list[GrepMatch] = []
     for file_path, file_data in filtered.items():

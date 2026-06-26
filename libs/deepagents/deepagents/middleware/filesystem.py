@@ -337,7 +337,7 @@ def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileDa
     if left is None:
         return {k: v for k, v in right.items() if v is not None}
 
-    result = {**left}
+    result: dict[str, FileData] = dict(left)
     for key, value in right.items():
         if value is None:
             result.pop(key, None)

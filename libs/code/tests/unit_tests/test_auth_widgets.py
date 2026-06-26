@@ -1040,6 +1040,26 @@ api_key_url = "javascript:alert(1)"
             # The URL value itself is not leaked into the hint.
             assert "scoped.example" not in text
 
+    async def test_base_url_hint_names_surviving_alternate_var(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The blank-endpoint hint includes alternate env vars that still resolve."""
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", tmp_path / "none.toml")
+        monkeypatch.setenv(
+            "DEEPAGENTS_CODE_BASETEN_API_BASE", "https://legacy.example/v1"
+        )
+        model_config.clear_caches()
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("baseten", "BASETEN_API_KEY")
+            await pilot.pause()
+            hint = app.screen.query_one("#auth-prompt-base-url-hint", Static)
+            text = str(hint.content)
+            assert "Leave blank to use DEEPAGENTS_CODE_BASETEN_API_BASE" in text
+            assert "DEEPAGENTS_CODE_BASETEN_BASE_URL, then BASETEN_BASE_URL" in text
+            assert "DEEPAGENTS_CODE_BASETEN_API_BASE, then BASETEN_API_BASE" in text
+            assert "legacy.example" not in text
+
     async def test_no_logging_of_secret(self, caplog: pytest.LogCaptureFixture) -> None:
         """Submitting a key never lands its value in widget logs."""
         secret = "sk-do-not-log-zzz"

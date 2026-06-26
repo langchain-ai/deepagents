@@ -1231,6 +1231,92 @@ def test_install_script_linux_skips_clt_check(tmp_path: Path) -> None:
     assert uv_args.exists()
 
 
+def _invoke_with_local_uv_not_on_path(
+    tmp_path: Path, *, env_file_content: str | None = None
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    """Run with uv present only in ~/.local/bin, absent from PATH."""
+    bin_dir, home, uv = _write_fake_tools(
+        tmp_path, installed_version=None, latest_version="0.2.0"
+    )
+
+    local_bin = home / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    local_uv = local_bin / "uv"
+    local_uv.write_text(uv.read_text())
+    _make_executable(local_uv)
+    uv.unlink()
+    if env_file_content is not None:
+        (local_bin / "env").write_text(env_file_content)
+
+    path_without_uv = os.pathsep.join(
+        entry
+        for entry in _path_without_dcode().split(os.pathsep)
+        if entry and not (Path(entry) / "uv").exists()
+    )
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+        "PATH": f"{bin_dir}{os.pathsep}{path_without_uv}",
+        "DEEPAGENTS_CODE_SKIP_OPTIONAL": "1",
+    }
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    return proc, tmp_path / "uv-args.txt"
+
+
+def test_install_script_uses_local_uv_when_not_on_path(tmp_path: Path) -> None:
+    """A minimal MDM PATH must not reinstall uv when ~/.local/bin/uv exists."""
+    proc, uv_args = _invoke_with_local_uv_not_on_path(tmp_path)
+
+    assert proc.returncode == 0
+    assert uv_args.exists()
+    assert "uv not found — installing" not in proc.stdout + proc.stderr
+    assert uv_args.read_text().splitlines()[:3] == ["tool", "install", "-U"]
+
+
+def test_install_script_sources_uv_env_file_defensively(tmp_path: Path) -> None:
+    """A non-zero command in uv's env file must not abort the installer."""
+    proc, uv_args = _invoke_with_local_uv_not_on_path(
+        tmp_path,
+        env_file_content='export PATH="$HOME/.local/bin:$PATH"\nfalse\n',
+    )
+
+    assert proc.returncode == 0
+    assert uv_args.exists()
+    assert "uv not found — installing" not in proc.stdout + proc.stderr
+    assert uv_args.read_text().splitlines()[:3] == ["tool", "install", "-U"]
+
+
+def test_install_script_rejects_invalid_uv_bin_without_installing(
+    tmp_path: Path,
+) -> None:
+    """A bad `UV_BIN` should fail clearly instead of reinstalling uv."""
+    cases = [
+        (tmp_path / "missing", tmp_path / "missing" / "uv"),
+        (tmp_path / "directory", tmp_path / "directory" / "uv"),
+    ]
+    cases[1][1].mkdir(parents=True)
+
+    for root, uv_bin in cases:
+        root.mkdir(exist_ok=True)
+        proc, uv_args = _invoke(root, {"UV_BIN": str(uv_bin)})
+
+        assert proc.returncode != 0
+        assert not uv_args.exists()
+        assert (
+            f"UV_BIN is set but does not point to an executable uv: {uv_bin}"
+            in proc.stderr
+        )
+
+
 def _invoke_with_local_dcode_not_on_path(
     tmp_path: Path, *, create_env_file: bool = False
 ) -> subprocess.CompletedProcess[str]:

@@ -11,44 +11,12 @@ from deepagents_talon.interfaces import (
     AgentResult,
     ChannelMedia,
     ChannelMessage,
-    ChannelStatus,
     ToolApprovalRequest,
 )
+from tests.conftest import RecordingChannel
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
     from pathlib import Path
-
-
-class RecordingChannel:
-    def __init__(self) -> None:
-        self.handler: Callable[[ChannelMessage], Awaitable[None]] | None = None
-        self.started = False
-        self.stopped = False
-        self.sent: list[tuple[str, str]] = []
-        self.media: list[tuple[str, ChannelMedia]] = []
-
-    async def start(self) -> None:
-        self.started = True
-
-    async def stop(self) -> None:
-        self.stopped = True
-
-    def set_message_handler(self, handler: Callable[[ChannelMessage], Awaitable[None]]) -> None:
-        self.handler = handler
-
-    async def send_message(self, conversation_id: str, text: str) -> None:
-        self.sent.append((conversation_id, text))
-
-    async def send_media(self, conversation_id: str, media: ChannelMedia) -> None:
-        self.media.append((conversation_id, media))
-        self.sent.append((conversation_id, f"{media.media_type}:{media.path}"))
-
-    async def edit_message(self, conversation_id: str, message_id: str, text: str) -> None:
-        self.sent.append((conversation_id, f"{message_id}:{text}"))
-
-    async def status(self) -> ChannelStatus:
-        return ChannelStatus(provider="test", connected=True)
 
 
 class RecordingScheduler:
@@ -81,6 +49,25 @@ class BlockingAgent:
         if request.text == "block":
             await self.released.wait()
         return AgentResult(text=f"reply:{request.text}")
+
+
+class HistoryAgent:
+    def __init__(self) -> None:
+        self.history: dict[str, list[str]] = {}
+        self.requests: list[AgentRequest] = []
+
+    async def start(self) -> None:
+        pass
+
+    async def stop(self) -> None:
+        pass
+
+    async def invoke(self, request: AgentRequest) -> AgentResult:
+        self.requests.append(request)
+        history = self.history.setdefault(request.conversation_id, [])
+        seen = len(history)
+        history.append(request.text)
+        return AgentResult(text=f"seen:{seen}")
 
 
 class VoiceTranscriber:
@@ -183,6 +170,69 @@ async def test_stop_cancels_in_flight_conversation(tmp_path: Path) -> None:
     assert channel.sent == [("chat", "Stopped current run.")]
 
 
+async def test_new_command_starts_fresh_conversation_thread(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = HistoryAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="first"))
+    await _wait_for_sent_count(channel, 1)
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="/new"))
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="second"))
+    await _wait_for_sent_count(channel, 3)
+    await host.stop()
+
+    assert [request.text for request in agent.requests] == ["first", "second"]
+    assert agent.requests[0].conversation_id == "chat"
+    assert agent.requests[1].conversation_id.startswith("chat:talon-reset:")
+    assert channel.sent == [
+        ("chat", "seen:0"),
+        ("chat", "Started a fresh conversation."),
+        ("chat", "seen:0"),
+    ]
+
+
+async def test_new_command_accepts_telegram_bot_command_suffix(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = HistoryAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="/new@TestBot"))
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="hello"))
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    assert [request.text for request in agent.requests] == ["hello"]
+    assert agent.requests[0].conversation_id.startswith("chat:talon-reset:")
+    assert channel.sent == [
+        ("chat", "Started a fresh conversation."),
+        ("chat", "seen:0"),
+    ]
+
+
+async def test_new_command_cancels_in_flight_conversation(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
+    await _wait_for_request(agent, "block")
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="/new"))
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="second"))
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    assert [request.text for request in agent.requests] == ["block", "second"]
+    assert agent.requests[1].conversation_id.startswith("chat:talon-reset:")
+    assert channel.sent == [
+        ("chat", "Started a fresh conversation."),
+        ("chat", "reply:second"),
+    ]
+
+
 async def test_host_sends_markdown_media_refs_as_channel_media(tmp_path: Path) -> None:
     channel = RecordingChannel()
     workspace = tmp_path / "workspace"
@@ -258,6 +308,35 @@ async def test_host_passes_inbound_photo_as_model_content(tmp_path: Path) -> Non
     assert isinstance(content, list)
     assert content[0] == {"type": "text", "text": "look"}
     assert content[1]["type"] == "image_url"
+
+
+async def test_host_passes_inbound_video_path_in_text(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    video = tmp_path / "inbound.mp4"
+    video.write_bytes(b"video-bytes")
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(
+            conversation_id="chat",
+            text="watch this",
+            metadata={
+                "media_type": "video",
+                "media_paths": [str(video)],
+                "media_mime_types": ["video/mp4"],
+            },
+        ),
+    )
+    await _wait_for_request(agent, f"watch this\n\n_(Received video attachment: {video}.)_")
+    await host.stop()
+
+    request = agent.requests[0]
+    assert "unsupported" not in request.text
+    assert request.metadata["media_type"] == "video"
+    assert request.metadata["media_paths"] == [str(video)]
 
 
 async def test_host_routes_tool_approval_reply_to_pending_run(tmp_path: Path) -> None:

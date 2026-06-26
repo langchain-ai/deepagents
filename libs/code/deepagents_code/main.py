@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
 
 if TYPE_CHECKING:
+    from langgraph.graph.state import CompiledStateGraph
     from rich.console import Console
 
     from deepagents_code.app import AppResult
@@ -38,6 +39,119 @@ logger = logging.getLogger(__name__)
 
 _SANDBOX_DEFAULT_SENTINEL = "\x00default"
 """Marker stored by `--sandbox` with no value, resolved to `[sandboxes].default`."""
+
+
+_ACP_AGENT_MODE = "agent"
+"""Default ACP session mode for normal agent execution."""
+
+_ACP_PLAN_MODE = "plan"
+"""ACP session mode for planning-oriented clients."""
+
+_ACP_ASK_MODE = "ask"
+"""ACP session mode for Q&A without workspace changes."""
+
+
+def _acp_model_name(spec: str) -> str:
+    """Return a display name for an ACP model selector entry.
+
+    Args:
+        spec: Model spec, usually in `provider:model` form.
+
+    Returns:
+        Human-readable model name for ACP clients.
+    """
+    if ":" not in spec:
+        return spec
+    _provider, model = spec.split(":", maxsplit=1)
+    return model
+
+
+def _is_acp_model_provider_selectable(provider: str) -> bool:
+    """Return whether an ACP model selector should offer a provider.
+
+    Args:
+        provider: Provider name from a `provider:model` spec.
+
+    Returns:
+        `True` when model creation should not be blocked by missing credentials.
+    """
+    from deepagents_code.model_config import get_provider_auth_status
+
+    return not get_provider_auth_status(provider).blocks_start
+
+
+def _build_acp_model_options(current_model: str) -> list[dict[str, str]]:
+    """Build ACP model selector entries with the current model first.
+
+    Args:
+        current_model: Resolved `provider:model` spec currently in use.
+
+    Returns:
+        Model entries shaped for `AgentServerACP`.
+    """
+    from deepagents_code.model_config import get_available_models, load_recent_models
+
+    specs: list[str] = [current_model]
+
+    try:
+        specs.extend(load_recent_models())
+    except Exception:
+        logger.warning("Could not load recent models for ACP selector", exc_info=True)
+
+    try:
+        available = get_available_models()
+    except Exception:
+        logger.warning(
+            "Could not discover available models for ACP selector",
+            exc_info=True,
+        )
+        available = {}
+
+    for provider, models in available.items():
+        specs.extend(f"{provider}:{model}" for model in models)
+
+    unique_specs = list(dict.fromkeys(spec for spec in specs if spec))
+    return [
+        {
+            "value": spec,
+            "name": _acp_model_name(spec),
+            "description": spec,
+        }
+        for spec in unique_specs
+        if spec == current_model
+        or ":" not in spec
+        or _is_acp_model_provider_selectable(spec.split(":", maxsplit=1)[0])
+    ]
+
+
+def _build_acp_modes() -> object:
+    """Build ACP session modes advertised by `dcode --acp`.
+
+    Returns:
+        ACP `SessionModeState` instance.
+    """
+    from acp.schema import SessionMode, SessionModeState
+
+    return SessionModeState(
+        current_mode_id=_ACP_AGENT_MODE,
+        available_modes=[
+            SessionMode(
+                id=_ACP_AGENT_MODE,
+                name="Agent",
+                description="Run normally with approval prompts for gated tools.",
+            ),
+            SessionMode(
+                id=_ACP_PLAN_MODE,
+                name="Plan",
+                description="Plan-oriented session mode for ACP clients.",
+            ),
+            SessionMode(
+                id=_ACP_ASK_MODE,
+                name="Ask",
+                description="Answer questions without file or command changes.",
+            ),
+        ],
+    )
 
 
 def build_version_text() -> str:
@@ -1906,7 +2020,11 @@ async def _run_acp_cli_async(
     Returns:
         Exit code for ACP mode.
     """
-    from deepagents_code.agent import create_cli_agent, load_async_subagents
+    from deepagents_code.agent import (
+        create_cli_agent,
+        get_system_prompt,
+        load_async_subagents,
+    )
     from deepagents_code.config import create_model, settings
     from deepagents_code.model_config import (
         ModelConfigError,
@@ -1964,24 +2082,76 @@ async def _run_acp_cli_async(
 
     async_subagents = load_async_subagents() or None
 
-    try:
-        from langgraph.checkpoint.memory import InMemorySaver
+    from deepagents_acp.server import AgentSessionContext
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from deepagents_code.acp_prompts import append_acp_mode_prompt
+
+    checkpointer = InMemorySaver()
+    acp_models = _build_acp_model_options(resolved_spec)
+    acp_modes = _build_acp_modes()
+
+    def build_agent(context: AgentSessionContext) -> "CompiledStateGraph":
+        """Build a session-scoped ACP agent from selector state.
+
+        Args:
+            context: ACP session context containing cwd, mode, and model.
+
+        Returns:
+            Compiled CLI agent graph.
+        """
+        selected_model = context.model or resolved_spec
+        selected_model_result = create_model(
+            selected_model,
+            extra_kwargs=model_params,
+            profile_overrides=profile_override,
+        )
+        selected_model_result.apply_to_settings()
+        selected_spec = (
+            f"{selected_model_result.provider}:{selected_model_result.model_name}"
+        )
+        save_recent_model(selected_spec)
+        touch_recent_model(selected_spec)
+        system_prompt = None
+        enable_shell = True
+        permissions = None
+        if context.mode in {_ACP_PLAN_MODE, _ACP_ASK_MODE}:
+            system_prompt = append_acp_mode_prompt(
+                get_system_prompt(
+                    assistant_id=assistant_id,
+                    sandbox_type=None,
+                    interactive=True,
+                    cwd=context.cwd,
+                ),
+                context.mode,
+            )
+        if context.mode == _ACP_ASK_MODE:
+            from deepagents.middleware.filesystem import FilesystemPermission
+
+            enable_shell = False
+            permissions = [
+                FilesystemPermission(
+                    operations=["write"],
+                    paths=["/**"],
+                    mode="deny",
+                )
+            ]
 
         agent_graph, _backend = create_cli_agent(
-            model=model_result.model,
+            model=selected_model_result.model,
             assistant_id=assistant_id,
             tools=tools,
+            system_prompt=system_prompt,
             mcp_server_info=mcp_server_info,
-            checkpointer=InMemorySaver(),
+            checkpointer=checkpointer,
             async_subagents=async_subagents,
+            enable_shell=enable_shell,
+            permissions=permissions,
+            cwd=context.cwd,
         )
-    except Exception as exc:
-        sys.stderr.write(f"Error: failed to create agent: {exc}\n")
-        sys.stderr.flush()
-        logger.debug("ACP agent creation failed", exc_info=True)
-        return 1
+        return agent_graph
 
-    server = agent_server_cls(agent_graph)  # Pregel is a CompiledStateGraph at runtime
+    server = agent_server_cls(build_agent, modes=acp_modes, models=acp_models)
     exit_code = 0
     try:
         await run_acp_agent(server)

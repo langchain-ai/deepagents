@@ -34,6 +34,7 @@ if TYPE_CHECKING:
 
     from deepagents.backends.sandbox import SandboxBackendProtocol
     from deepagents.middleware.async_subagents import AsyncSubAgent
+    from deepagents.middleware.filesystem import FilesystemPermission
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
     from langchain.agents.middleware import InterruptOnConfig
     from langchain.agents.middleware.types import AgentState
@@ -1254,6 +1255,7 @@ def create_cli_agent(
     cwd: str | Path | None = None,
     project_context: ProjectContext | None = None,
     async_subagents: list[AsyncSubAgent] | None = None,
+    permissions: list[FilesystemPermission] | None = None,
 ) -> tuple[Pregel[Any, Any, Any, Any], CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -1336,6 +1338,8 @@ def create_cli_agent(
         async_subagents: Remote LangGraph deployments to expose as async subagent tools.
 
             Loaded from `[async_subagents]` in `config.toml` or passed directly.
+        permissions: Optional filesystem permission rules forwarded to the SDK
+            filesystem tools.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -1722,6 +1726,7 @@ def create_cli_agent(
         context_schema=CLIContextSchema,
         checkpointer=checkpointer,
         subagents=all_subagents or None,
+        permissions=permissions,
         name=_sanitize_agent_message_name(assistant_id),
     ).with_config(config)
     return agent, composite_backend

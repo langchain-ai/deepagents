@@ -177,6 +177,7 @@ include = [
 
 [tool.uv.sources]
 deepagents = { path = "../deepagents", editable = true }
+deepagents-acp = { path = "../acp", editable = true }
 langchain-daytona = { path = "../partners/daytona", editable = true }
 langchain-modal = { path = "../partners/modal", editable = true }
 langchain-quickjs = { path = "../partners/quickjs", editable = true }

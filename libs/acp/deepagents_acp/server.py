@@ -41,6 +41,7 @@ from acp.schema import (
     ResourceContentBlock,
     SessionConfigOptionBoolean,
     SessionConfigOptionSelect,
+    SessionConfigSelectGroup,
     SessionConfigSelectOption,
     SessionModeState,
     SseMcpServer,
@@ -224,14 +225,7 @@ class AgentServerACP(ACPAgent):
         # Add model selector if models are configured
         if self._models is not None and len(self._models) > 0:
             current_model = self._session_models.get(session_id, self._models[0]["value"])
-            model_options = [
-                SessionConfigSelectOption(
-                    value=model["value"],
-                    name=model["name"],
-                    description=model.get("description", ""),
-                )
-                for model in self._models
-            ]
+            model_options = self._build_model_select_options()
 
             model_select = SessionConfigOptionSelect(
                 id="model",
@@ -247,6 +241,61 @@ class AgentServerACP(ACPAgent):
             )
 
         return config_options
+
+    def _build_model_select_options(
+        self,
+    ) -> list[SessionConfigSelectOption] | list[SessionConfigSelectGroup]:
+        """Build model selector options, grouped by provider when possible."""
+        if self._models is None:
+            return []
+
+        grouped: dict[str, list[SessionConfigSelectOption]] = {}
+        group_names: dict[str, str] = {}
+        ungrouped: list[SessionConfigSelectOption] = []
+
+        for model in self._models:
+            option = SessionConfigSelectOption(
+                value=model["value"],
+                name=model["name"],
+                description=model.get("description", ""),
+            )
+            group = self._model_group(model)
+            if group is None:
+                ungrouped.append(option)
+                continue
+            grouped.setdefault(group, []).append(option)
+            group_names.setdefault(group, model.get("group_name", group))
+
+        if not grouped or ungrouped:
+            return [
+                SessionConfigSelectOption(
+                    value=model["value"],
+                    name=model["name"],
+                    description=model.get("description", ""),
+                )
+                for model in self._models
+            ]
+
+        return [
+            SessionConfigSelectGroup(
+                group=group,
+                name=group_names[group],
+                options=options,
+            )
+            for group, options in grouped.items()
+        ]
+
+    def _model_group(self, model: dict[str, str]) -> str | None:
+        """Return the provider group for a model selector entry."""
+        if group := model.get("group"):
+            return group
+        if provider := model.get("provider"):
+            return provider
+        value = model.get("value", "")
+        if ":" not in value:
+            return None
+        provider, _model = value.split(":", maxsplit=1)
+        return provider or None
 
     async def initialize(
         self,

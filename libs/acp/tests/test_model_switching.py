@@ -102,7 +102,10 @@ async def test_new_session_returns_config_options(agent_factory, models):
     assert model_config.category == "model"
     assert model_config.type == "select"
     assert model_config.current_value == "anthropic:claude-opus-4-6"
-    assert len(model_config.options) == 3
+    assert len(model_config.options) == 1
+    group = model_config.options[0]
+    assert group.group == "anthropic"
+    assert len(group.options) == 3
 
 
 @pytest.mark.asyncio

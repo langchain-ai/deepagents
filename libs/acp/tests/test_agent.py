@@ -17,6 +17,7 @@ from acp.schema import (
     RequestPermissionResponse,
     ResourceContentBlock,
     SessionConfigOptionSelect,
+    SessionConfigSelectGroup,
     SessionMode,
     SessionModeState,
     TextContentBlock,
@@ -1060,6 +1061,43 @@ def test_build_config_options_models_only(monkeypatch: pytest.MonkeyPatch) -> No
 
     assert len(options) == 1
     assert options[0].category == "model"
+
+
+def test_build_config_options_groups_models_by_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Model selector options should be grouped by provider when specs include one."""
+    monkeypatch.setattr(server_module, "SessionConfigOption", None)
+
+    def factory(
+        context: AgentSessionContext,  # noqa: ARG001  # ACP factory signature requires context
+    ) -> CompiledStateGraph:
+        model = GenericFakeChatModel(
+            messages=iter([AIMessage(content="OK")]), stream_delimiter=None
+        )
+        return create_deep_agent(model=model, checkpointer=MemorySaver())
+
+    agent = AgentServerACP(
+        agent=factory,
+        models=[
+            {"value": "anthropic:claude-sonnet-4-6", "name": "claude-sonnet-4-6"},
+            {"value": "openai:gpt-5.2", "name": "gpt-5.2"},
+        ],
+    )
+    options = agent._build_config_options("session-1")
+
+    assert len(options) == 1
+    model_select = options[0]
+    assert isinstance(model_select, SessionConfigOptionSelect)
+    assert all(isinstance(group, SessionConfigSelectGroup) for group in model_select.options)
+    assert [(group.group, group.name) for group in model_select.options] == [
+        ("anthropic", "anthropic"),
+        ("openai", "openai"),
+    ]
+    assert [group.options[0].name for group in model_select.options] == [
+        "claude-sonnet-4-6",
+        "gpt-5.2",
+    ]
 
 
 def test_build_config_options_empty_models_list_omits_entry() -> None:

@@ -1644,6 +1644,12 @@ class TestToolCallMessageJsEvalArgs:
 
         assert "js_eval" in _TOOLS_WITH_HEADER_INFO
 
+    def test_delete_in_tools_with_header_info(self) -> None:
+        """`delete` is registered so its path stays in the header only."""
+        from deepagents_code.widgets.messages import _TOOLS_WITH_HEADER_INFO
+
+        assert "delete" in _TOOLS_WITH_HEADER_INFO
+
     def test_single_line_code_not_expandable(self) -> None:
         """One-line code is fully shown in the header — nothing to expand."""
         msg = ToolCallMessage("js_eval", {"code": "1 + 1"})

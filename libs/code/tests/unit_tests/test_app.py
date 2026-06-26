@@ -33,7 +33,7 @@ from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import Checkbox, Input, Static
 
-from deepagents_code._version import CHANGELOG_URL
+from deepagents_code._version import CHANGELOG_URL, __version__
 from deepagents_code.app import (
     _DEEPAGENTS_IMPORT_LOCK,
     _TYPING_IDLE_THRESHOLD_SECONDS,
@@ -6613,17 +6613,17 @@ class TestAppArgumentHints:
             assert chat._text_area.argument_hint == "[context]"
             assert chat._text_area.render_line(0).text.rstrip() == "remember [context]"
 
-            for _ in "remember ":
-                await pilot.press("left")
+            # Clear all text so backspace-on-empty exits command mode. Backspace
+            # at cursor 0 with text present is a no-op that no longer exits mode,
+            # so we must empty the field to exercise the mode-exit path.
+            chat._text_area.text = ""
             await pilot.pause()
-            assert chat._text_area.cursor_location == (0, 0)
-            assert chat._text_area.render_line(0).text.rstrip() == "remember [context]"
 
             await pilot.press("backspace")
             await pilot.pause()
 
             assert chat.mode == "normal"
-            assert chat._text_area.text == "remember "
+            assert chat._text_area.text == ""
             assert chat._text_area.argument_hint == ""
 
 
@@ -8012,8 +8012,8 @@ class TestInstallExtraModelSwitch:
             for c in app._mount_message.await_args_list  # ty: ignore
         )
         assert "Installed" in mounted
-        assert "/auth" in mounted
         assert "/model" in mounted
+        assert "prompted for credentials" in mounted
 
     async def test_install_extra_auto_restart_skips_restart_for_deferred_startup(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -9161,8 +9161,9 @@ class TestDeferredActions:
             assert isinstance(widget, ErrorMessage)
             rendered = str(widget._content)
             assert (
-                "uv tool install --reinstall -U deepagents-code "
-                "--with langchain-custom_provider" in rendered
+                "uv tool install --reinstall -U "
+                f"deepagents-code=={__version__} "
+                "--with langchain-custom_provider --prerelease allow" in rendered
             )
             assert "/model custom_provider:<model>" in rendered
 

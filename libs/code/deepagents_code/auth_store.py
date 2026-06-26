@@ -144,7 +144,11 @@ def _read_raw() -> dict | None:
             "Check the file permissions on the parent directory."
         )
         raise RuntimeError(msg) from exc
-    except json.JSONDecodeError as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        # `UnicodeDecodeError` (a `ValueError`, not an `OSError`) escapes the
+        # handler above when the file holds non-UTF-8 bytes; treat a decode
+        # failure as corruption so callers get the same `RuntimeError` hint
+        # instead of an unhandled traceback.
         msg = (
             f"Failed to parse credential file {path}: {exc}. "
             "Delete the file and re-add credentials via /auth if it is corrupt."

@@ -333,8 +333,10 @@ class CompletionPopup(VerticalScroll):
         # Increment generation so stale callbacks from prior calls are skipped.
         self._rebuild_generation += 1
         gen = self._rebuild_generation
-        # show() deferred to _rebuild_options to avoid a flash of stale content.
-        self.call_after_refresh(lambda: self._rebuild_options(gen))
+        # show() is still deferred to _rebuild_options to avoid stale content,
+        # but the rebuild runs before the next paint so prompt and popup changes
+        # appear in the same frame.
+        self.call_next(lambda: self._rebuild_options(gen))
 
     async def _rebuild_options(self, generation: int) -> None:
         """Rebuild option widgets from pending suggestions.
@@ -1116,6 +1118,22 @@ class ChatTextArea(TextArea):
         elif event.key != "enter":
             self._reset_paste_burst_run()
 
+        # A mode trigger (`!`, `!!`, `/`) typed at the very start of an
+        # unselected input switches modes. Handle it before TextArea inserts the
+        # character so the trigger never flashes on screen for a frame before
+        # the change handler would strip it.
+        if (
+            event.is_printable
+            and event.character is not None
+            and self.cursor_location == (0, 0)
+            and self.selection.is_empty
+            and self._chat_input_owner is not None
+            and self._chat_input_owner.handle_mode_prefix_keystroke(event.character)
+        ):
+            event.prevent_default()
+            event.stop()
+            return
+
         # Some terminals (e.g. VSCode built-in) send a literal backslash
         # followed by enter for shift+enter.  When enter arrives shortly
         # after a backslash, delete the backslash and insert a newline.
@@ -1767,19 +1785,8 @@ class ChatInput(Vertical):
         if self._stripping_prefix:
             self._stripping_prefix = False
         elif detected_prefix := detect_mode_prefix(text):
-            prefix, detected = detected_prefix
-            strip_length = len(prefix)
-            if self.mode == "shell" and detected == "shell":
-                # First `!` was stripped on entry to shell mode, so the
-                # currently-visible `!` is the second bang of `!!`. Promote to
-                # incognito and consume it.
-                detected = "shell_incognito"
-            elif self.mode == "shell_incognito" and detected == "shell":
-                # Already in incognito; an extra `!` is part of the command
-                # body. Skip the strip-and-demote path that would otherwise
-                # drop us back to plain shell mode.
-                detected = "shell_incognito"
-                strip_length = 0
+            prefix, raw_detected = detected_prefix
+            detected, strip_length = self._resolve_prefix_mode(prefix, raw_detected)
             if prefix == "/" and is_path_payload:
                 # Absolute dropped paths stay normal input, not slash-command mode.
                 if self.mode != "normal":
@@ -1942,6 +1949,56 @@ class ChatInput(Vertical):
             candidate = f"/{text.lstrip('/')}"
             return self._is_existing_path_payload(candidate)
         return False
+
+    def _resolve_prefix_mode(self, prefix: str, detected: str) -> tuple[str, int]:
+        """Resolve target mode and strip length for a detected mode prefix.
+
+        Applies the `!`/`!!` state machine relative to the current mode.
+
+        Returns:
+            Tuple of `(target_mode, strip_length)`.
+        """
+        strip_length = len(prefix)
+        if self.mode == "shell" and detected == "shell":
+            # First `!` was stripped on entry to shell mode, so this `!` is the
+            # second bang of `!!`. Promote to incognito and consume it.
+            detected = "shell_incognito"
+        elif self.mode == "shell_incognito" and detected == "shell":
+            # Already in incognito; an extra `!` is part of the command body.
+            # Skip the strip-and-demote path that would drop back to shell mode.
+            detected = "shell_incognito"
+            strip_length = 0
+        return detected, strip_length
+
+    def handle_mode_prefix_keystroke(self, char: str) -> bool:
+        """Switch input mode for a mode trigger typed at the start of the input.
+
+        Handles the switch before `TextArea` inserts the character so the
+        trigger (`!`, `!!`, `/`) never flashes on screen for a frame before the
+        change handler would strip it.
+
+        Returns:
+            True if the keystroke was consumed as a mode selector without
+            inserting the character, otherwise False.
+        """
+        detected_prefix = detect_mode_prefix(char)
+        if detected_prefix is None:
+            return False
+        prefix, raw_detected = detected_prefix
+        detected, strip_length = self._resolve_prefix_mode(prefix, raw_detected)
+        if not strip_length:
+            # An extra `!` inside an incognito command body is literal text.
+            return False
+        if self.mode != detected:
+            self.mode = detected
+        # No text changed, so run the same hint/completion refresh that
+        # on_text_area_changed performs after stripping a typed prefix.
+        self._update_argument_hint()
+        if self._completion_manager and self._text_area:
+            vtext, vcursor = self._completion_text_and_cursor()
+            self._completion_manager.on_text_changed(vtext, vcursor)
+        self.scroll_visible()
+        return True
 
     def _strip_mode_prefix(self, length: int = 1) -> None:
         """Remove the mode trigger from the text area.
@@ -2380,22 +2437,22 @@ class ChatInput(Vertical):
         if not self._completion_manager or not self._text_area:
             return
 
-        # Backspace at cursor position 0 (or on empty input) exits the
-        # current mode (e.g. command/shell).  When the cursor is at the very
-        # start of the text area, backspace is a no-op for the underlying
-        # widget, so without this guard the user would be stuck in the mode.
+        # Backspace at the start of a mode prompt exits the current mode. Prefix
+        # characters are mode selectors, not hidden draft text, so exiting the
+        # mode does not restore `/`, `!`, or `!!` into the input.
         if (
             event.key == "backspace"
             and self.mode != "normal"
             and self._get_cursor_offset() == 0
+            and not self._text_area.text
         ):
-            # Defer the popup reset so it coalesces with the glyph update
-            # that watch_mode schedules via call_after_refresh.
+            # Schedule the popup reset alongside the prompt/style update so both
+            # visual changes land before the next paint.
             def _deferred_reset() -> None:
                 if self._completion_manager is not None:
                     self._completion_manager.reset()
 
-            self.call_after_refresh(_deferred_reset)
+            self.call_next(_deferred_reset)
             self.mode = "normal"
             event.prevent_default()
             event.stop()
@@ -2451,9 +2508,9 @@ class ChatInput(Vertical):
     def watch_mode(self, mode: str) -> None:
         """Post mode changed message and update prompt indicator.
 
-        The prompt glyph update is deferred via `call_after_refresh` so that
-        callers which also schedule deferred work (e.g. the completion popup)
-        can coalesce both visual changes into a single refresh.
+        The prompt glyph update is scheduled for the next message-loop turn so
+        callers which also schedule popup work can coalesce both visual changes
+        before the next paint.
         """
         # Keep inline argument hints in sync for mode-only transitions
         # (for example, exiting command mode via Escape or backspace).
@@ -2500,7 +2557,7 @@ class ChatInput(Vertical):
                     "incognito" if mode == "shell_incognito" else None
                 )
 
-        self.call_after_refresh(_apply)
+        self.call_next(_apply)
         self.post_message(self.ModeChanged(mode))
 
     def focus_input(self) -> None:

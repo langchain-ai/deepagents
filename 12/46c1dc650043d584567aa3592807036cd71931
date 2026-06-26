@@ -1,0 +1,14 @@
+libs/code/CHANGELOG.md
+  h_9f69767fa5fabf 9,13-16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "1246c1dc650043d584567aa3592807036cd71931",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

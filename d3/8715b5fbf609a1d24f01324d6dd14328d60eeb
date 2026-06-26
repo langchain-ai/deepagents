@@ -1,0 +1,20 @@
+docs/superpowers/plans/2026-06-25-continual-learning-m2-retrieval-typed-beliefs.md
+  s_ff1d954e22bc10::t_152846eff91a8e 1-426,428-801
+  s_ff1d954e22bc10::t_6bdce8caf86168 427
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "d38715b5fbf609a1d24f01324d6dd14328d60eeb",
+  "prompts": {},
+  "sessions": {
+    "s_ff1d954e22bc10": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e85341e2-a6d5-4077-a245-b6953a292cae",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

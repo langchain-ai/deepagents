@@ -1,0 +1,54 @@
+libs/evals/tests/unit_tests/test_harbor_langgraph_agent.py
+  s_be045b46d84183::t_cb28729abe4ca3 23
+docs/superpowers/plans/2026-06-25-harness-eval-engine.md
+  s_be045b46d84183::t_a959e1d9f4ff2e 1569-1572
+  s_be045b46d84183::t_14d4ddf6756a94 1729-1730
+  s_be045b46d84183::t_9e1774a49804b9 1736-1740
+  s_be045b46d84183::t_e733c383bd9e29 1609
+  s_be045b46d84183::t_4fbc62d10047dd 1732
+libs/evals/tests/integration_tests/test_harbor_runner_live.py
+  s_be045b46d84183::t_363a265d211b93 1-15,24-32,35,37-39
+  s_be045b46d84183::t_c9a5918d5f1a25 16-23,33-34
+  s_be045b46d84183::t_4fbc62d10047dd 36
+  s_be045b46d84183::t_325f1fdf13d339 40-44
+libs/evals/deepagents_harness_opt/runner.py
+  s_be045b46d84183::t_8fcf0c34e2be48 142
+  s_be045b46d84183::t_f835745d23831e 12
+  s_be045b46d84183::t_15e8d0d730ac8e 75-124,131-141,143-166,168-236,243-245,250-269
+  s_be045b46d84183::t_1d241e7e7033c0 237-242,246-249
+  s_be045b46d84183::t_7a6bb956a802a8 3,8-10,15
+  s_be045b46d84183::t_a2b569084fb55a 125-130
+  s_be045b46d84183::t_d15fd0454428fc 167
+libs/evals/tests/unit_tests/harness_opt/test_harbor_runner.py
+  s_be045b46d84183::t_b0c9642000c23d 1-23,26-75,77-79,86-93
+  s_be045b46d84183::t_7ad9c7a4404245 24-25
+  s_be045b46d84183::t_b7dd63416b7228 76
+  s_be045b46d84183::t_7f5a98c6e81a55 94
+  s_be045b46d84183::t_6275c70521f1b8 95
+  s_be045b46d84183::t_dbe335b37b2378 96-107
+  s_be045b46d84183::t_e49153031f807b 80-85
+libs/evals/tests/unit_tests/harness_opt/fixtures/result_infra.json
+  s_be045b46d84183::t_2695bd1d7bd0bc 1
+libs/evals/tests/unit_tests/harness_opt/fixtures/result_pass.json
+  s_be045b46d84183::t_881f4a315b297a 1
+libs/evals/tests/unit_tests/harness_opt/fixtures/result_fail.json
+  s_be045b46d84183::t_dc2ec2c428a7b1 1
+libs/evals/pyproject.toml
+  s_be045b46d84183::t_7f0bd3dff13477 198-200
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "1d02157d2c809f2469894a9e37bc7ee91795002d",
+  "prompts": {},
+  "sessions": {
+    "s_be045b46d84183": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cade71c4-e821-4a02-888b-b70674466c73",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": null
+    }
+  }
+}

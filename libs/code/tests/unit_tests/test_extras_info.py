@@ -3,7 +3,6 @@
 import tomllib
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -14,6 +13,7 @@ from deepagents_code.extras_info import (
     MODEL_PROVIDER_EXTRAS,
     SANDBOX_EXTRAS,
     STANDALONE_EXTRAS,
+    _editable_sdk_source_root,
     extra_for_package,
     format_extras_status,
     format_extras_status_plain,
@@ -371,45 +371,40 @@ class TestResolveSdkVersion:
                 "deepagents_code.extras_info.pkg_version", return_value="1.2.3"
             ) as mock,
             patch("deepagents_code.extras_info.distribution", return_value=dist),
-            patch("deepagents_code.extras_info.importlib.import_module") as imported,
         ):
             version, status = resolve_sdk_version()
         mock.assert_called_once_with("deepagents")
-        imported.assert_not_called()
         assert (version, status) == ("1.2.3", "resolved")
 
-    def test_resolved_prefers_runtime_version_for_editable_install(self) -> None:
-        """An editable SDK reports `deepagents.__version__` over stale metadata."""
+    def test_resolved_prefers_source_version_for_editable_install(
+        self, tmp_path: Path
+    ) -> None:
+        """An editable SDK reports `_version.py` over stale metadata."""
+        version_file = tmp_path / "deepagents" / "_version.py"
+        version_file.parent.mkdir()
+        version_file.write_text('__version__ = "1.2.4"\n', encoding="utf-8")
         dist = MagicMock()
         dist.read_text.return_value = (
-            '{"url":"file:///repo/libs/deepagents","dir_info":{"editable":true}}'
+            f'{{"url":"{tmp_path.as_uri()}","dir_info":{{"editable":true}}}}'
         )
-        sdk = SimpleNamespace(__version__="1.2.4")
         with (
             patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
             patch("deepagents_code.extras_info.distribution", return_value=dist),
-            patch(
-                "deepagents_code.extras_info.importlib.import_module", return_value=sdk
-            ),
         ):
             version, status = resolve_sdk_version()
         assert (version, status) == ("1.2.4", "resolved")
 
-    def test_resolved_falls_back_to_metadata_when_editable_runtime_missing(
-        self,
+    def test_resolved_falls_back_to_metadata_when_editable_version_file_missing(
+        self, tmp_path: Path
     ) -> None:
-        """An editable SDK still reports metadata if runtime version is unavailable."""
+        """An editable SDK still reports metadata if `_version.py` is unavailable."""
         dist = MagicMock()
         dist.read_text.return_value = (
-            '{"url":"file:///repo/libs/deepagents","dir_info":{"editable":true}}'
+            f'{{"url":"{tmp_path.as_uri()}","dir_info":{{"editable":true}}}}'
         )
-        sdk = SimpleNamespace()
         with (
             patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
             patch("deepagents_code.extras_info.distribution", return_value=dist),
-            patch(
-                "deepagents_code.extras_info.importlib.import_module", return_value=sdk
-            ),
         ):
             version, status = resolve_sdk_version()
         assert (version, status) == ("1.2.3", "resolved")
@@ -426,16 +421,14 @@ class TestResolveSdkVersion:
     def test_resolved_uses_metadata_when_not_an_editable_install(
         self, direct_url: str
     ) -> None:
-        """Non-editable or unexpectedly-shaped metadata never prefers runtime."""
+        """Non-editable or unexpectedly-shaped metadata never prefers source."""
         dist = MagicMock()
         dist.read_text.return_value = direct_url
         with (
             patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
             patch("deepagents_code.extras_info.distribution", return_value=dist),
-            patch("deepagents_code.extras_info.importlib.import_module") as imported,
         ):
             version, status = resolve_sdk_version()
-        imported.assert_not_called()
         assert (version, status) == ("1.2.3", "resolved")
 
     @pytest.mark.parametrize("side_effect", [ValueError, OSError, TypeError])
@@ -444,7 +437,7 @@ class TestResolveSdkVersion:
     ) -> None:
         """A failed/invalid `direct_url.json` read degrades to the metadata version.
 
-        Exercises the `_is_editable_sdk_install` except arm: invalid JSON
+        Exercises the `_editable_sdk_source_root` except arm: invalid JSON
         (`ValueError`), an unreadable metadata file (`OSError`), and a
         non-text payload (`TypeError`) must all be swallowed rather than
         crashing the resolver.
@@ -454,48 +447,140 @@ class TestResolveSdkVersion:
         with (
             patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
             patch("deepagents_code.extras_info.distribution", return_value=dist),
-            patch("deepagents_code.extras_info.importlib.import_module") as imported,
-        ):
-            version, status = resolve_sdk_version()
-        imported.assert_not_called()
-        assert (version, status) == ("1.2.3", "resolved")
-
-    def test_resolved_falls_back_to_metadata_when_editable_import_fails(self) -> None:
-        """A broken editable SDK import degrades to the metadata version."""
-        dist = MagicMock()
-        dist.read_text.return_value = (
-            '{"url":"file:///repo/libs/deepagents","dir_info":{"editable":true}}'
-        )
-        with (
-            patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
-            patch("deepagents_code.extras_info.distribution", return_value=dist),
-            patch(
-                "deepagents_code.extras_info.importlib.import_module",
-                side_effect=ImportError("broken local checkout"),
-            ),
         ):
             version, status = resolve_sdk_version()
         assert (version, status) == ("1.2.3", "resolved")
 
-    @pytest.mark.parametrize("runtime_version", ["", None, 123])
-    def test_resolved_falls_back_to_metadata_when_runtime_version_unusable(
-        self, runtime_version: object
+    def test_resolved_falls_back_to_metadata_when_editable_version_file_invalid(
+        self, tmp_path: Path
     ) -> None:
-        """An empty or non-string runtime `__version__` is rejected for metadata."""
+        """A broken editable SDK version file degrades to the metadata version."""
+        version_file = tmp_path / "deepagents" / "_version.py"
+        version_file.parent.mkdir()
+        version_file.write_text("__version__ = ", encoding="utf-8")
         dist = MagicMock()
         dist.read_text.return_value = (
-            '{"url":"file:///repo/libs/deepagents","dir_info":{"editable":true}}'
+            f'{{"url":"{tmp_path.as_uri()}","dir_info":{{"editable":true}}}}'
         )
-        sdk = SimpleNamespace(__version__=runtime_version)
         with (
             patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
             patch("deepagents_code.extras_info.distribution", return_value=dist),
-            patch(
-                "deepagents_code.extras_info.importlib.import_module", return_value=sdk
-            ),
         ):
             version, status = resolve_sdk_version()
         assert (version, status) == ("1.2.3", "resolved")
+
+    @pytest.mark.parametrize("source_version", ["", None, 123])
+    def test_resolved_falls_back_to_metadata_when_source_version_unusable(
+        self, tmp_path: Path, source_version: object
+    ) -> None:
+        """An empty or non-string source `__version__` is rejected for metadata."""
+        version_file = tmp_path / "deepagents" / "_version.py"
+        version_file.parent.mkdir()
+        version_file.write_text(f"__version__ = {source_version!r}\n", encoding="utf-8")
+        dist = MagicMock()
+        dist.read_text.return_value = (
+            f'{{"url":"{tmp_path.as_uri()}","dir_info":{{"editable":true}}}}'
+        )
+        with (
+            patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
+            patch("deepagents_code.extras_info.distribution", return_value=dist),
+        ):
+            version, status = resolve_sdk_version()
+        assert (version, status) == ("1.2.3", "resolved")
+
+    def test_resolved_uses_metadata_for_editable_non_file_url(self) -> None:
+        """An editable install with a non-`file` source URL prefers metadata."""
+        dist = MagicMock()
+        dist.read_text.return_value = (
+            '{"url":"https://example.com/repo","dir_info":{"editable":true}}'
+        )
+        with (
+            patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
+            patch("deepagents_code.extras_info.distribution", return_value=dist),
+        ):
+            version, status = resolve_sdk_version()
+        assert (version, status) == ("1.2.3", "resolved")
+
+    @pytest.mark.parametrize(
+        "direct_url",
+        [
+            '{"dir_info":{"editable":true}}',  # url key absent
+            '{"url":123,"dir_info":{"editable":true}}',  # url not a string
+        ],
+    )
+    def test_resolved_uses_metadata_when_editable_url_unusable(
+        self, direct_url: str
+    ) -> None:
+        """An editable install without a usable source URL prefers metadata."""
+        dist = MagicMock()
+        dist.read_text.return_value = direct_url
+        with (
+            patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
+            patch("deepagents_code.extras_info.distribution", return_value=dist),
+        ):
+            version, status = resolve_sdk_version()
+        assert (version, status) == ("1.2.3", "resolved")
+
+    def test_resolved_falls_back_to_metadata_when_version_assignment_absent(
+        self, tmp_path: Path
+    ) -> None:
+        """A valid `_version.py` with no `__version__` assignment uses metadata."""
+        version_file = tmp_path / "deepagents" / "_version.py"
+        version_file.parent.mkdir()
+        version_file.write_text('VERSION = "1.2.4"\n', encoding="utf-8")
+        dist = MagicMock()
+        dist.read_text.return_value = (
+            f'{{"url":"{tmp_path.as_uri()}","dir_info":{{"editable":true}}}}'
+        )
+        with (
+            patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
+            patch("deepagents_code.extras_info.distribution", return_value=dist),
+        ):
+            version, status = resolve_sdk_version()
+        assert (version, status) == ("1.2.3", "resolved")
+
+    def test_resolved_falls_back_to_metadata_when_version_is_non_literal(
+        self, tmp_path: Path
+    ) -> None:
+        """A non-literal `__version__` RHS is rejected in favor of metadata.
+
+        Exercises the `ast.literal_eval` except arm — distinct from a
+        `SyntaxError` at parse time — where a syntactically valid but
+        dynamically-computed assignment cannot be read as a constant.
+        """
+        version_file = tmp_path / "deepagents" / "_version.py"
+        version_file.parent.mkdir()
+        version_file.write_text("__version__ = _compute_version()\n", encoding="utf-8")
+        dist = MagicMock()
+        dist.read_text.return_value = (
+            f'{{"url":"{tmp_path.as_uri()}","dir_info":{{"editable":true}}}}'
+        )
+        with (
+            patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
+            patch("deepagents_code.extras_info.distribution", return_value=dist),
+        ):
+            version, status = resolve_sdk_version()
+        assert (version, status) == ("1.2.3", "resolved")
+
+    @pytest.mark.parametrize(
+        ("url", "expected"),
+        [
+            # UNC authority is folded back into the path...
+            ("file://server/share/proj", Path("//server/share/proj")),
+            # ...but the conventional `localhost` authority is dropped.
+            ("file://localhost/repo", Path("/repo")),
+        ],
+    )
+    def test_editable_source_root_handles_url_authority(
+        self, url: str, expected: Path
+    ) -> None:
+        """`file://` authority handling distinguishes UNC hosts from `localhost`."""
+        dist = MagicMock()
+        dist.read_text.return_value = (
+            f'{{"url":"{url}","dir_info":{{"editable":true}}}}'
+        )
+        with patch("deepagents_code.extras_info.distribution", return_value=dist):
+            assert _editable_sdk_source_root() == expected
 
     def test_not_installed_distinguished_from_error(self) -> None:
         """A missing package reports `not_installed`, never `error`."""

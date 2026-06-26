@@ -451,10 +451,10 @@ def _build_check_tool(  # noqa: C901  # complexity from necessary error handling
         if isinstance(task, str):
             return task
 
-        client = clients.get_sync(task["agent_name"])
         try:
+            client = clients.get_sync(task["agent_name"])
             run = client.runs.get(thread_id=task["thread_id"], run_id=task["run_id"])
-        except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
+        except Exception as e:  # noqa: BLE001
             return f"Failed to get run status: {e}"
 
         thread_values: dict[str, Any] = {}
@@ -620,10 +620,10 @@ def _build_cancel_tool(
         if isinstance(tracked, str):
             return tracked
 
-        client = clients.get_sync(tracked["agent_name"])
         try:
+            client = clients.get_sync(tracked["agent_name"])
             client.runs.cancel(thread_id=tracked["thread_id"], run_id=tracked["run_id"])
-        except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
+        except Exception as e:  # noqa: BLE001
             return f"Failed to cancel run: {e}"
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         updated = AsyncTask(

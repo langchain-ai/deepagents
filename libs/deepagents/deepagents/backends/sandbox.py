@@ -25,6 +25,7 @@ from typing import Final
 
 from deepagents.backends.protocol import (
     ASYNC_GREP_TIMEOUT,
+    DeleteResult,
     EditResult,
     ExecuteResponse,
     FileData,
@@ -80,16 +81,12 @@ Uses base64-encoded parameters to avoid shell escaping issues.
 """
 
 _WRITE_CHECK_TEMPLATE = """python3 -c "
-import os, sys, base64
+import os, base64
 
 path = base64.b64decode('{path_b64}').decode('utf-8')
-if os.path.exists(path):
-    print('Error: File already exists: ' + repr(path))
-    sys.exit(1)
 os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
 " 2>&1"""
-"""Preflight check for write operations: verify the target file does not already
-exist and create parent directories.
+"""Preflight for write operations: create parent directories for the target path if it doesn't exist.
 
 Only the (small) base64-encoded path is interpolated — file content is
 transferred separately via `upload_files()`.
@@ -679,21 +676,20 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         return _parse_read_output(result.output, file_path)
 
     def _write_preflight(self, file_path: str) -> WriteResult | None:
-        """Run the existence check + parent-directory creation for `write()`.
+        """Create parent directories for `write()`.
 
         Subclasses overriding `write()` (e.g., to use a native SDK transport)
-        should call this first so they preserve the same "fail if file exists"
-        and parent-mkdir semantics as `BaseSandbox.write()`. There is a TOCTOU
-        window between this check and the actual write — an inherent limitation
-        of splitting the operation across two backend calls.
+        should call this first so they preserve the parent-mkdir semantics of
+        `BaseSandbox.write()`. There is a TOCTOU window between this and the
+        actual write — an inherent limitation of splitting the operation across
+        two backend calls.
 
         Args:
             file_path: Absolute path for the file about to be written.
 
         Returns:
-            `None` if the preflight passes (target does not exist, parents
-                created); a populated `WriteResult` with `error` set if the
-                check fails.
+            `None` if the preflight passes (parents created); a populated
+                `WriteResult` with `error` set if the preflight fails.
         """
         result = self.execute(_build_write_preflight_cmd(file_path))
         return _check_preflight_result(result, file_path)
@@ -708,10 +704,10 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         file_path: str,
         content: str,
     ) -> WriteResult:
-        """Create a new file, failing if it already exists.
+        """Write content to a file, creating or overwriting it if it already exists.
 
         Args:
-            file_path: Absolute path for the new file.
+            file_path: Absolute path for the file.
             content: UTF-8 text content to write.
 
         Returns:
@@ -933,6 +929,32 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             return _map_edit_error(data["error"], file_path, old_string)
 
         return EditResult(path=file_path, occurrences=data.get("count", 1))
+
+    def delete(self, file_path: str) -> DeleteResult:
+        """Delete a file or directory from the sandbox via a server-side ``rm``.
+
+        Uses ``rm -rf``, so directories are removed recursively along with their
+        contents, and deleting a path that does not exist succeeds silently. A
+        non-zero exit (e.g. a permission error) is reported as a failure.
+
+        Args:
+            file_path: Absolute path to the file or directory to delete.
+
+        Returns:
+            `DeleteResult` with the deleted path on success, or an error if the
+                deletion command fails.
+        """
+        # `shlex.quote` only neutralizes shell metacharacters so the path is
+        # passed to `rm` as a single literal argument. It is NOT a security
+        # boundary: it does not confine the deletion to any sandbox root or
+        # block traversal. Whatever the sandbox shell can reach, this can delete.
+        quoted = shlex.quote(file_path)
+        result = self.execute(f"rm -rf {quoted}")
+
+        if result.exit_code == 0:
+            return DeleteResult(path=file_path)
+
+        return DeleteResult(error=f"Error deleting file '{file_path}': {result.output.strip() or 'unknown error'}")
 
     def grep(
         self,

@@ -189,7 +189,7 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             return path.name
 
     # Tool-specific formatting - show the most important argument(s)
-    if tool_name in {"read_file", "write_file", "edit_file"}:
+    if tool_name in {"read_file", "write_file", "edit_file", "delete"}:
         # File operations: show the primary file path argument (file_path or path)
         path_value = tool_args.get("file_path")
         if path_value is None:

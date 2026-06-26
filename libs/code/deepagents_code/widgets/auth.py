@@ -487,6 +487,9 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         env_var: str | None,
         *,
         reason: str | None = None,
+        allow_empty_submit: bool = False,
+        input_placeholder: str | None = None,
+        submit_label: str | None = None,
     ) -> None:
         """Initialize the prompt for `provider`.
 
@@ -495,13 +498,20 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             env_var: Canonical env var the SDK reads, shown as helper text.
                 May be `None` for providers that don't use one of the
                 hardcoded env-var bindings (rare; the prompt still works).
-            reason: Optional one-line context, e.g.,
-                `"Required to use anthropic:claude-opus-4-7"`.
+            reason: Optional context, e.g.,
+                `"Required to use anthropic:claude-opus-4-8"`.
+            allow_empty_submit: Whether pressing Enter on an empty key dismisses
+                with `AuthResult.CANCELLED` instead of showing a validation error.
+            input_placeholder: Optional placeholder override for the key input.
+            submit_label: Optional help-label override for the Enter action.
         """
         super().__init__()
         self._provider = provider
         self._env_var = env_var
         self._reason = reason
+        self._allow_empty_submit = allow_empty_submit
+        self._input_placeholder = input_placeholder
+        self._submit_label = submit_label
         # LangSmith is configured as a tracing service: it has no base-URL
         # override but does carry an optional project name, and saving a key
         # turns tracing on.
@@ -636,7 +646,8 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                     classes="auth-prompt-error",
                 )
             yield Input(
-                placeholder=(
+                placeholder=self._input_placeholder
+                or (
                     "Paste a new key to replace the stored one"
                     if self._has_existing
                     else "Paste your API key"
@@ -644,23 +655,30 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                 password=True,
                 id="auth-prompt-input",
             )
+            storage_note: Content | None
             if self._is_langsmith:
                 storage_note = Content.from_markup(
                     "Deep Agents Code stores the above key locally and turns on "
                     "LangSmith tracing. To pause tracing without removing the key, "
                     "set [bold]DEEPAGENTS_CODE_LANGSMITH_TRACING=false[/bold]."
                 )
+            elif is_service(self._provider):
+                # Services (e.g. Tavily) skip the storage note: the title and
+                # reason copy already say what the key is for, so it only adds
+                # redundant copy here.
+                storage_note = None
             else:
                 storage_note = Content.from_markup(
                     "Deep Agents Code stores the above key locally and uses it "
                     "when you select [bold]$provider[/bold] models.",
                     provider=provider_label,
                 )
-            yield Static(
-                storage_note,
-                classes="auth-prompt-meta",
-                id="auth-prompt-storage-note",
-            )
+            if storage_note is not None:
+                yield Static(
+                    storage_note,
+                    classes="auth-prompt-meta",
+                    id="auth-prompt-storage-note",
+                )
             yield Static(
                 self._build_advanced_toggle_label(),
                 classes="auth-prompt-advanced-toggle",
@@ -736,7 +754,9 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                 base_url_hint_widget.display = self._advanced_visible
                 yield base_url_hint_widget
             yield Static("", classes="auth-prompt-error", id="auth-prompt-error")
-            save_label = "Enter replace" if self._has_existing else "Enter save"
+            save_label = self._submit_label or (
+                "Enter replace" if self._has_existing else "Enter save"
+            )
             help_parts = [f"{save_label} {glyphs.bullet} Esc cancel", "F2 advanced"]
             if self._has_existing:
                 help_parts.append("Ctrl+D delete stored")
@@ -763,9 +783,10 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         """Build provider-specific API-key acquisition guidance.
 
         Returns:
-            Content shown before the API-key input. Appends a muted notice when
-                a user-configured `api_key_url` was rejected for using an
-                unsupported URL scheme.
+            Content shown before the API-key input. May append muted notices: a
+                provider-specific caveat (e.g. Anthropic subscription plans are
+                unsupported) and/or a warning that a user-configured `api_key_url`
+                was rejected for using an unsupported URL scheme.
         """
         config = self._config
         configured_url = config.get_provider_api_key_url(self._provider)
@@ -779,12 +800,12 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         url = configured_url or PROVIDER_API_KEY_URLS.get(
             self._provider, _PROVIDERS_DOCS_URL
         )
-        label = (
-            "Provider key page"
-            if configured_url or self._provider in PROVIDER_API_KEY_URLS
-            else "Provider setup docs"
-        )
         provider = _provider_display_name(self._provider, config)
+        label = (
+            f"{provider} key page"
+            if configured_url or self._provider in PROVIDER_API_KEY_URLS
+            else f"{provider} setup docs"
+        )
         if self._provider == "azure_openai":
             instructions = Content.assemble(
                 "Find your key in your Azure OpenAI resource's "
@@ -799,6 +820,21 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                 "(/v1/responses). For older models, you may also need "
                 "Request access to Chat completions (/v1/chat/completions). ",
                 (label, self._link_style(url)),
+            )
+        elif self._provider == "anthropic":
+            instructions = Content.assemble(
+                f"Sign in to {provider}, create or copy an API key, "
+                "then paste it below. ",
+                (label, self._link_style(url)),
+                "\n",
+                (
+                    (
+                        "Subscription plans (Claude Pro/Max, Claude Code) cannot "
+                        "be used for Anthropic calls in Deep Agents Code. Only a "
+                        "standard API key with pay-as-you-go billing works here."
+                    ),
+                    "italic $text-muted",
+                ),
             )
         else:
             instructions = Content.assemble(
@@ -935,6 +971,16 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             base_url = self.query_one("#auth-prompt-base-url", Input).value.strip()
             project = ""
         if not cleaned:
+            if self._allow_empty_submit:
+                # Optional prompts (e.g. the Tavily onboarding step) treat an
+                # empty submit as an intentional skip. We deliberately reuse
+                # `CANCELLED` rather than add a `SKIPPED` outcome: every caller
+                # that allows empty submit wants identical "did not save"
+                # handling for skip and Escape, so the distinction would be
+                # dead weight. Revisit if a caller ever needs to tell a
+                # deliberate decline from an accidental dismissal.
+                self.dismiss(AuthResult.CANCELLED)
+                return
             self._show_error("API key cannot be empty.")
             return
         try:

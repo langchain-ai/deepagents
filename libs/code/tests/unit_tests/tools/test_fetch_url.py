@@ -4,12 +4,21 @@ from __future__ import annotations
 
 import socket
 from typing import TYPE_CHECKING, Any
+from unittest import mock
 
+import markdownify as markdownify_module
 import pytest
 import requests
 import responses
 
-from deepagents_code.tools import _UrlValidationError, _validate_url, fetch_url
+from deepagents_code import tools
+from deepagents_code.tools import (
+    _html_to_markdown_content,
+    _TextExtractor,
+    _UrlValidationError,
+    _validate_url,
+    fetch_url,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -96,6 +105,128 @@ def test_fetch_url_success() -> None:
     assert "Test" in result["markdown_content"]
     assert result["url"].startswith("http://example.com")
     assert result["content_length"] > 0
+
+
+@responses.activate
+@pytest.mark.usefixtures("resolve_public")
+def test_fetch_url_falls_back_when_markdownify_recurses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recursive markdown conversion falls back to extracted text."""
+    body = "<html><body><p>Hello <strong>world</strong></p><p>Second</p></body></html>"
+    responses.add(
+        responses.GET,
+        "http://example.com/deep",
+        body=body,
+        status=200,
+    )
+
+    def recursive_markdownify(_html: str) -> str:
+        msg = "maximum recursion depth exceeded"
+        raise RecursionError(msg)
+
+    monkeypatch.setattr(markdownify_module, "markdownify", recursive_markdownify)
+
+    result = fetch_url("http://example.com/deep")
+
+    assert result["status_code"] == 200
+    content = result["markdown_content"]
+    assert "Hello" in content
+    assert "world" in content
+    assert "Second" in content
+    # The fallback extracts text rather than passing raw HTML through: the
+    # markup that was present in the body must be gone. Substring assertions
+    # alone would also pass if the raw HTML leaked, so check tags are stripped.
+    assert "<strong>" not in content
+    assert "<p>" not in content
+
+
+@responses.activate
+@pytest.mark.usefixtures("resolve_public")
+def test_fetch_url_handles_deeply_nested_html() -> None:
+    """Deeply nested real HTML degrades gracefully instead of crashing.
+
+    Exercises the real `markdownify` (no monkeypatch) against markup deep
+    enough to exhaust its recursion limit, proving the premise of the fix:
+    `fetch_url` returns the inner text instead of propagating a crash.
+    """
+    depth = 6000
+    inner = "deep content here"
+    body = "<div>" * depth + inner + "</div>" * depth
+    responses.add(
+        responses.GET,
+        "http://example.com/nested",
+        body=body,
+        status=200,
+    )
+
+    result = fetch_url("http://example.com/nested")
+
+    assert result["status_code"] == 200
+    assert inner in result["markdown_content"]
+
+
+def test_text_extractor_skips_script_and_style() -> None:
+    """Script and style source is not emitted as extracted text."""
+    parser = _TextExtractor()
+    parser.feed(
+        "<style>.a{color:red}</style>"
+        "<script>var x = 1; alert('hi');</script>"
+        "<p>Hello</p>"
+    )
+    parser.close()
+
+    text = parser.get_text()
+    assert text == "Hello"
+    assert "color" not in text
+    assert "alert" not in text
+
+
+def test_text_extractor_collapses_whitespace_and_drops_empty() -> None:
+    """Internal whitespace is collapsed and empty fragments are dropped."""
+    parser = _TextExtractor()
+    parser.feed("<p>  Hello   world  </p><p>   </p>")
+    parser.close()
+
+    assert parser.get_text() == "Hello world"
+
+
+def test_text_extractor_empty_input_returns_empty_string() -> None:
+    """An empty document yields an empty string, not an error."""
+    parser = _TextExtractor()
+    parser.feed("")
+    parser.close()
+
+    assert parser.get_text() == ""
+
+
+def test_html_to_markdown_content_returns_markdownify_output() -> None:
+    """The happy path returns the injected converter's output verbatim."""
+
+    def fake_markdownify(html: str) -> str:
+        return f"converted:{html}"
+
+    assert (
+        _html_to_markdown_content("<p>x</p>", fake_markdownify) == "converted:<p>x</p>"
+    )
+
+
+def test_html_to_markdown_content_returns_empty_when_fallback_fails() -> None:
+    """If text extraction itself fails, the helper returns an empty string."""
+
+    def recursive_markdownify(_html: str) -> str:
+        msg = "maximum recursion depth exceeded"
+        raise RecursionError(msg)
+
+    class _BoomExtractor(_TextExtractor):
+        def feed(self, data: str) -> None:  # noqa: ARG002  # override signature
+            msg = "fallback parser blew up"
+            raise ValueError(msg)
+
+    with mock.patch.object(tools, "_TextExtractor", _BoomExtractor):
+        result = _html_to_markdown_content("<p>x</p>", recursive_markdownify)
+
+    assert result == ""
 
 
 @responses.activate

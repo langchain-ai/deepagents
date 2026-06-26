@@ -2476,6 +2476,7 @@ class TestGetTracingStatus:
         with patch.dict("os.environ", env, clear=False):
             status = get_tracing_status()
         assert status.enabled is False
+        assert status.explicitly_disabled is True
 
     def test_canonical_non_bridged_flag_enables(self) -> None:
         """A canonical, non-bridged flag (`LANGSMITH_TRACING_V2`) enables tracing."""

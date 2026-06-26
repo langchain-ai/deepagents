@@ -2735,14 +2735,15 @@ def _tracing_explicitly_disabled_from(env: dict[str, str]) -> bool:
     """Return whether a tracing flag is explicitly set to a recognized off value.
 
     True only when tracing is not enabled and at least one tracing-enable flag
-    carries a non-empty falsy token (`0`/`false`/`no`/`off`). An unset or empty
-    flag reads as "not configured" rather than "disabled", so a clean
-    environment is not mistaken for a deliberate opt-out.
+    carries a falsy token (`0`/`false`/`no`/`off`). An empty flag usually reads
+    as "not configured" rather than "disabled", except when an empty prefixed
+    bridged flag shadows a canonical truthy flag and therefore disables tracing.
 
     Args:
         env: Environment mapping to read.
     """
     from deepagents_code._env_vars import classify_env_bool
+    from deepagents_code.model_config import _ENV_PREFIX
 
     if _tracing_enabled_from(env):
         return False
@@ -2752,8 +2753,17 @@ def _tracing_explicitly_disabled_from(env: dict[str, str]) -> bool:
             return False
         return classify_env_bool(raw) is False
 
+    def _empty_prefixed_shadow_disables(var: str) -> bool:
+        prefixed = f"{_ENV_PREFIX}{var}"
+        if prefixed not in env or env[prefixed].strip():
+            return False
+        canonical = env.get(var)
+        return canonical is not None and classify_env_bool(canonical) is True
+
     for var in _TRACING_BRIDGED_ENABLE_ENV_VARS:
-        if _is_off(_resolve_env_var_from(env, var)):
+        if _is_off(_resolve_env_var_from(env, var)) or _empty_prefixed_shadow_disables(
+            var
+        ):
             return True
     return any(
         _is_off(env.get(var))

@@ -194,6 +194,30 @@ def test_missing_extra_hint_checks_provider_dependency(monkeypatch) -> None:
     assert _source_label("default") == "default"
 
 
+def test_source_label_marks_prefixed_credential_env_as_session_override() -> None:
+    """Only prefixed credential env sources get the session-override note."""
+    credential = get_option("credentials.anthropic")
+    assert credential is not None
+    display = get_option("display.theme")
+    assert display is not None
+
+    assert (
+        _source_label(
+            "env (DEEPAGENTS_CODE_ANTHROPIC_API_KEY)",
+            option=credential,
+        )
+        == "env (DEEPAGENTS_CODE_ANTHROPIC_API_KEY); session override"
+    )
+    assert (
+        _source_label("env (ANTHROPIC_API_KEY)", option=credential)
+        == "env (ANTHROPIC_API_KEY)"
+    )
+    assert (
+        _source_label("env (DEEPAGENTS_CODE_THEME)", option=display)
+        == "env (DEEPAGENTS_CODE_THEME)"
+    )
+
+
 def test_run_get_json_omits_secret_value(monkeypatch, capsys) -> None:
     """JSON output for a secret option reports presence but never the value."""
     import json
@@ -226,6 +250,36 @@ def test_resolve_credential_prefers_stored_over_env(monkeypatch):
     assert is_set is True
     assert source == "stored"
     assert value == "from-store"
+
+
+@pytest.mark.usefixtures("stored_auth_dir")
+def test_resolve_credential_prefers_prefixed_env_over_stored(monkeypatch):
+    """A prefixed credential env var stays authoritative over a stored key."""
+    from deepagents_code import auth_store
+
+    monkeypatch.setenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", "from-prefix")
+    auth_store.set_stored_key("anthropic", "from-store")
+    option = get_option("credentials.anthropic")
+    assert option is not None
+    is_set, source, value = _resolve(option, {})
+    assert is_set is True
+    assert source == "env (DEEPAGENTS_CODE_ANTHROPIC_API_KEY)"
+    assert value == "from-prefix"
+
+
+@pytest.mark.usefixtures("stored_auth_dir")
+def test_resolve_empty_prefixed_credential_blocks_stored(monkeypatch):
+    """An empty prefixed credential suppresses the stored key like the runtime."""
+    from deepagents_code import auth_store
+
+    monkeypatch.setenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", "")
+    auth_store.set_stored_key("anthropic", "from-store")
+    option = get_option("credentials.anthropic")
+    assert option is not None
+    is_set, source, value = _resolve(option, {})
+    assert is_set is False
+    assert source == "default"
+    assert value is None
 
 
 @pytest.mark.usefixtures("stored_auth_dir")
@@ -285,6 +339,256 @@ def test_run_get_text_reports_stored_source(capsys):
     assert "configured" in out
     assert "stored" in out
     assert "from-store" not in out
+
+
+@pytest.mark.usefixtures("stored_auth_dir")
+def test_run_get_text_reports_prefixed_env_as_session_override(monkeypatch, capsys):
+    """`config get` labels a visible prefixed credential env var as session-scoped."""
+    from deepagents_code import auth_store
+
+    monkeypatch.setenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", "from-prefix")
+    auth_store.set_stored_key("anthropic", "from-store")
+    assert _run_get("credentials.anthropic", "text") == 0
+    out = capsys.readouterr().out
+    compact = " ".join(out.split())
+    assert "configured" in out
+    assert "env (DEEPAGENTS_CODE_ANTHROPIC_API_KEY); session override" in compact
+    assert "from-prefix" not in out
+    assert "from-store" not in out
+
+
+@pytest.mark.usefixtures("stored_auth_dir")
+def test_run_get_json_redacts_stored_secret_value(capsys):
+    """`config get --json` reports a stored credential as set but never its value."""
+    import json
+
+    from deepagents_code import auth_store
+
+    auth_store.set_stored_key("anthropic", "from-store")
+    assert _run_get("credentials.anthropic", "json") == 0
+    raw = capsys.readouterr().out
+    payload = json.loads(raw)["data"]
+    assert payload["set"] is True
+    assert payload["source"] == "stored"
+    assert payload["value"] is None
+    assert "from-store" not in raw
+
+
+@pytest.mark.usefixtures("stored_auth_dir")
+def test_run_show_json_redacts_stored_secret_value(capsys):
+    """`config show --json` redacts a stored secret on the aggregate path too."""
+    import json
+
+    from deepagents_code import auth_store
+
+    auth_store.set_stored_key("anthropic", "from-store")
+    args = argparse.Namespace(config_command="show", output_format="json")
+    assert run_config_command(args) == 0
+    raw = capsys.readouterr().out
+    rows = json.loads(raw)["data"]
+    row = next(r for r in rows if r["key"] == "credentials.anthropic")
+    assert row["set"] is True
+    assert row["source"] == "stored"
+    assert row["value"] is None
+    assert "from-store" not in raw
+
+
+@pytest.mark.usefixtures("stored_auth_dir")
+def test_run_show_text_reports_stored_source(capsys):
+    """`config show` (aggregate text path) shows a stored credential as configured."""
+    from deepagents_code import auth_store
+
+    auth_store.set_stored_key("anthropic", "from-store")
+    args = argparse.Namespace(config_command="show", output_format="text")
+    assert run_config_command(args) == 0
+    out = capsys.readouterr().out
+    assert "configured" in out
+    assert "stored" in out
+    assert "from-store" not in out
+
+
+def test_resolve_empty_stored_key_falls_back_to_env(stored_auth_dir, monkeypatch):
+    """A stored entry with a blank key does not mask a working env var."""
+    import json
+
+    stored_auth_dir.mkdir(parents=True, exist_ok=True)
+    (stored_auth_dir / "auth.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "credentials": {
+                    "anthropic": {"type": "api_key", "key": "", "added_at": ""}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "from-env")
+    option = get_option("credentials.anthropic")
+    assert option is not None
+    is_set, source, value = _resolve(option, {})
+    assert is_set is True
+    assert source == "env (ANTHROPIC_API_KEY)"
+    assert value == "from-env"
+
+
+@pytest.mark.usefixtures("stored_auth_dir")
+def test_resolve_non_credential_ignores_store():
+    """Non-credential options never consult the `/auth` store."""
+    from deepagents_code import auth_store
+
+    auth_store.set_stored_key("anthropic", "from-store")
+    option = get_option("display.show_header")
+    assert option is not None
+    _, source, _ = _resolve(option, {})
+    assert source != "stored"
+
+
+@pytest.mark.usefixtures("stored_auth_dir")
+def test_resolve_tavily_service_prefers_stored(monkeypatch):
+    """A stored key for the tavily *service* resolves with a stored source.
+
+    Guards that the credential branch keys on group membership (and the
+    `provider` field), not on model-provider-registry membership.
+    """
+    from deepagents_code import auth_store
+
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPAGENTS_CODE_TAVILY_API_KEY", raising=False)
+    auth_store.set_stored_key("tavily", "from-store")
+    option = get_option("credentials.tavily")
+    assert option is not None
+    is_set, source, value = _resolve(option, {})
+    assert is_set is True
+    assert source == "stored"
+    assert value == "from-store"
+
+
+@pytest.mark.usefixtures("stored_auth_dir")
+def test_resolve_tavily_prefixed_env_overrides_stored(monkeypatch):
+    """A prefixed tavily env var wins over the stored key, matching runtime."""
+    from deepagents_code import auth_store
+
+    monkeypatch.setenv("DEEPAGENTS_CODE_TAVILY_API_KEY", "from-prefix")
+    auth_store.set_stored_key("tavily", "from-store")
+    option = get_option("credentials.tavily")
+    assert option is not None
+    is_set, source, value = _resolve(option, {})
+    assert is_set is True
+    assert source == "env (DEEPAGENTS_CODE_TAVILY_API_KEY)"
+    assert value == "from-prefix"
+
+
+def test_run_get_json_flags_unreadable_store(stored_auth_dir, capsys):
+    """`config get --json` for a credential surfaces a store-read failure in-band."""
+    import json
+
+    stored_auth_dir.mkdir(parents=True, exist_ok=True)
+    (stored_auth_dir / "auth.json").write_text("{ not json", encoding="utf-8")
+    assert _run_get("credentials.anthropic", "json") == 0
+    payload = json.loads(capsys.readouterr().out)["data"]
+    assert "store_error" in payload
+    # Redaction still holds even when the store is unreadable.
+    assert payload["value"] is None
+
+
+def test_run_get_json_non_credential_omits_store_error(stored_auth_dir, capsys):
+    """A non-credential `config get --json` never carries a `store_error` key."""
+    import json
+
+    stored_auth_dir.mkdir(parents=True, exist_ok=True)
+    (stored_auth_dir / "auth.json").write_text("{ not json", encoding="utf-8")
+    assert _run_get("display.show_header", "json") == 0
+    payload = json.loads(capsys.readouterr().out)["data"]
+    assert "store_error" not in payload
+
+
+def test_run_show_json_flags_unreadable_store(stored_auth_dir, capsys):
+    """`config show --json` marks credential rows when the store is unreadable."""
+    import json
+
+    stored_auth_dir.mkdir(parents=True, exist_ok=True)
+    (stored_auth_dir / "auth.json").write_text("{ not json", encoding="utf-8")
+    args = argparse.Namespace(config_command="show", output_format="json")
+    assert run_config_command(args) == 0
+    rows = json.loads(capsys.readouterr().out)["data"]
+    cred_rows = [r for r in rows if r["group"] == "Credentials"]
+    assert cred_rows
+    assert all("store_error" in r for r in cred_rows)
+    assert all("store_error" not in r for r in rows if r["group"] != "Credentials")
+
+
+def test_run_get_text_warns_on_unreadable_store(stored_auth_dir, capsys):
+    """`config get` text output shows a warning banner for an unreadable store."""
+    stored_auth_dir.mkdir(parents=True, exist_ok=True)
+    (stored_auth_dir / "auth.json").write_text("{ not json", encoding="utf-8")
+    assert _run_get("credentials.anthropic", "text") == 0
+    out = capsys.readouterr().out
+    assert "Warning" in out
+    assert "unreadable" in out
+
+
+@pytest.mark.usefixtures("stored_auth_dir")
+def test_run_show_reads_store_once(monkeypatch):
+    """`config show` parses the credential store once, not once per option."""
+    from deepagents_code import auth_store
+
+    calls = 0
+    real_load = auth_store.load_credentials
+
+    def _counting_load() -> dict:
+        nonlocal calls
+        calls += 1
+        return real_load()
+
+    monkeypatch.setattr(auth_store, "load_credentials", _counting_load)
+    args = argparse.Namespace(config_command="show", output_format="json")
+    assert run_config_command(args) == 0
+    # One read for the whole command, regardless of how many credential options
+    # exist — guards the single-snapshot design against a per-option regression.
+    assert calls == 1
+
+
+@pytest.mark.usefixtures("stored_auth_dir")
+def test_resolve_non_redacted_credential_shows_stored_value(monkeypatch):
+    """A non-redacted stored credential (the Vertex project) shows its value."""
+    from deepagents_code import auth_store
+
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+    monkeypatch.delenv("DEEPAGENTS_CODE_GOOGLE_CLOUD_PROJECT", raising=False)
+    auth_store.set_stored_key("google_vertexai", "my-project")
+    option = get_option("credentials.google_vertexai")
+    assert option is not None
+    assert option.redacted is False
+    is_set, source, value = _resolve(option, {})
+    assert is_set is True
+    assert source == "stored"
+    assert value == "my-project"
+
+
+@pytest.mark.usefixtures("stored_auth_dir")
+def test_run_get_json_shows_non_redacted_stored_value(capsys):
+    """`config get --json` surfaces a non-redacted stored value (not `None`)."""
+    import json
+
+    from deepagents_code import auth_store
+
+    auth_store.set_stored_key("google_vertexai", "my-project")
+    assert _run_get("credentials.google_vertexai", "json") == 0
+    payload = json.loads(capsys.readouterr().out)["data"]
+    assert payload["source"] == "stored"
+    assert payload["redacted"] is False
+    assert payload["value"] == "my-project"
+
+
+def test_run_get_non_utf8_store_does_not_crash(stored_auth_dir, capsys):
+    """A non-UTF-8 `auth.json` degrades to a warning banner, not a traceback."""
+    stored_auth_dir.mkdir(parents=True, exist_ok=True)
+    (stored_auth_dir / "auth.json").write_bytes(b"\xff\xfe not utf-8")
+    assert _run_get("credentials.anthropic", "text") == 0
+    out = capsys.readouterr().out
+    assert "Warning" in out
+    assert "unreadable" in out
 
 
 def test_charset_auto_display_value_includes_effective_glyph_mode() -> None:

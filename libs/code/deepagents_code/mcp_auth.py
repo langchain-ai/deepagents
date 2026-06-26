@@ -1051,7 +1051,8 @@ def _append_query_params(url: str, params: dict[str, str]) -> str:
 def _strip_duplicate_client_id_under_basic_auth(context: OAuthContext) -> None:
     """Drop the redundant body `client_id` when token auth uses HTTP Basic.
 
-    The MCP SDK always copies `client_id` into the token-request body and, for
+    The MCP SDK copies `client_id` into the token-request body (on both the
+    authorization-code exchange and refresh paths) and, for
     `token_endpoint_auth_method == "client_secret_basic"`, *also* sends it in the
     `Authorization: Basic` header. RFC 6749 §2.3.1 carries the client identity in
     the header for Basic auth, so the body copy is redundant; some authorization
@@ -1066,7 +1067,10 @@ def _strip_duplicate_client_id_under_basic_auth(context: OAuthContext) -> None:
         headers: dict[str, str] | None = None,
     ) -> tuple[dict[str, str], dict[str, str]]:
         data, headers = original(data, headers)
-        if headers.get("Authorization", "").startswith("Basic "):
+        # RFC 7617 makes the auth-scheme token case-insensitive, so match
+        # `basic` regardless of casing rather than coupling to the SDK's exact
+        # `Basic ` literal.
+        if headers.get("Authorization", "").lower().startswith("basic "):
             data = {k: v for k, v in data.items() if k != "client_id"}
         return data, headers
 

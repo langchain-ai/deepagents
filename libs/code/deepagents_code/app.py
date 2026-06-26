@@ -10190,7 +10190,7 @@ class DeepAgentsApp(App):
                     partial(
                         self._install_provider_then_reopen_auth,
                         extra,
-                        screen.pending_install_provider,
+                        provider=screen.pending_install_provider,
                     ),
                 )
                 return
@@ -10268,7 +10268,7 @@ class DeepAgentsApp(App):
         return True
 
     async def _install_provider_then_reopen_auth(
-        self, extra: str, provider: str | None = None
+        self, extra: str, *, provider: str | None = None
     ) -> None:
         """Install a provider's extra from `/auth`, then reopen the manager.
 
@@ -10301,6 +10301,12 @@ class DeepAgentsApp(App):
                     "Reopen `/auth` to add a key once it has.",
                 ),
             )
+            return
+        # `ready is False`: the extra genuinely didn't install. `_install_extra`
+        # has already surfaced the reason to the user, so stay in chat rather
+        # than reopen — but log it so an "install button did nothing" report is
+        # debuggable without relying on that sibling method's invariant.
+        logger.debug("Provider extra %r not importable after install attempt", extra)
 
     def _switch_agent(self, agent_name: str) -> None:
         """Switch to a different agent and hot-restart the backing server.

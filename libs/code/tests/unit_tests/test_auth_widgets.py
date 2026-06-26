@@ -1750,6 +1750,7 @@ api_key_env = "MY_GATEWAY_API_KEY"
             await pilot.press("escape")
             await pilot.pause()
             assert screen.pending_install_extra is None
+            assert screen.pending_install_provider is None
             assert isinstance(app.screen, AuthManagerScreen)
 
     async def test_disabled_known_provider_not_offered_for_install(

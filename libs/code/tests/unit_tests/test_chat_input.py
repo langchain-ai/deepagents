@@ -11,6 +11,7 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Container
 from textual.widgets import Static
+from textual.widgets.text_area import Selection
 
 from deepagents_code import _textual_patches as _textual_patches
 from deepagents_code.command_registry import SLASH_COMMANDS
@@ -1673,6 +1674,61 @@ class TestModePrefixStripping:
 
             assert chat.mode == "normal"
             assert chat._text_area.text == "ab!"
+
+    async def test_typed_trigger_at_cursor_zero_with_text_switches_mode(self) -> None:
+        """A trigger typed at start of existing text switches mode, keeps text.
+
+        Exercises the `cursor_location == (0, 0)` arm of the `_on_key` guard
+        with a non-empty input: the keystroke is consumed (no inserted `!`) and
+        the body text is preserved, matching the legacy insert-then-strip path.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("abc")
+            await pilot.pause()
+            chat._text_area.move_cursor((0, 0))
+            await pilot.pause()
+
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "shell"
+            assert chat._text_area.text == "abc"
+
+    async def test_typed_trigger_with_selection_is_not_intercepted(self) -> None:
+        """A trigger typed over a selection replaces it instead of switching.
+
+        A backward selection puts the cursor at `(0, 0)` while leaving the
+        selection non-empty, so only the `selection.is_empty` arm of the
+        `_on_key` guard keeps the keystroke from being intercepted. Removing
+        that arm would swallow the `/` and strand the selected text in the
+        input, which this test catches.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("ab")
+            await pilot.pause()
+            # Anchor at end, cursor at start: cursor_location is (0, 0) but the
+            # selection is non-empty.
+            chat._text_area.selection = Selection((0, 2), (0, 0))
+            await pilot.pause()
+            assert chat._text_area.cursor_location == (0, 0)
+            assert not chat._text_area.selection.is_empty
+
+            await pilot.press("/")
+            await _pause_for_strip(pilot)
+
+            # TextArea replaced the selected "ab" with "/", which the change
+            # handler then detected and stripped into command mode. The key
+            # point: the selected text did not survive as literal input.
+            assert chat._text_area.text == ""
+            assert chat.mode == "command"
 
     async def test_mode_stays_on_empty_text(self) -> None:
         """Clearing text after entering shell mode should stay in mode."""

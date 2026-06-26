@@ -33,7 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          fetch-depth: 2
+          fetch-depth: 0
       - name: Reject empty commits
         run: |
           if [ "$(git rev-list --count HEAD)" -lt 2 ]; then
@@ -45,8 +45,45 @@ jobs:
             echo "HEAD touches files; proceeding."
             exit 0
           fi
+
           COMMIT_MSG=$(git log -1 --format=%s HEAD)
           SHA=$(git rev-parse HEAD)
+          PARENT_COUNT=$(git show --no-patch --format=%P HEAD | wc -w | tr -d ' ')
+          if [ "$PARENT_COUNT" -ge 2 ]; then
+            case "$COMMIT_MSG" in
+              "hotfix(repo):"*) ;;
+              *)
+                echo "::error::Empty merge commit detected on main: $SHA \"$COMMIT_MSG\""
+                echo "::error::Only repo-scoped hotfix merge commits may use the history-repair exception."
+                echo "::error::release-please scopes commits to packages by changed file paths. Empty commits have none, so every package gets bumped."
+                exit 1
+                ;;
+            esac
+
+            MERGED_COMMITS=$(git rev-list HEAD^1..HEAD^2)
+            if [ -z "$MERGED_COMMITS" ]; then
+              echo "::error::Empty merge commit detected on main: $SHA \"$COMMIT_MSG\""
+              echo "::error::The merge commit does not introduce any second-parent commits."
+              exit 1
+            fi
+
+            EMPTY_MERGED_COMMITS=""
+            for COMMIT in $MERGED_COMMITS; do
+              if [ -z "$(git diff-tree --no-commit-id --name-only -r "$COMMIT")" ]; then
+                EMPTY_MERGED_COMMITS="$EMPTY_MERGED_COMMITS $COMMIT"
+              fi
+            done
+            if [ -z "$EMPTY_MERGED_COMMITS" ]; then
+              echo "Empty repo hotfix merge commit detected, but every commit merged from the second parent touches files; proceeding."
+              git log --oneline HEAD^1..HEAD^2
+              exit 0
+            fi
+            echo "::error::Empty merge commit detected on main: $SHA \"$COMMIT_MSG\""
+            echo "::error::The merged branch contains empty commits:$EMPTY_MERGED_COMMITS"
+            echo "::error::release-please scopes commits to packages by changed file paths. Empty commits have none, so every package gets bumped."
+            exit 1
+          fi
+
           echo "::error::Empty commit detected on main: $SHA \"$COMMIT_MSG\""
           echo "::error::release-please scopes commits to packages by changed file paths. An empty commit has none, so every package gets bumped."
           echo "::error::Recovery: revert this commit on main, then push a non-empty commit scoped to a single package directory. See .github/RELEASING.md -> \"Empty commit fan-out\"."

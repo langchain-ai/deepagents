@@ -651,7 +651,7 @@ def _json_error_hint(exc: json.JSONDecodeError) -> str | None:
         return "Hint: JSON does not allow comments (// or /* */). Remove them."
     if "expecting property name" in msg:
         return (
-            "Hint: check for a trailing comma, a missing key, or an unquoted "
+            "Hint: check for trailing commas, a missing key, or an unquoted "
             "property name near this position."
         )
     if "expecting value" in msg:
@@ -686,6 +686,12 @@ def _json_error_snippet(doc: str, lineno: int, colno: int) -> str | None:
     if not source:
         return None
     caret_col = max(0, min(colno - 1, len(source)))
+    if (
+        caret_col + 1 < len(source)
+        and source[caret_col] in "}]"
+        and source[caret_col + 1] == ","
+    ):
+        caret_col += 1
     return f"    {source}\n    {' ' * caret_col}^"
 
 

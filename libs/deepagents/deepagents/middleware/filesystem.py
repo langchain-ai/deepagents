@@ -167,16 +167,34 @@ def _find_delete_deny_patterns(rules: list[FilesystemPermission], target: str) -
                 continue
             anchor = _glob_anchor(pattern)
             if any(c in _GLOB_WILDCARD_CHARS for c in pattern):
-                # Wildcard pattern: block only if target directly matches the glob
-                # (protected file/dir) or the protected anchor sits inside target's
-                # subtree (recursive delete would remove matching descendants).
-                # When the anchor collapses to "/" the pattern can match anywhere,
-                # so we conservatively block any target (same as before).
-                overlaps = (
-                    anchor == "/"
-                    or wcglob.globmatch(target, pattern, flags=_FS_WCMATCH_FLAGS)
-                    or PurePosixPath(anchor).is_relative_to(PurePosixPath(target))
-                )
+                # Wildcard pattern — three cases in priority order:
+                # 1. Root anchor ("/**/x"): pattern can match anywhere, block all.
+                # 2. Target directly matches the glob: block.
+                # 3. Anchor is inside the delete subtree (anchor.is_relative_to(target)):
+                #    recursive delete would remove matching descendants — block.
+                # 4. Target is below the anchor (target.is_relative_to(anchor)):
+                #    safe to allow ONLY when the pattern suffix is a single,
+                #    non-** component (fixed depth). "/work/*.log" can never match
+                #    anything under "/work/notes.txt". Patterns with directory
+                #    wildcards after the anchor ("/work/*/secrets",
+                #    "/work/**/secrets") could match descendants of the target,
+                #    so we fail closed for those.
+                if anchor == "/" or wcglob.globmatch(target, pattern, flags=_FS_WCMATCH_FLAGS) or PurePosixPath(anchor).is_relative_to(PurePosixPath(target)):
+                    overlaps = True
+                elif PurePosixPath(target).is_relative_to(PurePosixPath(anchor)):
+                    # Target is below anchor. Safe to allow only when the pattern
+                    # suffix is a single non-** component (fixed depth): a file glob
+                    # like "*.log" can never match anything under a sibling target.
+                    # Patterns with directory wildcards ("/work/*/secrets") could
+                    # match descendants of target, so fail closed for those.
+                    anchor_parts = PurePosixPath(anchor).parts
+                    pattern_parts = PurePosixPath(pattern).parts
+                    suffix = pattern_parts[len(anchor_parts):]
+                    single_filename_glob = len(suffix) == 1 and "**" not in suffix[0]
+                    overlaps = not single_filename_glob
+                else:
+                    # No subtree relationship at all — unrelated paths.
+                    overlaps = False
             else:
                 # Literal pattern (no wildcards): keep the original subtree-overlap
                 # check so that a deny on "/work" blocks deletes of "/work/sub".

@@ -8012,8 +8012,8 @@ class TestInstallExtraModelSwitch:
             for c in app._mount_message.await_args_list  # ty: ignore
         )
         assert "Installed" in mounted
-        assert "/auth" in mounted
         assert "/model" in mounted
+        assert "prompted for credentials" in mounted
 
     async def test_install_extra_auto_restart_skips_restart_for_deferred_startup(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

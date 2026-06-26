@@ -77,11 +77,16 @@ class TestServerGraph:
         mcp_server_info = [SimpleNamespace(name="docs")]
         loop_thread_id = threading.get_ident()
         create_cli_agent_thread_ids: list[int] = []
+        create_model_thread_ids: list[int] = []
         warm_import_thread_ids: list[int] = []
 
         def create_cli_agent_side_effect(**_: object) -> tuple[object, object]:
             create_cli_agent_thread_ids.append(threading.get_ident())
             return graph_obj, object()
+
+        def create_model_side_effect(*_: object, **__: object) -> object:
+            create_model_thread_ids.append(threading.get_ident())
+            return model_result
 
         def warm_import_side_effect() -> None:
             warm_import_thread_ids.append(threading.get_ident())
@@ -100,7 +105,7 @@ class TestServerGraph:
         )
         config_module = _module_with_attrs(
             "deepagents_code.config",
-            create_model=MagicMock(return_value=model_result),
+            create_model=MagicMock(side_effect=create_model_side_effect),
             settings=SimpleNamespace(
                 has_tavily=False,
                 reload_from_environment=MagicMock(),
@@ -169,6 +174,8 @@ class TestServerGraph:
         assert warm_import_thread_ids[0] != loop_thread_id
         assert create_cli_agent_thread_ids
         assert create_cli_agent_thread_ids[0] != loop_thread_id
+        assert create_model_thread_ids
+        assert create_model_thread_ids[0] != loop_thread_id
         kwargs = resolve_mcp_tools.await_args_list[0].kwargs
         assert kwargs["explicit_config_path"] is None
         assert kwargs["no_mcp"] is False

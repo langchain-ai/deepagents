@@ -163,7 +163,12 @@ async def _make_graph() -> Any:  # noqa: ANN401
     if project_context is not None:
         settings.reload_from_environment(start_path=project_context.user_cwd)
 
-    result = create_model(config.model, extra_kwargs=config.model_params)
+    # Offload to a worker thread: `create_model` does blocking disk IO for some
+    # providers (e.g. the `openai_codex` token store acquires a file lock that
+    # calls `os.mkdir`), which `blockbuster` rejects on the server event loop.
+    result = await asyncio.to_thread(
+        create_model, config.model, extra_kwargs=config.model_params
+    )
     result.apply_to_settings()
 
     tools, mcp_server_info = await _build_tools(config, project_context)

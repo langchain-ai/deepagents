@@ -1,0 +1,22 @@
+libs/evals/tests/unit_tests/cl_proxy/test_contextual_logic.py
+  s_ff1d954e22bc10::t_8a5b1cd1e85035 1-54
+libs/evals/deepagents_evals/cl_proxy/contextual_logic.py
+  s_ff1d954e22bc10::t_14668224c517be 54
+  s_ff1d954e22bc10::t_3771eaaabdca54 1-53,55-89
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "ac0bfd7d316cdd6ee9c16065f7cd7e6353d98c29",
+  "prompts": {},
+  "sessions": {
+    "s_ff1d954e22bc10": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e85341e2-a6d5-4077-a245-b6953a292cae",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

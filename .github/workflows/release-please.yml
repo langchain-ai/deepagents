@@ -69,7 +69,13 @@ jobs:
 
             EMPTY_MERGED_COMMITS=""
             for COMMIT in $MERGED_COMMITS; do
-              if [ -z "$(git diff-tree --no-commit-id --name-only -r "$COMMIT")" ]; then
+              COMMIT_PARENT_COUNT=$(git show --no-patch --format=%P "$COMMIT" | wc -w | tr -d ' ')
+              if [ "$COMMIT_PARENT_COUNT" -ge 2 ]; then
+                COMMIT_CHANGED=$(git diff --name-only "$COMMIT^1" "$COMMIT")
+              else
+                COMMIT_CHANGED=$(git diff-tree --no-commit-id --name-only -r "$COMMIT")
+              fi
+              if [ -z "$COMMIT_CHANGED" ]; then
                 EMPTY_MERGED_COMMITS="$EMPTY_MERGED_COMMITS $COMMIT"
               fi
             done

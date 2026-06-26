@@ -30,9 +30,30 @@ from deepagents_code.main import (
     run_textual_cli_async,
 )
 
+# Most unit tests set `DEEPAGENTS_CODE_NO_UPDATE_CHECK=1` and patch
+# `is_update_check_enabled()` to avoid accidental PyPI/DNS work. This module
+# tests startup update behavior itself, so each test must control those values.
+pytestmark = pytest.mark.self_managed_update_check
+
 
 class TestStartupAutoUpdate:
     """Tests for startup auto-update behavior."""
+
+    @pytest.fixture(autouse=True)
+    def _no_prerelease_lookup(self) -> Iterator[None]:
+        """Stub the pre-release dependency lookup for startup tests.
+
+        The startup auto-update path calls `release_requires_prereleases`
+        (e.g. in the restart-loop guard) with `latest`. Unstubbed, that reads
+        the real host cache and falls through to a live PyPI request, which is
+        non-hermetic and would hit the network under a bare `pytest` run. Pin it
+        to `False`; the function's own behavior is covered in `test_update_check`.
+        """
+        with patch(
+            "deepagents_code.update_check.release_requires_prereleases",
+            return_value=False,
+        ):
+            yield
 
     @pytest.fixture(autouse=True)
     def _ack_auto_update_default(self) -> Iterator[None]:
@@ -1445,6 +1466,10 @@ class TestAutoInstallRipgrepCli:
                 AsyncMock(return_value=Path("/managed/rg")),
             ),
             patch(
+                "deepagents_code.managed_tools.managed_rg_path",
+                return_value=Path("/managed/rg"),
+            ),
+            patch(
                 "deepagents_code.managed_tools.prepend_managed_bin_to_path",
                 prepend,
             ),
@@ -1453,6 +1478,29 @@ class TestAutoInstallRipgrepCli:
 
         assert result == ["tavily"]
         prepend.assert_called_once()
+
+    def test_system_rg_drops_ripgrep_without_prepending(self) -> None:
+        """A system `rg` is usable without prepending the managed binary dir."""
+        console = MagicMock()
+        prepend = MagicMock()
+        with (
+            patch(
+                "deepagents_code.managed_tools.ensure_ripgrep",
+                AsyncMock(return_value=Path("/usr/bin/rg")),
+            ),
+            patch(
+                "deepagents_code.managed_tools.managed_rg_path",
+                return_value=Path("/managed/rg"),
+            ),
+            patch(
+                "deepagents_code.managed_tools.prepend_managed_bin_to_path",
+                prepend,
+            ),
+        ):
+            result = _auto_install_ripgrep_cli(console, ["ripgrep", "tavily"])
+
+        assert result == ["tavily"]
+        prepend.assert_not_called()
 
     def test_install_returns_none_keeps_ripgrep(self) -> None:
         """A skipped/failed install leaves `ripgrep` in the missing list."""

@@ -7,7 +7,9 @@ in either plain text (for stdout) or markdown (for rich UI contexts).
 
 from __future__ import annotations
 
+import ast
 import importlib.util
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -16,7 +18,10 @@ from importlib.metadata import (
     distribution,
     version as pkg_version,
 )
+from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
@@ -32,20 +37,106 @@ that don't care which kind of failure happened can treat both the same.
 """
 
 
+def _editable_sdk_source_root() -> Path | None:
+    """Return the editable `deepagents` source root from package metadata."""
+    try:
+        raw = distribution("deepagents").read_text("direct_url.json")
+        if not raw:
+            return None
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            logger.debug("Ignoring malformed deepagents direct_url.json metadata")
+            return None
+        dir_info = data.get("dir_info")
+        if not isinstance(dir_info, dict):
+            logger.debug("Ignoring malformed deepagents direct_url.json dir_info")
+            return None
+        if not dir_info.get("editable", False):
+            return None
+        url = data.get("url")
+        if not isinstance(url, str):
+            logger.debug("Ignoring editable deepagents metadata without a source URL")
+            return None
+        parsed = urlparse(url)
+        if parsed.scheme != "file":
+            logger.debug("Ignoring editable deepagents metadata with non-file URL")
+            return None
+        path = url2pathname(parsed.path)
+        if parsed.netloc and parsed.netloc != "localhost":
+            path = f"//{parsed.netloc}{path}"
+        return Path(path)
+    except (PackageNotFoundError, OSError, ValueError, TypeError):
+        # `OSError` covers `FileNotFoundError`/`PermissionError`/etc. while
+        # reading the metadata file; `ValueError` covers malformed JSON
+        # (`json.JSONDecodeError`), bad encodings (`UnicodeDecodeError`), and an
+        # invalid IPv6 host from `urlparse`; `TypeError` covers a non-text
+        # `read_text` payload. `url2pathname` is intentionally lenient and adds
+        # no new failure modes. This probe must never propagate, since callers
+        # treat it as a best-effort refinement over the metadata version.
+        return None
+
+
+def _sdk_version_from_source(root: Path) -> str | None:
+    """Read `deepagents.__version__` from a source tree rooted at `root`.
+
+    Returns:
+        The source SDK version, or `None` when it cannot be read.
+    """
+    version_file = root / "deepagents" / "_version.py"
+    try:
+        source = version_file.read_text(encoding="utf-8")
+        module = ast.parse(source, filename=str(version_file))
+    except (OSError, SyntaxError, ValueError):
+        # Reached only for editable installs, where the package is known to be
+        # present — so an unreadable or malformed version file is a broken local
+        # checkout, not an absent dependency. Warn (not debug): the source
+        # version is masked and the caller falls back to potentially stale
+        # metadata.
+        logger.warning("Failed to read deepagents SDK version file", exc_info=True)
+        return None
+    for node in module.body:
+        # Match only a plain `__version__ = "..."` assignment. release-please
+        # writes the SDK's `_version.py` that way, so annotated (`ast.AnnAssign`)
+        # or tuple-target forms are intentionally ignored.
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(target, ast.Name) and target.id == "__version__"
+            for target in node.targets
+        ):
+            continue
+        try:
+            value = ast.literal_eval(node.value)
+        except (ValueError, TypeError):
+            # A non-literal `__version__` RHS masks the source version just like
+            # an unreadable file, so warn for parity with the read/parse failure
+            # above rather than falling back to stale metadata silently.
+            logger.warning(
+                "Failed to evaluate deepagents SDK __version__ literal",
+                exc_info=True,
+            )
+            return None
+        return value if isinstance(value, str) and value else None
+    return None
+
+
 def resolve_sdk_version() -> tuple[str | None, SdkVersionStatus]:
-    """Resolve the installed `deepagents` SDK version from package metadata.
+    """Resolve the installed `deepagents` SDK version.
 
     Single source of truth for the lookup that `--version`, `/version`, and
-    `doctor` each used to reimplement. Distinguishes a genuinely missing
-    package from an unexpected metadata error so diagnostic callers can report
-    the two differently, while collapse-friendly callers can ignore the split.
+    `doctor` each used to reimplement. Editable installs can have stale package
+    metadata after local version files change, so they prefer the source tree's
+    `_version.py` and fall back to metadata when the source version is
+    unavailable. Distinguishes a genuinely missing package from an unexpected
+    metadata error so diagnostic callers can report the two differently, while
+    collapse-friendly callers can ignore the split.
 
     Returns:
         `(version, status)`. `version` is the resolved version string when
             `status` is `"resolved"`, otherwise `None`.
     """
     try:
-        return pkg_version("deepagents"), "resolved"
+        metadata_version = pkg_version("deepagents")
     except PackageNotFoundError:
         logger.debug("deepagents SDK package not found in environment")
         return None, "not_installed"
@@ -54,6 +145,14 @@ def resolve_sdk_version() -> tuple[str | None, SdkVersionStatus]:
             "Unexpected error looking up deepagents SDK version", exc_info=True
         )
         return None, "error"
+
+    source_root = _editable_sdk_source_root()
+    if source_root:
+        source_version = _sdk_version_from_source(source_root)
+        if source_version:
+            return source_version, "resolved"
+
+    return metadata_version, "resolved"
 
 
 _EXTRA_MARKER_RE = re.compile(r"""extra\s*==\s*["']([^"']+)["']""")
@@ -106,11 +205,10 @@ SANDBOX_EXTRAS: frozenset[str] = frozenset(
 """Optional extras that add sandbox integrations."""
 
 STANDALONE_EXTRAS: frozenset[str] = frozenset({"quickjs"})
-"""Optional extras that don't fit the provider/sandbox taxonomy.
+"""Compatibility extras that don't fit the provider/sandbox taxonomy.
 
-These integrations layer onto the main agent (e.g. a JS REPL via
-`langchain-quickjs`) and aren't grouped under `all-providers` or
-`all-sandboxes`.
+`quickjs` is a core dependency now, but the empty extra remains installable so
+older `deepagents-code[quickjs]` and `/install quickjs` workflows stay harmless.
 """
 
 KNOWN_EXTRAS: frozenset[str] = (
@@ -374,12 +472,12 @@ def extra_for_package(
 
 
 def verify_interpreter_deps() -> None:
-    """Check that `langchain-quickjs` is installed for the `--interpreter` flag.
+    """Check that `langchain-quickjs` is installed for the interpreter.
 
     Uses `importlib.util.find_spec` for a lightweight check with no actual
     imports. Call this in the app process *before* spawning the server
     subprocess so users get a clear, actionable error instead of an opaque
-    server crash when the optional `quickjs` extra is not installed.
+    server crash when the core dependency is missing or broken.
 
     Returns silently when the package is importable.
 
@@ -399,16 +497,16 @@ def verify_interpreter_deps() -> None:
         from deepagents_code.config import _is_editable_install
 
         if _is_editable_install():
-            from deepagents_code.update_check import editable_extra_hint
-
             msg = (
-                "Missing dependencies for --interpreter. Editable install "
-                f"detected — {editable_extra_hint('quickjs')}"
+                "Missing core dependency for the interpreter. Editable install "
+                "detected — refresh the local environment with uv sync, or "
+                "relaunch with --no-interpreter to skip it."
             )
         else:
             msg = (
-                "Missing dependencies for --interpreter. "
-                "Install with: dcode --install quickjs"
+                "Missing core dependency for the interpreter. "
+                "Reinstall dcode to restore langchain-quickjs, or relaunch with "
+                "--no-interpreter to skip it."
             )
         raise ImportError(msg)
 

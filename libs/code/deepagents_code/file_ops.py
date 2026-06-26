@@ -210,6 +210,28 @@ def build_approval_preview(
             diff_title=f"Diff {display_path}",
         )
 
+    if tool_name == "delete":
+        details = [f"File: {path_str}", "Action: Delete file or directory"]
+        if physical_path is None:
+            return ApprovalPreview(
+                title=f"Delete {display_path}",
+                details=details,
+                error="Unable to resolve file path.",
+            )
+        before = _safe_read(physical_path)
+        diff = None
+        if before is not None:
+            diff = compute_unified_diff(before, "", display_path, max_lines=100)
+            details.append(f"Lines to delete: {_count_lines(before)}")
+        elif physical_path.exists():
+            details.append("Contents: directory or unreadable file")
+        return ApprovalPreview(
+            title=f"Delete {display_path}",
+            details=details,
+            diff=diff,
+            diff_title=f"Diff {display_path}",
+        )
+
     if tool_name == "edit_file":
         if physical_path is None:
             return ApprovalPreview(
@@ -287,10 +309,10 @@ class FileOpTracker:
     ) -> None:
         """Begin tracking a file operation.
 
-        Creates a record for the operation and, for write/edit operations,
-        captures the file's content before modification.
+        Creates a record for the operation and, for write/edit/delete
+        operations, captures the file's content before the operation.
         """
-        if tool_name not in {"read_file", "write_file", "edit_file"}:
+        if tool_name not in {"read_file", "write_file", "edit_file", "delete"}:
             return
         path_str = str(args.get("file_path") or args.get("path") or "")
         display_path = format_display_path(path_str)
@@ -301,7 +323,7 @@ class FileOpTracker:
             tool_call_id=tool_call_id,
             args=args,
         )
-        if tool_name in {"write_file", "edit_file"}:
+        if tool_name in {"write_file", "edit_file", "delete"}:
             if self.backend and path_str:
                 try:
                     responses = self.backend.download_files([path_str])
@@ -374,13 +396,22 @@ class FileOpTracker:
             if isinstance(limit, int) and lines > limit:
                 record.metrics.end_line = (record.metrics.start_line or 1) + limit - 1
         else:
-            # For write/edit operations, read back from backend (or local filesystem)
-            self._populate_after_content(record)
-            if record.after_content is None:
-                record.status = "error"
-                record.error = "Could not read updated file content."
-                self._finalize(record)
-                return record
+            if record.tool_name == "delete":
+                # Reached only after the success-status check above, so the
+                # tool reported the path removed. Model an empty "after" to
+                # diff the removed content against; there is nothing to read
+                # back from disk. This trusts the tool's success status and
+                # is sound for backends where a successful delete means the
+                # path is gone.
+                record.after_content = ""
+            else:
+                # Write/edit: read the updated content back from backend/disk.
+                self._populate_after_content(record)
+                if record.after_content is None:
+                    record.status = "error"
+                    record.error = "Could not read updated file content."
+                    self._finalize(record)
+                    return record
             record.metrics.lines_written = _count_lines(record.after_content)
             before_lines = _count_lines(record.before_content or "")
             diff = compute_unified_diff(

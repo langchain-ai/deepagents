@@ -35,6 +35,107 @@ def simple_history(tmp_path: Path) -> HistoryManager:
     return mgr
 
 
+class TestSkillInvocationHistory:
+    """Explicit `/skill:<name>` commands are stored; other slash commands are not.
+
+    History stores the raw submitted text before app-layer alias rewriting, so
+    convenience aliases (e.g. `/remember`) are dropped here even though they
+    resolve to skills downstream.
+    """
+
+    def test_skill_invocation_added(self, tmp_path: Path) -> None:
+        """`/skill:web-research` should be stored in history."""
+        mgr = HistoryManager(tmp_path / "history.jsonl")
+        mgr.add("/skill:web-research find quantum computing")
+        assert mgr._entries == ["/skill:web-research find quantum computing"]
+
+    def test_skill_invocation_without_args_added(self, tmp_path: Path) -> None:
+        """`/skill:remember` with no args should be stored."""
+        mgr = HistoryManager(tmp_path / "history.jsonl")
+        mgr.add("/skill:remember")
+        assert mgr._entries == ["/skill:remember"]
+
+    def test_mixed_case_skill_invocation_added(self, tmp_path: Path) -> None:
+        """Mixed-case `/skill:` invocations should be stored as typed."""
+        mgr = HistoryManager(tmp_path / "history.jsonl")
+        mgr.add("/Skill:web-research find quantum computing")
+        mgr.add("/SKILL:remember")
+        assert mgr._entries == [
+            "/Skill:web-research find quantum computing",
+            "/SKILL:remember",
+        ]
+
+    def test_non_skill_slash_command_not_added(self, tmp_path: Path) -> None:
+        """`/help` and other slash commands should not be stored."""
+        mgr = HistoryManager(tmp_path / "history.jsonl")
+        mgr.add("/help")
+        mgr.add("/quit")
+        mgr.add("/model")
+        assert mgr._entries == []
+
+    def test_skill_invocation_recallable(self, tmp_path: Path) -> None:
+        """Skill invocations should be recallable via get_previous."""
+        mgr = HistoryManager(tmp_path / "history.jsonl")
+        mgr.add("some regular text")
+        mgr.add("/skill:web-research find cats")
+        mgr.reset_navigation()
+
+        entry = mgr.get_previous("", query="")
+        assert entry == "/skill:web-research find cats"
+
+        entry = mgr.get_previous("", query="")
+        assert entry == "some regular text"
+
+    def test_skill_invocation_dedup(self, tmp_path: Path) -> None:
+        """Duplicate skill invocations are deduplicated like normal entries."""
+        mgr = HistoryManager(tmp_path / "history.jsonl")
+        mgr.add("/skill:web-research find cats")
+        mgr.add("/skill:web-research find cats")
+        assert mgr._entries == ["/skill:web-research find cats"]
+
+    def test_skill_listing_command_not_added(self, tmp_path: Path) -> None:
+        """`/skill` without a colon is the listing command, not an invocation."""
+        mgr = HistoryManager(tmp_path / "history.jsonl")
+        mgr.add("/skill")
+        assert mgr._entries == []
+
+    def test_skill_prefix_collision_not_added(self, tmp_path: Path) -> None:
+        """Slash commands that merely start with `/skill` (no colon) are dropped."""
+        mgr = HistoryManager(tmp_path / "history.jsonl")
+        mgr.add("/skilling")
+        mgr.add("/skill-creator")
+        assert mgr._entries == []
+
+    def test_skill_invocation_empty_name_added(self, tmp_path: Path) -> None:
+        """A bare `/skill:` (empty name) still matches the prefix and is stored.
+
+        Upstream parsing rejects empty skill names, so this form is not expected
+        in practice; the test pins current behavior to catch silent changes.
+        """
+        mgr = HistoryManager(tmp_path / "history.jsonl")
+        mgr.add("/skill:")
+        assert mgr._entries == ["/skill:"]
+
+    def test_skill_alias_not_added(self, tmp_path: Path) -> None:
+        """Convenience aliases are dropped because history precedes rewriting.
+
+        A user typing `/remember` submits the raw alias, which is rewritten to
+        `/skill:remember` only in the app layer after history capture.
+        """
+        mgr = HistoryManager(tmp_path / "history.jsonl")
+        mgr.add("/remember something useful")
+        assert mgr._entries == []
+
+    def test_skill_invocation_persists_across_reload(self, tmp_path: Path) -> None:
+        """Stored skill invocations survive into a new session via the file."""
+        history_file = tmp_path / "history.jsonl"
+        mgr = HistoryManager(history_file)
+        mgr.add("/skill:web-research find cats")
+
+        reloaded = HistoryManager(history_file)
+        assert reloaded._entries == ["/skill:web-research find cats"]
+
+
 class TestSubstringMatch:
     """Substring matching navigates to entries containing the query."""
 

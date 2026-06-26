@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import os
 import sys
+import threading
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -74,7 +75,18 @@ class TestServerGraph:
         thread_tool = object()
         mcp_tool = object()
         mcp_server_info = [SimpleNamespace(name="docs")]
-        create_cli_agent = MagicMock(return_value=(graph_obj, object()))
+        loop_thread_id = threading.get_ident()
+        create_cli_agent_thread_ids: list[int] = []
+        warm_import_thread_ids: list[int] = []
+
+        def create_cli_agent_side_effect(**_: object) -> tuple[object, object]:
+            create_cli_agent_thread_ids.append(threading.get_ident())
+            return graph_obj, object()
+
+        def warm_import_side_effect() -> None:
+            warm_import_thread_ids.append(threading.get_ident())
+
+        create_cli_agent = MagicMock(side_effect=create_cli_agent_side_effect)
         agent_module = _module_with_attrs(
             "deepagents_code.agent",
             DEFAULT_AGENT_NAME="agent",
@@ -145,9 +157,18 @@ class TestServerGraph:
 
             module = _import_fresh_server_graph()
             resolve_mcp_tools.assert_not_awaited()
-            assert await module.make_graph() is graph_obj
+            with patch.object(
+                module,
+                "_warm_mcp_adapter_imports",
+                side_effect=warm_import_side_effect,
+            ):
+                assert await module.make_graph() is graph_obj
 
         resolve_mcp_tools.assert_awaited_once()
+        assert warm_import_thread_ids
+        assert warm_import_thread_ids[0] != loop_thread_id
+        assert create_cli_agent_thread_ids
+        assert create_cli_agent_thread_ids[0] != loop_thread_id
         kwargs = resolve_mcp_tools.await_args_list[0].kwargs
         assert kwargs["explicit_config_path"] is None
         assert kwargs["no_mcp"] is False
@@ -176,6 +197,179 @@ class TestServerGraph:
             project_context=None,
             async_subagents=None,
         )
+
+    async def test_build_tools_skips_mcp_when_disabled(self) -> None:
+        """`no_mcp=True` should not warm imports or call the MCP resolver."""
+        fetch_tool = object()
+        thread_tool = object()
+        resolve_mcp_tools = AsyncMock()
+        config_module = _module_with_attrs(
+            "deepagents_code.config",
+            settings=SimpleNamespace(has_tavily=False),
+        )
+        tools_module = _module_with_attrs(
+            "deepagents_code.tools",
+            fetch_url=fetch_tool,
+            get_current_thread_id=thread_tool,
+            web_search=object(),
+        )
+        mcp_module = _module_with_attrs(
+            "deepagents_code.mcp_tools",
+            resolve_and_load_mcp_tools=resolve_mcp_tools,
+        )
+
+        with patch.dict(
+            sys.modules,
+            {
+                "deepagents_code.config": config_module,
+                "deepagents_code.tools": tools_module,
+                "deepagents_code.mcp_tools": mcp_module,
+            },
+        ):
+            module = _import_fresh_server_graph()
+            warm_imports = MagicMock(side_effect=AssertionError("MCP warmup ran"))
+            with patch.object(module, "_warm_mcp_adapter_imports", warm_imports):
+                tools, mcp_server_info = await module._build_tools(
+                    ServerConfig(no_mcp=True),
+                    None,
+                )
+
+        assert tools == [fetch_tool, thread_tool]
+        assert mcp_server_info is None
+        warm_imports.assert_not_called()
+        resolve_mcp_tools.assert_not_awaited()
+
+    async def test_interpreter_settings_apply_before_agent_construction(self) -> None:
+        """Server config settings writes should be visible to `create_cli_agent`."""
+        graph_obj = object()
+        model_obj = object()
+        observed: dict[str, object] = {}
+
+        def create_cli_agent_side_effect(**_: object) -> tuple[object, object]:
+            from deepagents_code.config import settings
+
+            observed["interpreter_ptc"] = settings.interpreter_ptc
+            observed["acknowledge"] = settings.interpreter_ptc_acknowledge_unsafe
+            observed["enable_interpreter"] = settings.enable_interpreter
+            return graph_obj, object()
+
+        settings_obj = SimpleNamespace(
+            has_tavily=False,
+            interpreter_ptc=None,
+            interpreter_ptc_acknowledge_unsafe=False,
+            enable_interpreter=False,
+        )
+        config_module = _module_with_attrs(
+            "deepagents_code.config",
+            create_model=MagicMock(
+                return_value=SimpleNamespace(
+                    model=model_obj,
+                    apply_to_settings=MagicMock(),
+                ),
+            ),
+            settings=settings_obj,
+        )
+        agent_module = _module_with_attrs(
+            "deepagents_code.agent",
+            create_cli_agent=MagicMock(side_effect=create_cli_agent_side_effect),
+            load_async_subagents=MagicMock(return_value=None),
+        )
+        tools_module = _module_with_attrs(
+            "deepagents_code.tools",
+            fetch_url=object(),
+            get_current_thread_id=object(),
+            web_search=object(),
+        )
+        config = ServerConfig(
+            no_mcp=True,
+            enable_interpreter=True,
+            interpreter_ptc=["js_eval"],
+            interpreter_ptc_acknowledge_unsafe=True,
+        )
+        env_overrides = {
+            f"{SERVER_ENV_PREFIX}{suffix}": value
+            for suffix, value in config.to_env().items()
+            if value is not None
+        }
+
+        with (
+            patch.dict(os.environ, env_overrides, clear=False),
+            patch.dict(
+                sys.modules,
+                {
+                    "deepagents_code.agent": agent_module,
+                    "deepagents_code.config": config_module,
+                    "deepagents_code.tools": tools_module,
+                },
+            ),
+            patch(
+                "deepagents_code.project_utils.get_server_project_context",
+                return_value=None,
+            ),
+        ):
+            module = _import_fresh_server_graph()
+            assert await module.make_graph() is graph_obj
+
+        assert observed == {
+            "interpreter_ptc": ["js_eval"],
+            "acknowledge": True,
+            "enable_interpreter": True,
+        }
+
+    async def test_mcp_adapter_warmup_runs_before_mcp_resolver(self) -> None:
+        """MCP imports must be warmed before resolver imports adapter modules."""
+        events: list[str] = []
+        fetch_tool = object()
+        thread_tool = object()
+
+        def resolve_mcp_tools(
+            **_: object,
+        ) -> tuple[list[object], None, list[object]]:
+            events.append("resolver")
+            return [], None, []
+
+        config_module = _module_with_attrs(
+            "deepagents_code.config",
+            settings=SimpleNamespace(has_tavily=False),
+        )
+        tools_module = _module_with_attrs(
+            "deepagents_code.tools",
+            fetch_url=fetch_tool,
+            get_current_thread_id=thread_tool,
+            web_search=object(),
+        )
+
+        class FakeSessionManager:
+            pass
+
+        mcp_module = _module_with_attrs(
+            "deepagents_code.mcp_tools",
+            MCPSessionManager=FakeSessionManager,
+            resolve_and_load_mcp_tools=AsyncMock(side_effect=resolve_mcp_tools),
+        )
+
+        with patch.dict(
+            sys.modules,
+            {
+                "deepagents_code.config": config_module,
+                "deepagents_code.tools": tools_module,
+                "deepagents_code.mcp_tools": mcp_module,
+            },
+        ):
+            module = _import_fresh_server_graph()
+
+            def warm_imports() -> None:
+                events.append("warmup")
+
+            with patch.object(module, "_warm_mcp_adapter_imports", warm_imports):
+                tools, mcp_server_info = await module._build_tools(
+                    ServerConfig(no_mcp=False),
+                    None,
+                )
+
+        assert events == ["warmup", "resolver"]
+        assert tools == [fetch_tool, thread_tool]
+        assert mcp_server_info == []
 
 
 class TestStartupErrorMarker:

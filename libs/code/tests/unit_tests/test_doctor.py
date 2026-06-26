@@ -4,6 +4,7 @@ import argparse
 import io
 import json
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -188,7 +189,13 @@ class TestCollectTracing:
 class TestCollectUpdates:
     """Tests for the Updates diagnostic section."""
 
-    def _labels(self) -> dict[str, str]:
+    def _labels(self, cache_file: Path) -> dict[str, str]:
+        """Collect the Updates labels, reading `checked_at` from `cache_file`.
+
+        Patches `CACHE_FILE` rather than `get_last_update_check_time` so the
+        section flows through the genuine reader and the epoch -> ISO ->
+        relative-time conversion, not a stub.
+        """
         from deepagents_code.doctor import _collect_updates
 
         with (
@@ -205,29 +212,36 @@ class TestCollectUpdates:
                 "deepagents_code.update_check.get_cached_update_available",
                 return_value=(False, "1.0.0"),
             ),
+            patch("deepagents_code.update_check.CACHE_FILE", cache_file),
         ):
             section = _collect_updates()
         return {item.label: item.value for item in section.items}
 
-    def test_last_checked_shows_relative_time(self) -> None:
-        """A recent cached check is reported as a relative time."""
-        import time
+    def test_last_checked_shows_relative_time(self, tmp_path: Path) -> None:
+        """A check stamped an hour ago renders as `1h ago` via the real read."""
+        cache = tmp_path / "latest_version.json"
+        cache.write_text(
+            json.dumps({"checked_at": time.time() - 3600}), encoding="utf-8"
+        )
+        assert self._labels(cache)["Last checked"] == "1h ago"
 
-        with patch(
-            "deepagents_code.update_check.get_last_update_check_time",
-            return_value=time.time() - 3600,
-        ):
-            labels = self._labels()
-        assert labels["Last checked"].endswith("ago")
+    def test_last_checked_just_now_on_future_stamp(self, tmp_path: Path) -> None:
+        """A future stamp (clock skew) renders as `just now`, not a crash."""
+        cache = tmp_path / "latest_version.json"
+        cache.write_text(
+            json.dumps({"checked_at": time.time() + 3600}), encoding="utf-8"
+        )
+        assert self._labels(cache)["Last checked"] == "just now"
 
-    def test_last_checked_never_without_cache(self) -> None:
+    def test_last_checked_never_without_cache(self, tmp_path: Path) -> None:
         """An absent cache reports `never` rather than crashing."""
-        with patch(
-            "deepagents_code.update_check.get_last_update_check_time",
-            return_value=None,
-        ):
-            labels = self._labels()
-        assert labels["Last checked"] == "never"
+        assert self._labels(tmp_path / "latest_version.json")["Last checked"] == "never"
+
+    def test_last_checked_never_on_corrupt_stamp(self, tmp_path: Path) -> None:
+        """A non-finite stamp fails soft to `never` instead of crashing doctor."""
+        cache = tmp_path / "latest_version.json"
+        cache.write_text(json.dumps({"checked_at": float("nan")}), encoding="utf-8")
+        assert self._labels(cache)["Last checked"] == "never"
 
 
 class TestCommitHash:

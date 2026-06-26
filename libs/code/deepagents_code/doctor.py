@@ -229,7 +229,12 @@ def _collect_updates() -> DiagnosticSection:
 
 
 def _format_last_checked() -> str:
-    """Return a relative description of the last update check, or `never`."""
+    """Return a relative description of the last update check, or `never`.
+
+    `never` covers both the no-check-recorded case and, defensively, a stamp
+    that cannot be formatted. `get_last_update_check_time` only returns finite,
+    in-range epochs, so the formatting path does not raise here.
+    """
     from datetime import UTC, datetime
 
     from deepagents_code.sessions import format_relative_timestamp

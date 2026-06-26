@@ -272,9 +272,11 @@ def _coerce_checked_at(value: object) -> float | None:
 def get_last_update_check_time() -> float | None:
     """Return the epoch time of the last PyPI update check, or `None`.
 
-    Reads the `checked_at` stamp written by `get_latest_version` to `CACHE_FILE`.
-    Missing, corrupt, or non-numeric data fail-soft to `None` so callers can
-    render an "unknown" state without contacting the network.
+    Reads the `checked_at` stamp recorded in `CACHE_FILE` when the update cache
+    is written (primarily by `get_latest_version`; also seeded by
+    `_write_release_requires_prereleases`). Missing, corrupt, or non-numeric
+    data fail-soft to `None` so callers can render an "unknown" state without
+    contacting the network.
     """
     try:
         if not CACHE_FILE.exists():

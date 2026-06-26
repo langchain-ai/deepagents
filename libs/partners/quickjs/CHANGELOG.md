@@ -2,6 +2,17 @@
 
 # Changelog
 
+## [0.4.0](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.3.2...langchain-quickjs==0.4.0) (2026-06-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sdk:** Agents now see a destructive `delete` filesystem tool when the backend supports it. Existing agents may choose to remove files or directories recursively, and existing filesystem permission rules that allow writes can now authorize deletion unless a narrower deny or interrupt rule blocks the target subtree.
+
+### Features
+
+* **sdk:** add recursive filesystem delete support ([f2a21ec](https://github.com/langchain-ai/deepagents/commit/f2a21ec1606c2560bd2fd5765409a05c2a44edee))
+
 ## [0.3.2](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.3.1...langchain-quickjs==0.3.2) (2026-06-25)
 
 ### Features

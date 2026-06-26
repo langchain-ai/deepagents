@@ -1801,7 +1801,7 @@ class TestFilesystemMiddleware:
         request.override.assert_not_called()
 
     def test_disable_tools_raises_for_read_file(self):
-        """read_file cannot be disabled — it is always required."""
+        """read_file cannot be disabled, it is always required."""
         with pytest.raises(ValueError, match="read_file cannot be disabled"):
             FilesystemMiddleware(backend=StateBackend(), disable_tools=frozenset({"read_file"}))
 
@@ -1865,7 +1865,7 @@ class TestFilesystemMiddleware:
 
         middleware._filter_unsupported_tools_and_apply_prompt(request)
 
-        # ls and grep are not in disable_tools — both survive filtering
+        # ls and grep are not in disable_tools, both survive filtering
         filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
         assert "ls" in filtered_names
         assert "grep" in filtered_names

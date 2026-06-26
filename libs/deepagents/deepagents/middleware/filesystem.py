@@ -886,6 +886,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_token_limit_before_evict: int | None = 20000,
         human_message_token_limit_before_evict: int | None = 50000,
         max_execute_timeout: int = 3600,
+        disable_tools: frozenset[str] | set[str] = frozenset(),
         _permissions: list[FilesystemPermission] | None = None,
     ) -> None:
         """Initialize the filesystem middleware.
@@ -903,6 +904,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
                 Defaults to 3600 seconds (1 hour). Any per-command timeout
                 exceeding this value will be rejected with an error message.
+            disable_tools: Tool names to remove from the model's tool list. The
+                ``read_file`` tool cannot be disabled. When ``execute`` is not
+                disabled but the backend does not support command execution, the
+                tool is kept in the list and silently returns an empty result
+                (no-op) rather than an error.
             _permissions: Optional filesystem permission rules enforced directly
                 by this middleware's tool implementations.
 
@@ -910,6 +916,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 implementation detail and may move to the backend layer in a
                 future change.
         """
+        if "read_file" in disable_tools:
+            msg = "read_file cannot be disabled; it is required by FilesystemMiddleware"
+            raise ValueError(msg)
         if max_execute_timeout <= 0:
             msg = f"max_execute_timeout must be positive, got {max_execute_timeout}"
             raise ValueError(msg)
@@ -945,6 +954,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._tool_token_limit_before_evict = tool_token_limit_before_evict
         self._human_message_token_limit_before_evict = human_message_token_limit_before_evict
         self._max_execute_timeout = max_execute_timeout
+        self._disable_tools = frozenset(disable_tools)
         self._permissions = list(_permissions or [])
 
         # Shared executor for enforcing GLOB_TIMEOUT on the sync glob tool.
@@ -2026,19 +2036,23 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         has_execute_tool = "execute" in tool_names
         has_delete_tool = "delete" in tool_names
 
-        # `execute` and `delete` are optional per backend; resolve the
-        # backend once and filter out any tool the backend can't serve.
-        if has_execute_tool or has_delete_tool:
+        # Build the set of tools to remove from the model's request.
+        # `execute` and `delete` are filtered when the backend can't serve them.
+        # User-requested disable_tools are always filtered regardless of backend.
+        unsupported: set[str | None] = set(self._disable_tools)
+        execution_active = False  # tracks whether execute should get system-prompt instructions
+        backend = None
+        if has_delete_tool or has_execute_tool:
             backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
-            unsupported: set[str | None] = set()
-            if has_execute_tool and not supports_execution(backend):
-                unsupported.add("execute")
-                has_execute_tool = False
-            if has_delete_tool and not _supports_delete(backend):
+            if has_execute_tool and "execute" not in self._disable_tools:
+                execution_active = supports_execution(backend)
+                if not execution_active:
+                    unsupported.add("execute")
+            if has_delete_tool and "delete" not in self._disable_tools and not _supports_delete(backend):
                 unsupported.add("delete")
-            if unsupported:
-                filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) not in unsupported]
-                request = request.override(tools=filtered_tools)
+        if unsupported:
+            filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) not in unsupported]
+            request = request.override(tools=filtered_tools)
 
         # Use custom system prompt if provided, otherwise generate dynamically
         if self._custom_system_prompt is not None:
@@ -2052,9 +2066,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             ]
 
             # Add execution instructions only if the execute tool survived filtering
-            if has_execute_tool:
+            if execution_active:
                 prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
-                route_prompt = _route_host_path_prompt(backend)
+                route_prompt = _route_host_path_prompt(cast("BackendProtocol", backend))
                 if route_prompt:
                     prompt_parts.append(route_prompt)
 

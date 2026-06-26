@@ -13,6 +13,7 @@ from langchain_core.language_models import BaseChatModel
 from deepagents._models import (
     get_model_identifier,
     get_model_provider,
+    is_bedrock_model,
     model_matches_spec,
     resolve_model,
 )
@@ -44,6 +45,7 @@ from deepagents.profiles.provider.provider_profiles import (
     apply_provider_profile,
     get_provider_profile,
 )
+from tests.unit_tests.chat_model import GenericFakeChatModel
 
 _OPENROUTER_AZURE_IGNORE = {"ignore": ["azure"]}
 """Expected default value of `openrouter_provider` injected by the SDK profile."""
@@ -224,6 +226,58 @@ class TestGetModelProvider:
         model = _make_model({})
         model._get_ls_params = MagicMock(return_value=None)
         assert get_model_provider(model) is None
+
+
+class TestIsBedrockModel:
+    """Tests for `is_bedrock_model`."""
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "bedrock:anthropic.claude-3-5-sonnet-20240620-v1:0",
+            "bedrock_converse:us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+            "aws:amazon.nova-pro-v1:0",
+            "anthropic_bedrock:us.anthropic.claude-sonnet-4-6-20251117-v1:0",
+            "amazon.nova-pro-v1:0",
+            "us.amazon.nova-pro-v1:0",
+        ],
+    )
+    def test_detects_bedrock_provider_strings(self, model: str) -> None:
+        assert is_bedrock_model(model) is True
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "amazon.titan-text-express-v1:0",
+            "anthropic:claude-3-opus",
+            "openai:gpt-5",
+        ],
+    )
+    def test_rejects_non_bedrock_provider_strings(self, model: str) -> None:
+        assert is_bedrock_model(model) is False
+
+    @pytest.mark.parametrize(
+        "provider",
+        ["amazon_bedrock", "anthropic-bedrock", "bedrock", "bedrock_converse", "aws"],
+    )
+    def test_detects_bedrock_model_providers(self, provider: str) -> None:
+        model = _make_model({})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": provider})
+        assert is_bedrock_model(model) is True
+
+    @pytest.mark.parametrize(
+        "model_cls",
+        ["ChatAnthropicBedrock", "ChatBedrock", "ChatBedrockConverse", "ChatBedrockNovaSonic"],
+    )
+    def test_detects_bedrock_model_classes_when_provider_unavailable(self, model_cls: str) -> None:
+        model = type(model_cls, (GenericFakeChatModel,), {})(messages=iter([]))
+        model._get_ls_params = MagicMock(return_value={})
+        assert is_bedrock_model(model) is True
+
+    def test_rejects_non_bedrock_model_provider(self) -> None:
+        model = _make_model({})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "anthropic"})
+        assert is_bedrock_model(model) is False
 
 
 class TestModelMatchesSpec:

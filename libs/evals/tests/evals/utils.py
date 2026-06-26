@@ -511,6 +511,49 @@ class FileExcludes(SuccessAssertion):
         return f"File {self.path!r} unexpectedly contains {self.substring!r}.\nActual content:\n{actual!r}"
 
 
+@dataclass(frozen=True)
+class FileAbsent(SuccessAssertion):
+    """Assert that a file path does not exist in the trajectory.
+
+    A successful deletion removes the path from state entirely (the ``files``
+    channel reducer drops keys whose update value is ``None``), so a deleted
+    path should not appear in ``trajectory.files`` at all. This is stricter
+    than ``FileExcludes``, which only checks for an absent substring and
+    therefore passes even when the file is still present.
+
+    Attributes:
+        path: The file path that must not exist.
+    """
+
+    path: str
+
+    def check(self, trajectory: AgentTrajectory) -> bool:
+        """Check that ``self.path`` is absent from the trajectory files.
+
+        Args:
+            trajectory: The agent trajectory to check.
+
+        Returns:
+            Whether the file path is absent.
+        """
+        return self.path not in trajectory.files
+
+    def describe_failure(self, trajectory: AgentTrajectory) -> str:
+        """Describe why the file-absent check failed.
+
+        Args:
+            trajectory: The agent trajectory that failed the check.
+
+        Returns:
+            A human-readable failure description.
+        """
+        actual = trajectory.files.get(self.path)
+        return (
+            f"Expected file {self.path!r} to be absent, but it still exists "
+            f"with content:\n{actual!r}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Concrete efficiency assertions
 # ---------------------------------------------------------------------------
@@ -811,6 +854,18 @@ def file_excludes(path: str, substring: str) -> FileExcludes:
         A `FileExcludes` assertion instance.
     """
     return FileExcludes(path=path, substring=substring)
+
+
+def file_absent(path: str) -> FileAbsent:
+    """Create a ``FileAbsent`` success assertion.
+
+    Args:
+        path: The file path that must not exist in the trajectory files.
+
+    Returns:
+        A ``FileAbsent`` assertion instance.
+    """
+    return FileAbsent(path=path)
 
 
 def agent_steps(n: int) -> AgentSteps:

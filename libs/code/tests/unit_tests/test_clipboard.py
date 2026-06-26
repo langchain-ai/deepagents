@@ -18,6 +18,7 @@ from deepagents_code.clipboard import (
     _copy_osc52,
     copy_selection_to_clipboard,
     copy_text_to_clipboard,
+    copy_text_with_feedback,
     logger as clipboard_logger,
 )
 
@@ -96,6 +97,28 @@ class TestCopyTextToClipboard:
         assert "no app clipboard" in caplog.text
         assert "no tty" in caplog.text
 
+    def test_unicode_encode_error_is_caught_not_propagated(self, caplog) -> None:
+        """A backend raising `UnicodeEncodeError` is caught, not propagated.
+
+        `_copy_osc52` does `text.encode("utf-8")`, which raises
+        `UnicodeEncodeError` (a `ValueError` subclass) on lone surrogate code
+        points. The loop must treat it like any other backend failure so the
+        `(success, error)` contract holds instead of crashing the caller.
+        """
+        mock_app = MagicMock()
+        mock_app.copy_to_clipboard.side_effect = OSError("no app clipboard")
+        boom = UnicodeEncodeError("utf-8", "\ud800", 0, 1, "surrogates not allowed")
+
+        with (
+            patch("pyperclip.copy", side_effect=RuntimeError("no pyperclip")),
+            patch("deepagents_code.clipboard._copy_osc52", side_effect=boom),
+            caplog.at_level(logging.DEBUG),
+        ):
+            success, error = copy_text_to_clipboard(mock_app, "\ud800")
+
+        assert success is False
+        assert "surrogates not allowed" in (error or "")
+
     def test_returns_exception_class_name_when_message_empty(self) -> None:
         """An exception with empty `str()` still produces a non-empty reason."""
         mock_app = MagicMock()
@@ -143,6 +166,90 @@ class TestCopyTextToClipboard:
         assert error is None
         assert captured == [markdown]
         mock_app.copy_to_clipboard.assert_not_called()
+
+
+class TestCopyTextWithFeedback:
+    """The copy-then-notify helper shared by Ctrl+C and the `[ COPY ]` button."""
+
+    def test_success_with_message_notifies(self) -> None:
+        """A successful copy with a message emits a confirmation toast."""
+        mock_app = MagicMock()
+
+        with patch(
+            "deepagents_code.clipboard.copy_text_to_clipboard",
+            return_value=(True, None),
+        ) as copy:
+            result = copy_text_with_feedback(
+                mock_app,
+                "draft",
+                failure_noun="input",
+                success_message="Input copied to clipboard",
+            )
+
+        assert result is True
+        copy.assert_called_once_with(mock_app, "draft")
+        mock_app.notify.assert_called_once_with(
+            "Input copied to clipboard",
+            timeout=3,
+            markup=False,
+        )
+
+    def test_success_without_message_is_silent(self) -> None:
+        """With no success message, a successful copy emits no toast."""
+        mock_app = MagicMock()
+
+        with patch(
+            "deepagents_code.clipboard.copy_text_to_clipboard",
+            return_value=(True, None),
+        ):
+            result = copy_text_with_feedback(
+                mock_app,
+                "selection",
+                failure_noun="selection",
+            )
+
+        assert result is True
+        mock_app.notify.assert_not_called()
+
+    def test_failure_warns_with_noun_and_markup_disabled(self) -> None:
+        """A failed copy warns using the failure noun, with `markup=False`."""
+        mock_app = MagicMock()
+
+        with patch(
+            "deepagents_code.clipboard.copy_text_to_clipboard",
+            return_value=(False, "boom"),
+        ):
+            result = copy_text_with_feedback(
+                mock_app,
+                "draft",
+                failure_noun="input",
+                success_message="Input copied to clipboard",
+            )
+
+        assert result is False
+        mock_app.notify.assert_called_once_with(
+            "Failed to copy input: boom",
+            severity="warning",
+            timeout=3,
+            markup=False,
+        )
+
+    def test_failure_without_error_uses_fallback_message(self) -> None:
+        """A failure with no error detail falls back to the generic warning."""
+        mock_app = MagicMock()
+
+        with patch(
+            "deepagents_code.clipboard.copy_text_to_clipboard",
+            return_value=(False, None),
+        ):
+            copy_text_with_feedback(mock_app, "draft", failure_noun="input")
+
+        mock_app.notify.assert_called_once_with(
+            "Failed to copy input - no clipboard method available",
+            severity="warning",
+            timeout=3,
+            markup=False,
+        )
 
 
 class TestCopyOsc52:

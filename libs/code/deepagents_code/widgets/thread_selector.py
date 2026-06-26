@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from rich.cells import cell_len
+from rich.text import Text
 from textual.binding import Binding, BindingType
 from textual.color import Color as TColor
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -22,7 +23,12 @@ from textual.style import Style as TStyle
 from textual.widgets import Checkbox, Input, Select, Static
 
 # Specialize focused Select overlay key handling; no public re-export available.
-from textual.widgets._select import SelectCurrent, SelectOverlay  # noqa: PLC2701
+from textual.widgets._select import (  # noqa: PLC2701
+    NoSelection,
+    Option,
+    SelectCurrent,
+    SelectOverlay,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -115,6 +121,15 @@ _SCOPE_VALUE_CWD = "cwd"
 _SCOPE_VALUE_ALL = "all"
 _AGENT_SELECT_ID = "thread-agent-select"
 _AGENT_VALUE_ALL = "__all__"
+_AGENT_VALUE_LOADING = "__loading__"
+# Label shown in the agent dropdown while the disk load is still pending and no
+# agent names are known yet. The options list is derived from visible threads
+# (plus the configured `/agents` list), so before the load completes it would
+# otherwise show only the "All agents" sentinel; "Loading..." signals that more
+# options may appear. Uses a distinct transient value so the final "All agents"
+# label refreshes when the completed load swaps in the real sentinel. Matches
+# the "Loading threads..." empty-state copy.
+_AGENT_LABEL_LOADING = "Loading..."
 # Display label and filter key for threads with no stored `agent_name`. Shared
 # between the Agent column renderer, the agent dropdown options, and the filter
 # predicate so all three read identically. The parentheses distinguish the
@@ -583,6 +598,45 @@ class ThreadScopeSelect(Select[str]):
         yield ThreadScopeSelectOverlay(type_to_search=self._type_to_search).data_bind(
             compact=Select.compact
         )
+
+    def _setup_options_renderables(self) -> None:
+        """Populate the custom overlay when options change."""
+        options = [
+            Option(Text(self.prompt, style="dim"))
+            if value == self.NULL
+            else Option(prompt)
+            for prompt, value in self._options
+        ]
+
+        try:
+            option_list = self.query_one(ThreadScopeSelectOverlay)
+        except NoMatches:
+            if self.is_attached:
+                self.call_after_refresh(self._setup_options_renderables)
+            return
+
+        option_list.clear_options()
+        option_list.add_options(options)
+
+    def _watch_value(self, value: str | NoSelection) -> None:
+        """Update the current value while using the custom overlay widget."""
+        self._value = value
+        try:
+            select_current = self.query_one(SelectCurrent)
+        except NoMatches:
+            return
+
+        if value == self.NULL:
+            select_current.update(self.NULL)
+        else:
+            for index, (prompt, option_value) in enumerate(self._options):
+                if option_value == value:
+                    with contextlib.suppress(NoMatches):
+                        select_overlay = self.query_one(ThreadScopeSelectOverlay)
+                        select_overlay.highlighted = index
+                    select_current.update(prompt)
+                    break
+        self.post_message(self.Changed(self, value))
 
     def key_tab(self, event: Key) -> None:
         """Prevent focus traversal while the dropdown menu is open."""
@@ -1053,12 +1107,21 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         (and the `_UNKNOWN_AGENT_LABEL` sentinel for threads with no agent name)
         filterable.
 
+        While the disk load is still pending and no agent names are known yet,
+        returns a single `("Loading...", _AGENT_VALUE_LOADING)` option so the
+        dropdown signals that more options are on the way rather than implying
+        "All agents" is the only choice.
+
         Returns:
             List of `(label, value)` pairs; the first entry is always
-                `("All agents", _AGENT_VALUE_ALL)`.
+                `("All agents", _AGENT_VALUE_ALL)` once the load has completed
+                (or `("Loading...", _AGENT_VALUE_LOADING)` while it is still
+                pending with no known agents).
         """
         names = {t.get("agent_name") or _UNKNOWN_AGENT_LABEL for t in self._threads}
         names.update(self._available_agent_names)
+        if not names and not self._disk_load_complete:
+            return [(_AGENT_LABEL_LOADING, _AGENT_VALUE_LOADING)]
         ordered = sorted(names, key=str.casefold)
         return [("All agents", _AGENT_VALUE_ALL), *((n, n) for n in ordered)]
 
@@ -1256,9 +1319,15 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                         classes="thread-controls-label",
                         markup=False,
                     )
+                    agent_options = self._collect_agent_options()
+                    agent_value = (
+                        _AGENT_VALUE_LOADING
+                        if agent_options[0][1] == _AGENT_VALUE_LOADING
+                        else _AGENT_VALUE_ALL
+                    )
                     yield ThreadScopeSelect(
-                        self._collect_agent_options(),
-                        value=_AGENT_VALUE_ALL,
+                        agent_options,
+                        value=agent_value,
                         allow_blank=False,
                         compact=True,
                         id=_AGENT_SELECT_ID,
@@ -2312,6 +2381,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         if event.select.id == _AGENT_SELECT_ID:
             if self._confirming_delete:
                 return
+            if event.value == _AGENT_VALUE_LOADING:
+                return
             new_agent = None if event.value == _AGENT_VALUE_ALL else str(event.value)
             if new_agent == self._filter_agent:
                 return
@@ -2392,7 +2463,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     @property
     def is_delete_confirmation_open(self) -> bool:
-        """Return whether the delete confirmation overlay is visible."""
+        """Whether the delete confirmation overlay is visible."""
         return self._confirming_delete
 
     def _on_delete_confirmed(self, thread_id: str, confirmed: bool | None) -> None:

@@ -131,7 +131,8 @@ async def test_quickjs_async_task_global_subagent_loop_affinity_e2e() -> None:
     agent = create_deep_agent(
         model=_FakeChatModel(
             messages=_script(
-                "await task({description: 'say hi', subagentType: 'researcher'})",
+                "await task({description: 'say hi', "
+                "subagentType: 'researcher', label: 'greet'})",
                 final_message="done",
             )
         ),
@@ -172,7 +173,8 @@ async def test_quickjs_task_global_available_without_ptc_e2e() -> None:
     agent = create_deep_agent(
         model=_FakeChatModel(
             messages=_script(
-                "await task({description: 'say hi', subagentType: 'researcher'})",
+                "await task({description: 'say hi', "
+                "subagentType: 'researcher', label: 'greet'})",
                 final_message="done",
             )
         ),

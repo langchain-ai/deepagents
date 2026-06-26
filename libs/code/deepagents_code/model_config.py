@@ -547,15 +547,25 @@ Providers not listed here fall through to the config-file check or the langchain
 registry fallback.
 """
 
+LANGSMITH_SERVICE = "langsmith"
+"""Service name for LangSmith tracing in `SERVICE_API_KEY_ENV`.
+
+Storing a key for this service via `/auth` also enables tracing at startup
+(see `config._apply_stored_langsmith_tracing`) and can carry a custom project
+name, so it gets special handling beyond a plain key copy.
+"""
+
 SERVICE_API_KEY_ENV: dict[str, str] = {
+    LANGSMITH_SERVICE: "LANGSMITH_API_KEY",
     "tavily": "TAVILY_API_KEY",
 }
 """Non-model services configurable via `/auth`, mapped to their API-key env var.
 
-These are not LLM providers — they back features such as web search — but
-their credentials follow the same store-on-disk model as model providers, so
-they appear in the `/auth` manager and can be entered directly in the TUI
-instead of being exported as environment variables before launch.
+These are not LLM providers — they back features such as web search (Tavily) or
+agent tracing (LangSmith) — but their credentials follow the same store-on-disk
+model as model providers, so they appear in the `/auth` manager and can be
+entered directly in the TUI instead of being exported as environment variables
+before launch.
 """
 
 CODEX_PROVIDER = "openai_codex"
@@ -2012,6 +2022,16 @@ def is_service(name: str) -> bool:
     return name in SERVICE_API_KEY_ENV
 
 
+def is_langsmith(name: str) -> bool:
+    """Return whether `name` is the LangSmith tracing service.
+
+    Centralizes the identity check so the LangSmith-specific branches (project
+    field instead of a base URL, tracing auto-enable) share one definition
+    rather than scattering `== LANGSMITH_SERVICE` comparisons.
+    """
+    return name == LANGSMITH_SERVICE
+
+
 def get_service_auth_status(service: str) -> ProviderAuthStatus:
     """Return credential readiness for a non-model service (e.g. `"tavily"`).
 
@@ -2042,9 +2062,10 @@ def apply_stored_service_credentials() -> None:
 
     Services (e.g. web search via Tavily) have no base URL to reconcile, so
     this is a plain key copy onto the canonical env var name the underlying
-    SDK reads. A stored key takes precedence over an existing env var, matching
-    `apply_stored_credentials`. Only the unprefixed canonical name is written,
-    so a `DEEPAGENTS_CODE_`-prefixed override still wins via `resolve_env_var`.
+    SDK reads. A stored key takes precedence over an existing plain env var,
+    matching `apply_stored_credentials`; a `DEEPAGENTS_CODE_`-prefixed override
+    is left authoritative because the app already treats it as the top-priority
+    per-session credential.
     """
     for service, env_var in SERVICE_API_KEY_ENV.items():
         try:
@@ -2056,7 +2077,12 @@ def apply_stored_service_credentials() -> None:
                 service,
             )
             continue
-        if stored and os.environ.get(env_var) != stored:
+        if not stored:
+            continue
+        prefixed = f"{_ENV_PREFIX}{env_var}"
+        if prefixed in os.environ:
+            continue
+        if os.environ.get(env_var) != stored:
             os.environ[env_var] = stored
 
 

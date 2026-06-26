@@ -2597,7 +2597,8 @@ class TestToolFilterEndToEnd:
             await asyncio.sleep(0)
             url = connection.get("url")
             if isinstance(url, str):
-                yield sessions_by_url.get(url, fs_session)
+                session = sessions_by_url.get(url)
+                yield session if session is not None else fs_session
             else:
                 yield fs_session
 

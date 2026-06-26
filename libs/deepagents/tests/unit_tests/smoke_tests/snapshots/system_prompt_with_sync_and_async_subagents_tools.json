@@ -88,7 +88,7 @@
   },
   {
     "function": {
-      "description": "Writes to a new file in the filesystem.\n\nUsage:\n- The write_file tool will create the a new file.\n- Prefer to edit existing files (with the edit_file tool) over creating new ones when possible.",
+      "description": "Writes content to a file. Creates the file if it does not exist; replaces it entirely if it does.\n\nUsage:\n- Use this tool when you intend to create a new file or replace the whole file. You do not need to read the file first.\n- Prefer to edit existing files (with the edit_file tool) over creating new ones when possible.",
       "name": "write_file",
       "parameters": {
         "properties": {
@@ -97,7 +97,7 @@
             "type": "string"
           },
           "file_path": {
-            "description": "Absolute path where the file should be created. Must be absolute, not relative.",
+            "description": "Absolute path where the file should be written. Must be absolute, not relative.",
             "type": "string"
           }
         },
@@ -138,6 +138,25 @@
           "file_path",
           "old_string",
           "new_string"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Deletes a file or directory from the filesystem.\n\nUsage:\n- Permanently removes the file or directory at the given absolute path.\n- Deleting a directory removes it and everything inside it, recursively. Prefer\n  deleting a directory in one call over deleting each file individually.\n- This cannot be undone, so only delete paths you are sure are no longer needed.",
+      "name": "delete",
+      "parameters": {
+        "properties": {
+          "file_path": {
+            "description": "Absolute path to the file to delete. Must be absolute, not relative.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_path"
         ],
         "type": "object"
       }

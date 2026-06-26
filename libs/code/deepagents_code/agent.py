@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import re
@@ -62,10 +63,10 @@ from deepagents_code.config import (
     get_default_coding_instructions,
     get_glyphs,
     get_langsmith_project_name,
+    restore_user_tracing_env,
     settings,
 )
 from deepagents_code.configurable_model import ConfigurableModelMiddleware
-from deepagents_code.filesystem_empty_result import _FilesystemEmptyResultMiddleware
 from deepagents_code.integrations.sandbox_factory import get_default_working_dir
 from deepagents_code.local_context import (
     LocalContextMiddleware,
@@ -216,7 +217,7 @@ class ShellAllowListMiddleware(AgentMiddleware):
 
 
 _INTERPRETER_WRITE_TOOLS: frozenset[str] = frozenset(
-    {"execute", "write_file", "edit_file"}
+    {"execute", "write_file", "edit_file", "delete"}
 )
 """Tools considered write/shell capable for PTC auditing.
 
@@ -438,17 +439,32 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
     return agents
 
 
+@functools.lru_cache(maxsize=1)
+def _reserved_agent_dir_names() -> frozenset[str]:
+    """Return non-agent directory names reserved by the app under `~/.deepagents/`.
+
+    `bin/` holds the managed `rg` binary (`managed_tools.BIN_DIR`) and must
+    never appear in the agent picker. The name is derived from `BIN_DIR` so it
+    stays a single source of truth rather than being hardcoded here. The result
+    is cached since the reserved set is constant for the process.
+    """
+    from deepagents_code.managed_tools import BIN_DIR
+
+    return frozenset({BIN_DIR.name})
+
+
 def _is_agent_dir_entry(entry: Path) -> bool:
     """Return whether a `~/.deepagents/` entry should be listed as an agent.
 
-    Filters out symlinks (so dangling links don't masquerade as agents)
-    and dot-prefixed names — `.state/` (app internal state) plus any
-    other hidden directory the user may have placed there.
+    Filters out symlinks (so dangling links don't masquerade as agents),
+    dot-prefixed names — `.state/` (app internal state) plus any other
+    hidden directory the user may have placed there — and reserved names
+    the app owns (e.g. `bin/`, the managed-binary install dir).
 
     `OSError` from `is_dir`/`is_symlink` propagates so callers can log
     with the failing entry's name as context.
     """
-    if entry.name.startswith("."):
+    if entry.name.startswith(".") or entry.name in _reserved_agent_dir_names():
         return False
     return entry.is_dir() and not entry.is_symlink()
 
@@ -458,8 +474,9 @@ def get_available_agent_names() -> list[str]:
 
     Scans the user's `.deepagents` directory and returns each real
     subdirectory found there. Symlinks excluded so a dangling link does not
-    masquerade as an agent. Dot-prefixed entries (e.g., `.state/`) are
-    skipped so internal app state never appears as an agent.
+    masquerade as an agent. Dot-prefixed entries (e.g., `.state/`) and
+    reserved app-owned directories (e.g., `bin/`, the managed-binary install
+    dir) are skipped so internal state never appears as an agent.
 
     Filesystem errors (missing parent, permission denied, broken entries) are
     logged and surfaced as an empty list rather than raised — the caller shows
@@ -893,6 +910,17 @@ def _format_edit_file_description(
     return f"Action: Replace text ({scope})"
 
 
+def _format_delete_description(
+    _tool_call: ToolCall, _state: AgentState[Any], _runtime: Runtime[Any]
+) -> str:
+    """Format delete tool call for approval prompt.
+
+    Returns:
+        Formatted description string for the delete tool call.
+    """
+    return "Action: Delete file or directory"
+
+
 def _format_web_search_description(
     tool_call: ToolCall, _state: AgentState[Any], _runtime: Runtime[Any]
 ) -> str:
@@ -1008,6 +1036,94 @@ def _format_execute_description(
     return "\n".join(lines)
 
 
+def _is_auto_approve_enabled(value: object) -> bool:
+    """Return whether a context value explicitly enables auto-approve."""
+    return isinstance(value, bool) and value
+
+
+def _read_live_auto_approve(store: object, key: str | None) -> bool | None:
+    """Return live approval mode from the LangGraph Store when configured.
+
+    Args:
+        store: `request.runtime.store` from the graph server.
+        key: Live approval-mode store key, or `None` when this run has no live
+            control record.
+
+    Returns:
+        `None` when no live key is configured for this run — the caller should
+            fall back to the static `auto_approve` context snapshot.
+        `True` or `False` when a live key is configured: these reflect
+            the stored mode, and `False` is also returned when the key
+            is configured but the store is unreadable (missing item,
+            malformed value, read error), so an unreadable live mode fails
+            closed and interrupts.
+        `None` therefore means "feature not in play," the opposite of the store
+            reader's `None` ("unreadable, be careful").
+    """
+    if not key:
+        return None
+    from deepagents_code.approval_mode import read_approval_mode_from_store
+
+    value = read_approval_mode_from_store(store, key)
+    if value is None:
+        logger.warning(
+            "Approval-mode store item is unavailable; interrupting for safety"
+        )
+        return False
+    return value
+
+
+def _should_interrupt_tool_call(request: ToolCallRequest) -> bool:
+    """Decide whether a gated tool call should pause for human approval.
+
+    Returns `False` once the run context carries `auto_approve=True` so
+    `HumanInTheLoopMiddleware` skips the interrupt entirely. This avoids the
+    interrupt-then-auto-resolve pattern that previously split each turn into a
+    separate run after every tool call, producing noisy traces.
+
+    Auto-approve is read from the run-scoped `CLIContext` (set by the client)
+    rather than graph state. Sourcing it from state required seeding it with a
+    first-turn `Command(update=...)`, which the LangGraph API server rebuilds
+    with `goto=None` — crashing `_control_branch` on a fresh thread. Context
+    is also safer: the model cannot self-approve by writing state.
+
+    Args:
+        request: The pending tool call under review.
+
+    Returns:
+        `True` to interrupt for approval, `False` to auto-approve.
+    """
+    runtime = getattr(request, "runtime", None)
+    ctx = getattr(runtime, "context", None)
+    store = getattr(runtime, "store", None)
+    if isinstance(ctx, CLIContextSchema):
+        if (live := _read_live_auto_approve(store, ctx.approval_mode_key)) is not None:
+            return not live
+        return not _is_auto_approve_enabled(ctx.auto_approve)
+    if isinstance(ctx, dict):
+        raw_key = ctx.get("approval_mode_key")
+        key = raw_key if isinstance(raw_key, str) else None
+        if (live := _read_live_auto_approve(store, key)) is not None:
+            return not live
+        # Type-checked (not truthiness) check: over the JSON/RemoteGraph boundary a
+        # malformed payload (e.g. "yes", 1) must fail closed and interrupt, not
+        # silently auto-approve. Only a genuine boolean `True` suppresses.
+        return not _is_auto_approve_enabled(ctx.get("auto_approve"))
+    if ctx is not None:
+        # Context is present but neither expected shape. The registered
+        # `context_schema=CLIContextSchema` guarantees in-process coercion to
+        # that dataclass, and RemoteGraph delivers a dict — so this means the
+        # context-plumbing contract broke (likely an SDK change). Fail closed
+        # (interrupt), but surface it: otherwise auto-approve silently stops
+        # working with no error, looking like a feature that just "broke".
+        logger.warning(
+            "auto-approve predicate received unexpected context type %s; "
+            "interrupting for safety",
+            type(ctx).__name__,
+        )
+    return True
+
+
 def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
     """Configure human-in-the-loop interrupt settings for all gated tools.
 
@@ -1016,48 +1132,66 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
     delegation) is gated behind an approval prompt unless auto-approve
     is enabled.
 
+    Each config carries a `when` predicate so that enabling "approve always"
+    mid-session (carried in run-scoped context, not graph state) suppresses
+    the interrupt itself instead of relying on the client to auto-resolve it.
+
     Returns:
         Dictionary mapping tool names to their interrupt configuration.
     """
     execute_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": _format_execute_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
+        "when": _should_interrupt_tool_call,
     }
 
     write_file_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": _format_write_file_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
+        "when": _should_interrupt_tool_call,
     }
 
     edit_file_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": _format_edit_file_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
+        "when": _should_interrupt_tool_call,
+    }
+
+    delete_interrupt_config: InterruptOnConfig = {
+        "allowed_decisions": ["approve", "reject"],
+        "description": _format_delete_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
+        "when": _should_interrupt_tool_call,
     }
 
     web_search_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": _format_web_search_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
+        "when": _should_interrupt_tool_call,
     }
 
     fetch_url_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": _format_fetch_url_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
+        "when": _should_interrupt_tool_call,
     }
 
     task_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": _format_task_description,  # ty: ignore[invalid-argument-type]  # Callable description narrower than TypedDict expects
+        "when": _should_interrupt_tool_call,
     }
 
     async_subagent_interrupt_config: InterruptOnConfig = {
         "allowed_decisions": ["approve", "reject"],
         "description": "Launch, update, or cancel a remote async subagent.",
+        "when": _should_interrupt_tool_call,
     }
 
     interrupt_map: dict[str, InterruptOnConfig] = {
         "execute": execute_interrupt_config,
         "write_file": write_file_interrupt_config,
         "edit_file": edit_file_interrupt_config,
+        "delete": delete_interrupt_config,
         "web_search": web_search_interrupt_config,
         "fetch_url": fetch_url_interrupt_config,
         "task": task_interrupt_config,
@@ -1075,6 +1209,7 @@ def _add_interrupt_on() -> dict[str, InterruptOnConfig]:
                 "window space. Recent messages are kept as-is. "
                 "Full history remains available for retrieval."
             ),
+            "when": _should_interrupt_tool_call,
         }
 
     return interrupt_map
@@ -1189,8 +1324,7 @@ def create_cli_agent(
             list or `interpreter_ptc="all"` with
             `interpreter_ptc_acknowledge_unsafe=True`.
 
-            Requires the `quickjs` optional extra
-            (`langchain-quickjs>=0.1.2,<0.2.0`).
+            Requires the core `langchain-quickjs` dependency.
         checkpointer: Optional checkpointer for session persistence.
             When `None`, the graph is compiled without a checkpointer.
         mcp_server_info: MCP server metadata to surface in the system prompt.
@@ -1341,7 +1475,6 @@ def create_cli_agent(
     # Build middleware stack based on enabled features
     agent_middleware: list[AgentMiddleware[Any, Any]] = [
         ConfigurableModelMiddleware(),
-        _FilesystemEmptyResultMiddleware(),
     ]
 
     # Resume state: declares the `_context_tokens` and `_model_spec` channels
@@ -1435,11 +1568,17 @@ def create_cli_agent(
         # ========== LOCAL MODE ==========
         root_dir = effective_cwd if effective_cwd is not None else Path.cwd()
         if enable_shell:
-            # Create environment for shell commands
-            # Restore user's original LANGSMITH_PROJECT so their code traces separately
+            # Create environment for shell commands.
+            # Restore the user's original LANGSMITH_PROJECT so their code traces
+            # separately. When they had none, drop the agent's override (the
+            # `deepagents-code` default applied at bootstrap) entirely so shell
+            # commands don't inherit it.
             shell_env = os.environ.copy()
-            if settings.user_langchain_project:
+            if settings.user_langchain_project is not None:
                 shell_env["LANGSMITH_PROJECT"] = settings.user_langchain_project
+            else:
+                shell_env.pop("LANGSMITH_PROJECT", None)
+            restore_user_tracing_env(shell_env)
             # Re-apply a launch-time PYTHONPATH that was stripped from the server
             # interpreter but relayed for approval-gated `execute` commands.
             _apply_inherited_pythonpath(shell_env)
@@ -1452,6 +1591,7 @@ def create_cli_agent(
             # and resurrect the popped carrier var, leaking it into `execute`.
             backend = LocalShellBackend(
                 root_dir=root_dir,
+                virtual_mode=False,
                 inherit_env=False,
                 env=shell_env,
             )

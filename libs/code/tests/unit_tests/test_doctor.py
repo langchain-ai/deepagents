@@ -94,6 +94,7 @@ class TestCollectTracing:
 
         defaults: dict[str, object] = {
             "enabled": False,
+            "explicitly_disabled": False,
             "has_credentials": False,
             "endpoint": None,
             "project": None,
@@ -104,15 +105,23 @@ class TestCollectTracing:
         with patch("deepagents_code.config.get_tracing_status", return_value=status):
             return _collect_tracing()
 
-    def test_disabled_is_healthy(self) -> None:
-        """A disabled, keyless setup is informational, not a failure."""
+    def test_not_configured_is_healthy(self) -> None:
+        """An unconfigured, keyless setup is informational, not a failure."""
         section = self._section(enabled=False, project="deepagents-code")
         assert section.title == "Tracing"
         assert section.ok is True
         labels = {item.label: item.value for item in section.items}
-        assert labels["Tracing"] == "disabled"
-        assert labels["Credentials"] == "not configured"
+        assert labels["Tracing"] == "not configured"
+        assert labels["Credentials"] == "not set"
         assert labels["Project"] == "deepagents-code"
+
+    def test_explicitly_disabled_reads_disabled(self) -> None:
+        """An explicit opt-out reads `disabled`, not `not configured`."""
+        section = self._section(enabled=False, explicitly_disabled=True)
+        assert section.ok is True
+        labels = {item.label: item.value for item in section.items}
+        assert labels["Tracing"] == "disabled"
+        assert labels["Credentials"] == "not set"
 
     def test_enabled_without_credentials_is_unhealthy(self) -> None:
         """Tracing on with no key and no endpoint is a genuine problem."""

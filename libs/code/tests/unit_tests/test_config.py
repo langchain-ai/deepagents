@@ -2333,10 +2333,44 @@ class TestGetTracingStatus:
         with patch.dict("os.environ", self._CLEAN, clear=False):
             status = get_tracing_status()
         assert status.enabled is False
+        assert status.explicitly_disabled is False
         assert status.has_credentials is False
         assert status.endpoint is None
         assert status.project == LANGSMITH_PROJECT_DEFAULT
         assert status.replica_project is None
+
+    def test_explicitly_disabled_when_flag_off(self) -> None:
+        """A flag set to a falsy token reports an explicit opt-out."""
+        from deepagents_code.config import get_tracing_status
+
+        env = dict(self._CLEAN)
+        env["LANGSMITH_TRACING_V2"] = "false"
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.enabled is False
+        assert status.explicitly_disabled is True
+
+    def test_not_explicitly_disabled_when_flag_empty(self) -> None:
+        """An empty flag reads as not configured, not an explicit opt-out."""
+        from deepagents_code.config import get_tracing_status
+
+        env = dict(self._CLEAN)
+        env["LANGSMITH_TRACING_V2"] = ""
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.enabled is False
+        assert status.explicitly_disabled is False
+
+    def test_not_explicitly_disabled_when_enabled(self) -> None:
+        """An enabled setup is never reported as explicitly disabled."""
+        from deepagents_code.config import get_tracing_status
+
+        env = dict(self._CLEAN)
+        env["LANGSMITH_TRACING_V2"] = "true"
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.enabled is True
+        assert status.explicitly_disabled is False
 
     def test_prefixed_flag_and_key_are_detected(self) -> None:
         """`DEEPAGENTS_CODE_`-prefixed tracing/key vars resolve like the runtime.

@@ -155,6 +155,19 @@ on:
         required: true
         default: "1"
         type: string
+      agent_timeout_multiplier:
+        description: "Multiplier for agent EXECUTION timeout (e.g. 0.1 caps each rollout's wall-clock to bound model cost). Setup + env-build timeouts are unaffected, so the agent-setup phase is still tested at full budget — useful for cheap concurrency stress tests."
+        required: false
+        default: "1.0"
+        type: string
+      disable_verification:
+        description: "Skip the task verifier (tests). For setup/concurrency stress tests where task pass/fail is not the goal."
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 permissions:
   contents: read
 
@@ -247,6 +260,8 @@ jobs:
       HARBOR_N_TASKS: ${{ inputs.n_tasks }}
       HARBOR_INCLUDE_TASKS: ${{ inputs.include_tasks }}
       HARBOR_ROLLOUTS_PER_TASK: ${{ inputs.rollouts_per_task }}
+      HARBOR_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier || '1.0' }}
+      HARBOR_DISABLE_VERIFICATION: ${{ inputs.disable_verification || 'false' }}
       HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
       HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}
       HARBOR_MODEL: ${{ matrix.model }}
@@ -377,6 +392,18 @@ jobs:
             echo "::error::Invalid rollouts_per_task: $HARBOR_ROLLOUTS_PER_TASK"
             exit 1
           fi
+          # Positive decimal only; reject all-zero (0, 0.0, ...) which would mean a 0s timeout.
+          if ! [[ "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" =~ ^[0-9]+(\.[0-9]+)?$ ]] || [[ "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" =~ ^0+(\.0+)?$ ]]; then
+            echo "::error::Invalid agent_timeout_multiplier (must be a positive decimal): $HARBOR_AGENT_TIMEOUT_MULTIPLIER"
+            exit 1
+          fi
+          # Allowlist the boolean (no blocklist); only literal true/false accepted.
+          verification_flag=()
+          case "$HARBOR_DISABLE_VERIFICATION" in
+            true)  verification_flag=(--disable-verification) ;;
+            false) ;;
+            *) echo "::error::Invalid disable_verification (true|false): $HARBOR_DISABLE_VERIFICATION"; exit 1 ;;
+          esac
 
           include_args=()
           if [ -n "$HARBOR_INCLUDE_TASKS" ]; then
@@ -451,6 +478,8 @@ jobs:
             --dataset "$HARBOR_DATASET" \
             -n "$HARBOR_CONCURRENCY" \
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \
+            --agent-timeout-multiplier "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" \
+            "${verification_flag[@]}" \
             $n_tasks_flag \
             "${include_args[@]}" \
             "${agent_env_args[@]}" \

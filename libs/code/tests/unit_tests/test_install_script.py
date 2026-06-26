@@ -292,13 +292,13 @@ def test_install_script_default_invocation_installs_plain_package(
     """A fresh machine installs the bare package with no prompt.
 
     Guards the most common `curl ... | bash` path against accidentally
-    appending a version pin, extras, or a `--prerelease` flag.
+    appending a version pin or extras, while allowing stable releases that pin
+    pre-release dependencies to resolve.
     """
     args = _run_install_script(tmp_path, {}, installed_version=None)
 
     assert args[:3] == ["tool", "install", "-U"]
-    assert args[-1] == "deepagents-code"
-    assert "--prerelease" not in args
+    assert args[-3:] == ["--prerelease", "if-necessary", "deepagents-code"]
 
 
 def test_install_script_supports_exact_version_with_extras(tmp_path: Path) -> None:
@@ -583,7 +583,21 @@ _DEPENDENCY_UPDATE_DIFF = " - boto3==1.43.33\n + boto3==1.43.34"
 _DEPENDENCY_ADDITION_DIFF = " + brand-new-dep==1.0.0"
 
 # uv ran but moved nothing — only timing/summary noise, no `± pkg==ver` lines.
-_NO_PACKAGE_CHANGE_STDERR = "Resolved 5 packages in 12ms\nAudited 5 packages in 1ms"
+_NO_PACKAGE_CHANGE_STDERR = (
+    "Resolved 5 packages in 12ms\n"
+    "Resolved in 12ms\n"
+    "Prepared 1 package for build in 20ms\n"
+    "Checked in 1ms\n"
+    "Audited 5 packages in 1ms"
+)
+
+_UV_PROGRESS_STDERR = (
+    "Downloading uvloop (1.3MiB)\n"
+    " Downloading pygments (1.2MiB)\n"
+    "Downloaded uvloop\n"
+    "Building forbiddenfruit==0.1.4\n"
+    "Built forbiddenfruit==0.1.4"
+)
 
 
 def test_install_script_fresh_install_hides_packages(tmp_path: Path) -> None:
@@ -612,6 +626,41 @@ def test_install_script_verbose_lists_every_package(tmp_path: Path) -> None:
     assert "agent-client-protocol==0.10.1" in proc.stderr
     assert "zstandard==0.25.0" in proc.stderr
     assert "Installed 3 packages" not in proc.stderr
+
+
+def test_install_script_hides_uv_download_and_build_progress(tmp_path: Path) -> None:
+    """Non-verbose installs hide uv's download and build progress lines."""
+    proc, _ = _invoke(
+        tmp_path,
+        {"FAKE_UV_INSTALL_STDERR": _UV_PROGRESS_STDERR},
+        installed_version=None,
+    )
+
+    assert proc.returncode == 0
+    assert "Downloading uvloop" not in proc.stderr
+    assert "Downloaded uvloop" not in proc.stderr
+    assert "Building forbiddenfruit" not in proc.stderr
+    assert "Built forbiddenfruit" not in proc.stderr
+
+
+def test_install_script_verbose_shows_uv_download_and_build_progress(
+    tmp_path: Path,
+) -> None:
+    """Verbose installs preserve uv's raw download and build progress lines."""
+    proc, _ = _invoke(
+        tmp_path,
+        {
+            "FAKE_UV_INSTALL_STDERR": _UV_PROGRESS_STDERR,
+            "DEEPAGENTS_CODE_VERBOSE": "1",
+        },
+        installed_version=None,
+    )
+
+    assert proc.returncode == 0
+    assert "Downloading uvloop" in proc.stderr
+    assert "Downloaded uvloop" in proc.stderr
+    assert "Building forbiddenfruit" in proc.stderr
+    assert "Built forbiddenfruit" in proc.stderr
 
 
 def test_install_script_upgrade_still_shows_diff(tmp_path: Path) -> None:
@@ -1273,6 +1322,9 @@ def test_install_script_managed_ripgrep_calls_tools_install(tmp_path: Path) -> N
     tools_log = tmp_path / "dcode-tools.txt"
     assert tools_log.exists(), proc.stdout + proc.stderr
     assert "tools install" in tools_log.read_text()
+    combined = proc.stdout + proc.stderr
+    assert "Setting up ripgrep..." in combined
+    assert "opt out with DEEPAGENTS_CODE_RIPGREP_INSTALLER=system" not in combined
 
 
 def test_install_script_system_ripgrep_skips_tools_install(tmp_path: Path) -> None:

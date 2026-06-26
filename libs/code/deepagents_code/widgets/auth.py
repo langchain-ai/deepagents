@@ -31,7 +31,7 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.style import Style as TStyle
 from textual.widgets import Input, OptionList, Static
-from textual.widgets.option_list import Option
+from textual.widgets.option_list import Option, OptionDoesNotExist
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -58,6 +58,7 @@ from deepagents_code.model_config import (
     clear_caches,
     get_available_models,
     get_base_url_env_var,
+    get_base_url_env_vars,
     get_credential_env_var,
     get_default_base_url_env,
     get_provider_auth_status,
@@ -246,7 +247,7 @@ class AuthConfirmScreen(ModalScreen[bool]):
     }
 
     AuthConfirmScreen .auth-confirm-help {
-        height: 1;
+        height: auto;
         color: $text-muted;
         text-style: italic;
         text-align: center;
@@ -474,7 +475,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
     }
 
     AuthPromptScreen .auth-prompt-help {
-        height: 1;
+        height: auto;
         color: $text-muted;
         text-style: italic;
         text-align: center;
@@ -875,22 +876,25 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             Content describing blank behavior and env-var precedence.
         """
         surviving_base_url_env = get_default_base_url_env(self._provider)
-        endpoint_env = get_base_url_env_var(self._provider)
-        if surviving_base_url_env and endpoint_env:
+        endpoint_envs = get_base_url_env_vars(self._provider)
+        env_order = ", then ".join(
+            item for env in endpoint_envs for item in (f"DEEPAGENTS_CODE_{env}", env)
+        )
+        if surviving_base_url_env and env_order:
             return Content.from_markup(
                 "Override the provider endpoint for this stored key. "
                 "Leave blank to use [bold]$prefixed[/bold].\n"
-                "Env override order: [bold]$prefixed[/bold], then [bold]$plain[/bold].",
+                "Env override order: [bold]$order[/bold].",
                 prefixed=surviving_base_url_env,
-                plain=endpoint_env,
+                order=env_order,
             )
-        if endpoint_env:
+        endpoint_env = get_base_url_env_var(self._provider)
+        if endpoint_env and env_order:
             return Content.from_markup(
                 "Override the provider endpoint for this stored key. "
                 "Leave blank to use the provider default.\n"
-                "Env override order: [bold]$prefixed[/bold], then [bold]$plain[/bold].",
-                prefixed=f"DEEPAGENTS_CODE_{endpoint_env}",
-                plain=endpoint_env,
+                "Env override order: [bold]$order[/bold].",
+                order=env_order,
             )
         return Content.from_markup(
             "Override the provider endpoint for this stored key. "
@@ -1136,7 +1140,7 @@ class AuthManagerScreen(ModalScreen[None]):
     }
 
     AuthManagerScreen .auth-manager-help {
-        height: 1;
+        height: auto;
         color: $text-muted;
         text-style: italic;
         text-align: center;
@@ -1144,16 +1148,26 @@ class AuthManagerScreen(ModalScreen[None]):
     }
     """
 
-    def __init__(self) -> None:
-        """Initialize the manager with an empty install-on-select registry."""
+    def __init__(self, *, initial_provider: str | None = None) -> None:
+        """Initialize the manager with an empty install-on-select registry.
+
+        Args:
+            initial_provider: Provider whose row should start highlighted —
+                set when reopening after an install-on-select so the cursor
+                lands on the just-installed provider ready for a key, rather
+                than resetting to the top of the list.
+        """
         super().__init__()
         # Uninstalled known providers mapped to the extra that installs them,
         # populated each time the option list is built. Selecting one routes
         # to the install confirmation instead of the key prompt.
         self._install_extras: dict[str, str] = {}
         # Set when the user confirms installing a provider's extra; the app
-        # reads this off the screen after dismissal to install then reopen.
+        # reads these off the screen after dismissal to install then reopen
+        # the manager with the just-installed provider highlighted.
         self.pending_install_extra: str | None = None
+        self.pending_install_provider: str | None = None
+        self._initial_provider = initial_provider
 
     def compose(self) -> ComposeResult:
         """Compose the manager.
@@ -1209,11 +1223,29 @@ class AuthManagerScreen(ModalScreen[None]):
         )
 
     def on_mount(self) -> None:
-        """Apply ASCII border when needed."""
+        """Apply ASCII border and highlight the initial provider when set."""
         if is_ascii_mode():
             container = self.query_one(Vertical)
             colors = theme.get_theme_colors(self)
             container.styles.border = ("ascii", colors.success)
+        self._highlight_initial_provider()
+
+    def _highlight_initial_provider(self) -> None:
+        """Move the cursor to `initial_provider`'s row if it is listed.
+
+        Used when the manager reopens after an install-on-select so the cursor
+        lands on the just-installed provider (ready for a key) instead of
+        resetting to the top of the list.
+        """
+        if self._initial_provider is None:
+            return
+        option_list = self.query_one("#auth-manager-options", OptionList)
+        try:
+            index = option_list.get_option_index(self._initial_provider)
+        except OptionDoesNotExist:
+            return
+        option_list.highlighted = index
+        option_list.scroll_to_highlight()
 
     def on_click(self, event: Click) -> None:  # noqa: PLR6301 - Textual handler
         """Open style-embedded hyperlinks (the title `Docs` link)."""
@@ -1281,11 +1313,13 @@ class AuthManagerScreen(ModalScreen[None]):
         def _on_confirm(proceed: bool | None) -> None:
             if proceed:
                 self.pending_install_extra = extra
+                self.pending_install_provider = provider
                 self.dismiss(None)
             else:
-                # Declined or dismissed: clear any pending extra so a reused
+                # Declined or dismissed: clear any pending request so a reused
                 # screen never carries a stale install request, and stay put.
                 self.pending_install_extra = None
+                self.pending_install_provider = None
 
         self.app.push_screen(
             InstallProviderConfirmScreen(provider, extra),

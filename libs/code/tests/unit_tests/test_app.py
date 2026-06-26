@@ -7826,10 +7826,25 @@ class TestDefaultAgentNameDrift:
 class TestInstallExtraAuthContinuation:
     """Test `/auth` reopening after installing provider extras."""
 
+    async def test_reopens_auth_with_provider_highlighted_after_install(self) -> None:
+        """A successful install reopens the manager on the just-installed provider."""
+        app = DeepAgentsApp()
+        app._install_extra = AsyncMock(return_value=True)  # ty: ignore
+        app._show_auth_manager = AsyncMock()  # ty: ignore
+
+        await app._install_provider_then_reopen_auth("baseten", provider="baseten")
+
+        app._install_extra.assert_awaited_once_with("baseten", auto_restart=True)  # ty: ignore
+        app._show_auth_manager.assert_awaited_once_with(initial_provider="baseten")  # ty: ignore
+
     async def test_reopens_auth_after_installed_extra_even_when_restart_fails(
         self,
     ) -> None:
-        """`/auth` only needs the install to land before reopening the manager."""
+        """`/auth` only needs the install to land before reopening the manager.
+
+        Even on the restart-failed path the just-installed provider is threaded
+        through so the reopened manager lands the cursor on its row.
+        """
         app = DeepAgentsApp()
         app._install_extra = AsyncMock(return_value=False)  # ty: ignore
         app._show_auth_manager = AsyncMock()  # ty: ignore
@@ -7838,23 +7853,29 @@ class TestInstallExtraAuthContinuation:
             patch("deepagents_code.app._extra_is_ready", return_value=True),
             patch("deepagents_code.model_config.clear_caches") as clear_caches,
         ):
-            await app._install_provider_then_reopen_auth("baseten")
+            await app._install_provider_then_reopen_auth("baseten", provider="baseten")
 
         app._install_extra.assert_awaited_once_with("baseten", auto_restart=True)  # ty: ignore
         clear_caches.assert_called_once_with()
-        app._show_auth_manager.assert_awaited_once()  # ty: ignore
+        app._show_auth_manager.assert_awaited_once_with(initial_provider="baseten")  # ty: ignore
 
-    async def test_does_not_reopen_auth_when_install_failed(self) -> None:
-        """A failed install still leaves the user in chat with the surfaced error."""
+    async def test_does_not_reopen_auth_when_install_failed(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A failed install leaves the user in chat and logs the dead-end at DEBUG."""
         app = DeepAgentsApp()
         app._install_extra = AsyncMock(return_value=False)  # ty: ignore
         app._show_auth_manager = AsyncMock()  # ty: ignore
 
-        with patch("deepagents_code.app._extra_is_ready", return_value=False):
-            await app._install_provider_then_reopen_auth("baseten")
+        with (
+            patch("deepagents_code.app._extra_is_ready", return_value=False),
+            caplog.at_level(logging.DEBUG, logger="deepagents_code.app"),
+        ):
+            await app._install_provider_then_reopen_auth("baseten", provider="baseten")
 
         app._install_extra.assert_awaited_once_with("baseten", auto_restart=True)  # ty: ignore
         app._show_auth_manager.assert_not_awaited()  # ty: ignore
+        assert any("baseten" in record.message for record in caplog.records)
 
     async def test_surfaces_hint_when_install_state_unverifiable(self) -> None:
         """An unknown post-install state points the user back to `/auth`.
@@ -7869,7 +7890,7 @@ class TestInstallExtraAuthContinuation:
         app._mount_message = AsyncMock()  # ty: ignore
 
         with patch("deepagents_code.app._extra_is_ready", return_value=None):
-            await app._install_provider_then_reopen_auth("baseten")
+            await app._install_provider_then_reopen_auth("baseten", provider="baseten")
 
         app._show_auth_manager.assert_not_awaited()  # ty: ignore
         app._mount_message.assert_awaited_once()  # ty: ignore
@@ -8012,8 +8033,8 @@ class TestInstallExtraModelSwitch:
             for c in app._mount_message.await_args_list  # ty: ignore
         )
         assert "Installed" in mounted
-        assert "/auth" in mounted
         assert "/model" in mounted
+        assert "prompted for credentials" in mounted
 
     async def test_install_extra_auto_restart_skips_restart_for_deferred_startup(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

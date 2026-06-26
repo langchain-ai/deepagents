@@ -58,8 +58,25 @@ class ChannelMedia:
     """
 
     path: Path
-    media_type: Literal["image", "video"]
+    media_type: Literal["image", "video", "document", "audio", "voice"]
     caption: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SendResult:
+    """Result of a channel send operation.
+
+    Args:
+        success: Whether the send completed without error.
+        message_id: Channel-specific message identifier when available.
+        error: Human-readable error description on failure.
+        retryable: Whether a transient failure may succeed on retry.
+    """
+
+    success: bool
+    message_id: str | None = None
+    error: str | None = None
+    retryable: bool = False
 
 
 ToolApprovalDecision = Literal["approve", "reject"]
@@ -139,29 +156,45 @@ class ChannelAdapter(Protocol):
             handler: Coroutine callback invoked for each inbound channel message.
         """
 
-    async def send_message(self, conversation_id: str, text: str) -> None:
+    async def send_message(self, conversation_id: str, text: str) -> SendResult:
         """Send a message to a conversation.
 
         Args:
             conversation_id: Channel-specific conversation identifier.
             text: Message content to send.
+
+        Returns:
+            Result indicating whether the send succeeded.
         """
 
-    async def send_media(self, conversation_id: str, media: ChannelMedia) -> None:
+    async def send_media(self, conversation_id: str, media: ChannelMedia) -> SendResult:
         """Send media to a conversation.
 
         Args:
             conversation_id: Channel-specific conversation identifier.
             media: Media payload to deliver.
+
+        Returns:
+            Result indicating whether the send succeeded.
         """
 
-    async def edit_message(self, conversation_id: str, message_id: str, text: str) -> None:
+    async def edit_message(self, conversation_id: str, message_id: str, text: str) -> SendResult:
         """Edit a previously sent channel message.
 
         Args:
             conversation_id: Channel-specific conversation identifier.
             message_id: Channel-specific message identifier.
             text: Replacement message content.
+
+        Returns:
+            Result indicating whether the edit succeeded.
+        """
+
+    async def send_typing(self, conversation_id: str) -> None:
+        """Send a typing indicator to a conversation.
+
+        Args:
+            conversation_id: Channel-specific conversation identifier.
         """
 
     async def status(self) -> ChannelStatus:

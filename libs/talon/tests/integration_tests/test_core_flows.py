@@ -8,7 +8,13 @@ from deepagents_talon.config import TalonConfig
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronSchedule
 from deepagents_talon.cron.scheduler import PersistentCronScheduler
 from deepagents_talon.host import TalonHost
-from deepagents_talon.interfaces import AgentRequest, AgentResult, ChannelMessage, ChannelStatus
+from deepagents_talon.interfaces import (
+    AgentRequest,
+    AgentResult,
+    ChannelMessage,
+    ChannelStatus,
+    SendResult,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -28,14 +34,20 @@ class InMemoryChannel:
     def set_message_handler(self, handler: Callable[[ChannelMessage], Awaitable[None]]) -> None:
         self.handler = handler
 
-    async def send_message(self, conversation_id: str, text: str) -> None:
+    async def send_message(self, conversation_id: str, text: str) -> SendResult:
         self.sent.append((conversation_id, text))
+        return SendResult(success=True)
 
-    async def send_media(self, conversation_id: str, media: object) -> None:
-        pass
+    async def send_media(self, conversation_id: str, media: object) -> SendResult:
+        del conversation_id, media
+        return SendResult(success=True)
 
-    async def edit_message(self, conversation_id: str, message_id: str, text: str) -> None:
-        pass
+    async def edit_message(self, conversation_id: str, message_id: str, text: str) -> SendResult:
+        del conversation_id, message_id, text
+        return SendResult(success=True)
+
+    async def send_typing(self, conversation_id: str) -> None:
+        del conversation_id
 
     async def status(self) -> ChannelStatus:
         return ChannelStatus(provider="memory", connected=True)

@@ -2333,10 +2333,55 @@ class TestGetTracingStatus:
         with patch.dict("os.environ", self._CLEAN, clear=False):
             status = get_tracing_status()
         assert status.enabled is False
+        assert status.explicitly_disabled is False
         assert status.has_credentials is False
         assert status.endpoint is None
         assert status.project == LANGSMITH_PROJECT_DEFAULT
+        assert status.project_is_default is True
         assert status.replica_project is None
+
+    @pytest.mark.parametrize(
+        ("var", "token", "expected_enabled", "expected_disabled"),
+        [
+            # Non-bridged flags (bare `env.get` path) set to each falsy token.
+            ("LANGSMITH_TRACING_V2", "false", False, True),
+            ("LANGSMITH_TRACING_V2", "0", False, True),
+            ("LANGSMITH_TRACING_V2", "no", False, True),
+            ("LANGSMITH_TRACING_V2", "off", False, True),
+            ("LANGCHAIN_TRACING", "false", False, True),
+            # Prefixed bridged falsy flag — exercises the prefix-aware
+            # `_resolve_env_var_from` off path; doctor runs pre-bootstrap.
+            ("DEEPAGENTS_CODE_LANGSMITH_TRACING", "false", False, True),
+            # An empty flag reads as not configured, not an explicit opt-out.
+            ("LANGSMITH_TRACING_V2", "", False, False),
+            # An unrecognized token is neither enabled nor an explicit opt-out.
+            ("LANGSMITH_TRACING_V2", "maybe", False, False),
+            # A truthy flag is enabled and never reported as explicitly disabled.
+            ("LANGSMITH_TRACING_V2", "true", True, False),
+        ],
+    )
+    def test_explicit_disable_matrix(
+        self,
+        var: str,
+        token: str,
+        expected_enabled: bool,
+        expected_disabled: bool,
+    ) -> None:
+        """Each flag/token combination resolves to the right tri-state.
+
+        Exercises both the bare-`env.get` path (non-bridged vars) and the
+        prefix-aware `_resolve_env_var_from` path (the prefixed bridged flag),
+        across every recognized falsy token plus the empty and unrecognized
+        cases.
+        """
+        from deepagents_code.config import get_tracing_status
+
+        env = dict(self._CLEAN)
+        env[var] = token
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.enabled is expected_enabled
+        assert status.explicitly_disabled is expected_disabled
 
     def test_prefixed_flag_and_key_are_detected(self) -> None:
         """`DEEPAGENTS_CODE_`-prefixed tracing/key vars resolve like the runtime.
@@ -2356,6 +2401,24 @@ class TestGetTracingStatus:
         assert status.enabled is True
         assert status.has_credentials is True
         assert status.project == "prefixed-proj"
+        assert status.project_is_default is False
+
+    def test_explicit_default_name_is_not_marked_default(self) -> None:
+        """Explicitly setting the default name still counts as configured.
+
+        `project_is_default` tracks provenance (was anything set), not a string
+        match against the default. A user who sets the project to the same name
+        as the built-in default must not get the `(default)` marker.
+        """
+        from deepagents_code.config import get_tracing_status
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+        env = dict(self._CLEAN)
+        env["DEEPAGENTS_CODE_LANGSMITH_PROJECT"] = LANGSMITH_PROJECT_DEFAULT
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.project == LANGSMITH_PROJECT_DEFAULT
+        assert status.project_is_default is False
 
     def test_dotenv_values_are_detected(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2442,6 +2505,7 @@ class TestGetTracingStatus:
         with patch.dict("os.environ", env, clear=False):
             status = get_tracing_status()
         assert status.enabled is False
+        assert status.explicitly_disabled is True
 
     def test_canonical_non_bridged_flag_enables(self) -> None:
         """A canonical, non-bridged flag (`LANGSMITH_TRACING_V2`) enables tracing."""
@@ -2517,6 +2581,7 @@ class TestGetTracingStatus:
         with patch.dict("os.environ", env, clear=False):
             status = get_tracing_status()
         assert status.project == "prod"
+        assert status.project_is_default is False
 
     def test_reports_first_replica_project(self) -> None:
         """Only the first replica project is reported (server mirrors one)."""
@@ -2527,6 +2592,21 @@ class TestGetTracingStatus:
         with patch.dict("os.environ", env, clear=False):
             status = get_tracing_status()
         assert status.replica_project == "replica-a"
+
+    def test_enabled_and_explicitly_disabled_is_rejected(self) -> None:
+        """The contradictory enabled/disabled pair fails loud at construction."""
+        from deepagents_code.config import TracingStatus
+
+        with pytest.raises(ValueError, match="both enabled and explicitly disabled"):
+            TracingStatus(
+                enabled=True,
+                explicitly_disabled=True,
+                has_credentials=False,
+                endpoint=None,
+                project=None,
+                project_is_default=False,
+                replica_project=None,
+            )
 
 
 class TestQuietSdkTracingLogging:

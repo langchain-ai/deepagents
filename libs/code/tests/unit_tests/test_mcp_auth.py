@@ -8,7 +8,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from unittest.mock import patch
 
 import pytest
@@ -102,6 +102,21 @@ def _make_oauth_metadata(token_endpoint: str = "https://auth.example/token"):
         token_endpoint=AnyHttpUrl(token_endpoint),
         response_types_supported=["code"],
         grant_types_supported=["authorization_code", "refresh_token"],
+    )
+
+
+def _make_client_info_with_secret(
+    auth_method: Literal["client_secret_basic", "client_secret_post"],
+):
+    from mcp.shared.auth import AnyUrl, OAuthClientInformationFull
+
+    return OAuthClientInformationFull(
+        client_id="client-id",
+        client_secret="client-secret",
+        token_endpoint_auth_method=auth_method,
+        redirect_uris=[AnyUrl("http://localhost/callback")],
+        grant_types=["authorization_code", "refresh_token"],
+        response_types=["code"],
     )
 
 
@@ -542,6 +557,60 @@ class TestExpiryAwareOAuthClientProvider:
             "/.well-known/oauth-protected-resource"
         )
         await flow.aclose()
+
+
+@pytest.mark.usefixtures("fake_home")
+class TestBasicAuthClientIdStripping:
+    """Tests for dropping the duplicate body `client_id` under HTTP Basic auth."""
+
+    def _build_provider(
+        self,
+        auth_method: Literal["client_secret_basic", "client_secret_post"],
+    ):
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("pylon")
+        provider = build_oauth_provider(
+            server_name="pylon",
+            server_url="https://mcp.usepylon.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        provider.context.client_info = _make_client_info_with_secret(auth_method)
+        return provider
+
+    def test_basic_auth_drops_body_client_id(self) -> None:
+        """`client_secret_basic` puts the identity in the header, not the body."""
+        provider = self._build_provider("client_secret_basic")
+
+        data, headers = provider.context.prepare_token_auth(
+            {
+                "grant_type": "authorization_code",
+                "client_id": "client-id",
+                "client_secret": "client-secret",
+            },
+            {"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+        assert headers["Authorization"].startswith("Basic ")
+        assert "client_id" not in data
+        assert "client_secret" not in data
+
+    def test_post_auth_retains_body_client_id(self) -> None:
+        """`client_secret_post` keeps both fields in the body and adds no header."""
+        provider = self._build_provider("client_secret_post")
+
+        data, headers = provider.context.prepare_token_auth(
+            {
+                "grant_type": "authorization_code",
+                "client_id": "client-id",
+            },
+            {"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+        assert "Authorization" not in headers
+        assert data["client_id"] == "client-id"
+        assert data["client_secret"] == "client-secret"
 
 
 class TestFindReauthRequired:

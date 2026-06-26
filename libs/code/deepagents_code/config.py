@@ -2876,6 +2876,21 @@ class TracingStatus:
     replica_project: str | None
     """Extra project agent runs are mirrored to, if configured."""
 
+    def __post_init__(self) -> None:
+        """Reject the contradictory enabled/explicitly-disabled pair.
+
+        `enabled` and `explicitly_disabled` model a tri-state (enabled /
+        explicitly disabled / not configured), so both being true is
+        meaningless. Fail loud at construction rather than letting the illegal
+        state flow through to the `dcode doctor` renderer.
+
+        Raises:
+            ValueError: If both `enabled` and `explicitly_disabled` are true.
+        """
+        if self.enabled and self.explicitly_disabled:
+            msg = "tracing cannot be both enabled and explicitly disabled"
+            raise ValueError(msg)
+
 
 def get_tracing_status() -> TracingStatus:
     """Summarize LangSmith tracing configuration for diagnostics.

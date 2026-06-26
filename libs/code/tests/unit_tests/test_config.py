@@ -2339,38 +2339,48 @@ class TestGetTracingStatus:
         assert status.project == LANGSMITH_PROJECT_DEFAULT
         assert status.replica_project is None
 
-    def test_explicitly_disabled_when_flag_off(self) -> None:
-        """A flag set to a falsy token reports an explicit opt-out."""
+    @pytest.mark.parametrize(
+        ("var", "token", "expected_enabled", "expected_disabled"),
+        [
+            # Non-bridged flags (bare `env.get` path) set to each falsy token.
+            ("LANGSMITH_TRACING_V2", "false", False, True),
+            ("LANGSMITH_TRACING_V2", "0", False, True),
+            ("LANGSMITH_TRACING_V2", "no", False, True),
+            ("LANGSMITH_TRACING_V2", "off", False, True),
+            ("LANGCHAIN_TRACING", "false", False, True),
+            # Prefixed bridged falsy flag — exercises the prefix-aware
+            # `_resolve_env_var_from` off path; doctor runs pre-bootstrap.
+            ("DEEPAGENTS_CODE_LANGSMITH_TRACING", "false", False, True),
+            # An empty flag reads as not configured, not an explicit opt-out.
+            ("LANGSMITH_TRACING_V2", "", False, False),
+            # An unrecognized token is neither enabled nor an explicit opt-out.
+            ("LANGSMITH_TRACING_V2", "maybe", False, False),
+            # A truthy flag is enabled and never reported as explicitly disabled.
+            ("LANGSMITH_TRACING_V2", "true", True, False),
+        ],
+    )
+    def test_explicit_disable_matrix(
+        self,
+        var: str,
+        token: str,
+        expected_enabled: bool,
+        expected_disabled: bool,
+    ) -> None:
+        """Each flag/token combination resolves to the right tri-state.
+
+        Exercises both the bare-`env.get` path (non-bridged vars) and the
+        prefix-aware `_resolve_env_var_from` path (the prefixed bridged flag),
+        across every recognized falsy token plus the empty and unrecognized
+        cases.
+        """
         from deepagents_code.config import get_tracing_status
 
         env = dict(self._CLEAN)
-        env["LANGSMITH_TRACING_V2"] = "false"
+        env[var] = token
         with patch.dict("os.environ", env, clear=False):
             status = get_tracing_status()
-        assert status.enabled is False
-        assert status.explicitly_disabled is True
-
-    def test_not_explicitly_disabled_when_flag_empty(self) -> None:
-        """An empty flag reads as not configured, not an explicit opt-out."""
-        from deepagents_code.config import get_tracing_status
-
-        env = dict(self._CLEAN)
-        env["LANGSMITH_TRACING_V2"] = ""
-        with patch.dict("os.environ", env, clear=False):
-            status = get_tracing_status()
-        assert status.enabled is False
-        assert status.explicitly_disabled is False
-
-    def test_not_explicitly_disabled_when_enabled(self) -> None:
-        """An enabled setup is never reported as explicitly disabled."""
-        from deepagents_code.config import get_tracing_status
-
-        env = dict(self._CLEAN)
-        env["LANGSMITH_TRACING_V2"] = "true"
-        with patch.dict("os.environ", env, clear=False):
-            status = get_tracing_status()
-        assert status.enabled is True
-        assert status.explicitly_disabled is False
+        assert status.enabled is expected_enabled
+        assert status.explicitly_disabled is expected_disabled
 
     def test_prefixed_flag_and_key_are_detected(self) -> None:
         """`DEEPAGENTS_CODE_`-prefixed tracing/key vars resolve like the runtime.
@@ -2562,6 +2572,20 @@ class TestGetTracingStatus:
         with patch.dict("os.environ", env, clear=False):
             status = get_tracing_status()
         assert status.replica_project == "replica-a"
+
+    def test_enabled_and_explicitly_disabled_is_rejected(self) -> None:
+        """The contradictory enabled/disabled pair fails loud at construction."""
+        from deepagents_code.config import TracingStatus
+
+        with pytest.raises(ValueError, match="both enabled and explicitly disabled"):
+            TracingStatus(
+                enabled=True,
+                explicitly_disabled=True,
+                has_credentials=False,
+                endpoint=None,
+                project=None,
+                replica_project=None,
+            )
 
 
 class TestQuietSdkTracingLogging:

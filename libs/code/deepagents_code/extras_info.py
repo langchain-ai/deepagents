@@ -204,8 +204,8 @@ SANDBOX_EXTRAS: frozenset[str] = frozenset(
 )
 """Optional extras that add sandbox integrations."""
 
-STANDALONE_EXTRAS: frozenset[str] = frozenset({"quickjs"})
-"""Compatibility extras that don't fit the provider/sandbox taxonomy.
+STANDALONE_EXTRAS: frozenset[str] = frozenset({"quickjs", "video"})
+"""Optional extras that don't fit the provider/sandbox taxonomy.
 
 `quickjs` is a core dependency now, but the empty extra remains installable so
 older `deepagents-code[quickjs]` and `/install quickjs` workflows stay harmless.

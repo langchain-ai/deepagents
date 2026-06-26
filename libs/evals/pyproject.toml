@@ -123,13 +123,25 @@ division-by-zero = "error"
 [tool.ty.src]
 # clbench integration code targets the external benchmark's package layout
 # (src.interface / src.registry), not this project's — exclude it from type checks.
-exclude = ["deepagents_clbench"]
+# deepagents_harbor/oolong/dataset is generated Harbor task output, not source.
+# official_scorer.py is vendored verbatim (MIT); its loose typing is intentional.
+exclude = [
+    "deepagents_clbench",
+    "deepagents_harbor/oolong/dataset",
+    "deepagents_harbor/oolong/official_scorer.py",
+]
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-# Vendored BFCL benchmark files + external-benchmark integration code — skip lint and format
-exclude = ["tests/evals/data/bfcl_apis", "deepagents_clbench"]
+# Vendored BFCL benchmark files + external-benchmark integration code — skip lint and format.
+# deepagents_harbor/oolong/dataset is generated output (one Harbor task dir per row).
+exclude = [
+    "tests/evals/data/bfcl_apis",
+    "deepagents_clbench",
+    "deepagents_harbor/oolong/dataset",
+    "deepagents_harbor/oolong/official_scorer.py",
+]
 force-exclude = true
 
 [tool.ruff.format]
@@ -185,6 +197,9 @@ ban-relative-imports = "all"
 ]
 "deepagents_harbor/langsmith.py" = [
     "T201",    # `print` found — CI-facing integration layer, print is the expected output
+]
+"deepagents_harbor/oolong/generate_oolong_tasks.py" = [
+    "T201",    # `print` is the dataset generator's progress output
 ]
 
 [tool.ruff.lint.isort]

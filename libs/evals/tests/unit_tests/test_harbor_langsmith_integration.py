@@ -118,17 +118,20 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     assert '../code/ "$local_deps_dir/deepagents-code/"' in workflow
     assert "agent_env_args=(" in workflow
     assert "--agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}'" in workflow
+    # UV_PRERELEASE is unconditional: langchain-fireworks installs on every run and
+    # needs a pre-release fireworks-ai, so it can't be scoped to the fireworks case.
+    assert "--agent-env UV_PRERELEASE=allow" in workflow
     assert (
-        "fireworks)\n"
-        "              agent_env_args+=(\n"
-        "                --agent-env 'FIREWORKS_API_KEY=${FIREWORKS_API_KEY}'\n"
-        "                --agent-env UV_PRERELEASE=allow\n"
-        "              )" in workflow
+        "fireworks)    agent_env_args+=(--agent-env 'FIREWORKS_API_KEY=${FIREWORKS_API_KEY}') ;;"
+        in workflow
     )
     assert "--agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}'" in workflow
     assert "--agent-env 'OLLAMA_HOST=${OLLAMA_HOST}'" in workflow
     assert '"${agent_env_args[@]}"' in workflow
-    assert '--dataset "$HARBOR_DATASET"' in workflow
+    # Registry datasets run via --dataset; local-path datasets (OOLONG) via --path.
+    assert 'dataset_args=(--dataset "$HARBOR_DATASET")' in workflow
+    assert 'dataset_args=(--path "$HARBOR_DATASET")' in workflow
+    assert '"${dataset_args[@]}"' in workflow
     assert "--plugin langsmith" in workflow
     assert "--jobs-dir harbor-jobs/terminal-bench" in workflow
     assert 'Path("harbor-jobs/terminal-bench")' in workflow

@@ -1,0 +1,4 @@
+# Targeted HF row cache (re-fetched on demand); never commit.
+.cache/
+__pycache__/
+*.pyc

@@ -98,6 +98,7 @@ class TestCollectTracing:
             "has_credentials": False,
             "endpoint": None,
             "project": None,
+            "project_is_default": False,
             "replica_project": None,
         }
         defaults.update(kwargs)
@@ -122,6 +123,24 @@ class TestCollectTracing:
         labels = {item.label: item.value for item in section.items}
         assert labels["Tracing"] == "disabled"
         assert labels["Credentials"] == "not set"
+
+    def test_default_project_is_marked(self) -> None:
+        """An unconfigured project shows the default marker."""
+        section = self._section(project="deepagents-code", project_is_default=True)
+        labels = {item.label: item.value for item in section.items}
+        assert labels["Project"] == "deepagents-code (default)"
+
+    def test_explicit_project_has_no_default_marker(self) -> None:
+        """An explicitly set project name is reported verbatim."""
+        section = self._section(project="deepagents-code", project_is_default=False)
+        labels = {item.label: item.value for item in section.items}
+        assert labels["Project"] == "deepagents-code"
+
+    def test_unset_project_renders_unset(self) -> None:
+        """A missing project renders the `(unset)` placeholder."""
+        section = self._section(project=None)
+        labels = {item.label: item.value for item in section.items}
+        assert labels["Project"] == "(unset)"
 
     def test_enabled_without_credentials_is_unhealthy(self) -> None:
         """Tracing on with no key and no endpoint is a genuine problem."""

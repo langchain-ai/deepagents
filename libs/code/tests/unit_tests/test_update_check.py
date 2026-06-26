@@ -52,6 +52,7 @@ from deepagents_code.update_check import (
     format_shadowed_dcode_fix_command,
     format_shadowed_dcode_warning,
     get_cached_update_available,
+    get_last_update_check_time,
     get_latest_version,
     get_release_time,
     get_sdk_release_time,
@@ -273,6 +274,21 @@ class TestCachedUpdateAvailable:
 
         mock_get.assert_not_called()
 
+    @pytest.mark.parametrize("checked_at", [float("nan"), float("inf"), 1e100])
+    def test_invalid_numeric_checked_at_returns_no_answer_without_http(
+        self, cache_file, checked_at: float
+    ) -> None:
+        """Corrupt numeric timestamps must not be treated as fresh cache."""
+        cache_file.write_text(
+            json.dumps({"version": "99.0.0", "checked_at": checked_at}),
+            encoding="utf-8",
+        )
+
+        with patch("requests.get") as mock_get:
+            assert get_cached_update_available() == (False, None)
+
+        mock_get.assert_not_called()
+
     def test_missing_cache_returns_no_answer_without_http(self, cache_file) -> None:
         """Missing cache should not block startup on a network request."""
         assert not cache_file.exists()
@@ -289,6 +305,38 @@ class TestCachedUpdateAvailable:
         )
 
         assert get_cached_update_available() == (False, __version__)
+
+
+class TestGetLastUpdateCheckTime:
+    def test_reads_checked_at(self, cache_file) -> None:
+        """The stored `checked_at` epoch is returned as a float."""
+        now = time.time()
+        cache_file.write_text(json.dumps({"checked_at": now}), encoding="utf-8")
+        assert get_last_update_check_time() == pytest.approx(now)
+
+    def test_missing_cache_returns_none(self, cache_file) -> None:  # noqa: ARG002
+        """An absent cache yields `None`."""
+        assert get_last_update_check_time() is None
+
+    def test_corrupt_cache_returns_none(self, cache_file) -> None:
+        """Unparseable cache data fails soft to `None`."""
+        cache_file.write_text("{not valid json", encoding="utf-8")
+        assert get_last_update_check_time() is None
+
+    def test_non_numeric_checked_at_returns_none(self, cache_file) -> None:
+        """A non-numeric (or boolean) `checked_at` is ignored."""
+        cache_file.write_text(json.dumps({"checked_at": "soon"}), encoding="utf-8")
+        assert get_last_update_check_time() is None
+        cache_file.write_text(json.dumps({"checked_at": True}), encoding="utf-8")
+        assert get_last_update_check_time() is None
+
+    @pytest.mark.parametrize("checked_at", [float("nan"), float("inf"), 1e100])
+    def test_invalid_numeric_checked_at_returns_none(
+        self, cache_file, checked_at: float
+    ) -> None:
+        """Invalid numeric `checked_at` values are ignored."""
+        cache_file.write_text(json.dumps({"checked_at": checked_at}), encoding="utf-8")
+        assert get_last_update_check_time() is None
 
 
 class TestGetLatestVersion:

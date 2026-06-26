@@ -218,9 +218,33 @@ def _collect_updates() -> DiagnosticSection:
         update_status = f"v{latest} available"
     else:
         update_status = "up to date"
-    items.append(DiagnosticItem("Latest version", update_status))
+    items.extend(
+        (
+            DiagnosticItem("Latest version", update_status),
+            DiagnosticItem("Last checked", _format_last_checked()),
+        )
+    )
 
     return DiagnosticSection(title="Updates", items=items)
+
+
+def _format_last_checked() -> str:
+    """Return a relative description of the last update check, or `never`.
+
+    `never` covers both the no-check-recorded case and, defensively, a stamp
+    that cannot be formatted. `get_last_update_check_time` only returns finite,
+    in-range epochs, so the formatting path does not raise here.
+    """
+    from datetime import UTC, datetime
+
+    from deepagents_code.sessions import format_relative_timestamp
+    from deepagents_code.update_check import get_last_update_check_time
+
+    checked_at = get_last_update_check_time()
+    if checked_at is None:
+        return "never"
+    iso = datetime.fromtimestamp(checked_at, tz=UTC).isoformat()
+    return format_relative_timestamp(iso) or "never"
 
 
 def _sanitize_endpoint(endpoint: str) -> str:

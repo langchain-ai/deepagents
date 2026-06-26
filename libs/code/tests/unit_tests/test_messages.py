@@ -1120,6 +1120,44 @@ class TestToolCallMessageExpandHint:
             assert "line 4" in preview.plain
 
 
+class TestToolCallMessageEmptyResult:
+    """Empty file-op results render nothing instead of an empty box."""
+
+    @pytest.mark.parametrize(
+        ("tool", "output"),
+        [
+            ("glob", "[]"),
+            ("grep", "[]"),
+            ("ls", "[]"),
+            ("glob", "   "),
+        ],
+    )
+    async def test_empty_serialized_result_hides_output(
+        self, tool: str, output: str
+    ) -> None:
+        """A non-empty literal that formats to nothing must not render a box.
+
+        Tools like glob/grep/ls serialize an empty successful result as the
+        literal "[]", which formats to no visible content. The raw output is
+        truthy, so the early empty guard doesn't fire — without the formatted
+        emptiness check the preview row renders as an empty box with a
+        misleading expand affordance.
+        """
+        app = _tool_msg_app(tool)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._preview_row is not None
+            assert app.msg._full_row is not None
+            assert app.msg._hint_widget is not None
+            assert app.msg._preview_row.display is False
+            assert app.msg._full_row.display is False
+            assert app.msg._hint_widget.display is False
+            assert app.msg._has_expandable_output() is False
+
+
 class TestToolCallMessageExpandableArgs:
     """Tests for the `ask_user` expandable-arguments toggle."""
 

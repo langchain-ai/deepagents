@@ -1,0 +1,28 @@
+libs/evals/deepagents_harness_opt/models.py
+  s_be045b46d84183::t_f8353a3cc44e2b 1-28,30-32,34-48
+  s_be045b46d84183::t_5234c106bf2a37 29,33
+libs/evals/deepagents_harness_opt/__init__.py
+  s_be045b46d84183::t_52765dc7861e68 1-7
+libs/evals/pyproject.toml
+  s_be045b46d84183::t_ed0dabb4a1ee06 88
+  s_be045b46d84183::t_3c70236689c65a 170
+libs/evals/tests/unit_tests/harness_opt/test_models.py
+  s_be045b46d84183::t_f5764298a01fe7 35
+  s_be045b46d84183::t_95cee0b3ef9b86 1-34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "710622e6f48f0a5983917e0fde1509571db56b0e",
+  "prompts": {},
+  "sessions": {
+    "s_be045b46d84183": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cade71c4-e821-4a02-888b-b70674466c73",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

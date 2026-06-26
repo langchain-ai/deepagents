@@ -1,0 +1,29 @@
+libs/evals/tests/unit_tests/harness_opt/test_engine_one.py
+  s_be045b46d84183::t_e5b90ee1b38bba 1-32,35-36,60-65,67-69,74-83,86-87
+  s_be045b46d84183::t_18bacf2dbf0c7e 84-85
+  s_be045b46d84183::t_d98acabbe1363a 33-34,37-59,66,72-73
+  s_be045b46d84183::t_aa5479503700fc 70-71
+libs/evals/deepagents_harness_opt/engine.py
+  s_be045b46d84183::t_0f95f2cd21387a 6,10-17,19,22-23,28-30,46
+  s_be045b46d84183::t_fff03ce30c752b 1-5,7-9,18,20-21,24-27,31-45,47-66,68-75,79,83-84,88-99,106-107
+  s_be045b46d84183::t_81471e58aba68f 76-78,80-82
+  s_be045b46d84183::t_5241dba370f52a 85-87
+  s_be045b46d84183::t_58481e724d882f 67
+  s_be045b46d84183::t_187fde0cad1320 100-105
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "2aeb83e2ebaf9e37f36c34455dd135263df0b00e",
+  "prompts": {},
+  "sessions": {
+    "s_be045b46d84183": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cade71c4-e821-4a02-888b-b70674466c73",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

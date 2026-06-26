@@ -3,6 +3,7 @@
 import tomllib
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -361,13 +362,139 @@ def test_format_extras_status_renders_markdown_table() -> None:
 class TestResolveSdkVersion:
     """Tests for the shared `deepagents` SDK version resolver."""
 
-    def test_resolved_returns_version(self) -> None:
-        """A successful lookup reports the version and `resolved` status."""
-        with patch(
-            "deepagents_code.extras_info.pkg_version", return_value="1.2.3"
-        ) as mock:
+    def test_resolved_returns_metadata_version_for_normal_install(self) -> None:
+        """A normal install reports the package metadata version."""
+        dist = MagicMock()
+        dist.read_text.return_value = None
+        with (
+            patch(
+                "deepagents_code.extras_info.pkg_version", return_value="1.2.3"
+            ) as mock,
+            patch("deepagents_code.extras_info.distribution", return_value=dist),
+            patch("deepagents_code.extras_info.importlib.import_module") as imported,
+        ):
             version, status = resolve_sdk_version()
         mock.assert_called_once_with("deepagents")
+        imported.assert_not_called()
+        assert (version, status) == ("1.2.3", "resolved")
+
+    def test_resolved_prefers_runtime_version_for_editable_install(self) -> None:
+        """An editable SDK reports `deepagents.__version__` over stale metadata."""
+        dist = MagicMock()
+        dist.read_text.return_value = (
+            '{"url":"file:///repo/libs/deepagents","dir_info":{"editable":true}}'
+        )
+        sdk = SimpleNamespace(__version__="1.2.4")
+        with (
+            patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
+            patch("deepagents_code.extras_info.distribution", return_value=dist),
+            patch(
+                "deepagents_code.extras_info.importlib.import_module", return_value=sdk
+            ),
+        ):
+            version, status = resolve_sdk_version()
+        assert (version, status) == ("1.2.4", "resolved")
+
+    def test_resolved_falls_back_to_metadata_when_editable_runtime_missing(
+        self,
+    ) -> None:
+        """An editable SDK still reports metadata if runtime version is unavailable."""
+        dist = MagicMock()
+        dist.read_text.return_value = (
+            '{"url":"file:///repo/libs/deepagents","dir_info":{"editable":true}}'
+        )
+        sdk = SimpleNamespace()
+        with (
+            patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
+            patch("deepagents_code.extras_info.distribution", return_value=dist),
+            patch(
+                "deepagents_code.extras_info.importlib.import_module", return_value=sdk
+            ),
+        ):
+            version, status = resolve_sdk_version()
+        assert (version, status) == ("1.2.3", "resolved")
+
+    @pytest.mark.parametrize(
+        "direct_url",
+        [
+            "[]",  # valid JSON, wrong top-level type
+            '{"dir_info": null}',  # valid JSON, dir_info not an object
+            '{"url": "file:///repo", "dir_info": {"editable": false}}',  # non-editable
+            '{"url": "file:///repo", "dir_info": {}}',  # editable key absent
+        ],
+    )
+    def test_resolved_uses_metadata_when_not_an_editable_install(
+        self, direct_url: str
+    ) -> None:
+        """Non-editable or unexpectedly-shaped metadata never prefers runtime."""
+        dist = MagicMock()
+        dist.read_text.return_value = direct_url
+        with (
+            patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
+            patch("deepagents_code.extras_info.distribution", return_value=dist),
+            patch("deepagents_code.extras_info.importlib.import_module") as imported,
+        ):
+            version, status = resolve_sdk_version()
+        imported.assert_not_called()
+        assert (version, status) == ("1.2.3", "resolved")
+
+    @pytest.mark.parametrize("side_effect", [ValueError, OSError, TypeError])
+    def test_resolved_uses_metadata_when_direct_url_read_fails(
+        self, side_effect: type[Exception]
+    ) -> None:
+        """A failed/invalid `direct_url.json` read degrades to the metadata version.
+
+        Exercises the `_is_editable_sdk_install` except arm: invalid JSON
+        (`ValueError`), an unreadable metadata file (`OSError`), and a
+        non-text payload (`TypeError`) must all be swallowed rather than
+        crashing the resolver.
+        """
+        dist = MagicMock()
+        dist.read_text.side_effect = side_effect("boom")
+        with (
+            patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
+            patch("deepagents_code.extras_info.distribution", return_value=dist),
+            patch("deepagents_code.extras_info.importlib.import_module") as imported,
+        ):
+            version, status = resolve_sdk_version()
+        imported.assert_not_called()
+        assert (version, status) == ("1.2.3", "resolved")
+
+    def test_resolved_falls_back_to_metadata_when_editable_import_fails(self) -> None:
+        """A broken editable SDK import degrades to the metadata version."""
+        dist = MagicMock()
+        dist.read_text.return_value = (
+            '{"url":"file:///repo/libs/deepagents","dir_info":{"editable":true}}'
+        )
+        with (
+            patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
+            patch("deepagents_code.extras_info.distribution", return_value=dist),
+            patch(
+                "deepagents_code.extras_info.importlib.import_module",
+                side_effect=ImportError("broken local checkout"),
+            ),
+        ):
+            version, status = resolve_sdk_version()
+        assert (version, status) == ("1.2.3", "resolved")
+
+    @pytest.mark.parametrize("runtime_version", ["", None, 123])
+    def test_resolved_falls_back_to_metadata_when_runtime_version_unusable(
+        self, runtime_version: object
+    ) -> None:
+        """An empty or non-string runtime `__version__` is rejected for metadata."""
+        dist = MagicMock()
+        dist.read_text.return_value = (
+            '{"url":"file:///repo/libs/deepagents","dir_info":{"editable":true}}'
+        )
+        sdk = SimpleNamespace(__version__=runtime_version)
+        with (
+            patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
+            patch("deepagents_code.extras_info.distribution", return_value=dist),
+            patch(
+                "deepagents_code.extras_info.importlib.import_module", return_value=sdk
+            ),
+        ):
+            version, status = resolve_sdk_version()
         assert (version, status) == ("1.2.3", "resolved")
 
     def test_not_installed_distinguished_from_error(self) -> None:

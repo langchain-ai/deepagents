@@ -7,7 +7,9 @@ in either plain text (for stdout) or markdown (for rich UI contexts).
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -32,20 +34,66 @@ that don't care which kind of failure happened can treat both the same.
 """
 
 
+def _is_editable_sdk_install() -> bool:
+    """Return whether `deepagents` is installed from an editable source tree."""
+    try:
+        raw = distribution("deepagents").read_text("direct_url.json")
+        if not raw:
+            return False
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            logger.debug("Ignoring malformed deepagents direct_url.json metadata")
+            return False
+        dir_info = data.get("dir_info")
+        if not isinstance(dir_info, dict):
+            logger.debug("Ignoring malformed deepagents direct_url.json dir_info")
+            return False
+        return bool(dir_info.get("editable", False))
+    except (PackageNotFoundError, OSError, ValueError, TypeError):
+        # `OSError` covers `FileNotFoundError`/`PermissionError`/etc. while
+        # reading the metadata file; `ValueError` covers malformed JSON
+        # (`json.JSONDecodeError`) and bad encodings (`UnicodeDecodeError`).
+        # This probe must never propagate, since callers treat it as a
+        # best-effort refinement over the metadata version.
+        return False
+
+
+def _runtime_sdk_version() -> str | None:
+    """Read `deepagents.__version__` from the imported SDK package.
+
+    Returns:
+        The runtime SDK version, or `None` when it cannot be read.
+    """
+    try:
+        sdk = importlib.import_module("deepagents")
+        value = getattr(sdk, "__version__", None)
+    except Exception:
+        # Reached only for editable installs, where the package is known to be
+        # present — so an import failure is a broken local checkout, not an
+        # absent dependency. Warn (not debug): the runtime version is masked and
+        # the caller silently falls back to potentially stale metadata.
+        logger.warning("Failed to read runtime deepagents SDK version", exc_info=True)
+        return None
+    return value if isinstance(value, str) and value else None
+
+
 def resolve_sdk_version() -> tuple[str | None, SdkVersionStatus]:
-    """Resolve the installed `deepagents` SDK version from package metadata.
+    """Resolve the installed `deepagents` SDK version.
 
     Single source of truth for the lookup that `--version`, `/version`, and
-    `doctor` each used to reimplement. Distinguishes a genuinely missing
-    package from an unexpected metadata error so diagnostic callers can report
-    the two differently, while collapse-friendly callers can ignore the split.
+    `doctor` each used to reimplement. Editable installs can have stale package
+    metadata after local version files change, so they prefer the imported
+    SDK's runtime `__version__` and fall back to metadata when the runtime
+    version is unavailable. Distinguishes a genuinely missing package from an
+    unexpected metadata error so diagnostic callers can report the two
+    differently, while collapse-friendly callers can ignore the split.
 
     Returns:
         `(version, status)`. `version` is the resolved version string when
             `status` is `"resolved"`, otherwise `None`.
     """
     try:
-        return pkg_version("deepagents"), "resolved"
+        metadata_version = pkg_version("deepagents")
     except PackageNotFoundError:
         logger.debug("deepagents SDK package not found in environment")
         return None, "not_installed"
@@ -54,6 +102,13 @@ def resolve_sdk_version() -> tuple[str | None, SdkVersionStatus]:
             "Unexpected error looking up deepagents SDK version", exc_info=True
         )
         return None, "error"
+
+    if _is_editable_sdk_install():
+        runtime_version = _runtime_sdk_version()
+        if runtime_version:
+            return runtime_version, "resolved"
+
+    return metadata_version, "resolved"
 
 
 _EXTRA_MARKER_RE = re.compile(r"""extra\s*==\s*["']([^"']+)["']""")

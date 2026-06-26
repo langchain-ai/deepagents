@@ -253,6 +253,9 @@ class TestFindDeleteDenyPatterns:
             pytest.param("/workshop/**", "/work", [], id="sibling-prefix-glob"),
             pytest.param("/work2", "/work", [], id="sibling-prefix-literal"),
             pytest.param("/work/secrets", "/work/logs", [], id="sibling-leaf"),
+            # Glob deny on *.log must not block a sibling file that never matches
+            pytest.param("/work/*.log", "/work/notes.txt", [], id="file-glob-does-not-block-non-matching-sibling"),
+            pytest.param("/work/*.log", "/work/sub/notes.txt", [], id="file-glob-does-not-block-deeper-non-matching-path"),
             # --- overlap in either direction -> blocked ----------------------
             pytest.param("/work/a.txt", "/work/a.txt", ["/work/a.txt"], id="exact-file"),
             pytest.param("/work", "/work", ["/work"], id="exact-dir-literal"),

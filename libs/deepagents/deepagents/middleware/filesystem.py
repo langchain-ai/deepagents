@@ -57,6 +57,7 @@ from deepagents.backends.protocol import (
     execute_accepts_timeout,
 )
 from deepagents.backends.utils import (
+    _GLOB_WILDCARD_CHARS,
     _get_file_type,
     _glob_anchor,
     _paths_overlap,
@@ -162,7 +163,25 @@ def _find_delete_deny_patterns(rules: list[FilesystemPermission], target: str) -
         if rule.mode != "deny" or "write" not in rule.operations:
             continue
         for pattern in rule.paths:
-            if pattern not in seen and _paths_overlap(target, _glob_anchor(pattern)):
+            if pattern in seen:
+                continue
+            anchor = _glob_anchor(pattern)
+            if any(c in _GLOB_WILDCARD_CHARS for c in pattern):
+                # Wildcard pattern: block only if target directly matches the glob
+                # (protected file/dir) or the protected anchor sits inside target's
+                # subtree (recursive delete would remove matching descendants).
+                # When the anchor collapses to "/" the pattern can match anywhere,
+                # so we conservatively block any target (same as before).
+                overlaps = (
+                    anchor == "/"
+                    or wcglob.globmatch(target, pattern, flags=_FS_WCMATCH_FLAGS)
+                    or PurePosixPath(anchor).is_relative_to(PurePosixPath(target))
+                )
+            else:
+                # Literal pattern (no wildcards): keep the original subtree-overlap
+                # check so that a deny on "/work" blocks deletes of "/work/sub".
+                overlaps = _paths_overlap(target, anchor)
+            if overlaps:
                 seen.add(pattern)
                 denying.append(pattern)
     return denying

@@ -1,0 +1,19 @@
+docs/superpowers/specs/2026-06-26-hill-climbing-harness-agent-design.md
+  s_835b4f54a887d4::t_92f3618cb8532d 5-8,12-15,17-19,21-23,27-36,41-43,49-51,57-58,61-65,68-69,77-84,86-95,104,106-108,113,116-117,120,122-124,138,145-146,149-159,161-165,168-201,206,210,215,217-225,227-237,241-248,252-276,280-302,306-323,327-331
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "c10fb3bf0aa893c5d0c7a5ae2f6980f21b8440b4",
+  "prompts": {},
+  "sessions": {
+    "s_835b4f54a887d4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "309be8cc-8b32-4d74-a6b9-4d4c7b0bb936",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

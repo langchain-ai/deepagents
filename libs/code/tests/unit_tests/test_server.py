@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import socket
 import threading
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Self
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -49,6 +50,31 @@ class _FakeSocket:
     def getsockname(self) -> tuple[str, int]:
         """Return the configured socket name tuple."""
         return self._sockname
+
+
+class _FakeAsyncClient:
+    """Minimal async `httpx.AsyncClient` stand-in for readiness tests."""
+
+    def __init__(self, response: object) -> None:
+        self.response = response
+        self.urls: list[str] = []
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+    async def get(
+        self,
+        url: str,
+        *,
+        timeout: float,  # noqa: ARG002, ASYNC109  # mirrors httpx.AsyncClient.get
+    ) -> object:
+        self.urls.append(url)
+        if isinstance(self.response, BaseException):
+            raise self.response
+        return self.response
 
 
 class TestPortInUse:
@@ -204,6 +230,71 @@ class TestWaitForServerHealthy:
 
 
 class TestServerProcess:
+    async def test_wait_for_graph_ready_resolves_graph_endpoint(self) -> None:
+        """Graph readiness should force LangGraph to resolve graph factories."""
+        client = _FakeAsyncClient(SimpleNamespace(status_code=200))
+        process = MagicMock()
+        process.poll.return_value = None
+        server = ServerProcess(host="127.0.0.1", port=2024)
+        server._process = process
+
+        with patch("httpx.AsyncClient", return_value=client):
+            await server.wait_for_graph_ready("agent")
+
+        assert client.urls == ["http://127.0.0.1:2024/assistants/agent/graph"]
+
+    async def test_wait_for_graph_ready_surfaces_startup_marker(
+        self, tmp_path: Path
+    ) -> None:
+        """Readiness failures should preserve marked subprocess startup errors."""
+        log_path = tmp_path / "server.log"
+        log_path.write_text(
+            "booting\n"
+            "DEEPAGENTS_STARTUP_ERROR:Sandbox creation failed for 'modal': boom\n"
+        )
+
+        log_file = MagicMock()
+        log_file.name = str(log_path)
+
+        client = _FakeAsyncClient(SimpleNamespace(status_code=500))
+        process = MagicMock()
+        process.poll.return_value = None
+        server = ServerProcess(host="127.0.0.1", port=2024)
+        server._process = process
+        server._log_file = log_file
+
+        with (
+            patch("httpx.AsyncClient", return_value=client),
+            pytest.raises(RuntimeError, match="Sandbox creation failed"),
+        ):
+            await server.wait_for_graph_ready("agent")
+
+    async def test_wait_for_graph_ready_checks_logs_after_transport_error(
+        self, tmp_path: Path
+    ) -> None:
+        """Dropped graph requests should still surface startup markers."""
+        log_path = tmp_path / "server.log"
+        log_path.write_text(
+            "booting\nDEEPAGENTS_STARTUP_ERROR:ModelConfigError: missing API key\n"
+        )
+
+        log_file = MagicMock()
+        log_file.name = str(log_path)
+
+        client = _FakeAsyncClient(OSError("connection closed"))
+        process = MagicMock()
+        process.poll.return_value = 1
+        process.returncode = 3
+        server = ServerProcess(host="127.0.0.1", port=2024)
+        server._process = process
+        server._log_file = log_file
+
+        with (
+            patch("httpx.AsyncClient", return_value=client),
+            pytest.raises(RuntimeError, match="ModelConfigError: missing API key"),
+        ):
+            await server.wait_for_graph_ready("agent")
+
     async def test_start_cleans_up_partial_state_on_health_failure(
         self, tmp_path: Path
     ) -> None:

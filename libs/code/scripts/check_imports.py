@@ -20,7 +20,15 @@ if __name__ == "__main__":
     files = sys.argv[1:]
     has_failure = False
     with tempfile.TemporaryDirectory() as home:
+        # Point the home directory at a throwaway dir so importing a module can't
+        # read or depend on the developer's real `~` state (e.g. `~/.deepagents`
+        # config, MCP auth tokens). `Path.home()` resolves from `HOME` on POSIX
+        # and `USERPROFILE` / `HOMEDRIVE`+`HOMEPATH` on Windows, so override all
+        # of them to keep the isolation cross-platform.
         os.environ["HOME"] = home
+        os.environ["USERPROFILE"] = home
+        os.environ.pop("HOMEDRIVE", None)
+        os.environ.pop("HOMEPATH", None)
         for file in files:
             try:
                 module_name = "".join(

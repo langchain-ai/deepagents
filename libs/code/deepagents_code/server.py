@@ -18,6 +18,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
+from urllib.parse import quote
 
 from deepagents_code.config import _INHERITED_PYTHONPATH_ENV
 
@@ -144,7 +145,8 @@ def generate_langgraph_json(
 
     Args:
         output_dir: Directory to write the config file.
-        graph_ref: Python module:variable reference to the graph.
+        graph_ref: Python "module:attribute" reference to the graph, where the
+            attribute is a graph factory (e.g. `make_graph`) or a graph object.
         env_file: Optional path to an env file.
         checkpointer_path: Import path to an async context manager that yields a
             `BaseCheckpointSaver`. When set, the server persists checkpoint data
@@ -516,6 +518,84 @@ class ServerProcess:
         except Exception:
             self.stop()
             raise
+
+    async def wait_for_graph_ready(
+        self,
+        graph_name: str = "agent",
+        *,
+        timeout: float = _HEALTH_TIMEOUT,  # noqa: ASYNC109
+    ) -> None:
+        """Resolve the served graph once so lazy startup failures surface early.
+
+        Args:
+            graph_name: Registered graph name from `langgraph.json`.
+            timeout: Max seconds to wait for the graph readiness request.
+
+        Raises:
+            RuntimeError: If the server process exits or the graph endpoint
+                does not return a successful response.
+        """
+        import httpx
+
+        if self._process is None:
+            msg = "Server process is not running"
+            raise RuntimeError(msg)
+
+        graph_url = f"{self.url}/assistants/{quote(graph_name, safe='')}/graph"
+        deadline = time.monotonic() + timeout
+
+        async with httpx.AsyncClient() as client:
+            while time.monotonic() < deadline:
+                if self._process.poll() is not None:
+                    msg = f"Server process exited with code {self._process.returncode}"
+                    output = self._read_log_file()
+                    if output:
+                        summary = _extract_startup_error_marker(output)
+                        if summary:
+                            msg += f": {summary}"
+                        msg += f"\n{output[-_LOG_TAIL_CHARS:]}"
+                    raise RuntimeError(msg)
+
+                remaining = max(0.1, deadline - time.monotonic())
+                try:
+                    resp = await client.get(graph_url, timeout=remaining)
+                except (httpx.TransportError, httpx.TimeoutException, OSError) as exc:
+                    output = self._read_log_file()
+                    summary = _extract_startup_error_marker(output)
+                    if self._process.poll() is not None:
+                        msg = (
+                            f"Server process exited with code "
+                            f"{self._process.returncode}"
+                        )
+                    else:
+                        msg = (
+                            f"Server graph '{graph_name}' did not initialize within "
+                            f"{timeout}s"
+                        )
+                    if summary:
+                        msg += f": {summary}"
+                    if output:
+                        msg += f"\n{output[-_LOG_TAIL_CHARS:]}"
+                    raise RuntimeError(msg) from exc
+
+                if resp.status_code == 200:  # noqa: PLR2004
+                    logger.info("Server graph %s is ready at %s", graph_name, self.url)
+                    return
+
+                output = self._read_log_file()
+                msg = (
+                    f"Server graph '{graph_name}' failed readiness check "
+                    f"(status: {resp.status_code})"
+                )
+                summary = _extract_startup_error_marker(output)
+                if summary:
+                    msg += f": {summary}"
+                if output:
+                    msg += f"\n{output[-_LOG_TAIL_CHARS:]}"
+                raise RuntimeError(msg)
+
+        msg = f"Server graph '{graph_name}' did not initialize within {timeout}s"
+        raise RuntimeError(msg)
 
     def _stop_process(self) -> None:
         """Stop only the server subprocess and its log file.

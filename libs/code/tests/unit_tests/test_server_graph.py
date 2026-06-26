@@ -6,14 +6,12 @@ import importlib
 import os
 import sys
 from types import ModuleType, SimpleNamespace
-from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig
-
-if TYPE_CHECKING:
-    import pytest
 
 
 def _import_fresh_server_graph() -> ModuleType:
@@ -33,7 +31,42 @@ def _module_with_attrs(name: str, **attrs: object) -> ModuleType:
 class TestServerGraph:
     """Tests for server-mode graph bootstrap."""
 
-    def test_auto_discovery_loads_mcp_without_explicit_config(self) -> None:
+    async def test_make_graph_caches_first_constructed_graph(self) -> None:
+        """Repeated factory access should preserve process-lifetime resources."""
+        graph_obj = object()
+        module = _import_fresh_server_graph()
+
+        with patch.object(
+            module, "_make_graph", new=AsyncMock(return_value=graph_obj)
+        ) as make_graph:
+            assert await module.make_graph() is graph_obj
+            assert await module.make_graph() is graph_obj
+
+        make_graph.assert_awaited_once_with()
+
+    async def test_make_graph_emits_marker_and_exits_on_failure(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A construction failure must emit the startup marker, then exit non-zero."""
+        from deepagents_code._startup_error import STARTUP_ERROR_MARKER
+
+        module = _import_fresh_server_graph()
+
+        with (
+            patch.object(
+                module,
+                "_make_graph",
+                new=AsyncMock(side_effect=ValueError("boom: bad model")),
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            await module.make_graph()
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert f"{STARTUP_ERROR_MARKER}ValueError: boom: bad model" in captured.err
+
+    async def test_auto_discovery_loads_mcp_without_explicit_config(self) -> None:
         """Server mode should auto-discover MCP configs when the graph is built."""
         graph_obj = object()
         model_obj = object()
@@ -112,7 +145,7 @@ class TestServerGraph:
 
             module = _import_fresh_server_graph()
             resolve_mcp_tools.assert_not_awaited()
-            assert module.make_graph() is graph_obj
+            assert await module.make_graph() is graph_obj
 
         resolve_mcp_tools.assert_awaited_once()
         kwargs = resolve_mcp_tools.await_args_list[0].kwargs

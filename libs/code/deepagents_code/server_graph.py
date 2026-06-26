@@ -11,10 +11,11 @@ sides stay in sync.
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import logging
 import sys
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from deepagents_code._server_config import ServerConfig
 from deepagents_code._startup_error import (
@@ -22,6 +23,9 @@ from deepagents_code._startup_error import (
     emit_startup_failure,
 )
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +66,7 @@ def _get_mcp_session_manager() -> Any:  # noqa: ANN401
     return _mcp_session_manager
 
 
-def _build_tools(
+async def _build_tools(
     config: ServerConfig,
     project_context: ProjectContext | None,
 ) -> tuple[list[Any], list[Any] | None]:
@@ -71,11 +75,12 @@ def _build_tools(
     Loads built-in tools (conditionally including web search when Tavily is
     available) and MCP tools when enabled.
 
-    MCP discovery runs synchronously via `asyncio.run` because this function is
-    called while the graph factory is resolving (before the server's async event
-    loop is available). `stateless=True` ensures discovery only uses throwaway
-    sessions, while the shared runtime session manager binds real sessions
-    lazily inside the server loop on first tool invocation.
+    MCP discovery is awaited on the server's event loop: LangGraph invokes this
+    async factory on its running loop, so discovery must use `await` rather than
+    `asyncio.run` (which raises inside a running loop). `stateless=True` ensures
+    discovery only uses throwaway sessions, while the shared runtime session
+    manager binds real sessions lazily inside the server loop on first tool
+    invocation.
 
     Args:
         config: Deserialized server configuration.
@@ -97,20 +102,16 @@ def _build_tools(
 
     mcp_server_info: list[Any] | None = None
     if not config.no_mcp:
-        import asyncio
-
         from deepagents_code.mcp_tools import resolve_and_load_mcp_tools
 
         try:
-            mcp_tools, _, mcp_server_info = asyncio.run(
-                resolve_and_load_mcp_tools(
-                    explicit_config_path=config.mcp_config_path,
-                    no_mcp=config.no_mcp,
-                    trust_project_mcp=config.trust_project_mcp,
-                    project_context=project_context,
-                    stateless=True,
-                    session_manager=_get_mcp_session_manager(),
-                )
+            mcp_tools, _, mcp_server_info = await resolve_and_load_mcp_tools(
+                explicit_config_path=config.mcp_config_path,
+                no_mcp=config.no_mcp,
+                trust_project_mcp=config.trust_project_mcp,
+                project_context=project_context,
+                stateless=True,
+                session_manager=_get_mcp_session_manager(),
             )
         except FileNotFoundError:
             logger.exception("MCP config file not found: %s", config.mcp_config_path)
@@ -128,7 +129,7 @@ def _build_tools(
     return tools, mcp_server_info
 
 
-def _make_graph() -> Any:  # noqa: ANN401
+async def _make_graph() -> Any:  # noqa: ANN401
     """Create the agent graph from environment-based configuration.
 
     Reads `DEEPAGENTS_CODE_SERVER_*` env vars via `ServerConfig.from_env()`
@@ -150,11 +151,14 @@ def _make_graph() -> Any:  # noqa: ANN401
     result = create_model(config.model, extra_kwargs=config.model_params)
     result.apply_to_settings()
 
-    tools, mcp_server_info = _build_tools(config, project_context)
+    tools, mcp_server_info = await _build_tools(config, project_context)
 
     # Create sandbox backend if a sandbox provider is configured.
-    # The context manager is held open at module level and cleaned up via
-    # atexit so the sandbox lives for the entire server process lifetime.
+    # The context manager is created here in the factory, but its reference is
+    # stored in a module-level global (and cleaned up via atexit) so the sandbox
+    # lives for the entire server process lifetime. `make_graph` caches the built
+    # graph, so this runs once per process despite LangGraph's per-run factory
+    # invocation.
     global _sandbox_cm, _sandbox_backend  # noqa: PLW0603
     sandbox_backend = None
     if config.sandbox_type:
@@ -235,14 +239,50 @@ def _make_graph() -> Any:  # noqa: ANN401
     return agent
 
 
-def make_graph() -> Any:  # noqa: ANN401
-    """Create the agent graph and emit a startup marker on failure.
+def _build_graph_factory() -> Callable[[], Awaitable[Any]]:
+    """Build the cached async graph factory exposed to `langgraph dev`.
+
+    The returned coroutine function is what `langgraph.json` references. It keeps
+    its cache and lock in this closure rather than in module-level globals, so
+    importing the module (e.g. for import-only checks) introduces no shared
+    mutable state.
 
     Returns:
-        Compiled LangGraph agent graph.
+        A zero-arg async factory that builds the graph once and returns the
+        cached instance on every subsequent call.
     """
-    try:
-        return _make_graph()
-    except Exception as exc:  # noqa: BLE001
-        emit_startup_failure(exc)
-        sys.exit(1)
+    missing = object()
+    graph: Any = missing
+    lock = asyncio.Lock()
+
+    async def make_graph() -> Any:  # noqa: ANN401
+        """Create (or return the cached) agent graph for `langgraph dev`.
+
+        LangGraph loads this async factory from the generated `langgraph.json`
+        and invokes it lazily on its event loop — and again on every run. The
+        built graph is cached for the process lifetime so MCP discovery, sandbox
+        creation, and `atexit` registration each happen exactly once; re-running
+        them per request would re-discover MCP servers, leak sandbox sessions,
+        and stack duplicate `atexit` handlers. Any construction failure is
+        converted into a startup-error marker (scraped by the parent app
+        process) before exiting.
+
+        Returns:
+            Compiled LangGraph agent graph.
+        """
+        nonlocal graph
+        if graph is not missing:
+            return graph
+        async with lock:
+            if graph is missing:
+                try:
+                    graph = await _make_graph()
+                except Exception as exc:  # noqa: BLE001  # top-level barrier: any construction failure must surface to the parent as a marker
+                    emit_startup_failure(exc)
+                    sys.exit(1)
+            return graph
+
+    return make_graph
+
+
+make_graph = _build_graph_factory()

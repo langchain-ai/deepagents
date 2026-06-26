@@ -6613,17 +6613,17 @@ class TestAppArgumentHints:
             assert chat._text_area.argument_hint == "[context]"
             assert chat._text_area.render_line(0).text.rstrip() == "remember [context]"
 
-            for _ in "remember ":
-                await pilot.press("left")
+            # Clear all text so backspace-on-empty exits command mode. Backspace
+            # at cursor 0 with text present is a no-op that no longer exits mode,
+            # so we must empty the field to exercise the mode-exit path.
+            chat._text_area.text = ""
             await pilot.pause()
-            assert chat._text_area.cursor_location == (0, 0)
-            assert chat._text_area.render_line(0).text.rstrip() == "remember [context]"
 
             await pilot.press("backspace")
             await pilot.pause()
 
             assert chat.mode == "normal"
-            assert chat._text_area.text == "remember "
+            assert chat._text_area.text == ""
             assert chat._text_area.argument_hint == ""
 
 

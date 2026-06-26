@@ -1363,6 +1363,7 @@ async def execute_task_textual(
                                     if tool_name in {
                                         "write_file",
                                         "edit_file",
+                                        "delete",
                                     }:
                                         args = action_request.get("args", {})
                                         if isinstance(args, dict):
@@ -1385,6 +1386,7 @@ async def execute_task_textual(
                                     if tool_name in {
                                         "write_file",
                                         "edit_file",
+                                        "delete",
                                     }:
                                         args = action_request.get("args", {})
                                         if isinstance(args, dict):

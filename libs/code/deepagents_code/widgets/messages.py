@@ -112,6 +112,7 @@ _TOOLS_WITH_HEADER_INFO: set[str] = {
     "read_file",
     "write_file",
     "edit_file",
+    "delete",
     "glob",
     "grep",
     "execute",  # sandbox shell

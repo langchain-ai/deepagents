@@ -117,6 +117,94 @@ class TestFindFreePort:
         assert port == 53123
 
 
+class TestServerPortSelection:
+    """Port resolution in `ServerProcess.start()`."""
+
+    @staticmethod
+    def _make_server(tmp_path: Path, port: int = 0) -> ServerProcess:
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+        return ServerProcess(config_dir=config_dir, port=port)
+
+    @staticmethod
+    def _mock_log_file(tmp_path: Path) -> MagicMock:
+        log_file = MagicMock()
+        log_file.name = str(tmp_path / "server.log")
+        return log_file
+
+    async def test_default_uses_ephemeral_port(self, tmp_path: Path) -> None:
+        """Default port (0) resolves via `_find_free_port`, never squats 2024."""
+        server = self._make_server(tmp_path)
+        assert server.port == 0
+
+        process = MagicMock(pid=1234)
+        process.poll.return_value = None
+        with (
+            patch(
+                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                return_value=self._mock_log_file(tmp_path),
+            ),
+            patch("deepagents_code.server.subprocess.Popen", return_value=process),
+            patch("deepagents_code.server.wait_for_server_healthy", new=AsyncMock()),
+            patch(
+                "deepagents_code.server._find_free_port", return_value=43210
+            ) as find_free,
+            patch("deepagents_code.server._port_in_use") as in_use,
+        ):
+            await server.start()
+
+        find_free.assert_called_once_with("127.0.0.1")
+        in_use.assert_not_called()
+        assert server.port == 43210
+
+    async def test_explicit_free_port_is_kept(self, tmp_path: Path) -> None:
+        """An explicit, free port is honored without searching for another."""
+        server = self._make_server(tmp_path, port=2024)
+
+        process = MagicMock(pid=1234)
+        process.poll.return_value = None
+        with (
+            patch(
+                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                return_value=self._mock_log_file(tmp_path),
+            ),
+            patch("deepagents_code.server.subprocess.Popen", return_value=process),
+            patch("deepagents_code.server.wait_for_server_healthy", new=AsyncMock()),
+            patch("deepagents_code.server._port_in_use", return_value=False) as in_use,
+            patch("deepagents_code.server._find_free_port") as find_free,
+        ):
+            await server.start()
+
+        in_use.assert_called_once_with("127.0.0.1", 2024)
+        find_free.assert_not_called()
+        assert server.port == 2024
+
+    async def test_explicit_busy_port_falls_back(self, tmp_path: Path) -> None:
+        """An explicit but busy port falls back to a free port."""
+        server = self._make_server(tmp_path, port=2024)
+
+        process = MagicMock(pid=1234)
+        process.poll.return_value = None
+        with (
+            patch(
+                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                return_value=self._mock_log_file(tmp_path),
+            ),
+            patch("deepagents_code.server.subprocess.Popen", return_value=process),
+            patch("deepagents_code.server.wait_for_server_healthy", new=AsyncMock()),
+            patch("deepagents_code.server._port_in_use", return_value=True) as in_use,
+            patch(
+                "deepagents_code.server._find_free_port", return_value=43210
+            ) as find_free,
+        ):
+            await server.start()
+
+        in_use.assert_called_once_with("127.0.0.1", 2024)
+        find_free.assert_called_once_with("127.0.0.1")
+        assert server.port == 43210
+
+
 class TestWaitForServerHealthy:
     """Tests for the health-check polling loop."""
 
@@ -316,7 +404,7 @@ class TestServerProcess:
         server = ServerProcess(config_dir=config_dir, owns_config_dir=True)
 
         with (
-            patch("deepagents_code.server._port_in_use", return_value=False),
+            patch("deepagents_code.server._find_free_port", return_value=12345),
             patch(
                 "deepagents_code.server.tempfile.NamedTemporaryFile",
                 return_value=log_file,
@@ -358,7 +446,7 @@ class TestServerProcess:
         server = ServerProcess(config_dir=config_dir, scaffold=scaffold_mock)
 
         with (
-            patch("deepagents_code.server._port_in_use", return_value=False),
+            patch("deepagents_code.server._find_free_port", return_value=12345),
             patch(
                 "deepagents_code.server.tempfile.NamedTemporaryFile",
                 return_value=log_file,
@@ -445,7 +533,7 @@ class TestServerProcess:
         server = ServerProcess(config_dir=config_dir, scaffold=scaffold_mock)
 
         with (
-            patch("deepagents_code.server._port_in_use", return_value=False),
+            patch("deepagents_code.server._find_free_port", return_value=12345),
             patch(
                 "deepagents_code.server.tempfile.NamedTemporaryFile",
                 return_value=log_file,
@@ -482,7 +570,7 @@ class TestServerProcess:
         server = ServerProcess(config_dir=config_dir, scaffold=scaffold_mock)
 
         with (
-            patch("deepagents_code.server._port_in_use", return_value=False),
+            patch("deepagents_code.server._find_free_port", return_value=12345),
             patch(
                 "deepagents_code.server.tempfile.NamedTemporaryFile",
                 return_value=log_file,
@@ -526,6 +614,7 @@ class TestServerProcess:
         server = ServerProcess(config_dir=config_dir, scaffold=scaffold_mock)
 
         with (
+            patch("deepagents_code.server._find_free_port", return_value=12345),
             patch("deepagents_code.server._port_in_use", return_value=False),
             patch(
                 "deepagents_code.server.tempfile.NamedTemporaryFile",
@@ -568,6 +657,7 @@ class TestServerProcess:
         server = ServerProcess(config_dir=config_dir, owns_config_dir=False)
 
         with (
+            patch("deepagents_code.server._find_free_port", return_value=12345),
             patch("deepagents_code.server._port_in_use", return_value=False),
             patch(
                 "deepagents_code.server.tempfile.NamedTemporaryFile",

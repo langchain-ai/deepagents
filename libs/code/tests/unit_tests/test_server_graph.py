@@ -34,7 +34,7 @@ class TestServerGraph:
     """Tests for server-mode graph bootstrap."""
 
     def test_auto_discovery_loads_mcp_without_explicit_config(self) -> None:
-        """Server mode should auto-discover MCP configs when no path is passed."""
+        """Server mode should auto-discover MCP configs when the graph is built."""
         graph_obj = object()
         model_obj = object()
         fetch_tool = object()
@@ -80,8 +80,6 @@ class TestServerGraph:
             resolve_and_load_mcp_tools=resolve_mcp_tools,
         )
 
-        # Build env from ServerConfig to exercise the same serialization
-        # path the real CLI uses.
         config = ServerConfig(no_mcp=False)
         env_overrides = {}
         for suffix, value in config.to_env().items():
@@ -113,6 +111,8 @@ class TestServerGraph:
                 os.environ.pop(f"{SERVER_ENV_PREFIX}{suffix}", None)
 
             module = _import_fresh_server_graph()
+            resolve_mcp_tools.assert_not_awaited()
+            assert module.make_graph() is graph_obj
 
         resolve_mcp_tools.assert_awaited_once()
         kwargs = resolve_mcp_tools.await_args_list[0].kwargs
@@ -143,7 +143,6 @@ class TestServerGraph:
             project_context=None,
             async_subagents=None,
         )
-        assert module.graph is graph_obj
 
 
 class TestStartupErrorMarker:

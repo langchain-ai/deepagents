@@ -177,7 +177,7 @@ class TestStartServerAndGetAgent:
         assert manager is None
 
         kwargs = mock_generate_langgraph_json.call_args.kwargs
-        assert kwargs["graph_ref"] == "./server_graph.py:graph"
+        assert kwargs["graph_ref"] == "./server_graph.py:make_graph"
         assert kwargs["checkpointer_path"] == "./checkpointer.py:create_checkpointer"
 
     async def test_passes_scaffold_hook_to_server_process(
@@ -226,11 +226,11 @@ class TestStartServerAndGetAgent:
 
         generate_langgraph_json(
             tmp_path,
-            graph_ref="./server_graph.py:graph",
+            graph_ref="./server_graph.py:make_graph",
             checkpointer_path="./checkpointer.py:create_checkpointer",
         )
         config = json.loads((tmp_path / "langgraph.json").read_text())
-        assert config["graphs"]["agent"] == "./server_graph.py:graph"
+        assert config["graphs"]["agent"] == "./server_graph.py:make_graph"
         assert config["checkpointer"]["path"] == "./checkpointer.py:create_checkpointer"
 
 

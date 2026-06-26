@@ -110,7 +110,7 @@ def _scaffold_workspace(work_dir: Path) -> None:
     # here breaks Windows because importlib treats backslash paths as module names.
     generate_langgraph_json(
         work_dir,
-        graph_ref="./server_graph.py:graph",
+        graph_ref="./server_graph.py:make_graph",
         checkpointer_path="./checkpointer.py:create_checkpointer",
     )
 

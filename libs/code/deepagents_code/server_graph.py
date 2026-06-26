@@ -1,13 +1,12 @@
 """Server-side graph entry point for `langgraph dev`.
 
-This module is referenced by the generated `langgraph.json` and exposes the
-agent graph as a module-level variable that the LangGraph server can load
-and serve.
+This module is referenced by the generated `langgraph.json` and exposes a graph
+factory that the LangGraph server can load and serve.
 
-The graph is created at module import time via `make_graph()`, which reads
-configuration from `ServerConfig.from_env()` — the same dataclass the CLI uses
-to *write* the configuration via `ServerConfig.to_env()`. This shared schema
-ensures the two sides stay in sync.
+The graph is created by `make_graph()`, which reads configuration from
+`ServerConfig.from_env()` — the same dataclass the CLI uses to *write* the
+configuration via `ServerConfig.to_env()`. This shared schema ensures the two
+sides stay in sync.
 """
 
 from __future__ import annotations
@@ -73,10 +72,10 @@ def _build_tools(
     available) and MCP tools when enabled.
 
     MCP discovery runs synchronously via `asyncio.run` because this function is
-    called during module-level graph construction (before the server's async
-    event loop is available). `stateless=True` ensures discovery only uses
-    throwaway sessions, while the shared runtime session manager binds real
-    sessions lazily inside the server loop on first tool invocation.
+    called while the graph factory is resolving (before the server's async event
+    loop is available). `stateless=True` ensures discovery only uses throwaway
+    sessions, while the shared runtime session manager binds real sessions
+    lazily inside the server loop on first tool invocation.
 
     Args:
         config: Deserialized server configuration.
@@ -129,7 +128,7 @@ def _build_tools(
     return tools, mcp_server_info
 
 
-def make_graph() -> Any:  # noqa: ANN401
+def _make_graph() -> Any:  # noqa: ANN401
     """Create the agent graph from environment-based configuration.
 
     Reads `DEEPAGENTS_CODE_SERVER_*` env vars via `ServerConfig.from_env()`
@@ -236,8 +235,14 @@ def make_graph() -> Any:  # noqa: ANN401
     return agent
 
 
-try:
-    graph = make_graph()
-except Exception as exc:  # noqa: BLE001  # top-level barrier: any failure must surface to parent
-    emit_startup_failure(exc)
-    sys.exit(1)
+def make_graph() -> Any:  # noqa: ANN401
+    """Create the agent graph and emit a startup marker on failure.
+
+    Returns:
+        Compiled LangGraph agent graph.
+    """
+    try:
+        return _make_graph()
+    except Exception as exc:  # noqa: BLE001
+        emit_startup_failure(exc)
+        sys.exit(1)

@@ -380,10 +380,13 @@ def _process_ai_message(
         output_toks = usage.get("output_tokens", 0)
         total_toks = usage.get("total_tokens", 0)
         active_model = settings.model_name or ""
+        active_provider = settings.model_provider or ""
         if input_toks or output_toks:
-            state.stats.record_request(active_model, input_toks, output_toks)
+            state.stats.record_request(
+                active_model, input_toks, output_toks, active_provider
+            )
         elif total_toks:
-            state.stats.record_request(active_model, total_toks, 0)
+            state.stats.record_request(active_model, total_toks, 0, active_provider)
 
     if not hasattr(message_obj, "content_blocks"):
         logger.debug("AIMessage missing content_blocks attribute, skipping")
@@ -929,7 +932,7 @@ async def run_non_interactive(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool = False,
-    enable_interpreter: bool = False,
+    enable_interpreter: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
     max_turns: int | None = None,
@@ -989,7 +992,7 @@ async def run_non_interactive(
             servers. When `False` (default), project stdio servers are
             silently skipped.
         enable_interpreter: Enable the JS interpreter (`js_eval`) middleware
-            on the main agent. Local-mode only.
+            on the main agent. `None` uses the sandbox-aware default.
         interpreter_ptc: Override for `settings.interpreter_ptc` (PTC
             allowlist for `js_eval`).
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for

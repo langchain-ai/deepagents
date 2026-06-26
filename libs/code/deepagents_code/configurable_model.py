@@ -71,10 +71,13 @@ def _get_context(request: ModelRequest) -> CLIContextSchema | None:
     if isinstance(ctx, CLIContextSchema):
         return ctx
     if isinstance(ctx, dict):
+        raw_key = ctx.get("approval_mode_key")
         return CLIContextSchema(
             model=ctx.get("model"),
             model_params=ctx.get("model_params") or {},
             effective_model=ctx.get("effective_model"),
+            auto_approve=bool(ctx.get("auto_approve", False)),
+            approval_mode_key=raw_key if isinstance(raw_key, str) else None,
         )
     return None
 

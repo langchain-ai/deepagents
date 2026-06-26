@@ -46,7 +46,7 @@ _AUTH_STATUS_CASES = [
             env_var="ANTHROPIC_API_KEY",
             source=ProviderAuthSource.ENV,
         ),
-        "[env: ANTHROPIC_API_KEY]",
+        "[env set: ANTHROPIC_API_KEY]",
         "",
     ),
     (
@@ -56,7 +56,7 @@ _AUTH_STATUS_CASES = [
             env_var="ANTHROPIC_API_KEY",
         ),
         "[missing]",
-        f"{get_glyphs().warning} missing ANTHROPIC_API_KEY",
+        f"{get_glyphs().warning} missing credentials",
     ),
     (
         ProviderAuthStatus(
@@ -147,7 +147,9 @@ def test_auth_badge_uses_resolved_env_var_name(monkeypatch: pytest.MonkeyPatch) 
         source=ProviderAuthSource.ENV,
     )
 
-    assert format_auth_badge(status).plain == "[env: DEEPAGENTS_CODE_OPENAI_API_KEY]"
+    assert (
+        format_auth_badge(status).plain == "[env set: DEEPAGENTS_CODE_OPENAI_API_KEY]"
+    )
 
 
 def _badge_styles(status: ProviderAuthStatus) -> str:

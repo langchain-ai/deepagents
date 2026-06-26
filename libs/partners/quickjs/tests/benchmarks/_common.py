@@ -15,6 +15,8 @@ from langchain_quickjs import CodeInterpreterMiddleware
 from tests._common import FakeChatModel
 
 if TYPE_CHECKING:
+    from typing import Literal
+
     from langchain_quickjs.middleware import REPLState
 
 CONSOLE_LOG_CODE = "for (let i = 0; i < 200; i += 1) {  console.log(`line-${i}`);}'ok';"
@@ -110,12 +112,10 @@ def assert_eval_succeeded(result: dict[str, Any]) -> None:
 def run_counter_turns(
     *,
     turn_count: int,
-    snapshot_between_turns: bool,
+    mode: Literal["thread", "turn"],
 ) -> list[str]:
     """Run `turn_count` REPL turns and return counter values per turn."""
-    middleware = CodeInterpreterMiddleware(
-        snapshot_between_turns=snapshot_between_turns
-    )
+    middleware = CodeInterpreterMiddleware(mode=mode)
     state: REPLState = {}
     runtime: Any = None  # hooks ignore runtime; `None` keeps this path lightweight
     values: list[str] = []
@@ -143,12 +143,12 @@ def run_counter_turns(
 def assert_counter_turn_values(
     *,
     values: list[str],
-    snapshot_between_turns: bool,
+    mode: Literal["thread", "turn"],
 ) -> None:
-    """Assert expected counter values with snapshots enabled/disabled."""
+    """Assert expected counter values for the configured persistence mode."""
     expected = (
         [str(turn_index) for turn_index in range(len(values))]
-        if snapshot_between_turns
+        if mode == "thread"
         else ["0", *(["missing"] * max(0, len(values) - 1))]
     )
     assert values == expected, f"expected {expected}, got {values}"

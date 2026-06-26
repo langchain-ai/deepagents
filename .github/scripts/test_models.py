@@ -99,6 +99,35 @@ def test_harbor_matrix_output_stays_flat(models: ModuleType) -> None:
     }
 
 
+def test_clbench_matrix_output_stays_flat(models: ModuleType) -> None:
+    """clbench shares Harbor's single-matrix output contract (flat, no per-provider)."""
+    outputs = models._matrix_outputs("clbench", ["openai:gpt-5.4"])
+
+    assert outputs == {
+        "matrix": {
+            "include": [
+                {
+                    "model": "openai:gpt-5.4",
+                    "provider": "openai",
+                    "artifact_key": "openai-gpt-5.4",
+                }
+            ]
+        }
+    }
+
+
+def test_clbench_resolves_models_like_harbor(models: ModuleType) -> None:
+    """clbench reuses Harbor's presets, so selections must resolve identically.
+
+    Encodes the design intent of the shared `_HARBOR_PRESETS`: the two
+    benchmarks stay in lockstep on which models belong to each group.
+    """
+    for selection in ("all", "openai:gpt-5.4"):
+        assert models._resolve_models("clbench", selection) == models._resolve_models(
+            "harbor", selection
+        )
+
+
 def test_eval_matrix_outputs_with_no_models(models: ModuleType) -> None:
     """Empty model list emits empty includes for every declared provider.
 

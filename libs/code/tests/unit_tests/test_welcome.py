@@ -13,6 +13,8 @@ from deepagents_code._env_vars import (
     HIDE_LANGSMITH_TRACING,
     HIDE_SPLASH_TIPS,
     HIDE_SPLASH_VERSION,
+    LANGSMITH_REPLICA_PROJECTS,
+    SHOW_LANGSMITH_REPLICA_TRACING,
 )
 from deepagents_code._version import __version__
 from deepagents_code.widgets.welcome import (
@@ -27,6 +29,8 @@ def _clear_startup_splash_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent local startup splash overrides from affecting tests."""
     monkeypatch.delenv(DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER, raising=False)
     monkeypatch.delenv(HIDE_SPLASH_TIPS, raising=False)
+    monkeypatch.delenv(LANGSMITH_REPLICA_PROJECTS, raising=False)
+    monkeypatch.delenv(SHOW_LANGSMITH_REPLICA_TRACING, raising=False)
 
 
 def _extract_links(banner: Content, text_start: int, text_end: int) -> list[str]:
@@ -58,6 +62,8 @@ def _make_banner(
     project_name: str | None = None,
     *,
     hide_langsmith_tracing: bool = False,
+    replica_projects: str | None = None,
+    show_replica_tracing: bool | None = None,
 ) -> WelcomeBanner:
     """Create a `WelcomeBanner` with all env vars cleared.
 
@@ -65,6 +71,8 @@ def _make_banner(
         thread_id: Optional thread ID to display.
         project_name: If set, simulates LangSmith being configured.
         hide_langsmith_tracing: Whether to hide tracing info from the splash.
+        replica_projects: Comma-separated LangSmith replica projects to display.
+        show_replica_tracing: Whether to show replica tracing info in the splash.
 
     Returns:
         A `WelcomeBanner` instance ready for testing.
@@ -79,17 +87,21 @@ def _make_banner(
         env["DEEPAGENTS_CODE_LANGSMITH_PROJECT"] = project_name
     if hide_langsmith_tracing:
         env[HIDE_LANGSMITH_TRACING] = "1"
+    if replica_projects is not None:
+        env[LANGSMITH_REPLICA_PROJECTS] = replica_projects
+    if show_replica_tracing is not None:
+        env[SHOW_LANGSMITH_REPLICA_TRACING] = "1" if show_replica_tracing else "0"
 
     # Temporarily clear the cached settings singleton so _get_settings()
     # re-creates it from the patched env vars inside the context manager.
     saved = _cfg.__dict__.pop("settings", None)
-    saved_bootstrap = _cfg._bootstrap_done
-    _cfg._bootstrap_done = False
+    saved_bootstrap = _cfg._bootstrap_state.done
+    _cfg._bootstrap_state.done = False
     try:
         with patch.dict("os.environ", env, clear=True):
             return WelcomeBanner(thread_id=thread_id)
     finally:
-        _cfg._bootstrap_done = saved_bootstrap
+        _cfg._bootstrap_state.done = saved_bootstrap
         if saved is not None:
             _cfg.__dict__["settings"] = saved
         else:
@@ -102,7 +114,7 @@ class TestBuildBannerThreadLink:
     def test_thread_id_plain_when_no_project_url(self) -> None:
         """Thread ID should be plain dim text when `project_url` is `None`."""
         widget = _make_banner(thread_id="12345")
-        banner = widget._build_banner(project_url=None)
+        banner = widget._build_banner()
 
         assert "Thread: 12345" in banner.plain
         assert "\n  Thread: 12345\n" in banner.plain
@@ -116,8 +128,8 @@ class TestBuildBannerThreadLink:
     def test_thread_id_linked_when_project_url_provided(self) -> None:
         """Thread ID should be a hyperlink when `project_url` is provided."""
         project_url = "https://smith.langchain.com/o/org/projects/p/abc123"
-        widget = _make_banner(thread_id="99999")
-        banner = widget._build_banner(project_url=project_url)
+        widget = _make_banner(thread_id="99999", project_name="my-project")
+        banner = widget._build_banner(project_urls={"my-project": project_url})
 
         assert "Thread: 99999" in banner.plain
         assert "\n  Thread: 99999\n" in banner.plain
@@ -132,22 +144,24 @@ class TestBuildBannerThreadLink:
     def test_no_thread_line_when_thread_id_is_none(self) -> None:
         """Banner should not contain a thread line when `thread_id` is `None`."""
         widget = _make_banner(thread_id=None)
-        banner = widget._build_banner(project_url=None)
+        banner = widget._build_banner()
         assert "Thread:" not in banner.plain
 
     def test_no_thread_line_when_project_url_but_no_thread_id(self) -> None:
         """Banner should not contain a thread line even with `project_url`."""
-        widget = _make_banner(thread_id=None)
+        widget = _make_banner(thread_id=None, project_name="my-project")
         banner = widget._build_banner(
-            project_url="https://smith.langchain.com/o/org/projects/p/abc123"
+            project_urls={
+                "my-project": "https://smith.langchain.com/o/org/projects/p/abc123"
+            }
         )
         assert "Thread:" not in banner.plain
 
     def test_trailing_slash_on_project_url_normalized(self) -> None:
         """Trailing slash on `project_url` should not cause double-slash in URL."""
         project_url = "https://smith.langchain.com/o/org/projects/p/abc123/"
-        widget = _make_banner(thread_id="55555")
-        banner = widget._build_banner(project_url=project_url)
+        widget = _make_banner(thread_id="55555", project_name="my-project")
+        banner = widget._build_banner(project_urls={"my-project": project_url})
 
         thread_id_start = banner.plain.index("55555")
         thread_id_end = thread_id_start + len("55555")
@@ -161,7 +175,7 @@ class TestBuildBannerThreadLink:
         """Thread link should work when LangSmith project info is also shown."""
         project_url = "https://smith.langchain.com/o/org/projects/p/abc123"
         widget = _make_banner(thread_id="77777", project_name="my-project")
-        banner = widget._build_banner(project_url=project_url)
+        banner = widget._build_banner(project_urls={"my-project": project_url})
 
         assert "my-project" in banner.plain
         assert "Thread: 77777" in banner.plain
@@ -181,13 +195,157 @@ class TestBuildBannerThreadLink:
             hide_langsmith_tracing=True,
         )
         banner = widget._build_banner(
-            project_url="https://smith.langchain.com/o/org/projects/p/abc123"
+            project_urls={
+                "my-project": "https://smith.langchain.com/o/org/projects/p/abc123"
+            }
         )
 
         assert "LangSmith tracing:" not in banner.plain
         assert "my-project" not in banner.plain
         assert "Thread:" not in banner.plain
         assert "77777" not in banner.plain
+
+    def test_replica_project_shows_by_default_when_configured(self) -> None:
+        """The forwarded replica project should show unless explicitly disabled."""
+        widget = _make_banner(
+            project_name="my-project",
+            replica_projects="replica-a, replica-b",
+        )
+        banner = widget._build_banner()
+
+        assert "LangSmith tracing: 'my-project'" in banner.plain
+        assert "Also tracing to: 'replica-a'" in banner.plain
+        assert "replica-b" not in banner.plain
+
+    def test_replica_project_plain_when_url_is_unresolved(self) -> None:
+        """The forwarded replica project should be plain until its URL resolves."""
+        widget = _make_banner(
+            project_name="my-project",
+            replica_projects="replica-a, replica-b",
+        )
+        banner = widget._build_banner(project_urls={})
+
+        replica_start = banner.plain.index("replica-a")
+        replica_end = replica_start + len("replica-a")
+        links = _extract_links(banner, replica_start, replica_end)
+        assert not links
+        assert "replica-b" not in banner.plain
+
+    def test_replica_project_linked_when_url_is_resolved(self) -> None:
+        """The forwarded replica project should link to its LangSmith project URL."""
+        widget = _make_banner(
+            project_name="my-project",
+            replica_projects="replica-a, replica-b",
+        )
+        replica_url = "https://smith.langchain.com/o/org/projects/p/replica-a-id"
+        banner = widget._build_banner(project_urls={"replica-a": replica_url})
+
+        replica_start = banner.plain.index("replica-a")
+        replica_end = replica_start + len("replica-a")
+        links = _extract_links(banner, replica_start, replica_end)
+        assert links == [f"{replica_url}?utm_source=deepagents-code"]
+
+        assert "replica-b" not in banner.plain
+
+    async def test_fetch_and_update_refreshes_each_resolved_project(self) -> None:
+        """Resolved replica URLs should update the splash as they arrive."""
+        project_url = "https://smith.langchain.com/o/org/projects/p/main-id"
+        replica_url = "https://smith.langchain.com/o/org/projects/p/replica-id"
+        urls = {
+            "my-project": project_url,
+            "mason-dual-trace": replica_url,
+        }
+        widget = _make_banner(
+            project_name="my-project",
+            replica_projects="mason-dual-trace",
+        )
+
+        with (
+            patch(
+                "deepagents_code.widgets.welcome.fetch_langsmith_project_url",
+                side_effect=urls.__getitem__,
+            ),
+            patch.object(widget, "update") as update,
+        ):
+            await widget._fetch_and_update()
+
+        assert widget._project_urls == urls
+        assert update.call_count == 2
+
+        first_banner = update.call_args_list[0].args[0]
+        first_replica_start = first_banner.plain.index("mason-dual-trace")
+        first_replica_end = first_replica_start + len("mason-dual-trace")
+        assert not _extract_links(first_banner, first_replica_start, first_replica_end)
+
+        second_banner = update.call_args_list[1].args[0]
+        second_replica_start = second_banner.plain.index("mason-dual-trace")
+        second_replica_end = second_replica_start + len("mason-dual-trace")
+        links = _extract_links(
+            second_banner,
+            second_replica_start,
+            second_replica_end,
+        )
+        assert links == [f"{replica_url}?utm_source=deepagents-code"]
+
+    async def test_fetch_and_update_isolates_replica_resolution_failure(self) -> None:
+        """One project's fetch timeout must not block the others from resolving."""
+        project_url = "https://smith.langchain.com/o/org/projects/p/main-id"
+
+        def _resolve(project: str) -> str:
+            if project == "mason-dual-trace":
+                msg = "timed out"
+                raise TimeoutError(msg)
+            return project_url
+
+        widget = _make_banner(
+            project_name="my-project",
+            replica_projects="mason-dual-trace",
+        )
+
+        with (
+            patch(
+                "deepagents_code.widgets.welcome.fetch_langsmith_project_url",
+                side_effect=_resolve,
+            ),
+            patch.object(widget, "update") as update,
+        ):
+            await widget._fetch_and_update()
+
+        # Primary resolved and linked; the replica that timed out is absent from
+        # the cache and rendered as plain text rather than aborting the loop.
+        assert widget._project_urls == {"my-project": project_url}
+        assert update.call_count == 1
+        banner = update.call_args_list[0].args[0]
+        replica_start = banner.plain.index("mason-dual-trace")
+        replica_end = replica_start + len("mason-dual-trace")
+        assert not _extract_links(banner, replica_start, replica_end)
+
+    def test_replica_projects_hidden_when_show_env_var_is_disabled(self) -> None:
+        """Replica tracing splash details should be hidden when opted out."""
+        widget = _make_banner(
+            project_name="my-project",
+            replica_projects="replica-a, replica-b",
+            show_replica_tracing=False,
+        )
+        banner = widget._build_banner()
+
+        assert "LangSmith tracing: 'my-project'" in banner.plain
+        assert "Also tracing to:" not in banner.plain
+        assert "replica-a" not in banner.plain
+        assert "replica-b" not in banner.plain
+
+    def test_hide_langsmith_tracing_hides_replica_projects(self) -> None:
+        """The broader tracing splash opt-out should also hide replica details."""
+        widget = _make_banner(
+            project_name="my-project",
+            hide_langsmith_tracing=True,
+            replica_projects="replica-a, replica-b",
+        )
+        banner = widget._build_banner()
+
+        assert "LangSmith tracing:" not in banner.plain
+        assert "Also tracing to:" not in banner.plain
+        assert "replica-a" not in banner.plain
 
 
 class TestUpdateThreadId:
@@ -209,8 +367,8 @@ class TestUpdateThreadId:
     def test_update_thread_id_preserves_project_url(self) -> None:
         """Thread link should use the cached project URL after update."""
         project_url = "https://smith.langchain.com/o/org/projects/p/abc123"
-        widget = _make_banner(thread_id="old_id")
-        widget._project_url = project_url
+        widget = _make_banner(thread_id="old_id", project_name="my-project")
+        widget._project_urls = {"my-project": project_url}
 
         with patch.object(widget, "update") as mock_update:
             widget.update_thread_id("new_id")
@@ -469,6 +627,11 @@ class TestBuildWelcomeFooter:
     def test_copy_command_tip_registered(self) -> None:
         """The `/copy` command must have a discoverability tip."""
         assert "Use /copy to copy the latest assistant message" in _TIPS
+
+    def test_workflow_subagent_tip_registered(self) -> None:
+        """The workflow trigger phrase should have a weighted discoverability tip."""
+        tip = "Ask for a workflow to fan work out to subagents in parallel"
+        assert _TIPS[tip] == 3
 
     def test_tip_varies_across_calls(self) -> None:
         """Tips should rotate (not always the same)."""

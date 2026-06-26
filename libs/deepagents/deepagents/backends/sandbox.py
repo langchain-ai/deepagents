@@ -793,13 +793,14 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         can surface a `read_file` pointer) with only a head/tail preview returned.
         Captured output is hard-capped at `max_capture_bytes` (default
         `_EXECUTE_CAPTURE_MAX_BYTES`) without killing the command, so the exit
-        code is preserved.
+        code is preserved. When `enable_capture_offload` is `False`, the command
+        runs unwrapped and the full output is returned (`offloaded=False`), so
+        callers can fall back to their own handling (e.g. generic eviction).
 
-        Returns an `ExecuteOffloadResult`; `offloaded` is `True` when the result
-        was left at `capture_path` and `response.output` holds only the preview.
-        When `enable_capture_offload` is `False`, runs the command unwrapped and
-        returns `offloaded=False` with the full output — letting callers fall back
-        to their own handling (e.g. generic eviction).
+        Returns:
+            An `ExecuteOffloadResult`. `offloaded=True` when the result was left
+            at `capture_path` and `response.output` holds only the preview;
+            `offloaded=False` when `response.output` is the complete output.
         """
         use_timeout = timeout is not None and execute_accepts_timeout(type(self))
         if not self.enable_capture_offload:

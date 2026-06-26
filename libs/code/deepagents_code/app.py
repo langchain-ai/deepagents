@@ -13373,6 +13373,12 @@ class DeepAgentsApp(App):
             if provider and not parsed:
                 display = f"{provider}:{model_name}"
 
+            # Provider package imports (e.g. google_genai) can take a noticeable
+            # moment; show an animated busy indicator so the switch doesn't look
+            # frozen. The work itself already runs off the event loop via
+            # `asyncio.to_thread`, so the UI stays responsive meanwhile.
+            if self._status_bar:
+                self._status_bar.set_busy(f"Switching to {display}")
             try:
                 result = await asyncio.to_thread(
                     _create_model_with_deepagents_import_lock,
@@ -13392,6 +13398,9 @@ class DeepAgentsApp(App):
                         ErrorMessage(_build_model_switch_error_body(exc)),
                     )
                 return
+            finally:
+                if self._status_bar:
+                    self._status_bar.set_busy("")
 
             # Set the model override for ConfigurableModelMiddleware.
             # The next stream call passes CLIContext via context= and the

@@ -628,6 +628,11 @@ class TestBuildWelcomeFooter:
         """The `/copy` command must have a discoverability tip."""
         assert "Use /copy to copy the latest assistant message" in _TIPS
 
+    def test_workflow_subagent_tip_registered(self) -> None:
+        """The workflow trigger phrase should have a weighted discoverability tip."""
+        tip = "Ask for a workflow to fan work out to subagents in parallel"
+        assert _TIPS[tip] == 3
+
     def test_tip_varies_across_calls(self) -> None:
         """Tips should rotate (not always the same)."""
         seen = {build_welcome_footer().plain for _ in range(50)}

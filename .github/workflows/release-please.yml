@@ -31,7 +31,7 @@ jobs:
     name: Block empty commits on main
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 2
       - name: Reject empty commits
@@ -73,7 +73,7 @@ jobs:
       quickjs-release: ${{ steps.check-releases.outputs.quickjs-release }}
       release-version: ${{ steps.check-releases.outputs.release-version }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 2
 
@@ -216,10 +216,13 @@ jobs:
   # Release commits bypass this wait entirely: their run must reach
   # `trigger-releases` to dispatch the publish.
   #
-  # Two fallbacks if the wait can't resolve cleanly:
+  # Three fallbacks if the wait can't resolve cleanly:
   #   * Publish genuinely *stuck* past MAX_WAIT (label never flips, but GitHub is
   #     answering): skip=true, deferring to the next push, so a hung publish
   #     outside this run's control never paints main red.
+  #   * The matching release run already failed/cancelled/timed out: fail the job
+  #     loudly (exit 1), because the pending label now means operator action is
+  #     needed rather than an in-flight publish.
   #   * GitHub itself unreadable (gh keeps erroring so we can't tell whether a
   #     publish is in flight): fail the job loudly (exit 1). release-please is
   #     then skipped via `needs`, and a red guard is the honest signal — better
@@ -237,12 +240,13 @@ jobs:
     # an unset value, blocking release-please until the next push.
     timeout-minutes: 55
     permissions:
+      actions: read
       contents: read
       pull-requests: read
     outputs:
       skip: ${{ steps.check.outputs.skip }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 1
       - name: Wait for in-flight releases
@@ -263,31 +267,129 @@ jobs:
           # --limit is explicit and generous: the default (30) could drop a
           # genuinely stuck pending PR past the window precisely in the backlog
           # scenario this guard exists to catch, silently reporting "none".
-          list_pending() {
+          list_pending_json() {
             gh pr list --repo "$REPO" --state merged \
-              --label "autorelease: pending" --limit 100 --json number,title \
-              --jq '[.[] | "#\(.number) \(.title)"] | join("; ")'
+              --label "autorelease: pending" --limit 100 --json number,title
           }
 
-          # poll_pending sets PENDING from list_pending and tracks consecutive
-          # failures in QUERY_FAILS. Called directly (never in a subshell) so the
-          # counter persists across iterations. On a `gh` error we set PENDING to
-          # a non-empty sentinel so the caller keeps waiting rather than proceed
-          # on unverified state — but a *sustained* failure means we genuinely
+          format_pending() {
+            jq -r '[.[] | "#\(.number) \(.title)"] | join("; ")'
+          }
+
+          # Echoes a line per merged pending PR whose matching release.yml run has
+          # already finished unsuccessfully; empty output means none failed.
+          # Returns non-zero only when GitHub is unreadable, so the caller can
+          # distinguish "no failures" from "couldn't tell".
+          #
+          # Matching is `release.yml` run displayTitle == release PR title. That
+          # holds only because two independently-maintained templates render
+          # byte-identically: release-please-config.json's
+          # `pull-request-title-pattern` ("release(${component}): ${version}") and
+          # release.yml's `run-name` ("release(<package>): <version>"), with
+          # component == the dispatched package. This is the same run-name
+          # coupling that `find_run_url` (in the trigger-releases job) reconstructs
+          # from parts and warns about — see its lock-step comment. If either
+          # template drifts, or a `package-override` whose value differs from the
+          # component is ever dispatched, the match silently always-misses: this
+          # guard then finds nothing and the job degrades to the normal wait/skip
+          # path rather than misfiring. Fail-open by design — a missed match never
+          # blocks a release, it only forgoes the early loud failure.
+          #
+          # --event workflow_dispatch mirrors find_run_url: release.yml only ever
+          # runs via dispatch, and the filter keeps an unrelated run that happens
+          # to share a title from being mistaken for the release publish.
+          describe_failed_pending_releases() {
+            local pending_json="$1"
+            local runs_json
+            if ! runs_json=$(gh run list --repo "$REPO" --workflow release.yml \
+              --event workflow_dispatch \
+              --limit 100 --json displayTitle,status,conclusion,url,createdAt); then
+              return 1
+            fi
+            # action_required is included deliberately: a *completed* run carrying
+            # it means the publish needs a human (e.g. an environment approval that
+            # resolved to this conclusion), which warrants the same loud failure as
+            # an outright error. Runs merely *awaiting* approval have status !=
+            # "completed" and are excluded by the status check below.
+            #
+            # Any single failed pending release makes this emit a line, and the
+            # caller fails the whole guard closed — even if a sibling PR's publish
+            # is still legitimately in flight. That is intentional: once a human
+            # must intervene, release-please must not run against half-updated
+            # state regardless of what else is mid-publish.
+            jq -r --argjson prs "$pending_json" '
+              def failed_conclusion:
+                . == "failure" or . == "cancelled" or . == "timed_out" or
+                . == "action_required" or . == "startup_failure";
+              $prs[] as $pr
+              | ([.[] | select(.displayTitle == $pr.title)] | sort_by(.createdAt) | reverse | .[0]) as $run
+              | select($run != null and $run.status == "completed" and ($run.conclusion | failed_conclusion))
+              | "#\($pr.number) \($pr.title) -> \($run.conclusion): \($run.url)"
+            ' <<< "$runs_json"
+          }
+
+          fail_failed_releases() {
+            echo "::error::Merged release PR(s) are still labeled 'autorelease: pending', but their matching package release run did not finish successfully:"
+            printf '%s\n' "$FAILED_RELEASES" | while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error::$line"
+            done
+            echo "::error::Fix or rerun the failed package release before running release-please again. Only update labels manually if the tag and GitHub release were created."
+            {
+              echo "## release-please blocked by failed release"
+              echo ""
+              echo "The following merged release PR(s) are still labeled \`autorelease: pending\`, but their matching \`release.yml\` run has already completed unsuccessfully:"
+              echo ""
+              printf '%s\n' "$FAILED_RELEASES"
+              echo ""
+              echo "Fix or rerun the failed package release before running release-please again. Only update labels manually if the tag and GitHub release were created."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          # poll_pending sets PENDING from list_pending_json, FAILED_RELEASES
+          # from matching `release.yml` runs, and tracks consecutive failures in
+          # QUERY_FAILS. Called directly (never in a subshell) so the counter
+          # persists across iterations. On a `gh` error we set PENDING to a
+          # non-empty sentinel so the caller keeps waiting rather than proceed on
+          # unverified state — but a *sustained* failure means we genuinely
           # cannot read release state, which we must surface loudly (see the
           # MAX_QUERY_FAILS bail-out below) rather than mislabel as "in flight".
           QUERY_FAILS=0
           poll_pending() {
-            if PENDING=$(list_pending); then
-              QUERY_FAILS=0
-            else
+            local next_failed
+            local next_pending
+            local next_pending_json
+
+            if ! next_pending_json=$(list_pending_json); then
               QUERY_FAILS=$((QUERY_FAILS + 1))
               PENDING="(failed to query GitHub)"
+              FAILED_RELEASES=""
               echo "::warning::Failed to query GitHub for release state (${QUERY_FAILS} consecutive)."
+              return
             fi
+
+            next_pending=$(printf '%s\n' "$next_pending_json" | format_pending)
+            if [ -n "$next_pending" ]; then
+              if ! next_failed=$(describe_failed_pending_releases "$next_pending_json"); then
+                QUERY_FAILS=$((QUERY_FAILS + 1))
+                PENDING="$next_pending"
+                FAILED_RELEASES=""
+                echo "::warning::Failed to query GitHub for release workflow state (${QUERY_FAILS} consecutive)."
+                return
+              fi
+            else
+              next_failed=""
+            fi
+
+            QUERY_FAILS=0
+            PENDING="$next_pending"
+            FAILED_RELEASES="$next_failed"
           }
 
           poll_pending
+          if [ -n "$FAILED_RELEASES" ]; then
+            fail_failed_releases
+          fi
           if [ -z "$PENDING" ]; then
             echo "No in-flight releases; proceeding."
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -313,6 +415,9 @@ jobs:
             sleep "$POLL_INTERVAL"
             WAITED=$((WAITED + POLL_INTERVAL))
             poll_pending
+            if [ -n "$FAILED_RELEASES" ]; then
+              fail_failed_releases
+            fi
             echo "Waited ${WAITED}s; pending: ${PENDING:-<cleared>}"
           done
 
@@ -373,7 +478,7 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       # release-please uses GITHUB_TOKEN, so its PR events don't trigger
       # pull_request_target (GitHub's infinite-loop prevention). Reuse the
@@ -425,7 +530,7 @@ jobs:
         pr: ${{ fromJson(needs.release-please.outputs.prs) }}
     steps:
       - name: Checkout release branch
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ matrix.pr.headBranchName }}
 

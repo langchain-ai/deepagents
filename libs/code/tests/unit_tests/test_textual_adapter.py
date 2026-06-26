@@ -336,6 +336,41 @@ class TestInterruptCleanup:
         agent.acancel_active_runs.assert_awaited_once()
         agent.aupdate_state.assert_awaited_once()
 
+    async def test_remote_run_cancel_value_error_propagates(self) -> None:
+        """A `ValueError` (missing `thread_id`) propagates instead of warning.
+
+        It is a contract bug rather than a transient remote failure, so it must
+        surface and the recovery-state write must be skipped.
+        """
+        agent = SimpleNamespace(
+            acancel_active_runs=AsyncMock(side_effect=ValueError("missing thread_id")),
+            aupdate_state=AsyncMock(),
+        )
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+
+        with pytest.raises(ValueError, match="missing thread_id"):
+            await _handle_interrupt_cleanup(
+                adapter=adapter,
+                agent=agent,
+                config={"configurable": {"thread_id": "t-1"}},
+                pending_text_by_namespace={},
+                captured_input_tokens=0,
+                captured_output_tokens=0,
+                turn_stats=SessionStats(),
+                start_time=0.0,
+            )
+
+        agent.acancel_active_runs.assert_awaited_once()
+        # The re-raise short-circuits before the recovery-state write, which
+        # is what distinguishes it from the swallowed-transient-failure path.
+        agent.aupdate_state.assert_not_awaited()
+
     async def test_local_agent_without_cancel_method_still_writes_state(self) -> None:
         """Local agents lack `acancel_active_runs`; cleanup must skip it cleanly."""
         agent = SimpleNamespace(aupdate_state=AsyncMock())

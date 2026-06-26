@@ -50,12 +50,12 @@ logger = logging.getLogger(__name__)
 # These are the single source of truth for `[interpreter]` defaults. The
 # `Settings` dataclass references them so the default is defined once.
 
-INTERPRETER_ENABLE_DEFAULT = False
+INTERPRETER_ENABLE_DEFAULT = True
 INTERPRETER_TIMEOUT_SECONDS_DEFAULT = 5.0
 INTERPRETER_MEMORY_LIMIT_MB_DEFAULT = 64
 INTERPRETER_MAX_PTC_CALLS_DEFAULT = 256
 INTERPRETER_MAX_RESULT_CHARS_DEFAULT = 4000
-INTERPRETER_PTC_DEFAULT: str | bool | list[str] = False
+INTERPRETER_PTC_DEFAULT: str | bool | list[str] = "safe"
 INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT = False
 
 LANGSMITH_PROJECT_DEFAULT = "deepagents-code"
@@ -209,6 +209,16 @@ class ConfigOption:
 
     install_extra: str | None = None
     """Optional `deepagents-code[...]` extra that provides `dependency_module`."""
+
+    provider: str | None = None
+    """Provider/service name a credential option authenticates, or `None`.
+
+    Set only for `Credentials`-group options (e.g. `"anthropic"`, `"tavily"`),
+    where it is the key `/auth` stores the credential under and the name passed
+    to `model_config.is_service`. Carrying it as a structured field lets
+    `config show`/`get` look up the stored credential without re-parsing it out
+    of `key`. `None` for every other option.
+    """
 
     def __post_init__(self) -> None:
         """Reject a `default` that contradicts `kind` at construction time.
@@ -740,6 +750,7 @@ def _credential_options() -> tuple[ConfigOption, ...]:
                 kind=OptionKind.STR,
                 env_var=env_var,
                 redacted=redacted,
+                provider=name,
                 settings_field=_CREDENTIAL_SETTINGS_FIELD.get(env_var),
                 dependency_module=dependency[0] if dependency else None,
                 install_extra=dependency[1] if dependency else None,
@@ -949,7 +960,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.BOOL,
         default=INTERPRETER_ENABLE_DEFAULT,
         toml_keys=("interpreter", "enable_interpreter"),
-        cli_flag="--enable-interpreter",
+        cli_flag="--interpreter",
         settings_field="enable_interpreter",
     ),
     ConfigOption(

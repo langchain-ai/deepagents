@@ -1306,8 +1306,7 @@ def create_cli_agent(
             list or `interpreter_ptc="all"` with
             `interpreter_ptc_acknowledge_unsafe=True`.
 
-            Requires the `quickjs` optional extra
-            (`langchain-quickjs>=0.3.1,<0.4.0`).
+            Requires the core `langchain-quickjs` dependency.
         checkpointer: Optional checkpointer for session persistence.
             When `None`, the graph is compiled without a checkpointer.
         mcp_server_info: MCP server metadata to surface in the system prompt.

@@ -43,6 +43,7 @@ from deepagents_code.app import (
     QueuedMessage,
     TextualSessionState,
     _build_whats_new_message,
+    _display_model_label,
     _extra_is_ready,
 )
 from deepagents_code.event_bus import ExternalEvent
@@ -78,6 +79,29 @@ def _closing_run_worker_mock(
     if inspect.iscoroutine(work):
         work.close()
     return MagicMock()
+
+
+class TestDisplayModelLabel:
+    """Tests for stripping the provider prefix off a model spec for display."""
+
+    @pytest.mark.parametrize(
+        ("spec", "expected"),
+        [
+            ("anthropic:opus", "opus"),
+            ("openai:gpt-5.1", "gpt-5.1"),
+            # No prefix: shown verbatim.
+            ("opus", "opus"),
+            # Only the first colon splits, so a colon in the model name survives.
+            ("anthropic:claude:opus", "claude:opus"),
+            # Falsy specs pass through unchanged rather than raising.
+            ("", ""),
+            (None, None),
+        ],
+    )
+    def test_strips_provider_prefix(
+        self, spec: str | None, expected: str | None
+    ) -> None:
+        assert _display_model_label(spec) == expected
 
 
 class TestWhatsNewMessage:
@@ -11907,6 +11931,10 @@ class TestNotificationCenterIntegration:
                 return_value="",
             ),
             patch(
+                "deepagents_code.update_check.release_requires_prereleases",
+                return_value=False,
+            ),
+            patch(
                 "deepagents_code.update_check.upgrade_command",
                 return_value="uv tool upgrade deepagents-code",
             ),
@@ -11916,6 +11944,55 @@ class TestNotificationCenterIntegration:
                 await app._check_for_updates()
                 await pilot.pause()
                 assert isinstance(app.screen, UpdateAvailableScreen)
+
+    async def test_update_check_preserves_prerelease_channel_in_command(self) -> None:
+        """Prerelease users get a prerelease-capable update command in notices."""
+        from deepagents_code.notifications import UpdateAvailablePayload
+        from deepagents_code.widgets.update_available import UpdateAvailableScreen
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(True, "9.9.9rc2"),
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.should_notify_update",
+                return_value=True,
+            ),
+            patch("deepagents_code.update_check.mark_update_notified"),
+            patch(
+                "deepagents_code.update_check.release_requires_prereleases",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.upgrade_command",
+                return_value="uv tool install -U deepagents-code --prerelease allow",
+            ) as upgrade_command_mock,
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._check_for_updates()
+                await pilot.pause()
+                assert isinstance(app.screen, UpdateAvailableScreen)
+
+        upgrade_command_mock.assert_called_once_with(
+            include_prereleases=None,
+            version=None,
+        )
+        entry = app._notice_registry.get("update:available")
+        assert entry is not None
+        assert isinstance(entry.payload, UpdateAvailablePayload)
+        assert "--prerelease allow" in entry.payload.upgrade_cmd
 
     async def test_periodic_update_check_toasts_without_opening_modal(self) -> None:
         """Hourly rechecks surface updates without interrupting the session."""
@@ -11958,6 +12035,10 @@ class TestNotificationCenterIntegration:
             patch(
                 "deepagents_code.update_check.format_installed_age_suffix",
                 return_value="",
+            ),
+            patch(
+                "deepagents_code.update_check.release_requires_prereleases",
+                return_value=False,
             ),
             patch(
                 "deepagents_code.update_check.upgrade_command",
@@ -16956,7 +17037,7 @@ class TestNotifyInterpreterToolsWithoutInterpreter:
 
         notify_mock.assert_called_once()
         assert (
-            "--interpreter-tools has no effect unless --interpreter is set"
+            "--interpreter-tools has no effect when the interpreter is disabled"
             in notify_mock.call_args.args[0]
         )
         assert notify_mock.call_args.kwargs.get("severity") == "warning"
@@ -17003,6 +17084,96 @@ class TestNotifyInterpreterToolsWithoutInterpreter:
         app.notify = notify_mock  # ty: ignore
 
         app._notify_interpreter_tools_without_interpreter()
+
+        notify_mock.assert_not_called()
+
+
+class TestNotifyInterpreterDisabledBySandbox:
+    """Tests for `_notify_interpreter_disabled_by_sandbox` (TUI advisory)."""
+
+    def test_toasts_when_sandbox_suppresses_default(self) -> None:
+        """A remote sandbox with the unset, default-on interpreter warns once."""
+        from deepagents_code.config import settings
+
+        app = DeepAgentsApp(
+            server_kwargs={
+                "assistant_id": "agent",
+                "model_name": None,
+                "sandbox_type": "daytona",
+                "enable_interpreter": False,
+            },
+            interpreter_arg=None,
+        )
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        with patch.object(settings, "enable_interpreter", True):
+            app._notify_interpreter_disabled_by_sandbox()
+
+        notify_mock.assert_called_once()
+        assert "unavailable under a remote sandbox" in notify_mock.call_args.args[0]
+        assert notify_mock.call_args.kwargs.get("severity") == "warning"
+        assert notify_mock.call_args.kwargs.get("markup") is False
+
+    def test_no_toast_in_local_mode(self) -> None:
+        """Local mode keeps the interpreter, so there is nothing to warn about."""
+        from deepagents_code.config import settings
+
+        app = DeepAgentsApp(
+            server_kwargs={
+                "assistant_id": "agent",
+                "model_name": None,
+                "enable_interpreter": True,
+            },
+            interpreter_arg=None,
+        )
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        with patch.object(settings, "enable_interpreter", True):
+            app._notify_interpreter_disabled_by_sandbox()
+
+        notify_mock.assert_not_called()
+
+    def test_no_toast_on_explicit_opt_out(self) -> None:
+        """An explicit `--no-interpreter` opt-out under a sandbox is not announced."""
+        from deepagents_code.config import settings
+
+        app = DeepAgentsApp(
+            server_kwargs={
+                "assistant_id": "agent",
+                "model_name": None,
+                "sandbox_type": "daytona",
+                "enable_interpreter": False,
+            },
+            interpreter_arg=False,
+        )
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        with patch.object(settings, "enable_interpreter", True):
+            app._notify_interpreter_disabled_by_sandbox()
+
+        notify_mock.assert_not_called()
+
+    def test_no_toast_when_config_default_off(self) -> None:
+        """A user who disabled the interpreter in config is not nagged."""
+        from deepagents_code.config import settings
+
+        app = DeepAgentsApp(
+            server_kwargs={
+                "assistant_id": "agent",
+                "model_name": None,
+                "sandbox_type": "daytona",
+                "enable_interpreter": False,
+            },
+            interpreter_arg=None,
+        )
+        notify_mock = MagicMock()
+        app.notify = notify_mock  # ty: ignore
+
+        with patch.object(settings, "enable_interpreter", False):
+            app._notify_interpreter_disabled_by_sandbox()
 
         notify_mock.assert_not_called()
 

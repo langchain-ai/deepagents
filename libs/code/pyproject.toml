@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-code"
-version = "0.1.23"
+version = "0.1.24"
 description = "Terminal interface for Deep Agents - interactive AI agent with file operations, shell access, and sub-agent capabilities."
 readme = "README.md"
 license = { text = "MIT" }
@@ -57,6 +57,7 @@ dependencies = [
 
     # Tools
     "tavily-python>=0.7.26,<1.0.0",
+    "langchain-quickjs>=0.3.2,<0.4.0",
 
     # Clipboard
     "pyperclip>=1.11.0,<2.0.0",
@@ -117,8 +118,8 @@ all-sandboxes = [
     "deepagents-code[agentcore,daytona,modal,runloop,vercel]",
 ]
 
-# Standalone integrations (not part of any composite extra)
-quickjs = ["langchain-quickjs>=0.3.1,<0.4.0"]
+# Standalone integrations (kept for backwards-compatible install commands)
+quickjs = []
 
 
 [project.scripts]
@@ -143,7 +144,6 @@ test = [
     "hatchling>=1.27.0,<2.0.0",
     "ruff>=0.15.18,<1.0.0",
     "ty>=0.0.52,<1.0.0",
-    "langchain-quickjs>=0.3.1,<0.4.0",
     "pytest>=9.1.1,<10.0.0",
     "pytest-asyncio>=1.4.0,<2.0.0",
     "pytest-benchmark>=5.2.3,<6.0.0",
@@ -303,6 +303,9 @@ omit = ["tests/*"]
 timeout = 30  # Default timeout for all tests (can be overridden per-test)
 
 addopts = "--strict-markers --strict-config --durations=5"
-markers = ["benchmark: marks tests as benchmarks (select with '-m benchmark')"]
+markers = [
+    "benchmark: marks tests as benchmarks (select with '-m benchmark')",
+    "self_managed_update_check: tests that manage app-startup update-check setup themselves",
+]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

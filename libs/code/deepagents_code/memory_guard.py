@@ -9,12 +9,14 @@ that file to persist learnings, nothing stops it from rewriting the managed
 block.
 
 This middleware intercepts `write_file`/`edit_file` calls targeting the guarded
-file(s). When a call would change or remove the managed block, the model's other
-edits are kept (though surrounding whitespace may be normalized, and a fully
-removed block is re-appended rather than restored in place) while the managed
-block is restored, and an error is returned so the model learns the region is
-machine-managed. When the block was altered but the restore could not be
-completed, an error is still returned so the failure is never silent.
+file(s), and `delete` calls that would remove them. When a write or edit would
+change or remove the managed block, the model's other edits are kept (though
+surrounding whitespace may be normalized, and a fully removed block is
+re-appended rather than restored in place) while the managed block is restored,
+and an error is returned so the model learns the region is machine-managed. A
+`delete` call that would remove an existing managed block is rejected before the
+tool runs. When the block was altered but the restore could not be completed, an
+error is still returned so the failure is never silent.
 """
 
 from __future__ import annotations
@@ -44,7 +46,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_GUARDED_TOOLS: frozenset[str] = frozenset({"write_file", "edit_file"})
+_GUARDED_TOOLS: frozenset[str] = frozenset({"write_file", "edit_file", "delete"})
 """Tool names whose calls can mutate a guarded file and must be inspected."""
 
 _REJECTION_MESSAGE = (
@@ -66,6 +68,14 @@ _RESTORE_FAILED_MESSAGE = (
 )
 """Error returned when a managed-block edit could not be reverted."""
 
+_DELETE_REJECTION_MESSAGE = (
+    "The guarded memory file {path} contains a machine-managed region between "
+    "the `deepagents:onboarding-name:start` and `deepagents:onboarding-name:end` "
+    "markers and must not be deleted. Do not delete this file or a parent "
+    "directory that contains it."
+)
+"""Error returned when a delete would remove a managed memory block."""
+
 
 class _RestoreOutcome(Enum):
     """Result of attempting to restore a managed block after a tool call."""
@@ -86,8 +96,10 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
     Guards the managed onboarding-name block in a fixed set of memory files. A
     `write_file`/`edit_file` that leaves the managed block untouched passes
     through; one that alters or drops it has the block restored (other edits
-    kept) and returns an error. If the restore itself fails, an error is still
-    returned so the failure is never silent.
+    kept) and returns an error. A `delete` targeting a guarded file (or a parent
+    directory that contains one) is rejected outright before the tool runs. If
+    the restore itself fails, an error is still returned so the failure is never
+    silent.
     """
 
     def __init__(self, guarded_paths: Iterable[str | Path]) -> None:
@@ -125,7 +137,8 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
         Returns:
             The matching guarded `Path`, or `None` when the call is unrelated.
         """
-        if request.tool_call["name"] not in _GUARDED_TOOLS:
+        tool_name = request.tool_call["name"]
+        if tool_name not in _GUARDED_TOOLS:
             return None
         args = request.tool_call.get("args") or {}
         file_path = args.get("file_path")
@@ -139,9 +152,16 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
             logger.warning(
                 "Could not resolve target path %r for %s",
                 file_path,
-                request.tool_call["name"],
+                tool_name,
                 exc_info=True,
             )
+            return None
+        if tool_name == "delete":
+            # `is_relative_to` is True when the guarded file is the delete
+            # target itself or lives under a directory being deleted.
+            for guarded in self._guarded:
+                if guarded.is_relative_to(resolved):
+                    return guarded
             return None
         return resolved if resolved in self._guarded else None
 
@@ -336,6 +356,20 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
             status="error",
         )
 
+    @staticmethod
+    def _delete_error(request: ToolCallRequest, path: Path) -> ToolMessage:
+        """Build the error result returned when a delete would remove memory.
+
+        Returns:
+            An error-status `ToolMessage` explaining the protected file.
+        """
+        return ToolMessage(
+            content=_DELETE_REJECTION_MESSAGE.format(path=path),
+            name=request.tool_call["name"],
+            tool_call_id=request.tool_call["id"],
+            status="error",
+        )
+
     def _result_after_restore(
         self,
         request: ToolCallRequest,
@@ -375,9 +409,11 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
         before_block = (
             extract_onboarding_name_block(before) if before is not None else None
         )
-        result = handler(request)
         if before is None or before_block is None:
-            return result
+            return handler(request)
+        if request.tool_call["name"] == "delete":
+            return self._delete_error(request, path)
+        result = handler(request)
         return self._result_after_restore(request, path, before, before_block, result)
 
     async def awrap_tool_call(
@@ -398,9 +434,11 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
         before_block = (
             extract_onboarding_name_block(before) if before is not None else None
         )
-        result = await handler(request)
         if before is None or before_block is None:
-            return result
+            return await handler(request)
+        if request.tool_call["name"] == "delete":
+            return self._delete_error(request, path)
+        result = await handler(request)
         return await asyncio.to_thread(
             self._result_after_restore, request, path, before, before_block, result
         )

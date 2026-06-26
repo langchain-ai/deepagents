@@ -24,6 +24,7 @@ from deepagents_code.agent import (
     DEFAULT_AGENT_NAME,
     _add_interrupt_on,
     _apply_inherited_pythonpath,
+    _format_delete_description,
     _format_edit_file_description,
     _format_execute_description,
     _format_fetch_url_description,
@@ -417,6 +418,30 @@ def test_format_edit_file_description_all_occurrences():
 
     assert "Action: Replace text (all occurrences)" in description
     assert "File:" not in description
+
+
+def test_format_delete_description() -> None:
+    """Test delete description for approval prompts."""
+    tool_call = cast(
+        "ToolCall",
+        {"name": "delete", "args": {"file_path": "/path/to/file.py"}, "id": "call-5"},
+    )
+
+    description = _format_delete_description(
+        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
+    )
+
+    assert "Action: Delete file or directory" in description
+
+
+def test_add_interrupt_on_gates_delete() -> None:
+    """The destructive delete tool is approval-gated like other write tools."""
+    interrupt_map = _add_interrupt_on()
+
+    assert "delete" in interrupt_map
+    assert interrupt_map["delete"]["allowed_decisions"] == ["approve", "reject"]
+    assert interrupt_map["delete"]["description"] is _format_delete_description
+    assert interrupt_map["delete"]["when"] is _should_interrupt_tool_call
 
 
 def test_format_web_search_description():
@@ -3413,11 +3438,16 @@ class TestResolvePtcOption:
             return ""
 
         @tool
+        def delete(path: str) -> str:  # noqa: ARG001
+            """Delete."""
+            return ""
+
+        @tool
         def grep(pattern: str) -> str:  # noqa: ARG001
             """Search."""
             return ""
 
-        return [read_file, write_file, grep]
+        return [read_file, write_file, delete, grep]
 
     def test_false_returns_none(self) -> None:
         from deepagents_code.agent import _resolve_ptc_option
@@ -3474,7 +3504,7 @@ class TestResolvePtcOption:
         assert result is not None
         # `all` enumerates only the tools passed to `create_cli_agent`; SDK
         # runtime built-ins are injected later and are not enumerable here.
-        assert sorted(result) == ["grep", "read_file", "write_file"]
+        assert sorted(result) == ["delete", "grep", "read_file", "write_file"]
 
     @staticmethod
     def _tools_with_task() -> list:

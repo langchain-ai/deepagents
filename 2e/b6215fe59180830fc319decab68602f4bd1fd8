@@ -1,0 +1,20 @@
+libs/code/tests/unit_tests/test_chat_input.py
+  s_ae9c5725f10bc5::t_95e49d86cd2cec 14
+  s_ae9c5725f10bc5::t_cb4554c0c3e3ef 1678-1732
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "2eb6215fe59180830fc319decab68602f4bd1fd8",
+  "prompts": {},
+  "sessions": {
+    "s_ae9c5725f10bc5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f6a97421-7c03-4591-87af-522b7e80eb01",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

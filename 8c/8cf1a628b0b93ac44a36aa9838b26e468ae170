@@ -1,0 +1,58 @@
+libs/code/deepagents_code/config_commands.py
+  s_62687bfc5d51ee::t_2c9684a7855258 498,502-511,524-527
+  s_ac4bc5fdf1cf39::t_e5e6f9168ac58f 25,239-248
+  s_ac4bc5fdf1cf39::t_82e5571b59ee68 277,283-286,290-297,412,519
+  s_62687bfc5d51ee::t_2d625ec7e88921 341-343
+  s_62687bfc5d51ee::t_3d2c5211905165 136-138,140-142,151-152,154-156,159-163,165-174,177-178,183,185-235
+  s_62687bfc5d51ee::t_7743ba2eab5253 334
+  s_62687bfc5d51ee::t_d8ed4a7847929c 144-148
+  s_62687bfc5d51ee::t_a4930d137c01e7 329-333,335-340,344-358,372-374,377,383-389,401-405
+  s_62687bfc5d51ee::t_3fd65142dc1c2d 27
+  s_62687bfc5d51ee::t_8c775923bc8386 495-497,499
+libs/code/deepagents_code/config_manifest.py
+  s_62687bfc5d51ee::t_0ab6b26cc3c1bf 753
+  s_62687bfc5d51ee::t_0f478b3fcc4738 213-222
+libs/code/tests/unit_tests/test_auth_store.py
+  s_62687bfc5d51ee::t_5aa5e3978fba7f 267-272
+libs/code/tests/unit_tests/test_config_manifest.py
+  s_62687bfc5d51ee::t_d5fae4dc8ae7fa 539
+  s_ac4bc5fdf1cf39::t_e7250cb33d7619 353,355
+  s_62687bfc5d51ee::t_8b12e3f26a819f 357,360-387,390-435,437-530
+  s_62687bfc5d51ee::t_b894072916c1ab 531-532
+  s_62687bfc5d51ee::t_7f42d87d513023 255,533-538,540-593
+  s_ac4bc5fdf1cf39::t_be81ab4388e899 197-220,344-352,354,356
+  s_62687bfc5d51ee::t_246c641b5663d9 388-389
+  s_ac4bc5fdf1cf39::t_1fdedf035563e4 256-284
+  s_62687bfc5d51ee::t_a1bec9717b4f39 436
+libs/code/deepagents_code/auth_store.py
+  s_62687bfc5d51ee::t_68c7dc4102f135 147-151
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "8c8cf1a628b0b93ac44a36aa9838b26e468ae170",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  },
+  "sessions": {
+    "s_62687bfc5d51ee": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1532d934-8e84-4c1b-a2da-1ea058fbe205",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    },
+    "s_ac4bc5fdf1cf39": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f0089-5698-7a01-9427-6c0e9680f30a",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

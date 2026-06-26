@@ -86,21 +86,28 @@ experiments, and the exact required output contract; update it as you learn. Re-
 it when confused, when resuming, or after summarization events, when you feel you lack
 context about what you're solving.
 
-## Verify against the real check, not your own
-
-Run it the way the grader will. If the task ships tests, examples, or sample
-input/output, run them; they are your success signal. Otherwise turn a concrete example
-from the task into a runnable check and iterate until it passes — the exact command, from
-a clean directory. Derive what you check from the task's literal wording, not your own
-assumptions: a self-written test that passes proves nothing if it asserts a field, path,
-or value you invented.
-
 ## Finish with a verified deliverable
 
 If the task asks for a file or on-disk output, that artifact must exist before you
 stop — confirm it with the shell (`ls`, `cat`). Never end having only described or
 planned the deliverable.
 """
+
+# Judge model for the optional `verify_behavior` tool. Override via HARBOR_VERIFY_MODEL.
+# Resolution is guarded so a bad slug degrades to the main model rather than failing.
+_DEFAULT_VERIFY_MODEL = "fireworks:accounts/fireworks/models/deepseek-v4-flash"
+
+# Appended to the system prompt only when verify_behavior is enabled, so the agent is
+# told about a tool it actually has.
+_VERIFY_BEHAVIOR_CLAUSE = """
+
+## Verify with verify_behavior
+
+When the task ships tests, examples, or a command to run, or states a numeric target,
+tolerance, or invariant your output must meet, call `verify_behavior` before concluding.
+It re-reads the task, builds an independent test from the task's own criteria, runs it,
+and returns PASS / FAIL / INCOMPLETE. Treat any FAIL as a real defect: fix it and re-run
+until it returns PASS."""
 
 
 @contextmanager
@@ -146,6 +153,35 @@ def _model_name(configurable: dict[str, object]) -> str:
     return value
 
 
+def _verify_behavior_model(configurable: dict[str, object]) -> object | None:
+    """Resolve the verify_behavior judge model, or None to use the main model.
+
+    Returns:
+        An initialized chat model, or None if resolution fails (degrades to main model).
+    """
+    name = (
+        configurable.get("verify_model")
+        or os.environ.get("HARBOR_VERIFY_MODEL")
+        or _DEFAULT_VERIFY_MODEL
+    )
+    if not isinstance(name, str) or not name.strip():
+        return None
+    try:
+        return init_chat_model(name)
+    except Exception:  # noqa: BLE001  (a bad slug must not fail the run)
+        return None
+
+
+def _enable_verify_behavior() -> bool:
+    """Return True if DEEPAGENTS_ENABLE_VERIFY_BEHAVIOR is set truthy (default off)."""
+    return os.environ.get("DEEPAGENTS_ENABLE_VERIFY_BEHAVIOR", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 def _workdir(configurable: dict[str, object]) -> Path:
     value = configurable.get("cwd")
     if value is None:
@@ -180,13 +216,15 @@ def make_graph(config: dict[str, object] | None = None) -> object:
     _raw_session = os.environ.get("HARBOR_SESSION_ID") or f"harbor-{uuid.uuid4()}"
     # Keep only characters dcode allows in an agent name.
     assistant_id = re.sub(r"[^A-Za-z0-9_\-\s]", "_", _raw_session)
+    verify_on = _enable_verify_behavior()
+    system_prompt = _SYSTEM_PROMPT + (_VERIFY_BEHAVIOR_CLAUSE if verify_on else "")
     with _scrub_shell_env():
         graph, _backend = create_cli_agent(
             model=model,
             assistant_id=assistant_id,
             sandbox=None,
             sandbox_type="harbor",
-            system_prompt=_SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             interactive=False,
             auto_approve=True,
             enable_memory=False,
@@ -195,6 +233,10 @@ def make_graph(config: dict[str, object] | None = None) -> object:
             # Finalize + anti-ramble middleware now come from the GLM-5.2 harness
             # profile (deepagents.profiles.harness), applied for the fireworks
             # glm-5p2 model this harness runs.
+            enable_verify_behavior=verify_on,
+            verify_behavior_model=(
+                _verify_behavior_model(configurable) if verify_on else None
+            ),
             cwd=_workdir(configurable),
         )
     return graph

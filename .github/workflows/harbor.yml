@@ -173,6 +173,19 @@ on:
         required: false
         default: "1"
         type: string
+      ramble_output_tokens:
+        description: "Anti-ramble output-token boundary (DEEPAGENTS_RAMBLE_OUTPUT_TOKENS). Empty = profile default (8000). Lower fires the nudge sooner."
+        required: false
+        default: ""
+        type: string
+      enable_verify_behavior:
+        description: "Enable the verify_behavior tool (judge authors + runs a task-derived check before finishing)."
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 permissions:
   contents: read
 
@@ -291,6 +304,8 @@ jobs:
       HARBOR_DISABLE_VERIFICATION: ${{ inputs.disable_verification || 'false' }}
       HARBOR_SHARD_INDEX: ${{ matrix.shard }}
       HARBOR_N_SHARDS: ${{ inputs.n_shards || '1' }}
+      HARBOR_RAMBLE_OUTPUT_TOKENS: ${{ inputs.ramble_output_tokens }}
+      HARBOR_ENABLE_VERIFY_BEHAVIOR: ${{ inputs.enable_verify_behavior || 'false' }}
       HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
       HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}
       HARBOR_MODEL: ${{ matrix.model }}
@@ -434,6 +449,15 @@ jobs:
             *) echo "::error::Invalid disable_verification (true|false): $HARBOR_DISABLE_VERIFICATION"; exit 1 ;;
           esac
 
+          # Validate optional anti-ramble threshold (empty = profile default 8000).
+          if [ -n "$HARBOR_RAMBLE_OUTPUT_TOKENS" ] && ! [[ "$HARBOR_RAMBLE_OUTPUT_TOKENS" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Invalid ramble_output_tokens (empty or positive integer): $HARBOR_RAMBLE_OUTPUT_TOKENS"; exit 1
+          fi
+          case "$HARBOR_ENABLE_VERIFY_BEHAVIOR" in
+            true|false) ;;
+            *) echo "::error::Invalid enable_verify_behavior (true|false): $HARBOR_ENABLE_VERIFY_BEHAVIOR"; exit 1 ;;
+          esac
+
           if ! [[ "$HARBOR_DATASET" =~ ^[A-Za-z0-9._/-]+$ ]]; then
             echo "::error::Invalid Harbor dataset ref: $HARBOR_DATASET"
             exit 1
@@ -521,6 +545,12 @@ jobs:
             # langchain-fireworks (always an agent dep) pins a pre-release; allow it for all providers.
             --agent-env UV_PRERELEASE=allow
           )
+
+          # Forward GLM-5.2 experiment knobs to the sandboxed agent (values validated above).
+          agent_env_args+=(--agent-env "DEEPAGENTS_ENABLE_VERIFY_BEHAVIOR=${HARBOR_ENABLE_VERIFY_BEHAVIOR}")
+          if [ -n "$HARBOR_RAMBLE_OUTPUT_TOKENS" ]; then
+            agent_env_args+=(--agent-env "DEEPAGENTS_RAMBLE_OUTPUT_TOKENS=${HARBOR_RAMBLE_OUTPUT_TOKENS}")
+          fi
           model_provider="${HARBOR_MODEL%%:*}"
           case "$model_provider" in
             anthropic)    agent_env_args+=(--agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}') ;;

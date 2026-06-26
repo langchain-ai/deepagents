@@ -258,6 +258,14 @@ ignore-var-parameters = true
     "S",        # Security warnings — not applicable to tests
     "SLF",      # Private member access — tests need access to internals
 ]
+"tests/unit_tests/test_verify_behavior.py" = [
+    "ANN003",   # **kwargs annotation — test helper
+    "ANN202",   # Missing return type on private test helper — common for mocks
+    "ARG002",   # Unused method argument — backend/mock stand-ins
+    "ASYNC109", # timeout kwarg mirrors the backend protocol on async mocks
+    "B903",     # Simple response holders — fine in tests
+    "EM101",    # String literal in test exception
+]
 "tests/unit_tests/test_mcp_{auth,commands,tools}.py" = [
     "ANN202",   # Missing return type on private test helper — common for mocks
     "ARG001",   # Unused function argument — pytest fixtures / mock stand-ins

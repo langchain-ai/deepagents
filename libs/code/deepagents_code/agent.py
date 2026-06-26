@@ -1192,6 +1192,8 @@ def create_cli_agent(
     enable_skills: bool = True,
     enable_shell: bool = True,
     enable_interpreter: bool = False,
+    enable_verify_behavior: bool = False,
+    verify_behavior_model: str | BaseChatModel | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
     cwd: str | Path | None = None,
@@ -1269,6 +1271,11 @@ def create_cli_agent(
 
             Requires the `quickjs` optional extra
             (`langchain-quickjs>=0.3.1,<0.4.0`).
+        enable_verify_behavior: Add the `verify_behavior` tool, which has a judge
+            model author a task-derived test, runs it in the sandbox, and reports
+            PASS/FAIL/INCOMPLETE. The verdict comes from executing the test.
+        verify_behavior_model: Judge model for `verify_behavior`. When `None`,
+            falls back to the main `model`. Ignored unless `enable_verify_behavior`.
         checkpointer: Optional checkpointer for session persistence.
             When `None`, the graph is compiled without a checkpointer.
         mcp_server_info: MCP server metadata to surface in the system prompt.
@@ -1650,6 +1657,19 @@ def create_cli_agent(
     agent_middleware.append(
         create_summarization_tool_middleware(model, composite_backend)
     )
+
+    if enable_verify_behavior:
+        from deepagents_code.verify_behavior_tool import make_verify_behavior_tool
+
+        verify_cwd = effective_cwd if effective_cwd is not None else str(Path.cwd())
+        tools = [
+            *tools,
+            make_verify_behavior_tool(
+                verify_behavior_model if verify_behavior_model is not None else model,
+                composite_backend,
+                cwd=str(verify_cwd),
+            ),
+        ]
 
     # Create the agent
     all_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = [

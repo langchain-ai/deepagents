@@ -667,18 +667,39 @@ def _json_error_hint(exc: json.JSONDecodeError) -> str | None:
     return None
 
 
-def _json_error_snippet(doc: str, lineno: int, colno: int) -> str | None:
+def _trailing_comma_pos(doc: str, pos: int) -> int | None:
+    """Return the comma position for decoder errors at a trailing comma."""
+    if pos < 0 or pos >= len(doc) or doc[pos] not in "}]":
+        return None
+    idx = pos - 1
+    while idx >= 0 and doc[idx].isspace():
+        idx -= 1
+    if idx >= 0 and doc[idx] == ",":
+        return idx
+    return None
+
+
+def _json_error_snippet(
+    doc: str, lineno: int, colno: int, *, pos: int | None = None
+) -> str | None:
     """Build a caret snippet pointing at a JSON error location.
 
     Args:
         doc: Full source text that failed to parse.
         lineno: 1-based line number of the error.
         colno: 1-based column number of the error.
+        pos: 0-based absolute error offset, if available.
 
     Returns:
         A two-line `<source line>` + caret string, or `None` when the line
         is out of range or blank.
     """
+    if pos is not None:
+        trailing_pos = _trailing_comma_pos(doc, pos)
+        if trailing_pos is not None:
+            lineno = doc.count("\n", 0, trailing_pos) + 1
+            line_start = doc.rfind("\n", 0, trailing_pos) + 1
+            colno = trailing_pos - line_start + 1
     lines = doc.splitlines()
     if lineno < 1 or lineno > len(lines):
         return None
@@ -686,12 +707,6 @@ def _json_error_snippet(doc: str, lineno: int, colno: int) -> str | None:
     if not source:
         return None
     caret_col = max(0, min(colno - 1, len(source)))
-    if (
-        caret_col + 1 < len(source)
-        and source[caret_col] in "}]"
-        and source[caret_col + 1] == ","
-    ):
-        caret_col += 1
     return f"    {source}\n    {' ' * caret_col}^"
 
 
@@ -745,7 +760,7 @@ def load_mcp_config(config_path: str) -> dict[str, Any]:
         hint = _json_error_hint(exc)
         if hint is not None:
             parts.append(hint)
-        snippet = _json_error_snippet(exc.doc, exc.lineno, exc.colno)
+        snippet = _json_error_snippet(exc.doc, exc.lineno, exc.colno, pos=exc.pos)
         if snippet is not None:
             parts.append(snippet)
         error_msg = "\n".join(parts)

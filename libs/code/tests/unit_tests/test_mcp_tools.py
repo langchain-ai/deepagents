@@ -342,6 +342,22 @@ class TestLoadMCPConfig:
         caret_col = msg_lines[caret_idx].index("^")
         assert source_line[caret_col] == ","
 
+    def test_missing_value_error_keeps_decoder_caret(self, tmp_path: Path) -> None:
+        """A missing value keeps the caret at the decoder-reported token."""
+        path = tmp_path / "bad.json"
+        path.write_text('{"mcpServers": {"fs": {"command": }, "other": {}}}')
+        with pytest.raises(json.JSONDecodeError) as exc_info:
+            load_mcp_config(str(path))
+        message = str(exc_info.value)
+        assert "missing value" in message
+        msg_lines = message.splitlines()
+        caret_idx = next(
+            i for i, line in enumerate(msg_lines) if line.lstrip().startswith("^")
+        )
+        source_line = msg_lines[caret_idx - 1]
+        caret_col = msg_lines[caret_idx].index("^")
+        assert source_line[caret_col] == "}"
+
     def test_comment_error_has_hint(self, tmp_path: Path) -> None:
         """A JSON file with a comment surfaces a comment-specific hint.
 

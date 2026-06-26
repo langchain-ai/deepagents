@@ -131,9 +131,13 @@ def _clear_provider_base_url_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "OPENAI_API_BASE",
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_API_URL",
+        "BASETEN_BASE_URL",
+        "BASETEN_API_BASE",
         "GOOGLE_GEMINI_BASE_URL",
         "DEEPAGENTS_CODE_OPENAI_BASE_URL",
         "DEEPAGENTS_CODE_ANTHROPIC_BASE_URL",
+        "DEEPAGENTS_CODE_BASETEN_BASE_URL",
+        "DEEPAGENTS_CODE_BASETEN_API_BASE",
         "DEEPAGENTS_CODE_GOOGLE_GEMINI_BASE_URL",
     ):
         monkeypatch.delenv(key, raising=False)

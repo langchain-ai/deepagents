@@ -1030,12 +1030,14 @@ in `tool_display`.
 """
 
 config: RunnableConfig = {
-    "recursion_limit": 1000,
+    "recursion_limit": 2000,
 }
 """Default LangGraph runnable config.
 
-Sets `recursion_limit` to 1000 to accommodate deeply nested agent graphs without
-hitting the default LangGraph ceiling.
+Sets `recursion_limit` to 2000 to accommodate deeply nested agent graphs and the
+raised FinalizeMiddleware hard-turn cap (72 turns ≈ ~430 supersteps) without
+hitting the default LangGraph ceiling. The FinalizeMiddleware soft-stop is meant
+to end runs before this ceiling, so this stays comfortably above it.
 """
 
 _git_branch_cache: dict[str, str | None] = {}

@@ -23,11 +23,14 @@ from langchain_core.messages import AIMessage, HumanMessage
 if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
-# Turn budget before the recursion_limit. One model turn costs ~18 graph
-# supersteps under the dcode middleware stack, so recursion_limit=1000 is ~55
-# turns; defaults stop with margin.
-_DEFAULT_SOFT_TURNS = 36
-_DEFAULT_HARD_TURNS = 42
+# Turn budget before the recursion_limit. Empirically one model turn is ~6 graph
+# supersteps under the dcode middleware stack (observed langgraph_step≈244 at 42
+# turns), so recursion_limit=2000 leaves ample headroom for the hard cap below.
+# Soft nudge fires at ~75% of budget — a genuine "running low" warning — but now
+# leaves ~18 turns of runway (was 6) so an over-exploring agent that pivots to a
+# deliverable has room to finish; hard cap raised for long-horizon tasks.
+_DEFAULT_SOFT_TURNS = 54
+_DEFAULT_HARD_TURNS = 72
 
 _SOFT_ENV = "DEEPAGENTS_FINALIZE_SOFT_TURNS"
 _HARD_ENV = "DEEPAGENTS_FINALIZE_HARD_TURNS"

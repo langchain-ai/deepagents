@@ -94,9 +94,11 @@ class TestCollectTracing:
 
         defaults: dict[str, object] = {
             "enabled": False,
+            "explicitly_disabled": False,
             "has_credentials": False,
             "endpoint": None,
             "project": None,
+            "project_is_default": False,
             "replica_project": None,
         }
         defaults.update(kwargs)
@@ -104,15 +106,41 @@ class TestCollectTracing:
         with patch("deepagents_code.config.get_tracing_status", return_value=status):
             return _collect_tracing()
 
-    def test_disabled_is_healthy(self) -> None:
-        """A disabled, keyless setup is informational, not a failure."""
+    def test_not_configured_is_healthy(self) -> None:
+        """An unconfigured, keyless setup is informational, not a failure."""
         section = self._section(enabled=False, project="deepagents-code")
         assert section.title == "Tracing"
         assert section.ok is True
         labels = {item.label: item.value for item in section.items}
-        assert labels["Tracing"] == "disabled"
-        assert labels["Credentials"] == "not configured"
+        assert labels["Tracing"] == "not configured"
+        assert labels["Credentials"] == "not set"
         assert labels["Project"] == "deepagents-code"
+
+    def test_explicitly_disabled_reads_disabled(self) -> None:
+        """An explicit opt-out reads `disabled`, not `not configured`."""
+        section = self._section(enabled=False, explicitly_disabled=True)
+        assert section.ok is True
+        labels = {item.label: item.value for item in section.items}
+        assert labels["Tracing"] == "disabled"
+        assert labels["Credentials"] == "not set"
+
+    def test_default_project_is_marked(self) -> None:
+        """An unconfigured project shows the default marker."""
+        section = self._section(project="deepagents-code", project_is_default=True)
+        labels = {item.label: item.value for item in section.items}
+        assert labels["Project"] == "deepagents-code (default)"
+
+    def test_explicit_project_has_no_default_marker(self) -> None:
+        """An explicitly set project name is reported verbatim."""
+        section = self._section(project="deepagents-code", project_is_default=False)
+        labels = {item.label: item.value for item in section.items}
+        assert labels["Project"] == "deepagents-code"
+
+    def test_unset_project_renders_unset(self) -> None:
+        """A missing project renders the `(unset)` placeholder."""
+        section = self._section(project=None)
+        labels = {item.label: item.value for item in section.items}
+        assert labels["Project"] == "(unset)"
 
     def test_enabled_without_credentials_is_unhealthy(self) -> None:
         """Tracing on with no key and no endpoint is a genuine problem."""

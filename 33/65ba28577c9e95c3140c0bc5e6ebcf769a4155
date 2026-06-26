@@ -1,0 +1,30 @@
+libs/deepagents/deepagents/profiles/harness/_fireworks_glm_5p2.py
+  s_15e7846dc2c767::t_c271d5a47ea1a4 37
+  s_15e7846dc2c767::t_f3d08216ed6521 9-12,29-32,38-46,51-54
+libs/deepagents/tests/unit_tests/test_fireworks_glm_5p2_middleware.py
+  s_15e7846dc2c767::t_305083fabf32e5 1-194
+libs/evals/tests/unit_tests/test_harbor_langgraph_agent.py
+  s_15e7846dc2c767::t_282e69e180cc5e 114-117
+libs/code/deepagents_code/config.py
+  s_15e7846dc2c767::t_f7df61052c20b5 1033,1037-1038
+libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py
+  s_15e7846dc2c767::t_9caa09d75518d0 195-197
+libs/deepagents/deepagents/profiles/harness/_fireworks_glm_5p2_middleware/__init__.py
+  s_15e7846dc2c767::t_5b89c4c629236c 1-277
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "3365ba28577c9e95c3140c0bc5e6ebcf769a4155",
+  "prompts": {},
+  "sessions": {
+    "s_15e7846dc2c767": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fd18de2c-5b2b-4125-8ef6-c29809e66c05",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

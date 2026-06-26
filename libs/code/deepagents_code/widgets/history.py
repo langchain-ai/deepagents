@@ -100,7 +100,8 @@ class HistoryManager:
         # Skip empty or non-skill slash commands.
         # Skill invocations (/skill:<name>) are kept so users can recall them
         # with up-arrow; other slash commands are ephemeral UI actions.
-        if not text or (text.startswith("/") and not text.startswith("/skill:")):
+        lower_text = text.lower()
+        if not text or (text.startswith("/") and not lower_text.startswith("/skill:")):
             return
 
         # Skip duplicates of the last entry

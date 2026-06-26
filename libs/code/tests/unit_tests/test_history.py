@@ -50,6 +50,16 @@ class TestSkillInvocationHistory:
         mgr.add("/skill:remember")
         assert mgr._entries == ["/skill:remember"]
 
+    def test_mixed_case_skill_invocation_added(self, tmp_path: Path) -> None:
+        """Mixed-case `/skill:` invocations should be stored as typed."""
+        mgr = HistoryManager(tmp_path / "history.jsonl")
+        mgr.add("/Skill:web-research find quantum computing")
+        mgr.add("/SKILL:remember")
+        assert mgr._entries == [
+            "/Skill:web-research find quantum computing",
+            "/SKILL:remember",
+        ]
+
     def test_non_skill_slash_command_not_added(self, tmp_path: Path) -> None:
         """`/help` and other slash commands should not be stored."""
         mgr = HistoryManager(tmp_path / "history.jsonl")

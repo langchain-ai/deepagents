@@ -1,0 +1,21 @@
+libs/code/deepagents_code/config.py
+  s_15e7846dc2c767::t_84e3d2cd8244ea 1033,1037-1040
+libs/code/deepagents_code/finalize_middleware.py
+  s_15e7846dc2c767::t_a8bab6b073729e 26-33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "cff6a489ec890fd02fa7d2b7f4289a039af3bc8b",
+  "prompts": {},
+  "sessions": {
+    "s_15e7846dc2c767": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fd18de2c-5b2b-4125-8ef6-c29809e66c05",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

@@ -1976,8 +1976,8 @@ class ChatInput(Vertical):
         change handler would strip it.
 
         Returns:
-            True if the keystroke was consumed (mode handled without inserting
-            the character), otherwise False.
+            True if the keystroke was consumed as a mode selector without
+            inserting the character, otherwise False.
         """
         detected_prefix = detect_mode_prefix(char)
         if detected_prefix is None:
@@ -2435,15 +2435,10 @@ class ChatInput(Vertical):
         if not self._completion_manager or not self._text_area:
             return
 
-        # Backspace at cursor position 0 (or on empty input) exits the
-        # current mode (e.g. command/shell).  When the cursor is at the very
-        # start of the text area, backspace is a no-op for the underlying
-        # widget, so without this guard the user would be stuck in the mode.
-        if (
-            event.key == "backspace"
-            and self.mode != "normal"
-            and self._get_cursor_offset() == 0
-        ):
+        # Backspace on an empty mode prompt exits the current mode. Prefix
+        # characters are mode selectors, not hidden draft text, so exiting the
+        # mode does not restore `/`, `!`, or `!!` into the input.
+        if event.key == "backspace" and self.mode != "normal" and not self.value:
             # Defer the popup reset so it coalesces with the glyph update
             # that watch_mode schedules via call_after_refresh.
             def _deferred_reset() -> None:

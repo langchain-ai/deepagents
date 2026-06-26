@@ -1572,11 +1572,12 @@ class TestModePrefixStripping:
     async def test_handle_mode_prefix_keystroke_switches_without_text_change(
         self,
     ) -> None:
-        """A typed trigger switches mode without inserting the character.
+        """A typed mode selector is consumed without inserting the character.
 
         Regression guard for the `!`-flash: `handle_mode_prefix_keystroke`
-        consumes the keystroke and flips the mode directly, so the trigger is
-        never inserted (and thus never flashes for a frame before stripping).
+        consumes the keystroke and flips the mode directly when needed, so the
+        trigger is never inserted (and thus never flashes for a frame before
+        stripping).
         """
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
@@ -1598,6 +1599,23 @@ class TestModePrefixStripping:
             assert chat.handle_mode_prefix_keystroke("!") is False
             # Non-trigger characters are never consumed.
             assert chat.handle_mode_prefix_keystroke("a") is False
+
+    async def test_redundant_typed_slash_keystroke_stays_command_mode(self) -> None:
+        """A redundant `/` at the command prompt is consumed as a mode selector."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("/")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+            assert chat._text_area.text == ""
+
+            await pilot.press("/")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+            assert chat._text_area.text == ""
 
     async def test_typed_bang_keystroke_skips_strip_round_trip(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1695,6 +1713,24 @@ class TestModePrefixStripping:
             await pilot.pause()
             assert chat.mode == "normal"
 
+    async def test_backspace_on_empty_incognito_exits_to_normal(self) -> None:
+        """Backspace cancels incognito mode instead of demoting to shell mode."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("!")
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell_incognito"
+            assert chat._text_area.text == ""
+
+            await pilot.press("backspace")
+            await pilot.pause()
+            assert chat.mode == "normal"
+            assert chat._text_area.text == ""
+
     async def test_backspace_on_single_char_stays_in_mode(self) -> None:
         """Deleting last char in command mode should stay in mode, not exit."""
         app = _ChatInputTestApp()
@@ -1722,8 +1758,8 @@ class TestModePrefixStripping:
             await pilot.pause()
             assert chat.mode == "normal"
 
-    async def test_backspace_at_cursor_zero_with_text_exits_mode(self) -> None:
-        """Backspace at cursor position 0 with text after cursor exits mode."""
+    async def test_backspace_at_cursor_zero_with_text_stays_in_mode(self) -> None:
+        """Backspace only exits a mode prompt when the input is empty."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -1742,10 +1778,12 @@ class TestModePrefixStripping:
             chat._text_area.move_cursor((0, 0))
             await pilot.pause()
 
-            # Backspace at position 0 with text after cursor — should exit mode
+            # Backspace at position 0 with text after cursor is a text-editing
+            # no-op; it should not cancel the active mode.
             await pilot.press("backspace")
             await pilot.pause()
-            assert chat.mode == "normal"
+            assert chat.mode == "command"
+            assert chat._text_area.text == "help"
 
     async def test_backspace_exit_mode_dismisses_completion(self) -> None:
         """Exiting mode via backspace-on-empty should hide the completion popup."""
@@ -2001,6 +2039,39 @@ class TestModePrefixStripping:
 
 class TestExitModePreservesText:
     """Exiting shell/command mode should preserve typed text."""
+
+    async def test_exit_empty_shell_mode_does_not_restore_prefix(self) -> None:
+        """Escape cancels shell mode; it does not turn `!` back into text."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell"
+            assert chat._text_area.text == ""
+
+            assert chat.exit_mode() is True
+            assert chat.mode == "normal"
+            assert chat._text_area.text == ""
+
+    async def test_exit_empty_incognito_mode_does_not_restore_prefix(self) -> None:
+        """Escape cancels incognito mode; it does not turn `!!` back into text."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("!")
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell_incognito"
+            assert chat._text_area.text == ""
+
+            assert chat.exit_mode() is True
+            assert chat.mode == "normal"
+            assert chat._text_area.text == ""
 
     async def test_exit_shell_mode_keeps_text(self) -> None:
         """Pressing Escape in shell mode should switch to normal but keep text."""
@@ -3663,7 +3734,7 @@ class TestArgumentHints:
             assert app.submitted[0].value == "/remember"
 
     async def test_hint_cleared_when_backspace_exits_command_mode(self) -> None:
-        """Backspace mode exit clears ghost text without needing a text edit."""
+        """Backspace mode exit clears stale ghost text without a text edit."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -3671,19 +3742,17 @@ class TestArgumentHints:
 
             chat._text_area.insert("/")
             await _pause_for_strip(pilot)
-            chat._text_area.insert("remember ")
-            await pilot.pause()
-            assert chat._text_area.argument_hint == "[context]"
+            assert chat.mode == "command"
+            assert chat._text_area.text == ""
 
-            chat._text_area.move_cursor((0, 0))
-            await pilot.pause()
+            chat._text_area.argument_hint = "[context]"
             await pilot.press("backspace")
             await pilot.pause()
 
             assert chat.mode == "normal"
-            assert chat._text_area.text == "remember "
+            assert chat._text_area.text == ""
             assert chat._text_area.argument_hint == ""
-            assert _render_text_area_line(chat._text_area) == "remember"
+            assert _render_text_area_line(chat._text_area) == ""
 
     async def test_hint_not_shown_in_normal_mode(self) -> None:
         """Ghost text does not appear when not in command mode."""

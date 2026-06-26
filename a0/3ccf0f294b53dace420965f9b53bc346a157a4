@@ -1,0 +1,21 @@
+libs/code/tests/unit_tests/test_update_progress.py
+  s_7f32bd1f70740f::t_f25708fa8ecfa8 231-250,269
+  s_7f32bd1f70740f::t_c4541418499d93 5-6,14-15
+  s_7f32bd1f70740f::t_4034eb6131e67b 16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "a03ccf0f294b53dace420965f9b53bc346a157a4",
+  "prompts": {},
+  "sessions": {
+    "s_7f32bd1f70740f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d4144aa-9eb9-4c67-9bae-fe5fae4708b4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

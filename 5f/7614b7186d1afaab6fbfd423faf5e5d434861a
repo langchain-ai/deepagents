@@ -1,0 +1,24 @@
+libs/code/tests/unit_tests/test_mcp_auth.py
+  s_7097e4a9c9cd8b::t_85a0665dcf9900 109,113-114,117
+  s_7097e4a9c9cd8b::t_018e568b935817 570,585-591,605,623-664
+  s_7097e4a9c9cd8b::t_7b716fc6133518 665
+libs/code/deepagents_code/mcp_auth.py
+  s_7097e4a9c9cd8b::t_01168cb134ff73 1070-1073
+  s_7097e4a9c9cd8b::t_916d8db371d83a 1054-1055
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "5f7614b7186d1afaab6fbfd423faf5e5d434861a",
+  "prompts": {},
+  "sessions": {
+    "s_7097e4a9c9cd8b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4eb77c2e-a543-4818-87c3-24fd84ae95e5",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

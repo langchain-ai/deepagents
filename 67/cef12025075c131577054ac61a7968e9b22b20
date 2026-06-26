@@ -1,0 +1,43 @@
+libs/evals/tests/unit_tests/harness_opt/test_engine_batch.py
+  s_835b4f54a887d4::t_f555eed0411c6b 12-14
+libs/evals/deepagents_harness_opt/engine.py
+  s_835b4f54a887d4::t_ae3c17cdbc9bfc 34-35
+libs/evals/tests/unit_tests/harness_opt/test_variant.py
+  s_835b4f54a887d4::t_c5e8d0e979bab4 5-14,17-19,22-23,25
+libs/evals/tests/unit_tests/harness_opt/test_fake_runner.py
+  s_835b4f54a887d4::t_e48636e31cf50e 6
+libs/evals/tests/unit_tests/harness_opt/test_harbor_runner.py
+  s_835b4f54a887d4::t_7a27961309ea12 10
+libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py
+  s_835b4f54a887d4::t_893a00ba130e92 322
+  s_835b4f54a887d4::t_15dc57fd529a90 308-314,316-321,323-327
+  s_835b4f54a887d4::t_50518c6fea0454 6,13,22
+  s_835b4f54a887d4::t_e52703e64564ad 23
+libs/evals/tests/unit_tests/harness_opt/test_engine_one.py
+  s_835b4f54a887d4::t_9c3b3ffc2aaa5b 12-13
+libs/evals/deepagents_harness_opt/variant.py
+  s_835b4f54a887d4::t_590518af4a04ce 1-6,17,19,24-25,28,30,36,38
+libs/evals/tests/unit_tests/harness_opt/test_cache.py
+  s_835b4f54a887d4::t_277693bba96f88 7
+libs/evals/tests/unit_tests/harness_opt/hillclimb/test_sandbox_builder.py
+  s_835b4f54a887d4::t_4a81a7b341d55a 1-25,29-40
+  s_835b4f54a887d4::t_7ce66b6807faa0 26-28
+libs/evals/tests/unit_tests/harness_opt/test_screening.py
+  s_835b4f54a887d4::t_f88697fed68079 8-9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "67cef12025075c131577054ac61a7968e9b22b20",
+  "prompts": {},
+  "sessions": {
+    "s_835b4f54a887d4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "309be8cc-8b32-4d74-a6b9-4d4c7b0bb936",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

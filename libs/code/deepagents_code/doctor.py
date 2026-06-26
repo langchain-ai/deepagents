@@ -23,6 +23,8 @@ from deepagents_code.output import write_json
 if TYPE_CHECKING:
     import argparse
 
+    from deepagents_code.config import TracingStatus
+
 logger = logging.getLogger(__name__)
 
 
@@ -267,6 +269,20 @@ def _sanitize_endpoint(endpoint: str) -> str:
     return f"{parsed.scheme}://{netloc}"
 
 
+def _format_tracing_project(status: TracingStatus) -> str:
+    """Render the tracing project, marking the unconfigured default.
+
+    Returns:
+        The project name with a `(default)` suffix when it is the built-in
+            fallback rather than an explicit setting, or `(unset)` when absent.
+    """
+    if not status.project:
+        return "(unset)"
+    if status.project_is_default:
+        return f"{status.project} (default)"
+    return status.project
+
+
 def _collect_tracing() -> DiagnosticSection:
     """Collect LangSmith tracing status from env and profile (offline).
 
@@ -290,7 +306,7 @@ def _collect_tracing() -> DiagnosticSection:
             "configured" if status.has_credentials else "not configured",
             ok=status.has_credentials or not creds_required,
         ),
-        DiagnosticItem("Project", status.project or "(unset)"),
+        DiagnosticItem("Project", _format_tracing_project(status)),
     ]
     if status.endpoint:
         items.append(DiagnosticItem("Endpoint", _sanitize_endpoint(status.endpoint)))

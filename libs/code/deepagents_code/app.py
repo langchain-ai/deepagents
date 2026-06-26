@@ -9995,9 +9995,8 @@ class DeepAgentsApp(App):
         if not await self._prompt_model_auth_if_needed(model_spec):
             await self._mount_message(
                 AppMessage(
-                    f"Installed '{extra}'. Skipped switching to {model_spec} for "
-                    f"now — add credentials with `/auth`, then switch with "
-                    f"`/model` anytime.",
+                    f"Installed '{extra}'. Switch to {model_spec} anytime with "
+                    f"`/model` — you'll be prompted for credentials.",
                 ),
             )
             return

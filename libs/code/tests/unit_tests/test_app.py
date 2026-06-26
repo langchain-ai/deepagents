@@ -33,7 +33,7 @@ from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import Checkbox, Input, Static
 
-from deepagents_code._version import CHANGELOG_URL
+from deepagents_code._version import CHANGELOG_URL, __version__
 from deepagents_code.app import (
     _DEEPAGENTS_IMPORT_LOCK,
     _TYPING_IDLE_THRESHOLD_SECONDS,
@@ -8012,8 +8012,8 @@ class TestInstallExtraModelSwitch:
             for c in app._mount_message.await_args_list  # ty: ignore
         )
         assert "Installed" in mounted
-        assert "/auth" in mounted
         assert "/model" in mounted
+        assert "prompted for credentials" in mounted
 
     async def test_install_extra_auto_restart_skips_restart_for_deferred_startup(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -9161,8 +9161,9 @@ class TestDeferredActions:
             assert isinstance(widget, ErrorMessage)
             rendered = str(widget._content)
             assert (
-                "uv tool install --reinstall -U deepagents-code "
-                "--with langchain-custom_provider" in rendered
+                "uv tool install --reinstall -U "
+                f"deepagents-code=={__version__} "
+                "--with langchain-custom_provider --prerelease allow" in rendered
             )
             assert "/model custom_provider:<model>" in rendered
 

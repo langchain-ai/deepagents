@@ -2873,7 +2873,8 @@ class TestInstallExtraCommand:
 
         assert install_extra_recovery_command("quickjs") == (
             "uv tool install --reinstall -U --python '/opt/Python 3.13/bin/python' "
-            "'deepagents-code[nvidia,quickjs]' --with langchain-custom"
+            f"'deepagents-code[nvidia,quickjs]=={__version__}' "
+            "--with langchain-custom --prerelease allow"
         )
 
     def test_recovery_command_uses_script_for_non_uv_without_receipt(
@@ -2928,11 +2929,11 @@ class TestInstallExtraCommand:
         monkeypatch.syspath_prepend(str(tmp_path))
 
         assert installed_extra_names("deepagents-code") == {"nvidia"}
-        assert (
-            _install_extra_uv_tool_command(
-                "baseten", distribution_name="deepagents-code"
-            )
-            == "uv tool install --reinstall -U 'deepagents-code[baseten,nvidia]'"
+        assert _install_extra_uv_tool_command(
+            "baseten", distribution_name="deepagents-code"
+        ) == (
+            "uv tool install --reinstall -U "
+            f"'deepagents-code[baseten,nvidia]=={__version__}' --prerelease allow"
         )
 
     def test_uv_install_extra_command_dedupes_existing_extra(
@@ -2949,11 +2950,11 @@ class TestInstallExtraCommand:
         monkeypatch.setattr("sys.prefix", str(tmp_path))
         monkeypatch.syspath_prepend(str(tmp_path))
 
-        assert (
-            _install_extra_uv_tool_command(
-                "nvidia", distribution_name="deepagents-code"
-            )
-            == "uv tool install --reinstall -U 'deepagents-code[nvidia]'"
+        assert _install_extra_uv_tool_command(
+            "nvidia", distribution_name="deepagents-code"
+        ) == (
+            "uv tool install --reinstall -U "
+            f"'deepagents-code[nvidia]=={__version__}' --prerelease allow"
         )
 
     def test_uv_install_extra_command_drops_composite_extras(
@@ -2975,11 +2976,11 @@ class TestInstallExtraCommand:
         monkeypatch.syspath_prepend(str(tmp_path))
 
         assert installed_extra_names("deepagents-code") == {"nvidia"}
-        assert (
-            _install_extra_uv_tool_command(
-                "baseten", distribution_name="deepagents-code"
-            )
-            == "uv tool install --reinstall -U 'deepagents-code[baseten,nvidia]'"
+        assert _install_extra_uv_tool_command(
+            "baseten", distribution_name="deepagents-code"
+        ) == (
+            "uv tool install --reinstall -U "
+            f"'deepagents-code[baseten,nvidia]=={__version__}' --prerelease allow"
         )
 
     def test_uv_install_extra_command_preserves_receipt_python_and_with_packages(
@@ -3006,7 +3007,8 @@ class TestInstallExtraCommand:
 
         assert command == (
             "uv tool install --reinstall -U --python '/opt/Python 3.13/bin/python' "
-            "'deepagents-code[baseten,nvidia]' --with langchain-custom"
+            f"'deepagents-code[baseten,nvidia]=={__version__}' "
+            "--with langchain-custom --prerelease allow"
         )
 
     def test_sorts_extras_deterministically(self) -> None:
@@ -3043,7 +3045,7 @@ class TestInstallPackageCommand:
     """`install_package_command` builds a uv tool package install string."""
 
     def test_basic_no_extras(self, tmp_path, monkeypatch) -> None:
-        """Clean metadata with no installed extras yields a plain requirement."""
+        """Clean metadata with no extras yields the version-pinned requirement."""
         _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
         _write_dist_info(
             tmp_path,
@@ -3053,11 +3055,12 @@ class TestInstallPackageCommand:
         monkeypatch.setattr("sys.prefix", str(tmp_path))
         monkeypatch.syspath_prepend(str(tmp_path))
 
-        assert (
-            install_package_command(
-                "langchain-custom", distribution_name="deepagents-code"
-            )
-            == "uv tool install --reinstall -U deepagents-code --with langchain-custom"
+        assert install_package_command(
+            "langchain-custom", distribution_name="deepagents-code"
+        ) == (
+            "uv tool install --reinstall -U "
+            f"deepagents-code=={__version__} --with langchain-custom "
+            "--prerelease allow"
         )
 
     def test_allows_pep508_name_separators(self, tmp_path, monkeypatch) -> None:
@@ -3070,12 +3073,12 @@ class TestInstallPackageCommand:
         monkeypatch.setattr("sys.prefix", str(tmp_path))
         monkeypatch.syspath_prepend(str(tmp_path))
 
-        assert (
-            install_package_command(
-                "langchain.custom_provider", distribution_name="deepagents-code"
-            )
-            == "uv tool install --reinstall -U deepagents-code "
-            "--with langchain.custom_provider"
+        assert install_package_command(
+            "langchain.custom_provider", distribution_name="deepagents-code"
+        ) == (
+            "uv tool install --reinstall -U "
+            f"deepagents-code=={__version__} --with langchain.custom_provider "
+            "--prerelease allow"
         )
 
     def test_preserves_installed_extras(self, tmp_path, monkeypatch) -> None:
@@ -3094,12 +3097,12 @@ class TestInstallPackageCommand:
         monkeypatch.syspath_prepend(str(tmp_path))
 
         assert installed_extra_names("deepagents-code") == {"nvidia"}
-        assert (
-            install_package_command(
-                "langchain-custom", distribution_name="deepagents-code"
-            )
-            == "uv tool install --reinstall -U 'deepagents-code[nvidia]' "
-            "--with langchain-custom"
+        assert install_package_command(
+            "langchain-custom", distribution_name="deepagents-code"
+        ) == (
+            "uv tool install --reinstall -U "
+            f"'deepagents-code[nvidia]=={__version__}' --with langchain-custom "
+            "--prerelease allow"
         )
 
     def test_preserves_receipt_python_and_with_packages(
@@ -3126,8 +3129,8 @@ class TestInstallPackageCommand:
 
         assert command == (
             "uv tool install --reinstall -U --python '/opt/Python 3.13/bin/python' "
-            "'deepagents-code[nvidia]' --with langchain-first "
-            "--with langchain-second"
+            f"'deepagents-code[nvidia]=={__version__}' --with langchain-first "
+            "--with langchain-second --prerelease allow"
         )
 
     def test_does_not_duplicate_existing_receipt_package(
@@ -3146,18 +3149,14 @@ class TestInstallPackageCommand:
             "LangChain_Custom", distribution_name="deepagents-code"
         )
 
-        assert (
-            command
-            == "uv tool install --reinstall -U deepagents-code --with langchain-custom"
+        assert command == (
+            "uv tool install --reinstall -U "
+            f"deepagents-code=={__version__} --with langchain-custom "
+            "--prerelease allow"
         )
 
-    def test_preserves_prerelease_channel(self, tmp_path, monkeypatch) -> None:
-        """Adding a package to a pre-release install keeps the pre-release channel.
-
-        The `--reinstall` rebuild re-resolves the unpinned `deepagents-code`
-        requirement from scratch; without `--prerelease allow` uv would resolve
-        to the latest stable and silently downgrade a pre-release user.
-        """
+    def test_pins_prerelease_app_version(self, tmp_path, monkeypatch) -> None:
+        """Adding a package to a pre-release install keeps that exact app version."""
         _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
         _write_dist_info(tmp_path, "deepagents-code")
         monkeypatch.setattr("sys.prefix", str(tmp_path))
@@ -3169,17 +3168,14 @@ class TestInstallPackageCommand:
             )
 
         assert command == (
-            "uv tool install --reinstall -U deepagents-code "
+            "uv tool install --reinstall -U deepagents-code==1.0.0a1 "
             "--with langchain-custom --prerelease allow"
         )
 
-    def test_stable_channel_omits_prerelease_flag(self, tmp_path, monkeypatch) -> None:
-        """A stable install does not add `--prerelease allow` for a package add.
-
-        The negative companion to `test_preserves_prerelease_channel`: pins that
-        the channel is *inferred* from the installed version, so an inverted
-        condition that always emitted `--prerelease allow` would fail here.
-        """
+    def test_stable_install_pins_app_and_allows_prerelease_deps(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A stable app reinstall keeps the app pinned while allowing rc deps."""
         _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
         _write_dist_info(tmp_path, "deepagents-code")
         monkeypatch.setattr("sys.prefix", str(tmp_path))
@@ -3191,7 +3187,8 @@ class TestInstallPackageCommand:
             )
 
         assert command == (
-            "uv tool install --reinstall -U deepagents-code --with langchain-custom"
+            "uv tool install --reinstall -U deepagents-code==1.0.0 "
+            "--with langchain-custom --prerelease allow"
         )
 
     def test_appends_new_with_package_after_sorted_receipt_packages(
@@ -3218,8 +3215,9 @@ class TestInstallPackageCommand:
         )
 
         assert command == (
-            "uv tool install --reinstall -U deepagents-code "
-            "--with langchain-zeta --with langchain-alpha"
+            "uv tool install --reinstall -U "
+            f"deepagents-code=={__version__} --with langchain-zeta "
+            "--with langchain-alpha --prerelease allow"
         )
 
     def test_unpreservable_receipt_with_requirement_raises(
@@ -3438,8 +3436,8 @@ class TestIsValidPackageName:
     def test_rejects_option_injection_leading_dash(self) -> None:
         """A leading dash would smuggle uv options into `--with <name>`.
 
-        The command is `uv tool install --reinstall -U deepagents-code --with
-        <name>`; a name
+        The command is `uv tool install --reinstall -U deepagents-code==<version>
+        --with <name>`; a name
         like `-rreqs.txt` or `--editable` would be parsed by uv as a flag, not a
         package. The validator must reject these regardless of `--force`/`--yes`.
         """
@@ -3622,6 +3620,27 @@ class TestPerformInstallPackage:
         assert "ToolRequirementIntrospectionError" in output
         assert "non-table requirement" in output
         assert "uv receipt" in caplog.text
+
+    async def test_invalid_app_version_is_reported(self, tmp_path, monkeypatch) -> None:
+        """A malformed app version pin is reported instead of escaping."""
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
+        _write_dist_info(tmp_path, "deepagents-code")
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check.shutil.which",
+                return_value="/usr/bin/uv",
+            ),
+            patch("deepagents_code.update_check.__version__", "not-a-version"),
+        ):
+            success, output = await perform_install_package("langchain-custom")
+        assert success is False
+        assert "ValueError" in output
+        assert "Invalid deepagents-code version" in output
 
 
 class TestRunInstallSubprocessFailureModes:

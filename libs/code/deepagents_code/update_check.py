@@ -2145,6 +2145,7 @@ def _uv_tool_install_command(
     Raises:
         ExtrasIntrospectionError: If a metadata-sourced extra name fails PEP 508
             validation.
+        ValueError: If `version` is not PEP 440 compliant.
 
     Propagates `ToolRequirementIntrospectionError` if the uv tool receipt's
     interpreter or `--with` packages cannot be determined safely from the tool
@@ -2160,6 +2161,8 @@ def _uv_tool_install_command(
     try:
         requirement = _dcode_extras_requirement(extras, version=version)
     except ValueError as exc:
+        if str(exc).startswith("Invalid deepagents-code version"):
+            raise
         msg = f"Distribution metadata yielded an invalid extra name: {exc}"
         raise ExtrasIntrospectionError(msg) from exc
     cmd = "uv tool install --reinstall -U" if reinstall else "uv tool install -U"
@@ -2320,13 +2323,13 @@ def install_package_command(
 
     Delegates to `_uv_tool_install_command` (the same builder the extras path
     uses), passing the new package as a `--with` requirement. That builder folds
-    already-installed extras into the `deepagents-code[...]` requirement, and
-    preserves the uv-managed Python interpreter, the receipt's existing `--with`
-    packages, and the installed pre-release channel. Without this, reinstalling
-    to add a second package would replace the tool with a plain `deepagents-code`
-    (dropping extras the user added through `/install <extra>`), rebuild with
-    only the newest `--with` package (dropping previously configured custom
-    providers), or silently downgrade a pre-release install to the latest stable.
+    already-installed extras into the pinned `deepagents-code[...]` requirement,
+    and preserves the uv-managed Python interpreter and the receipt's existing
+    `--with` packages. Without this, reinstalling to add a second package would
+    replace the tool with a plain `deepagents-code` (dropping extras the user
+    added through `/install <extra>`), rebuild with only the newest `--with`
+    package (dropping previously configured custom providers), or silently
+    downgrade when the latest stable app depends on prerelease packages.
 
     Like the extras path (`_install_extra_uv_tool_command`), passes
     `reinstall=True` so the upgrade rebuilds the tool environment cleanly; see
@@ -2357,8 +2360,8 @@ def install_package_command(
         )
         raise ValueError(msg)
     return _uv_tool_install_command(
-        version=None,
-        include_prereleases=None,
+        version=__version__,
+        include_prereleases=True,
         distribution_name=distribution_name,
         with_packages_to_add=(package,),
         reinstall=True,
@@ -2456,6 +2459,8 @@ def _install_extra_uv_tool_command(
 ) -> str:
     """Return the receipt-preserving uv command that installs one dcode extra.
 
+    Pins the running `deepagents-code` version and allows prerelease dependency
+    resolution so adding an extra cannot make uv backtrack to an older app release.
     Passes `reinstall=True` so the upgrade rebuilds the tool environment from
     scratch rather than patching it in place; see `_uv_tool_install_command`'s
     `reinstall` parameter for why an in-place upgrade is unsafe.
@@ -2481,8 +2486,8 @@ def _install_extra_uv_tool_command(
         )
         raise ValueError(msg)
     return _uv_tool_install_command(
-        version=None,
-        include_prereleases=None,
+        version=__version__,
+        include_prereleases=True,
         distribution_name=distribution_name,
         extras_to_add=(extra,),
         reinstall=True,
@@ -2526,11 +2531,11 @@ async def perform_install_extra(
 ) -> tuple[bool, str]:
     """Add `extra` to the installed dcode tool environment.
 
-    Runs `uv tool install --reinstall -U 'deepagents-code[<extras>]'`,
-    preserving any extras that are already installed. Editable installs are
-    refused — the caller should rerun their `uv tool install --editable` command
-    with `--with 'deepagents-code[<extra>]'` added so the extra is resolved
-    against the editable source.
+    Runs `uv tool install --reinstall -U 'deepagents-code[<extras>]==<current>'
+    --prerelease allow`, preserving any extras that are already installed.
+    Editable installs are refused — the caller should rerun their
+    `uv tool install --editable` command with `--with 'deepagents-code[<extra>]'`
+    added so the extra is resolved against the editable source.
 
     Args:
         extra: The extra name to install. Must satisfy `is_valid_extra_name`;
@@ -2597,10 +2602,11 @@ async def perform_install_package(
 ) -> tuple[bool, str]:
     """Add an arbitrary `package` to the installed dcode tool environment.
 
-    Runs `uv tool install --reinstall -U 'deepagents-code[<extras>]' --with
-    <package>`, the escape hatch for a provider whose package is not a
-    `deepagents-code` extra (e.g. a custom or in-house `class_path` model).
-    Already-installed extras are preserved so the reinstall does not drop them.
+    Runs `uv tool install --reinstall -U 'deepagents-code[<extras>]==<current>'
+    --with <package> --prerelease allow`, the escape hatch for a provider whose
+    package is not a `deepagents-code` extra (e.g. a custom or in-house
+    `class_path` model). Already-installed extras are preserved so the reinstall
+    does not drop them.
     Editable installs are refused
     — the caller should rerun their `uv tool install --editable` command with
     `--with <package>` added so it resolves against the editable source.

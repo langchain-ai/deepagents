@@ -1,0 +1,31 @@
+libs/evals/tests/unit_tests/harness_opt/test_harbor_runner.py
+  s_be045b46d84183::t_b4e10658f3d353 31-33,36,41-42,56-57
+  s_be045b46d84183::t_35cedac75a9fb0 37-39,43
+docs/superpowers/plans/2026-06-25-harness-eval-engine.md
+  s_be045b46d84183::t_bd678d3bf949b8 1390-1402
+docs/superpowers/specs/2026-06-25-harness-eval-engine-design.md
+  s_be045b46d84183::t_ab828db59fb57a 308-318
+  s_be045b46d84183::t_7350390134ff74 161-167
+libs/evals/deepagents_harness_opt/runner.py
+  s_be045b46d84183::t_31ed086d9cc5a5 10
+  s_be045b46d84183::t_04cf9dfea8720a 242-250
+  s_be045b46d84183::t_775d4251846adc 82-93
+  s_be045b46d84183::t_57411da6fc4b4c 165
+  s_be045b46d84183::t_87d471afca7d3e 112-118
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "ff36e5418264eb124563dfd4cc90a933a9636b44",
+  "prompts": {},
+  "sessions": {
+    "s_be045b46d84183": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cade71c4-e821-4a02-888b-b70674466c73",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

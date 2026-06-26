@@ -58,11 +58,7 @@ from deepagents.backends.protocol import (
     _supports_delete,
     execute_accepts_timeout,
 )
-from deepagents.backends.sandbox import (
-    BaseSandbox,
-    _build_capture_execute_cmd,
-    _parse_capture_execute_output,
-)
+from deepagents.backends.sandbox import BaseSandbox
 from deepagents.backends.utils import (
     _get_file_type,
     _glob_anchor,
@@ -1825,24 +1821,27 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=GrepSchema,
         )
 
-    def _capture_path_if_local(self, resolved_backend: BackendProtocol, tool_call_id: str | None) -> str | None:
-        """Return the sandbox-local offload path for capture-at-source, or `None` to skip.
+    def _resolve_capture(self, resolved_backend: BackendProtocol, tool_call_id: str | None) -> tuple[BaseSandbox, str] | None:
+        """Resolve `(executor, capture_path)` for capture-at-source, or `None` to skip.
 
         Capture-at-source writes output to a literal path via the sandbox shell
         and later reads it back through the backend, so it is only sound when
         `execute()` and `read_file` share one filesystem at that path. Only
-        `BaseSandbox` guarantees this, so the optimization is gated on it (a
-        stub or host-shell backend falls back to inline execute plus generic
-        eviction). Also returns `None` when the sandbox opts out via
-        `enable_capture_offload`, eviction is disabled, the tool call has no id,
-        or the offload path would route to a different backend.
+        `BaseSandbox` guarantees this, so it is gated on it (a stub or host-shell
+        backend falls back to plain execute plus generic eviction). Also returns
+        `None` when eviction is disabled, the tool call has no id, or the offload
+        path would route to a different backend.
+
+        Whether capture is actually applied is left to the executor's
+        `execute_with_offload` (which honors `enable_capture_offload`); this only
+        decides whether the offload path is sound to attempt.
         """
         if not self._tool_token_limit_before_evict or not tool_call_id:
             return None
         capture_path = f"{self._large_tool_results_prefix}/{sanitize_tool_call_id(tool_call_id)}"
         if isinstance(resolved_backend, CompositeBackend):
             default = resolved_backend.default
-            if not isinstance(default, BaseSandbox) or not default.enable_capture_offload:
+            if not isinstance(default, BaseSandbox):
                 return None
             backend, _backend_path, route_prefix = _route_for_path(
                 default=default,
@@ -1852,10 +1851,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # Safe only when the path falls through to the default backend
             # unchanged, since execute() also runs on the default.
             if route_prefix is None and backend is default:
-                return capture_path
+                return default, capture_path
             return None
         if isinstance(resolved_backend, BaseSandbox):
-            return capture_path if resolved_backend.enable_capture_offload else None
+            return resolved_backend, capture_path
         return None
 
     @staticmethod
@@ -1942,16 +1941,22 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            capture_path = self._capture_path_if_local(resolved_backend, runtime.tool_call_id)
-            exec_command = (
-                _build_capture_execute_cmd(
-                    command, capture_path, inline_budget=NUM_CHARS_PER_TOKEN * cast("int", self._tool_token_limit_before_evict)
-                )
-                if capture_path is not None
-                else command
-            )
+            capture = self._resolve_capture(resolved_backend, runtime.tool_call_id)
             try:
-                result = executable.execute(exec_command, timeout=timeout) if timeout is not None else executable.execute(exec_command)
+                if capture is not None:
+                    executor, capture_path = capture
+                    offloaded, result = executor.execute_with_offload(
+                        command,
+                        capture_path,
+                        max_inline_bytes=NUM_CHARS_PER_TOKEN * cast("int", self._tool_token_limit_before_evict),
+                        timeout=timeout,
+                    )
+                    content = self._interpret_capture_output(
+                        offloaded=offloaded, result=result, capture_path=capture_path, tool_call_id=cast("str", runtime.tool_call_id)
+                    )
+                else:
+                    result = executable.execute(command, timeout=timeout) if timeout is not None else executable.execute(command)
+                    content = self._format_execute_output(result.output, result.exit_code, truncated=result.truncated)
             except NotImplementedError as e:
                 return ToolMessage(
                     content=f"Error: Execution not available. {e}",
@@ -1966,14 +1971,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-
-            if capture_path is not None:
-                offloaded, parsed = _parse_capture_execute_output(result.output, backend_truncated=result.truncated)
-                content = self._interpret_capture_output(
-                    offloaded=offloaded, result=parsed, capture_path=capture_path, tool_call_id=cast("str", runtime.tool_call_id)
-                )
-            else:
-                content = self._format_execute_output(result.output, result.exit_code, truncated=result.truncated)
 
             return ToolMessage(
                 content=content,
@@ -2037,16 +2034,22 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-            capture_path = self._capture_path_if_local(resolved_backend, runtime.tool_call_id)
-            exec_command = (
-                _build_capture_execute_cmd(
-                    command, capture_path, inline_budget=NUM_CHARS_PER_TOKEN * cast("int", self._tool_token_limit_before_evict)
-                )
-                if capture_path is not None
-                else command
-            )
+            capture = self._resolve_capture(resolved_backend, runtime.tool_call_id)
             try:
-                result = await executable.aexecute(exec_command, timeout=timeout) if timeout is not None else await executable.aexecute(exec_command)
+                if capture is not None:
+                    executor, capture_path = capture
+                    offloaded, result = await executor.aexecute_with_offload(
+                        command,
+                        capture_path,
+                        max_inline_bytes=NUM_CHARS_PER_TOKEN * cast("int", self._tool_token_limit_before_evict),
+                        timeout=timeout,
+                    )
+                    content = self._interpret_capture_output(
+                        offloaded=offloaded, result=result, capture_path=capture_path, tool_call_id=cast("str", runtime.tool_call_id)
+                    )
+                else:
+                    result = await executable.aexecute(command, timeout=timeout) if timeout is not None else await executable.aexecute(command)
+                    content = self._format_execute_output(result.output, result.exit_code, truncated=result.truncated)
             except NotImplementedError as e:
                 return ToolMessage(
                     content=f"Error: Execution not available. {e}",
@@ -2061,14 +2064,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
-
-            if capture_path is not None:
-                offloaded, parsed = _parse_capture_execute_output(result.output, backend_truncated=result.truncated)
-                content = self._interpret_capture_output(
-                    offloaded=offloaded, result=parsed, capture_path=capture_path, tool_call_id=cast("str", runtime.tool_call_id)
-                )
-            else:
-                content = self._format_execute_output(result.output, result.exit_code, truncated=result.truncated)
 
             return ToolMessage(
                 content=content,

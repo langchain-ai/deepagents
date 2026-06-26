@@ -39,6 +39,7 @@ from deepagents.backends.protocol import (
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
+    execute_accepts_timeout,
 )
 from deepagents.backends.utils import _get_file_type
 
@@ -650,21 +651,23 @@ fi
 """Pure POSIX sh wrapper for capture-at-source `execute`. See the comment above."""
 
 
-def _build_capture_execute_cmd(command: str, capture_path: str, *, inline_budget: int) -> str:
+def _build_capture_execute_cmd(command: str, capture_path: str, *, inline_budget: int, max_capture_bytes: int | None = None) -> str:
     """Build the capture-at-source wrapper command for `execute`.
 
     `inline_budget` is the byte threshold at or below which output is returned
     inline; above it the output is left at `capture_path` and only a head/tail
-    preview is returned. Captured output is hard-capped at
-    `_EXECUTE_CAPTURE_MAX_BYTES`; beyond that it is truncated and flagged.
+    preview is returned. Captured output is hard-capped at `max_capture_bytes`
+    (defaulting to `_EXECUTE_CAPTURE_MAX_BYTES`, resolved here so it stays
+    overridable/patchable); beyond that it is truncated and flagged.
     """
+    cap = max_capture_bytes if max_capture_bytes is not None else _EXECUTE_CAPTURE_MAX_BYTES
     delim = "__DEEPAGENTS_CMD_" + base64.b32encode(os.urandom(10)).decode("ascii").rstrip("=") + "__"
     # __COMMAND__ is substituted last so command content can never collide with a
     # remaining placeholder token.
     return (
         _EXECUTE_CAPTURE_CMD_TEMPLATE.replace("__PATH_Q__", shlex.quote(capture_path))
         .replace("__DELIM__", delim)
-        .replace("__MAXBYTES__", str(_EXECUTE_CAPTURE_MAX_BYTES))
+        .replace("__MAXBYTES__", str(cap))
         .replace("__BUDGET__", str(inline_budget))
         .replace("__SENTINEL__", _EXECUTE_CAPTURE_SENTINEL)
         .replace("__HEADLINES__", str(_EXECUTE_CAPTURE_HEAD_LINES))
@@ -754,6 +757,56 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         Returns:
             `ExecuteResponse` with combined output, exit code, and truncation flag.
         """
+
+    def execute_with_offload(
+        self,
+        command: str,
+        capture_path: str,
+        *,
+        max_inline_bytes: int,
+        max_capture_bytes: int | None = None,
+        timeout: int | None = None,
+    ) -> tuple[bool, ExecuteResponse]:
+        """Run `command`, offloading large output to a file in the sandbox.
+
+        Captures the command's combined output: returned inline when it is at or
+        below `max_inline_bytes`, otherwise left at `capture_path` (so the caller
+        can surface a `read_file` pointer) with only a head/tail preview returned.
+        Captured output is hard-capped at `max_capture_bytes` (default
+        `_EXECUTE_CAPTURE_MAX_BYTES`) without killing the command, so the exit
+        code is preserved.
+
+        Returns `(offloaded, ExecuteResponse)`, where `offloaded` is `True` when
+        the result was left at `capture_path` and `output` holds only the preview.
+        When `enable_capture_offload` is `False`, runs the command unwrapped and
+        returns `(False, …)` with the full output — letting callers fall back to
+        their own handling (e.g. generic eviction).
+        """
+        use_timeout = timeout is not None and execute_accepts_timeout(type(self))
+        if not self.enable_capture_offload:
+            result = self.execute(command, timeout=timeout) if use_timeout else self.execute(command)
+            return False, result
+        wrapper = _build_capture_execute_cmd(command, capture_path, inline_budget=max_inline_bytes, max_capture_bytes=max_capture_bytes)
+        result = self.execute(wrapper, timeout=timeout) if use_timeout else self.execute(wrapper)
+        return _parse_capture_execute_output(result.output, backend_truncated=result.truncated)
+
+    async def aexecute_with_offload(
+        self,
+        command: str,
+        capture_path: str,
+        *,
+        max_inline_bytes: int,
+        max_capture_bytes: int | None = None,
+        timeout: int | None = None,  # noqa: ASYNC109  # forwarded to the backend, not an asyncio timeout
+    ) -> tuple[bool, ExecuteResponse]:
+        """Async version of `execute_with_offload`, delegating to `aexecute`."""
+        use_timeout = timeout is not None and execute_accepts_timeout(type(self))
+        if not self.enable_capture_offload:
+            result = await self.aexecute(command, timeout=timeout) if use_timeout else await self.aexecute(command)
+            return False, result
+        wrapper = _build_capture_execute_cmd(command, capture_path, inline_budget=max_inline_bytes, max_capture_bytes=max_capture_bytes)
+        result = await self.aexecute(wrapper, timeout=timeout) if use_timeout else await self.aexecute(wrapper)
+        return _parse_capture_execute_output(result.output, backend_truncated=result.truncated)
 
     def ls(self, path: str) -> LsResult:
         """Structured listing with file metadata using os.scandir."""

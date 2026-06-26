@@ -1707,15 +1707,21 @@ class TestExecuteCaptureOffload:
         size = sandbox.execute(f"wc -c < {self._capture_path('c_cap')}").output.strip()
         assert size == str(cap)
 
-    def test_enable_capture_offload_flag_gates_capture(self) -> None:
-        # Fresh sandbox so toggling the flag does not leak into the shared fixture.
-        sandbox = LocalSubprocessSandbox()
-        backend = CompositeBackend(default=sandbox, routes={}, artifacts_root=VIRTUAL_SANDBOX_ROOT)
-        middleware = FilesystemMiddleware(backend=backend)
+    def test_enable_capture_offload_flag_controls_offload(self, sandbox: LocalSubprocessSandbox) -> None:
+        budget = 100  # small, so _BIG_OUTPUT_CMD would offload when capture is enabled
 
-        # Enabled by default -> a sandbox-local capture path is chosen.
-        assert middleware._capture_path_if_local(backend, "c1") is not None
-
-        # Opting out -> capture is skipped (caller falls back to generic eviction).
+        # Disabled -> command runs unwrapped: full output inline, not offloaded, no file.
         sandbox.enable_capture_offload = False
-        assert middleware._capture_path_if_local(backend, "c1") is None
+        off_path = self._capture_path("flag_off")
+        offloaded, result = sandbox.execute_with_offload(_BIG_OUTPUT_CMD, off_path, max_inline_bytes=budget)
+        assert offloaded is False
+        assert "line 5000:" in result.output  # full output returned, not a preview
+        assert "line 2500:" in result.output
+        assert sandbox.execute(f"test -e {off_path} && echo Y || echo N").output.strip() == "N"
+
+        # Enabled -> offloaded to a file; only a head/tail preview is returned.
+        sandbox.enable_capture_offload = True
+        on_path = self._capture_path("flag_on")
+        offloaded, result = sandbox.execute_with_offload(_BIG_OUTPUT_CMD, on_path, max_inline_bytes=budget)
+        assert offloaded is True
+        assert "line 2500:" not in result.output  # middle omitted -> it's a preview

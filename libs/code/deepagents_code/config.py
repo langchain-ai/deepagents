@@ -87,9 +87,14 @@ re-applied only to the approval-gated shell backend's `execute` subprocesses by
 
 _DOTENV_DENIED_ENV_KEYS = frozenset(
     {
+        "BASH_ENV",
+        "BASHOPTS",
+        "CDPATH",
         "DYLD_INSERT_LIBRARIES",
         "DYLD_LIBRARY_PATH",
+        "ENV",
         "GIT_ASKPASS",
+        "GLOBIGNORE",
         "LD_AUDIT",
         "LD_LIBRARY_PATH",
         "LD_PRELOAD",
@@ -99,15 +104,42 @@ _DOTENV_DENIED_ENV_KEYS = frozenset(
         "PYTHONHOME",
         "PYTHONPATH",
         "PYTHONSTARTUP",
+        "SHELLOPTS",
         "SSH_ASKPASS",
         _INHERITED_PYTHONPATH_ENV,
     }
 )
 """Environment keys that project `.env` files must not inject.
 
+A project `.env` is untrusted (it travels with a cloned repo), so it must not be
+able to set variables that turn loading the `.env` into code execution in the
+subprocesses Deep Agents Code spawns. The set spans four threat categories;
+every entry is here for one of these reasons, so do not remove one without
+checking which category it belongs to:
+
+- Dynamic-linker preload/audit (`DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`,
+    `LD_AUDIT`, `LD_LIBRARY_PATH`, `LD_PRELOAD`): force a loader to map an
+    attacker-supplied shared object into every spawned binary.
+- Interpreter startup/path (`NODE_OPTIONS`, `PATH`, `PYTHONEXECUTABLE`,
+    `PYTHONHOME`, `PYTHONPATH`, `PYTHONSTARTUP`, `_INHERITED_PYTHONPATH_ENV`):
+    hijack which interpreter/binary runs or what it imports at startup.
+- Shell startup hooks (`BASH_ENV`, `ENV`, `BASHOPTS`, `SHELLOPTS`, `CDPATH`,
+    `GLOBIGNORE`): `BASH_ENV`/`ENV` source a file on every non-interactive shell;
+    `SHELLOPTS`/`BASHOPTS` can force `xtrace`/alias expansion; `CDPATH`/
+    `GLOBIGNORE` alter path/glob resolution. The agent runs detection and
+    `execute` commands through non-interactive shells, so these are live vectors.
+- Askpass hijack (`GIT_ASKPASS`, `SSH_ASKPASS`): point credential prompts at an
+    attacker-controlled binary.
+
 `_INHERITED_PYTHONPATH_ENV` is denied so a project `.env` cannot smuggle a
 `PYTHONPATH` into agent `execute` commands through the carrier var; the carrier
-is only meant to relay a value the user set in their launch environment."""
+is only meant to relay a value the user set in their launch environment.
+
+Matching is exact and case-sensitive: the protected consumers (the dynamic
+linker, bash, CPython) read these names only in their canonical case, so a
+lowercase `bash_env` injected into the environment is inert. Any future entry
+that some consumer reads case-insensitively would need a different check.
+"""
 
 
 def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
@@ -169,8 +201,13 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
             )
             return
         for key, value in values.items():
-            if value is not None and key not in env:
-                env[key] = value
+            if value is None or key in env:
+                continue
+            if key in _DOTENV_DENIED_ENV_KEYS:
+                # Log the key only — the value is attacker-controlled.
+                logger.debug("Ignoring denied env key %r from %s", key, dotenv_path)
+                continue
+            env[key] = value
 
     project_dotenv: Path | None = None
     try:
@@ -265,7 +302,11 @@ def _load_dotenv(
         values = dotenv.dotenv_values(dotenv_path=dotenv_path)
         applied = False
         for key, value in values.items():
-            if value is None or key in os.environ or key in _DOTENV_DENIED_ENV_KEYS:
+            if value is None or key in os.environ:
+                continue
+            if key in _DOTENV_DENIED_ENV_KEYS:
+                # Log the key only — the value is attacker-controlled.
+                logger.debug("Ignoring denied env key %r from %s", key, dotenv_path)
                 continue
             os.environ[key] = value
             _dotenv_loaded_values[key] = value

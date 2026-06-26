@@ -303,6 +303,9 @@ omit = ["tests/*"]
 timeout = 30  # Default timeout for all tests (can be overridden per-test)
 
 addopts = "--strict-markers --strict-config --durations=5"
-markers = ["benchmark: marks tests as benchmarks (select with '-m benchmark')"]
+markers = [
+    "benchmark: marks tests as benchmarks (select with '-m benchmark')",
+    "self_managed_update_check: tests that manage app-startup update-check setup themselves",
+]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

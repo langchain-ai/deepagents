@@ -230,8 +230,8 @@ def format_relative_timestamp(iso_timestamp: str | None) -> str:
     days = hours // 24
     if days < 30:  # noqa: PLR2004
         return f"{days}d ago"
-    months = days // 30
-    if months < 12:  # noqa: PLR2004
+    if days < 365:  # noqa: PLR2004
+        months = days // 30
         return f"{months}mo ago"
     years = days // 365
     return f"{years}y ago"

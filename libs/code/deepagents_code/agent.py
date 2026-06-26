@@ -1232,6 +1232,35 @@ def _apply_inherited_pythonpath(env: dict[str, str]) -> None:
         env["PYTHONPATH"] = inherited
 
 
+def _build_rubric_middleware(
+    *,
+    grader_model: str | BaseChatModel,
+    max_iterations: int,
+) -> AgentMiddleware | None:
+    """Build `RubricMiddleware`, or `None` when the SDK lacks it.
+
+    `RubricMiddleware` ships in a later `deepagents` release than the one
+    `deepagents-code` currently pins, so the import is guarded: an older SDK
+    disables rubric grading instead of crashing agent construction.
+
+    Returns:
+        A `RubricMiddleware` instance, or `None` when the installed SDK does
+        not provide it.
+    """
+    try:
+        # `outcomes` ships in a later deepagents release than the current pin.
+        from deepagents.middleware.outcomes import (  # ty: ignore[unresolved-import]
+            RubricMiddleware,
+        )
+    except ImportError:
+        logger.warning(
+            "RubricMiddleware is unavailable in the installed deepagents SDK; "
+            "rubric grading is disabled. Upgrade deepagents to enable it."
+        )
+        return None
+    return RubricMiddleware(model=grader_model, max_iterations=max_iterations)
+
+
 def create_cli_agent(
     model: str | BaseChatModel,
     assistant_id: str,
@@ -1249,6 +1278,9 @@ def create_cli_agent(
     enable_skills: bool = True,
     enable_shell: bool = True,
     enable_interpreter: bool = False,
+    enable_rubric: bool = False,
+    rubric_model: str | BaseChatModel | None = None,
+    rubric_max_iterations: int = 3,
     checkpointer: BaseCheckpointSaver | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
     cwd: str | Path | None = None,
@@ -1325,6 +1357,17 @@ def create_cli_agent(
             `interpreter_ptc_acknowledge_unsafe=True`.
 
             Requires the core `langchain-quickjs` dependency.
+        enable_rubric: Install `RubricMiddleware` so the agent self-evaluates
+            against a caller-supplied rubric and loops until satisfied.
+
+            The middleware is a no-op until a `rubric` is supplied on
+            invocation state, so it is safe to enable unconditionally. When
+            the installed SDK predates `RubricMiddleware`, the feature
+            degrades to a no-op with a warning instead of failing.
+        rubric_model: Grader model for `RubricMiddleware`. A `'provider:model'`
+            string or `BaseChatModel`. When `None`, the main `model` is reused.
+        rubric_max_iterations: Grader iterations per rubric attempt before the
+            agent terminates with `'max_iterations_reached'` (default 3).
         checkpointer: Optional checkpointer for session persistence.
             When `None`, the graph is compiled without a checkpointer.
         mcp_server_info: MCP server metadata to surface in the system prompt.
@@ -1706,6 +1749,16 @@ def create_cli_agent(
     agent_middleware.append(
         create_summarization_tool_middleware(model, composite_backend)
     )
+
+    # Rubric-driven self-evaluation. The middleware is a no-op until a
+    # `rubric` is supplied on invocation state, so installing it is safe.
+    if enable_rubric:
+        rubric_middleware = _build_rubric_middleware(
+            grader_model=rubric_model if rubric_model is not None else model,
+            max_iterations=rubric_max_iterations,
+        )
+        if rubric_middleware is not None:
+            agent_middleware.append(rubric_middleware)
 
     # Create the agent
     all_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = [

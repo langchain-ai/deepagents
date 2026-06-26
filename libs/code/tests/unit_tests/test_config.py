@@ -2336,6 +2336,7 @@ class TestGetTracingStatus:
         assert status.has_credentials is False
         assert status.endpoint is None
         assert status.project == LANGSMITH_PROJECT_DEFAULT
+        assert status.project_is_default is True
         assert status.replica_project is None
 
     def test_prefixed_flag_and_key_are_detected(self) -> None:
@@ -2356,6 +2357,7 @@ class TestGetTracingStatus:
         assert status.enabled is True
         assert status.has_credentials is True
         assert status.project == "prefixed-proj"
+        assert status.project_is_default is False
 
     def test_dotenv_values_are_detected(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

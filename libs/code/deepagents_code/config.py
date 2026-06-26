@@ -2771,7 +2771,7 @@ def _tracing_endpoint_from(env: dict[str, str]) -> str | None:
     return None
 
 
-def _resolve_tracing_project_from(env: dict[str, str]) -> str:
+def _resolve_tracing_project_from(env: dict[str, str]) -> tuple[str, bool]:
     """Resolve the project agent traces would route to, without bootstrap.
 
     The reported project matches the `tracing.langsmith_project` manifest
@@ -2784,7 +2784,8 @@ def _resolve_tracing_project_from(env: dict[str, str]) -> str:
         env: Environment mapping to read.
 
     Returns:
-        The resolved project name, or the default when none is configured.
+        The resolved project name and whether it fell back to the default
+        because no project was explicitly configured.
     """
     from deepagents_code._env_vars import LANGSMITH_PROJECT
     from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
@@ -2792,8 +2793,8 @@ def _resolve_tracing_project_from(env: dict[str, str]) -> str:
     for name in (LANGSMITH_PROJECT, "LANGSMITH_PROJECT"):
         value = env.get(name)
         if value:
-            return value
-    return LANGSMITH_PROJECT_DEFAULT
+            return value, False
+    return LANGSMITH_PROJECT_DEFAULT, True
 
 
 def _tracing_diagnostic_env() -> dict[str, str]:
@@ -2829,6 +2830,9 @@ class TracingStatus:
     project: str | None
     """Resolved configured project name, independent of active trace ingestion."""
 
+    project_is_default: bool
+    """Whether `project` is the built-in default rather than an explicit setting."""
+
     replica_project: str | None
     """Extra project agent runs are mirrored to, if configured."""
 
@@ -2848,11 +2852,13 @@ def get_tracing_status() -> TracingStatus:
     enabled = _tracing_enabled_from(env)
     has_credentials = _tracing_has_credentials_from(env)
     endpoint = _tracing_endpoint_from(env)
+    project, project_is_default = _resolve_tracing_project_from(env)
     return TracingStatus(
         enabled=enabled,
         has_credentials=has_credentials,
         endpoint=endpoint,
-        project=_resolve_tracing_project_from(env),
+        project=project,
+        project_is_default=project_is_default,
         replica_project=_get_first_langsmith_replica_project(
             _get_langsmith_replica_projects_from(env)
         ),

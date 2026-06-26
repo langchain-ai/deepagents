@@ -729,14 +729,16 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
     and the `id` property.
     """
 
-    enable_capture_offload: bool = True
+    enable_capture_offload: bool = False
     """Whether `FilesystemMiddleware` may use capture-at-source offload for `execute`.
 
-    When `True` (default), large `execute` output is captured to a file in the
-    sandbox and only a preview is returned, avoiding a round-trip back through the
-    agent process. Set to `False` (on the subclass or an instance) to fall back to
-    inline execution plus the middleware's generic eviction -- an escape hatch for
-    environments where the capture wrapper's shell assumptions do not hold.
+    When `True`, large `execute` output is captured to a file in the sandbox and
+    only a preview is returned, avoiding a round-trip back through the agent
+    process. Defaults to `False` (opt-in) because the capture wrapper's shell and
+    coreutils assumptions are not guaranteed on every sandbox image; subclasses
+    known to be compatible set it to `True`. When `False`, `execute_with_offload`
+    runs the command unwrapped and the middleware falls back to inline execution
+    plus generic eviction.
     """
 
     @abstractmethod

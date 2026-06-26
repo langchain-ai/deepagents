@@ -61,6 +61,8 @@ class LocalSubprocessSandbox(BaseSandbox):
         self._id = "local-subprocess-sandbox"
         self._virtual_root = VIRTUAL_SANDBOX_ROOT
         self._real_root = self._virtual_root
+        # Real host shell, so capture-at-source (opt-in, default off) is supported.
+        self.enable_capture_offload = True
 
     def set_real_root(self, real_root: str) -> None:
         """Set the on-disk directory used for test file operations."""

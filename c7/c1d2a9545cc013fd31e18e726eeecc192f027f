@@ -1,0 +1,36 @@
+libs/evals/datasets/hillclimb-smoke/format-1/tests/test.sh
+  s_835b4f54a887d4::t_1789456868b135 1,3-4
+  s_835b4f54a887d4::t_dbc4d936e3b167 2,5-12
+libs/evals/datasets/hillclimb-smoke/dataset.toml
+  s_835b4f54a887d4::t_acc281d54f8419 1-4
+libs/evals/datasets/hillclimb-smoke/format-1/instruction.md
+  s_835b4f54a887d4::t_b7054570225413 1
+libs/evals/deepagents_harness_opt/runner.py
+  s_835b4f54a887d4::t_2a388b3f4235aa 198-203
+  s_835b4f54a887d4::t_5783655247e27c 166-168
+  s_835b4f54a887d4::t_759947f6cee55d 13
+libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py
+  s_835b4f54a887d4::t_5e03106b297dcf 350,352-354,357-360
+libs/evals/datasets/hillclimb-smoke/NOTES.md
+  s_835b4f54a887d4::t_63e010a65dcb50 1-49
+libs/evals/datasets/hillclimb-smoke/format-1/environment/Dockerfile
+  s_835b4f54a887d4::t_9544290b4e518d 1-3
+libs/evals/datasets/hillclimb-smoke/format-1/task.toml
+  s_835b4f54a887d4::t_8fd1d440483e1a 1-22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "c7c1d2a9545cc013fd31e18e726eeecc192f027f",
+  "prompts": {},
+  "sessions": {
+    "s_835b4f54a887d4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "309be8cc-8b32-4d74-a6b9-4d4c7b0bb936",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

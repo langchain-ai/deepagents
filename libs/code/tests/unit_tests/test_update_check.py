@@ -274,6 +274,21 @@ class TestCachedUpdateAvailable:
 
         mock_get.assert_not_called()
 
+    @pytest.mark.parametrize("checked_at", [float("nan"), float("inf"), 1e100])
+    def test_invalid_numeric_checked_at_returns_no_answer_without_http(
+        self, cache_file, checked_at: float
+    ) -> None:
+        """Corrupt numeric timestamps must not be treated as fresh cache."""
+        cache_file.write_text(
+            json.dumps({"version": "99.0.0", "checked_at": checked_at}),
+            encoding="utf-8",
+        )
+
+        with patch("requests.get") as mock_get:
+            assert get_cached_update_available() == (False, None)
+
+        mock_get.assert_not_called()
+
     def test_missing_cache_returns_no_answer_without_http(self, cache_file) -> None:
         """Missing cache should not block startup on a network request."""
         assert not cache_file.exists()
@@ -313,6 +328,14 @@ class TestGetLastUpdateCheckTime:
         cache_file.write_text(json.dumps({"checked_at": "soon"}), encoding="utf-8")
         assert get_last_update_check_time() is None
         cache_file.write_text(json.dumps({"checked_at": True}), encoding="utf-8")
+        assert get_last_update_check_time() is None
+
+    @pytest.mark.parametrize("checked_at", [float("nan"), float("inf"), 1e100])
+    def test_invalid_numeric_checked_at_returns_none(
+        self, cache_file, checked_at: float
+    ) -> None:
+        """Invalid numeric `checked_at` values are ignored."""
+        cache_file.write_text(json.dumps({"checked_at": checked_at}), encoding="utf-8")
         assert get_last_update_check_time() is None
 
 

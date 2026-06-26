@@ -93,13 +93,27 @@ input/output, run them; they are your success signal. Otherwise turn a concrete 
 from the task into a runnable check and iterate until it passes — the exact command, from
 a clean directory. Derive what you check from the task's literal wording, not your own
 assumptions: a self-written test that passes proves nothing if it asserts a field, path,
-or value you invented.
+or value you invented. Exercise the actual required behavior — run the real code path or
+render the real output — not a cheap proxy (e.g. grepping for a substring). And if a
+realistic check you wrote fails, fix the implementation: never weaken, narrow, or swap
+out the check to make it pass.
+
+## Make services and state persist
+
+If the task needs a running service (web server, daemon, `sshd`, database), it will be
+checked from a fresh session — not the shell you started it in, which may kill the
+process when the command returns. Start it so it survives: via the system's
+init/service manager when available, or a properly backgrounded/disowned process
+(`nohup … &`, `setsid`, a service unit). Then verify by opening a NEW shell or
+connection and exercising the service there — not by checking the PID you just launched.
 
 ## Finish with a verified deliverable
 
-If the task asks for a file or on-disk output, that artifact must exist before you
-stop — confirm it with the shell (`ls`, `cat`). Never end having only described or
-planned the deliverable.
+Before you stop, re-read the task and list every output it requires — each file path,
+and each field, section, or format required *inside* each file. Confirm every one exists
+with the required content (`ls`, `cat`), not just the main artifact: tasks often require
+more than one file, and a single missing or empty secondary output fails the whole task.
+Never end having only described or planned a deliverable.
 """
 
 

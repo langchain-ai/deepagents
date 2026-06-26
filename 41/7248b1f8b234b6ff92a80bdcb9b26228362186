@@ -1,0 +1,20 @@
+docs/superpowers/specs/2026-06-25-weakness-mining-design.md
+  s_835b4f54a887d4::t_4dae1a486522ac 210-212
+  s_835b4f54a887d4::t_6c7a69d1e60195 1-209,213-308
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "417248b1f8b234b6ff92a80bdcb9b26228362186",
+  "prompts": {},
+  "sessions": {
+    "s_835b4f54a887d4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "309be8cc-8b32-4d74-a6b9-4d4c7b0bb936",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

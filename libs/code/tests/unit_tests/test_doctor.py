@@ -166,6 +166,51 @@ class TestCollectTracing:
         assert labels["Replica project"] == "replica"
 
 
+class TestCollectUpdates:
+    """Tests for the Updates diagnostic section."""
+
+    def _labels(self) -> dict[str, str]:
+        from deepagents_code.doctor import _collect_updates
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(False, "1.0.0"),
+            ),
+        ):
+            section = _collect_updates()
+        return {item.label: item.value for item in section.items}
+
+    def test_last_checked_shows_relative_time(self) -> None:
+        """A recent cached check is reported as a relative time."""
+        import time
+
+        with patch(
+            "deepagents_code.update_check.get_last_update_check_time",
+            return_value=time.time() - 3600,
+        ):
+            labels = self._labels()
+        assert labels["Last checked"].endswith("ago")
+
+    def test_last_checked_never_without_cache(self) -> None:
+        """An absent cache reports `never` rather than crashing."""
+        with patch(
+            "deepagents_code.update_check.get_last_update_check_time",
+            return_value=None,
+        ):
+            labels = self._labels()
+        assert labels["Last checked"] == "never"
+
+
 class TestCommitHash:
     """Tests for git commit hash detection."""
 

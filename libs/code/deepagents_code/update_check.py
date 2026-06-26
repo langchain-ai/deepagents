@@ -253,6 +253,28 @@ def get_cached_update_available() -> tuple[bool, str | None]:
         return False, None
 
 
+def get_last_update_check_time() -> float | None:
+    """Return the epoch time of the last PyPI update check, or `None`.
+
+    Reads the `checked_at` stamp written by `get_latest_version` to `CACHE_FILE`.
+    Missing, corrupt, or non-numeric data fail-soft to `None` so callers can
+    render an "unknown" state without contacting the network.
+    """
+    try:
+        if not CACHE_FILE.exists():
+            return None
+        data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        checked_at = data.get("checked_at")
+    except (OSError, json.JSONDecodeError, TypeError):
+        logger.debug("Failed to read last update check time", exc_info=True)
+        return None
+    if isinstance(checked_at, (int, float)) and not isinstance(checked_at, bool):
+        return float(checked_at)
+    return None
+
+
 def _requires_prerelease_dependency(requirements: Sequence[object] | None) -> bool:
     """Return whether any requirement specifier names a pre-release version.
 

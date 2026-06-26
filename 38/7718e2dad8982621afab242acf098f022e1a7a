@@ -1,0 +1,39 @@
+libs/evals/tests/unit_tests/harness_opt/hillclimb/test_agent.py
+  s_835b4f54a887d4::t_c9328852aa514c 44-45
+  s_835b4f54a887d4::t_9e74f2c418dc50 19
+  s_835b4f54a887d4::t_94af0fb33d560b 1-18,20-43,46-54
+libs/evals/tests/unit_tests/harness_opt/hillclimb/test_validation.py
+  s_835b4f54a887d4::t_c30490099ce958 16-17
+  s_835b4f54a887d4::t_218dd30253e782 22-23
+  s_835b4f54a887d4::t_9e74f2c418dc50 6
+libs/evals/tests/unit_tests/harness_opt/hillclimb/test_climber.py
+  s_835b4f54a887d4::t_9e74f2c418dc50 46-55,71-80
+libs/evals/deepagents_harness_opt/hillclimb/__init__.py
+  s_835b4f54a887d4::t_7d35ec5e7c45c7 4-21
+libs/evals/deepagents_harness_opt/hillclimb/validation.py
+  s_835b4f54a887d4::t_9e74f2c418dc50 18
+libs/evals/deepagents_harness_opt/engine.py
+  s_835b4f54a887d4::t_2eb6cf56d06497 70,108,145
+  s_835b4f54a887d4::t_5dbd0925936723 33
+libs/evals/deepagents_harness_opt/hillclimb/agent.py
+  s_835b4f54a887d4::t_9a195b94e9151d 74
+  s_835b4f54a887d4::t_64f62133cbbb9e 1-4,6-13,15-55,57-73,75-96
+  s_835b4f54a887d4::t_9e74f2c418dc50 14,56
+  s_835b4f54a887d4::t_b37eaa6af96945 5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "387718e2dad8982621afab242acf098f022e1a7a",
+  "prompts": {},
+  "sessions": {
+    "s_835b4f54a887d4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "309be8cc-8b32-4d74-a6b9-4d4c7b0bb936",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

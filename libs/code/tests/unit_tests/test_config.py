@@ -12,6 +12,7 @@ import pytest
 
 from deepagents_code import _git as git_module, model_config
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
+from deepagents_code._version import __version__
 from deepagents_code.config import (
     CLI_MAX_RETRIES_KEY,
     RECOMMENDED_SAFE_SHELL_COMMANDS,
@@ -3929,8 +3930,9 @@ class TestCreateModelViaInitImportError:
             pytest.raises(
                 ModelConfigError,
                 match=(
-                    "Install with: uv tool install --reinstall -U deepagents-code "
-                    "--with langchain-custom_provider"
+                    "Install with: uv tool install --reinstall -U "
+                    f"deepagents-code=={__version__} "
+                    "--with langchain-custom_provider --prerelease allow"
                 ),
             ),
         ):

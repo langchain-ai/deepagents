@@ -2,6 +2,20 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.28](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.27...deepagents-code==0.1.28) (2026-06-26)
+
+
+### Features
+
+* **code:** quit shortcut on completed update modal ([#4312](https://github.com/langchain-ai/deepagents/issues/4312)) ([5e6eae9](https://github.com/langchain-ai/deepagents/commit/5e6eae9f094a5167b6bf01f2d84cf06ca5cd80c3))
+
+
+### Bug Fixes
+
+* **code:** clearer MCP config JSON parse errors ([#4327](https://github.com/langchain-ai/deepagents/issues/4327)) ([9cee602](https://github.com/langchain-ai/deepagents/commit/9cee60274d38d4ad8a2d7a7e9d3ae59aebce5261))
+* **code:** highlight just-installed provider on `/auth` reopen ([#4311](https://github.com/langchain-ai/deepagents/issues/4311)) ([85e47b5](https://github.com/langchain-ai/deepagents/commit/85e47b532b5caf92a52f1a070a95bdb39bee6d3d))
+* **code:** honor Baseten base URL env precedence ([#4328](https://github.com/langchain-ai/deepagents/issues/4328)) ([8f20d74](https://github.com/langchain-ai/deepagents/commit/8f20d74892112c3b88aaca63d8c04a355fd6726f))
+
 ## [0.1.27](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.26...deepagents-code==0.1.27) (2026-06-26)
 
 ### Features

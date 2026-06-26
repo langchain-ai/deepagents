@@ -785,11 +785,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # Add harness-profile middleware, if any
         gp_middleware.extend(_profile.materialize_extra_middleware())
 
-        # Prompt caching is unconditional: "ignore" silently skips non-Anthropic models
-        gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
-        # Strip excluded tools after all tool-injecting middleware has run
-        if _profile.excluded_tools:
-            gp_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
         _append_prompt_caching_middleware(gp_middleware)
 
         gp_middleware = _apply_excluded_middleware(
@@ -872,10 +867,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # that memory updates (which change the system prompt) don't invalidate the
     # Anthropic prompt cache prefix.
     deepagent_middleware.extend(_profile.materialize_extra_middleware())
-    # Unconditional prompt caching (see general-purpose subagent comment).
-    deepagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
-    if _profile.excluded_tools:
-        deepagent_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
     _append_prompt_caching_middleware(deepagent_middleware)
     if memory is not None:
         # MemoryMiddleware applies the cache_control breakpoint only when the

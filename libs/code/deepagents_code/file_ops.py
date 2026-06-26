@@ -397,8 +397,12 @@ class FileOpTracker:
                 record.metrics.end_line = (record.metrics.start_line or 1) + limit - 1
         else:
             if record.tool_name == "delete":
-                # The file is gone, so model an empty "after" to diff the
-                # removed content against; nothing to read back from disk.
+                # Reached only after the success-status check above, so the
+                # tool reported the path removed. Model an empty "after" to
+                # diff the removed content against; there is nothing to read
+                # back from disk. This trusts the tool's success status and
+                # is sound for backends where a successful delete means the
+                # path is gone.
                 record.after_content = ""
             else:
                 # Write/edit: read the updated content back from backend/disk.

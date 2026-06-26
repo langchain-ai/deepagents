@@ -390,6 +390,43 @@ def test_delete_guarded_file_without_block_is_allowed(tmp_path) -> None:
     assert not path.exists()
 
 
+def test_delete_unreadable_guarded_file_fails_closed(tmp_path) -> None:
+    """An existing-but-unreadable guarded file is not deleted (fail closed)."""
+    path = tmp_path / "agent" / "AGENTS.md"
+    path.parent.mkdir(parents=True)
+    # Invalid UTF-8 bytes make `_read` return None while the file still
+    # exists, so the guard cannot confirm the file lacks a managed block.
+    path.write_bytes(b"\xff\xfe not valid utf-8")
+    middleware = ManagedMemoryGuardMiddleware([str(path)])
+    handler = cast("Any", lambda _request: pytest.fail("delete should not run"))
+
+    result = middleware.wrap_tool_call(_request("delete", str(path)), handler)
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    assert "must not be deleted" in result.content
+    assert path.exists()
+
+
+def test_delete_missing_guarded_file_is_allowed(tmp_path) -> None:
+    """A guarded path that does not exist has nothing to protect, so it runs."""
+    path = tmp_path / "agent" / "AGENTS.md"
+    middleware = ManagedMemoryGuardMiddleware([str(path)])
+    ran = False
+
+    def handler(_request: ToolCallRequest) -> ToolMessage:
+        nonlocal ran
+        ran = True
+        return ToolMessage(
+            content=f"Deleted {path}", name="delete", tool_call_id="call-1"
+        )
+
+    result = middleware.wrap_tool_call(_request("delete", str(path)), handler)
+
+    assert isinstance(result, ToolMessage)
+    assert ran is True
+
+
 def test_error_message_propagates_call_metadata(tmp_path) -> None:
     """The error result carries the originating tool name and call id."""
     path = tmp_path / "agent" / "AGENTS.md"

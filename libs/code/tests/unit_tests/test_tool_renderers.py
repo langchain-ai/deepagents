@@ -33,3 +33,11 @@ def test_delete_renderer_flags_directories_without_diff(tmp_path: Path) -> None:
     assert widget_class is GenericApprovalWidget
     assert data["file_path"] == "subdir"
     assert "Contents: directory or unreadable file" in data["details"]
+
+
+def test_delete_renderer_surfaces_unresolvable_path_error() -> None:
+    """An empty path yields a resolution error shown in the approval widget."""
+    widget_class, data = get_renderer("delete").get_approval_widget({"file_path": ""})
+
+    assert widget_class is GenericApprovalWidget
+    assert data["error"] == "Unable to resolve file path."

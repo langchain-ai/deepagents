@@ -15,8 +15,10 @@ surrounding whitespace may be normalized, and a fully removed block is
 re-appended rather than restored in place) while the managed block is restored,
 and an error is returned so the model learns the region is machine-managed. A
 `delete` call that would remove an existing managed block is rejected before the
-tool runs. When the block was altered but the restore could not be completed, an
-error is still returned so the failure is never silent.
+tool runs; a `delete` of a guarded file that exists but cannot be read is also
+rejected, failing closed rather than removing a file we cannot inspect. When the
+block was altered but the restore could not be completed, an error is still
+returned so the failure is never silent.
 """
 
 from __future__ import annotations
@@ -97,9 +99,9 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
     `write_file`/`edit_file` that leaves the managed block untouched passes
     through; one that alters or drops it has the block restored (other edits
     kept) and returns an error. A `delete` targeting a guarded file (or a parent
-    directory that contains one) is rejected outright before the tool runs. If
-    the restore itself fails, an error is still returned so the failure is never
-    silent.
+    directory that contains one) is rejected outright before the tool runs when
+    the file holds a managed block or exists but cannot be read. If the restore
+    itself fails, an error is still returned so the failure is never silent.
     """
 
     def __init__(self, guarded_paths: Iterable[str | Path]) -> None:
@@ -357,6 +359,30 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
         )
 
     @staticmethod
+    def _reject_delete(path: Path, before: str | None) -> bool:
+        """Return whether a delete targeting a guarded path must be rejected.
+
+        The caller has already matched `path` as a guarded file (or a file
+        inside a directory being deleted). The delete is rejected when:
+
+        - the guarded file currently holds a managed block, or
+        - the guarded file exists but its content could not be read.
+
+        The second case fails closed on purpose: `_read` returns `None` for
+        both a missing file and an existing-but-unreadable one (a permission
+        error, or a symlink swap caught by `O_NOFOLLOW`). A missing guarded
+        file has nothing to protect and is safe to remove, but an existing
+        file we cannot inspect must not be deleted irreversibly on the
+        assumption that it lacks a managed block.
+
+        Returns:
+            `True` when the delete must be blocked, `False` when it may proceed.
+        """
+        if before is not None:
+            return extract_onboarding_name_block(before) is not None
+        return path.exists()
+
+    @staticmethod
     def _delete_error(request: ToolCallRequest, path: Path) -> ToolMessage:
         """Build the error result returned when a delete would remove memory.
 
@@ -406,13 +432,15 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
         if path is None:
             return handler(request)
         before = self._read(path)
+        if request.tool_call["name"] == "delete":
+            if self._reject_delete(path, before):
+                return self._delete_error(request, path)
+            return handler(request)
         before_block = (
             extract_onboarding_name_block(before) if before is not None else None
         )
         if before is None or before_block is None:
             return handler(request)
-        if request.tool_call["name"] == "delete":
-            return self._delete_error(request, path)
         result = handler(request)
         return self._result_after_restore(request, path, before, before_block, result)
 
@@ -431,13 +459,15 @@ class ManagedMemoryGuardMiddleware(AgentMiddleware):
         if path is None:
             return await handler(request)
         before = await asyncio.to_thread(self._read, path)
+        if request.tool_call["name"] == "delete":
+            if await asyncio.to_thread(self._reject_delete, path, before):
+                return self._delete_error(request, path)
+            return await handler(request)
         before_block = (
             extract_onboarding_name_block(before) if before is not None else None
         )
         if before is None or before_block is None:
             return await handler(request)
-        if request.tool_call["name"] == "delete":
-            return self._delete_error(request, path)
         result = await handler(request)
         return await asyncio.to_thread(
             self._result_after_restore, request, path, before, before_block, result

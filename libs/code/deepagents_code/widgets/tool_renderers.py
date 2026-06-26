@@ -90,15 +90,17 @@ class DeleteFileRenderer(ToolRenderer):
         preview = build_approval_preview(
             "delete", {"file_path": path}, assistant_id=assistant_id
         )
-        if preview and preview.diff:
+        if preview is None:
+            # `build_approval_preview` always returns a preview for "delete";
+            # this guards its `ApprovalPreview | None` contract defensively.
+            return GenericApprovalWidget, tool_args
+        if preview.diff:
             return EditFileApprovalWidget, {
                 "file_path": format_display_path(path),
                 "diff_lines": preview.diff.splitlines(),
                 "old_string": "",
                 "new_string": "",
             }
-        if preview is None:
-            return GenericApprovalWidget, tool_args
         data: dict[str, Any] = {"file_path": format_display_path(path)}
         details = [
             detail for detail in preview.details if not detail.startswith("File:")

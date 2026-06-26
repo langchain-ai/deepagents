@@ -36,9 +36,9 @@ if __package__ in (None, ""):
     # loader directly by adding this dir to the path, so we skip the parent
     # ``deepagents_harbor`` package __init__ (which pulls in aiohttp et al.).
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from loader import OolongExample, load_oolong_examples
+    from loader import OolongExample, load_oolong_examples  # ty: ignore[unresolved-import]
 else:
-    from .loader import OolongExample, load_oolong_examples
+    from deepagents_harbor.oolong.loader import OolongExample, load_oolong_examples
 
 #: Verbatim upstream scorer, copied into every task's ``tests/`` dir so the
 #: dataset is self-contained (the verifier needs no installed package).
@@ -318,6 +318,7 @@ def _write_dataset_files(out_dir: Path, org: str) -> None:
 
 
 def main() -> None:
+    """CLI entry point: generate the OOLONG Harbor dataset from one HF bucket."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", default="trec_coarse", help="OOLONG subset.")
     parser.add_argument("--context-len", type=int, default=1024, help="Token bucket.")
@@ -364,10 +365,11 @@ def main() -> None:
         split=args.split,
     )
     if not examples:
-        raise SystemExit(
+        msg = (
             f"No rows for dataset={args.dataset!r} context_len={args.context_len} "
             f"split={args.split!r}. Try a different bucket."
         )
+        raise SystemExit(msg)
 
     out_dir: Path = args.out
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -385,7 +387,9 @@ def main() -> None:
             network_mode=args.network,
             allowed_hosts=allowed_hosts,
         )
-        print(f"wrote {task_dir.relative_to(out_dir.parent)}  ({example.answer_type}, gold={example.gold_answers})")
+        print(
+            f"wrote {task_dir.relative_to(out_dir.parent)}  ({example.answer_type}, gold={example.gold_answers})"
+        )
 
     print(f"\n{len(examples)} task(s) written to {out_dir}")
 

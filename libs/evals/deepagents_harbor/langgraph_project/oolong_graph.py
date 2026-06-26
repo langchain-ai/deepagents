@@ -22,11 +22,10 @@ never requires QuickJS unless that arm is actually run.
 
 from __future__ import annotations
 
+import os
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-
-import os
 
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
@@ -34,6 +33,8 @@ from langchain.chat_models import init_chat_model
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+    from deepagents.middleware.subagents import SubAgent
 
 _DEFAULT_WORKDIR = Path("/app")
 
@@ -179,12 +180,11 @@ def _build_oolong_graph(
     configurable = _configurable(config)
     root_model_id = _model_name(configurable)
     model = init_chat_model(root_model_id, **_model_kwargs(configurable))
-    subagents = [
+    subagents: list[SubAgent] = [
         {
             "name": "general-purpose",
             "description": (
-                "Reads a line range of /app/context.txt and extracts per-line facts "
-                "as directed."
+                "Reads a line range of /app/context.txt and extracts per-line facts as directed."
             ),
             "system_prompt": _OOLONG_SUBAGENT_SYSTEM_PROMPT,
             "model": _sub_model_id(configurable, root_model_id),
@@ -219,7 +219,7 @@ def make_oolong_code_interpreter_graph(config: dict[str, object] | None = None) 
     long enough for a ``Promise.all`` of subagent dispatches, and a ceiling on
     ``eval`` calls so a retry-spiral can't run away.
     """
-    from langchain_quickjs import CodeInterpreterMiddleware
+    from langchain_quickjs import CodeInterpreterMiddleware  # noqa: PLC0415
 
     return _build_oolong_graph(
         config,

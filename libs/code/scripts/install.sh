@@ -10,8 +10,8 @@
 # Override uv's pre-release strategy when resolving the latest version:
 #   curl -LsSf https://langch.in/dcode | DEEPAGENTS_CODE_PRERELEASE="allow" bash
 #
-# By default, the installer uses uv's `if-necessary` pre-release strategy so
-# stable deepagents-code releases that pin a pre-release dependency can resolve.
+# By default, the installer uses uv's `allow` pre-release strategy so stable
+# deepagents-code releases that pin a pre-release dependency can resolve.
 # DEEPAGENTS_CODE_VERSION and an explicit DEEPAGENTS_CODE_PRERELEASE are mutually
 # exclusive: an exact pin already selects a single version, so setting both is an
 # error.
@@ -50,8 +50,8 @@
 #     (mutually exclusive with DEEPAGENTS_CODE_PRERELEASE)
 #   DEEPAGENTS_CODE_PRERELEASE — uv pre-release strategy applied when
 #     resolving the latest version: disallow, allow, if-necessary, explicit,
-#     or if-necessary-or-explicit (default: if-necessary; explicitly setting it
-#     is mutually exclusive with DEEPAGENTS_CODE_VERSION)
+#     or if-necessary-or-explicit (default: allow; explicitly setting it is
+#     mutually exclusive with DEEPAGENTS_CODE_VERSION)
 #   DEEPAGENTS_CODE_PYTHON — Python version to use (default: 3.13)
 #   DEEPAGENTS_CODE_YES — set to 1 to accept an available update without
 #     prompting (assume "yes"). Exists so automated runs that still attach a
@@ -345,7 +345,7 @@ copy_install_log() {
 EXTRAS="${DEEPAGENTS_CODE_EXTRAS:-}"
 VERSION="${DEEPAGENTS_CODE_VERSION:-}"
 PRERELEASE_REQUESTED="${DEEPAGENTS_CODE_PRERELEASE:-}"
-PRERELEASE="${PRERELEASE_REQUESTED:-if-necessary}"
+PRERELEASE="${PRERELEASE_REQUESTED:-allow}"
 PYTHON_REQUESTED=false
 if [[ -n "${DEEPAGENTS_CODE_PYTHON:-}" ]]; then
   PYTHON_REQUESTED=true

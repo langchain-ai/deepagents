@@ -298,7 +298,7 @@ def test_install_script_default_invocation_installs_plain_package(
     args = _run_install_script(tmp_path, {}, installed_version=None)
 
     assert args[:3] == ["tool", "install", "-U"]
-    assert args[-3:] == ["--prerelease", "if-necessary", "deepagents-code"]
+    assert args[-3:] == ["--prerelease", "allow", "deepagents-code"]
 
 
 def test_install_script_supports_exact_version_with_extras(tmp_path: Path) -> None:

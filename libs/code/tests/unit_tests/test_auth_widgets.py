@@ -93,9 +93,9 @@ class _AuthHostApp(App[None]):
             handle,
         )
 
-    def show_manager(self) -> None:
+    def show_manager(self, *, initial_provider: str | None = None) -> None:
         """Push the manager screen."""
-        self.push_screen(AuthManagerScreen())
+        self.push_screen(AuthManagerScreen(initial_provider=initial_provider))
 
     def on_auth_manager_screen_credential_saved(
         self, _event: AuthManagerScreen.CredentialSaved
@@ -1660,6 +1660,53 @@ api_key_env = "MY_GATEWAY_API_KEY"
             await pilot.press("enter")
             await pilot.pause()
         assert screen.pending_install_extra == "groq"
+        assert screen.pending_install_provider == "groq"
+
+    async def test_reopening_manager_highlights_initial_provider(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reopening after an install highlights the just-installed provider.
+
+        Simulates the post-install reopen: `groq` is now installed and listed,
+        and passing it as `initial_provider` lands the cursor on its row rather
+        than resetting to index 0.
+        """
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {"openai": ["gpt-5.4"], "groq": ["llama-3"]},
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda provider: provider in {"openai", "groq"},
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager(initial_provider="groq")
+            await pilot.pause()
+            screen = cast("AuthManagerScreen", app.screen)
+            options = screen.query_one("#auth-manager-options", OptionList)
+            assert options.highlighted is not None
+            assert options.get_option_at_index(options.highlighted).id == "groq"
+
+    async def test_reopening_manager_ignores_unknown_initial_provider(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An initial provider absent from the list leaves the cursor at the top."""
+        monkeypatch.setattr(
+            "deepagents_code.widgets.auth.get_available_models",
+            lambda: {"openai": ["gpt-5.4"]},
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.is_provider_package_installed",
+            lambda provider: provider == "openai",
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_manager(initial_provider="not-a-real-provider")
+            await pilot.pause()
+            screen = cast("AuthManagerScreen", app.screen)
+            options = screen.query_one("#auth-manager-options", OptionList)
+            assert options.highlighted == 0
 
     async def test_cancelling_install_leaves_manager_without_pending_extra(
         self, monkeypatch: pytest.MonkeyPatch

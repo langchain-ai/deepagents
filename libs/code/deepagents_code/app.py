@@ -10163,12 +10163,17 @@ class DeepAgentsApp(App):
         )
         self.push_screen(screen, handle_result)
 
-    async def _show_auth_manager(self) -> None:
+    async def _show_auth_manager(self, *, initial_provider: str | None = None) -> None:
         """Show the `/auth` credential manager modal.
 
         State changes persist via `auth_store`; the manager refreshes its
         own option labels after each save/delete, so this caller only needs
         to refocus the chat input on close.
+
+        Args:
+            initial_provider: Provider to start highlighted — set when
+                reopening after an install-on-select so the cursor lands on
+                the just-installed provider instead of the top of the list.
         """
         from deepagents_code.widgets.auth import AuthManagerScreen
 
@@ -10183,13 +10188,17 @@ class DeepAgentsApp(App):
                 from functools import partial
 
                 self.call_later(
-                    partial(self._install_provider_then_reopen_auth, extra),
+                    partial(
+                        self._install_provider_then_reopen_auth,
+                        extra,
+                        screen.pending_install_provider,
+                    ),
                 )
                 return
             task = asyncio.create_task(self._resume_server_after_auth_change())
             task.add_done_callback(_log_task_exception)
 
-        screen = AuthManagerScreen()
+        screen = AuthManagerScreen(initial_provider=initial_provider)
         self.push_screen(screen, handle_result)
 
     def on_auth_manager_screen_credential_saved(self, event: Message) -> None:
@@ -10259,14 +10268,18 @@ class DeepAgentsApp(App):
         await self._retry_startup_with_model(model_spec, extra_kwargs=extra_kwargs)
         return True
 
-    async def _install_provider_then_reopen_auth(self, extra: str) -> None:
+    async def _install_provider_then_reopen_auth(
+        self, extra: str, provider: str | None = None
+    ) -> None:
         """Install a provider's extra from `/auth`, then reopen the manager.
 
         Args:
             extra: The extra that installs the selected provider's integration.
+            provider: The provider being installed, highlighted in the
+                reopened manager so the cursor lands on it ready for a key.
         """
         if await self._install_extra(extra, auto_restart=True):
-            await self._show_auth_manager()
+            await self._show_auth_manager(initial_provider=provider)
             return
         # `_install_extra` returns `False` both when the install genuinely
         # failed (it already surfaced the reason) and when the package landed
@@ -10278,7 +10291,7 @@ class DeepAgentsApp(App):
             from deepagents_code.model_config import clear_caches
 
             clear_caches()
-            await self._show_auth_manager()
+            await self._show_auth_manager(initial_provider=provider)
             return
         if ready is None:
             # Introspection couldn't confirm the state (rare). Don't dead-end

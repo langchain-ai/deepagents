@@ -247,7 +247,7 @@ class AuthConfirmScreen(ModalScreen[bool]):
     }
 
     AuthConfirmScreen .auth-confirm-help {
-        height: 1;
+        height: auto;
         color: $text-muted;
         text-style: italic;
         text-align: center;
@@ -475,7 +475,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
     }
 
     AuthPromptScreen .auth-prompt-help {
-        height: 1;
+        height: auto;
         color: $text-muted;
         text-style: italic;
         text-align: center;
@@ -1140,7 +1140,7 @@ class AuthManagerScreen(ModalScreen[None]):
     }
 
     AuthManagerScreen .auth-manager-help {
-        height: 1;
+        height: auto;
         color: $text-muted;
         text-style: italic;
         text-align: center;

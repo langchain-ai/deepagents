@@ -45,7 +45,7 @@ from deepagents.backends.protocol import (
     BackendProtocol,
     DeleteResult,
     EditResult,
-    ExecuteResponse,
+    ExecuteOffloadResult,
     FileData as FileData,  # Re-export for backwards compatibility
     FileInfo,
     GlobResult,
@@ -1873,15 +1873,16 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             parts.append("\n[Output was truncated due to size limits]")
         return "".join(parts)
 
-    def _interpret_capture_output(self, *, offloaded: bool, result: ExecuteResponse, capture_path: str, tool_call_id: str) -> str:
-        """Build `ToolMessage` content from a capture-at-source `execute` result."""
-        if not offloaded:
-            return self._format_execute_output(result.output, result.exit_code, truncated=result.truncated)
-        cmd_status = "succeeded" if result.exit_code == 0 else "failed"
-        status_line = f"[Command {cmd_status} with exit code {result.exit_code}]"
-        if result.truncated:
+    def _interpret_capture_output(self, offload: ExecuteOffloadResult, capture_path: str, tool_call_id: str) -> str:
+        """Build `ToolMessage` content from an `execute_with_offload` result."""
+        response = offload.response
+        if not offload.offloaded:
+            return self._format_execute_output(response.output, response.exit_code, truncated=response.truncated)
+        cmd_status = "succeeded" if response.exit_code == 0 else "failed"
+        status_line = f"[Command {cmd_status} with exit code {response.exit_code}]"
+        if response.truncated:
             status_line += "\n[Output exceeded the capture size limit and was truncated; the saved file is incomplete]"
-        content_sample = f"{status_line}\n{result.output}"
+        content_sample = f"{status_line}\n{response.output}"
         return TOO_LARGE_TOOL_MSG.format(
             tool_call_id=tool_call_id,
             file_path=capture_path,
@@ -1950,15 +1951,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             try:
                 if capture is not None:
                     executor, capture_path = capture
-                    offloaded, result = executor.execute_with_offload(
+                    offload = executor.execute_with_offload(
                         command,
                         capture_path,
                         max_inline_bytes=NUM_CHARS_PER_TOKEN * cast("int", self._tool_token_limit_before_evict),
                         timeout=timeout,
                     )
-                    content = self._interpret_capture_output(
-                        offloaded=offloaded, result=result, capture_path=capture_path, tool_call_id=cast("str", runtime.tool_call_id)
-                    )
+                    content = self._interpret_capture_output(offload, capture_path, cast("str", runtime.tool_call_id))
                 else:
                     result = executable.execute(command, timeout=timeout) if timeout is not None else executable.execute(command)
                     content = self._format_execute_output(result.output, result.exit_code, truncated=result.truncated)
@@ -2043,15 +2042,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             try:
                 if capture is not None:
                     executor, capture_path = capture
-                    offloaded, result = await executor.aexecute_with_offload(
+                    offload = await executor.aexecute_with_offload(
                         command,
                         capture_path,
                         max_inline_bytes=NUM_CHARS_PER_TOKEN * cast("int", self._tool_token_limit_before_evict),
                         timeout=timeout,
                     )
-                    content = self._interpret_capture_output(
-                        offloaded=offloaded, result=result, capture_path=capture_path, tool_call_id=cast("str", runtime.tool_call_id)
-                    )
+                    content = self._interpret_capture_output(offload, capture_path, cast("str", runtime.tool_call_id))
                 else:
                     result = await executable.aexecute(command, timeout=timeout) if timeout is not None else await executable.aexecute(command)
                     content = self._format_execute_output(result.output, result.exit_code, truncated=result.truncated)

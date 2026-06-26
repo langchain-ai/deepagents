@@ -27,6 +27,7 @@ from deepagents.backends.protocol import (
     ASYNC_GREP_TIMEOUT,
     DeleteResult,
     EditResult,
+    ExecuteOffloadResult,
     ExecuteResponse,
     FileData,
     FileDownloadResponse,
@@ -688,8 +689,8 @@ def _build_capture_execute_cmd(command: str, capture_path: str, *, inline_budget
     )
 
 
-def _parse_capture_execute_output(output: str, *, backend_truncated: bool = False) -> tuple[bool, ExecuteResponse]:
-    r"""Parse capture-wrapper stdout into `(offloaded, ExecuteResponse)`.
+def _parse_capture_execute_output(output: str, *, backend_truncated: bool = False) -> ExecuteOffloadResult:
+    r"""Parse capture-wrapper stdout into an `ExecuteOffloadResult`.
 
     The wrapper emits a meta line followed by the body:
 
@@ -701,11 +702,9 @@ def _parse_capture_execute_output(output: str, *, backend_truncated: bool = Fals
     first newline is the body (full output when inline, head/tail preview when
     offloaded).
 
-    `offloaded` is kept separate from `ExecuteResponse` because it describes the
-    capture mechanism, not the command result (an ordinary `execute` never sets
-    it). Falls back to `(False, raw output)` when the meta line is absent or
-    malformed — e.g. if the backend truncated transport; the caller must not
-    re-run the command in that case. `ExecuteResponse.truncated` is set when the
+    Falls back to `offloaded=False` with the raw output when the meta line is
+    absent or malformed — e.g. if the backend truncated transport; the caller
+    must not re-run the command in that case. `response.truncated` is set when the
     captured output hit the size cap (the saved file is incomplete) or
     `backend_truncated` is passed through from the underlying `execute`.
     """
@@ -714,18 +713,14 @@ def _parse_capture_execute_output(output: str, *, backend_truncated: bool = Fals
     # Expect exactly the four meta fields described above; anything else is not
     # our wrapper's output, so fall back to returning it verbatim.
     if len(parts) != 4 or parts[0] != _EXECUTE_CAPTURE_SENTINEL:  # noqa: PLR2004
-        offloaded = False
-        return offloaded, ExecuteResponse(output=output, truncated=backend_truncated)
+        return ExecuteOffloadResult(offloaded=False, response=ExecuteResponse(output=output, truncated=backend_truncated))
     try:
         exit_code = int(parts[1])
     except ValueError:
-        offloaded = False
-        return offloaded, ExecuteResponse(output=output, truncated=backend_truncated)
-    offloaded = parts[2] == "1"
-    return offloaded, ExecuteResponse(
-        output=body,
-        exit_code=exit_code,
-        truncated=parts[3] == "1" or backend_truncated,
+        return ExecuteOffloadResult(offloaded=False, response=ExecuteResponse(output=output, truncated=backend_truncated))
+    return ExecuteOffloadResult(
+        offloaded=parts[2] == "1",
+        response=ExecuteResponse(output=body, exit_code=exit_code, truncated=parts[3] == "1" or backend_truncated),
     )
 
 
@@ -790,7 +785,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         max_inline_bytes: int,
         max_capture_bytes: int | None = None,
         timeout: int | None = None,
-    ) -> tuple[bool, ExecuteResponse]:
+    ) -> ExecuteOffloadResult:
         """Run `command`, offloading large output to a file in the sandbox.
 
         Captures the command's combined output: returned inline when it is at or
@@ -800,16 +795,16 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         `_EXECUTE_CAPTURE_MAX_BYTES`) without killing the command, so the exit
         code is preserved.
 
-        Returns `(offloaded, ExecuteResponse)`, where `offloaded` is `True` when
-        the result was left at `capture_path` and `output` holds only the preview.
+        Returns an `ExecuteOffloadResult`; `offloaded` is `True` when the result
+        was left at `capture_path` and `response.output` holds only the preview.
         When `enable_capture_offload` is `False`, runs the command unwrapped and
-        returns `(False, …)` with the full output — letting callers fall back to
-        their own handling (e.g. generic eviction).
+        returns `offloaded=False` with the full output — letting callers fall back
+        to their own handling (e.g. generic eviction).
         """
         use_timeout = timeout is not None and execute_accepts_timeout(type(self))
         if not self.enable_capture_offload:
             result = self.execute(command, timeout=timeout) if use_timeout else self.execute(command)
-            return False, result
+            return ExecuteOffloadResult(offloaded=False, response=result)
         wrapper = _build_capture_execute_cmd(command, capture_path, inline_budget=max_inline_bytes, max_capture_bytes=max_capture_bytes)
         result = self.execute(wrapper, timeout=timeout) if use_timeout else self.execute(wrapper)
         return _parse_capture_execute_output(result.output, backend_truncated=result.truncated)
@@ -822,12 +817,12 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         max_inline_bytes: int,
         max_capture_bytes: int | None = None,
         timeout: int | None = None,  # noqa: ASYNC109  # forwarded to the backend, not an asyncio timeout
-    ) -> tuple[bool, ExecuteResponse]:
+    ) -> ExecuteOffloadResult:
         """Async version of `execute_with_offload`, delegating to `aexecute`."""
         use_timeout = timeout is not None and execute_accepts_timeout(type(self))
         if not self.enable_capture_offload:
             result = await self.aexecute(command, timeout=timeout) if use_timeout else await self.aexecute(command)
-            return False, result
+            return ExecuteOffloadResult(offloaded=False, response=result)
         wrapper = _build_capture_execute_cmd(command, capture_path, inline_budget=max_inline_bytes, max_capture_bytes=max_capture_bytes)
         result = await self.aexecute(wrapper, timeout=timeout) if use_timeout else await self.aexecute(wrapper)
         return _parse_capture_execute_output(result.output, backend_truncated=result.truncated)

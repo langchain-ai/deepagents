@@ -1715,15 +1715,15 @@ class TestExecuteCaptureOffload:
         # Disabled -> command runs unwrapped: full output inline, not offloaded, no file.
         sandbox.enable_capture_offload = False
         off_path = self._capture_path("flag_off")
-        offloaded, result = sandbox.execute_with_offload(_BIG_OUTPUT_CMD, off_path, max_inline_bytes=budget)
-        assert offloaded is False
-        assert "line 5000:" in result.output  # full output returned, not a preview
-        assert "line 2500:" in result.output
+        offload = sandbox.execute_with_offload(_BIG_OUTPUT_CMD, off_path, max_inline_bytes=budget)
+        assert offload.offloaded is False
+        assert "line 5000:" in offload.response.output  # full output returned, not a preview
+        assert "line 2500:" in offload.response.output
         assert sandbox.execute(f"test -e {off_path} && echo Y || echo N").output.strip() == "N"
 
         # Enabled -> offloaded to a file; only a head/tail preview is returned.
         sandbox.enable_capture_offload = True
         on_path = self._capture_path("flag_on")
-        offloaded, result = sandbox.execute_with_offload(_BIG_OUTPUT_CMD, on_path, max_inline_bytes=budget)
-        assert offloaded is True
-        assert "line 2500:" not in result.output  # middle omitted -> it's a preview
+        offload = sandbox.execute_with_offload(_BIG_OUTPUT_CMD, on_path, max_inline_bytes=budget)
+        assert offload.offloaded is True
+        assert "line 2500:" not in offload.response.output  # middle omitted -> it's a preview

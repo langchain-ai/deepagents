@@ -39,6 +39,7 @@ from deepagents._version import __version__
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
 from deepagents.middleware._fs_interrupt import _build_interrupt_on_from_permissions
+from deepagents.middleware._secrets import SecretsRedactionMiddleware
 from deepagents.middleware._state import private_state_field_names
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
@@ -110,7 +111,11 @@ Keep working until the task is fully complete. Don't stop partway and explain wh
 
 ## Progress Updates
 
-For longer tasks, provide brief progress updates at reasonable intervals — a concise sentence recapping what you've done and what's next."""  # noqa: E501
+For longer tasks, provide brief progress updates at reasonable intervals — a concise sentence recapping what you've done and what's next.
+
+## Credentials and Secrets
+
+Never inline credentials, API keys, or tokens directly into shell commands or tool arguments. Reference environment variables (e.g. `$PYLON_API_KEY`) or placeholders supplied by the runtime. If the user pastes a credential, acknowledge that it has been captured securely and proceed using the env-var reference; do not echo the literal value."""  # noqa: E501
 """Default base system prompt for every deep agent (`BASE`).
 
 The final system prompt sent to the model is composed from up to four
@@ -641,6 +646,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             # Build middleware: base stack + skills (if specified) + user's middleware
             subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
+                SecretsRedactionMiddleware(),
                 TodoListMiddleware(),
                 FilesystemMiddleware(
                     backend=backend,
@@ -716,6 +722,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     gp_profile = _profile.general_purpose_subagent or GeneralPurposeSubagentProfile()
     if gp_profile.enabled is not False and not any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in inline_subagents):
         gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
+            SecretsRedactionMiddleware(),
             TodoListMiddleware(),
             FilesystemMiddleware(
                 backend=backend,
@@ -771,6 +778,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
     # Build main agent middleware stack
     deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
+        SecretsRedactionMiddleware(),
         TodoListMiddleware(),
     ]
     if skills is not None:

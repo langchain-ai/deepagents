@@ -49,13 +49,14 @@ Before treating a task as done:
   restart the service, open a fresh session, re-run the script — not just where
   you built it.
 
-- Keep the solution simple and bounded. Prefer the simplest approach that
-  satisfies every requirement with margin: don't tune a value to its
-  breaking-point edge, enumerate-and-pick an extremal candidate, or rewrite
-  shared or immutable state (version history, schemas, running services) the
-  task didn't ask you to touch. Once your output is computed and cross-checked,
-  record it and stop — don't launch another long run just to re-confirm a result
-  you've already validated.
+- Keep the solution simple, minimal, and bounded. Make the smallest change that
+  satisfies the requirement and nothing more; when the scope is ambiguous, take
+  the narrowest reasonable reading — edit the relevant files in place rather than
+  rewriting shared history, migrating schemas, or regenerating/deleting files you
+  were not asked to. Don't tune a value to its breaking-point edge or
+  enumerate-and-pick an extremal candidate. Once your output is computed and
+  cross-checked, record it and stop — don't launch another long run just to
+  re-confirm a result you've already validated.
 </verification_discipline>
 
 <work_in_batches>

@@ -80,9 +80,11 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/auth",
-        description="Connect and manage model provider credentials",
+        description="Connect and manage provider and service credentials",
         bypass_tier=BypassTier.IMMEDIATE_UI,
-        hidden_keywords="key keys credential credentials login token api",
+        hidden_keywords=(
+            "key keys credential credentials login token api tracing langsmith"
+        ),
         aliases=("/connect",),
     ),
     SlashCommand(
@@ -189,7 +191,8 @@ COMMANDS: tuple[SlashCommand, ...] = (
         name="/update",
         description="Check for and install updates",
         bypass_tier=BypassTier.QUEUED,
-        hidden_keywords="upgrade",
+        hidden_keywords="upgrade dependencies deps refresh",
+        argument_hint="[--deps] [--prerelease]",
     ),
     SlashCommand(
         name="/install",

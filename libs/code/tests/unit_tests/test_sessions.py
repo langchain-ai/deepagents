@@ -449,6 +449,19 @@ class TestFormatRelativeTimestamp:
         result = sessions.format_relative_timestamp(ts)
         assert result.endswith("s ago")
 
+    def test_boundary_360_to_364_days_shows_months(self) -> None:
+        """360-364 days old should show months, never the bogus '0y ago'."""
+        for days in (360, 362, 364):
+            ts = (datetime.now(tz=UTC) - timedelta(days=days, hours=1)).isoformat()
+            result = sessions.format_relative_timestamp(ts)
+            assert result == "12mo ago"
+
+    def test_boundary_365_days_shows_years(self) -> None:
+        """At exactly 365 days, the year bucket takes over with '1y ago'."""
+        ts = (datetime.now(tz=UTC) - timedelta(days=365, hours=1)).isoformat()
+        result = sessions.format_relative_timestamp(ts)
+        assert result == "1y ago"
+
 
 class TestFormatPath:
     """Tests for format_path helper."""
@@ -506,6 +519,17 @@ class TestTextualSessionState:
         assert new_id != old_id
         assert uuid.UUID(new_id).version == 7
         assert state.thread_id == new_id
+
+    def test_reset_thread_clears_approval_mode_key(self):
+        """A new thread must not inherit the prior thread's live approval key.
+
+        The key is hashed per thread; leaving a stale key would point the
+        interrupt predicate at the previous thread's mode.
+        """
+        state = TextualSessionState(thread_id="original")
+        state.approval_mode_key = "stale"
+        state.reset_thread()
+        assert state.approval_mode_key is None
 
 
 class TestFindSimilarThreads:

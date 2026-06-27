@@ -67,6 +67,15 @@ class ApiKeyCredential(TypedDict):
     the URL.
     """
 
+    project: NotRequired[str]
+    """Optional LangSmith project name paired with this credential.
+
+    Set only for the `langsmith` tracing service when the user supplies a
+    custom project in `/auth`; absent means traces fall back to the default
+    (`deepagents-code`). Not a secret — it is shown in the `/auth` advanced
+    panel and applied to `LANGSMITH_PROJECT` at startup.
+    """
+
 
 class OAuthCredential(TypedDict):
     """A persisted OAuth subscription credential.
@@ -135,7 +144,11 @@ def _read_raw() -> dict | None:
             "Check the file permissions on the parent directory."
         )
         raise RuntimeError(msg) from exc
-    except json.JSONDecodeError as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        # `UnicodeDecodeError` (a `ValueError`, not an `OSError`) escapes the
+        # handler above when the file holds non-UTF-8 bytes; treat a decode
+        # failure as corruption so callers get the same `RuntimeError` hint
+        # instead of an unhandled traceback.
         msg = (
             f"Failed to parse credential file {path}: {exc}. "
             "Delete the file and re-add credentials via /auth if it is corrupt."
@@ -312,6 +325,15 @@ def _coerce_credential(raw: Any) -> StoredCredential | None:  # noqa: ANN401
             logger.warning(
                 "Ignoring malformed base_url for a stored credential: %r", base_url
             )
+        project = raw.get("project")
+        if isinstance(project, str) and project:
+            credential["project"] = project
+        elif project is not None:
+            # Same rationale as `base_url`: a hand-edited non-string value is
+            # dropped with a trace. `project` is non-secret, so logging is safe.
+            logger.warning(
+                "Ignoring malformed project for a stored credential: %r", project
+            )
         return credential
     # OAuth is reserved for a future PR — silently skip until the producer
     # path lands. `cred_type in {"oauth"}` falls through to None here.
@@ -352,8 +374,28 @@ def get_stored_base_url(provider: str) -> str | None:
     return entry.get("base_url") or None
 
 
+def get_stored_project(provider: str) -> str | None:
+    """Return the LangSmith project paired with `provider`'s stored key, or `None`.
+
+    Returns `None` when no key is stored and when a key is stored without a
+    custom project (the user left the field blank, meaning "use the default").
+
+    Raises:
+        RuntimeError: If the credential file is corrupt.
+    """  # noqa: DOC502 - re-raised from `_read_raw` via `load_credentials`
+    creds = load_credentials()
+    entry = creds.get(provider)
+    if entry is None or entry["type"] != "api_key":
+        return None
+    return entry.get("project") or None
+
+
 def set_stored_key(
-    provider: str, key: str, *, base_url: str | None = None
+    provider: str,
+    key: str,
+    *,
+    base_url: str | None = None,
+    project: str | None = None,
 ) -> WriteOutcome:
     """Persist an API key for `provider`.
 
@@ -362,19 +404,31 @@ def set_stored_key(
     `apply_stored_credentials` in `model_config` — a stored empty would
     unconditionally overwrite the env var).
 
+    This rewrites the whole credential record: `base_url` and `project` are
+    *not* merged with any previously stored values. Passing blank/`None` for
+    either clears it, so a caller rotating a key while wanting to keep the
+    existing endpoint/project must read it back (e.g. via `get_stored_base_url`
+    / `get_stored_project`) and pass it in again.
+
     Args:
         provider: Provider identifier (e.g., `"anthropic"`).
         key: The API key value. Whitespace is stripped before storage.
         base_url: Optional provider endpoint to pair with the key. Whitespace
             is stripped; blank/`None` stores no endpoint, meaning the key uses
             the provider default rather than any inherited (e.g. gateway) URL.
+        project: Optional LangSmith project name to pair with the key. Valid
+            only for the `langsmith` tracing service. Whitespace is stripped;
+            blank/`None` stores no project, meaning traces use the default
+            project.
 
     Returns:
         A `WriteOutcome` whose `warnings` tuple lists chmod failures the
         caller should surface to the user. Empty on a clean save.
 
     Raises:
-        ValueError: If `provider` or the stripped `key` is empty.
+        ValueError: If `provider` or the stripped `key` is empty, or a non-empty
+            `project` is paired with a provider other than the `langsmith`
+            service.
         RuntimeError: If the credential file is corrupt and cannot be read, or
             the new file cannot be written (e.g. no disk space or an
             unwritable state directory).
@@ -398,6 +452,19 @@ def set_stored_key(
     cleaned_base_url = base_url.strip() if base_url else ""
     if cleaned_base_url:
         entry["base_url"] = cleaned_base_url
+    cleaned_project = project.strip() if project else ""
+    if cleaned_project:
+        # A project name is meaningful only for the LangSmith tracing service;
+        # enforce the invariant at the write boundary so a stray project can
+        # never be persisted onto an unrelated provider, regardless of caller.
+        # Lazy import avoids a circular dependency (model_config imports this
+        # module), matching the pattern in `auth_path`.
+        from deepagents_code.model_config import is_langsmith
+
+        if not is_langsmith(provider):
+            msg = f"project is only valid for the langsmith service, not {provider!r}"
+            raise ValueError(msg)
+        entry["project"] = cleaned_project
     creds[provider] = entry
     data["version"] = _STORAGE_VERSION
     data["credentials"] = creds

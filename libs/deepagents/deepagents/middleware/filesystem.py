@@ -39,10 +39,13 @@ from pydantic import BaseModel, Field
 
 from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
+from deepagents.backends.composite import _route_for_path
 from deepagents.backends.protocol import (
     BACKEND_TYPES as BACKEND_TYPES,  # Re-export type here for backwards compatibility
     BackendProtocol,
+    DeleteResult,
     EditResult,
+    ExecuteOffloadResult,
     FileData as FileData,  # Re-export for backwards compatibility
     FileInfo,
     GlobResult,
@@ -52,10 +55,14 @@ from deepagents.backends.protocol import (
     SandboxBackendProtocol,
     WriteResult,
     _resolve_backend,
+    _supports_delete,
     execute_accepts_timeout,
 )
+from deepagents.backends.sandbox import BaseSandbox
 from deepagents.backends.utils import (
     _get_file_type,
+    _glob_anchor,
+    _paths_overlap,
     check_empty_content,
     format_content_with_line_numbers,
     format_grep_matches,
@@ -84,6 +91,7 @@ _DEFAULT_FS_TOOL_OPS: dict[str, FilesystemOperation] = {
     "grep": "read",
     "write_file": "write",
     "edit_file": "write",
+    "delete": "write",
 }
 
 
@@ -135,6 +143,32 @@ def _check_fs_permission(
         if any(wcglob.globmatch(path, pattern, flags=_FS_WCMATCH_FLAGS) for pattern in rule.paths):
             return rule.mode
     return "allow"
+
+
+def _find_delete_deny_patterns(rules: list[FilesystemPermission], target: str) -> list[str]:
+    """Return deny-write patterns that block deleting `target`.
+
+    A recursive delete removes `target` and all descendants, so any overlapping
+    deny-write pattern prevents the operation. The check is based only on
+    permission rules and returns all matching patterns.
+
+    Args:
+        rules: Filesystem permission rules.
+        target: Absolute, validated path being deleted.
+
+    Returns:
+        Matching deny-write patterns, or an empty list if the delete is allowed.
+    """
+    denying: list[str] = []
+    seen: set[str] = set()
+    for rule in rules:
+        if rule.mode != "deny" or "write" not in rule.operations:
+            continue
+        for pattern in rule.paths:
+            if pattern not in seen and _paths_overlap(target, _glob_anchor(pattern)):
+                seen.add(pattern)
+                denying.append(pattern)
+    return denying
 
 
 def _filter_paths_by_permission(
@@ -234,6 +268,13 @@ def _apply_permissions_to_glob_results(
     return [fi.get("path", "") for fi in filtered_infos]
 
 
+def _format_file_paths(paths: list[str]) -> str:
+    """Format filesystem path lists for tool output."""
+    if not paths:
+        return "No files found"
+    return str(truncate_if_too_long(paths))
+
+
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 GLOB_TIMEOUT = 20.0  # seconds
 LINE_NUMBER_WIDTH = 6
@@ -299,7 +340,7 @@ def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileDa
     if left is None:
         return {k: v for k, v in right.items() if v is not None}
 
-    result = {**left}
+    result: dict[str, FileData] = dict(left)
     for key, value in right.items():
         if value is None:
             result.pop(key, None)
@@ -361,7 +402,7 @@ class ReadFileSchema(BaseModel):
 class WriteFileSchema(BaseModel):
     """Input schema for the `write_file` tool."""
 
-    file_path: str = Field(description="Absolute path where the file should be created. Must be absolute, not relative.")
+    file_path: str = Field(description="Absolute path where the file should be written. Must be absolute, not relative.")
 
     content: str = Field(description="The text content to write to the file. This parameter is required.")
 
@@ -379,6 +420,12 @@ class EditFileSchema(BaseModel):
         default=False,
         description="If True, replace all occurrences of old_string. If False (default), old_string must be unique.",
     )
+
+
+class DeleteSchema(BaseModel):
+    """Input schema for the `delete` tool."""
+
+    file_path: str = Field(description="Absolute path to the file to delete. Must be absolute, not relative.")
 
 
 class GlobSchema(BaseModel):
@@ -453,11 +500,20 @@ Usage:
 - Only use emojis if the user explicitly requests it."""
 
 
-WRITE_FILE_TOOL_DESCRIPTION = """Writes to a new file in the filesystem.
+WRITE_FILE_TOOL_DESCRIPTION = """Writes content to a file. Creates the file if it does not exist; replaces it entirely if it does.
 
 Usage:
-- The write_file tool will create the a new file.
+- Use this tool when you intend to create a new file or replace the whole file. You do not need to read the file first.
 - Prefer to edit existing files (with the edit_file tool) over creating new ones when possible.
+"""
+
+DELETE_TOOL_DESCRIPTION = """Deletes a file or directory from the filesystem.
+
+Usage:
+- Permanently removes the file or directory at the given absolute path.
+- Deleting a directory removes it and everything inside it, recursively. Prefer
+  deleting a directory in one call over deleting each file individually.
+- This cannot be undone, so only delete paths you are sure are no longer needed.
 """
 
 GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern.
@@ -531,7 +587,7 @@ _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE = """## Following Conventions
 - Read files before editing — understand existing content before making changes
 - Mimic existing style, naming conventions, and patterns
 
-## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`
+## Filesystem Tools `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`
 
 You have access to a filesystem which you can interact with using these tools.
 All file paths must start with a /. Follow the tool docs for the available tools, and use pagination (offset/limit) when reading large files.
@@ -540,6 +596,7 @@ All file paths must start with a /. Follow the tool docs for the available tools
 - read_file: read a file from the filesystem
 - write_file: write to a file in the filesystem
 - edit_file: edit a file in the filesystem
+- delete: delete a file or directory (recursively) from the filesystem
 - glob: find files matching a pattern (e.g., "**/*.py")
 - grep: search for text within files
 
@@ -700,6 +757,7 @@ TOOLS_EXCLUDED_FROM_EVICTION = (
     "read_file",
     "edit_file",
     "write_file",
+    "delete",
 )
 
 
@@ -906,6 +964,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             self._create_read_file_tool(),
             self._create_write_file_tool(),
             self._create_edit_file_tool(),
+            self._create_delete_tool(),
             self._create_glob_tool(),
             self._create_grep_tool(),
             self._create_execute_tool(),
@@ -991,7 +1050,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             infos = ls_result.entries or []
             paths = _apply_permissions_to_ls_results(self._permissions, infos)
             return ToolMessage(
-                content=str(truncate_if_too_long(paths)),
+                content=_format_file_paths(paths),
                 tool_call_id=runtime.tool_call_id,
                 name="ls",
                 status="success",
@@ -1030,7 +1089,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             infos = ls_result.entries or []
             paths = _apply_permissions_to_ls_results(self._permissions, infos)
             return ToolMessage(
-                content=str(truncate_if_too_long(paths)),
+                content=_format_file_paths(paths),
                 tool_call_id=runtime.tool_call_id,
                 name="ls",
                 status="success",
@@ -1216,7 +1275,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_description = self._custom_tool_descriptions.get("write_file") or WRITE_FILE_TOOL_DESCRIPTION
 
         def sync_write_file(
-            file_path: Annotated[str, "Absolute path where the file should be created. Must be absolute, not relative."],
+            file_path: Annotated[str, "Absolute path where the file should be written. Must be absolute, not relative."],
             content: Annotated[str, "The text content to write to the file. This parameter is required."],
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
@@ -1255,7 +1314,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             )
 
         async def async_write_file(
-            file_path: Annotated[str, "Absolute path where the file should be created. Must be absolute, not relative."],
+            file_path: Annotated[str, "Absolute path where the file should be written. Must be absolute, not relative."],
             content: Annotated[str, "The text content to write to the file. This parameter is required."],
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
@@ -1399,6 +1458,97 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=EditFileSchema,
         )
 
+    def _create_delete_tool(self) -> BaseTool:  # Tool wiring + permission/support handling
+        """Create the delete tool."""
+        tool_description = self._custom_tool_descriptions.get("delete") or DELETE_TOOL_DESCRIPTION
+
+        def sync_delete(
+            file_path: Annotated[str, "Absolute path to the file to delete. Must be absolute, not relative."],
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> ToolMessage:
+            """Synchronous wrapper for delete tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = validate_path(file_path)
+            except ValueError as e:
+                return ToolMessage(
+                    content=f"Error: {e}",
+                    name="delete",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+
+            denying_patterns = _find_delete_deny_patterns(self._permissions, validated_path)
+            if denying_patterns:
+                return ToolMessage(
+                    content=f"Error: permission denied for write on {validated_path} (matches deny rule(s): {', '.join(denying_patterns)})",
+                    name="delete",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            res: DeleteResult = resolved_backend.delete(validated_path)
+            if res.error:
+                return ToolMessage(
+                    content=res.error,
+                    name="delete",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            return ToolMessage(
+                content=f"Deleted {res.path}",
+                name="delete",
+                tool_call_id=runtime.tool_call_id,
+                status="success",
+            )
+
+        async def async_delete(
+            file_path: Annotated[str, "Absolute path to the file to delete. Must be absolute, not relative."],
+            runtime: ToolRuntime[None, FilesystemState],
+        ) -> ToolMessage:
+            """Asynchronous wrapper for delete tool."""
+            resolved_backend = self._get_backend(runtime)
+            try:
+                validated_path = validate_path(file_path)
+            except ValueError as e:
+                return ToolMessage(
+                    content=f"Error: {e}",
+                    name="delete",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+
+            denying_patterns = _find_delete_deny_patterns(self._permissions, validated_path)
+            if denying_patterns:
+                return ToolMessage(
+                    content=f"Error: permission denied for write on {validated_path} (matches deny rule(s): {', '.join(denying_patterns)})",
+                    name="delete",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            res: DeleteResult = await resolved_backend.adelete(validated_path)
+            if res.error:
+                return ToolMessage(
+                    content=res.error,
+                    name="delete",
+                    tool_call_id=runtime.tool_call_id,
+                    status="error",
+                )
+            return ToolMessage(
+                content=f"Deleted {res.path}",
+                name="delete",
+                tool_call_id=runtime.tool_call_id,
+                status="success",
+            )
+
+        return StructuredTool.from_function(
+            name="delete",
+            description=tool_description,
+            func=sync_delete,
+            coroutine=async_delete,
+            infer_schema=False,
+            args_schema=DeleteSchema,
+        )
+
     def _create_glob_tool(self) -> BaseTool:  # noqa: C901, PLR0915  # Tool wiring + permission/result shaping + timeout handling
         """Create the glob tool."""
         tool_description = self._custom_tool_descriptions.get("glob") or GLOB_TOOL_DESCRIPTION
@@ -1493,7 +1643,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             infos = glob_result.matches or []
             paths = _apply_permissions_to_glob_results(self._permissions, infos)
             return ToolMessage(
-                content=str(truncate_if_too_long(paths)),
+                content=_format_file_paths(paths),
                 tool_call_id=runtime.tool_call_id,
                 name="glob",
                 status="success",
@@ -1557,7 +1707,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             infos = glob_result.matches or []
             paths = _apply_permissions_to_glob_results(self._permissions, infos)
             return ToolMessage(
-                content=str(truncate_if_too_long(paths)),
+                content=_format_file_paths(paths),
                 tool_call_id=runtime.tool_call_id,
                 name="glob",
                 status="success",
@@ -1671,6 +1821,74 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=GrepSchema,
         )
 
+    def _resolve_capture(self, resolved_backend: BackendProtocol, tool_call_id: str | None) -> tuple[BaseSandbox, str] | None:
+        """Resolve the executing sandbox and offload path for capture-at-source.
+
+        Capture-at-source writes output to a literal path via the sandbox shell
+        and later reads it back through the backend, which requires `execute()`
+        and `read_file` to resolve to the same filesystem at that path. Only
+        `BaseSandbox` provides that guarantee, so it is gated on it; the offload
+        path must also route to the executing backend rather than a different
+        composite route.
+
+        Whether capture is actually applied is left to the executor's
+        `execute_with_offload` (which honors `enable_capture_offload`); this only
+        decides whether the offload path is valid to attempt.
+
+        Returns:
+            `(executor, capture_path)` when capture-at-source can be attempted, or
+            `None` to skip it (eviction disabled, no tool-call id, the backend is
+            not a `BaseSandbox`, or the offload path routes elsewhere) — in which
+            case the caller uses plain execute plus generic eviction.
+        """
+        if not self._tool_token_limit_before_evict or not tool_call_id:
+            return None
+        capture_path = f"{self._large_tool_results_prefix}/{sanitize_tool_call_id(tool_call_id)}"
+        if isinstance(resolved_backend, CompositeBackend):
+            default = resolved_backend.default
+            if not isinstance(default, BaseSandbox):
+                return None
+            backend, _backend_path, route_prefix = _route_for_path(
+                default=default,
+                sorted_routes=resolved_backend.sorted_routes,
+                path=capture_path,
+            )
+            # Safe only when the path falls through to the default backend
+            # unchanged, since execute() also runs on the default.
+            if route_prefix is None and backend is default:
+                return default, capture_path
+            return None
+        if isinstance(resolved_backend, BaseSandbox):
+            return resolved_backend, capture_path
+        return None
+
+    @staticmethod
+    def _format_execute_output(output: str, exit_code: int | None, *, truncated: bool) -> str:
+        """Format raw command output with status and truncation notes for the model."""
+        parts = [output]
+        if exit_code is not None:
+            cmd_status = "succeeded" if exit_code == 0 else "failed"
+            parts.append(f"\n[Command {cmd_status} with exit code {exit_code}]")
+        if truncated:
+            parts.append("\n[Output was truncated due to size limits]")
+        return "".join(parts)
+
+    def _interpret_capture_output(self, offload: ExecuteOffloadResult, capture_path: str, tool_call_id: str) -> str:
+        """Build `ToolMessage` content from an `execute_with_offload` result."""
+        response = offload.response
+        if not offload.offloaded:
+            return self._format_execute_output(response.output, response.exit_code, truncated=response.truncated)
+        cmd_status = "succeeded" if response.exit_code == 0 else "failed"
+        status_line = f"[Command {cmd_status} with exit code {response.exit_code}]"
+        if response.truncated:
+            status_line += "\n[Output exceeded the capture size limit and was truncated; the saved file is incomplete]"
+        content_sample = f"{status_line}\n{response.output}"
+        return TOO_LARGE_TOOL_MSG.format(
+            tool_call_id=tool_call_id,
+            file_path=capture_path,
+            content_sample=content_sample,
+        )
+
     def _create_execute_tool(self) -> BaseTool:  # noqa: C901
         """Create the execute tool for sandbox command execution."""
         tool_description = self._custom_tool_descriptions.get("execute") or EXECUTE_TOOL_DESCRIPTION
@@ -1729,8 +1947,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
+            capture = self._resolve_capture(resolved_backend, runtime.tool_call_id)
             try:
-                result = executable.execute(command, timeout=timeout) if timeout is not None else executable.execute(command)
+                if capture is not None:
+                    executor, capture_path = capture
+                    offload = executor.execute_with_offload(
+                        command,
+                        capture_path,
+                        max_inline_bytes=NUM_CHARS_PER_TOKEN * cast("int", self._tool_token_limit_before_evict),
+                        timeout=timeout,
+                    )
+                    content = self._interpret_capture_output(offload, capture_path, cast("str", runtime.tool_call_id))
+                else:
+                    result = executable.execute(command, timeout=timeout) if timeout is not None else executable.execute(command)
+                    content = self._format_execute_output(result.output, result.exit_code, truncated=result.truncated)
             except NotImplementedError as e:
                 return ToolMessage(
                     content=f"Error: Execution not available. {e}",
@@ -1746,18 +1976,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            # Format output for LLM consumption
-            parts = [result.output]
-
-            if result.exit_code is not None:
-                cmd_status = "succeeded" if result.exit_code == 0 else "failed"
-                parts.append(f"\n[Command {cmd_status} with exit code {result.exit_code}]")
-
-            if result.truncated:
-                parts.append("\n[Output was truncated due to size limits]")
-
             return ToolMessage(
-                content="".join(parts),
+                content=content,
                 name="execute",
                 tool_call_id=runtime.tool_call_id,
                 status="success",
@@ -1818,8 +2038,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
+            capture = self._resolve_capture(resolved_backend, runtime.tool_call_id)
             try:
-                result = await executable.aexecute(command, timeout=timeout) if timeout is not None else await executable.aexecute(command)
+                if capture is not None:
+                    executor, capture_path = capture
+                    offload = await executor.aexecute_with_offload(
+                        command,
+                        capture_path,
+                        max_inline_bytes=NUM_CHARS_PER_TOKEN * cast("int", self._tool_token_limit_before_evict),
+                        timeout=timeout,
+                    )
+                    content = self._interpret_capture_output(offload, capture_path, cast("str", runtime.tool_call_id))
+                else:
+                    result = await executable.aexecute(command, timeout=timeout) if timeout is not None else await executable.aexecute(command)
+                    content = self._format_execute_output(result.output, result.exit_code, truncated=result.truncated)
             except NotImplementedError as e:
                 return ToolMessage(
                     content=f"Error: Execution not available. {e}",
@@ -1835,18 +2067,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            # Format output for LLM consumption
-            parts = [result.output]
-
-            if result.exit_code is not None:
-                cmd_status = "succeeded" if result.exit_code == 0 else "failed"
-                parts.append(f"\n[Command {cmd_status} with exit code {result.exit_code}]")
-
-            if result.truncated:
-                parts.append("\n[Output was truncated due to size limits]")
-
             return ToolMessage(
-                content="".join(parts),
+                content=content,
                 name="execute",
                 tool_call_id=runtime.tool_call_id,
                 status="success",
@@ -1860,6 +2082,64 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             infer_schema=False,
             args_schema=ExecuteSchema,
         )
+
+    def _filter_unsupported_tools_and_apply_prompt(self, request: ModelRequest[ContextT]) -> ModelRequest[ContextT]:
+        """Drop capability-gated tools the backend can't serve, then apply the system prompt.
+
+        Shared by the sync and async `wrap_model_call` paths (the only part that
+        differs between them is sync vs. async message eviction). The `execute`
+        and `delete` tools are optional per backend, so when the resolved
+        backend doesn't support a capability the corresponding tool is filtered
+        out of the request rather than advertised to the model and left to fail
+        at call time. Resolving the backend and probing support is synchronous,
+        so both paths route through here.
+
+        Returns the request with unsupported tools removed and the filesystem
+        system prompt appended.
+        """
+        tool_names = {(tool.name if hasattr(tool, "name") else tool.get("name")) for tool in request.tools}
+        has_execute_tool = "execute" in tool_names
+        has_delete_tool = "delete" in tool_names
+
+        # `execute` and `delete` are optional per backend; resolve the
+        # backend once and filter out any tool the backend can't serve.
+        if has_execute_tool or has_delete_tool:
+            backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
+            unsupported: set[str | None] = set()
+            if has_execute_tool and not supports_execution(backend):
+                unsupported.add("execute")
+                has_execute_tool = False
+            if has_delete_tool and not _supports_delete(backend):
+                unsupported.add("delete")
+            if unsupported:
+                filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) not in unsupported]
+                request = request.override(tools=filtered_tools)
+
+        # Use custom system prompt if provided, otherwise generate dynamically
+        if self._custom_system_prompt is not None:
+            system_prompt = self._custom_system_prompt
+        else:
+            # Build dynamic system prompt based on available tools
+            prompt_parts = [
+                _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
+                    large_tool_results_prefix=self._large_tool_results_prefix,
+                )
+            ]
+
+            # Add execution instructions only if the execute tool survived filtering
+            if has_execute_tool:
+                prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
+                route_prompt = _route_host_path_prompt(backend)
+                if route_prompt:
+                    prompt_parts.append(route_prompt)
+
+            system_prompt = "\n\n".join(prompt_parts).strip()
+
+        if system_prompt:
+            new_system_message = append_to_system_message(request.system_message, system_prompt)
+            request = request.override(system_message=new_system_message)
+
+        return request
 
     def wrap_model_call(
         self,
@@ -1886,44 +2166,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             The model response, or an `ExtendedModelResponse` with a state
                 update tagging a newly evicted message.
         """
-        # Check if execute tool is present and if backend supports it
-        has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
-
-        backend_supports_execution = False
-        if has_execute_tool:
-            # Resolve backend to check execution support
-            backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
-            backend_supports_execution = supports_execution(backend)
-
-            # If execute tool exists but backend doesn't support it, filter it out
-            if not backend_supports_execution:
-                filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) != "execute"]
-                request = request.override(tools=filtered_tools)
-                has_execute_tool = False
-
-        # Use custom system prompt if provided, otherwise generate dynamically
-        if self._custom_system_prompt is not None:
-            system_prompt = self._custom_system_prompt
-        else:
-            # Build dynamic system prompt based on available tools
-            prompt_parts = [
-                _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
-                    large_tool_results_prefix=self._large_tool_results_prefix,
-                )
-            ]
-
-            # Add execution instructions if execute tool is available
-            if has_execute_tool and backend_supports_execution:
-                prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
-                route_prompt = _route_host_path_prompt(backend)
-                if route_prompt:
-                    prompt_parts.append(route_prompt)
-
-            system_prompt = "\n\n".join(prompt_parts).strip()
-
-        if system_prompt:
-            new_system_message = append_to_system_message(request.system_message, system_prompt)
-            request = request.override(system_message=new_system_message)
+        request = self._filter_unsupported_tools_and_apply_prompt(request)
 
         eviction_result = self._evict_and_truncate_messages(request)
         if eviction_result is not None:
@@ -1954,44 +2197,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             The model response from the handler, or an `ExtendedModelResponse`
                 with a state update tagging newly evicted messages.
         """
-        # Check if execute tool is present and if backend supports it
-        has_execute_tool = any((tool.name if hasattr(tool, "name") else tool.get("name")) == "execute" for tool in request.tools)
-
-        backend_supports_execution = False
-        if has_execute_tool:
-            # Resolve backend to check execution support
-            backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
-            backend_supports_execution = supports_execution(backend)
-
-            # If execute tool exists but backend doesn't support it, filter it out
-            if not backend_supports_execution:
-                filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) != "execute"]
-                request = request.override(tools=filtered_tools)
-                has_execute_tool = False
-
-        # Use custom system prompt if provided, otherwise generate dynamically
-        if self._custom_system_prompt is not None:
-            system_prompt = self._custom_system_prompt
-        else:
-            # Build dynamic system prompt based on available tools
-            prompt_parts = [
-                _FILESYSTEM_SYSTEM_PROMPT_TEMPLATE.format(
-                    large_tool_results_prefix=self._large_tool_results_prefix,
-                )
-            ]
-
-            # Add execution instructions if execute tool is available
-            if has_execute_tool and backend_supports_execution:
-                prompt_parts.append(EXECUTION_SYSTEM_PROMPT)
-                route_prompt = _route_host_path_prompt(backend)
-                if route_prompt:
-                    prompt_parts.append(route_prompt)
-
-            system_prompt = "\n\n".join(prompt_parts).strip()
-
-        if system_prompt:
-            new_system_message = append_to_system_message(request.system_message, system_prompt)
-            request = request.override(system_message=new_system_message)
+        request = self._filter_unsupported_tools_and_apply_prompt(request)
 
         eviction_result = await self._aevict_and_truncate_messages(request)
         if eviction_result is not None:

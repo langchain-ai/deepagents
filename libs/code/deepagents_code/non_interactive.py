@@ -945,7 +945,7 @@ async def run_non_interactive(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool = False,
-    enable_interpreter: bool = False,
+    enable_interpreter: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
     max_turns: int | None = None,
@@ -1005,7 +1005,7 @@ async def run_non_interactive(
             servers. When `False` (default), project stdio servers are
             silently skipped.
         enable_interpreter: Enable the JS interpreter (`js_eval`) middleware
-            on the main agent. Local-mode only.
+            on the main agent. `None` uses the sandbox-aware default.
         interpreter_ptc: Override for `settings.interpreter_ptc` (PTC
             allowlist for `js_eval`).
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for

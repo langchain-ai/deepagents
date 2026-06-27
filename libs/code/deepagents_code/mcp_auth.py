@@ -24,7 +24,7 @@ import stat
 import threading
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
-from typing import TYPE_CHECKING, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, TypedDict
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -46,6 +46,8 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from mcp.client.auth.oauth2 import OAuthContext
 
     from deepagents_code.mcp_oauth_ui import OAuthInteraction
 
@@ -238,7 +240,7 @@ class FileTokenStorage(TokenStorage):
 
     @property
     def path(self) -> Path:
-        """Return the on-disk token file path for this server."""
+        """On-disk token file path for this server."""
         stem = _token_file_stem(self._server_name, self._server_url)
         return _tokens_dir() / f"{stem}.json"
 
@@ -1046,6 +1048,35 @@ def _append_query_params(url: str, params: dict[str, str]) -> str:
     return urlunparse(parsed._replace(query=urlencode(existing, doseq=True)))
 
 
+def _strip_duplicate_client_id_under_basic_auth(context: OAuthContext) -> None:
+    """Drop the redundant body `client_id` when token auth uses HTTP Basic.
+
+    The MCP SDK copies `client_id` into the token-request body (on both the
+    authorization-code exchange and refresh paths) and, for
+    `token_endpoint_auth_method == "client_secret_basic"`, *also* sends it in the
+    `Authorization: Basic` header. RFC 6749 §2.3.1 carries the client identity in
+    the header for Basic auth, so the body copy is redundant; some authorization
+    servers (e.g. Pylon) reject the duplicate identity with an `OAuthTokenError`.
+    Wrapping `prepare_token_auth` strips the body `client_id` only when a Basic
+    header is present, leaving `client_secret_post`/`none` flows untouched.
+    """
+    original = context.prepare_token_auth
+
+    def prepare_token_auth(
+        data: dict[str, str],
+        headers: dict[str, str] | None = None,
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        data, headers = original(data, headers)
+        # RFC 7617 makes the auth-scheme token case-insensitive, so match
+        # `basic` regardless of casing rather than coupling to the SDK's exact
+        # `Basic ` literal.
+        if headers.get("Authorization", "").lower().startswith("basic "):
+            data = {k: v for k, v in data.items() if k != "client_id"}
+        return data, headers
+
+    context.prepare_token_auth = prepare_token_auth  # ty: ignore[invalid-assignment]
+
+
 class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
     """`OAuthClientProvider` that restores `token_expiry_time` from storage.
 
@@ -1062,6 +1093,10 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
     token is expired so the refresh path still gets a chance before
     falling back to 401.
     """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        _strip_duplicate_client_id_under_basic_auth(self.context)
 
     async def _initialize(self) -> None:
         # Overrides a leading-underscore SDK method; behavior depends on

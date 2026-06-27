@@ -89,6 +89,67 @@ class TestRoundTrip:
         assert auth_store.get_stored_base_url("openai") is None
         assert auth_store.get_stored_key("openai") == "k"
 
+    def test_project_round_trips(self) -> None:
+        """A stored project is persisted alongside the key."""
+        auth_store.set_stored_key("langsmith", "k", project="  my-app  ")
+        assert auth_store.get_stored_key("langsmith") == "k"
+        assert auth_store.get_stored_project("langsmith") == "my-app"
+
+    def test_blank_project_not_stored(self) -> None:
+        """A blank/omitted project stores nothing (use the default project)."""
+        auth_store.set_stored_key("langsmith", "k", project="   ")
+        assert auth_store.get_stored_project("langsmith") is None
+        auth_store.set_stored_key("langsmith", "k")
+        assert auth_store.get_stored_project("langsmith") is None
+
+    def test_resave_without_project_drops_it(self) -> None:
+        """Replacing a credential without a project clears the prior one."""
+        auth_store.set_stored_key("langsmith", "k", project="my-app")
+        auth_store.set_stored_key("langsmith", "k2")
+        assert auth_store.get_stored_project("langsmith") is None
+
+    def test_project_rejected_for_non_langsmith(self) -> None:
+        """A non-empty project may only pair with the langsmith service.
+
+        The invariant is enforced at the write boundary (not just in the CLI),
+        and nothing is persisted when it is violated.
+        """
+        with pytest.raises(ValueError, match="langsmith"):
+            auth_store.set_stored_key("anthropic", "k", project="my-app")
+        assert auth_store.get_stored_key("anthropic") is None
+
+    def test_blank_project_allowed_for_non_langsmith(self) -> None:
+        """A blank project is a no-op for any provider, so the key still stores."""
+        auth_store.set_stored_key("anthropic", "k", project="   ")
+        assert auth_store.get_stored_key("anthropic") == "k"
+        assert auth_store.get_stored_project("anthropic") is None
+
+    def test_malformed_project_is_dropped_and_logged(
+        self, fake_home: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A non-string project is dropped, the key survives, and it's logged."""
+        path = _auth_file(fake_home)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "credentials": {
+                        "langsmith": {
+                            "type": "api_key",
+                            "key": "k",
+                            "added_at": "",
+                            "project": 1234,
+                        }
+                    },
+                }
+            )
+        )
+        with caplog.at_level("WARNING", logger="deepagents_code.auth_store"):
+            assert auth_store.get_stored_project("langsmith") is None
+            assert auth_store.get_stored_key("langsmith") == "k"
+        assert any("malformed project" in r.getMessage() for r in caplog.records)
+
     def test_malformed_base_url_is_dropped_and_logged(
         self, fake_home: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -200,6 +261,14 @@ class TestCorruption:
         path = _auth_file(fake_home)
         path.parent.mkdir(parents=True)
         path.write_text("{not json")
+        with pytest.raises(RuntimeError, match="Delete the file"):
+            auth_store.load_credentials()
+
+    def test_non_utf8_raises(self, fake_home: Path) -> None:
+        """A non-UTF-8 file surfaces the deletion hint, not a `UnicodeDecodeError`."""
+        path = _auth_file(fake_home)
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"\xff\xfe not utf-8")
         with pytest.raises(RuntimeError, match="Delete the file"):
             auth_store.load_credentials()
 

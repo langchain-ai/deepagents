@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from rich.cells import cell_len
+from rich.text import Text
 from textual.binding import Binding, BindingType
 from textual.color import Color as TColor
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -22,7 +23,12 @@ from textual.style import Style as TStyle
 from textual.widgets import Checkbox, Input, Select, Static
 
 # Specialize focused Select overlay key handling; no public re-export available.
-from textual.widgets._select import SelectCurrent, SelectOverlay  # noqa: PLC2701
+from textual.widgets._select import (  # noqa: PLC2701
+    NoSelection,
+    Option,
+    SelectCurrent,
+    SelectOverlay,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -592,6 +598,45 @@ class ThreadScopeSelect(Select[str]):
         yield ThreadScopeSelectOverlay(type_to_search=self._type_to_search).data_bind(
             compact=Select.compact
         )
+
+    def _setup_options_renderables(self) -> None:
+        """Populate the custom overlay when options change."""
+        options = [
+            Option(Text(self.prompt, style="dim"))
+            if value == self.NULL
+            else Option(prompt)
+            for prompt, value in self._options
+        ]
+
+        try:
+            option_list = self.query_one(ThreadScopeSelectOverlay)
+        except NoMatches:
+            if self.is_attached:
+                self.call_after_refresh(self._setup_options_renderables)
+            return
+
+        option_list.clear_options()
+        option_list.add_options(options)
+
+    def _watch_value(self, value: str | NoSelection) -> None:
+        """Update the current value while using the custom overlay widget."""
+        self._value = value
+        try:
+            select_current = self.query_one(SelectCurrent)
+        except NoMatches:
+            return
+
+        if value == self.NULL:
+            select_current.update(self.NULL)
+        else:
+            for index, (prompt, option_value) in enumerate(self._options):
+                if option_value == value:
+                    with contextlib.suppress(NoMatches):
+                        select_overlay = self.query_one(ThreadScopeSelectOverlay)
+                        select_overlay.highlighted = index
+                    select_current.update(prompt)
+                    break
+        self.post_message(self.Changed(self, value))
 
     def key_tab(self, event: Key) -> None:
         """Prevent focus traversal while the dropdown menu is open."""
@@ -2418,7 +2463,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     @property
     def is_delete_confirmation_open(self) -> bool:
-        """Return whether the delete confirmation overlay is visible."""
+        """Whether the delete confirmation overlay is visible."""
         return self._confirming_delete
 
     def _on_delete_confirmed(self, thread_id: str, confirmed: bool | None) -> None:

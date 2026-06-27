@@ -328,6 +328,49 @@ async def test_channel_polls_and_dispatches_reactions(tmp_path: Path) -> None:
     assert [message.message_id for message in messages] == ["should-not-be-reaction"]
 
 
+async def test_channel_polls_self_reactions_without_operator_id(tmp_path: Path) -> None:
+    transport = RecordingTransport(
+        messages=[
+            {
+                "event_type": "reaction",
+                "chat_id": "chat",
+                "message_id": "approval-message",
+                "sender_id": "operator",
+                "emoji": "👍",
+                "fromSelf": True,
+            },
+            {
+                "event_type": "reaction",
+                "chat_id": "chat",
+                "message_id": "other-message",
+                "sender_id": "other",
+                "emoji": "👍",
+            },
+        ],
+    )
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(
+            session_dir=tmp_path,
+            poll_interval_seconds=60,
+            health_interval_seconds=60,
+        ),
+        transport=cast("_BridgeTransport", transport),
+    )
+    reactions: list[ChannelReaction] = []
+
+    async def record(reaction: ChannelReaction) -> None:
+        reactions.append(reaction)
+
+    channel.set_reaction_handler(record)
+
+    await channel.start()
+    await asyncio.sleep(0)
+    await channel.stop()
+
+    assert [reaction.message_id for reaction in reactions] == ["approval-message"]
+    assert reactions[0].metadata["from_self"] is True
+
+
 async def test_channel_keeps_legacy_message_entries_compatible(tmp_path: Path) -> None:
     transport = RecordingTransport(
         messages=[
@@ -835,3 +878,4 @@ def test_bridge_script_registers_reaction_queue_entries() -> None:
     assert 'event_type: "message"' in script
     assert 'event_type: "reaction"' in script
     assert "raw_reaction" in script
+    assert "from_self: fromSelf" in script

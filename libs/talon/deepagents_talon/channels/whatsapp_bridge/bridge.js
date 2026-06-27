@@ -196,6 +196,7 @@ function enqueueReaction(reaction) {
     console.error("Skipping WhatsApp reaction without a message id, chat id, or sender id");
     return;
   }
+  const fromSelf = senderId === botId;
 
   const entry = {
     event_type: "reaction",
@@ -206,6 +207,8 @@ function enqueueReaction(reaction) {
     messageId,
     sender_id: senderId,
     senderId,
+    from_self: fromSelf,
+    fromSelf,
     emoji,
     reaction: emoji,
     raw_reaction: rawReaction(reaction),

@@ -405,6 +405,169 @@ async def test_host_keeps_tool_approval_scoped_to_original_sender(tmp_path: Path
     assert channel.sent[3] == ("chat", "decision:reject")
 
 
+async def test_host_routes_tool_approval_reaction_to_prompt_message(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    channel.next_message_id = "approval-prompt"
+    agent = ApprovalAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="run", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    await channel.receive_reaction(
+        "👍🏽",
+        message_id="approval-prompt",
+        sender_id="operator",
+    )
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    assert len(agent.requests) == 1
+    assert channel.reaction_handler is not None
+    assert channel.sent[1] == ("chat", "decision:approve")
+
+
+async def test_host_routes_tool_approval_reaction_denial(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    channel.next_message_id = "approval-prompt"
+    agent = ApprovalAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="run", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    await channel.receive_reaction(
+        "👎️",
+        message_id="approval-prompt",
+        sender_id="operator",
+    )
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    assert channel.sent[1] == ("chat", "decision:reject")
+
+
+async def test_host_ignores_tool_approval_reaction_on_unrelated_message(
+    tmp_path: Path,
+) -> None:
+    channel = RecordingChannel()
+    channel.next_message_id = "approval-prompt"
+    agent = ApprovalAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="run", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    await channel.receive_reaction(
+        "👍",
+        message_id="unrelated",
+        sender_id="operator",
+    )
+    await asyncio.sleep(0)
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="deny", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    assert channel.sent[1] == ("chat", "decision:reject")
+
+
+async def test_host_ignores_tool_approval_reaction_from_different_sender(
+    tmp_path: Path,
+) -> None:
+    channel = RecordingChannel()
+    channel.next_message_id = "approval-prompt"
+    agent = ApprovalAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="run", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    await channel.receive_reaction(
+        "👍",
+        message_id="approval-prompt",
+        sender_id="other",
+    )
+    await asyncio.sleep(0)
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="deny", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    assert channel.sent[1] == ("chat", "decision:reject")
+
+
+async def test_host_ignores_senderless_tool_approval_reaction_when_sender_known(
+    tmp_path: Path,
+) -> None:
+    channel = RecordingChannel()
+    channel.next_message_id = "approval-prompt"
+    agent = ApprovalAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="run", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    await channel.receive_reaction("👍", message_id="approval-prompt")
+    await asyncio.sleep(0)
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="deny", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    assert channel.sent[1] == ("chat", "decision:reject")
+
+
+async def test_host_ignores_tool_approval_reaction_without_prompt_message_id(
+    tmp_path: Path,
+) -> None:
+    channel = RecordingChannel()
+    agent = ApprovalAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="run", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    await channel.receive_reaction(
+        "👍",
+        message_id="approval-prompt",
+        sender_id="operator",
+    )
+    await asyncio.sleep(0)
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="approve", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    assert channel.sent[1] == ("chat", "decision:approve")
+
+
 async def test_host_runs_scheduled_job_and_delivers_result(tmp_path: Path) -> None:
     channel = RecordingChannel()
     agent = BlockingAgent()

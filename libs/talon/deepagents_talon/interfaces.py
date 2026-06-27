@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -29,6 +29,25 @@ class ChannelMessage:
     text: str
     sender_id: str | None = None
     message_id: str | None = None
+    metadata: Mapping[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class ChannelReaction:
+    """Inbound reaction delivered by a channel adapter.
+
+    Args:
+        conversation_id: Stable channel-specific conversation identifier.
+        message_id: Channel-specific message identifier that received the reaction.
+        emoji: Provider reaction value.
+        sender_id: Channel-specific sender identifier.
+        metadata: Extra channel values that later adapters may need.
+    """
+
+    conversation_id: str
+    message_id: str
+    emoji: str
+    sender_id: str | None = None
     metadata: Mapping[str, object] = field(default_factory=dict)
 
 
@@ -138,6 +157,7 @@ class AgentResult:
 
 
 MessageHandler = Callable[[ChannelMessage], Awaitable[None]]
+ReactionHandler = Callable[[ChannelReaction], Awaitable[None]]
 
 
 class ChannelAdapter(Protocol):
@@ -199,6 +219,18 @@ class ChannelAdapter(Protocol):
 
     async def status(self) -> ChannelStatus:
         """Report the channel connection status."""
+
+
+@runtime_checkable
+class ReactionChannelAdapter(Protocol):
+    """Optional channel surface for inbound reaction events."""
+
+    def set_reaction_handler(self, handler: ReactionHandler) -> None:
+        """Register the host callback for inbound reactions.
+
+        Args:
+            handler: Coroutine callback invoked for each inbound channel reaction.
+        """
 
 
 class CronScheduler(Protocol):

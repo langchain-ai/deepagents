@@ -93,6 +93,10 @@ client.on("message_create", (message) => {
   void enqueueMessage(message);
 });
 
+client.on("message_reaction", (reaction) => {
+  enqueueReaction(reaction);
+});
+
 async function enqueueMessage(message) {
   if (message.from === "status@broadcast") {
     return;
@@ -125,6 +129,8 @@ async function enqueueMessage(message) {
       : typeof chatId === "string" && chatId.endsWith("@g.us");
 
   const entry = {
+    event_type: "message",
+    eventType: "message",
     text: message.body || "",
     body: message.body || "",
     message_type: message.type || "chat",
@@ -175,6 +181,38 @@ async function enqueueMessage(message) {
   };
 
   console.log(`[bridge] Queued message ${messageId} for ${chatId}`);
+  queue.push(entry);
+}
+
+function enqueueReaction(reaction) {
+  const emoji = typeof reaction.reaction === "string" ? reaction.reaction : "";
+  if (!emoji) {
+    return;
+  }
+  const messageId = reactionMessageId(reaction);
+  const chatId = reactionChatId(reaction);
+  const senderId = normalizeId(reaction.senderId);
+  if (!messageId || !chatId || !senderId) {
+    console.error("Skipping WhatsApp reaction without a message id, chat id, or sender id");
+    return;
+  }
+
+  const entry = {
+    event_type: "reaction",
+    eventType: "reaction",
+    chat_id: chatId,
+    chatId,
+    message_id: messageId,
+    messageId,
+    sender_id: senderId,
+    senderId,
+    emoji,
+    reaction: emoji,
+    raw_reaction: rawReaction(reaction),
+    rawReaction: rawReaction(reaction),
+  };
+
+  console.log(`[bridge] Queued reaction ${emoji} on ${messageId} for ${chatId}`);
   queue.push(entry);
 }
 
@@ -370,6 +408,37 @@ function decodedBase64Size(value) {
 
 function serializedId(value) {
   return value && value._serialized ? value._serialized : null;
+}
+
+function normalizeId(value) {
+  if (typeof value === "string" && value) {
+    return value;
+  }
+  return serializedId(value);
+}
+
+function reactionMessageId(reaction) {
+  const msgId = reaction && reaction.msgId;
+  if (!msgId) {
+    return null;
+  }
+  return serializedId(msgId) || (typeof msgId.id === "string" ? msgId.id : null);
+}
+
+function reactionChatId(reaction) {
+  const msgId = reaction && reaction.msgId;
+  return normalizeId(msgId && msgId.remote);
+}
+
+function rawReaction(reaction) {
+  return {
+    msgId: reactionMessageId(reaction),
+    senderId: normalizeId(reaction && reaction.senderId),
+    reaction: typeof reaction.reaction === "string" ? reaction.reaction : null,
+    orphan: Boolean(reaction.orphan),
+    orphanReason: typeof reaction.orphanReason === "string" ? reaction.orphanReason : null,
+    timestamp: Number.isFinite(Number(reaction.timestamp)) ? Number(reaction.timestamp) : null,
+  };
 }
 
 function normalizeIds(values) {

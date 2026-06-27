@@ -41,8 +41,10 @@ from deepagents_talon.channels.base import (
 from deepagents_talon.interfaces import (
     ChannelMedia,
     ChannelMessage,
+    ChannelReaction,
     ChannelStatus,
     MessageHandler,
+    ReactionHandler,
     SendResult,
 )
 
@@ -266,6 +268,7 @@ class WhatsAppChannel:
             token=config.bridge_token,
         )
         self._handler: MessageHandler | None = None
+        self._reaction_handler: ReactionHandler | None = None
         self._process: asyncio.subprocess.Process | None = None
         self._bridge_stdout: asyncio.Task[None] | None = None
         self._bridge_stderr: asyncio.Task[None] | None = None
@@ -282,6 +285,14 @@ class WhatsAppChannel:
             handler: Coroutine callback invoked for accepted inbound messages.
         """
         self._handler = handler
+
+    def set_reaction_handler(self, handler: ReactionHandler) -> None:
+        """Register the host callback for inbound reactions.
+
+        Args:
+            handler: Coroutine callback invoked for accepted inbound reactions.
+        """
+        self._reaction_handler = handler
 
     async def start(self) -> None:
         """Start the bridge subprocess and background polling tasks."""
@@ -442,22 +453,41 @@ class WhatsAppChannel:
         while not self._stopped.is_set():
             try:
                 payload = await self._transport.get("/messages")
-                for message in _parse_messages(payload):
-                    if self.config.exposure.allows(message):
-                        checked = _enforce_inbound_media_cap(
-                            message,
-                            max_bytes=self.config.max_media_bytes,
-                        )
-                        await dispatch_message(self._handler, checked, provider="WhatsApp")
-                    else:
-                        logger.debug(
-                            "Dropping WhatsApp message %s from %s due to exposure policy",
-                            message.message_id,
-                            message.conversation_id,
-                        )
+                for item in _parse_queue_entries(payload):
+                    await self._process_queue_entry(item)
             except _WhatsAppBridgeError:
                 logger.exception("Failed to poll WhatsApp bridge messages")
             await asyncio.sleep(self.config.poll_interval_seconds)
+
+    async def _process_queue_entry(self, item: ChannelMessage | ChannelReaction) -> None:
+        if isinstance(item, ChannelReaction):
+            await self._process_reaction(item)
+            return
+        if self.config.exposure.allows(item):
+            checked = _enforce_inbound_media_cap(
+                item,
+                max_bytes=self.config.max_media_bytes,
+            )
+            await dispatch_message(self._handler, checked, provider="WhatsApp")
+        else:
+            logger.debug(
+                "Dropping WhatsApp message %s from %s due to exposure policy",
+                item.message_id,
+                item.conversation_id,
+            )
+
+    async def _process_reaction(self, reaction: ChannelReaction) -> None:
+        if not self.config.exposure.allows(_reaction_exposure_message(reaction)):
+            logger.debug(
+                "Dropping WhatsApp reaction %s from %s due to exposure policy",
+                reaction.message_id,
+                reaction.conversation_id,
+            )
+            return
+        if self._reaction_handler is None:
+            logger.warning("Dropping WhatsApp reaction because no handler is registered")
+            return
+        await self._reaction_handler(reaction)
 
     async def _watch_health(self) -> None:
         while not self._stopped.is_set():
@@ -586,11 +616,30 @@ def _validate_loopback_url(value: str) -> str:
     return value
 
 
-def _parse_messages(payload: object) -> list[ChannelMessage]:
+def _parse_queue_entries(payload: object) -> list[ChannelMessage | ChannelReaction]:
     if not isinstance(payload, list):
         msg = "WhatsApp bridge /messages response must be a list"
         raise _WhatsAppBridgeError(msg)
-    return [_parse_message(item) for item in payload]
+    entries: list[ChannelMessage | ChannelReaction] = []
+    for item in payload:
+        parsed = _parse_queue_entry(item)
+        if parsed is not None:
+            entries.append(parsed)
+    return entries
+
+
+def _parse_queue_entry(payload: object) -> ChannelMessage | ChannelReaction | None:
+    if not isinstance(payload, dict):
+        msg = "WhatsApp bridge queue entry must be an object"
+        raise _WhatsAppBridgeError(msg)
+    values = cast("Mapping[str, object]", payload)
+    event_type = optional_str(values.get("event_type") or values.get("eventType"))
+    if event_type in (None, "message"):
+        return _parse_message(values)
+    if event_type == "reaction":
+        return _parse_reaction(values)
+    logger.warning("Dropping WhatsApp bridge queue entry with unknown event_type %r", event_type)
+    return None
 
 
 def _parse_message(payload: object) -> ChannelMessage:
@@ -637,6 +686,49 @@ def _parse_message(payload: object) -> ChannelMessage:
         media_paths=media_paths,
         mime_types=media_mime_types,
         has_media=has_media,
+    )
+
+
+def _parse_reaction(values: Mapping[str, object]) -> ChannelReaction | None:
+    if _is_reaction_removal(values):
+        return None
+    emoji = optional_str(values.get("emoji") or values.get("reaction"))
+    sender_id = optional_str(values.get("sender_id") or values.get("senderId"))
+    if emoji is None or sender_id is None:
+        return None
+    return ChannelReaction(
+        conversation_id=_required_str_any(values, ("chat_id", "chatId")),
+        message_id=_required_str_any(values, ("message_id", "messageId")),
+        emoji=emoji,
+        sender_id=sender_id,
+        metadata={
+            "provider": "whatsapp",
+            "chat_type": values.get("chat_type") or values.get("chatType"),
+            "chat_name": values.get("chat_name") or values.get("chatName"),
+            "raw_reaction": values.get("raw_reaction") or values.get("rawReaction") or {},
+            "from_self": bool(values.get("from_self") or values.get("fromSelf")),
+        },
+    )
+
+
+def _is_reaction_removal(values: Mapping[str, object]) -> bool:
+    if values.get("removed") is True or values.get("is_removed") is True:
+        return True
+    action = values.get("action") or values.get("reaction_action") or values.get("reactionAction")
+    return isinstance(action, str) and action.lower() in {"remove", "removed", "revoke", "revoked"}
+
+
+def _reaction_exposure_message(reaction: ChannelReaction) -> ChannelMessage:
+    return ChannelMessage(
+        conversation_id=reaction.conversation_id,
+        text="",
+        sender_id=reaction.sender_id,
+        message_id=reaction.message_id,
+        metadata={
+            "provider": "whatsapp",
+            "chat_type": reaction.metadata.get("chat_type"),
+            "from_self": reaction.metadata.get("from_self") is True,
+        },
     )
 
 

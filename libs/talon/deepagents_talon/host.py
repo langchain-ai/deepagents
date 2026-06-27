@@ -11,7 +11,7 @@ import json
 import logging
 import signal
 from collections import defaultdict
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from types import FrameType
 from typing import TYPE_CHECKING, cast
@@ -37,7 +37,7 @@ from deepagents_talon.media import (
     extract_markdown_media,
     outbound_channel_media,
 )
-from deepagents_talon.observability import langsmith_trace_context
+from deepagents_talon.observability import langsmith_trace_context, log_event, stable_log_ref
 from deepagents_talon.speech import transcribe_voice_message
 
 if TYPE_CHECKING:
@@ -58,6 +58,7 @@ _NEW_CONVERSATION_MESSAGE = "Started a fresh conversation."
 _APPROVE_REPLIES = frozenset({"approve", "approved", "yes", "y"})
 _DENY_REPLIES = frozenset({"deny", "denied", "reject", "rejected", "no", "n"})
 _RESET_THREAD_SEPARATOR = ":talon-reset:"
+_APPROVAL_LOG_RAW_IDS_ENV = "DEEPAGENTS_TALON_APPROVAL_LOG_RAW_IDS"
 _EMOJI_VARIATION_SELECTOR = "\ufe0f"
 _EMOJI_SKIN_TONES = frozenset(
     {
@@ -78,6 +79,15 @@ class _PendingToolApproval:
     agent_conversation_id: str
     prompt_message_id: str | None
     sender_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ReactionAudit:
+    reaction: ChannelReaction
+    provider: str
+    decision: ToolApprovalDecision | None
+    match_status: str
+    resolution: str
 
 
 class TalonHost:
@@ -232,8 +242,23 @@ class TalonHost:
         agent_conversation_id = self._agent_conversation_id(conversation_root)
         pending = self._pending_tool_approvals.get(agent_conversation_id)
         if pending is None:
+            _log_tool_approval_reaction(
+                self.config.env,
+                _ReactionAudit(
+                    reaction=reaction,
+                    provider=provider_key,
+                    decision=_parse_tool_approval_reaction(reaction.emoji),
+                    match_status="ignored",
+                    resolution="no_pending_approval",
+                ),
+            )
             return
-        self._handle_tool_approval_reaction(reaction, pending, provider=provider_key)
+        self._handle_tool_approval_reaction(
+            reaction,
+            pending,
+            provider=provider_key,
+            env=self.config.env,
+        )
 
     async def _run_agent_turn(
         self,
@@ -510,20 +535,39 @@ class TalonHost:
         pending: _PendingToolApproval,
         *,
         provider: str,
+        env: Mapping[str, str],
     ) -> None:
         decision = _parse_tool_approval_reaction(reaction.emoji)
-        if decision is None or pending.prompt_message_id is None:
+        resolution = _reaction_mismatch_resolution(
+            reaction,
+            pending,
+            provider=provider,
+            decision=decision,
+        )
+        if resolution is not None:
+            _log_tool_approval_reaction(
+                env,
+                _ReactionAudit(
+                    reaction=reaction,
+                    provider=provider,
+                    decision=decision,
+                    match_status="ignored",
+                    resolution=resolution,
+                ),
+            )
             return
-        if provider != pending.provider:
-            return
-        if reaction.conversation_id != pending.channel_conversation_id:
-            return
-        if reaction.message_id != pending.prompt_message_id:
-            return
-        if pending.sender_id is not None and reaction.sender_id != pending.sender_id:
-            return
+        _log_tool_approval_reaction(
+            env,
+            _ReactionAudit(
+                reaction=reaction,
+                provider=provider,
+                decision=decision,
+                match_status="matched",
+                resolution="operator_reaction",
+            ),
+        )
         if not pending.future.done():
-            pending.future.set_result(decision)
+            pending.future.set_result(cast("ToolApprovalDecision", decision))
 
     async def _deliver_agent_result(
         self,
@@ -769,3 +813,59 @@ def _normalize_reaction_emoji(emoji: str) -> str:
         for char in emoji.strip()
         if char != _EMOJI_VARIATION_SELECTOR and char not in _EMOJI_SKIN_TONES
     )
+
+
+def _reaction_mismatch_resolution(
+    reaction: ChannelReaction,
+    pending: _PendingToolApproval,
+    *,
+    provider: str,
+    decision: ToolApprovalDecision | None,
+) -> str | None:
+    checks = (
+        (decision is None, "unsupported_emoji"),
+        (pending.prompt_message_id is None, "missing_prompt_message_id"),
+        (provider != pending.provider, "provider_mismatch"),
+        (reaction.conversation_id != pending.channel_conversation_id, "conversation_mismatch"),
+        (reaction.message_id != pending.prompt_message_id, "message_mismatch"),
+        (pending.sender_id is not None and reaction.sender_id is None, "sender_missing"),
+        (
+            pending.sender_id is not None and reaction.sender_id != pending.sender_id,
+            "sender_mismatch",
+        ),
+    )
+    for failed, resolution in checks:
+        if failed:
+            return resolution
+    return None
+
+
+def _log_tool_approval_reaction(
+    env: Mapping[str, str],
+    audit: _ReactionAudit,
+) -> None:
+    fields: dict[str, object] = {
+        "provider": audit.provider,
+        "channel_conversation_ref": stable_log_ref(audit.reaction.conversation_id),
+        "prompt_message_ref": stable_log_ref(audit.reaction.message_id),
+        "emoji": audit.reaction.emoji,
+        "decision": audit.decision,
+        "match_status": audit.match_status,
+        "resolution": audit.resolution,
+    }
+    if audit.reaction.sender_id is not None:
+        fields["reacting_sender_ref"] = stable_log_ref(audit.reaction.sender_id)
+    if _approval_log_raw_ids(env):
+        fields.update(
+            {
+                "raw_channel_conversation_id": audit.reaction.conversation_id,
+                "raw_prompt_message_id": audit.reaction.message_id,
+            }
+        )
+        if audit.reaction.sender_id is not None:
+            fields["raw_reacting_sender_id"] = audit.reaction.sender_id
+    log_event(logger, "tool_approval.reaction", **fields)
+
+
+def _approval_log_raw_ids(env: Mapping[str, str]) -> bool:
+    return env.get(_APPROVAL_LOG_RAW_IDS_ENV, "").lower() == "true"

@@ -267,6 +267,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     skills: list[str] | None = None,
     memory: list[str] | None = None,
     permissions: list[FilesystemPermission] | None = None,
+    disable_tools: frozenset[str] = frozenset(),
     backend: BackendProtocol | BackendFactory | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
     response_format: ResponseFormat[ResponseT] | type[ResponseT] | dict[str, Any] | None = None,
@@ -548,6 +549,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         cache: The cache to use for the agent.
 
             Passed through to [`create_agent`][langchain.agents.create_agent].
+        disable_tools: Set of filesystem tool names to remove from the agent's
+            tool list. `read_file` cannot be disabled and raises `ValueError`
+            if included. Applies to the main agent and all subagents.
 
     Returns:
         A configured deep agent.
@@ -645,6 +649,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 FilesystemMiddleware(
                     backend=backend,
                     custom_tool_descriptions=_subagent_profile.tool_description_overrides,
+                    disable_tools=spec.get("disable_tools", frozenset()),
                     _permissions=subagent_permissions,
                 ),
                 create_summarization_middleware(subagent_model, backend),
@@ -720,6 +725,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             FilesystemMiddleware(
                 backend=backend,
                 custom_tool_descriptions=_profile.tool_description_overrides,
+                disable_tools=disable_tools,
                 _permissions=permissions,
             ),
             create_summarization_middleware(model, backend),
@@ -779,6 +785,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         FilesystemMiddleware(
             backend=backend,
             custom_tool_descriptions=_profile.tool_description_overrides,
+            disable_tools=disable_tools,
             _permissions=permissions,
         )
     )

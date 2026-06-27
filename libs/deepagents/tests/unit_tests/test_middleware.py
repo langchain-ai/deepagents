@@ -1800,6 +1800,97 @@ class TestFilesystemMiddleware:
         # tool filtering — and with an empty system prompt, no override at all.
         request.override.assert_not_called()
 
+    def test_disable_tools_raises_for_read_file(self):
+        """read_file cannot be disabled, it is always required."""
+        with pytest.raises(ValueError, match="read_file cannot be disabled"):
+            FilesystemMiddleware(backend=StateBackend(), disable_tools=frozenset({"read_file"}))
+
+    def test_disable_tools_removes_tool_from_request(self):
+        """A tool in disable_tools is filtered out of the model request."""
+        middleware = FilesystemMiddleware(
+            backend=StateBackend(),
+            system_prompt="",
+            disable_tools=frozenset({"write_file"}),
+        )
+        write_tool = MagicMock()
+        write_tool.name = "write_file"
+        ls_tool = MagicMock()
+        ls_tool.name = "ls"
+        request = MagicMock()
+        request.tools = [ls_tool, write_tool]
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
+        assert "write_file" not in filtered_names
+        assert "ls" in filtered_names
+
+    def test_disable_tools_multiple(self):
+        """Multiple tools can be disabled at once."""
+        middleware = FilesystemMiddleware(
+            backend=StateBackend(),
+            system_prompt="",
+            disable_tools=frozenset({"write_file", "delete"}),
+        )
+        tools = [MagicMock(name=n) for n in ("ls", "write_file", "delete", "grep")]
+        for t in tools:
+            t.name = t._mock_name
+        request = MagicMock()
+        request.tools = tools
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
+        assert "write_file" not in filtered_names
+        assert "delete" not in filtered_names
+        assert "ls" in filtered_names
+        assert "grep" in filtered_names
+
+    def test_disable_tools_does_not_affect_other_tools(self):
+        """Tools not in disable_tools pass through unaffected."""
+        middleware = FilesystemMiddleware(
+            backend=StateBackend(),
+            system_prompt="",
+            disable_tools=frozenset({"edit_file"}),
+        )
+        ls_tool = MagicMock()
+        ls_tool.name = "ls"
+        grep_tool = MagicMock()
+        grep_tool.name = "grep"
+        request = MagicMock()
+        request.tools = [ls_tool, grep_tool]
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        # ls and grep are not in disable_tools, both survive filtering
+        filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
+        assert "ls" in filtered_names
+        assert "grep" in filtered_names
+
+    def test_disable_tools_always_retains_read_file(self):
+        """read_file is always retained even when all other tools are disabled."""
+        all_other_tools = {"ls", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
+        middleware = FilesystemMiddleware(
+            backend=StateBackend(),
+            system_prompt="",
+            disable_tools=frozenset(all_other_tools),
+        )
+        tools = [MagicMock() for _ in range(len(all_other_tools) + 1)]
+        for t, name in zip(tools, [*all_other_tools, "read_file"], strict=True):
+            t.name = name
+        request = MagicMock()
+        request.tools = tools
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
+        assert "read_file" in filtered_names
+        assert filtered_names == {"read_file"}
+
     def test_delete_invalid_path_returns_error(self):
         """The sync delete tool rejects a traversal path before deleting."""
         middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")

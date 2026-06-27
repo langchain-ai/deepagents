@@ -121,6 +121,14 @@ class SubAgent(TypedDict):
     tools on the subagent stack.
     """
 
+    disable_tools: NotRequired[frozenset[str]]
+    """Filesystem tool names to remove from this subagent's tool list.
+
+    Accepts any subset of the tools provided by `FilesystemMiddleware`:
+    ``ls``, ``write_file``, ``edit_file``, ``delete``, ``glob``, ``grep``,
+    ``execute``. ``read_file`` cannot be disabled.
+    """
+
     response_format: NotRequired[ResponseFormat[Any] | type | dict[str, Any]]
     """Structured output response format for the subagent.
 

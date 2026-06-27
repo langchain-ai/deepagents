@@ -27,6 +27,7 @@ from deepagents_code.non_interactive import (
     _collect_action_request_warnings,
     _make_hitl_decision,
     _process_ai_message,
+    _process_message_chunk,
     _run_agent_loop,
     _run_startup_command,
     _start_langsmith_thread_url_lookup,
@@ -1692,3 +1693,197 @@ async def _async_iter(items: Sequence[object]) -> AsyncIterator[object]:  # noqa
     """Create an async iterator from a list for testing."""
     for item in items:
         yield item
+
+
+# ---------------------------------------------------------------------------
+# tool.use / tool.result hook dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestProcessAIMessageHooks:
+    """Tests for tool.use hook dispatch in _process_ai_message."""
+
+    def test_tool_use_dispatched_on_first_chunk_name(self) -> None:
+        """tool.use fires once with the tool name and id when chunk_name is set."""
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [
+            {"type": "tool_call_chunk", "name": "read_file", "id": "call-1", "index": 0}
+        ]
+        state = StreamState()
+        console = Console(quiet=True)
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_ai_message(ai_msg, state, console)
+
+        mock_dispatch.assert_any_call(
+            "tool.use",
+            {"tool_name": "read_file", "tool_id": "call-1", "tool_args": {}},
+        )
+
+    def test_tool_use_not_dispatched_when_no_name(self) -> None:
+        """tool.use must not fire for arg-only chunks that carry no name."""
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [
+            {"type": "tool_call_chunk", "name": None, "id": None, "index": 0}
+        ]
+        state = StreamState()
+        state.tool_call_buffers[0] = {"name": "read_file", "id": "call-1"}
+        console = Console(quiet=True)
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_ai_message(ai_msg, state, console)
+
+        tool_use_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.use"
+        ]
+        assert not tool_use_calls
+
+    def test_tool_use_not_dispatched_for_text_blocks(self) -> None:
+        """tool.use must not fire when the block is a text chunk, not a tool call."""
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [{"type": "text", "text": "hello"}]
+        state = StreamState()
+        console = Console(quiet=True)
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_ai_message(ai_msg, state, console)
+
+        mock_dispatch.assert_not_called()
+
+    def test_tool_use_dispatched_once_per_tool_call(self) -> None:
+        """With two different tool calls, tool.use fires once each."""
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [
+            {
+                "type": "tool_call_chunk",
+                "name": "read_file",
+                "id": "call-1",
+                "index": 0,
+            },
+            {
+                "type": "tool_call_chunk",
+                "name": "write_file",
+                "id": "call-2",
+                "index": 1,
+            },
+        ]
+        state = StreamState()
+        console = Console(quiet=True)
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_ai_message(ai_msg, state, console)
+
+        tool_use_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.use"
+        ]
+        assert len(tool_use_calls) == 2
+        names = {c[0][1]["tool_name"] for c in tool_use_calls}
+        assert names == {"read_file", "write_file"}
+
+
+class TestProcessMessageChunkHooks:
+    """Tests for tool.result hook dispatch in _process_message_chunk."""
+
+    def test_tool_result_dispatched_for_tool_message(self) -> None:
+        """tool.result fires with correct fields when a ToolMessage is processed."""
+        from langchain_core.messages import ToolMessage
+
+        tool_msg = ToolMessage(
+            content="File read successfully",
+            tool_call_id="call-1",
+            name="read_file",
+            status="success",
+        )
+        state = StreamState()
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
+
+        mock_dispatch.assert_called_once_with(
+            "tool.result",
+            {
+                "tool_name": "read_file",
+                "tool_id": "call-1",
+                "tool_status": "success",
+                "tool_output": "File read successfully",
+            },
+        )
+
+    def test_tool_result_dispatched_for_error_status(self) -> None:
+        """tool.result fires with tool_status='error' when tool call failed."""
+        from langchain_core.messages import ToolMessage
+
+        tool_msg = ToolMessage(
+            content="Permission denied",
+            tool_call_id="call-2",
+            name="write_file",
+            status="error",
+        )
+        state = StreamState()
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
+
+        payload = mock_dispatch.call_args[0][1]
+        assert payload["tool_status"] == "error"
+        assert payload["tool_name"] == "write_file"
+
+    def test_tool_result_output_truncated_to_2000_chars(self) -> None:
+        """tool_output in the payload is at most 2000 characters."""
+        from langchain_core.messages import ToolMessage
+
+        long_content = "x" * 5000
+        tool_msg = ToolMessage(
+            content=long_content,
+            tool_call_id="call-3",
+            name="execute",
+            status="success",
+        )
+        state = StreamState()
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
+
+        payload = mock_dispatch.call_args[0][1]
+        assert len(payload["tool_output"]) == 2000
+
+    def test_tool_result_not_dispatched_for_ai_message(self) -> None:
+        """tool.result must not fire when the message is an AIMessage."""
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = []
+        state = StreamState()
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_message_chunk((ai_msg, {}), state, console, file_op_tracker)
+
+        tool_result_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
+        ]
+        assert not tool_result_calls

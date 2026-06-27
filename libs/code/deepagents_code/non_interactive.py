@@ -427,6 +427,10 @@ def _process_ai_message(
                     f"[dim]🔧 Calling tool: {escape_markup(chunk_name)}[/dim]",
                     highlight=False,
                 )
+                dispatch_hook_fire_and_forget(
+                    "tool.use",
+                    {"tool_name": chunk_name, "tool_id": chunk_id, "tool_args": {}},
+                )
 
 
 def _process_message_chunk(
@@ -472,6 +476,15 @@ def _process_message_chunk(
                 f"[dim]📝 {escape_markup(record.display_path)}[/dim]",
                 highlight=False,
             )
+        dispatch_hook_fire_and_forget(
+            "tool.result",
+            {
+                "tool_name": getattr(message_obj, "name", ""),
+                "tool_id": getattr(message_obj, "tool_call_id", None),
+                "tool_status": getattr(message_obj, "status", "success"),
+                "tool_output": str(message_obj.content)[:2000],
+            },
+        )
         if state.spinner:
             state.spinner.start()
 

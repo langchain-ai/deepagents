@@ -53,6 +53,14 @@ uv run deepagents-talon --once
 
 During a long-running Fleet session, Talon treats a 401/403 from an MCP tool as an expired OAuth credential signal. It reloads the Fleet components once, which re-mints tokens and rebuilds MCP connections, then retries the failed graph invocation once. If authorization still fails, Talon returns a structured `mcp_auth_failed` error instead of looping.
 
+## Tool Approval Overrides
+
+Set `DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS` to a comma-separated list of tool names that should always require Talon's channel approval flow. This local override is additive with Fleet-provided HITL configuration and also applies to non-Fleet MCP or local runtime tools.
+
+```bash
+DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS=bash,execute,github_create_pr
+```
+
 ## WhatsApp
 
 The WhatsApp channel uses a local Node bridge packaged with this library. The Python adapter talks to the bridge over loopback only.

@@ -1156,6 +1156,9 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         # boundary: it does not confine the deletion to any sandbox root or
         # block traversal. Whatever the sandbox shell can reach, this can delete.
         quoted = shlex.quote(file_path)
+        exists = self.execute(f"test -e {quoted} || test -L {quoted}")
+        if exists.exit_code != 0:
+            return DeleteResult(error=f"Error: '{file_path}' not found")
         result = self.execute(f"rm -rf {quoted}")
 
         if result.exit_code == 0:

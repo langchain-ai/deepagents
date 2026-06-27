@@ -45,6 +45,7 @@ class MockSandbox(BaseSandbox):
         self._next_exit_code: int = 0
         self._uploaded: list[tuple[str, bytes]] = []
         self._file_store: dict[str, bytes] = {}
+        self._responses: list[tuple[str, int]] = []
 
     @property
     def id(self) -> str:
@@ -57,10 +58,13 @@ class MockSandbox(BaseSandbox):
         has_tmp = any(".deepagents_edit_" in k for k in self._file_store)
         if "old_path = base64.b64decode(" in command and has_tmp:
             return self._simulate_edit_tmpfile(command)
-        output = self._next_output
-        exit_code = self._next_exit_code
-        self._next_output = "1"
-        self._next_exit_code = 0
+        if self._responses:
+            output, exit_code = self._responses.pop(0)
+        else:
+            output = self._next_output
+            exit_code = self._next_exit_code
+            self._next_output = "1"
+            self._next_exit_code = 0
         return ExecuteResponse(output=output, exit_code=exit_code, truncated=False)
 
     def _simulate_edit_tmpfile(self, command: str) -> ExecuteResponse:
@@ -1572,20 +1576,23 @@ class TestSandboxDelete:
         assert "rm -rf" in sandbox.last_command
         assert "/some/dir" in sandbox.last_command
 
-    def test_delete_missing_is_noop_success(self) -> None:
-        # `rm -f` ignores a missing path: exit 0, so delete reports success.
+    def test_delete_missing_returns_not_found(self) -> None:
+        # `test -e` exits 1 for a missing path; delete must return a not-found error.
         sandbox = MockSandbox()
-        sandbox._next_output = ""
-        sandbox._next_exit_code = 0
+        sandbox._next_exit_code = 1  # test -e reports path absent
         result = sandbox.delete("/missing.txt")
-        assert result.error is None
-        assert result.path == "/missing.txt"
+        assert result.path is None
+        assert result.error is not None
+        assert "not found" in result.error
 
     def test_delete_failure_reports_output(self) -> None:
-        # A non-zero exit (e.g. a permission error) surfaces rm's stderr.
+        # A non-zero exit from rm (e.g. a permission error) surfaces rm's stderr.
         sandbox = MockSandbox()
-        sandbox._next_output = "rm: cannot remove '/some/dir': Is a directory"
-        sandbox._next_exit_code = 1
+        # Queue: test -e succeeds (file exists), then rm -rf fails with output.
+        sandbox._responses = [
+            ("", 0),
+            ("rm: cannot remove '/some/dir': Is a directory", 1),
+        ]
         result = sandbox.delete("/some/dir")
         assert result.path is None
         assert result.error is not None
@@ -1593,10 +1600,10 @@ class TestSandboxDelete:
         assert "Is a directory" in result.error
 
     def test_delete_failure_unknown_error(self) -> None:
-        # Non-zero exit with no output falls back to a generic message.
+        # Non-zero exit from rm with no output falls back to a generic message.
         sandbox = MockSandbox()
-        sandbox._next_output = ""
-        sandbox._next_exit_code = 1
+        # Queue: test -e succeeds (file exists), then rm -rf fails silently.
+        sandbox._responses = [("", 0), ("", 1)]
         result = sandbox.delete("/file.txt")
         assert result.path is None
         assert result.error is not None

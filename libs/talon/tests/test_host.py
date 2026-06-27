@@ -365,6 +365,49 @@ async def test_host_routes_tool_approval_reply_to_pending_run(tmp_path: Path) ->
     assert channel.sent[1] == ("chat", "decision:approve")
 
 
+async def test_host_routes_tool_approval_emoji_reply_to_pending_run(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = ApprovalAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="run", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="👍🏽", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    assert "Reply `👍` / `approve`" in channel.sent[0][1]
+    assert channel.sent[1] == ("chat", "decision:approve")
+
+
+async def test_host_routes_tool_approval_emoji_reply_denial(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = ApprovalAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="run", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="👎️", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    assert channel.sent[1] == ("chat", "decision:reject")
+
+
 async def test_host_keeps_tool_approval_scoped_to_original_sender(tmp_path: Path) -> None:
     channel = RecordingChannel()
     agent = ApprovalAgent()

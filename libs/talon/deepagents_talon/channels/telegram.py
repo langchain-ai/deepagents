@@ -785,26 +785,9 @@ def _allows_telegram_reaction(
     allowed_user_ids: frozenset[str],
     reaction: ChannelReaction,
 ) -> bool:
-    chat_type = reaction.metadata.get("chat_type")
-    if (
-        exposure.mode == ExposureMode.ALLOWLIST
-        and chat_type == "private"
-        and reaction.sender_id in allowed_user_ids
-    ):
-        return True
-    return exposure.allows(
-        ChannelMessage(
-            conversation_id=reaction.conversation_id,
-            text="",
-            sender_id=reaction.sender_id,
-            message_id=reaction.message_id,
-            metadata={
-                "provider": "telegram",
-                "chat_type": chat_type,
-                "from_self": False,
-            },
-        )
-    )
+    if reaction.sender_id is None:
+        return False
+    return reaction.sender_id in exposure.operator_ids or reaction.sender_id in allowed_user_ids
 
 
 _MIME_RE = re.compile(r"^[a-z]+/[a-z0-9.+\-]+$")

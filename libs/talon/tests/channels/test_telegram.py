@@ -496,7 +496,13 @@ async def test_channel_polls_and_dispatches_allowed_reactions(tmp_path: Path) ->
             ],
         )
         channel = TelegramChannel(
-            _make_config(case_dir, exposure=ChannelExposure(mode=ExposureMode.OPEN)),
+            _make_config(
+                case_dir,
+                exposure=ChannelExposure(
+                    mode=ExposureMode.OPEN,
+                    operator_ids=frozenset({"222"}),
+                ),
+            ),
             transport=cast("_TelegramTransport", transport),
         )
 
@@ -559,6 +565,43 @@ async def test_channel_drops_reactions_denied_by_exposure(tmp_path: Path) -> Non
 
     assert received == []
     assert _load_offset(config.offset_file) == 11
+
+
+async def test_channel_drops_untrusted_reactions_in_allowlisted_conversation(
+    tmp_path: Path,
+) -> None:
+    transport = RecordingTransport(
+        updates=[
+            _make_reaction_update(
+                update_id=10,
+                chat_id=-100111,
+                sender_id=222,
+                chat_type="channel",
+                message_id=42,
+            ),
+            _make_reaction_update(
+                update_id=11,
+                chat_id=-100111,
+                sender_id=111,
+                chat_type="channel",
+                message_id=42,
+            ),
+        ],
+    )
+    config = _make_config(
+        tmp_path,
+        exposure=ChannelExposure(
+            mode=ExposureMode.ALLOWLIST,
+            conversations=frozenset({"-100111"}),
+        ),
+        allowed_user_ids=frozenset({"111"}),
+    )
+    channel = TelegramChannel(config, transport=cast("_TelegramTransport", transport))
+
+    received = await _run_channel_reactions_once(channel)
+
+    assert [reaction.sender_id for reaction in received] == ["111"]
+    assert _load_offset(config.offset_file) == 12
 
 
 async def test_channel_persists_offset_after_reaction_update(tmp_path: Path) -> None:

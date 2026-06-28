@@ -9,7 +9,7 @@ from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from rich.console import Console
@@ -497,10 +497,10 @@ class TestStartupAutoUpdate:
         assert "automatic restart failed" in printed
         assert "Auto-update failed" not in printed
 
-    def test_restart_after_update_confirms_launched(
+    def test_restart_after_update_clears_transient_launch_status(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The re-exec'd process rewrites `Launching...` to `Launched.`."""
+        """The re-exec'd process rewrites `Launching...` to stable update text."""
         stream = StringIO()
         console = Console(file=stream, force_terminal=True, no_color=True, width=80)
         # The prior generation recorded the version it restarted into.
@@ -526,6 +526,7 @@ class TestStartupAutoUpdate:
             ),
             patch("deepagents_code.update_check.perform_upgrade") as upgrade,
             patch("deepagents_code.main._restart_current_process") as restart,
+            patch.object(console, "control", wraps=console.control) as control,
         ):
             _run_startup_auto_update(console)
 
@@ -533,10 +534,10 @@ class TestStartupAutoUpdate:
         restart.assert_not_called()
         # Sentinel is consumed so the confirmation only fires once.
         assert os.environ.get("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE") is None
-        # The prior line is erased via a control sequence, then reprinted.
+        # The prior line is erased via one control call, then reprinted.
         output = stream.getvalue()
-        assert output.count("\x1b[1A") == 1
-        assert "Launched." in output
+        assert control.call_count == 1
+        assert "Updated to v9.9.9." in output
         assert "9.9.9" in output
 
     def test_update_launch_status_rewrite_handles_narrow_terminal_wrap(
@@ -545,9 +546,16 @@ class TestStartupAutoUpdate:
         """The status rewrite erases every row in narrow terminal panes."""
         stream = StringIO()
         console = Console(file=stream, force_terminal=True, no_color=True, width=10)
+        narrow_options = console.options.update_width(10)
         monkeypatch.setenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", "9.9.9")
 
         with (
+            patch.object(
+                type(console),
+                "options",
+                new_callable=PropertyMock,
+                return_value=narrow_options,
+            ),
             patch("deepagents_code.config._is_editable_install", return_value=False),
             patch(
                 "deepagents_code.update_check.is_update_check_enabled",
@@ -567,13 +575,16 @@ class TestStartupAutoUpdate:
             ),
             patch("deepagents_code.update_check.perform_upgrade"),
             patch("deepagents_code.main._restart_current_process"),
+            patch.object(console, "control", wraps=console.control) as control,
         ):
+            launch_rows = _terminal_row_count(
+                console, "Updated to v9.9.9. Launching..."
+            )
             _run_startup_auto_update(console)
 
-        launch_rows = _terminal_row_count(console, "Updated to v9.9.9. Launching...")
         output = stream.getvalue()
-        assert output.count("\x1b[1A") == launch_rows
-        assert "Launched." in output
+        assert control.call_count == launch_rows
+        assert "Updated to" in output
         assert "9.9.9" in output
 
     def test_restart_after_update_skips_rewrite_when_not_terminal(
@@ -611,12 +622,12 @@ class TestStartupAutoUpdate:
 
         output = stream.getvalue()
         assert "\x1b" not in output
-        assert "Launched." not in output
+        assert "Updated to v9.9.9." not in output
 
-    def test_failed_restart_does_not_confirm_launched(
+    def test_failed_restart_does_not_confirm_update(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A re-exec that did not change the version must not claim `Launched.`."""
+        """A re-exec that did not change the version must not confirm the update."""
         console = MagicMock()
         console.is_terminal = True
         console.width = 80
@@ -652,7 +663,7 @@ class TestStartupAutoUpdate:
         restart.assert_not_called()
         console.control.assert_not_called()
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
-        assert "Launched." not in printed
+        assert "Updated to v9.9.9." not in printed
 
     def test_version_check_failure_skips_confirm_in_isolation(
         self, monkeypatch: pytest.MonkeyPatch
@@ -660,8 +671,9 @@ class TestStartupAutoUpdate:
         """The confirm must be gated solely by `is_installed_version_at_least`.
 
         With nothing available (`(False, None)`) the function returns before the
-        restart-loop guard, so the only path that could print `Launched.` is the
-        confirm block. This pins the `is_installed_version_at_least(restarted_for)`
+        restart-loop guard, so the only path that could print the stable update
+        status is the confirm block. This pins the
+        `is_installed_version_at_least(restarted_for)`
         condition: dropping it would let the confirm fire here and fail the test.
         """
         stream = StringIO()
@@ -694,16 +706,16 @@ class TestStartupAutoUpdate:
         restart.assert_not_called()
         output = stream.getvalue()
         assert "\x1b[1A" not in output
-        assert "Launched." not in output
+        assert "Updated to v9.9.9." not in output
 
-    def test_confirm_launched_then_continues_to_available_update(
+    def test_confirm_update_then_continues_to_available_update(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Confirming the prior launch must not short-circuit a newer update.
+        """Confirming the prior update must not short-circuit a newer update.
 
         The sentinel is an older version (now running), while a newer version is
-        available: the function should both rewrite the prior line to `Launched.`
-        and proceed into the upgrade path for the newer version.
+        available: the function should both rewrite the prior line to stable
+        update text and proceed into the upgrade path for the newer version.
         """
         stream = StringIO()
         console = Console(file=stream, force_terminal=True, no_color=True, width=80)
@@ -750,8 +762,9 @@ class TestStartupAutoUpdate:
         upgrade.assert_awaited_once()
         restart.assert_called_once_with()
         output = stream.getvalue()
-        # The prior launch is confirmed for the running version...
-        assert "v9.9.8. Launched." in output
+        # The prior update is confirmed for the running version...
+        assert "Updated to v9.9.8." in output
+        assert "v9.9.8. Launched." not in output
         # ...and the newer version still goes through the upgrade path.
         assert "v9.9.9. Launching..." in output
 
@@ -761,7 +774,12 @@ class TestStartupAutoUpdate:
         assert _terminal_row_count(console, "abc") == 1
 
     def test_terminal_row_count_wraps_to_multiple_rows(self) -> None:
-        """Text wider than the pane counts each wrapped row."""
+        """Text wider than the pane counts each wrapped row.
+
+        Deliberately left unmocked: this is the canary that should fail if a
+        future Rich version changes how it wraps text, so its `options` must
+        stay real rather than being pinned to a forced width.
+        """
         console = Console(file=StringIO(), force_terminal=True, no_color=True, width=10)
         # 20 characters at width 10 wraps to exactly 2 rows.
         assert _terminal_row_count(console, "abcdefghijklmnopqrst") == 2

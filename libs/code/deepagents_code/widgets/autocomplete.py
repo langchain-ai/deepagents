@@ -7,7 +7,6 @@ for slash commands (/) and file mentions (@).
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import shutil
 
@@ -655,11 +654,17 @@ class FuzzyFileController:
         if not force and self._file_cache is not None:
             return
         project_root = self._project_root
-        # Best-effort; _get_files() falls back to sync on failure.
-        with contextlib.suppress(Exception):
+        # Best-effort: on failure the existing cache (if any) stays in place. A
+        # cold cache (`_file_cache is None`) is later filled synchronously by
+        # `_get_files()`; a force refresh that fails simply leaves the prior
+        # list visible. Log at debug so a recurring background refresh failure
+        # (the 30s timer) is diagnosable rather than silently stale.
+        try:
             files = await asyncio.to_thread(_get_project_files, project_root)
             if generation == self._cache_generation:
                 self._file_cache = _scope_files_to_cwd(files, project_root, cwd)
+        except Exception:  # best-effort refresh; prior cache is the fallback
+            logger.debug("File-cache warm failed for %s", project_root, exc_info=True)
 
     @staticmethod
     def can_handle(text: str, cursor_index: int) -> bool:

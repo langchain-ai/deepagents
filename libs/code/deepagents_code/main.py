@@ -701,7 +701,34 @@ def _should_ensure_managed_ripgrep() -> bool:
     return rg_path is None or _is_managed_ripgrep_path(rg_path)
 
 
-def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
+def _configured_model_provider(model_spec: str | None) -> str | None:
+    """Return the configured provider used to decide optional tool relevance."""
+    from deepagents_code.config import detect_provider, settings
+    from deepagents_code.model_config import ModelConfig, ModelSpec
+
+    spec = model_spec
+    provider = getattr(settings, "model_provider", None)
+    if spec is None and provider:
+        return provider
+    if spec is None:
+        try:
+            config = ModelConfig.load()
+        except Exception:
+            logger.debug("Could not load model config for tool checks", exc_info=True)
+        else:
+            spec = config.default_model or config.recent_model
+    if not spec:
+        return None
+
+    parsed = ModelSpec.try_parse(spec)
+    if parsed is not None:
+        return parsed.provider
+    return detect_provider(spec)
+
+
+def check_optional_tools(
+    *, config_path: Path | None = None, model_spec: str | None = None
+) -> list[str]:
     """Check for recommended external tools and return missing tool names.
 
     Skips tools that the user has suppressed via
@@ -711,11 +738,14 @@ def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
         config_path: Path to config file.
 
             Defaults to `~/.deepagents/config.toml`.
+        model_spec: Optional configured model spec used to skip Tavily warnings
+            when the active provider has hosted web search.
 
     Returns:
         List of missing tool names (e.g. `["ripgrep"]`).
     """
     from deepagents_code.model_config import is_warning_suppressed
+    from deepagents_code.tools import supports_provider_web_search
 
     missing: list[str] = []
     if _should_ensure_managed_ripgrep() and not is_warning_suppressed(
@@ -725,7 +755,12 @@ def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
 
     from deepagents_code.config import settings
 
-    if not settings.has_tavily and not is_warning_suppressed("tavily", config_path):
+    provider = _configured_model_provider(model_spec)
+    if (
+        not settings.has_tavily
+        and not supports_provider_web_search(provider)
+        and not is_warning_suppressed("tavily", config_path)
+    ):
         missing.append("tavily")
 
     return missing
@@ -1913,7 +1948,7 @@ async def _run_acp_cli_async(
         save_recent_model,
         touch_recent_model,
     )
-    from deepagents_code.tools import fetch_url, get_current_thread_id, web_search
+    from deepagents_code.tools import build_builtin_tools
 
     try:
         model_result = create_model(
@@ -1932,9 +1967,10 @@ async def _run_acp_cli_async(
     save_recent_model(resolved_spec)
     touch_recent_model(resolved_spec)
 
-    tools: list[Any] = [fetch_url, get_current_thread_id]
-    if settings.has_tavily:
-        tools.append(web_search)
+    tools = build_builtin_tools(
+        provider=model_result.provider,
+        has_tavily=settings.has_tavily,
+    )
 
     mcp_session_manager = None
     mcp_server_info = None
@@ -3164,7 +3200,9 @@ def cli_main() -> None:
                 warn_console = None
                 try:
                     warn_console = _Console(stderr=True)
-                    missing_tools = check_optional_tools()
+                    missing_tools = check_optional_tools(
+                        model_spec=getattr(args, "model", None)
+                    )
                     if _should_ensure_managed_ripgrep():
                         missing_tools = _auto_install_ripgrep_cli(
                             warn_console, missing_tools

@@ -101,6 +101,7 @@ class TestServerGraph:
 
         model_result = SimpleNamespace(
             model=model_obj,
+            provider="anthropic",
             apply_to_settings=MagicMock(),
         )
         config_module = _module_with_attrs(
@@ -117,6 +118,7 @@ class TestServerGraph:
             fetch_url=fetch_tool,
             get_current_thread_id=thread_tool,
             web_search=object(),
+            build_builtin_tools=MagicMock(return_value=[fetch_tool, thread_tool]),
         )
 
         class FakeSessionManager:
@@ -222,6 +224,7 @@ class TestServerGraph:
             fetch_url=fetch_tool,
             get_current_thread_id=thread_tool,
             web_search=object(),
+            build_builtin_tools=MagicMock(return_value=[fetch_tool, thread_tool]),
         )
         mcp_module = _module_with_attrs(
             "deepagents_code.mcp_tools",
@@ -242,6 +245,7 @@ class TestServerGraph:
                 tools, mcp_server_info = await module._build_tools(
                     ServerConfig(no_mcp=True),
                     None,
+                    provider="anthropic",
                 )
 
         assert tools == [fetch_tool, thread_tool]
@@ -274,6 +278,7 @@ class TestServerGraph:
             create_model=MagicMock(
                 return_value=SimpleNamespace(
                     model=model_obj,
+                    provider="anthropic",
                     apply_to_settings=MagicMock(),
                 ),
             ),
@@ -289,6 +294,7 @@ class TestServerGraph:
             fetch_url=object(),
             get_current_thread_id=object(),
             web_search=object(),
+            build_builtin_tools=MagicMock(return_value=[]),
         )
         config = ServerConfig(
             no_mcp=True,
@@ -347,6 +353,7 @@ class TestServerGraph:
             fetch_url=fetch_tool,
             get_current_thread_id=thread_tool,
             web_search=object(),
+            build_builtin_tools=MagicMock(return_value=[fetch_tool, thread_tool]),
         )
 
         class FakeSessionManager:
@@ -375,6 +382,7 @@ class TestServerGraph:
                 tools, mcp_server_info = await module._build_tools(
                     ServerConfig(no_mcp=False),
                     None,
+                    provider="anthropic",
                 )
 
         assert events == ["warmup", "resolver"]

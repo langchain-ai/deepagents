@@ -1160,6 +1160,14 @@ def _tool_chunk(
     return ((), "messages", (message, {}))
 
 
+def _server_tool_message(blocks: list[dict[str, Any]]) -> tuple[Any, ...]:
+    """Build a message chunk carrying provider-side tool call blocks."""
+    from langchain_core.messages import AIMessage
+
+    content = cast("list[str | dict[Any, Any]]", blocks)
+    return ((), "messages", (AIMessage(content=content), {}))
+
+
 def _usage_chunk(*, input_tokens: int, output_tokens: int) -> tuple[Any, ...]:
     """Build a `messages`-stream chunk carrying only `usage_metadata`."""
     from langchain_core.messages import AIMessageChunk
@@ -1214,6 +1222,59 @@ class TestExecuteTaskTextualUsageStats:
 
 class TestExecuteTaskTextualToolCallStreaming:
     """Tests for incremental tool-call argument accumulation."""
+
+    async def test_server_tool_call_mounts_and_completes(self) -> None:
+        """Hosted provider tool calls should render like local tool rows."""
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        chunks = [
+            _server_tool_message(
+                [
+                    {
+                        "type": "server_tool_call",
+                        "name": "web_search",
+                        "id": "ws_1",
+                        "args": {
+                            "type": "search",
+                            "query": "fun things to do in nyc",
+                            "queries": [
+                                "fun things to do in nyc",
+                                "nyc events this weekend",
+                            ],
+                        },
+                    },
+                    {
+                        "type": "server_tool_result",
+                        "tool_call_id": "ws_1",
+                        "status": "success",
+                    },
+                ]
+            )
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        tool_msgs = [m for m in mounted if isinstance(m, ToolCallMessage)]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]._tool_name == "web_search"
+        assert tool_msgs[0]._args["query"] == "fun things to do in nyc"
+        assert tool_msgs[0]._status == "success"
 
     async def test_fragmented_args_mount_once_when_json_completes(self) -> None:
         """Args streamed across many fragments parse once the JSON is whole.

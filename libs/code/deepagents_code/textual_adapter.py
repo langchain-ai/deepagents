@@ -1092,6 +1092,72 @@ async def execute_task_textual(
 
                             tool_call_buffers.pop(buffer_key, None)
 
+                        elif block_type == "server_tool_call":
+                            tool_name = block.get("name")
+                            tool_id = block.get("id")
+                            tool_args = block.get("args")
+                            if not isinstance(tool_name, str) or not tool_name:
+                                continue
+                            if not isinstance(tool_id, str) or not tool_id:
+                                continue
+                            if not isinstance(tool_args, dict):
+                                tool_args = {}
+
+                            pending_text = pending_text_by_namespace.get(ns_key, "")
+                            if pending_text:
+                                await _flush_assistant_text_ns(
+                                    adapter,
+                                    pending_text,
+                                    ns_key,
+                                    assistant_message_by_namespace,
+                                )
+                                pending_text_by_namespace[ns_key] = ""
+                                assistant_message_by_namespace.pop(ns_key, None)
+
+                            if tool_id in displayed_tool_ids:
+                                continue
+
+                            displayed_tool_ids.add(tool_id)
+                            if adapter._set_spinner:
+                                await adapter._set_spinner(None)
+
+                            logger.debug(
+                                "Mounting server ToolCallMessage: %s(%s)",
+                                tool_name,
+                                repr(tool_args)[:200],
+                            )
+                            tool_msg = ToolCallMessage(tool_name, tool_args)
+                            await adapter._mount_message(tool_msg)
+                            adapter._current_tool_messages[tool_id] = tool_msg
+                            tool_msg.set_running()
+
+                        elif block_type == "server_tool_result":
+                            tool_id = block.get("tool_call_id")
+                            if not isinstance(tool_id, str) or not tool_id:
+                                continue
+
+                            tool_msg = adapter._current_tool_messages.pop(
+                                tool_id, None
+                            )
+                            if tool_msg is None:
+                                continue
+
+                            status = block.get("status")
+                            if status in {None, "success", "completed"}:
+                                tool_msg.set_success("Completed")
+                            else:
+                                tool_msg.set_error(str(status))
+                                await dispatch_hook(
+                                    "tool.error",
+                                    {"tool_names": [tool_msg._tool_name]},
+                                )
+
+                            if (
+                                adapter._set_spinner
+                                and not adapter._current_tool_messages
+                            ):
+                                await adapter._set_spinner("Thinking")
+
                     if getattr(message, "chunk_position", None) == "last":
                         pending_text = pending_text_by_namespace.get(ns_key, "")
                         if pending_text:

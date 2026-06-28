@@ -191,12 +191,13 @@ function enqueueReaction(reaction) {
   }
   const messageId = reactionMessageId(reaction);
   const chatId = reactionChatId(reaction);
-  const senderId = normalizeId(reaction.senderId);
+  const rawSenderId = normalizeId(reaction.senderId);
+  const fromSelf = isSelfReaction(reaction, rawSenderId);
+  const senderId = fromSelf && botId ? botId : rawSenderId;
   if (!messageId || !chatId || !senderId) {
     console.error("Skipping WhatsApp reaction without a message id, chat id, or sender id");
     return;
   }
-  const fromSelf = senderId === botId;
 
   const entry = {
     event_type: "reaction",
@@ -430,7 +431,18 @@ function reactionMessageId(reaction) {
 
 function reactionChatId(reaction) {
   const msgId = reaction && reaction.msgId;
-  return normalizeId(msgId && msgId.remote);
+  if (msgId && typeof msgId.remote === "string" && msgId.remote) {
+    return msgId.remote;
+  }
+  if (msgId && typeof msgId.remoteJid === "string" && msgId.remoteJid) {
+    return msgId.remoteJid;
+  }
+  const serialized = serializedId(msgId);
+  if (!serialized) {
+    return null;
+  }
+  const parts = serialized.split("_");
+  return parts.length >= 3 && parts[1] ? parts[1] : null;
 }
 
 function rawReaction(reaction) {
@@ -442,6 +454,18 @@ function rawReaction(reaction) {
     orphanReason: typeof reaction.orphanReason === "string" ? reaction.orphanReason : null,
     timestamp: Number.isFinite(Number(reaction.timestamp)) ? Number(reaction.timestamp) : null,
   };
+}
+
+function isSelfReaction(reaction, senderId) {
+  if (senderId && botId && senderId === botId) {
+    return true;
+  }
+  const id = reaction && reaction.id ? reaction.id : null;
+  if (id && id.fromMe === true) {
+    return true;
+  }
+  const serialized = serializedId(id);
+  return typeof serialized === "string" && serialized.startsWith("true_");
 }
 
 function normalizeIds(values) {

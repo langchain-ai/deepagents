@@ -879,3 +879,4 @@ def test_bridge_script_registers_reaction_queue_entries() -> None:
     assert 'event_type: "reaction"' in script
     assert "raw_reaction" in script
     assert "from_self: fromSelf" in script
+    assert "const senderId = fromSelf && botId ? botId : rawSenderId;" in script

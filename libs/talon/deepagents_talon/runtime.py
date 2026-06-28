@@ -48,12 +48,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_RECURSION_LIMIT = 150
+DEFAULT_RECURSION_LIMIT = 500
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_MAX_CONTINUATIONS = 3
 DEFAULT_MAX_APPROVAL_ROUNDS = 50
 CONTEXT_SIZE_ENV_KEY = "DEEPAGENTS_TALON_CONTEXT_SIZE"
 INTERRUPT_ON_TOOLS_ENV_KEY = "DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS"
+RECURSION_LIMIT_ENV_KEY = "DEEPAGENTS_TALON_RECURSION_LIMIT"
 _WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
 _SAFE_BACKEND_PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 ModelContent = str | list[dict[str, object]]
@@ -302,7 +303,9 @@ class DeepAgentRuntime:
         reload_agent_components: Callable[[], Awaitable[RuntimeAgentComponents]] | None = None,
     ) -> None:
         """Initialize without constructing the graph."""
-        if recursion_limit <= 0:
+        values = os.environ if env is None else env
+        resolved_recursion_limit = _recursion_limit_from_env(values, recursion_limit)
+        if resolved_recursion_limit <= 0:
             msg = "recursion_limit must be positive"
             raise ValueError(msg)
         if max_retries < 1:
@@ -326,7 +329,7 @@ class DeepAgentRuntime:
         self.memory = tuple(memory) if memory is not None else None
         self.checkpointer = checkpointer if checkpointer is not None else InMemorySaver()
         self.include_web_tools = include_web_tools
-        self.recursion_limit = recursion_limit
+        self.recursion_limit = resolved_recursion_limit
         self.max_retries = max_retries
         self.max_continuations = max_continuations
         self.reload_agent_components = reload_agent_components
@@ -862,16 +865,31 @@ def _resolve_model_from_env(
 
 
 def _context_size_from_env(env: Mapping[str, str]) -> int | None:
-    raw = env.get(CONTEXT_SIZE_ENV_KEY)
+    return _positive_int_from_env(env, CONTEXT_SIZE_ENV_KEY)
+
+
+def _recursion_limit_from_env(env: Mapping[str, str], fallback: int) -> int:
+    """Resolve the recursion limit from the environment with a code fallback.
+
+    The `DEEPAGENTS_TALON_RECURSION_LIMIT` env var, when set, overrides the
+    caller-supplied value so operators can tune the graph recursion limit
+    without changing code. Falls back to the caller value when unset.
+    """
+    resolved = _positive_int_from_env(env, RECURSION_LIMIT_ENV_KEY)
+    return resolved if resolved is not None else fallback
+
+
+def _positive_int_from_env(env: Mapping[str, str], key: str) -> int | None:
+    raw = env.get(key)
     if raw is None or not raw.strip():
         return None
     try:
         value = int(raw)
     except ValueError as exc:
-        msg = f"{CONTEXT_SIZE_ENV_KEY} must be a positive integer"
+        msg = f"{key} must be a positive integer"
         raise ValueError(msg) from exc
     if value <= 0:
-        msg = f"{CONTEXT_SIZE_ENV_KEY} must be a positive integer"
+        msg = f"{key} must be a positive integer"
         raise ValueError(msg)
     return value
 

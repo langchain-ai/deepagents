@@ -20,7 +20,7 @@ def _tool_name(tool: BaseTool | Callable | dict[str, Any]) -> str | None:
         The tool name, or `None` if it cannot be determined.
     """
     if isinstance(tool, dict):
-        name = tool.get("name")  # ty: ignore[invalid-argument-type]  # Callable & dict intersection confuses ty
+        name = tool.get("name")
         return name if isinstance(name, str) else None
     name = getattr(tool, "name", None)
     return name if isinstance(name, str) else None

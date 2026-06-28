@@ -1,0 +1,371 @@
+# continual-learning-bench (clbench) evaluation workflow for Deep Agents.
+#
+# Runs continual-learning-bench (https://github.com/pgasawa/continual-learning-bench)
+# with the Deep Agents system, directly on the runner. This is NOT Harbor — clbench
+# has no sandbox concept. Split out of the Harbor workflow so this dispatch form is
+# scoped to clbench alone (every input below applies).
+#
+# Models are selected via a free-text field (group name or comma-separated specs),
+# resolved by `.github/scripts/models.py` against Harbor's model groups.
+#
+# Required secrets:
+#   LANGSMITH_API_KEY  — optional; enables trajectory tracing when present
+#   ANTHROPIC_API_KEY  — needed for Anthropic models
+#   OPENAI_API_KEY     — needed for OpenAI models
+#   GOOGLE_API_KEY     — needed for Google models
+#   XAI_API_KEY        — needed for xAI/Grok models
+#   GROQ_API_KEY       — needed for Groq-hosted models
+#   OLLAMA_API_KEY     — needed for Ollama Cloud models
+#   NVIDIA_API_KEY     — needed for NVIDIA NIM models
+#   BASETEN_API_KEY    — needed for Baseten-hosted models
+#   FIREWORKS_API_KEY  — needed for Fireworks-hosted models
+#   OPENROUTER_API_KEY — needed for OpenRouter-hosted models
+
+name: "📊 Evals - Clbench"
+run-name: >-
+  📊 Evals - Clbench — ${{ contains(inputs.models, ',') && 'custom models' || (inputs.models || 'all') }} / ${{ inputs.clbench_schedule }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      models:
+        description: "Model set to run. A group name (set definitions: libs/evals/MODEL_GROUPS.md) or comma-separated 'provider:model' specs (e.g. 'openai:gpt-4.1,anthropic:claude-sonnet-4-6'). Defaults to all models when empty."
+        required: false
+        default: "all"
+        type: string
+      include_tasks:
+        description: "Space-separated clbench task names passed as --task (empty = all clbench tasks)."
+        required: false
+        default: ""
+        type: string
+      concurrency:
+        description: "Forwarded to clbench as --per-task-parallelism."
+        required: true
+        default: "1"
+        type: string
+      clbench_schedule:
+        description: "'quick_test' = cheap smoke (per-task clbench run; only tasks that define it — currently just exploitable_poker). 'default' = leaderboard-comparable (run-all, each task's default schedule, 5 runs + baseline) — multi-hour and likely exceeds the job timeout for a Deep Agents system."
+        required: true
+        default: "quick_test"
+        type: choice
+        options:
+          - quick_test
+          - default
+
+permissions:
+  contents: read
+
+env:
+  UV_NO_SYNC: "true"
+
+jobs:
+  prep:
+    name: "🔧 Prepare matrix"
+    runs-on: ubuntu-latest
+    environment: evals
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: "📝 Log dispatch inputs"
+        continue-on-error: true
+        env:
+          MODELS: ${{ inputs.models || 'all' }}
+          INCLUDE_TASKS: ${{ inputs.include_tasks }}
+          CONCURRENCY: ${{ inputs.concurrency }}
+          CLBENCH_SCHEDULE: ${{ inputs.clbench_schedule }}
+        run: |
+          echo "### 📊 Evals - Clbench dispatch inputs" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Input | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`models\` | \`${MODELS}\` |" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "${INCLUDE_TASKS}" ]; then
+            echo "| \`include_tasks\` | \`${INCLUDE_TASKS}\` |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "| \`include_tasks\` | all |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "| \`concurrency\` | \`${CONCURRENCY}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| \`clbench_schedule\` | \`${CLBENCH_SCHEDULE}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: "🐍 Compute clbench matrix"
+        id: set-matrix
+        run: python .github/scripts/models.py clbench
+        env:
+          CLBENCH_MODELS: ${{ inputs.models || 'all' }}
+
+  # continual-learning-bench (clbench) — NOT Harbor. Runs the whole benchmark
+  # (clbench run-all) with the Deep Agents system on the runner. Shares the prep
+  # model matrix with the evals/Harbor model groups.
+  clbench:
+    name: "📊 Evals - Clbench (${{ matrix.model }} / deepagents)"
+    needs: prep
+    runs-on: ubuntu-latest
+    environment: evals
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prep.outputs.matrix) }}
+    env:
+      CLBENCH_REPO: "https://github.com/pgasawa/continual-learning-bench"
+      # Pinned to a specific commit (not a moving ref) for reproducibility.
+      CLBENCH_REF: "56764d61afa2860e4893bc14e6229e33fcebf06b"
+      CLBENCH_MODEL: ${{ matrix.model }}
+      CLBENCH_PROVIDER: ${{ matrix.provider }}
+      CLBENCH_INCLUDE_TASKS: ${{ inputs.include_tasks }}
+      CLBENCH_PER_TASK_PARALLELISM: ${{ inputs.concurrency }}
+      CLBENCH_SCHEDULE: ${{ inputs.clbench_schedule }}
+      # Ollama cloud endpoint (matches the Harbor job); ollama:*:cloud needs this
+      # or LangChain defaults to a local Ollama server.
+      OLLAMA_HOST: "https://ollama.com"
+      # Trace-level LangSmith tracing only: LangChain/LangGraph auto-captures the
+      # agent trajectories when these are set. clbench itself has no LangSmith
+      # experiment integration, so scores/gain stay in clbench's own artifacts.
+      # Tracing turns on only when the secret is present (no warnings when absent).
+      # LANGSMITH_API_KEY is injected at the run step only (not job-wide), so it is
+      # absent while the third-party clbench deps are cloned/synced/installed.
+      LANGSMITH_TRACING: ${{ secrets.LANGSMITH_API_KEY != '' && 'true' || 'false' }}
+    steps:
+      - name: "🔑 Verify model credentials"
+        env:
+          ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
+          BASETEN_API_KEY: ${{ startsWith(matrix.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
+          FIREWORKS_API_KEY: ${{ startsWith(matrix.model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}
+          GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
+          GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
+          NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
+          OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ startsWith(matrix.model, 'openai:') && secrets.OPENAI_API_KEY || '' }}
+          OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
+          XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
+        run: |
+          provider="${CLBENCH_MODEL%%:*}"
+          missing=()
+          # All Harbor matrix providers resolve through init_chat_model.
+          case "$provider" in
+            anthropic)    [ -z "$ANTHROPIC_API_KEY" ] && missing+=("ANTHROPIC_API_KEY") ;;
+            openai)       [ -z "$OPENAI_API_KEY" ] && missing+=("OPENAI_API_KEY") ;;
+            google_genai) [ -z "$GOOGLE_API_KEY" ] && missing+=("GOOGLE_API_KEY") ;;
+            groq)         [ -z "$GROQ_API_KEY" ] && missing+=("GROQ_API_KEY") ;;
+            xai)          [ -z "$XAI_API_KEY" ] && missing+=("XAI_API_KEY") ;;
+            ollama)       [ -z "$OLLAMA_API_KEY" ] && missing+=("OLLAMA_API_KEY") ;;
+            fireworks)    [ -z "$FIREWORKS_API_KEY" ] && missing+=("FIREWORKS_API_KEY") ;;
+            nvidia)       [ -z "$NVIDIA_API_KEY" ] && missing+=("NVIDIA_API_KEY") ;;
+            openrouter)   [ -z "$OPENROUTER_API_KEY" ] && missing+=("OPENROUTER_API_KEY") ;;
+            baseten)      [ -z "$BASETEN_API_KEY" ] && missing+=("BASETEN_API_KEY") ;;
+            *)
+              echo "::warning::Unknown provider prefix '$provider' for clbench; proceeding and letting init_chat_model resolve it. Ensure the matching API key secret is configured."
+              ;;
+          esac
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing required secret(s) for $CLBENCH_MODEL: ${missing[*]}"
+            exit 1
+          fi
+          echo "Credentials present for $CLBENCH_MODEL"
+
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.13"
+          cache-suffix: clbench
+          working-directory: libs/evals
+
+      - name: "📦 Set up clbench (clone + install — no model keys)"
+        # Deliberately has NO model/provider API keys (and no LANGSMITH_API_KEY) in
+        # its environment. The third-party clone, `uv sync --all-extras`, and the
+        # provider-package install run here, so install-time / build-backend code from
+        # clbench's dependency tree cannot read the secrets. The keys are injected only
+        # into the later `uv run clbench ...` step, after everything is installed.
+        run: |
+          set -euo pipefail
+
+          # Validate the pinned ref is a full commit SHA (no moving refs).
+          if ! [[ "$CLBENCH_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::CLBENCH_REF must be a full 40-char commit SHA"; exit 1
+          fi
+
+          # Clone clbench pinned to a specific commit.
+          git clone --filter=blob:none "$CLBENCH_REPO" clbench-src
+          git -C clbench-src checkout --quiet "$CLBENCH_REF"
+
+          # Install clbench (all task extras), the local Deep Agents SDK, and the
+          # matrix model's LangChain provider integration.
+          ( cd clbench-src && uv sync --all-extras )
+          # Provider -> LangChain integration package (init_chat_model resolves all of these).
+          case "$CLBENCH_PROVIDER" in
+            anthropic)    provider_pkg="langchain-anthropic" ;;
+            openai)       provider_pkg="langchain-openai" ;;
+            google_genai) provider_pkg="langchain-google-genai" ;;
+            groq)         provider_pkg="langchain-groq" ;;
+            xai)          provider_pkg="langchain-xai" ;;
+            ollama)       provider_pkg="langchain-ollama" ;;
+            fireworks)    provider_pkg="langchain-fireworks" ;;
+            nvidia)       provider_pkg="langchain-nvidia-ai-endpoints" ;;
+            openrouter)   provider_pkg="langchain-openrouter" ;;
+            baseten)      provider_pkg="langchain-baseten" ;;
+            *)            provider_pkg="langchain-openai"
+                          echo "::warning::Unknown provider '$CLBENCH_PROVIDER'; defaulting integration to langchain-openai." ;;
+          esac
+          # Fireworks can pull a prerelease dependency (matches the Harbor job).
+          uv_pre=""
+          [ "$CLBENCH_PROVIDER" = "fireworks" ] && uv_pre="UV_PRERELEASE=allow"
+          ( cd clbench-src && env $uv_pre uv pip install -e "$GITHUB_WORKSPACE/libs/deepagents" ${provider_pkg:+"$provider_pkg"} )
+
+          # Deploy the Deep Agents system into this clbench checkout.
+          "$GITHUB_WORKSPACE/libs/evals/deepagents_clbench/sync_to_clbench.sh" "$GITHUB_WORKSPACE/clbench-src"
+
+          # Best-effort dataset setup for tasks that need it (non-fatal). Dataset setup
+          # needs no model keys, so it runs here — keeping the third-party code it
+          # executes away from the provider secrets too.
+          ( cd clbench-src && uv run clbench setup --all ) \
+            || echo "::warning::'clbench setup --all' reported errors; tasks needing that data may be skipped."
+
+      - name: "🧠 Run continual-learning-bench with the Deep Agents system"
+        env:
+          ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
+          BASETEN_API_KEY: ${{ startsWith(matrix.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
+          FIREWORKS_API_KEY: ${{ startsWith(matrix.model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}
+          GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
+          GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
+          NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
+          OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ startsWith(matrix.model, 'openai:') && secrets.OPENAI_API_KEY || '' }}
+          OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
+          XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
+          # Trajectory tracing secret — injected here, not job-wide, so it is absent
+          # during the clone/sync/install step above. Tracing stays off when unset.
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          # Validate per-task parallelism is a positive integer.
+          if ! [[ "$CLBENCH_PER_TASK_PARALLELISM" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Invalid concurrency (per-task-parallelism): $CLBENCH_PER_TASK_PARALLELISM"; exit 1
+          fi
+          # Validate the schedule name (used in a file path + the command).
+          if ! [[ "$CLBENCH_SCHEDULE" =~ ^[A-Za-z0-9_]+$ ]]; then
+            echo "::error::Invalid clbench schedule: $CLBENCH_SCHEDULE"; exit 1
+          fi
+          # Validate + collect requested task names (alphanumeric + underscore only).
+          req_tasks=()
+          if [ -n "$CLBENCH_INCLUDE_TASKS" ]; then
+            read -r -a req_tasks <<< "$CLBENCH_INCLUDE_TASKS"
+            for t in "${req_tasks[@]}"; do
+              if ! [[ "$t" =~ ^[A-Za-z0-9_]+$ ]]; then
+                echo "::error::Invalid clbench task name: $t"; exit 1
+              fi
+            done
+          fi
+
+          # clbench was cloned, `uv sync`'d, the provider package installed, and
+          # `clbench setup` run in the preceding setup step — all without model keys
+          # in the environment. clbench-src persists on the runner across steps.
+          model_slug=$(printf '%s' "$CLBENCH_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
+          run_name="deepagents-${model_slug}-${GITHUB_RUN_ID}"
+
+          # Trace-level LangSmith: group this model's agent traces under one project.
+          # Inherited by the run-all subprocesses. Never print the key, only status.
+          ls_project="deepagents-clbench-${model_slug}"
+          export LANGSMITH_PROJECT="$ls_project"
+          echo "CLBENCH_LS_PROJECT=${ls_project}" >> "$GITHUB_ENV"
+          if [ -n "${LANGSMITH_API_KEY:-}" ]; then
+            echo "LangSmith tracing: ON -> project $ls_project"
+          else
+            echo "LangSmith tracing: OFF (no LANGSMITH_API_KEY secret)"
+          fi
+
+          if [ "$CLBENCH_SCHEDULE" = "default" ]; then
+            # Leaderboard-comparable: run-all uses each task's default schedule (5 runs
+            # + baseline). This is exactly the config the public leaderboard reports.
+            echo "::warning::clbench_schedule=default is leaderboard-scale (all default schedules, 5 runs + baseline); for a Deep Agents system this is many hours and will likely exceed the job timeout — prefer running per-task or out-of-CI."
+            task_flags=()
+            if [ "${#req_tasks[@]}" -gt 0 ]; then task_flags=(--task "${req_tasks[@]}"); fi
+            echo "Running 'clbench run-all' (leaderboard mode) — system=deepagents, model=$CLBENCH_MODEL"
+            ( cd clbench-src && set -x && uv run clbench run-all \
+                --name "$run_name" \
+                --system deepagents \
+                --system.model "$CLBENCH_MODEL" \
+                ${task_flags[@]+"${task_flags[@]}"} \
+                --per-task-parallelism "$CLBENCH_PER_TASK_PARALLELISM" \
+                --no-live-dashboard )
+          else
+            # Cheap/named-schedule mode: run-all is hardwired to default.json, so a
+            # named schedule (e.g. quick_test) must be run per task via `clbench run`.
+            targets=()
+            if [ "${#req_tasks[@]}" -gt 0 ]; then
+              # Explicit request: every named task MUST define the schedule. Do not
+              # silently skip — that would produce a green run with no benchmark result.
+              for t in "${req_tasks[@]}"; do
+                if [ ! -f "clbench-src/src/tasks/$t/schedules/${CLBENCH_SCHEDULE}.json" ]; then
+                  echo "::error::Requested task '$t' has no '$CLBENCH_SCHEDULE' schedule (e.g. quick_test currently exists only for exploitable_poker). Pick a task that defines it, or use clbench_schedule=default."; exit 1
+                fi
+                targets+=("$t")
+              done
+            else
+              # No include_tasks: auto-select tasks that actually define this schedule.
+              for d in clbench-src/src/tasks/*/; do
+                t="$(basename "$d")"
+                if [ -f "$d/schedules/${CLBENCH_SCHEDULE}.json" ]; then targets+=("$t"); fi
+              done
+            fi
+            if [ "${#targets[@]}" -eq 0 ]; then
+              echo "::error::No task defines schedule '$CLBENCH_SCHEDULE' (currently only exploitable_poker ships quick_test). Pass include_tasks, or use clbench_schedule=default."; exit 1
+            fi
+            echo "Cheap mode: schedule=$CLBENCH_SCHEDULE, tasks: ${targets[*]}"
+            rc=0; ran=0
+            for t in "${targets[@]}"; do
+              echo "Running 'clbench run $t --schedule $CLBENCH_SCHEDULE' — system=deepagents, model=$CLBENCH_MODEL"
+              ( cd clbench-src && set -x && uv run clbench run "$t" \
+                  --schedule "$CLBENCH_SCHEDULE" \
+                  --system deepagents \
+                  --system.model "$CLBENCH_MODEL" \
+                  --max-workers "$CLBENCH_PER_TASK_PARALLELISM" \
+                  --no-live-dashboard ) || rc=$?
+              ran=$((ran + 1))
+            done
+            if [ "$ran" -eq 0 ]; then echo "::error::no clbench tasks ran for schedule '$CLBENCH_SCHEDULE'"; exit 1; fi
+            [ "$rc" -eq 0 ] || { echo "::error::one or more clbench tasks failed (rc=$rc)"; exit "$rc"; }
+          fi
+
+      - name: "📝 Write workflow summary"
+        if: always()
+        run: |
+          {
+            echo "## clbench run (continual-learning-bench — not Harbor)"
+            echo
+            echo "- Model: ${CLBENCH_MODEL}"
+            echo "- System: deepagents"
+            echo "- clbench ref: ${CLBENCH_REF}"
+            if [ -n "${CLBENCH_INCLUDE_TASKS}" ]; then
+              echo "- Tasks: ${CLBENCH_INCLUDE_TASKS}"
+            else
+              echo "- Tasks: all (run-all over the whole benchmark)"
+            fi
+            echo "- Per-task parallelism: ${CLBENCH_PER_TASK_PARALLELISM}"
+            if [ "${CLBENCH_SCHEDULE}" = "default" ]; then
+              echo "- Schedule: default (leaderboard-comparable: run-all, each task's default schedule, 5 runs)"
+            else
+              echo "- Schedule: ${CLBENCH_SCHEDULE} (cheap mode: per-task clbench run --schedule)"
+            fi
+            if [ "${LANGSMITH_TRACING}" = "true" ]; then
+              echo "- LangSmith tracing: on (trajectories only; project ${CLBENCH_LS_PROJECT:-deepagents-clbench-<model>})"
+            else
+              echo "- LangSmith tracing: off (set the LANGSMITH_API_KEY secret to enable)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "📤 Upload clbench results"
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: clbench-${{ strategy.job-index }}
+          path: |
+            clbench-src/final_results
+            clbench-src/results
+          if-no-files-found: warn

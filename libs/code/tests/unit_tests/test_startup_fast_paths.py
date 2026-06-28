@@ -46,24 +46,28 @@ def _run_cli_main(argv: list[str]) -> subprocess.CompletedProcess[str]:
         from deepagents_code.main import cli_main
 
         argv = ["deepagents", *json.loads(sys.argv[1])]
-        with (
-            patch.object(sys, "argv", argv),
-            patch("deepagents_code.main.check_cli_dependencies"),
-        ):
-            cli_main()
-
-        prefixes = tuple(json.loads(sys.argv[2]))
-        loaded = sorted(
-            name for name in sys.modules if name.startswith(prefixes)
-        )
-        config_module = sys.modules.get("deepagents_code.config")
-        bootstrap_done = (
-            getattr(config_module, "_bootstrap_done", None)
-            if config_module is not None
-            else None
-        )
-        print("LOADED_MODULES=" + json.dumps(loaded), file=sys.stderr)
-        print("BOOTSTRAP_DONE=" + json.dumps(bootstrap_done), file=sys.stderr)
+        try:
+            with (
+                patch.object(sys, "argv", argv),
+                patch("deepagents_code.main.check_cli_dependencies"),
+            ):
+                cli_main()
+        finally:
+            prefixes = tuple(json.loads(sys.argv[2]))
+            loaded = sorted(
+                name for name in sys.modules if name.startswith(prefixes)
+            )
+            config_module = sys.modules.get("deepagents_code.config")
+            bootstrap_state = (
+                getattr(config_module, "_bootstrap_state", None)
+                if config_module is not None
+                else None
+            )
+            bootstrap_done = (
+                bootstrap_state.done if bootstrap_state is not None else None
+            )
+            print("LOADED_MODULES=" + json.dumps(loaded), file=sys.stderr)
+            print("BOOTSTRAP_DONE=" + json.dumps(bootstrap_done), file=sys.stderr)
     """
     return subprocess.run(
         [
@@ -98,6 +102,7 @@ def _read_marker(stderr: str, prefix: str) -> object:
         (["mcp"], "dcode mcp <command>"),
         (["config"], "dcode config <command>"),
         (["auth"], "dcode auth <command>"),
+        (["tools"], "dcode tools <command>"),
     ],
 )
 def test_help_only_commands_skip_runtime_imports(
@@ -122,6 +127,38 @@ def test_help_only_commands_skip_runtime_imports(
 
 
 @pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["auth", "path"], "/auth.json"),
+        (["config", "path", "--json"], '"command": "config path"'),
+        (["doctor", "--json"], '"command": "doctor"'),
+    ],
+)
+def test_lightweight_commands_skip_settings_bootstrap(
+    argv: list[str], expected: str
+) -> None:
+    """Lightweight diagnostics commands should avoid settings bootstrap."""
+    result = _run_cli_main(argv)
+
+    assert result.returncode == 0, result.stderr
+    assert expected in result.stdout
+
+    bootstrap_done = _read_marker(result.stderr, "BOOTSTRAP_DONE=")
+    assert bootstrap_done in (None, False), (
+        f"settings bootstrap must not run for {argv}; got {bootstrap_done!r}"
+    )
+
+
+def test_auth_credential_resolution_commands_run_settings_bootstrap() -> None:
+    """Auth commands that resolve credentials must see dotenv-loaded values."""
+    result = _run_cli_main(["auth", "status", "anthropic"])
+
+    assert result.returncode == 0, result.stderr
+    bootstrap_done = _read_marker(result.stderr, "BOOTSTRAP_DONE=")
+    assert bootstrap_done is True
+
+
+@pytest.mark.parametrize(
     "argv",
     [
         ["agents", "list"],
@@ -130,6 +167,7 @@ def test_help_only_commands_skip_runtime_imports(
         ["mcp", "login", "example.com"],
         ["config", "show"],
         ["auth", "list"],
+        ["tools", "install"],
     ],
 )
 def test_subcommands_bypass_fast_path(argv: list[str]) -> None:

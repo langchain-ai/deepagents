@@ -138,7 +138,7 @@ class ApprovalMenu(Container):
     def __init__(
         self,
         action_requests: list[dict[str, Any]] | dict[str, Any],
-        _assistant_id: str | None = None,
+        assistant_id: str | None = None,
         id: str | None = None,  # noqa: A002  # Textual widget constructor uses `id` parameter
         **kwargs: Any,
     ) -> None:
@@ -148,8 +148,8 @@ class ApprovalMenu(Container):
             action_requests: A single action request dictionary or a list of action
                 request dictionaries requiring approval. Each dictionary should
                 contain 'name' (tool name) and 'args' (tool arguments).
-            _assistant_id: Optional assistant ID (currently unused, reserved for
-                future use).
+            assistant_id: Optional assistant ID for resolving virtual paths in
+                file-operation previews.
             id: Optional widget ID. Defaults to 'approval-menu'.
             **kwargs: Additional keyword arguments passed to the Container base class.
         """
@@ -160,6 +160,7 @@ class ApprovalMenu(Container):
         else:
             self._action_requests = action_requests
 
+        self._assistant_id = assistant_id
         # For display purposes, get tool names
         self._tool_names = [r.get("name", "unknown") for r in self._action_requests]
         self._selected = 0
@@ -397,7 +398,9 @@ class ApprovalMenu(Container):
 
             # Get the appropriate renderer for this tool
             renderer = get_renderer(tool_name)
-            widget_class, data = renderer.get_approval_widget(tool_args)
+            widget_class, data = renderer.get_approval_widget(
+                tool_args, assistant_id=self._assistant_id
+            )
             approval_widget = widget_class(data)
             await self._tool_info_container.mount(approval_widget)
 

@@ -27,6 +27,7 @@ class UpdateProgressScreen(ModalScreen[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("d", "toggle_details", "Details", show=False),
         Binding("c", "copy_log_path", "Copy log path", show=False),
+        Binding("q", "quit_app", "Quit", show=False),
         Binding("escape", "cancel", "Close", show=False),
     ]
 
@@ -126,6 +127,7 @@ class UpdateProgressScreen(ModalScreen[None]):
         self._details_visible = False
         self._done = False
         self._status = f"Installing v{latest}..."
+        self._done_glyph: str | None = None
         self._status_widget: Static | None = None
         self._spinner = Spinner()
         self._spinner_widget: Static | None = None
@@ -134,6 +136,8 @@ class UpdateProgressScreen(ModalScreen[None]):
         self._log_path_widget: Static | None = None
         self._tail_widget: Log | None = None
         self._help_widget: Static | None = None
+        self._copy_text: str | None = None
+        self._copy_label = "log path"
 
     def compose(self) -> ComposeResult:
         """Compose the modal.
@@ -196,8 +200,10 @@ class UpdateProgressScreen(ModalScreen[None]):
     def mark_success(self) -> None:
         """Render the completed-success state."""
         self._done = True
+        self._done_glyph = get_glyphs().checkmark
         self._status = (
-            f"Update complete. Restart Deep Agents Code to use v{self._latest}."
+            f"Update complete. Quit and relaunch Deep Agents Code to use "
+            f"v{self._latest}."
         )
         self._stop_spinner_timer()
         self._refresh_status()
@@ -209,7 +215,32 @@ class UpdateProgressScreen(ModalScreen[None]):
             command: Manual command users can run to retry.
         """
         self._done = True
+        self._done_glyph = get_glyphs().error
         self._status = f"Update failed. Try manually: {command}"
+        self._details_visible = True
+        self._stop_spinner_timer()
+        self._refresh_status()
+        self._apply_details_visibility()
+
+    def mark_warning(
+        self,
+        warning: str,
+        *,
+        copy_text: str | None = None,
+        copy_label: str = "fix command",
+    ) -> None:
+        """Render a completed state that needs user action.
+
+        Args:
+            warning: Durable warning text to show in the modal status.
+            copy_text: Optional text copied by the `c` key in warning state.
+            copy_label: User-facing name for the copied text.
+        """
+        self._done = True
+        self._done_glyph = get_glyphs().warning
+        self._status = warning
+        self._copy_text = copy_text
+        self._copy_label = copy_label
         self._details_visible = True
         self._stop_spinner_timer()
         self._refresh_status()
@@ -225,13 +256,25 @@ class UpdateProgressScreen(ModalScreen[None]):
         if self._done:
             self.dismiss(None)
 
+    def action_quit_app(self) -> None:
+        """Quit the app once the update command has finished."""
+        if self._done:
+            self.app.exit()
+
     def action_copy_log_path(self) -> None:
-        """Copy the persisted log path when details are visible."""
-        if not self._details_visible:
+        """Copy warning action text or the persisted log path."""
+        copy_text = self._copy_text
+        copy_label = self._copy_label
+        if copy_text is None:
+            if not self._details_visible:
+                return
+            copy_text = str(self._log_path)
+            copy_label = "log path"
+        if not copy_text:
             return
-        self.app.copy_to_clipboard(str(self._log_path))
+        self.app.copy_to_clipboard(copy_text)
         self.app.notify(
-            "Copied log path.",
+            f"Copied {copy_label}.",
             severity="information",
             timeout=3,
             markup=False,
@@ -242,7 +285,7 @@ class UpdateProgressScreen(ModalScreen[None]):
             self._status_widget.update(self._status)
         if self._spinner_widget is not None:
             if self._done:
-                self._spinner_widget.update(get_glyphs().checkmark)
+                self._spinner_widget.update(self._done_glyph or get_glyphs().checkmark)
                 self._spinner_widget.display = True
             else:
                 self._spinner_widget.display = True
@@ -270,8 +313,12 @@ class UpdateProgressScreen(ModalScreen[None]):
         details = "Hide details" if self._details_visible else "Show details"
         close = "Esc close" if self._done else "Esc close when complete"
         parts = [f"d {details}", close]
-        if self._details_visible:
+        if self._copy_text is not None:
+            parts.insert(1, f"c copy {self._copy_label}")
+        elif self._details_visible:
             parts.insert(1, "c copy log path")
+        if self._done:
+            parts.append("q quit")
         return f" {glyphs.bullet} ".join(parts)
 
     def _update_spinner(self) -> None:

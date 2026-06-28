@@ -7,6 +7,7 @@ subagent, and summarization middleware.
 
 import logging
 from collections.abc import Callable, Sequence
+from importlib import import_module
 from typing import Annotated, Any, Required, cast
 
 from langchain.agents import AgentState, create_agent
@@ -62,7 +63,7 @@ logger = logging.getLogger(__name__)
 
 
 class DeepAgentState(AgentState):
-    """AgentState with DeltaChannel on messages to reduce checkpoint growth from O(N²) to O(N)."""
+    """AgentState with `DeltaChannel` on messages to reduce checkpoint growth from O(N²) to O(N)."""
 
     messages: Required[Annotated[list[AnyMessage], DeltaChannel(_messages_delta_reducer, snapshot_frequency=50)]]  # ty: ignore[invalid-argument-type]
 
@@ -185,15 +186,38 @@ def get_default_model() -> ChatAnthropic:
     return _build_default_model()
 
 
+def _create_bedrock_prompt_caching_middleware() -> AgentMiddleware[Any, Any, Any] | None:
+    """Create Bedrock prompt caching middleware when `langchain-aws` is installed."""
+    module_name = "langchain_aws.middleware.prompt_caching"
+    try:
+        module = import_module(module_name)
+    except ImportError as exc:
+        if exc.name not in {"langchain_aws", "langchain_aws.middleware", module_name}:
+            raise
+        logger.debug("Bedrock prompt caching middleware is unavailable.", exc_info=exc)
+        return None
+    middleware_cls = module.BedrockPromptCachingMiddleware
+    return cast("AgentMiddleware[Any, Any, Any]", middleware_cls(unsupported_model_behavior="ignore"))
+
+
+def _append_prompt_caching_middleware(middleware: list[AgentMiddleware[Any, Any, Any]]) -> None:
+    """Append provider-specific prompt caching middleware."""
+    middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+    bedrock_middleware = _create_bedrock_prompt_caching_middleware()
+    if bedrock_middleware is not None:
+        middleware.append(bedrock_middleware)
+
+
 def _merge_fs_interrupt_on(
     fs_interrupt_on: dict[str, InterruptOnConfig],
     user_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
 ) -> dict[str, bool | InterruptOnConfig] | None:
-    """Merge fs-permission-derived configs with user-supplied `interrupt_on`.
+    """Combine filesystem-permission configs with user-defined interrupts.
 
-    User-supplied entries override generated ones per tool name. Returns
-    `None` when both inputs are empty so callers can skip installing
-    `HumanInTheLoopMiddleware`.
+    User-defined `interrupt_on` entries take precedence over generated
+    filesystem-permission entries with the same tool name. Returns `None` when
+    there are no interrupts to configure, allowing `HumanInTheLoopMiddleware` to
+    be omitted.
     """
     if not fs_interrupt_on and not user_interrupt_on:
         return None
@@ -255,8 +279,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     cache: BaseCache | None = None,
 ) -> CompiledStateGraph[AgentState[ResponseT], ContextT, InputAgentState, OutputAgentState[ResponseT]]:  # ty: ignore[invalid-type-arguments]  # ty can't verify generic TypedDicts satisfy StateLike bound
     r"""Create a deep agent.
-
-    !!! warning "Deep agents require a LLM that supports tool calling!"
 
     By default, this agent has access to the following tools:
 
@@ -350,6 +372,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             - `_ToolExclusionMiddleware` (if profile has `excluded_tools`)
             - [`AnthropicPromptCachingMiddleware`][langchain_anthropic.middleware.AnthropicPromptCachingMiddleware] (unconditional; no-ops for
                 non-Anthropic models)
+            - [`BedrockPromptCachingMiddleware`](https://reference.langchain.com/python/langchain-aws/middleware/prompt_caching/BedrockPromptCachingMiddleware)
+                when `langchain-aws` is installed (no-ops for non-Bedrock models)
             - [`MemoryMiddleware`][deepagents.middleware.memory.MemoryMiddleware] (if `memory` is provided)
             - [`HumanInTheLoopMiddleware`][langchain.agents.middleware.HumanInTheLoopMiddleware] (if `interrupt_on` is provided)
 
@@ -378,9 +402,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             `SubAgent` entries are invoked through the `task` tool. They should
             provide `name`, `description`, and `system_prompt`, and may also
-            override `tools`, `model`, `middleware`, `interrupt_on`, and
-            `skills`. See `interrupt_on` below for inheritance and override
-            behavior.
+            override `tools`, `model`, `middleware`, `interrupt_on`, `skills`,
+            `permissions`, and `response_format`. See `interrupt_on` below for
+            inheritance and override behavior.
 
             `CompiledSubAgent` entries are also exposed through the `task` tool,
             but provide a pre-built `runnable` instead of a declarative prompt
@@ -421,17 +445,17 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             Rules are evaluated in declaration order; the first match wins.
             If no rule matches, the call is allowed.
 
-            Each rule's ``mode`` can be:
+            Each rule's `mode` can be:
 
-            - ``"allow"`` (default): the call proceeds.
-            - ``"deny"``: the tool returns a permission-denied error.
-            - ``"interrupt"``: the call pauses for human approval via
-              `HumanInTheLoopMiddleware`. A `HumanInTheLoopMiddleware` is
-              auto-installed when any interrupt-mode rule is present, and the
-              generated `interrupt_on` entries are merged with the
-              `interrupt_on` argument below (user-supplied entries win per
-              tool name). Requires a `langchain` version that supports the
-              ``when`` predicate on `InterruptOnConfig`.
+            - `"allow"` (default): the call proceeds.
+            - `"deny"`: the tool returns a permission-denied error.
+            - `"interrupt"`: the call pauses for human approval via
+                `HumanInTheLoopMiddleware`. A `HumanInTheLoopMiddleware` is
+                auto-installed when any interrupt-mode rule is present, and the
+                generated `interrupt_on` entries are merged with the
+                `interrupt_on` argument below (user-supplied entries win per
+                tool name). Requires a `langchain` version that supports the
+                `when` predicate on `InterruptOnConfig`.
 
             Subagents inherit these rules unless they specify their own
             `permissions` field, which replaces the parent's rules entirely.
@@ -636,8 +660,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             if _subagent_profile.excluded_tools:
                 subagent_middleware.append(_ToolExclusionMiddleware(excluded=_subagent_profile.excluded_tools))
 
-            # Prompt caching
-            subagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+            _append_prompt_caching_middleware(subagent_middleware)
 
             _subagent_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
             _subagent_matched_names: set[str] = set()
@@ -711,8 +734,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # Strip excluded tools after all tool-injecting middleware has run
         if _profile.excluded_tools:
             gp_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
-        # Prompt caching is unconditional: "ignore" silently skips non-Anthropic models
-        gp_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+        _append_prompt_caching_middleware(gp_middleware)
 
         gp_middleware = _apply_excluded_middleware(
             gp_middleware,
@@ -794,8 +816,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     deepagent_middleware.extend(_profile.materialize_extra_middleware())
     if _profile.excluded_tools:
         deepagent_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
-    # Unconditional prompt caching (see general-purpose subagent comment).
-    deepagent_middleware.append(AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore"))
+    _append_prompt_caching_middleware(deepagent_middleware)
     if memory is not None:
         # MemoryMiddleware applies the cache_control breakpoint only when the
         # request model is Anthropic, making it safe to enable unconditionally.

@@ -11,9 +11,29 @@ from deepagents_code.unicode_security import check_url_safety, strip_dangerous_u
 
 if TYPE_CHECKING:
     from textual.app import App
-    from textual.events import Click
+    from textual.events import Click, MouseMove
 
 logger = logging.getLogger(__name__)
+
+
+def event_targets_link(event: MouseMove) -> bool:
+    """Return whether the style under the mouse points to a clickable link.
+
+    Detects both Rich `Style(link=...)` (OSC 8) hyperlinks and the
+    `@click=link(...)` meta actions that Textual's `Markdown` widget attaches
+    to rendered links and images.
+
+    Args:
+        event: The Textual mouse-move event to inspect.
+
+    Returns:
+        `True` when the hovered character belongs to a link span.
+    """
+    style = event.style
+    if style.link:
+        return True
+    click = style.meta.get("@click")
+    return isinstance(click, str) and click.startswith("link(")
 
 
 async def open_url_async(url: str, *, app: App) -> bool:

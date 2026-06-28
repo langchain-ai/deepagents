@@ -90,7 +90,7 @@ jobs:
           echo "sha=$PR_SHA" >> "$GITHUB_OUTPUT"
           echo "branch=$PR_BRANCH" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           # Use the PR branch name so the agent can commit and push to the PR directly.
           ref: ${{ github.event_name != 'workflow_dispatch' && steps.pr-sha.outputs.branch || '' }}

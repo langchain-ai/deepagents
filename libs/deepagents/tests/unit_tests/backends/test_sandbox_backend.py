@@ -30,6 +30,9 @@ from deepagents.backends.sandbox import (
     _READ_COMMAND_TEMPLATE,
     _WRITE_CHECK_TEMPLATE,
     BaseSandbox,
+    _check_preflight_result,
+    _map_edit_error,
+    _parse_grep_output,
 )
 
 
@@ -537,17 +540,31 @@ def test_sandbox_write_with_special_content() -> None:
     assert sandbox._uploaded[0][1] == content.encode("utf-8")
 
 
-def test_sandbox_write_returns_error_on_existing_file() -> None:
-    """Test that write() returns an error when the check command fails."""
+def test_sandbox_write_overwrites_existing_file() -> None:
+    """Test that write() replaces an existing file without error."""
+    sandbox = MockSandbox()
+
+    result = sandbox.write("/test/file.txt", "original content")
+    assert result.error is None
+
+    result = sandbox.write("/test/file.txt", "new content")
+    assert result.error is None
+
+    assert len(sandbox._uploaded) == 2
+    assert sandbox._uploaded[-1] == ("/test/file.txt", b"new content")
+
+
+def test_sandbox_write_returns_error_on_preflight_failure() -> None:
+    """Test that write() returns an error and skips upload when the preflight fails."""
     sandbox = MockSandbox()
 
     def fail_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ARG001
         sandbox.last_command = command
-        return ExecuteResponse(output="Error: File already exists", exit_code=1)
+        return ExecuteResponse(output="Error: Permission denied", exit_code=1)
 
     sandbox.execute = fail_execute
 
-    result = sandbox.write("/test/existing.txt", "content")
+    result = sandbox.write("/test/protected.txt", "content")
     assert result.error is not None
     assert "Error:" in result.error
     assert len(sandbox._uploaded) == 0  # upload should not have been called
@@ -1034,7 +1051,7 @@ def test_sandbox_edit_one_over_threshold_uses_upload() -> None:
 
 def test_map_edit_error_unknown_code_falls_through() -> None:
     """Test that _map_edit_error returns a generic error for unrecognized codes."""
-    result = BaseSandbox._map_edit_error("temp_read_failed", "/test/file.txt", "old")
+    result = _map_edit_error("temp_read_failed", "/test/file.txt", "old")
 
     assert result.error is not None
     assert "temp_read_failed" in result.error
@@ -1294,7 +1311,7 @@ def test_glob_empty_returns_empty_matches() -> None:
 
 def test_map_edit_error_permission_denied() -> None:
     """_map_edit_error returns a readable message for permission_denied."""
-    result = BaseSandbox._map_edit_error("permission_denied", "/test/file.txt", "old")
+    result = _map_edit_error("permission_denied", "/test/file.txt", "old")
     assert result.error is not None
     assert "permission" in result.error.lower()
     assert "/test/file.txt" in result.error
@@ -1326,3 +1343,269 @@ def test_sandbox_edit_inline_permission_denied() -> None:
     assert result.error is not None
     assert "permission" in result.error.lower()
     assert "/test/locked.txt" in result.error
+
+
+# -- async override tests (issue #665) ----------------------------------------
+#
+# These tests verify that the async helpers on BaseSandbox call aexecute()
+# rather than wrapping the sync methods with asyncio.to_thread. The fixture is
+# a NativeAsyncSandbox that overrides aexecute() with a coroutine that records
+# all calls, while execute() raises to prove it is never reached.
+
+
+class NativeAsyncSandbox(BaseSandbox):
+    """Sandbox where aexecute() is natively async; execute() always raises."""
+
+    def __init__(self) -> None:
+        self._aexecute_calls: list[str] = []
+        self._aupload_calls: list[list[tuple[str, bytes]]] = []
+        self._next_output: str = ""
+        self._next_exit_code: int = 0
+
+    @property
+    def id(self) -> str:
+        return "native-async-sandbox"
+
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        msg = "sync execute() must not be called from async helpers"
+        raise RuntimeError(msg)
+
+    async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ASYNC109
+        self._aexecute_calls.append(command)
+        output = self._next_output
+        exit_code = self._next_exit_code
+        return ExecuteResponse(output=output, exit_code=exit_code, truncated=False)
+
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        msg = "sync upload_files() must not be called from async helpers"
+        raise RuntimeError(msg)
+
+    async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        self._aupload_calls.append(files)
+        return [FileUploadResponse(path=f[0], error=None) for f in files]
+
+    def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        msg = "sync download_files() must not be called from async helpers"
+        raise RuntimeError(msg)
+
+
+async def test_als_calls_aexecute() -> None:
+    """als() must call aexecute(), not the sync execute()."""
+    sandbox = NativeAsyncSandbox()
+    sandbox._next_output = json.dumps({"path": "/foo/bar.txt", "is_dir": False})
+
+    result = await sandbox.als("/foo")
+
+    assert len(sandbox._aexecute_calls) == 1
+    assert result.error is None
+    assert result.entries is not None
+
+
+async def test_aread_calls_aexecute() -> None:
+    """aread() must call aexecute(), not the sync execute()."""
+    sandbox = NativeAsyncSandbox()
+    sandbox._next_output = json.dumps({"encoding": "utf-8", "content": "hello"})
+
+    result = await sandbox.aread("/foo/bar.txt")
+
+    assert len(sandbox._aexecute_calls) == 1
+    assert result.error is None
+    assert result.file_data is not None
+
+
+async def test_agrep_calls_aexecute() -> None:
+    """agrep() must call aexecute(), not the sync execute()."""
+    sandbox = NativeAsyncSandbox()
+    sandbox._next_output = "/foo/bar.txt\x00" + "1:hello"
+    sandbox._next_exit_code = 0
+
+    result = await sandbox.agrep("hello")
+
+    assert len(sandbox._aexecute_calls) == 1
+    assert result.error is None
+
+
+async def test_aglob_calls_aexecute() -> None:
+    """aglob() must call aexecute(), not the sync execute()."""
+    sandbox = NativeAsyncSandbox()
+    sandbox._next_output = json.dumps({"path": "/foo/bar.txt", "is_dir": False})
+
+    result = await sandbox.aglob("**/*.txt")
+
+    assert len(sandbox._aexecute_calls) == 1
+    assert result.error is None
+    assert result.matches is not None
+
+
+async def test_awrite_calls_aexecute_and_aupload_files() -> None:
+    """awrite() must call aexecute() for preflight and aupload_files(), not sync methods."""
+    sandbox = NativeAsyncSandbox()
+    sandbox._next_output = ""
+    sandbox._next_exit_code = 0
+
+    result = await sandbox.awrite("/foo/new.txt", "content")
+
+    assert len(sandbox._aexecute_calls) == 1, "expected one aexecute call for preflight"
+    assert len(sandbox._aupload_calls) == 1, "expected one aupload_files call"
+    assert result.error is None
+    assert result.path == "/foo/new.txt"
+
+
+async def test_aedit_inline_calls_aexecute() -> None:
+    """aedit() (small payload) must call aexecute(), not the sync execute()."""
+    sandbox = NativeAsyncSandbox()
+    sandbox._next_output = json.dumps({"count": 1})
+
+    result = await sandbox.aedit("/foo/bar.txt", "old", "new")
+
+    assert len(sandbox._aexecute_calls) == 1
+    assert result.error is None
+    assert result.occurrences == 1
+
+
+async def test_aedit_via_upload_calls_aexecute_and_aupload_files() -> None:
+    """aedit() (large payload) must call aexecute() and aupload_files(), not sync methods."""
+    sandbox = NativeAsyncSandbox()
+    sandbox._next_output = json.dumps({"count": 1})
+    large = "x" * (_EDIT_INLINE_MAX_BYTES + 1)
+
+    result = await sandbox.aedit("/foo/bar.txt", large, "new")
+
+    assert len(sandbox._aupload_calls) == 1, "expected one aupload_files call for temp files"
+    assert len(sandbox._aexecute_calls) == 1, "expected one aexecute call for server-side replace"
+    assert result.error is None
+
+
+# -- direct unit tests for module-level helper functions ----------------------
+
+
+def test_map_edit_error_file_not_found() -> None:
+    result = _map_edit_error("file_not_found", "/a/b.txt", "old")
+    assert result.error is not None
+    assert "not found" in result.error.lower()
+    assert "/a/b.txt" in result.error
+
+
+def test_map_edit_error_not_a_file() -> None:
+    result = _map_edit_error("not_a_file", "/a/b.txt", "old")
+    assert result.error is not None
+    assert "not a regular file" in result.error.lower()
+    assert "/a/b.txt" in result.error
+
+
+def test_map_edit_error_not_a_text_file() -> None:
+    result = _map_edit_error("not_a_text_file", "/a/b.bin", "old")
+    assert result.error is not None
+    assert "not a text file" in result.error.lower()
+    assert "/a/b.bin" in result.error
+
+
+def test_map_edit_error_string_not_found() -> None:
+    result = _map_edit_error("string_not_found", "/a/b.txt", "needle")
+    assert result.error is not None
+    assert "not found" in result.error.lower()
+    assert "needle" in result.error
+
+
+def test_map_edit_error_multiple_occurrences() -> None:
+    result = _map_edit_error("multiple_occurrences", "/a/b.txt", "needle")
+    assert result.error is not None
+    assert "multiple" in result.error.lower() or "replace_all" in result.error
+    assert "needle" in result.error
+
+
+def test_check_preflight_result_nonzero_exit_returns_error() -> None:
+    resp = ExecuteResponse(output="Error: file exists", exit_code=1, truncated=False)
+    result = _check_preflight_result(resp, "/a/b.txt")
+    assert result is not None
+    assert result.error is not None
+    assert "Error: file exists" in result.error
+
+
+def test_check_preflight_result_error_in_output_returns_error() -> None:
+    resp = ExecuteResponse(output="Error: parent dir missing", exit_code=0, truncated=False)
+    result = _check_preflight_result(resp, "/a/b.txt")
+    assert result is not None
+    assert result.error is not None
+    assert "Error: parent dir missing" in result.error
+
+
+def test_check_preflight_result_success_returns_none() -> None:
+    resp = ExecuteResponse(output="", exit_code=0, truncated=False)
+    result = _check_preflight_result(resp, "/a/b.txt")
+    assert result is None
+
+
+def test_parse_grep_output_non_integer_line_number_is_skipped() -> None:
+    # Format: path\0not_a_number:text — int() raises ValueError, line is treated as parse error.
+    output = "file.py\0not_a_number:some text"
+    resp = ExecuteResponse(output=output, exit_code=0, truncated=False)
+    result = _parse_grep_output(resp, ".")
+    # The only line has a bad line number; no valid matches → error is set.
+    assert result.matches is None or result.matches == []
+    assert result.error is not None
+
+
+class TestSandboxDelete:
+    """BaseSandbox.delete maps the `rm -f` exit code onto DeleteResult."""
+
+    def test_delete_success(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._next_output = ""
+        sandbox._next_exit_code = 0
+        result = sandbox.delete("/file.txt")
+        assert result.error is None
+        assert result.path == "/file.txt"
+        # The shell command quotes the path and uses rm -rf (recursive)
+        assert sandbox.last_command is not None
+        assert "rm -rf" in sandbox.last_command
+        assert "/file.txt" in sandbox.last_command
+
+    def test_delete_directory_uses_recursive_rm(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._next_output = ""
+        sandbox._next_exit_code = 0
+        result = sandbox.delete("/some/dir")
+        assert result.error is None
+        assert result.path == "/some/dir"
+        assert sandbox.last_command is not None
+        assert "rm -rf" in sandbox.last_command
+        assert "/some/dir" in sandbox.last_command
+
+    def test_delete_missing_is_noop_success(self) -> None:
+        # `rm -f` ignores a missing path: exit 0, so delete reports success.
+        sandbox = MockSandbox()
+        sandbox._next_output = ""
+        sandbox._next_exit_code = 0
+        result = sandbox.delete("/missing.txt")
+        assert result.error is None
+        assert result.path == "/missing.txt"
+
+    def test_delete_failure_reports_output(self) -> None:
+        # A non-zero exit (e.g. a permission error) surfaces rm's stderr.
+        sandbox = MockSandbox()
+        sandbox._next_output = "rm: cannot remove '/some/dir': Is a directory"
+        sandbox._next_exit_code = 1
+        result = sandbox.delete("/some/dir")
+        assert result.path is None
+        assert result.error is not None
+        assert "Error deleting file" in result.error
+        assert "Is a directory" in result.error
+
+    def test_delete_failure_unknown_error(self) -> None:
+        # Non-zero exit with no output falls back to a generic message.
+        sandbox = MockSandbox()
+        sandbox._next_output = ""
+        sandbox._next_exit_code = 1
+        result = sandbox.delete("/file.txt")
+        assert result.path is None
+        assert result.error is not None
+        assert "unknown error" in result.error
+
+    async def test_adelete_success(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._next_output = ""
+        sandbox._next_exit_code = 0
+        result = await sandbox.adelete("/file.txt")
+        assert result.error is None
+        assert result.path == "/file.txt"

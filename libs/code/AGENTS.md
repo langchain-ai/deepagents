@@ -133,3 +133,7 @@ To add a new slash command: (1) add a `SlashCommand` entry to `COMMANDS`, (2) se
 - `Settings.has_*` property in `config.py` — only needed if referenced by `detect_provider()` fallback logic
 
 Model discovery, credential checking, and UI integration are automatic once `PROVIDER_API_KEY_ENV` is populated and the `langchain-*` package is installed.
+
+## Orchestration patterns
+
+When a user prompt asks for an N-item tournament, bracket, head-to-head, round-robin, or "generate N items and rank/compare/pick the best" workflow, load the `bracket-tournament` skill at `examples/skills/bracket-tournament/SKILL.md`. It owns the canonical shape: one batched `js_eval` that generates all items into `globalThis.__items`, a shared `judgeMatch(a, b)` helper with a fixed `{winner, reason}` schema, a bracket-construction helper, and a fixed final-summary layout. Reach for it instead of re-deriving the loop, accumulator, and schema each session.

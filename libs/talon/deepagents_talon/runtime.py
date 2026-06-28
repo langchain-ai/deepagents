@@ -53,6 +53,7 @@ DEFAULT_MAX_RETRIES = 3
 DEFAULT_MAX_CONTINUATIONS = 3
 DEFAULT_MAX_APPROVAL_ROUNDS = 50
 CONTEXT_SIZE_ENV_KEY = "DEEPAGENTS_TALON_CONTEXT_SIZE"
+INTERRUPT_ON_TOOLS_ENV_KEY = "DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS"
 _WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
 _SAFE_BACKEND_PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 ModelContent = str | list[dict[str, object]]
@@ -317,17 +318,17 @@ class DeepAgentRuntime:
         self.subagents = tuple(subagents) if subagents is not None else None
         self.assistant_dir = assistant_dir
         self.cron_store = cron_store
-        self.backend = backend if backend is not None else _default_backend(env)
+        self.env = dict(os.environ if env is None else env)
+        self.backend = backend if backend is not None else _default_backend(self.env)
         self.skills = tuple(skills) if skills is not None else None
         self.middleware = tuple(middleware)
-        self.interrupt_on = dict(interrupt_on) if interrupt_on is not None else None
+        self.interrupt_on = interrupt_on_with_env_overlay(interrupt_on, self.env)
         self.memory = tuple(memory) if memory is not None else None
         self.checkpointer = checkpointer if checkpointer is not None else InMemorySaver()
         self.include_web_tools = include_web_tools
         self.recursion_limit = recursion_limit
         self.max_retries = max_retries
         self.max_continuations = max_continuations
-        self.env = dict(os.environ if env is None else env)
         self.reload_agent_components = reload_agent_components
         self._reload_lock = asyncio.Lock()
         self._graph: object | None = None
@@ -365,9 +366,7 @@ class DeepAgentRuntime:
         self.subagents = tuple(components.subagents) if components.subagents is not None else None
         self.skills = tuple(components.skills) if components.skills is not None else None
         self.middleware = tuple(components.middleware)
-        self.interrupt_on = (
-            dict(components.interrupt_on) if components.interrupt_on is not None else None
-        )
+        self.interrupt_on = interrupt_on_with_env_overlay(components.interrupt_on, self.env)
         await self.start()
 
     async def stop(self) -> None:
@@ -775,6 +774,38 @@ def _decision_payload(
     if reject_message:
         return [{"type": "reject", "message": reject_message} for _ in range(count)]
     return [{"type": "reject"} for _ in range(count)]
+
+
+def interrupt_on_with_env_overlay(
+    interrupt_on: Mapping[str, bool | InterruptOnConfig] | None,
+    env: Mapping[str, str],
+) -> dict[str, bool | InterruptOnConfig] | None:
+    """Merge Talon's local tool approval env overlay into an `interrupt_on` mapping.
+
+    Args:
+        interrupt_on: Base human-in-the-loop tool approval configuration.
+        env: Environment values to inspect for Talon approval overrides.
+
+    Returns:
+        Merged approval configuration, or `None` when neither source configures
+        approval.
+    """
+    overlay = _interrupt_on_tools_from_env(env)
+    if interrupt_on is None and not overlay:
+        return None
+
+    merged: dict[str, bool | InterruptOnConfig] = {}
+    if interrupt_on is not None:
+        merged.update(interrupt_on)
+    merged.update(overlay)
+    return merged
+
+
+def _interrupt_on_tools_from_env(env: Mapping[str, str]) -> dict[str, bool]:
+    raw = env.get(INTERRUPT_ON_TOOLS_ENV_KEY)
+    if raw is None or not raw.strip():
+        return {}
+    return {name: True for name in (part.strip() for part in raw.split(",")) if name}
 
 
 def _default_backend(env: Mapping[str, str] | None) -> LocalShellBackend:

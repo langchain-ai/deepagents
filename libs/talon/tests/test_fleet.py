@@ -13,7 +13,7 @@ from deepagents_talon.config import TalonConfig
 from deepagents_talon.cron import CronJobStore
 from deepagents_talon.fleet import FleetAgentComponents, load_fleet_agent_components
 from deepagents_talon.mcp import MCPTools
-from deepagents_talon.runtime import DeepAgentRuntime
+from deepagents_talon.runtime import INTERRUPT_ON_TOOLS_ENV_KEY, DeepAgentRuntime
 
 if TYPE_CHECKING:
     import pytest
@@ -266,6 +266,7 @@ async def test_agent_runtime_loads_fleet_components(
         {
             "AGENT_ASSISTANT_ID": "test",
             "DEEPAGENTS_TALON_FLEET_DIR": str(fleet_dir),
+            INTERRUPT_ON_TOOLS_ENV_KEY: "bash, execute",
             "BUILTIN_MCP_URL": "https://tools.example/mcp",
         },
         base_home=tmp_path,
@@ -282,6 +283,11 @@ async def test_agent_runtime_loads_fleet_components(
     assert runtime.subagents == (subagent,)
     assert runtime.skills == ("/fleet/skills",)
     assert runtime.middleware == (middleware,)
+    assert runtime.interrupt_on == {
+        "fleet_tool": True,
+        "bash": True,
+        "execute": True,
+    }
     assert runtime.assistant_dir is None
     assert seen["paths"] == [fleet_dir]
     assert seen["env"]["BUILTIN_MCP_URL"] == "https://tools.example/mcp"
@@ -292,6 +298,11 @@ async def test_agent_runtime_loads_fleet_components(
     assert refreshed.model == "fleet:model"
     assert refreshed.tools == (fleet_tool,)
     assert refreshed.middleware == (middleware,)
+    assert refreshed.interrupt_on == {
+        "fleet_tool": True,
+        "bash": True,
+        "execute": True,
+    }
     assert seen["paths"] == [fleet_dir, fleet_dir]
 
 
@@ -353,6 +364,7 @@ async def test_agent_runtime_keeps_non_fleet_local_mcp_path(
         {
             "AGENT_ASSISTANT_ID": "test",
             "AGENT_MODEL": "local:model",
+            INTERRUPT_ON_TOOLS_ENV_KEY: "local_tool, custom_mcp_tool",
         },
         base_home=tmp_path,
     )
@@ -366,6 +378,7 @@ async def test_agent_runtime_keeps_non_fleet_local_mcp_path(
     assert runtime.model == "local:model"
     assert runtime.tools == (local_tool,)
     assert runtime.assistant_dir == config.manifest_dir
+    assert runtime.interrupt_on == {"local_tool": True, "custom_mcp_tool": True}
 
 
 def _talon_events(

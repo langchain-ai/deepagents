@@ -25,6 +25,7 @@ from deepagents_talon.runtime import (
     DeepAgentRuntime,
     EchoAgentRuntime,
     RuntimeAgentComponents,
+    interrupt_on_with_env_overlay,
 )
 from deepagents_talon.speech import build_voice_transcriber
 
@@ -112,11 +113,11 @@ async def _agent_runtime(
     if config.fleet_dir is not None:
         fleet_dir = config.fleet_dir
         components = await load_fleet_agent_components(fleet_dir, env=env)
-        runtime_components = _runtime_components_from_fleet(config, components)
+        runtime_components = _runtime_components_from_fleet(config, components, env=env)
 
         async def reload_fleet_components() -> RuntimeAgentComponents:
             refreshed = await load_fleet_agent_components(fleet_dir, env=env)
-            return _runtime_components_from_fleet(config, refreshed)
+            return _runtime_components_from_fleet(config, refreshed, env=env)
 
         return DeepAgentRuntime(
             model=runtime_components.model,
@@ -145,6 +146,7 @@ async def _agent_runtime(
         tools=mcp.tools,
         assistant_dir=config.manifest_dir,
         cron_store=cron_store,
+        interrupt_on=interrupt_on_with_env_overlay(None, env),
         env=env,
     )
 
@@ -152,6 +154,8 @@ async def _agent_runtime(
 def _runtime_components_from_fleet(
     config: TalonConfig,
     components: FleetAgentComponents,
+    *,
+    env: Mapping[str, str],
 ) -> RuntimeAgentComponents:
     return RuntimeAgentComponents(
         model=config.model or components.model,
@@ -160,7 +164,7 @@ def _runtime_components_from_fleet(
         subagents=components.subagents,
         skills=components.skills,
         middleware=components.middleware,
-        interrupt_on=components.interrupt_on,
+        interrupt_on=interrupt_on_with_env_overlay(components.interrupt_on, env),
     )
 
 

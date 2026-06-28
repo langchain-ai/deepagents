@@ -135,12 +135,12 @@ def _terminal_row_count(console: "Console", text: str) -> int:
     return max(1, len(console.render_lines(Text(text), console.options)))
 
 
-def _confirm_launch_after_restart(console: "Console", version: str) -> None:
-    """Rewrite the pre-restart `Launching...` line as `Launched.` in-place.
+def _confirm_update_after_restart(console: "Console", version: str) -> None:
+    """Rewrite the pre-restart `Launching...` line as a stable update status.
 
     The `Updated to v{version}. Launching...` line is printed by the previous
     generation right before `os.execv`; this runs in the re-exec'd process to
-    retroactively confirm the launch once the new version is actually running.
+    clear the transient action once the new version is actually running.
 
     The in-place rewrite is attempted only on a real terminal: `os.execv` does
     nothing between that print and this process's first output, so the cursor
@@ -173,7 +173,7 @@ def _confirm_launch_after_restart(console: "Console", version: str) -> None:
                 (ControlType.ERASE_IN_LINE, 2),
             )
         )
-    console.print(f"[green]Updated to v{version}. Launched.[/green]", highlight=False)
+    console.print(f"[green]Updated to v{version}.[/green]", highlight=False)
 
 
 def _run_startup_auto_update(console: "Console") -> None:
@@ -220,16 +220,16 @@ def _run_startup_auto_update(console: "Console") -> None:
         restarted_for = os.environ.pop(RESTARTED_AFTER_UPDATE, None)
         if restarted_for is not None and is_installed_version_at_least(restarted_for):
             # The re-exec landed on the upgraded version, so the prior
-            # "Launching..." line is now accurate as "Launched.".
+            # "Launching..." line can be replaced with a stable completed status.
             try:
-                _confirm_launch_after_restart(console, restarted_for)
+                _confirm_update_after_restart(console, restarted_for)
             except Exception:
                 # The upgrade already succeeded; this rewrite is purely
                 # cosmetic. Swallow rendering glitches with their own guard so
                 # the outer fail-soft handler does not misreport a successful
                 # upgrade as "Auto-update failed". The prior "Launching..."
                 # line simply stays.
-                logger.debug("Post-restart launch confirmation failed", exc_info=True)
+                logger.debug("Post-restart update confirmation failed", exc_info=True)
         available, latest = get_cached_update_available()
         if not available or latest is None:
             return

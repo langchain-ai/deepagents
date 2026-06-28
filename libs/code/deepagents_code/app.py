@@ -9482,11 +9482,28 @@ class DeepAgentsApp(App):
         # run's trace instead of being SIGTERM'd mid-request.
         agent_worker = self._agent_worker if self._agent_running else None
 
-        if agent_worker is not None and not agent_worker.done:
+        if agent_worker is not None and not agent_worker.is_finished:
 
             async def _graceful_exit() -> None:
-                with suppress(TimeoutError, asyncio.CancelledError, Exception):
-                    await asyncio.wait_for(agent_worker, timeout=2.0)
+                from textual.worker import WorkerCancelled, WorkerFailed
+
+                try:
+                    await asyncio.wait_for(agent_worker.wait(), timeout=2.0)
+                except (
+                    TimeoutError,
+                    asyncio.CancelledError,
+                    WorkerCancelled,
+                    WorkerFailed,
+                ):
+                    logger.debug(
+                        "Agent worker did not finish cleanly before app exit",
+                        exc_info=True,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Agent worker wait raised unexpectedly before app exit",
+                        exc_info=True,
+                    )
                 super(DeepAgentsApp, self).exit(
                     result=result,
                     return_code=return_code,

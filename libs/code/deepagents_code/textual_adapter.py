@@ -380,7 +380,7 @@ def _read_mentioned_file(file_path: Path, max_embed_bytes: int) -> str:
             "use read_file tool to view)"
         )
     content = file_path.read_text(encoding="utf-8")
-    return f"\n### {file_path.name}\nPath: `{file_path}`\n```\n{content}\n```"
+    return f"\n### {file_path.name}\nPath: `{file_path}`\n```text\n{content}\n```"
 
 
 def _is_renderable_subagent_event(data: Any, *, is_main_agent: bool) -> bool:  # noqa: ANN401  # custom-stream payload is dynamic

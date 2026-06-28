@@ -1986,10 +1986,11 @@ class DeepAgentsApp(App):
         """True while a `!` shell command is executing."""
 
         self._pending_shell_messages: list[BaseMessage] = []
-        """Non-incognito `!` command/output messages awaiting flush.
+        """Non-incognito `!` runs awaiting flush, one per command.
 
-        `!` runs outside the agent graph, so its command/output are buffered
-        here and written into thread state on the next user send (see
+        `!` runs outside the agent graph, so each run is buffered here as a
+        single structured `HumanMessage` (command + output) and written into
+        thread state on the next user send (see
         `_flush_pending_shell_messages`) — never proactively. `!!` (incognito)
         never appends here."""
 
@@ -6863,10 +6864,10 @@ class DeepAgentsApp(App):
             if output:
                 if incognito:
                     await self._mount_message(
-                        AppMessage(f"```\n{output}\n```", markdown=True),
+                        AppMessage(f"```text\n{output}\n```", markdown=True),
                     )
                 else:
-                    msg = AssistantMessage(f"```\n{output}\n```")
+                    msg = AssistantMessage(f"```text\n{output}\n```")
                     await self._mount_message(msg)
                     await msg.write_initial_content()
             else:
@@ -6918,8 +6919,8 @@ class DeepAgentsApp(App):
         their command/output never reach the checkpoint the model reads. Rather
         than write to thread state immediately (which would spend a model turn
         on output the user may never reference), the command/output are queued
-        here as a `HumanMessage`/`AIMessage` pair and flushed when the user
-        sends their next message (see `_flush_pending_shell_messages`). `!!`
+        here as a structured `HumanMessage` and flushed when the user sends
+        their next message (see `_flush_pending_shell_messages`). `!!`
         (incognito) callers skip this and stay local-only.
 
         Args:
@@ -6927,16 +6928,23 @@ class DeepAgentsApp(App):
             output: Combined stdout/stderr captured from the command.
             returncode: Process exit code, or `None` if unavailable.
         """
-        from langchain_core.messages import AIMessage, HumanMessage
+        from langchain_core.messages import HumanMessage
 
-        status = f"\n[Command exited with code {returncode}]" if returncode else ""
+        code = returncode if returncode is not None else "unknown"
         body = output or "(no output)"
-        self._pending_shell_messages.extend(
-            [
-                HumanMessage(content=f"!{command}"),
-                AIMessage(content=f"```\n{body}\n```{status}"),
-            ]
+        content = (
+            "<user_shell_command>\n"
+            "<command>\n"
+            f"{command}\n"
+            "</command>\n"
+            "<result>\n"
+            f"Exit code: {code}\n"
+            "Output:\n"
+            f"{body}\n"
+            "</result>\n"
+            "</user_shell_command>"
         )
+        self._pending_shell_messages.append(HumanMessage(content=content))
 
     async def _flush_pending_shell_messages(self) -> None:
         """Write buffered `!` command/output into thread state, then clear it.

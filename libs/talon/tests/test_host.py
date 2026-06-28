@@ -599,6 +599,35 @@ async def test_host_logs_raw_reaction_ids_only_when_enabled(
     assert event["raw_reacting_sender_id"] == "sender-private"
 
 
+async def test_host_routes_tool_approval_reaction_with_conversation_alias(
+    tmp_path: Path,
+) -> None:
+    channel = RecordingChannel("whatsapp")
+    channel.next_message_id = "approval-prompt"
+    agent = ApprovalAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat@lid", text="run", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    await host.receive_reaction(
+        channel,
+        ChannelReaction(
+            conversation_id="123@s.whatsapp.net",
+            message_id="approval-prompt",
+            emoji="👍",
+            sender_id="operator",
+        ),
+    )
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    assert channel.sent[1] == ("chat@lid", "decision:approve")
+
+
 async def test_host_ignores_tool_approval_reaction_on_unrelated_message(
     tmp_path: Path,
 ) -> None:

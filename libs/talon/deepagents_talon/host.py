@@ -241,6 +241,13 @@ class TalonHost:
         conversation_root = self._conversation_root(provider_key, reaction.conversation_id)
         agent_conversation_id = self._agent_conversation_id(conversation_root)
         pending = self._pending_tool_approvals.get(agent_conversation_id)
+        allow_conversation_alias = False
+        if pending is None:
+            pending = self._pending_tool_approval_for_prompt(
+                reaction.message_id,
+                provider=provider_key,
+            )
+            allow_conversation_alias = pending is not None
         if pending is None:
             _log_tool_approval_reaction(
                 self.config.env,
@@ -258,6 +265,7 @@ class TalonHost:
             pending,
             provider=provider_key,
             env=self.config.env,
+            allow_conversation_alias=allow_conversation_alias,
         )
 
     async def _run_agent_turn(
@@ -536,6 +544,7 @@ class TalonHost:
         *,
         provider: str,
         env: Mapping[str, str],
+        allow_conversation_alias: bool = False,
     ) -> None:
         decision = _parse_tool_approval_reaction(reaction.emoji)
         resolution = _reaction_mismatch_resolution(
@@ -543,6 +552,7 @@ class TalonHost:
             pending,
             provider=provider,
             decision=decision,
+            allow_conversation_alias=allow_conversation_alias,
         )
         if resolution is not None:
             _log_tool_approval_reaction(
@@ -568,6 +578,17 @@ class TalonHost:
         )
         if not pending.future.done():
             pending.future.set_result(cast("ToolApprovalDecision", decision))
+
+    def _pending_tool_approval_for_prompt(
+        self,
+        message_id: str,
+        *,
+        provider: str,
+    ) -> _PendingToolApproval | None:
+        for pending in self._pending_tool_approvals.values():
+            if pending.provider == provider and pending.prompt_message_id == message_id:
+                return pending
+        return None
 
     async def _deliver_agent_result(
         self,
@@ -824,12 +845,17 @@ def _reaction_mismatch_resolution(
     *,
     provider: str,
     decision: ToolApprovalDecision | None,
+    allow_conversation_alias: bool = False,
 ) -> str | None:
     checks = (
         (decision is None, "unsupported_emoji"),
         (pending.prompt_message_id is None, "missing_prompt_message_id"),
         (provider != pending.provider, "provider_mismatch"),
-        (reaction.conversation_id != pending.channel_conversation_id, "conversation_mismatch"),
+        (
+            not allow_conversation_alias
+            and reaction.conversation_id != pending.channel_conversation_id,
+            "conversation_mismatch",
+        ),
         (reaction.message_id != pending.prompt_message_id, "message_mismatch"),
         (pending.sender_id is not None and reaction.sender_id is None, "sender_missing"),
         (

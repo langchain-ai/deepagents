@@ -24,7 +24,9 @@ from deepagents_talon.interfaces import (
     ChannelAdapter,
     ChannelMedia,
     ChannelMessage,
+    ChannelReaction,
     CronScheduler,
+    ReactionChannelAdapter,
     ToolApprovalDecision,
     ToolApprovalRequest,
 )
@@ -56,11 +58,25 @@ _NEW_CONVERSATION_MESSAGE = "Started a fresh conversation."
 _APPROVE_REPLIES = frozenset({"approve", "approved", "yes", "y"})
 _DENY_REPLIES = frozenset({"deny", "denied", "reject", "rejected", "no", "n"})
 _RESET_THREAD_SEPARATOR = ":talon-reset:"
+_EMOJI_VARIATION_SELECTOR = "\ufe0f"
+_EMOJI_SKIN_TONES = frozenset(
+    {
+        "\U0001f3fb",
+        "\U0001f3fc",
+        "\U0001f3fd",
+        "\U0001f3fe",
+        "\U0001f3ff",
+    }
+)
 
 
 @dataclass(slots=True)
 class _PendingToolApproval:
     future: asyncio.Future[ToolApprovalDecision]
+    provider: str
+    channel_conversation_id: str
+    agent_conversation_id: str
+    prompt_message_id: str | None
     sender_id: str | None
 
 
@@ -114,6 +130,10 @@ class TalonHost:
             channel.set_message_handler(
                 lambda message, current=channel: self.receive_message(current, message),
             )
+            if isinstance(channel, ReactionChannelAdapter):
+                channel.set_reaction_handler(
+                    lambda reaction, current=channel: self.receive_reaction(current, reaction),
+                )
             await channel.start()
 
         if self.scheduler is not None:
@@ -199,6 +219,22 @@ class TalonHost:
         )
         self._track_conversation_task(agent_conversation_id, task)
 
+    async def receive_reaction(self, channel: ChannelAdapter, reaction: ChannelReaction) -> None:
+        """Handle one inbound channel reaction.
+
+        Args:
+            channel: Channel that delivered the reaction.
+            reaction: Inbound reaction to process.
+        """
+        provider = await _channel_provider(channel)
+        provider_key = _channel_key(channel, provider)
+        conversation_root = self._conversation_root(provider_key, reaction.conversation_id)
+        agent_conversation_id = self._agent_conversation_id(conversation_root)
+        pending = self._pending_tool_approvals.get(agent_conversation_id)
+        if pending is None:
+            return
+        self._handle_tool_approval_reaction(reaction, pending, provider=provider_key)
+
     async def _run_agent_turn(
         self,
         channel: ChannelAdapter,
@@ -229,6 +265,7 @@ class TalonHost:
             approval_handler=lambda approval: self._request_tool_approval(
                 channel,
                 approval,
+                provider=_channel_key(channel, provider),
                 reply_conversation_id=message.conversation_id,
                 sender_id=message.sender_id,
             ),
@@ -411,20 +448,29 @@ class TalonHost:
         channel: ChannelAdapter,
         approval: ToolApprovalRequest,
         *,
+        provider: str,
         reply_conversation_id: str,
         sender_id: str | None,
     ) -> ToolApprovalDecision:
         loop = asyncio.get_running_loop()
         future: asyncio.Future[ToolApprovalDecision] = loop.create_future()
-        pending = _PendingToolApproval(future=future, sender_id=sender_id)
+        pending = _PendingToolApproval(
+            future=future,
+            provider=provider,
+            channel_conversation_id=reply_conversation_id,
+            agent_conversation_id=approval.conversation_id,
+            prompt_message_id=None,
+            sender_id=sender_id,
+        )
         self._pending_tool_approvals[approval.conversation_id] = pending
         try:
-            await send_with_retry(
+            result = await send_with_retry(
                 lambda: channel.send_message(
                     reply_conversation_id,
                     _format_tool_approval_prompt(approval),
                 )
             )
+            pending.prompt_message_id = result.message_id
             return await future
         finally:
             if self._pending_tool_approvals.get(approval.conversation_id) is pending:
@@ -455,6 +501,27 @@ class TalonHost:
             )
             return
 
+        if not pending.future.done():
+            pending.future.set_result(decision)
+
+    def _handle_tool_approval_reaction(
+        self,
+        reaction: ChannelReaction,
+        pending: _PendingToolApproval,
+        *,
+        provider: str,
+    ) -> None:
+        decision = _parse_tool_approval_reaction(reaction.emoji)
+        if decision is None or pending.prompt_message_id is None:
+            return
+        if provider != pending.provider:
+            return
+        if reaction.conversation_id != pending.channel_conversation_id:
+            return
+        if reaction.message_id != pending.prompt_message_id:
+            return
+        if pending.sender_id is not None and reaction.sender_id != pending.sender_id:
+            return
         if not pending.future.done():
             pending.future.set_result(decision)
 
@@ -649,6 +716,10 @@ async def _channel_provider(channel: ChannelAdapter) -> str | None:
         return None
 
 
+def _channel_key(channel: ChannelAdapter, provider: str | None) -> str:
+    return provider or type(channel).__name__
+
+
 def _format_tool_approval_prompt(approval: ToolApprovalRequest) -> str:
     lines = ["Tool approval required."]
     for index, action in enumerate(approval.action_requests, start=1):
@@ -681,3 +752,20 @@ def _parse_tool_approval_reply(text: str) -> ToolApprovalDecision | None:
     if first in _DENY_REPLIES:
         return "reject"
     return None
+
+
+def _parse_tool_approval_reaction(emoji: str) -> ToolApprovalDecision | None:
+    normalized = _normalize_reaction_emoji(emoji)
+    if normalized == "\U0001f44d":
+        return "approve"
+    if normalized == "\U0001f44e":
+        return "reject"
+    return None
+
+
+def _normalize_reaction_emoji(emoji: str) -> str:
+    return "".join(
+        char
+        for char in emoji.strip()
+        if char != _EMOJI_VARIATION_SELECTOR and char not in _EMOJI_SKIN_TONES
+    )

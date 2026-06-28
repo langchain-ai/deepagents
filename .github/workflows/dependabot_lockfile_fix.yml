@@ -23,13 +23,20 @@ jobs:
     # On that run github.actor is the App's bot identity -- not
     # dependabot[bot] -- so the actor guard skips it. Do not loosen the actor
     # check without adding an explicit loop breaker.
+    #
+    # The head.ref prefix is deliberately scoped to 'dependabot/uv/': this job
+    # only regenerates uv lockfiles, so other ecosystems (e.g. github-actions,
+    # whose branches are 'dependabot/github_actions/...') have nothing to fix
+    # and would only hit the changed-file guard and fail. Do not re-widen this
+    # to 'dependabot/' -- the narrow scope keeps the contents:write token path
+    # reachable only by uv Dependabot PRs.
     if: >
       github.actor == 'dependabot[bot]' &&
       github.event.pull_request.user.login == 'dependabot[bot]' &&
       github.event.pull_request.user.type == 'Bot' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.base.repo.full_name == github.repository &&
-      startsWith(github.event.pull_request.head.ref, 'dependabot/')
+      startsWith(github.event.pull_request.head.ref, 'dependabot/uv/')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -40,7 +47,7 @@ jobs:
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
       - name: Checkout trusted base code
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ env.BASE_SHA }}
           path: trusted-source
@@ -56,7 +63,7 @@ jobs:
           enable-cache: "false"
 
       - name: Checkout PR head read-only for preflight
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ env.HEAD_SHA }}
           path: pr-preflight
@@ -202,7 +209,7 @@ jobs:
           PY
 
       - name: Checkout PR head for commit
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ env.HEAD_REF }}
           path: pr

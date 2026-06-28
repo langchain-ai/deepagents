@@ -91,9 +91,11 @@ from deepagents_code.widgets.messages import (
     UserMessage,
 )
 from deepagents_code.widgets.status import StatusBar
+from deepagents_code.widgets.subagent_panel import SubagentPanel
 from deepagents_code.widgets.welcome import WelcomeBanner
 
 logger = logging.getLogger(__name__)
+_GRACEFUL_EXIT_WAIT_SECONDS = 2.0
 _monotonic = time.monotonic
 
 _DEFERRED_START_NOTICE = (
@@ -970,6 +972,20 @@ def _format_model_params(extra_kwargs: dict[str, Any] | None) -> str:
     return f" with model params {json.dumps(extra_kwargs, sort_keys=True)}"
 
 
+def _display_model_label(spec: str | None) -> str | None:
+    """Strip the provider prefix from a model spec for display.
+
+    `anthropic:opus` becomes `opus`; only the first colon splits, so a model
+    name that itself contains a colon is preserved. A spec without a colon (or
+    an empty/`None` spec) is returned unchanged. This is a cosmetic label only,
+    so a malformed spec degrades to a slightly-off label rather than an error.
+
+    Returns:
+        The display label, or the spec unchanged when there is no prefix.
+    """
+    return spec.split(":", 1)[1] if spec and ":" in spec else spec
+
+
 InputMode = Literal["normal", "shell", "shell_incognito", "command"]
 
 _RECONNECT_FORCE_TOKENS: frozenset[str] = frozenset({"force", "--force", "-f"})
@@ -1351,6 +1367,7 @@ class TextualSessionState:
         """
         self.auto_approve = auto_approve
         self.thread_id = thread_id or _new_thread_id()
+        self.approval_mode_key: str | None = None
 
     def reset_thread(self) -> str:
         """Reset to a new thread.
@@ -1359,6 +1376,7 @@ class TextualSessionState:
             The new thread_id.
         """
         self.thread_id = _new_thread_id()
+        self.approval_mode_key = None
         return self.thread_id
 
 
@@ -1478,6 +1496,7 @@ class DeepAgentsApp(App):
         ),
         Binding("ctrl+d", "quit_app", "Quit", show=False, priority=True),
         Binding("ctrl+t", "toggle_auto_approve", "Toggle Auto-Approve", show=False),
+        Binding("ctrl+g", "toggle_subagent_panel", "Toggle Subagents", show=False),
         Binding(
             "shift+tab",
             "toggle_auto_approve",
@@ -1564,6 +1583,7 @@ class DeepAgentsApp(App):
         mcp_preload_kwargs: dict[str, Any] | None = None,
         model_kwargs: dict[str, Any] | None = None,
         model_explicitly_set: bool = False,
+        interpreter_arg: bool | None = None,
         defer_server_start: bool = False,
         title: str | None = None,
         sub_title: str | None = None,
@@ -1622,6 +1642,11 @@ class DeepAgentsApp(App):
 
                 When `True`, an explicit choice wins over the model persisted
                 in a resumed thread (no resume adoption).
+            interpreter_arg: The raw `--interpreter`/`--no-interpreter` tri-state
+                (`True`/`False`/`None`). Used only to distinguish an explicit
+                opt-out from a sandbox-suppressed default when surfacing the
+                disabled-by-sandbox advisory; the resolved value travels in
+                `server_kwargs`.
             defer_server_start: Whether to keep app-owned server startup paused
                 until the user configures credentials or explicitly picks a model.
             title: Override the Textual `App.title` shown in the optional
@@ -1749,6 +1774,22 @@ class DeepAgentsApp(App):
         self._launch_init_requested = launch_init
         """Whether startup should show onboarding during the initial paint."""
 
+        self._onboarding_session = launch_init
+        """Whether onboarding runs this session (constant for the session).
+
+        Unlike `_launch_init_requested`, which is cleared once the flow starts,
+        this stays set so background workers (e.g. the optional-tools check)
+        can register missing-dependency notices silently instead of toasting
+        over the onboarding modals.
+
+        Intentionally never reset, including on onboarding completion: the
+        optional-tools check is scheduled once at startup and may not have run
+        by the time the flow finishes, so clearing this would let that check
+        toast the very "Web search disabled" notice onboarding means to defer.
+        Leaving it set for the whole session is harmless because the check runs
+        exactly once.
+        """
+
         self._launch_init_running = False
         """Re-entry guard for launch init modals."""
 
@@ -1846,6 +1887,8 @@ class DeepAgentsApp(App):
         """
 
         self._model_explicitly_set = model_explicitly_set
+        self._interpreter_arg = interpreter_arg
+        """Raw `--interpreter`/`--no-interpreter` tri-state for advisory gating."""
         """Whether `--model` was passed on the command line.
 
         Suppresses adopting a resumed thread's persisted model.
@@ -1944,10 +1987,11 @@ class DeepAgentsApp(App):
         """True while a `!` shell command is executing."""
 
         self._pending_shell_messages: list[BaseMessage] = []
-        """Non-incognito `!` command/output messages awaiting flush.
+        """Non-incognito `!` runs awaiting flush, one per command.
 
-        `!` runs outside the agent graph, so its command/output are buffered
-        here and written into thread state on the next user send (see
+        `!` runs outside the agent graph, so each run is buffered here as a
+        single structured `HumanMessage` (command + output) and written into
+        thread state on the next user send (see
         `_flush_pending_shell_messages`) — never proactively. `!!` (incognito)
         never appends here."""
 
@@ -2157,6 +2201,9 @@ class DeepAgentsApp(App):
         self._git_branch_refresh_task: asyncio.Task[None] | None = None
         """Latest background git-branch refresh task, if one is running."""
 
+        self._graceful_exit_task: asyncio.Task[None] | None = None
+        """Fire-and-forget task for deferred exit after agent worker cancellation."""
+
         self._last_typed_at: float | None = None
         """Typing-aware approval deferral state."""
 
@@ -2333,6 +2380,9 @@ class DeepAgentsApp(App):
             )
             yield Container(id="messages")
         with Container(id="bottom-app-container"):
+            # Live fan-out panel for subagents spawned from js_eval. Hidden
+            # until the first spawn event; sits just above the input.
+            yield SubagentPanel(id="subagent-panel")
             yield ChatInput(
                 cwd=self._cwd,
                 image_tracker=self._image_tracker,
@@ -2434,6 +2484,7 @@ class DeepAgentsApp(App):
         # Non-essential advisory: defer past first paint so it never delays
         # the initial frame.
         self.call_after_refresh(self._notify_interpreter_tools_without_interpreter)
+        self.call_after_refresh(self._notify_interpreter_disabled_by_sandbox)
         self.call_after_refresh(self._notify_orphaned_tracing_disabled)
 
     def _notify_orphaned_tracing_disabled(self) -> None:
@@ -2454,7 +2505,7 @@ class DeepAgentsApp(App):
             logger.exception("Failed to surface orphaned-tracing disabled notice")
 
     def _notify_interpreter_tools_without_interpreter(self) -> None:
-        """Toast when `--interpreter-tools` was set without `--interpreter`.
+        """Toast when `--interpreter-tools` was set while the interpreter is off.
 
         The PTC allowlist applies only when the interpreter middleware is
         enabled, so the flag is a no-op on its own. This is the TUI counterpart
@@ -2472,7 +2523,37 @@ class DeepAgentsApp(App):
         if server_kwargs.get("enable_interpreter"):
             return
         self.notify(
-            "--interpreter-tools has no effect unless --interpreter is set.",
+            "--interpreter-tools has no effect when the interpreter is disabled.",
+            severity="warning",
+            markup=False,
+        )
+
+    def _notify_interpreter_disabled_by_sandbox(self) -> None:
+        """Toast when a remote sandbox suppressed the otherwise-default interpreter.
+
+        `js_eval` is on by default in local mode but unsupported under a remote
+        sandbox, so a `--sandbox` run silently drops it. A stderr line would be
+        clobbered by the alternate screen, so the advisory is surfaced here as a
+        startup notification — the TUI counterpart of the non-interactive warning
+        in `main._warn_if_interpreter_disabled_by_sandbox`.
+
+        Gated on the raw `--interpreter` tri-state (`self._interpreter_arg`) so an
+        explicit `--no-interpreter` opt-out stays quiet, and on the local default
+        from `settings` so users who disabled the interpreter in config are not
+        nagged.
+        """
+        from deepagents_code._server_config import _interpreter_suppressed_by_sandbox
+        from deepagents_code.config import settings
+
+        if not _interpreter_suppressed_by_sandbox(
+            enable_interpreter=self._interpreter_arg,
+            sandbox_type=self._sandbox_type,
+            local_default=settings.enable_interpreter,
+        ):
+            return
+        self.notify(
+            "JS interpreter (js_eval) is unavailable under a remote sandbox; "
+            "it runs in local mode only.",
             severity="warning",
             markup=False,
         )
@@ -2652,6 +2733,7 @@ class DeepAgentsApp(App):
             sync_message_content=self._sync_message_content,
             request_ask_user=self._request_ask_user,
             on_tool_complete=self._schedule_git_branch_refresh,
+            on_subagent_event=self._on_subagent_event,
         )
         # Wire token display callbacks
         self._ui_adapter._on_tokens_update = self._on_tokens_update
@@ -2778,9 +2860,10 @@ class DeepAgentsApp(App):
         `_ripgrep_ensured` instead of installing again.
 
         Returns:
-            `True` when a usable managed `rg` is on `PATH`, `False` when the
-            install was skipped or failed (caller should surface the missing
-            tool and fall back to the slow path).
+            `True` when a usable `rg` is resolved — the managed binary (with
+            `BIN_DIR` prepended to `PATH`) or a system `rg` already on `PATH` —
+            `False` when the install was skipped or failed (caller should
+            surface the missing tool and fall back to the slow path).
         """
         async with self._ripgrep_ensure_lock:
             if self._ripgrep_ensured.is_set():
@@ -2791,6 +2874,7 @@ class DeepAgentsApp(App):
                 from deepagents_code.managed_tools import (
                     ChecksumMismatchError,
                     ensure_ripgrep,
+                    managed_rg_path,
                     prepend_managed_bin_to_path,
                 )
             except ImportError:
@@ -2837,7 +2921,8 @@ class DeepAgentsApp(App):
                 )
 
             if installed is not None:
-                prepend_managed_bin_to_path()
+                if installed == managed_rg_path():
+                    prepend_managed_bin_to_path()
                 self._ripgrep_ensured.set()
                 return True
 
@@ -2909,7 +2994,13 @@ class DeepAgentsApp(App):
         # update (already notified within CACHE_TTL) does not open the
         # modal, so toasts must still fire or returning users never
         # see the warning.
-        suppress_toasts = self._update_modal_pending.is_set()
+        # Onboarding suppresses too: the flow covers integrations (and
+        # prompts for a Tavily key) itself, so a "Web search disabled"
+        # toast over the onboarding modals is noise. Entries stay
+        # reachable via ctrl+n.
+        suppress_toasts = (
+            self._update_modal_pending.is_set() or self._onboarding_session
+        )
 
         for tool in missing:
             notification = build_missing_tool_notification(tool)
@@ -3461,11 +3552,18 @@ class DeepAgentsApp(App):
                 )
             else:
                 from deepagents_code.extras_info import ExtrasIntrospectionError
-                from deepagents_code.update_check import install_package_command
+                from deepagents_code.update_check import (
+                    ToolRequirementIntrospectionError,
+                    install_package_command,
+                )
 
                 try:
                     install_cmd = install_package_command(missing.package)
-                except (ValueError, ExtrasIntrospectionError) as exc:
+                except (
+                    ValueError,
+                    ExtrasIntrospectionError,
+                    ToolRequirementIntrospectionError,
+                ) as exc:
                     logger.debug(
                         "install_package_command failed; falling back to "
                         "manual hint: %s",
@@ -3740,6 +3838,7 @@ class DeepAgentsApp(App):
                 format_installed_age_suffix,
                 format_release_age_parenthetical,
                 mark_update_notified,
+                release_requires_prereleases,
                 should_notify_update,
             )
 
@@ -3769,7 +3868,14 @@ class DeepAgentsApp(App):
             if not await asyncio.to_thread(should_notify_update, latest):
                 return
 
-            cmd = upgrade_command()
+            update_needs_prereleases = await asyncio.to_thread(
+                release_requires_prereleases,
+                latest,
+            )
+            cmd = upgrade_command(
+                include_prereleases=True if update_needs_prereleases else None,
+                version=latest if update_needs_prereleases else None,
+            )
             release_age = await asyncio.to_thread(
                 format_release_age_parenthetical,
                 latest,
@@ -3933,6 +4039,7 @@ class DeepAgentsApp(App):
                 perform_dependency_refresh_dry_run,
                 perform_upgrade,
                 prerelease_upgrade_supported,
+                release_requires_prereleases,
                 upgrade_command,
             )
 
@@ -3972,6 +4079,14 @@ class DeepAgentsApp(App):
                     ),
                 )
                 return
+            upgrade_include_prereleases = include_prereleases
+            pin_upgrade_version: str | None = None
+            if include_prereleases is None and await asyncio.to_thread(
+                release_requires_prereleases,
+                latest,
+            ):
+                upgrade_include_prereleases = True
+                pin_upgrade_version = latest
             if not available:
                 if deps_only:
                     await self._refresh_dependencies(
@@ -4039,6 +4154,16 @@ class DeepAgentsApp(App):
                     )
                     return
 
+            if upgrade_include_prereleases is True:
+                supported, reason = await asyncio.to_thread(
+                    prerelease_upgrade_supported,
+                )
+                if not supported:
+                    await self._mount_message(
+                        AppMessage(reason or _PRERELEASE_UNSUPPORTED_MESSAGE),
+                    )
+                    return
+
             release_age = await asyncio.to_thread(
                 format_release_age_parenthetical,
                 latest,
@@ -4061,6 +4186,7 @@ class DeepAgentsApp(App):
                 return
             success, output = await perform_upgrade(
                 include_prereleases=include_prereleases,
+                target_version=latest,
             )
             if success:
                 self._update_available = (False, None)
@@ -4077,8 +4203,7 @@ class DeepAgentsApp(App):
                     await self._mount_message(
                         AppMessage(
                             f"Updated to v{latest}. Quit and relaunch dcode "
-                            "to use the new version (`/restart` only restarts "
-                            "the server, not the CLI)."
+                            "to use the new version."
                         ),
                     )
                 else:
@@ -4100,7 +4225,10 @@ class DeepAgentsApp(App):
                         ),
                     )
             else:
-                cmd = upgrade_command(include_prereleases=include_prereleases)
+                cmd = upgrade_command(
+                    include_prereleases=upgrade_include_prereleases,
+                    version=pin_upgrade_version,
+                )
                 detail = f": {output[:200]}" if output else ""
                 await self._mount_message(
                     AppMessage(f"Auto-update failed{detail}\nRun manually: {cmd}"),
@@ -4312,8 +4440,9 @@ class DeepAgentsApp(App):
     async def _handle_install_command(self, command: str) -> None:
         """Handle the `/install <extra>` slash command.
 
-        Adds an optional extra (e.g. `quickjs`, `daytona`) to the installed
-        dcode tool by re-running `uv tool install -U 'deepagents-code[<extra>]'`.
+        Adds an optional extra (e.g. `daytona`, `fireworks`) to the installed
+        dcode tool by re-running
+        `uv tool install --reinstall -U 'deepagents-code[<extra>]'`.
         Refuses unknown extras unless the user passes a `--force` token.
 
         Args:
@@ -4334,7 +4463,7 @@ class DeepAgentsApp(App):
                 AppMessage(
                     "Usage: /install <extra> [--force]\n"
                     "       /install <package> --package [--force]\n"
-                    "Example: /install quickjs\n\n"
+                    "Example: /install daytona\n\n"
                     f"{format_known_extras()}",
                 ),
             )
@@ -4367,7 +4496,7 @@ class DeepAgentsApp(App):
         a one-keypress restart for restart-capable extras.
 
         Args:
-            extra: The extra name to install (e.g. `"baseten"`, `"quickjs"`).
+            extra: The extra name to install (e.g. `"baseten"`, `"daytona"`).
             force: Skip the "unknown extra" guard for valid-but-unlisted names.
             auto_restart: Restart the app-owned server immediately after a
                 restart-capable install. Used only when the user selected a model
@@ -4531,10 +4660,8 @@ class DeepAgentsApp(App):
 
         # Model-provider and sandbox extras are imported by the langgraph
         # server subprocess; `/restart` respawns that subprocess and picks
-        # them up without exiting the TUI. `quickjs` (and other
-        # STANDALONE_EXTRAS) are wired into the parent process at startup
-        # (`verify_interpreter_deps` gates `--interpreter`), so a full
-        # relaunch is required.
+        # them up without exiting the TUI. STANDALONE_EXTRAS are wired into
+        # the parent process at startup, so a full relaunch is required.
         restart_capable = extra in MODEL_PROVIDER_EXTRAS or extra in SANDBOX_EXTRAS
         if restart_capable and auto_restart:
             if self._restart_after_install_is_unneeded():
@@ -4566,17 +4693,7 @@ class DeepAgentsApp(App):
             return False
 
         if not restart_capable:
-            if extra == "quickjs":
-                # `quickjs` only does anything behind `--interpreter`, a
-                # launch-only flag with a startup-time dependency gate, so a
-                # `/restart` (which reuses the original launch settings) can't
-                # enable it — a full relaunch with the flag is required.
-                next_step = (
-                    "Exit and relaunch dcode with `--interpreter` to use it — "
-                    "see `dcode --help`."
-                )
-            else:
-                next_step = "Exit and relaunch dcode to use the new dependencies."
+            next_step = "Exit and relaunch dcode to use the new dependencies."
             await self._mount_message(
                 AppMessage(f"Installed extra '{extra}'. {next_step}"),
             )
@@ -5523,7 +5640,43 @@ class DeepAgentsApp(App):
             )
         await self._mount_approval_widget(menu, result_future)
 
-    def _on_auto_approve_enabled(self) -> None:
+    async def _write_live_approval_mode(self) -> bool:
+        """Persist the current approval mode for the active thread.
+
+        Returns:
+            `True` when no write was needed or the write succeeded, otherwise
+            `False`.
+        """
+        if self._session_state is None or self._agent is None:
+            return True
+        from deepagents_code.approval_mode import awrite_approval_mode
+
+        try:
+            live_key = await awrite_approval_mode(
+                self._agent,
+                self._session_state.thread_id,
+                auto_approve=bool(self._session_state.auto_approve),
+            )
+        except Exception:
+            self._session_state.approval_mode_key = None
+            logger.warning("Failed to write live approval-mode state", exc_info=True)
+            return False
+        if live_key is None:
+            # No store writer on the agent (a local/in-process agent rather
+            # than a RemoteAgent). This is an expected configuration, not a
+            # fault, so — unlike the except branch above — we clear the stale
+            # key and fail closed without logging, to avoid noise on every
+            # toggle. The run-context path persists the mode for local agents.
+            self._session_state.approval_mode_key = None
+            return False
+        self._session_state.approval_mode_key = live_key
+        return True
+
+    def _warn_live_approval_mode_unavailable(self, message: str) -> None:
+        """Surface live approval-mode degradation to the user."""
+        self.notify(message, severity="warning", timeout=8, markup=False)
+
+    async def _on_auto_approve_enabled(self) -> None:
         """Handle auto-approve being enabled via the HITL approval menu.
 
         Called when the user selects "Auto-approve all" from an approval
@@ -5536,6 +5689,11 @@ class DeepAgentsApp(App):
             self._status_bar.set_auto_approve(enabled=True)
         if self._session_state:
             self._session_state.auto_approve = True
+            if not await self._write_live_approval_mode():
+                self._warn_live_approval_mode_unavailable(
+                    "Auto-approve could not sync to the running agent; "
+                    "approval prompts may continue."
+                )
 
     async def _remove_ask_user_widget(  # noqa: PLR6301  # Shared helper used by ask_user event handlers
         self,
@@ -6102,6 +6260,7 @@ class DeepAgentsApp(App):
                 return
 
             model_spec, provider = result
+            await self._prompt_launch_tavily()
             if self._connecting:
                 # Bound the wait so a stuck server never traps onboarding.
                 # Server startup typically completes in seconds; a minute is
@@ -6185,6 +6344,59 @@ class DeepAgentsApp(App):
                 await self._install_extra_then_switch(extra, model_spec)
                 return
         await self._switch_model(model_spec, announce_unchanged=False)
+
+    async def _prompt_launch_tavily(self) -> None:
+        """Optionally collect and store a Tavily web-search key during onboarding.
+
+        Skipped when a Tavily key is already configured (env or stored). A
+        blank submission or Escape stores nothing; a non-empty key is persisted
+        via the same `auth_store` path `/auth` uses. The key is also exported to
+        the process environment (`apply_stored_service_credentials`) so a server
+        respawn this session picks it up; the already-running server keeps its
+        spawn-time tools, so web search takes full effect on the next launch (or
+        after a restart).
+        """
+        from deepagents_code.config import settings
+
+        if settings.has_tavily:
+            return
+
+        from deepagents_code.widgets.auth import AuthPromptScreen, AuthResult
+
+        result = await self._push_screen_wait(
+            AuthPromptScreen(
+                "tavily",
+                "TAVILY_API_KEY",
+                reason=(
+                    "Web search is optional but strongly recommended to enhance "
+                    "your agent's capabilities."
+                ),
+                allow_empty_submit=True,
+                input_placeholder="Tavily API key (optional)",
+                submit_label="Enter save/skip",
+            )
+        )
+        if result is not AuthResult.SAVED:
+            return
+
+        from deepagents_code.model_config import apply_stored_service_credentials
+
+        apply_stored_service_credentials()
+
+        # `apply_stored_service_credentials` is best-effort: it swallows a
+        # corrupt-store read with only a `logger.warning`, which is invisible
+        # inside a Textual session. The user just saw the key accepted, so
+        # confirm it actually reached the environment; if not, say so rather
+        # than letting web search silently stay disabled. Reaching this branch
+        # means `has_tavily` was False at bootstrap, so a populated
+        # `TAVILY_API_KEY` here can only come from the export above.
+        if not os.environ.get("TAVILY_API_KEY"):
+            self.notify(
+                "Saved your Tavily key, but couldn't activate it this "
+                "session. Restart Deep Agents Code, or re-add it with /auth.",
+                severity="warning",
+                markup=False,
+            )
 
     async def _finish_launch_init(self, *, name: str | None) -> None:
         """Persist onboarding completion and, when given, mount the welcome.
@@ -6295,12 +6507,23 @@ class DeepAgentsApp(App):
     def _build_launch_dependencies_prompt(
         self,
     ) -> tuple[ModalScreen, asyncio.Future[tuple[bool, tuple[str, str] | None]]]:
-        """Build the dependency/model prompt screen and result future.
+        """Build the first post-name onboarding screen and its result future.
+
+        The integrations summary screen is disabled by default (the model
+        selector already surfaces and installs uninstalled providers), so the
+        model selector is normally the first screen. Setting
+        `DEEPAGENTS_CODE_ONBOARDING_INTEGRATIONS_SCREEN` re-inserts the
+        `LaunchDependenciesScreen` ahead of it.
 
         Returns:
-            The dependency screen and a future resolved when the dependency or
-            model screen finishes.
+            The first onboarding screen and a future resolved when the
+            dependency or model screen finishes.
         """
+        from deepagents_code._env_vars import (
+            ONBOARDING_INTEGRATIONS_SCREEN,
+            is_env_truthy,
+        )
+
         loop = asyncio.get_running_loop()
         result_future: asyncio.Future[tuple[bool, tuple[str, str] | None]] = (
             loop.create_future()
@@ -6323,6 +6546,9 @@ class DeepAgentsApp(App):
             curated=True,
             result_callback=handle_model,
         )
+        if not is_env_truthy(ONBOARDING_INTEGRATIONS_SCREEN):
+            return model_screen, result_future
+
         dependency_screen = self._build_launch_dependencies_screen(
             continue_screen=model_screen,
             on_done=handle_dependencies,
@@ -6639,10 +6865,10 @@ class DeepAgentsApp(App):
             if output:
                 if incognito:
                     await self._mount_message(
-                        AppMessage(f"```\n{output}\n```", markdown=True),
+                        AppMessage(f"```text\n{output}\n```", markdown=True),
                     )
                 else:
-                    msg = AssistantMessage(f"```\n{output}\n```")
+                    msg = AssistantMessage(f"```text\n{output}\n```")
                     await self._mount_message(msg)
                     await msg.write_initial_content()
             else:
@@ -6694,8 +6920,8 @@ class DeepAgentsApp(App):
         their command/output never reach the checkpoint the model reads. Rather
         than write to thread state immediately (which would spend a model turn
         on output the user may never reference), the command/output are queued
-        here as a `HumanMessage`/`AIMessage` pair and flushed when the user
-        sends their next message (see `_flush_pending_shell_messages`). `!!`
+        here as a structured `HumanMessage` and flushed when the user sends
+        their next message (see `_flush_pending_shell_messages`). `!!`
         (incognito) callers skip this and stay local-only.
 
         Args:
@@ -6703,16 +6929,23 @@ class DeepAgentsApp(App):
             output: Combined stdout/stderr captured from the command.
             returncode: Process exit code, or `None` if unavailable.
         """
-        from langchain_core.messages import AIMessage, HumanMessage
+        from langchain_core.messages import HumanMessage
 
-        status = f"\n[Command exited with code {returncode}]" if returncode else ""
+        code = returncode if returncode is not None else "unknown"
         body = output or "(no output)"
-        self._pending_shell_messages.extend(
-            [
-                HumanMessage(content=f"!{command}"),
-                AIMessage(content=f"```\n{body}\n```{status}"),
-            ]
+        content = (
+            "<user_shell_command>\n"
+            "<command>\n"
+            f"{command}\n"
+            "</command>\n"
+            "<result>\n"
+            f"Exit code: {code}\n"
+            "Output:\n"
+            f"{body}\n"
+            "</result>\n"
+            "</user_shell_command>"
         )
+        self._pending_shell_messages.append(HumanMessage(content=content))
 
     async def _flush_pending_shell_messages(self) -> None:
         """Write buffered `!` command/output into thread state, then clear it.
@@ -6956,7 +7189,8 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 AppMessage(
                     "LangSmith tracing is not configured. "
-                    "Set LANGSMITH_API_KEY and LANGSMITH_TRACING=true to enable.",
+                    "Run `/auth` and select LangSmith to enable tracing, or set "
+                    "LANGSMITH_API_KEY and LANGSMITH_TRACING=true.",
                 ),
             )
             return
@@ -6974,7 +7208,8 @@ class DeepAgentsApp(App):
                 AppMessage(
                     "The `langsmith` package is not installed. "
                     "Install it with "
-                    "`uv tool install -U deepagents-code --with langsmith` "
+                    "`uv tool install --reinstall -U deepagents-code "
+                    "--with langsmith` "
                     "to enable `/trace`.",
                 ),
             )
@@ -7137,6 +7372,10 @@ class DeepAgentsApp(App):
             self._queued_widgets.clear()
             self._sync_status_queued()
             await self._clear_messages()
+            # A fresh conversation drops any prior subagent fan-out too.
+            subagent_panel = self._get_subagent_panel()
+            if subagent_panel is not None:
+                subagent_panel.reset()
             self._context_tokens = 0
             self._tokens_approximate = False
             self._update_tokens(0)
@@ -7924,6 +8163,16 @@ class DeepAgentsApp(App):
         turn_stats = SessionStats()
         self._inflight_turn_stats = turn_stats
         self._inflight_turn_start = time.monotonic()
+
+        # Arm the subagent fan-out panel for this turn, seeding the session
+        # model that labels each row. The panel persists across turns and only
+        # clears when this turn's first subagent actually starts, so a turn that
+        # spawns none leaves the previous workflow's results on screen.
+        panel = self._get_subagent_panel()
+        if panel is not None:
+            spec = self._effective_model_spec()
+            panel.prepare_turn(model_label=_display_model_label(spec))
+
         try:
             await execute_task_textual(
                 user_input=message,
@@ -7987,6 +8236,13 @@ class DeepAgentsApp(App):
             if self._inflight_turn_stats is not None:
                 self._session_stats.merge(turn_stats)
                 self._inflight_turn_stats = None
+            # Finalize any subagent rows left "running" — an interrupt cancels
+            # the worker before the bridge emits terminal events (a cancel is a
+            # BaseException, which the bridge's `except Exception` skips), so the
+            # panel would otherwise spin forever. No-op when nothing's running.
+            subagent_panel = self._get_subagent_panel()
+            if subagent_panel is not None:
+                subagent_panel.finalize_running()
             await self._cleanup_agent_task()
 
     async def _process_next_from_queue(self) -> None:
@@ -9166,6 +9422,15 @@ class DeepAgentsApp(App):
             return_code: Exit code (non-zero for errors).
             message: Optional message to display on exit.
         """
+        # A second exit() while a graceful exit is already pending means the
+        # user is forcing the issue (e.g. mashing Ctrl+D/Ctrl+C). Tear down
+        # immediately rather than arming another bounded wait — the first call
+        # already ran cleanup and cancelled the worker, so re-running it would
+        # only make the force-quit wait out another window.
+        if self._graceful_exit_task is not None and not self._graceful_exit_task.done():
+            super().exit(result=result, return_code=return_code, message=message)
+            return
+
         # Merge in-flight turn stats before any cleanup that might raise.
         # When the agent worker is cancelled (e.g. Ctrl+D during a pending tool
         # call), the worker's finally block will see _inflight_turn_stats is
@@ -9227,9 +9492,101 @@ class DeepAgentsApp(App):
                 exc_info=True,
             )
         restore_iterm_cursor_guide()
-        super().exit(result=result, return_code=return_code, message=message)
 
-    def action_toggle_auto_approve(self) -> None:
+        # Defer super().exit() so the agent worker's cancellation handler
+        # (which, for remote agents, sends a server-side run cancel, and in all
+        # cases persists interrupt state) has a bounded window to complete
+        # before the event loop is torn down. This gives the server a chance to
+        # finish persisting the in-flight run's trace instead of being
+        # SIGTERM'd mid-request.
+        agent_worker = self._agent_worker if self._agent_running else None
+
+        if agent_worker is not None and not agent_worker.is_finished:
+
+            async def _graceful_exit() -> None:
+                from textual.worker import WorkerCancelled, WorkerFailed
+
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(agent_worker.wait()),
+                        timeout=_GRACEFUL_EXIT_WAIT_SECONDS,
+                    )
+                except (asyncio.CancelledError, WorkerCancelled):
+                    # Expected: exit() cancelled the worker above, so its
+                    # cancellation handler ran to completion. Nothing to flag.
+                    logger.debug(
+                        "Agent worker cancelled cleanly before app exit",
+                        exc_info=True,
+                    )
+                except (TimeoutError, WorkerFailed):
+                    # The worker did not finish within the window, so the
+                    # in-flight run's server-side trace may be incomplete.
+                    # Surface above debug so the loss isn't silent.
+                    logger.warning(
+                        "Agent worker did not finish persisting before app "
+                        "exit; the in-flight run's trace may be incomplete",
+                        exc_info=True,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Agent worker wait raised unexpectedly before app exit",
+                        exc_info=True,
+                    )
+                finally:
+                    # This is the only call that stops the event loop, so it
+                    # must run on every path the try/except can take, including
+                    # an unexpected BaseException (e.g. SystemExit) propagating
+                    # out of the wait. Guard the teardown itself so a failure
+                    # here can't leave this fire-and-forget task with an
+                    # unretrieved exception; a non-Exception (SystemExit,
+                    # KeyboardInterrupt) still propagates. Explicit super()
+                    # form: the zero-arg super() can't resolve its implicit
+                    # __class__/self binding inside this nested coroutine, so
+                    # name the class and instance.
+                    try:
+                        super(DeepAgentsApp, self).exit(
+                            result=result,
+                            return_code=return_code,
+                            message=message,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "super().exit() raised during deferred teardown",
+                            exc_info=True,
+                        )
+
+            self._graceful_exit_task = asyncio.ensure_future(_graceful_exit())
+        else:
+            super().exit(result=result, return_code=return_code, message=message)
+
+    def _get_subagent_panel(self) -> SubagentPanel | None:
+        """Return the subagent fan-out panel, or None if not yet mounted.
+
+        Returns:
+            The mounted `SubagentPanel`, or None during early startup.
+        """
+        try:
+            return self.query_one("#subagent-panel", SubagentPanel)
+        except Exception:  # noqa: BLE001 — not mounted during early startup
+            return None
+
+    def _on_subagent_event(self, event: dict[str, Any]) -> None:
+        """Forward a validated subagent custom-stream event to the panel.
+
+        Runs on the Textual event loop (same loop as the stream consumer), so
+        the panel widget can be updated directly.
+        """
+        panel = self._get_subagent_panel()
+        if panel is not None:
+            panel.on_subagent_event(event)
+
+    def action_toggle_subagent_panel(self) -> None:
+        """Expand or collapse the subagent fan-out panel."""
+        panel = self._get_subagent_panel()
+        if panel is not None:
+            panel.toggle()
+
+    async def action_toggle_auto_approve(self) -> None:
         """Toggle auto-approve mode for the current session.
 
         When enabled, all tool calls (shell execution, file writes/edits,
@@ -9287,6 +9644,26 @@ class DeepAgentsApp(App):
             self._status_bar.set_auto_approve(enabled=self._auto_approve)
         if self._session_state:
             self._session_state.auto_approve = self._auto_approve
+            if not await self._write_live_approval_mode():
+                if self._auto_approve:
+                    self._warn_live_approval_mode_unavailable(
+                        "Auto-approve could not sync to the running agent; "
+                        "approval prompts may continue."
+                    )
+                elif self._agent_running:
+                    # Switching to manual mid-run, but the agent never saw it:
+                    # cancel the active run rather than let it keep auto-approving.
+                    self._session_state.approval_mode_key = None
+                    self._warn_live_approval_mode_unavailable(
+                        "Manual approval could not sync to the running agent; "
+                        "the active run was cancelled for safety."
+                    )
+                    self._force_interrupt_active_work()
+                else:
+                    self._warn_live_approval_mode_unavailable(
+                        "Manual approval could not sync to the running agent; "
+                        "start a new run before continuing."
+                    )
 
     def action_toggle_tool_output(self) -> None:
         """Toggle expand/collapse of the most recent tool output or skill body."""
@@ -9520,7 +9897,8 @@ class DeepAgentsApp(App):
             description=(
                 "These models have performed well in Deep Agents evals and are "
                 "a solid starting set. You can explore the full model list "
-                "later with /model."
+                "later with /model. Sandboxes and other integrations install "
+                "anytime with /install."
                 if curated
                 else None
             ),
@@ -9703,9 +10081,8 @@ class DeepAgentsApp(App):
         if not await self._prompt_model_auth_if_needed(model_spec):
             await self._mount_message(
                 AppMessage(
-                    f"Installed '{extra}'. Skipped switching to {model_spec} for "
-                    f"now — add credentials with `/auth`, then switch with "
-                    f"`/model` anytime.",
+                    f"Installed '{extra}'. Switch to {model_spec} anytime with "
+                    f"`/model` — you'll be prompted for credentials.",
                 ),
             )
             return
@@ -9871,12 +10248,17 @@ class DeepAgentsApp(App):
         )
         self.push_screen(screen, handle_result)
 
-    async def _show_auth_manager(self) -> None:
+    async def _show_auth_manager(self, *, initial_provider: str | None = None) -> None:
         """Show the `/auth` credential manager modal.
 
         State changes persist via `auth_store`; the manager refreshes its
         own option labels after each save/delete, so this caller only needs
         to refocus the chat input on close.
+
+        Args:
+            initial_provider: Provider to start highlighted — set when
+                reopening after an install-on-select so the cursor lands on
+                the just-installed provider instead of the top of the list.
         """
         from deepagents_code.widgets.auth import AuthManagerScreen
 
@@ -9891,13 +10273,17 @@ class DeepAgentsApp(App):
                 from functools import partial
 
                 self.call_later(
-                    partial(self._install_provider_then_reopen_auth, extra),
+                    partial(
+                        self._install_provider_then_reopen_auth,
+                        extra,
+                        provider=screen.pending_install_provider,
+                    ),
                 )
                 return
             task = asyncio.create_task(self._resume_server_after_auth_change())
             task.add_done_callback(_log_task_exception)
 
-        screen = AuthManagerScreen()
+        screen = AuthManagerScreen(initial_provider=initial_provider)
         self.push_screen(screen, handle_result)
 
     def on_auth_manager_screen_credential_saved(self, event: Message) -> None:
@@ -9967,14 +10353,18 @@ class DeepAgentsApp(App):
         await self._retry_startup_with_model(model_spec, extra_kwargs=extra_kwargs)
         return True
 
-    async def _install_provider_then_reopen_auth(self, extra: str) -> None:
+    async def _install_provider_then_reopen_auth(
+        self, extra: str, *, provider: str | None = None
+    ) -> None:
         """Install a provider's extra from `/auth`, then reopen the manager.
 
         Args:
             extra: The extra that installs the selected provider's integration.
+            provider: The provider being installed, highlighted in the
+                reopened manager so the cursor lands on it ready for a key.
         """
         if await self._install_extra(extra, auto_restart=True):
-            await self._show_auth_manager()
+            await self._show_auth_manager(initial_provider=provider)
             return
         # `_install_extra` returns `False` both when the install genuinely
         # failed (it already surfaced the reason) and when the package landed
@@ -9986,7 +10376,7 @@ class DeepAgentsApp(App):
             from deepagents_code.model_config import clear_caches
 
             clear_caches()
-            await self._show_auth_manager()
+            await self._show_auth_manager(initial_provider=provider)
             return
         if ready is None:
             # Introspection couldn't confirm the state (rare). Don't dead-end
@@ -9997,6 +10387,12 @@ class DeepAgentsApp(App):
                     "Reopen `/auth` to add a key once it has.",
                 ),
             )
+            return
+        # `ready is False`: the extra genuinely didn't install. `_install_extra`
+        # has already surfaced the reason to the user, so stay in chat rather
+        # than reopen — but log it so an "install button did nothing" report is
+        # debuggable without relying on that sibling method's invariant.
+        logger.debug("Provider extra %r not importable after install attempt", extra)
 
     def _switch_agent(self, agent_name: str) -> None:
         """Switch to a different agent and hot-restart the backing server.
@@ -10854,7 +11250,6 @@ class DeepAgentsApp(App):
             format_shadowed_dcode_warning,
             mark_update_notified,
             perform_upgrade,
-            upgrade_command,
         )
 
         if action_id == ActionId.INSTALL:
@@ -10871,7 +11266,7 @@ class DeepAgentsApp(App):
 
             from deepagents_code.widgets.update_progress import UpdateProgressScreen
 
-            cmd = upgrade_command()
+            cmd = payload.upgrade_cmd
             log_path = create_update_log_path()
             screen = UpdateProgressScreen(
                 latest=payload.latest,
@@ -10902,6 +11297,7 @@ class DeepAgentsApp(App):
                 success, output = await perform_upgrade(
                     progress=screen.append_line,
                     log_path=log_path,
+                    target_version=payload.latest,
                 )
                 if success:
                     self._notice_registry.remove(entry.key)
@@ -10931,8 +11327,7 @@ class DeepAgentsApp(App):
                         return
                     self.notify(
                         f"Updated to v{payload.latest}. "
-                        "Quit and relaunch dcode to use the new version "
-                        "(/restart only restarts the server, not the CLI).",
+                        "Quit and relaunch dcode to use the new version.",
                         severity="information",
                         timeout=10,
                         markup=False,
@@ -11798,7 +12193,7 @@ class DeepAgentsApp(App):
     def _ensure_restart_prompt_loaded() -> None:
         """Load the restart-prompt modal before any in-place self-upgrade.
 
-        `/install` runs `uv tool install -U 'deepagents-code[...]'`, which
+        `/install` runs `uv tool install --reinstall -U 'deepagents-code[...]'`, which
         rewrites deepagents-code's own on-disk package tree while this process
         is running. Modules already in `sys.modules` keep working from memory,
         but a *first* import after the rewrite reads the mutated (or
@@ -11835,11 +12230,11 @@ class DeepAgentsApp(App):
         redundant hint:
 
         - Owned + idle: show the prompt (its button is the call to action). If
-          the prompt can't be shown, fall back to a `/restart` hint.
+            the prompt can't be shown, fall back to a `/restart` hint.
         - Owned + busy/connecting: a restart cancels in-flight work, so point
-          at `/restart` for once the current task finishes.
+            at `/restart` for once the current task finishes.
         - No owned subprocess (remote server): `/restart` can't respawn it, so a
-          full relaunch is the only way to load the package.
+            full relaunch is the only way to load the package.
 
         Args:
             label: Installed extra/package name, surfaced in the prompt title.
@@ -11865,8 +12260,9 @@ class DeepAgentsApp(App):
         try:
             from deepagents_code.widgets.restart_prompt import RestartPromptScreen
         except ModuleNotFoundError:
-            # `/install` runs `uv tool install -U 'deepagents-code[...]'`, which
-            # can rewrite deepagents-code's own on-disk package tree mid-session
+            # `/install` runs `uv tool install --reinstall -U
+            # 'deepagents-code[...]'`, which can rewrite deepagents-code's own
+            # on-disk package tree mid-session
             # (see `_ensure_restart_prompt_loaded`). A first import of the modal
             # here may then fail with `ModuleNotFoundError`. Degrade to the
             # manual `/restart` hint instead of crashing the TUI. The catch is
@@ -13373,6 +13769,7 @@ async def run_textual_app(
     mcp_preload_kwargs: dict[str, Any] | None = None,
     model_kwargs: dict[str, Any] | None = None,
     model_explicitly_set: bool = False,
+    interpreter_arg: bool | None = None,
     defer_server_start: bool = False,
     title: str | None = None,
     sub_title: str | None = None,
@@ -13424,6 +13821,9 @@ async def run_textual_app(
 
             When `True`, the explicit choice wins over a resumed thread's
             persisted model (no resume adoption).
+        interpreter_arg: The raw `--interpreter`/`--no-interpreter` tri-state,
+            forwarded to the app so the disabled-by-sandbox advisory can tell an
+            explicit opt-out from a sandbox-suppressed default.
         defer_server_start: Whether to keep app-owned server startup paused
             until credentials or a model are configured from inside the TUI.
         title: Override the Textual `App.title` shown in the optional header
@@ -13454,6 +13854,7 @@ async def run_textual_app(
         mcp_preload_kwargs=mcp_preload_kwargs,
         model_kwargs=model_kwargs,
         model_explicitly_set=model_explicitly_set,
+        interpreter_arg=interpreter_arg,
         defer_server_start=defer_server_start,
         title=title,
         sub_title=sub_title,

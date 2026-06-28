@@ -32,9 +32,12 @@ jobs:
       !contains(github.event.pull_request.labels.*.name, 'release-deps: acknowledged')
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      failed: ${{ steps.resolve.outputs.failed }}
+      comment_body: ${{ steps.resolve.outputs.comment_body }}
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
 
@@ -45,7 +48,87 @@ jobs:
           enable-cache: "false"
 
       - name: "🔍 Resolve changed release package dependencies"
+        id: resolve
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: uv run --no-project --with packaging python .github/scripts/check_release_deps.py
+
+  manage-release-deps-comment:
+    name: "manage release dependency PR comment"
+    needs: check-release-deps
+    if: >-
+      always() && startsWith(github.event.pull_request.title, 'release(')
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: "💬 Manage PR comment"
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          COMMENT_BODY: ${{ needs.check-release-deps.outputs.comment_body }}
+          FAILED: ${{ needs.check-release-deps.outputs.failed }}
+          RESULT: ${{ needs.check-release-deps.result }}
+        with:
+          script: |
+            const marker = '<!-- release-deps-check -->';
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request.number;
+            const body = process.env.COMMENT_BODY || '';
+            const failedRaw = process.env.FAILED || '';
+            const result = process.env.RESULT || '';
+            const failed = failedRaw === 'true';
+
+            // The check job writes `failed=true|false` only when it runs to
+            // completion. An empty value means it never produced outputs: it was
+            // either skipped (bypass label applied) or it crashed before writing
+            // them. Treat a skipped job as "resolved" (delete any stale warning),
+            // but a crashed job (failure result with no outputs) as unknown —
+            // leave any existing comment so the red check keeps its explanation.
+            const crashed = failedRaw === '' && result !== 'skipped';
+
+            try {
+              if (crashed) {
+                core.info('Release dependency check produced no result (likely a crash); leaving any existing comment in place.');
+                return;
+              }
+
+              const comments = await github.paginate(
+                github.rest.issues.listComments,
+                { owner, repo, issue_number: prNumber, per_page: 100 },
+              );
+              const existing = comments.find(c => (c.body ?? '').includes(marker));
+
+              if (!failed) {
+                if (existing) {
+                  await github.rest.issues.deleteComment({ owner, repo, comment_id: existing.id });
+                  core.info('Release dependencies resolved or acknowledged — removed stale warning comment.');
+                } else {
+                  core.info('No release dependency warning comment needed.');
+                }
+                return;
+              }
+
+              if (!body.trim()) {
+                core.info('Release dependency check is still failing but produced no comment body; keeping any existing warning comment.');
+                return;
+              }
+
+              if (existing) {
+                await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+                core.info('Updated release dependency warning comment.');
+              } else {
+                await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
+                core.info('Created release dependency warning comment.');
+              }
+            } catch (err) {
+              // Commenting is best-effort cosmetics on top of the real gate
+              // (the check-release-deps job). If the token cannot write comments,
+              // degrade to a warning rather than failing this job. Surface anything
+              // else.
+              if (err.status === 403) {
+                core.warning(`Skipping release-deps PR comment (token cannot write comments): ${err.message}`);
+                return;
+              }
+              throw err;
+            }

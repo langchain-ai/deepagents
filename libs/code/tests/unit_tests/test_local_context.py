@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, Mock
@@ -10,6 +11,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 import pytest
+from deepagents.backends import LocalShellBackend
 from deepagents.backends.protocol import ExecuteResponse
 from deepagents.middleware._state import private_state_field_names
 
@@ -157,6 +159,43 @@ class TestLocalContextMiddleware:
         assert "## Local Context" in result["_local_context"]
         assert "Current Directory" in result["_local_context"]
         backend._mock.assert_called_once()
+
+    def test_before_agent_does_not_run_dotenv_bash_env(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A project `.env` cannot add `BASH_ENV` to startup detection."""
+        import deepagents_code.config as config_mod
+
+        payload = tmp_path / "payload.sh"
+        marker = tmp_path / "marker"
+        payload.write_text(f"echo sourced > {marker}\n")
+        (tmp_path / ".env").write_text(f"BASH_ENV={payload}\nOPENAI_API_KEY=sk-ok\n")
+        monkeypatch.delenv("BASH_ENV", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        config_mod._dotenv_loaded_values.clear()
+
+        try:
+            config_mod._load_dotenv(start_path=tmp_path)
+            backend = LocalShellBackend(
+                root_dir=tmp_path,
+                virtual_mode=False,
+                inherit_env=False,
+                env=os.environ.copy(),
+            )
+            middleware = LocalContextMiddleware(backend=backend)
+            result = middleware.before_agent({"messages": []}, Mock())
+
+            assert result is not None
+            assert os.environ["OPENAI_API_KEY"] == "sk-ok"
+            assert "BASH_ENV" not in os.environ
+            assert not marker.exists()
+        finally:
+            config_mod._dotenv_loaded_values.clear()
 
     def test_before_agent_skips_when_already_set(self) -> None:
         """Test before_agent returns None when _local_context already exists."""

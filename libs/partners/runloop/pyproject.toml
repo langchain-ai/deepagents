@@ -22,7 +22,7 @@ classifiers = [
 version = "0.0.6"
 requires-python = ">=3.11,<4.0"
 dependencies = [
-    "deepagents>=0.6.8,<0.7.0",
+    "deepagents>=0.6.12,<0.7.0",
     "runloop-api-client",
 ]
 
@@ -37,14 +37,14 @@ Documentation = "https://github.com/langchain-ai/deepagents/tree/main/libs/partn
 
 [dependency-groups]
 test = [
-    "pytest>=9.0.3,<10.0.0",
+    "pytest>=9.1.1,<10.0.0",
     "pytest-cov",
     "pytest-socket",
     "pytest-xdist",
     "pytest-timeout>=2.4.0,<3.0.0",
     "pytest-asyncio>=1.4.0",
-    "ruff>=0.15.16,<0.16.0",
-    "ty>=0.0.46,<1.0.0",
+    "ruff>=0.15.20,<0.16.0",
+    "ty>=0.0.54,<1.0.0",
     "langchain-tests>=1.1.9",
 ]
 

@@ -11,6 +11,7 @@ from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends import StateBackend, StoreBackend
 from deepagents.backends.composite import CompositeBackend
+from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import EditResult, ExecuteResponse, GlobResult, ReadResult, SandboxBackendProtocol, WriteResult
 from deepagents.backends.utils import _glob_anchor, _paths_overlap
 from deepagents.graph import create_deep_agent
@@ -22,6 +23,7 @@ from deepagents.middleware.filesystem import (
     _all_paths_scoped_to_routes,
     _check_fs_permission,
     _filter_paths_by_permission,
+    _find_delete_deny_patterns,
 )
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 
@@ -112,6 +114,213 @@ async def _ainvoke_with_permissions(tool, args, rules, tool_call_id="test", back
     if isinstance(result, ToolMessage):
         return result.content
     return str(result)
+
+
+class TestRecursiveDeletePermissions:
+    """All-or-nothing write-permission enforcement for recursive delete.
+
+    A recursive delete is refused if any ``deny`` write rule's pattern overlaps
+    the target subtree, in either direction: a rule scoped inside the target
+    (``/work/secrets/**``) and a rule the target falls under (``/work``) both
+    block it. The check is rule-based (no filesystem enumeration).
+    """
+
+    def _fs_backend(self, tmp_path):
+        # /work/a.txt, /work/logs/run.log, /work/secrets/{key,token}.txt
+        (tmp_path / "work" / "logs").mkdir(parents=True)
+        (tmp_path / "work" / "secrets").mkdir(parents=True)
+        (tmp_path / "work" / "a.txt").write_text("a")
+        (tmp_path / "work" / "logs" / "run.log").write_text("log")
+        (tmp_path / "work" / "secrets" / "key.txt").write_text("k")
+        (tmp_path / "work" / "secrets" / "token.txt").write_text("t")
+        return FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    def test_recursive_delete_refused_when_descendant_denied(self, tmp_path):
+        backend = self._fs_backend(tmp_path)
+        rules = [FilesystemPermission(operations=["write"], paths=["/work/secrets/**"], mode="deny")]
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
+
+        result = _invoke_with_permissions(tool, {"file_path": "/work"}, rules, backend=backend)
+
+        assert "permission denied for write" in result
+        assert "/work/secrets" in result
+        # All-or-nothing: nothing was removed.
+        assert (tmp_path / "work" / "a.txt").exists()
+        assert (tmp_path / "work" / "secrets" / "key.txt").exists()
+
+    def test_recursive_delete_allowed_when_whole_subtree_allowed(self, tmp_path):
+        backend = self._fs_backend(tmp_path)
+        rules = [FilesystemPermission(operations=["write"], paths=["/other/**"], mode="deny")]
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
+
+        result = _invoke_with_permissions(tool, {"file_path": "/work"}, rules, backend=backend)
+
+        assert "Deleted" in result
+        assert not (tmp_path / "work").exists()
+
+    def test_delete_denied_directory_path_itself(self, tmp_path):
+        # A rule on the bare directory path (no /**) still blocks deleting it.
+        backend = self._fs_backend(tmp_path)
+        rules = [FilesystemPermission(operations=["write"], paths=["/work/secrets"], mode="deny")]
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
+
+        result = _invoke_with_permissions(tool, {"file_path": "/work"}, rules, backend=backend)
+
+        assert "permission denied for write" in result
+        assert (tmp_path / "work" / "secrets" / "key.txt").exists()
+
+    def test_delete_refused_when_ancestor_denied(self, tmp_path):
+        # Any overlap denies: a rule on an ancestor of the target also blocks,
+        # since the target subtree falls under it.
+        backend = self._fs_backend(tmp_path)
+        rules = [FilesystemPermission(operations=["write"], paths=["/work/**"], mode="deny")]
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
+
+        result = _invoke_with_permissions(tool, {"file_path": "/work/logs"}, rules, backend=backend)
+
+        assert "permission denied for write" in result
+        assert (tmp_path / "work" / "logs" / "run.log").exists()
+
+    def test_delete_unaffected_sibling_subtree(self, tmp_path):
+        backend = self._fs_backend(tmp_path)
+        rules = [FilesystemPermission(operations=["write"], paths=["/work/secrets", "/work/secrets/**"], mode="deny")]
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
+
+        result = _invoke_with_permissions(tool, {"file_path": "/work/logs"}, rules, backend=backend)
+
+        assert "Deleted" in result
+        assert not (tmp_path / "work" / "logs").exists()
+        assert (tmp_path / "work" / "secrets" / "key.txt").exists()
+
+    def test_delete_reports_multiple_overlapping_patterns(self, tmp_path):
+        # The agent gets context: several overlapping deny patterns are reported.
+        backend = self._fs_backend(tmp_path)
+        rules = [
+            FilesystemPermission(operations=["write"], paths=["/work/secrets/**"], mode="deny"),
+            FilesystemPermission(operations=["write"], paths=["/work/logs/**"], mode="deny"),
+        ]
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
+
+        result = _invoke_with_permissions(tool, {"file_path": "/work"}, rules, backend=backend)
+
+        assert "/work/secrets/**" in result
+        assert "/work/logs/**" in result
+        assert (tmp_path / "work" / "a.txt").exists()
+
+    def test_single_file_delete_still_works(self, tmp_path):
+        backend = self._fs_backend(tmp_path)
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
+
+        result = _invoke_with_permissions(tool, {"file_path": "/work/a.txt"}, [], backend=backend)
+
+        assert "Deleted" in result
+        assert not (tmp_path / "work" / "a.txt").exists()
+
+    async def test_recursive_delete_refused_async(self, tmp_path):
+        backend = self._fs_backend(tmp_path)
+        rules = [FilesystemPermission(operations=["write"], paths=["/work/secrets/**"], mode="deny")]
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
+
+        result = await _ainvoke_with_permissions(tool, {"file_path": "/work"}, rules, backend=backend)
+
+        assert "permission denied for write" in result
+        assert (tmp_path / "work" / "secrets" / "key.txt").exists()
+
+    def test_delete_registered_as_bulk_interrupt(self):
+        # An interrupt rule on a descendant must fire for a recursive delete,
+        # so delete is registered (bulk scope) in the interrupt builder.
+        rules = [FilesystemPermission(operations=["write"], paths=["/work/secrets/**"], mode="interrupt")]
+        out = _build_interrupt_on_from_permissions(rules)
+        assert "delete" in out
+
+
+def _deny(*paths: str) -> FilesystemPermission:
+    return FilesystemPermission(operations=["write"], paths=list(paths), mode="deny")
+
+
+class TestFindDeleteDenyPatterns:
+    """Exhaustive unit tests for the pure `_find_delete_deny_patterns` helper.
+
+    Returns every `deny` write pattern whose glob overlaps the delete subtree
+    (target + descendants). An empty result means the delete is permitted.
+    """
+
+    @pytest.mark.parametrize(
+        ("pattern", "target", "expected"),
+        [
+            # --- no overlap -> permitted (empty result) ----------------------
+            pytest.param("/other/**", "/work", [], id="unrelated-subtree"),
+            pytest.param("/workshop/**", "/work", [], id="sibling-prefix-glob"),
+            pytest.param("/work2", "/work", [], id="sibling-prefix-literal"),
+            pytest.param("/work/secrets", "/work/logs", [], id="sibling-leaf"),
+            # --- overlap in either direction -> blocked ----------------------
+            pytest.param("/work/a.txt", "/work/a.txt", ["/work/a.txt"], id="exact-file"),
+            pytest.param("/work", "/work", ["/work"], id="exact-dir-literal"),
+            pytest.param("/work/secrets/**", "/work", ["/work/secrets/**"], id="descendant-pattern-blocks-ancestor-target"),
+            pytest.param("/work/**", "/work/logs", ["/work/**"], id="ancestor-glob-blocks-descendant-target"),
+            pytest.param("/work", "/work/sub/deep", ["/work"], id="ancestor-literal-blocks-descendant-target"),
+            pytest.param("/work/secrets", "/work", ["/work/secrets"], id="bare-directory-pattern"),
+            # --- wildcard / root anchors -------------------------------------
+            pytest.param("/anything/**", "/", ["/anything/**"], id="root-target-blocked-by-any-rule"),
+            pytest.param("/**/secrets", "/work", ["/**/secrets"], id="leading-wildcard-anchor-is-root"),
+            # --- trailing-slash normalization (both sides) -------------------
+            pytest.param("/work/**", "/work/", ["/work/**"], id="target-trailing-slash"),
+            pytest.param("/work/", "/work/sub", ["/work/"], id="pattern-trailing-slash"),
+            pytest.param("/work/", "/work/", ["/work/"], id="both-trailing-slash"),
+        ],
+    )
+    def test_overlap_geometry(self, pattern: str, target: str, expected: list[str]):
+        assert _find_delete_deny_patterns([_deny(pattern)], target) == expected
+
+    @pytest.mark.parametrize(
+        ("operations", "mode", "expected"),
+        [
+            pytest.param(["write"], "deny", ["/work/**"], id="write-deny-blocks"),
+            pytest.param(["read", "write"], "deny", ["/work/**"], id="readwrite-deny-blocks"),
+            pytest.param(["write"], "allow", [], id="allow-ignored"),
+            pytest.param(["write"], "interrupt", [], id="interrupt-ignored"),
+            pytest.param(["read"], "deny", [], id="read-only-deny-ignored"),
+        ],
+    )
+    def test_mode_and_operation_filtering(self, operations, mode, expected):
+        # Only deny + write rules count; the target always overlaps the pattern.
+        rule = FilesystemPermission(operations=operations, paths=["/work/**"], mode=mode)
+        assert _find_delete_deny_patterns([rule], "/work") == expected
+
+    @pytest.mark.parametrize(
+        ("rule_paths", "target", "expected"),
+        [
+            pytest.param([], "/work", [], id="no-permissions"),
+            pytest.param([["/work/a/**"], ["/work/b/**"]], "/work", ["/work/a/**", "/work/b/**"], id="multiple-rules"),
+            pytest.param(
+                [["/work/a/**", "/work/b/**", "/other/**"]],
+                "/work",
+                ["/work/a/**", "/work/b/**"],
+                id="multiple-paths-one-rule-filters-non-overlapping",
+            ),
+            pytest.param(
+                [[f"/work/d{i}/**"] for i in range(8)],
+                "/work",
+                [f"/work/d{i}/**" for i in range(8)],
+                id="all-overlapping-no-cap",
+            ),
+            pytest.param(
+                [["/work/x/**"], ["/work/x/**", "/work/y/**"]],
+                "/work",
+                ["/work/x/**", "/work/y/**"],
+                id="deduplicated-first-seen-order",
+            ),
+            pytest.param(
+                [["/other/**"], ["/work/x/**"], ["/elsewhere/**"]],
+                "/work",
+                ["/work/x/**"],
+                id="only-overlapping-returned",
+            ),
+        ],
+    )
+    def test_multiple_rule_aggregation(self, rule_paths, target, expected):
+        rules = [_deny(*paths) for paths in rule_paths]
+        assert _find_delete_deny_patterns(rules, target) == expected
 
 
 class TestFilesystemPermission:
@@ -228,7 +437,7 @@ class TestBuildInterruptOnFromPermissions:
         """A write-only interrupt rule registers only the write-op tools."""
         rule = FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="interrupt")
         out = _build_interrupt_on_from_permissions([rule])
-        assert set(out) == {"write_file", "edit_file"}
+        assert set(out) == {"write_file", "edit_file", "delete"}
 
     def test_registers_read_tools_for_read_interrupt(self):
         rule = FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="interrupt")

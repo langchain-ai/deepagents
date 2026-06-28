@@ -1,6 +1,7 @@
 """Unit tests for message widgets markup safety."""
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -291,12 +292,83 @@ class TestAssistantMessageMarkdownRendering:
 
 
 class _AssistantMessageApp(App[None]):
-    """Minimal app that mounts an AssistantMessage for timer-based tests."""
+    """Minimal app that mounts an AssistantMessage for runtime tests."""
 
     def compose(self) -> ComposeResult:
         widget = AssistantMessage()
         widget.id = "assistant"
         yield widget
+
+
+class TestAssistantMessageLinkPointer:
+    """Tests for the pointer cursor shown when hovering markdown links."""
+
+    @staticmethod
+    def _move_event(
+        *, link: str | None = None, meta: dict | None = None
+    ) -> SimpleNamespace:
+        """Build a minimal mouse-move-like event exposing the hovered style.
+
+        The handlers only read `event.style.link` and `event.style.meta`, so a
+        namespace is enough; the assertions run against the real `Markdown`
+        widget mounted by `_AssistantMessageApp`.
+        """
+        return SimpleNamespace(style=SimpleNamespace(link=link, meta=meta or {}))
+
+    async def test_hovering_markdown_link_sets_pointer_cursor(self) -> None:
+        """A markdown `@click=link(...)` span switches the real pointer to pointer."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+
+            msg.on_mouse_move(self._move_event(meta={"@click": "link('https://x')"}))  # ty: ignore
+
+            assert msg._markdown is not None
+            assert msg._markdown.styles.pointer == "pointer"
+
+    async def test_hovering_osc8_link_sets_pointer_cursor(self) -> None:
+        """An OSC 8 `Style(link=...)` span also switches the pointer to pointer."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+
+            msg.on_mouse_move(self._move_event(link="https://example.com"))  # ty: ignore
+
+            assert msg._markdown is not None
+            assert msg._markdown.styles.pointer == "pointer"
+
+    async def test_hovering_text_sets_text_pointer(self) -> None:
+        """Plain markdown text keeps the text pointer."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+
+            msg.on_mouse_move(self._move_event())  # ty: ignore
+
+            assert msg._markdown is not None
+            assert msg._markdown.styles.pointer == "text"
+
+    async def test_leave_resets_pointer(self) -> None:
+        """Leaving the message resets the pointer to text after a link hover."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+            msg.on_mouse_move(self._move_event(link="https://example.com"))  # ty: ignore
+
+            msg.on_leave()
+
+            assert msg._markdown is not None
+            assert msg._markdown.styles.pointer == "text"
+
+    def test_mouse_move_before_mount_is_noop(self) -> None:
+        """Hovering before mount (no markdown widget yet) must not raise."""
+        msg = AssistantMessage()
+        assert msg._markdown is None
+
+        msg.on_mouse_move(self._move_event(link="https://example.com"))  # ty: ignore
+
+    def test_leave_before_mount_is_noop(self) -> None:
+        """Leaving before mount (no markdown widget yet) must not raise."""
+        msg = AssistantMessage()
+        assert msg._markdown is None
+
+        msg.on_leave()
 
 
 class TestAssistantMessageStreamCoalescing:
@@ -1048,6 +1120,78 @@ class TestToolCallMessageExpandHint:
             assert "line 4" in preview.plain
 
 
+class TestToolCallMessageEmptyResult:
+    """Empty file-op results render nothing instead of an empty box."""
+
+    @pytest.mark.parametrize(
+        ("tool", "output"),
+        [
+            ("glob", "[]"),
+            ("grep", "[]"),
+            ("ls", "[]"),
+            ("glob", "   "),
+        ],
+    )
+    async def test_empty_serialized_result_hides_output(
+        self, tool: str, output: str
+    ) -> None:
+        """A non-empty literal that formats to nothing must not render a box.
+
+        Tools like glob/grep/ls serialize an empty successful result as the
+        literal "[]", which formats to no visible content. The raw output is
+        truthy, so the early empty guard doesn't fire — without the formatted
+        emptiness check the preview row renders as an empty box with a
+        misleading expand affordance. The whitespace-only case ("   ") exercises
+        the same check now that the collapsed branch's own empty guard is gone.
+        """
+        app = _tool_msg_app(tool)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._preview_row is not None
+            assert app.msg._full_row is not None
+            assert app.msg._hint_widget is not None
+            assert app.msg._preview_row.display is False
+            assert app.msg._full_row.display is False
+            assert app.msg._hint_widget.display is False
+            assert app.msg._has_expandable_output() is False
+
+    async def test_non_empty_serialized_result_still_renders(self) -> None:
+        """A populated result must still render — the guard can't false-positive."""
+        app = _tool_msg_app("glob")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("['a.py', 'b.py']")
+            await pilot.pause()
+
+            assert app.msg._preview_row is not None
+            assert app.msg._preview_row.display is True
+            assert app.msg._preview_widget is not None
+            preview = app.msg._preview_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert "a.py" in preview.plain
+
+    async def test_error_body_is_not_hidden(self) -> None:
+        """A real (non-empty) error body must stay visible.
+
+        The emptiness guard runs regardless of status, so this pins the
+        invariant that a human-readable error — which always formats non-empty —
+        is shown in full rather than collapsed away.
+        """
+        app = _tool_msg_app("grep", {"pattern": "x"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_error("grep: invalid pattern")
+            await pilot.pause()
+
+            assert app.msg._full_row is not None
+            assert app.msg._full_widget is not None
+            assert app.msg._full_row.display is True
+            full = app.msg._full_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert "invalid pattern" in full.plain
+
+
 class TestToolCallMessageExpandableArgs:
     """Tests for the `ask_user` expandable-arguments toggle."""
 
@@ -1571,6 +1715,12 @@ class TestToolCallMessageJsEvalArgs:
         from deepagents_code.widgets.messages import _TOOLS_WITH_HEADER_INFO
 
         assert "js_eval" in _TOOLS_WITH_HEADER_INFO
+
+    def test_delete_in_tools_with_header_info(self) -> None:
+        """`delete` is registered so its path stays in the header only."""
+        from deepagents_code.widgets.messages import _TOOLS_WITH_HEADER_INFO
+
+        assert "delete" in _TOOLS_WITH_HEADER_INFO
 
     def test_single_line_code_not_expandable(self) -> None:
         """One-line code is fully shown in the header — nothing to expand."""

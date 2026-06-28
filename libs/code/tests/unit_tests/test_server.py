@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import socket
 import threading
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Self
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -51,6 +52,31 @@ class _FakeSocket:
         return self._sockname
 
 
+class _FakeAsyncClient:
+    """Minimal async `httpx.AsyncClient` stand-in for readiness tests."""
+
+    def __init__(self, response: object) -> None:
+        self.response = response
+        self.urls: list[str] = []
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+    async def get(
+        self,
+        url: str,
+        *,
+        timeout: float,  # noqa: ARG002, ASYNC109  # mirrors httpx.AsyncClient.get
+    ) -> object:
+        self.urls.append(url)
+        if isinstance(self.response, BaseException):
+            raise self.response
+        return self.response
+
+
 class TestPortInUse:
     def test_free_port(self) -> None:
         fake_socket = _FakeSocket()
@@ -89,6 +115,94 @@ class TestFindFreePort:
             port = _find_free_port("127.0.0.1")
 
         assert port == 53123
+
+
+class TestServerPortSelection:
+    """Port resolution in `ServerProcess.start()`."""
+
+    @staticmethod
+    def _make_server(tmp_path: Path, port: int = 0) -> ServerProcess:
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+        return ServerProcess(config_dir=config_dir, port=port)
+
+    @staticmethod
+    def _mock_log_file(tmp_path: Path) -> MagicMock:
+        log_file = MagicMock()
+        log_file.name = str(tmp_path / "server.log")
+        return log_file
+
+    async def test_default_uses_ephemeral_port(self, tmp_path: Path) -> None:
+        """Default port (0) resolves via `_find_free_port`, never squats 2024."""
+        server = self._make_server(tmp_path)
+        assert server.port == 0
+
+        process = MagicMock(pid=1234)
+        process.poll.return_value = None
+        with (
+            patch(
+                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                return_value=self._mock_log_file(tmp_path),
+            ),
+            patch("deepagents_code.server.subprocess.Popen", return_value=process),
+            patch("deepagents_code.server.wait_for_server_healthy", new=AsyncMock()),
+            patch(
+                "deepagents_code.server._find_free_port", return_value=43210
+            ) as find_free,
+            patch("deepagents_code.server._port_in_use") as in_use,
+        ):
+            await server.start()
+
+        find_free.assert_called_once_with("127.0.0.1")
+        in_use.assert_not_called()
+        assert server.port == 43210
+
+    async def test_explicit_free_port_is_kept(self, tmp_path: Path) -> None:
+        """An explicit, free port is honored without searching for another."""
+        server = self._make_server(tmp_path, port=2024)
+
+        process = MagicMock(pid=1234)
+        process.poll.return_value = None
+        with (
+            patch(
+                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                return_value=self._mock_log_file(tmp_path),
+            ),
+            patch("deepagents_code.server.subprocess.Popen", return_value=process),
+            patch("deepagents_code.server.wait_for_server_healthy", new=AsyncMock()),
+            patch("deepagents_code.server._port_in_use", return_value=False) as in_use,
+            patch("deepagents_code.server._find_free_port") as find_free,
+        ):
+            await server.start()
+
+        in_use.assert_called_once_with("127.0.0.1", 2024)
+        find_free.assert_not_called()
+        assert server.port == 2024
+
+    async def test_explicit_busy_port_falls_back(self, tmp_path: Path) -> None:
+        """An explicit but busy port falls back to a free port."""
+        server = self._make_server(tmp_path, port=2024)
+
+        process = MagicMock(pid=1234)
+        process.poll.return_value = None
+        with (
+            patch(
+                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                return_value=self._mock_log_file(tmp_path),
+            ),
+            patch("deepagents_code.server.subprocess.Popen", return_value=process),
+            patch("deepagents_code.server.wait_for_server_healthy", new=AsyncMock()),
+            patch("deepagents_code.server._port_in_use", return_value=True) as in_use,
+            patch(
+                "deepagents_code.server._find_free_port", return_value=43210
+            ) as find_free,
+        ):
+            await server.start()
+
+        in_use.assert_called_once_with("127.0.0.1", 2024)
+        find_free.assert_called_once_with("127.0.0.1")
+        assert server.port == 43210
 
 
 class TestWaitForServerHealthy:
@@ -204,6 +318,71 @@ class TestWaitForServerHealthy:
 
 
 class TestServerProcess:
+    async def test_wait_for_graph_ready_resolves_graph_endpoint(self) -> None:
+        """Graph readiness should force LangGraph to resolve graph factories."""
+        client = _FakeAsyncClient(SimpleNamespace(status_code=200))
+        process = MagicMock()
+        process.poll.return_value = None
+        server = ServerProcess(host="127.0.0.1", port=2024)
+        server._process = process
+
+        with patch("httpx.AsyncClient", return_value=client):
+            await server.wait_for_graph_ready("agent")
+
+        assert client.urls == ["http://127.0.0.1:2024/assistants/agent/graph"]
+
+    async def test_wait_for_graph_ready_surfaces_startup_marker(
+        self, tmp_path: Path
+    ) -> None:
+        """Readiness failures should preserve marked subprocess startup errors."""
+        log_path = tmp_path / "server.log"
+        log_path.write_text(
+            "booting\n"
+            "DEEPAGENTS_STARTUP_ERROR:Sandbox creation failed for 'modal': boom\n"
+        )
+
+        log_file = MagicMock()
+        log_file.name = str(log_path)
+
+        client = _FakeAsyncClient(SimpleNamespace(status_code=500))
+        process = MagicMock()
+        process.poll.return_value = None
+        server = ServerProcess(host="127.0.0.1", port=2024)
+        server._process = process
+        server._log_file = log_file
+
+        with (
+            patch("httpx.AsyncClient", return_value=client),
+            pytest.raises(RuntimeError, match="Sandbox creation failed"),
+        ):
+            await server.wait_for_graph_ready("agent")
+
+    async def test_wait_for_graph_ready_checks_logs_after_transport_error(
+        self, tmp_path: Path
+    ) -> None:
+        """Dropped graph requests should still surface startup markers."""
+        log_path = tmp_path / "server.log"
+        log_path.write_text(
+            "booting\nDEEPAGENTS_STARTUP_ERROR:ModelConfigError: missing API key\n"
+        )
+
+        log_file = MagicMock()
+        log_file.name = str(log_path)
+
+        client = _FakeAsyncClient(OSError("connection closed"))
+        process = MagicMock()
+        process.poll.return_value = 1
+        process.returncode = 3
+        server = ServerProcess(host="127.0.0.1", port=2024)
+        server._process = process
+        server._log_file = log_file
+
+        with (
+            patch("httpx.AsyncClient", return_value=client),
+            pytest.raises(RuntimeError, match="ModelConfigError: missing API key"),
+        ):
+            await server.wait_for_graph_ready("agent")
+
     async def test_start_cleans_up_partial_state_on_health_failure(
         self, tmp_path: Path
     ) -> None:
@@ -225,7 +404,7 @@ class TestServerProcess:
         server = ServerProcess(config_dir=config_dir, owns_config_dir=True)
 
         with (
-            patch("deepagents_code.server._port_in_use", return_value=False),
+            patch("deepagents_code.server._find_free_port", return_value=12345),
             patch(
                 "deepagents_code.server.tempfile.NamedTemporaryFile",
                 return_value=log_file,
@@ -267,7 +446,7 @@ class TestServerProcess:
         server = ServerProcess(config_dir=config_dir, scaffold=scaffold_mock)
 
         with (
-            patch("deepagents_code.server._port_in_use", return_value=False),
+            patch("deepagents_code.server._find_free_port", return_value=12345),
             patch(
                 "deepagents_code.server.tempfile.NamedTemporaryFile",
                 return_value=log_file,
@@ -354,7 +533,7 @@ class TestServerProcess:
         server = ServerProcess(config_dir=config_dir, scaffold=scaffold_mock)
 
         with (
-            patch("deepagents_code.server._port_in_use", return_value=False),
+            patch("deepagents_code.server._find_free_port", return_value=12345),
             patch(
                 "deepagents_code.server.tempfile.NamedTemporaryFile",
                 return_value=log_file,
@@ -391,7 +570,7 @@ class TestServerProcess:
         server = ServerProcess(config_dir=config_dir, scaffold=scaffold_mock)
 
         with (
-            patch("deepagents_code.server._port_in_use", return_value=False),
+            patch("deepagents_code.server._find_free_port", return_value=12345),
             patch(
                 "deepagents_code.server.tempfile.NamedTemporaryFile",
                 return_value=log_file,
@@ -435,6 +614,7 @@ class TestServerProcess:
         server = ServerProcess(config_dir=config_dir, scaffold=scaffold_mock)
 
         with (
+            patch("deepagents_code.server._find_free_port", return_value=12345),
             patch("deepagents_code.server._port_in_use", return_value=False),
             patch(
                 "deepagents_code.server.tempfile.NamedTemporaryFile",
@@ -477,6 +657,7 @@ class TestServerProcess:
         server = ServerProcess(config_dir=config_dir, owns_config_dir=False)
 
         with (
+            patch("deepagents_code.server._find_free_port", return_value=12345),
             patch("deepagents_code.server._port_in_use", return_value=False),
             patch(
                 "deepagents_code.server.tempfile.NamedTemporaryFile",

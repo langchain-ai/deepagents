@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
+import pytest
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
@@ -14,6 +15,7 @@ from deepagents_code._cli_context import CLIContext, CLIContextSchema
 from deepagents_code.agent import build_model_identity_section
 from deepagents_code.configurable_model import (
     ConfigurableModelMiddleware,
+    _get_context,
     _is_anthropic_model,
 )
 
@@ -29,7 +31,7 @@ def _make_model(name: str) -> MagicMock:
 
 def _make_request(
     model: BaseChatModel,
-    context: CLIContext | CLIContextSchema | None = None,
+    context: object = None,
     model_settings: dict[str, Any] | None = None,
     system_prompt: str | None = None,
 ) -> ModelRequest:
@@ -93,6 +95,37 @@ class TestNoOverride:
             request, lambda r: (captured.append(r), _make_response())[1]
         )
         assert captured[0] is request
+
+    def test_dict_context_reconstructs_approval_fields(self) -> None:
+        request = _make_request(
+            _make_model("claude-sonnet-4-6"),
+            context={
+                "auto_approve": True,
+                "approval_mode_key": "approval-key",
+            },
+        )
+
+        ctx = _get_context(request)
+
+        assert ctx is not None
+        assert ctx.auto_approve is True
+        assert ctx.approval_mode_key == "approval-key"
+
+    @pytest.mark.parametrize("key", [None, 1, object()])
+    def test_dict_context_coerces_non_string_approval_key(self, key: object) -> None:
+        request = _make_request(
+            _make_model("claude-sonnet-4-6"),
+            context={
+                "auto_approve": True,
+                "approval_mode_key": key,
+            },
+        )
+
+        ctx = _get_context(request)
+
+        assert ctx is not None
+        assert ctx.auto_approve is True
+        assert ctx.approval_mode_key is None
 
     def test_same_model_spec(self) -> None:
         request = _make_request(

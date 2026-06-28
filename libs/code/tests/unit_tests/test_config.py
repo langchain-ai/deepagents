@@ -12,6 +12,7 @@ import pytest
 
 from deepagents_code import _git as git_module, model_config
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
+from deepagents_code._version import __version__
 from deepagents_code.config import (
     CLI_MAX_RETRIES_KEY,
     RECOMMENDED_SAFE_SHELL_COMMANDS,
@@ -2332,10 +2333,55 @@ class TestGetTracingStatus:
         with patch.dict("os.environ", self._CLEAN, clear=False):
             status = get_tracing_status()
         assert status.enabled is False
+        assert status.explicitly_disabled is False
         assert status.has_credentials is False
         assert status.endpoint is None
         assert status.project == LANGSMITH_PROJECT_DEFAULT
+        assert status.project_is_default is True
         assert status.replica_project is None
+
+    @pytest.mark.parametrize(
+        ("var", "token", "expected_enabled", "expected_disabled"),
+        [
+            # Non-bridged flags (bare `env.get` path) set to each falsy token.
+            ("LANGSMITH_TRACING_V2", "false", False, True),
+            ("LANGSMITH_TRACING_V2", "0", False, True),
+            ("LANGSMITH_TRACING_V2", "no", False, True),
+            ("LANGSMITH_TRACING_V2", "off", False, True),
+            ("LANGCHAIN_TRACING", "false", False, True),
+            # Prefixed bridged falsy flag — exercises the prefix-aware
+            # `_resolve_env_var_from` off path; doctor runs pre-bootstrap.
+            ("DEEPAGENTS_CODE_LANGSMITH_TRACING", "false", False, True),
+            # An empty flag reads as not configured, not an explicit opt-out.
+            ("LANGSMITH_TRACING_V2", "", False, False),
+            # An unrecognized token is neither enabled nor an explicit opt-out.
+            ("LANGSMITH_TRACING_V2", "maybe", False, False),
+            # A truthy flag is enabled and never reported as explicitly disabled.
+            ("LANGSMITH_TRACING_V2", "true", True, False),
+        ],
+    )
+    def test_explicit_disable_matrix(
+        self,
+        var: str,
+        token: str,
+        expected_enabled: bool,
+        expected_disabled: bool,
+    ) -> None:
+        """Each flag/token combination resolves to the right tri-state.
+
+        Exercises both the bare-`env.get` path (non-bridged vars) and the
+        prefix-aware `_resolve_env_var_from` path (the prefixed bridged flag),
+        across every recognized falsy token plus the empty and unrecognized
+        cases.
+        """
+        from deepagents_code.config import get_tracing_status
+
+        env = dict(self._CLEAN)
+        env[var] = token
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.enabled is expected_enabled
+        assert status.explicitly_disabled is expected_disabled
 
     def test_prefixed_flag_and_key_are_detected(self) -> None:
         """`DEEPAGENTS_CODE_`-prefixed tracing/key vars resolve like the runtime.
@@ -2355,6 +2401,24 @@ class TestGetTracingStatus:
         assert status.enabled is True
         assert status.has_credentials is True
         assert status.project == "prefixed-proj"
+        assert status.project_is_default is False
+
+    def test_explicit_default_name_is_not_marked_default(self) -> None:
+        """Explicitly setting the default name still counts as configured.
+
+        `project_is_default` tracks provenance (was anything set), not a string
+        match against the default. A user who sets the project to the same name
+        as the built-in default must not get the `(default)` marker.
+        """
+        from deepagents_code.config import get_tracing_status
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+        env = dict(self._CLEAN)
+        env["DEEPAGENTS_CODE_LANGSMITH_PROJECT"] = LANGSMITH_PROJECT_DEFAULT
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.project == LANGSMITH_PROJECT_DEFAULT
+        assert status.project_is_default is False
 
     def test_dotenv_values_are_detected(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -2441,6 +2505,7 @@ class TestGetTracingStatus:
         with patch.dict("os.environ", env, clear=False):
             status = get_tracing_status()
         assert status.enabled is False
+        assert status.explicitly_disabled is True
 
     def test_canonical_non_bridged_flag_enables(self) -> None:
         """A canonical, non-bridged flag (`LANGSMITH_TRACING_V2`) enables tracing."""
@@ -2516,6 +2581,7 @@ class TestGetTracingStatus:
         with patch.dict("os.environ", env, clear=False):
             status = get_tracing_status()
         assert status.project == "prod"
+        assert status.project_is_default is False
 
     def test_reports_first_replica_project(self) -> None:
         """Only the first replica project is reported (server mirrors one)."""
@@ -2526,6 +2592,21 @@ class TestGetTracingStatus:
         with patch.dict("os.environ", env, clear=False):
             status = get_tracing_status()
         assert status.replica_project == "replica-a"
+
+    def test_enabled_and_explicitly_disabled_is_rejected(self) -> None:
+        """The contradictory enabled/disabled pair fails loud at construction."""
+        from deepagents_code.config import TracingStatus
+
+        with pytest.raises(ValueError, match="both enabled and explicitly disabled"):
+            TracingStatus(
+                enabled=True,
+                explicitly_disabled=True,
+                has_credentials=False,
+                endpoint=None,
+                project=None,
+                project_is_default=False,
+                replica_project=None,
+            )
 
 
 class TestQuietSdkTracingLogging:
@@ -3905,8 +3986,20 @@ class TestCreateModelViaInitImportError:
             _create_model_via_init("nemotron", "nvidia", {})
 
     @patch("langchain.chat_models.init_chat_model")
-    def test_unknown_provider_fallback_package_name(self, mock_init: Mock) -> None:
-        """Unknown provider falls back to langchain-{provider} package name."""
+    def test_unknown_provider_fallback_package_name(
+        self, mock_init: Mock, tmp_path, monkeypatch
+    ) -> None:
+        """Unknown provider falls back to langchain-{provider} package name.
+
+        `install_package_command` reads the uv tool receipt, so it is isolated to
+        a temporary tool root here; otherwise the hint degrades to the manual
+        fallback (see the sibling unreadable-receipt test).
+        """
+        tmp_path.joinpath("uv-receipt.toml").write_text(
+            '[tool]\nrequirements = [{ name = "deepagents-code" }]\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
         mock_init.side_effect = ImportError("no module")
         with (
             patch("importlib.util.find_spec", return_value=None),
@@ -3917,9 +4010,37 @@ class TestCreateModelViaInitImportError:
             pytest.raises(
                 ModelConfigError,
                 match=(
-                    "Install with: uv tool install -U deepagents-code "
-                    "--with langchain-custom_provider"
+                    "Install with: uv tool install --reinstall -U "
+                    f"deepagents-code=={__version__} "
+                    "--with langchain-custom_provider --prerelease allow"
                 ),
+            ),
+        ):
+            _create_model_via_init("some-model", "custom_provider", {})
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_unknown_provider_receipt_failure_falls_back_to_manual(
+        self, mock_init: Mock, tmp_path, monkeypatch
+    ) -> None:
+        """An unreadable uv receipt degrades to the manual-install hint.
+
+        Exercises the `ToolRequirementIntrospectionError` arm of the fallback:
+        `install_package_command` reads the uv tool receipt, and a missing
+        receipt must surface an actionable message instead of letting the error
+        leak out of hint construction.
+        """
+        # tmp_path has no uv-receipt.toml, so the receipt read raises.
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        mock_init.side_effect = ImportError("no module")
+        with (
+            patch("importlib.util.find_spec", return_value=None),
+            patch(
+                "deepagents_code.extras_info.installed_extra_names",
+                return_value=set(),
+            ),
+            pytest.raises(
+                ModelConfigError,
+                match="Install the 'langchain-custom_provider' package manually",
             ),
         ):
             _create_model_via_init("some-model", "custom_provider", {})
@@ -4706,12 +4827,12 @@ class TestInterpreterSettings:
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
             settings_obj = Settings.from_environment(start_path=tmp_path)
 
-        assert settings_obj.enable_interpreter is False
+        assert settings_obj.enable_interpreter is True
         assert settings_obj.interpreter_timeout_seconds == pytest.approx(5.0)
         assert settings_obj.interpreter_memory_limit_mb == 64
         assert settings_obj.interpreter_max_ptc_calls == 256
         assert settings_obj.interpreter_max_result_chars == 4000
-        assert settings_obj.interpreter_ptc is False
+        assert settings_obj.interpreter_ptc == "safe"
         assert settings_obj.interpreter_ptc_acknowledge_unsafe is False
 
     def test_round_trip_through_toml(self, tmp_path: Path) -> None:
@@ -4763,7 +4884,7 @@ ptc = [""]
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
             settings_obj = Settings.from_environment(start_path=tmp_path)
 
-        assert settings_obj.interpreter_ptc is False
+        assert settings_obj.interpreter_ptc == "safe"
 
     def test_ptc_list_with_safe_preset_round_trip(self, tmp_path: Path) -> None:
         """`"safe"` is preserved as a list entry until agent-build expansion."""
@@ -4791,7 +4912,7 @@ ptc = ["all", "task"]
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
             settings_obj = Settings.from_environment(start_path=tmp_path)
 
-        assert settings_obj.interpreter_ptc is False
+        assert settings_obj.interpreter_ptc == "safe"
 
 
 class TestCreateModelCodex:

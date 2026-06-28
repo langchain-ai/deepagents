@@ -9421,6 +9421,15 @@ class DeepAgentsApp(App):
             return_code: Exit code (non-zero for errors).
             message: Optional message to display on exit.
         """
+        # A second exit() while a graceful exit is already pending means the
+        # user is forcing the issue (e.g. mashing Ctrl+D/Ctrl+C). Tear down
+        # immediately rather than arming another bounded wait — the first call
+        # already ran cleanup and cancelled the worker, so re-running it would
+        # only make the force-quit wait out another window.
+        if self._graceful_exit_task is not None and not self._graceful_exit_task.done():
+            super().exit(result=result, return_code=return_code, message=message)
+            return
+
         # Merge in-flight turn stats before any cleanup that might raise.
         # When the agent worker is cancelled (e.g. Ctrl+D during a pending tool
         # call), the worker's finally block will see _inflight_turn_stats is
@@ -9497,26 +9506,38 @@ class DeepAgentsApp(App):
 
                 try:
                     await asyncio.wait_for(agent_worker.wait(), timeout=2.0)
-                except (
-                    TimeoutError,
-                    asyncio.CancelledError,
-                    WorkerCancelled,
-                    WorkerFailed,
-                ):
+                except (asyncio.CancelledError, WorkerCancelled):
+                    # Expected: exit() cancelled the worker above, so its
+                    # cancellation handler ran to completion. Nothing to flag.
                     logger.debug(
-                        "Agent worker did not finish cleanly before app exit",
+                        "Agent worker cancelled cleanly before app exit",
+                        exc_info=True,
+                    )
+                except (TimeoutError, WorkerFailed):
+                    # The worker did not finish within the window, so the
+                    # in-flight run's server-side trace may be incomplete.
+                    # Surface above debug so the loss isn't silent.
+                    logger.warning(
+                        "Agent worker did not finish persisting before app "
+                        "exit; the in-flight run's trace may be incomplete",
                         exc_info=True,
                     )
                 except Exception:
-                    logger.debug(
+                    logger.warning(
                         "Agent worker wait raised unexpectedly before app exit",
                         exc_info=True,
                     )
-                super(DeepAgentsApp, self).exit(
-                    result=result,
-                    return_code=return_code,
-                    message=message,
-                )
+                finally:
+                    # Always tear down, even on BaseException (e.g. a second
+                    # KeyboardInterrupt landing during the wait): this is the
+                    # only call that stops the event loop, so it must run on
+                    # every path. Explicit super() form — a bare super() has
+                    # no __class__ cell inside this nested coroutine.
+                    super(DeepAgentsApp, self).exit(
+                        result=result,
+                        return_code=return_code,
+                        message=message,
+                    )
 
             self._graceful_exit_task = asyncio.ensure_future(_graceful_exit())
         else:

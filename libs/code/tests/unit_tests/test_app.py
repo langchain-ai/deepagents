@@ -7518,6 +7518,93 @@ class TestTerminalBackgroundSync:
         app_exit.assert_called_once()
 
 
+class TestExitGracefulWorkerHandoff:
+    """Verify `exit()` defers teardown for an in-flight agent worker."""
+
+    async def test_defers_when_agent_worker_unfinished(self) -> None:
+        """A running, unfinished worker arms a deferred graceful exit."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            worker = MagicMock()
+            worker.is_finished = False
+            worker.wait = AsyncMock()
+            app._agent_worker = worker
+
+            with patch.object(App, "exit") as super_exit:
+                app.exit()
+                # Teardown is deferred, not synchronous.
+                super_exit.assert_not_called()
+                assert app._graceful_exit_task is not None
+                # The deferred task waits on the worker, then tears down.
+                await app._graceful_exit_task
+                super_exit.assert_called_once()
+            worker.wait.assert_awaited_once()
+
+    async def test_synchronous_when_worker_finished(self) -> None:
+        """A finished worker tears down synchronously with no deferred task."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            worker = MagicMock()
+            worker.is_finished = True
+            worker.wait = AsyncMock()
+            app._agent_worker = worker
+
+            with patch.object(App, "exit") as super_exit:
+                app.exit()
+                super_exit.assert_called_once()
+            assert app._graceful_exit_task is None
+            worker.wait.assert_not_awaited()
+
+    async def test_synchronous_when_agent_not_running(self) -> None:
+        """An idle session tears down synchronously even with a worker set."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = False
+            worker = MagicMock()
+            worker.is_finished = False
+            worker.wait = AsyncMock()
+            app._agent_worker = worker
+
+            with patch.object(App, "exit") as super_exit:
+                app.exit()
+                super_exit.assert_called_once()
+            assert app._graceful_exit_task is None
+            worker.wait.assert_not_awaited()
+
+    async def test_second_exit_force_quits_pending_graceful_exit(self) -> None:
+        """A second exit() during a pending graceful exit force-quits.
+
+        Mashing Ctrl+D/Ctrl+C to bail out must not arm a second bounded wait;
+        it should tear down immediately and leave the first task untouched.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            worker = MagicMock()
+            worker.is_finished = False
+            worker.wait = AsyncMock()
+            app._agent_worker = worker
+
+            with patch.object(App, "exit") as super_exit:
+                app.exit()
+                pending = app._graceful_exit_task
+                assert pending is not None
+                super_exit.assert_not_called()
+
+                # Second press before the loop runs the deferred task.
+                app.exit()
+                super_exit.assert_called_once()
+                # The pending task is not re-armed or replaced.
+                assert app._graceful_exit_task is pending
+            pending.cancel()
+
+
 class TestSlashCommandBypass:
     """Test that certain slash commands bypass the queue gate."""
 

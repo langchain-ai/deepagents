@@ -22,6 +22,7 @@ from deepagents_code.main import (
     _restart_current_process,
     _ripgrep_install_hint,
     _run_startup_auto_update,
+    _should_check_teardown_thread,
     _terminal_row_count,
     build_missing_tool_notification,
     check_optional_tools,
@@ -1062,6 +1063,50 @@ class TestResumeHintLogic:
 
         show = bool(thread_id) and return_code == 0 and has_checkpoints
         assert not show, "No hint when thread_exists returns False"
+
+
+class TestTeardownThreadCheckpointLookup:
+    """Test teardown checkpoint lookup guard behavior."""
+
+    def test_skips_fresh_thread_without_requests(self) -> None:
+        """Fresh untouched sessions should avoid the teardown DB lookup."""
+        should_check = _should_check_teardown_thread(
+            "test123",
+            request_count=0,
+            resume_thread=None,
+        )
+
+        assert not should_check
+
+    def test_checks_fresh_thread_after_requests(self) -> None:
+        """Sessions that made requests may have checkpointed content."""
+        should_check = _should_check_teardown_thread(
+            "test123",
+            request_count=1,
+            resume_thread=None,
+        )
+
+        assert should_check
+
+    def test_checks_resumed_thread_without_new_requests(self) -> None:
+        """Resumed sessions can already have checkpoints before new requests."""
+        should_check = _should_check_teardown_thread(
+            "test123",
+            request_count=0,
+            resume_thread="test123",
+        )
+
+        assert should_check
+
+    def test_skips_when_no_thread_id(self) -> None:
+        """No final thread means there is nothing to look up."""
+        should_check = _should_check_teardown_thread(
+            None,
+            request_count=1,
+            resume_thread="test123",
+        )
+
+        assert not should_check
 
 
 class TestLangSmithTeardownUrl:

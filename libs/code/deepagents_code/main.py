@@ -135,6 +135,18 @@ def _terminal_row_count(console: "Console", text: str) -> int:
     return max(1, len(console.render_lines(Text(text), console.options)))
 
 
+def _should_check_teardown_thread(
+    thread_id: str | None,
+    *,
+    request_count: int,
+    resume_thread: str | None,
+) -> bool:
+    """Return whether teardown should query for checkpointed thread content."""
+    if thread_id is None:
+        return False
+    return request_count > 0 or resume_thread is not None
+
+
 def _confirm_launch_after_restart(console: "Console", version: str) -> None:
     """Rewrite the pre-restart `Launching...` line as `Launched.` in-place.
 
@@ -3357,10 +3369,14 @@ def cli_main() -> None:
             # Show LangSmith thread link and resume hint for threads with
             # checkpointed content. Both checks share a single `thread_exists`
             # query to avoid spinning up a second event loop + aiosqlite
-            # connection during teardown. Sessions with no LLM requests
-            # (request_count == 0) skip the DB query entirely — no checkpoints
-            # are possible without at least one model call.
-            if thread_id and result.session_stats.request_count > 0:
+            # connection during teardown. Fresh sessions with no LLM requests
+            # skip the DB query entirely; resumed threads can already have
+            # checkpoints, so they still need the lookup.
+            if thread_id is not None and _should_check_teardown_thread(
+                thread_id,
+                request_count=result.session_stats.request_count,
+                resume_thread=args.resume_thread,
+            ):
                 thread_has_checkpoints = False
                 try:
                     thread_has_checkpoints = asyncio.run(thread_exists(thread_id))

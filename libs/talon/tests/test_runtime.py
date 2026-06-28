@@ -583,6 +583,70 @@ async def test_runtime_rejects_invalid_context_size() -> None:
         await runtime.start()
 
 
+async def test_runtime_recursion_limit_defaults_when_env_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = RecordingGraph()
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", lambda **_kwargs: graph)
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+    await runtime.start()
+
+    result = await runtime.invoke(AgentRequest(conversation_id="chat", text="hi"))
+    assert graph.calls[0][1]["recursion_limit"] == 500
+    assert result.text == "seen:1"
+
+
+async def test_runtime_recursion_limit_reads_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    graph = RecordingGraph()
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", lambda **_kwargs: graph)
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        env={"DEEPAGENTS_TALON_RECURSION_LIMIT": "1000"},
+    )
+    await runtime.start()
+
+    await runtime.invoke(AgentRequest(conversation_id="chat", text="hi"))
+    assert graph.calls[0][1]["recursion_limit"] == 1000
+
+
+async def test_runtime_recursion_limit_env_overrides_explicit_arg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = RecordingGraph()
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", lambda **_kwargs: graph)
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        recursion_limit=200,
+        env={"DEEPAGENTS_TALON_RECURSION_LIMIT": "750"},
+    )
+    await runtime.start()
+
+    await runtime.invoke(AgentRequest(conversation_id="chat", text="hi"))
+    assert graph.calls[0][1]["recursion_limit"] == 750
+
+
+async def test_runtime_rejects_invalid_recursion_limit_env() -> None:
+    with pytest.raises(ValueError, match="DEEPAGENTS_TALON_RECURSION_LIMIT"):
+        DeepAgentRuntime(
+            model="test:model",
+            include_web_tools=False,
+            skills=(),
+            memory=(),
+            env={"DEEPAGENTS_TALON_RECURSION_LIMIT": "0"},
+        )
+
+
 async def test_runtime_preserves_conversation_thread_across_turns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

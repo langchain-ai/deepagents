@@ -880,3 +880,5 @@ def test_bridge_script_registers_reaction_queue_entries() -> None:
     assert "raw_reaction" in script
     assert "from_self: fromSelf" in script
     assert "const senderId = fromSelf && botId ? botId : rawSenderId;" in script
+    assert "const sentMessageChatIds = new Map();" in script
+    assert "sentMessageChatIds.get(messageId) || reactionChatId(reaction)" in script

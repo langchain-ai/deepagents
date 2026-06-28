@@ -25,6 +25,7 @@ let botId = null;
 const queue = [];
 const sentMessageIds = new Set();
 const sentMessages = new Map();
+const sentMessageChatIds = new Map();
 const recentSentBodies = new Map();
 
 process.on("unhandledRejection", (reason) => {
@@ -190,7 +191,7 @@ function enqueueReaction(reaction) {
     return;
   }
   const messageId = reactionMessageId(reaction);
-  const chatId = reactionChatId(reaction);
+  const chatId = sentMessageChatIds.get(messageId) || reactionChatId(reaction);
   const rawSenderId = normalizeId(reaction.senderId);
   const fromSelf = isSelfReaction(reaction, rawSenderId);
   const senderId = fromSelf && botId ? botId : rawSenderId;
@@ -480,17 +481,22 @@ function isSelfMessage(message) {
   return typeof id === "string" && id.startsWith("true_");
 }
 
-function rememberSentMessage(message, body) {
+function rememberSentMessage(message, body, chatId) {
   const id = serializedId(message && message.id);
   if (!id) {
     return;
   }
   sentMessageIds.add(id);
   sentMessages.set(id, message);
+  if (chatId) {
+    sentMessageChatIds.set(id, chatId);
+  }
   rememberSentBody(body);
   if (sentMessages.size > MAX_CACHED_SENT_MESSAGES) {
     const oldest = sentMessages.keys().next().value;
+    sentMessageIds.delete(oldest);
     sentMessages.delete(oldest);
+    sentMessageChatIds.delete(oldest);
   }
 }
 
@@ -595,7 +601,7 @@ async function handle(req, res) {
       const sent = await client.sendMessage(chatId, text, {
         quotedMessageId: body.replyTo || body.reply_to || undefined,
       });
-      rememberSentMessage(sent, text);
+      rememberSentMessage(sent, text, chatId);
       const messageId = serializedId(sent.id);
       sendJson(res, 200, {
         success: true,
@@ -630,7 +636,7 @@ async function handle(req, res) {
         caption,
         sendMediaAsDocument: body.mediaType === "document",
       });
-      rememberSentMessage(sent, caption || "");
+      rememberSentMessage(sent, caption || "", chatId);
       const messageId = serializedId(sent.id);
       sendJson(res, 200, {
         success: true,
@@ -668,7 +674,7 @@ async function handle(req, res) {
       }
       rememberSentBody(content);
       const edited = await message.edit(content);
-      rememberSentMessage(edited, content);
+      rememberSentMessage(edited, content, sentMessageChatIds.get(messageId));
       const editedId = serializedId(edited.id) || messageId;
       sendJson(res, 200, {
         success: true,

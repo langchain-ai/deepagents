@@ -731,7 +731,7 @@ def _format_tool_approval_prompt(approval: ToolApprovalRequest) -> str:
             lines.append(f"Args: `{_json_preview(args)}`")
         elif args not in (None, {}, []):
             lines.append(f"Args: `{args}`")
-    lines.append("Reply `approve` to run or `deny` to skip.")
+    lines.append("Reply `👍` / `approve` to run or `👎` / `deny` to skip.")
     return "\n".join(lines)
 
 
@@ -747,6 +747,9 @@ def _parse_tool_approval_reply(text: str) -> ToolApprovalDecision | None:
     if not normalized:
         return None
     first = normalized.split(maxsplit=1)[0]
+    reaction_decision = _parse_tool_approval_reaction(first)
+    if reaction_decision is not None:
+        return reaction_decision
     if first in _APPROVE_REPLIES:
         return "approve"
     if first in _DENY_REPLIES:

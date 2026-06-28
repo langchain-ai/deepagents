@@ -38,8 +38,10 @@ from deepagents_talon.channels.base import (
 from deepagents_talon.interfaces import (
     ChannelMedia,
     ChannelMessage,
+    ChannelReaction,
     ChannelStatus,
     MessageHandler,
+    ReactionHandler,
     SendResult,
 )
 
@@ -57,7 +59,7 @@ DEFAULT_REQUEST_TIMEOUT_SECONDS = 35.0
 MAX_CAPTION_CHARS = 1024
 OPEN_EXPOSURE_ACK_ENV = "DEEPAGENTS_TALON_TELEGRAM_OPEN_ACK"
 _OFFSET_FILENAME = "telegram_offset.json"
-_ALLOWED_UPDATES = ["message", "channel_post"]
+_ALLOWED_UPDATES = ["message", "channel_post", "message_reaction"]
 
 
 class _TelegramError(RuntimeError):
@@ -317,6 +319,7 @@ class TelegramChannel:
             timeout=config.request_timeout_seconds,
         )
         self._handler: MessageHandler | None = None
+        self._reaction_handler: ReactionHandler | None = None
         self._poll: asyncio.Task[None] | None = None
         self._stopped = asyncio.Event()
         self._status = ChannelStatus(provider="telegram", connected=False, detail="disconnected")
@@ -332,6 +335,14 @@ class TelegramChannel:
             handler: Coroutine callback invoked for accepted inbound messages.
         """
         self._handler = handler
+
+    def set_reaction_handler(self, handler: ReactionHandler) -> None:
+        """Register the host callback for inbound reactions.
+
+        Args:
+            handler: Coroutine callback invoked for accepted inbound reactions.
+        """
+        self._reaction_handler = handler
 
     async def start(self) -> None:
         """Load persisted offset, call getMe, and start the long-polling loop."""
@@ -490,23 +501,7 @@ class TelegramChannel:
                     detail="polling",
                 )
                 for update in updates:
-                    message = _parse_update(update)
-                    if message is None:
-                        continue
-                    message = _with_from_self(message, self._bot_id)
-                    if not _allows_telegram_message(
-                        self._exposure,
-                        self.config.allowed_user_ids,
-                        message,
-                    ):
-                        logger.debug(
-                            "Dropping Telegram message %s from %s due to exposure policy",
-                            message.message_id,
-                            message.conversation_id,
-                        )
-                        continue
-                    message = await self._prepare_inbound_media(message)
-                    await dispatch_message(self._handler, message, provider="Telegram")
+                    await self._process_update(update)
                 if updates:
                     self._advance_offset(updates)
             except _TelegramError as error:
@@ -556,6 +551,50 @@ class TelegramChannel:
             return
         self._offset = next_offset
         _save_offset(self.config.offset_file, self._offset)
+
+    async def _process_update(self, update: dict[str, object]) -> None:
+        reaction = _parse_reaction_update(update)
+        if reaction is not None:
+            await self._process_reaction(reaction)
+            return
+
+        message = _parse_update(update)
+        if message is None:
+            return
+        message = _with_from_self(message, self._bot_id)
+        if not _allows_telegram_message(
+            self._exposure,
+            self.config.allowed_user_ids,
+            message,
+        ):
+            logger.debug(
+                "Dropping Telegram message %s from %s due to exposure policy",
+                message.message_id,
+                message.conversation_id,
+            )
+            return
+        message = await self._prepare_inbound_media(message)
+        await dispatch_message(self._handler, message, provider="Telegram")
+
+    async def _process_reaction(self, reaction: ChannelReaction) -> None:
+        if not _allows_telegram_reaction(
+            self._exposure,
+            self.config.allowed_user_ids,
+            reaction,
+        ):
+            logger.debug(
+                "Dropping Telegram reaction %s on %s due to exposure policy",
+                reaction.message_id,
+                reaction.conversation_id,
+            )
+            return
+        await self._dispatch_reaction(reaction)
+
+    async def _dispatch_reaction(self, reaction: ChannelReaction) -> None:
+        if self._reaction_handler is None:
+            logger.warning("Dropping Telegram reaction because no handler is registered")
+            return
+        await self._reaction_handler(reaction)
 
     async def _prepare_inbound_media(self, message: ChannelMessage) -> ChannelMessage:
         media_type = message.metadata.get("media_type")
@@ -741,6 +780,16 @@ def _allows_telegram_message(
     return exposure.allows(message)
 
 
+def _allows_telegram_reaction(
+    exposure: ChannelExposure,
+    allowed_user_ids: frozenset[str],
+    reaction: ChannelReaction,
+) -> bool:
+    if reaction.sender_id is None:
+        return False
+    return reaction.sender_id in exposure.operator_ids or reaction.sender_id in allowed_user_ids
+
+
 _MIME_RE = re.compile(r"^[a-z]+/[a-z0-9.+\-]+$")
 
 
@@ -884,6 +933,40 @@ def _parse_update(update: Mapping[str, object]) -> ChannelMessage | None:
     )
 
 
+def _parse_reaction_update(update: Mapping[str, object]) -> ChannelReaction | None:
+    """Parse a Telegram message_reaction update into a ChannelReaction.
+
+    Args:
+        update: Raw update object from getUpdates.
+
+    Returns:
+        Parsed channel reaction, or ``None`` if required fields are missing.
+    """
+    values = _reaction_values(update)
+    if values is None:
+        return None
+    return ChannelReaction(
+        conversation_id=str(values.chat_id),
+        message_id=str(values.message_id),
+        emoji=values.emoji,
+        sender_id=values.sender_id,
+        metadata={
+            "provider": "telegram",
+            "chat_type": values.chat_type,
+        },
+    )
+
+
+class _ReactionValues(NamedTuple):
+    """Parsed core fields from a Telegram reaction update payload."""
+
+    chat_id: int
+    message_id: int
+    chat_type: str
+    sender_id: str
+    emoji: str
+
+
 class _MessageValues(NamedTuple):
     """Parsed core fields from a Telegram update payload."""
 
@@ -930,12 +1013,76 @@ def _message_values(
     )
 
 
+def _reaction_values(update: Mapping[str, object]) -> _ReactionValues | None:
+    raw = update.get("message_reaction")
+    if not isinstance(raw, dict):
+        return None
+    reaction = cast("Mapping[str, object]", raw)
+    chat = _reaction_chat(reaction)
+    message_id = reaction.get("message_id")
+    sender_id = _reaction_sender_id(reaction)
+    emoji = _reaction_emoji(reaction.get("new_reaction"))
+    if chat is None or not isinstance(message_id, int) or sender_id is None or emoji is None:
+        return None
+    return _ReactionValues(
+        chat_id=chat.chat_id,
+        message_id=message_id,
+        chat_type=chat.chat_type,
+        sender_id=sender_id,
+        emoji=emoji,
+    )
+
+
+class _ReactionChat(NamedTuple):
+    """Parsed chat fields from a Telegram reaction payload."""
+
+    chat_id: int
+    chat_type: str
+
+
+def _reaction_chat(reaction: Mapping[str, object]) -> _ReactionChat | None:
+    chat = reaction.get("chat")
+    if not isinstance(chat, dict):
+        return None
+    chat_values = cast("Mapping[str, object]", chat)
+    chat_id = chat_values.get("id")
+    chat_type = chat_values.get("type")
+    if not isinstance(chat_id, int) or not isinstance(chat_type, str):
+        return None
+    return _ReactionChat(chat_id=chat_id, chat_type=chat_type)
+
+
 def _sender_id(msg: Mapping[str, object]) -> str | None:
     sender = msg.get("from")
     if isinstance(sender, dict):
         sender_id_raw = cast("Mapping[str, object]", sender).get("id")
         if isinstance(sender_id_raw, int):
             return str(sender_id_raw)
+    return None
+
+
+def _reaction_sender_id(reaction: Mapping[str, object]) -> str | None:
+    sender = reaction.get("user")
+    if not isinstance(sender, dict):
+        return None
+    sender_id_raw = cast("Mapping[str, object]", sender).get("id")
+    if isinstance(sender_id_raw, int):
+        return str(sender_id_raw)
+    return None
+
+
+def _reaction_emoji(value: object) -> str | None:
+    if not isinstance(value, list):
+        return None
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        reaction = cast("Mapping[str, object]", item)
+        if reaction.get("type") != "emoji":
+            continue
+        emoji = reaction.get("emoji")
+        if isinstance(emoji, str) and emoji:
+            return emoji
     return None
 
 

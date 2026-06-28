@@ -19,9 +19,11 @@ from deepagents_code.config import build_langsmith_thread_url, reset_langsmith_u
 from deepagents_code.main import (
     _auto_install_ripgrep_cli,
     _is_managed_ripgrep_path,
+    _render_teardown_thread_hints,
     _restart_current_process,
     _ripgrep_install_hint,
     _run_startup_auto_update,
+    _should_check_teardown_thread,
     _terminal_row_count,
     build_missing_tool_notification,
     check_optional_tools,
@@ -1080,6 +1082,129 @@ class TestResumeHintLogic:
 
         show = bool(thread_id) and return_code == 0 and has_checkpoints
         assert not show, "No hint when thread_exists returns False"
+
+
+class TestTeardownThreadCheckpointLookup:
+    """Test teardown checkpoint lookup guard behavior."""
+
+    def test_checks_fresh_thread_without_requests(self) -> None:
+        """Fresh interrupted sessions can checkpoint before usage is recorded."""
+        should_check = _should_check_teardown_thread(
+            "test123",
+            request_count=0,
+            resume_thread=None,
+        )
+
+        assert should_check
+
+    def test_checks_fresh_thread_after_requests(self) -> None:
+        """Sessions that made requests may have checkpointed content."""
+        should_check = _should_check_teardown_thread(
+            "test123",
+            request_count=1,
+            resume_thread=None,
+        )
+
+        assert should_check
+
+    def test_checks_resumed_thread_without_new_requests(self) -> None:
+        """Resumed sessions can already have checkpoints before new requests."""
+        should_check = _should_check_teardown_thread(
+            "test123",
+            request_count=0,
+            resume_thread="test123",
+        )
+
+        assert should_check
+
+    def test_skips_when_no_thread_id(self) -> None:
+        """No final thread means there is nothing to look up."""
+        should_check = _should_check_teardown_thread(
+            None,
+            request_count=1,
+            resume_thread="test123",
+        )
+
+        assert not should_check
+
+
+class TestRenderTeardownThreadHints:
+    """Test the teardown hint renderer shares one `thread_exists` lookup."""
+
+    def _render(
+        self,
+        *,
+        thread_exists_mock: AsyncMock,
+        thread_url: str | None,
+        return_code: int = 0,
+    ) -> str:
+        """Render the hints with patched dependencies, returning the output."""
+        buffer = StringIO()
+        console = Console(file=buffer, width=200)
+        with (
+            patch("deepagents_code.sessions.thread_exists", thread_exists_mock),
+            patch(
+                "deepagents_code.config.build_langsmith_thread_url",
+                return_value=thread_url,
+            ),
+        ):
+            _render_teardown_thread_hints(console, "test123", return_code=return_code)
+        return buffer.getvalue()
+
+    def test_queries_thread_exists_at_most_once(self) -> None:
+        """Both hints must share a single checkpoint lookup, never two.
+
+        Guards against a regression that reintroduces a second
+        `asyncio.run(thread_exists(...))` (a fresh event loop + aiosqlite
+        connection) during teardown.
+        """
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(thread_exists_mock=thread_exists_mock, thread_url=None)
+
+        thread_exists_mock.assert_awaited_once()
+        assert "Resume this thread with:" in output
+        assert "dcode -r test123" in output
+
+    def test_prints_langsmith_link_when_available(self) -> None:
+        """A configured LangSmith URL is shown alongside the resume hint."""
+        thread_exists_mock = AsyncMock(return_value=True)
+        url = "https://smith.langchain.com/o/org/projects/p/proj/t/test123"
+
+        output = self._render(thread_exists_mock=thread_exists_mock, thread_url=url)
+
+        assert "View this thread in LangSmith:" in output
+        assert "Resume this thread with:" in output
+        thread_exists_mock.assert_awaited_once()
+
+    def test_no_hints_without_checkpoints(self) -> None:
+        """No checkpoint means no link and no resume hint."""
+        thread_exists_mock = AsyncMock(return_value=False)
+
+        output = self._render(thread_exists_mock=thread_exists_mock, thread_url=None)
+
+        assert output == ""
+        thread_exists_mock.assert_awaited_once()
+
+    def test_lookup_failure_is_swallowed(self) -> None:
+        """A failed checkpoint lookup must not crash teardown or print hints."""
+        thread_exists_mock = AsyncMock(side_effect=RuntimeError("db locked"))
+
+        output = self._render(thread_exists_mock=thread_exists_mock, thread_url=None)
+
+        assert output == ""
+        thread_exists_mock.assert_awaited_once()
+
+    def test_resume_hint_omitted_on_error_exit(self) -> None:
+        """The resume hint is only shown on a clean exit (return_code 0)."""
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(
+            thread_exists_mock=thread_exists_mock, thread_url=None, return_code=1
+        )
+
+        assert "Resume this thread with:" not in output
+        thread_exists_mock.assert_awaited_once()
 
 
 class TestLangSmithTeardownUrl:

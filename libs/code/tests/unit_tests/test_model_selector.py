@@ -305,6 +305,44 @@ class TestModelSelectorChrome:
             assert "Ctrl+S set default" in str(help_text.content)
             assert "Esc cancel" not in str(help_text.content)
 
+    async def test_standard_selector_help_wraps_to_two_rows(self) -> None:
+        """The standard footer is wider than the modal, so it must wrap.
+
+        With a clamped one-row `height` the trailing `Ctrl+R recommended`
+        hint was clipped off the end; `height: auto` lets it wrap instead.
+        """
+        app = ModelSelectorTestApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_text = screen.query_one(".model-selector-help", Static)
+
+            assert "Ctrl+R recommended" in str(help_text.content)
+            # `content` holds the full string even when a one-row clamp clips it
+            # off-screen, so the rendered `region.height` is the load-bearing
+            # assertion that actually catches the regression.
+            assert help_text.region.height >= 2
+            assert help_text.region.y + help_text.region.height <= app.size.height
+
+    async def test_curated_selector_help_stays_one_row(self) -> None:
+        """The shorter curated footer must not over-wrap once the clamp is gone.
+
+        `height: auto` lets the standard footer wrap, but the curated line drops
+        the Ctrl+S/Ctrl+R hints and fits one row — pin it so a future width or
+        hint change that pushes it to two rows fails loudly.
+        """
+        app = ModelSelectorTestApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            screen = ModelSelectorScreen(curated=True)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_text = screen.query_one(".model-selector-help", Static)
+
+            assert help_text.region.height == 1
+
 
 class TestRecommendedToggle:
     """Tests for the Ctrl+R recommended-only toggle in `/model`."""

@@ -8,7 +8,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from unittest.mock import patch
 
 import pytest
@@ -102,6 +102,23 @@ def _make_oauth_metadata(token_endpoint: str = "https://auth.example/token"):
         token_endpoint=AnyHttpUrl(token_endpoint),
         response_types_supported=["code"],
         grant_types_supported=["authorization_code", "refresh_token"],
+    )
+
+
+def _make_client_info_with_secret(
+    auth_method: Literal["client_secret_basic", "client_secret_post", "none"],
+):
+    from mcp.shared.auth import AnyUrl, OAuthClientInformationFull
+
+    # Public clients (`none`) carry no secret; confidential clients do.
+    client_secret = None if auth_method == "none" else "client-secret"
+    return OAuthClientInformationFull(
+        client_id="client-id",
+        client_secret=client_secret,
+        token_endpoint_auth_method=auth_method,
+        redirect_uris=[AnyUrl("http://localhost/callback")],
+        grant_types=["authorization_code", "refresh_token"],
+        response_types=["code"],
     )
 
 
@@ -542,6 +559,109 @@ class TestExpiryAwareOAuthClientProvider:
             "/.well-known/oauth-protected-resource"
         )
         await flow.aclose()
+
+
+@pytest.mark.usefixtures("fake_home")
+class TestBasicAuthClientIdStripping:
+    """Tests for dropping the duplicate body `client_id` under HTTP Basic auth."""
+
+    def _build_provider(
+        self,
+        auth_method: Literal["client_secret_basic", "client_secret_post", "none"],
+    ):
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("pylon")
+        provider = build_oauth_provider(
+            server_name="pylon",
+            server_url="https://mcp.usepylon.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        provider.context.client_info = _make_client_info_with_secret(auth_method)
+        return provider
+
+    def test_basic_auth_drops_body_client_id(self) -> None:
+        """`client_secret_basic` carries credentials in the header, not the body.
+
+        This wrapper strips the redundant body `client_id`. The SDK itself
+        already strips `client_secret` for Basic auth, which the final
+        assertion pins (see `test_sdk_still_injects_client_id_under_basic_auth`
+        for the contract the wrapper depends on).
+        """
+        provider = self._build_provider("client_secret_basic")
+
+        data, headers = provider.context.prepare_token_auth(
+            {
+                "grant_type": "authorization_code",
+                "client_id": "client-id",
+                "client_secret": "client-secret",
+            },
+            {"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+        assert headers["Authorization"].startswith("Basic ")
+        assert "client_id" not in data
+        assert "client_secret" not in data  # stripped by the SDK, not this wrapper
+
+    def test_post_auth_retains_body_client_id(self) -> None:
+        """`client_secret_post` keeps both fields in the body and adds no header."""
+        provider = self._build_provider("client_secret_post")
+
+        data, headers = provider.context.prepare_token_auth(
+            {
+                "grant_type": "authorization_code",
+                "client_id": "client-id",
+            },
+            {"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+        assert "Authorization" not in headers
+        assert data["client_id"] == "client-id"
+        assert data["client_secret"] == "client-secret"
+
+    def test_none_auth_retains_body_client_id(self) -> None:
+        """`none` (public client) sends no header, so the body keeps `client_id`."""
+        provider = self._build_provider("none")
+
+        data, headers = provider.context.prepare_token_auth(
+            {
+                "grant_type": "authorization_code",
+                "client_id": "client-id",
+            },
+            {"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+        assert "Authorization" not in headers
+        assert data["client_id"] == "client-id"
+
+    def test_sdk_still_injects_client_id_under_basic_auth(self) -> None:
+        """Pin the SDK contract this wrapper depends on.
+
+        Unwrapped, the SDK leaves `client_id` in the token-request body under
+        Basic auth (it strips only `client_secret`). If upstream ever strips
+        `client_id` too, this wrapper becomes a silent no-op; this test fails
+        loudly instead, flagging the workaround as obsolete.
+        """
+        from mcp.client.auth.oauth2 import OAuthContext
+
+        provider = self._build_provider("client_secret_basic")
+
+        # Call the SDK's method via the class to bypass the instance-level wrap
+        # installed in `__init__` and observe the SDK's own behavior.
+        data, headers = OAuthContext.prepare_token_auth(
+            provider.context,
+            {
+                "grant_type": "authorization_code",
+                "client_id": "client-id",
+                "client_secret": "client-secret",
+            },
+            {"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+        assert headers["Authorization"].startswith("Basic ")
+        assert data["client_id"] == "client-id"
+        assert "client_secret" not in data
 
 
 class TestFindReauthRequired:

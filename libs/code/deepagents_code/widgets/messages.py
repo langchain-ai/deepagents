@@ -2244,11 +2244,29 @@ class ToolCallMessage(Vertical):
             total_lines > self._PREVIEW_LINES or total_chars > self._PREVIEW_CHARS
         )
 
+        # Some tools serialize an empty successful result as a non-empty literal
+        # (e.g. glob "[]") that formats to no visible content. The raw `_output`
+        # is truthy, so the early-return guard at the top of this method doesn't
+        # catch it, but rendering it would show an empty box with a misleading
+        # expand affordance. Treat it like empty output and render nothing. This
+        # also subsumes the all-whitespace case (formats to empty), so the
+        # collapsed branch below no longer needs its own empty guard.
+        #
+        # This fires for errors too, but never hides one: a real error body is
+        # human-readable text that formats non-empty (and execute errors keep
+        # the `$ command` echo), so it only triggers on a body that has nothing
+        # to render anyway. The "error" status badge stays visible regardless.
+        full = self._format_output(self._output, is_preview=False)
+        if not full.content.plain.strip():
+            self._preview_row.display = False
+            self._full_row.display = False
+            self._hint_widget.display = False
+            return
+
         if self._expanded:
             # Show full output with formatting
             self._preview_row.display = False
-            result = self._format_output(self._output, is_preview=False)
-            self._full_widget.update(result.content)
+            self._full_widget.update(full.content)
             self._full_row.display = True
             # Only offer a collapse affordance when collapsing would actually
             # hide something. Errors are force-expanded (see `set_error`), so a
@@ -2264,11 +2282,6 @@ class ToolCallMessage(Vertical):
         else:
             # Show collapsed preview
             self._full_row.display = False
-            if not output_stripped:
-                self._preview_row.display = False
-                self._hint_widget.display = False
-                return
-
             # Truncate the preview only when the output is large enough to
             # warrant it; `write_todos` always uses its compact per-item preview
             # regardless of size.

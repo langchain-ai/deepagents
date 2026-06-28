@@ -27,6 +27,7 @@ from deepagents_code.widgets.chat_input import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Coroutine
     from pathlib import Path
 
     from textual.pilot import Pilot
@@ -226,6 +227,122 @@ class _RecordingApp(App[None]):
 
     def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         self.submitted.append(event)
+
+
+async def _noop() -> None:
+    pass
+
+
+class _RefreshController:
+    def __init__(self) -> None:
+        self.cwd_values: list[Path] = []
+        self.force_values: list[bool] = []
+
+    def set_cwd(self, cwd: Path) -> None:
+        self.cwd_values.append(cwd)
+
+    def warm_cache(self, *, force: bool = False) -> Coroutine[object, object, None]:
+        self.force_values.append(force)
+        return _noop()
+
+
+class TestChatInputFileCacheRefresh:
+    def test_refresh_file_cache_uses_exclusive_worker(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        chat = ChatInput()
+        controller = _RefreshController()
+        worker_calls: list[dict[str, object]] = []
+
+        def fake_run_worker(
+            work: Coroutine[object, object, None], **kwargs: object
+        ) -> None:
+            work.close()
+            worker_calls.append(kwargs)
+
+        monkeypatch.setattr(chat, "_file_controller", controller, raising=False)
+        monkeypatch.setattr(chat, "run_worker", fake_run_worker)
+
+        chat._refresh_file_cache()
+
+        assert controller.force_values == [True]
+        assert worker_calls == [
+            {
+                "exclusive": True,
+                "group": chat_input_module._FILE_CACHE_WORKER_GROUP,
+                "exit_on_error": False,
+            }
+        ]
+
+    def test_set_cwd_uses_file_cache_worker_group(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        chat = ChatInput()
+        controller = _RefreshController()
+        worker_calls: list[dict[str, object]] = []
+
+        def fake_run_worker(
+            work: Coroutine[object, object, None], **kwargs: object
+        ) -> None:
+            work.close()
+            worker_calls.append(kwargs)
+
+        monkeypatch.setattr(chat, "_file_controller", controller, raising=False)
+        monkeypatch.setattr(chat, "run_worker", fake_run_worker)
+
+        chat.set_cwd(tmp_path)
+
+        assert controller.cwd_values == [tmp_path]
+        assert controller.force_values == [False]
+        assert worker_calls == [
+            {
+                "exclusive": False,
+                "group": chat_input_module._FILE_CACHE_WORKER_GROUP,
+                "exit_on_error": False,
+            }
+        ]
+
+    def test_refresh_file_cache_noop_without_controller(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Refresh is a no-op before the file controller is wired up."""
+        chat = ChatInput()
+        worker_calls: list[object] = []
+        monkeypatch.setattr(
+            chat,
+            "run_worker",
+            lambda *args, **kwargs: worker_calls.append((args, kwargs)),
+        )
+
+        assert getattr(chat, "_file_controller", None) is None
+        chat._refresh_file_cache()
+
+        assert worker_calls == []
+
+    async def test_on_mount_schedules_file_cache_refresh(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`on_mount` schedules the periodic `@` file-cache refresh.
+
+        Without this the cache would only warm on mount and cwd switches, so
+        files created or deleted mid-session would never surface.
+        """
+        interval_calls: list[tuple[float, object]] = []
+
+        def fake_set_interval(
+            _self: ChatInput, interval: float, callback: object, **_kwargs: object
+        ) -> None:
+            interval_calls.append((interval, callback))
+
+        monkeypatch.setattr(ChatInput, "set_interval", fake_set_interval)
+
+        app = _ChatInputTestApp()
+        async with app.run_test():
+            chat = app.query_one(ChatInput)
+            assert (
+                chat_input_module._FILE_CACHE_REFRESH_INTERVAL_SECONDS,
+                chat._refresh_file_cache,
+            ) in interval_calls
 
 
 class TestChatInputScrollbar:

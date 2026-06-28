@@ -54,6 +54,7 @@ from deepagents_code.widgets.launch_init import (
 )
 from deepagents_code.widgets.messages import (
     AppMessage,
+    AssistantMessage,
     ErrorMessage,
     QueuedUserMessage,
     SummarizationMessage,
@@ -6102,7 +6103,8 @@ class TestShellCommandInterrupt:
 
         messages = app._message_store.get_all_messages()
         assert any(
-            msg.type == MessageType.APP and "secret" in msg.content for msg in messages
+            msg.type == MessageType.APP and msg.content == "```text\nsecret\n```"
+            for msg in messages
         )
         assert not any(
             msg.type in {MessageType.USER, MessageType.ASSISTANT}
@@ -6176,7 +6178,42 @@ class TestShellCommandInterrupt:
         assert isinstance(buffered[0], HumanMessage)
         assert buffered[0].content == "!echo hello world"
         assert isinstance(buffered[1], AIMessage)
-        assert "hello world" in buffered[1].content
+        assert buffered[1].content == "```text\nhello world\n```"
+
+    async def test_non_incognito_shell_output_uses_text_fence(self) -> None:
+        """Non-incognito shell output renders in a ```text fenced block."""
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        app._agent.aupdate_state = AsyncMock()
+        app._lc_thread_id = "thread-123"
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate = AsyncMock(return_value=(b"hi\n", b""))
+        mock_proc.returncode = 0
+        mock_proc.pid = 12345
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            app._schedule_git_branch_refresh = MagicMock()  # ty: ignore
+            app._maybe_drain_deferred = AsyncMock()  # ty: ignore
+            app._process_next_from_queue = AsyncMock()  # ty: ignore
+
+            with (
+                patch(
+                    "asyncio.create_subprocess_shell",
+                    return_value=mock_proc,
+                ),
+                patch(
+                    "deepagents_code.app.AssistantMessage.write_initial_content",
+                    new=AsyncMock(),
+                ),
+            ):
+                await app._run_shell_task("echo hi", incognito=False)
+                await pilot.pause()
+
+            rendered = app.query(AssistantMessage)
+            assert any(w._content == "```text\nhi\n```" for w in rendered)
 
     async def test_pending_shell_flushed_on_next_user_send(self) -> None:
         """Buffered `!` output is written to graph state on the next send."""
@@ -6190,7 +6227,7 @@ class TestShellCommandInterrupt:
         app._session_state = MagicMock()
         app._pending_shell_messages = [
             HumanMessage(content="!echo hi"),
-            AIMessage(content="```\nhi\n```"),
+            AIMessage(content="```text\nhi\n```"),
         ]
 
         async with app.run_test() as pilot:
@@ -6221,7 +6258,7 @@ class TestShellCommandInterrupt:
         app._ui_adapter = MagicMock()
         app._pending_shell_messages = [
             HumanMessage(content="!echo before-chat"),
-            AIMessage(content="```\nbefore-chat\n```"),
+            AIMessage(content="```text\nbefore-chat\n```"),
         ]
 
         async with app.run_test() as pilot:
@@ -6262,7 +6299,7 @@ class TestShellCommandInterrupt:
         app = DeepAgentsApp(agent=agent, thread_id="thread-remote")
         app._pending_shell_messages = [
             HumanMessage(content="!pwd"),
-            AIMessage(content="```\n/tmp/project\n```"),
+            AIMessage(content="```text\n/tmp/project\n```"),
         ]
 
         with patch.object(app, "_remote_agent", return_value=remote):
@@ -6376,7 +6413,7 @@ class TestShellCommandInterrupt:
         app = DeepAgentsApp()
         app._pending_shell_messages = [
             HumanMessage(content="!echo secret"),
-            AIMessage(content="```\nsecret\n```"),
+            AIMessage(content="```text\nsecret\n```"),
         ]
 
         async with app.run_test() as pilot:
@@ -6418,7 +6455,7 @@ class TestShellCommandInterrupt:
         app._lc_thread_id = "thread-123"
         app._pending_shell_messages = [
             HumanMessage(content="!echo hi"),
-            AIMessage(content="```\nhi\n```"),
+            AIMessage(content="```text\nhi\n```"),
         ]
 
         # Must not propagate; buffer is dropped so stale output is not replayed.
@@ -6437,7 +6474,7 @@ class TestShellCommandInterrupt:
         app._session_state = None
         buffered = [
             HumanMessage(content="!echo hi"),
-            AIMessage(content="```\nhi\n```"),
+            AIMessage(content="```text\nhi\n```"),
         ]
         app._pending_shell_messages = list(buffered)
 
@@ -6458,7 +6495,7 @@ class TestShellCommandInterrupt:
         app._session_state = MagicMock()
         app._pending_shell_messages = [
             HumanMessage(content="!echo hi"),
-            AIMessage(content="```\nhi\n```"),
+            AIMessage(content="```text\nhi\n```"),
         ]
 
         async with app.run_test() as pilot:

@@ -6860,10 +6860,10 @@ class DeepAgentsApp(App):
             if output:
                 if incognito:
                     await self._mount_message(
-                        AppMessage(f"```\n{output}\n```", markdown=True),
+                        AppMessage(f"```text\n{output}\n```", markdown=True),
                     )
                 else:
-                    msg = AssistantMessage(f"```\n{output}\n```")
+                    msg = AssistantMessage(f"```text\n{output}\n```")
                     await self._mount_message(msg)
                     await msg.write_initial_content()
             else:
@@ -6931,7 +6931,7 @@ class DeepAgentsApp(App):
         self._pending_shell_messages.extend(
             [
                 HumanMessage(content=f"!{command}"),
-                AIMessage(content=f"```\n{body}\n```{status}"),
+                AIMessage(content=f"```text\n{body}\n```{status}"),
             ]
         )
 

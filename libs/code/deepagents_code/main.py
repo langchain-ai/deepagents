@@ -3354,32 +3354,47 @@ def cli_main() -> None:
                 console.print(Text(traceback.format_exc(), style="dim"))
                 sys.exit(1)
 
-            # Show LangSmith thread link for threads with checkpointed
-            # content (same table that backs the `/threads` listing).
-            if thread_id:
+            # Show LangSmith thread link and resume hint for threads with
+            # checkpointed content. Both checks share a single `thread_exists`
+            # query to avoid spinning up a second event loop + aiosqlite
+            # connection during teardown. Sessions with no LLM requests
+            # (request_count == 0) skip the DB query entirely — no checkpoints
+            # are possible without at least one model call.
+            if thread_id and result.session_stats.request_count > 0:
+                thread_has_checkpoints = False
                 try:
-                    thread_url = build_langsmith_thread_url(thread_id)
-                    if thread_url and asyncio.run(thread_exists(thread_id)):
-                        console.print()
-                        ls_hint = Text("View this thread in LangSmith: ", style="dim")
-                        ls_hint.append(
-                            thread_url,
-                            style=Style(dim=True, link=thread_url),
-                        )
-                        console.print(ls_hint)
+                    thread_has_checkpoints = asyncio.run(thread_exists(thread_id))
                 except Exception:
                     logger.debug(
-                        "Could not display LangSmith thread URL on teardown",
+                        "Could not check thread existence on teardown",
                         exc_info=True,
                     )
 
-            # Show resume hint on exit for threads with checkpointed content.
-            if thread_id and return_code == 0 and asyncio.run(thread_exists(thread_id)):
-                console.print()
-                console.print("[dim]Resume this thread with:[/dim]")
-                hint = Text("dcode -r ", style="cyan")
-                hint.append(str(thread_id), style="cyan")
-                console.print(hint)
+                if thread_has_checkpoints:
+                    try:
+                        thread_url = build_langsmith_thread_url(thread_id)
+                        if thread_url:
+                            console.print()
+                            ls_hint = Text(
+                                "View this thread in LangSmith: ", style="dim"
+                            )
+                            ls_hint.append(
+                                thread_url,
+                                style=Style(dim=True, link=thread_url),
+                            )
+                            console.print(ls_hint)
+                    except Exception:
+                        logger.debug(
+                            "Could not display LangSmith thread URL on teardown",
+                            exc_info=True,
+                        )
+
+                    if return_code == 0:
+                        console.print()
+                        console.print("[dim]Resume this thread with:[/dim]")
+                        hint = Text("dcode -r ", style="cyan")
+                        hint.append(str(thread_id), style="cyan")
+                        console.print(hint)
 
             # Warn about available update on exit
             try:

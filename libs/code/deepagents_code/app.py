@@ -2199,6 +2199,9 @@ class DeepAgentsApp(App):
         self._git_branch_refresh_task: asyncio.Task[None] | None = None
         """Latest background git-branch refresh task, if one is running."""
 
+        self._graceful_exit_task: asyncio.Task[None] | None = None
+        """Fire-and-forget task for deferred exit after agent worker cancellation."""
+
         self._last_typed_at: float | None = None
         """Typing-aware approval deferral state."""
 
@@ -9471,7 +9474,28 @@ class DeepAgentsApp(App):
                 exc_info=True,
             )
         restore_iterm_cursor_guide()
-        super().exit(result=result, return_code=return_code, message=message)
+
+        # Defer super().exit() so the agent worker's cancellation handler
+        # (which sends a server-side run cancel and persists interrupt state)
+        # has a bounded window to complete before the event loop is torn down.
+        # This gives the server a chance to finish persisting the in-flight
+        # run's trace instead of being SIGTERM'd mid-request.
+        agent_worker = self._agent_worker if self._agent_running else None
+
+        if agent_worker is not None and not agent_worker.done:
+
+            async def _graceful_exit() -> None:
+                with suppress(TimeoutError, asyncio.CancelledError, Exception):
+                    await asyncio.wait_for(agent_worker, timeout=2.0)
+                super(DeepAgentsApp, self).exit(
+                    result=result,
+                    return_code=return_code,
+                    message=message,
+                )
+
+            self._graceful_exit_task = asyncio.ensure_future(_graceful_exit())
+        else:
+            super().exit(result=result, return_code=return_code, message=message)
 
     def _get_subagent_panel(self) -> SubagentPanel | None:
         """Return the subagent fan-out panel, or None if not yet mounted.

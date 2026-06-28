@@ -1,0 +1,20 @@
+libs/deepagents/deepagents/profiles/harness/_fireworks_glm_5p2.py
+  s_15e7846dc2c767::t_4750ca8843c610 51-58
+  s_15e7846dc2c767::t_f97bad583d795b 67-70
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "1948e5916bbe978956e8cbe35e64c380e98064af",
+  "prompts": {},
+  "sessions": {
+    "s_15e7846dc2c767": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fd18de2c-5b2b-4125-8ef6-c29809e66c05",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

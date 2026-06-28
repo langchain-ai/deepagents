@@ -95,6 +95,7 @@ from deepagents_code.widgets.subagent_panel import SubagentPanel
 from deepagents_code.widgets.welcome import WelcomeBanner
 
 logger = logging.getLogger(__name__)
+_GRACEFUL_EXIT_WAIT_SECONDS = 2.0
 _monotonic = time.monotonic
 
 _DEFERRED_START_NOTICE = (
@@ -9493,10 +9494,11 @@ class DeepAgentsApp(App):
         restore_iterm_cursor_guide()
 
         # Defer super().exit() so the agent worker's cancellation handler
-        # (which sends a server-side run cancel and persists interrupt state)
-        # has a bounded window to complete before the event loop is torn down.
-        # This gives the server a chance to finish persisting the in-flight
-        # run's trace instead of being SIGTERM'd mid-request.
+        # (which, for remote agents, sends a server-side run cancel, and in all
+        # cases persists interrupt state) has a bounded window to complete
+        # before the event loop is torn down. This gives the server a chance to
+        # finish persisting the in-flight run's trace instead of being
+        # SIGTERM'd mid-request.
         agent_worker = self._agent_worker if self._agent_running else None
 
         if agent_worker is not None and not agent_worker.is_finished:
@@ -9505,7 +9507,10 @@ class DeepAgentsApp(App):
                 from textual.worker import WorkerCancelled, WorkerFailed
 
                 try:
-                    await asyncio.wait_for(agent_worker.wait(), timeout=2.0)
+                    await asyncio.wait_for(
+                        asyncio.shield(agent_worker.wait()),
+                        timeout=_GRACEFUL_EXIT_WAIT_SECONDS,
+                    )
                 except (asyncio.CancelledError, WorkerCancelled):
                     # Expected: exit() cancelled the worker above, so its
                     # cancellation handler ran to completion. Nothing to flag.
@@ -9528,16 +9533,27 @@ class DeepAgentsApp(App):
                         exc_info=True,
                     )
                 finally:
-                    # Always tear down, even on BaseException (e.g. a second
-                    # KeyboardInterrupt landing during the wait): this is the
-                    # only call that stops the event loop, so it must run on
-                    # every path. Explicit super() form — a bare super() has
-                    # no __class__ cell inside this nested coroutine.
-                    super(DeepAgentsApp, self).exit(
-                        result=result,
-                        return_code=return_code,
-                        message=message,
-                    )
+                    # This is the only call that stops the event loop, so it
+                    # must run on every path the try/except can take, including
+                    # an unexpected BaseException (e.g. SystemExit) propagating
+                    # out of the wait. Guard the teardown itself so a failure
+                    # here can't leave this fire-and-forget task with an
+                    # unretrieved exception; a non-Exception (SystemExit,
+                    # KeyboardInterrupt) still propagates. Explicit super()
+                    # form: the zero-arg super() can't resolve its implicit
+                    # __class__/self binding inside this nested coroutine, so
+                    # name the class and instance.
+                    try:
+                        super(DeepAgentsApp, self).exit(
+                            result=result,
+                            return_code=return_code,
+                            message=message,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "super().exit() raised during deferred teardown",
+                            exc_info=True,
+                        )
 
             self._graceful_exit_task = asyncio.ensure_future(_graceful_exit())
         else:

@@ -141,10 +141,74 @@ def _should_check_teardown_thread(
     request_count: int,
     resume_thread: str | None,
 ) -> bool:
-    """Return whether teardown should query for checkpointed thread content."""
-    if thread_id is None:
-        return False
-    return request_count > 0 or resume_thread is not None
+    """Return whether teardown should query for checkpointed thread content.
+
+    Any session that owns a thread may have persisted a checkpoint, so the only
+    gate is whether a thread exists. `request_count` and `resume_thread` are
+    accepted and ignored: an interrupted first turn can checkpoint before any
+    usage metadata is recorded, so they are not a reliable proxy. They remain in
+    the signature so callers need not change if the gate later grows selective.
+    """
+    del request_count, resume_thread
+    return bool(thread_id)
+
+
+def _render_teardown_thread_hints(
+    console: "Console",
+    thread_id: str,
+    *,
+    return_code: int,
+) -> None:
+    """Print the LangSmith link and resume hint for a checkpointed thread.
+
+    Both hints share a single `thread_exists` lookup to avoid spinning up a
+    second event loop and aiosqlite connection during teardown. Every failure is
+    logged at debug and swallowed: teardown convenience output must never crash
+    the exit path.
+
+    Args:
+        console: Console to print the hints to.
+        thread_id: Thread whose checkpoints back the hints.
+        return_code: Process exit code; the resume hint is shown only on a clean
+            exit (`0`).
+    """
+    from rich.style import Style
+    from rich.text import Text
+
+    from deepagents_code.config import build_langsmith_thread_url
+    from deepagents_code.sessions import thread_exists
+
+    try:
+        thread_has_checkpoints = asyncio.run(thread_exists(thread_id))
+    except Exception:
+        logger.debug(
+            "Could not check thread existence on teardown",
+            exc_info=True,
+        )
+        return
+
+    if not thread_has_checkpoints:
+        return
+
+    try:
+        thread_url = build_langsmith_thread_url(thread_id)
+        if thread_url:
+            console.print()
+            ls_hint = Text("View this thread in LangSmith: ", style="dim")
+            ls_hint.append(thread_url, style=Style(dim=True, link=thread_url))
+            console.print(ls_hint)
+    except Exception:
+        logger.debug(
+            "Could not display LangSmith thread URL on teardown",
+            exc_info=True,
+        )
+
+    if return_code == 0:
+        console.print()
+        console.print("[dim]Resume this thread with:[/dim]")
+        hint = Text("dcode -r ", style="cyan")
+        hint.append(str(thread_id), style="cyan")
+        console.print(hint)
 
 
 def _confirm_launch_after_restart(console: "Console", version: str) -> None:
@@ -3277,16 +3341,9 @@ def cli_main() -> None:
             # Resolve recent-agent fallback only for actual session launches.
             assistant_id = _resolve_agent_arg(args)
             # Interactive mode - handle thread resume
-            from rich.style import Style
             from rich.text import Text
 
-            from deepagents_code.config import (
-                build_langsmith_thread_url,
-            )
-            from deepagents_code.sessions import (
-                generate_thread_id,
-                thread_exists,
-            )
+            from deepagents_code.sessions import generate_thread_id
 
             # Instead of resolving thread_id here with synchronous asyncio.run()
             # DB calls, pass the raw resume request to the TUI and let it
@@ -3367,50 +3424,17 @@ def cli_main() -> None:
                 sys.exit(1)
 
             # Show LangSmith thread link and resume hint for threads with
-            # checkpointed content. Both checks share a single `thread_exists`
-            # query to avoid spinning up a second event loop + aiosqlite
-            # connection during teardown. Fresh sessions with no LLM requests
-            # skip the DB query entirely; resumed threads can already have
-            # checkpoints, so they still need the lookup.
+            # checkpointed content. The `thread_id is not None` check narrows the
+            # type to `str` for the helper; `_should_check_teardown_thread` gates
+            # whether the teardown lookup runs at all.
             if thread_id is not None and _should_check_teardown_thread(
                 thread_id,
                 request_count=result.session_stats.request_count,
                 resume_thread=args.resume_thread,
             ):
-                thread_has_checkpoints = False
-                try:
-                    thread_has_checkpoints = asyncio.run(thread_exists(thread_id))
-                except Exception:
-                    logger.debug(
-                        "Could not check thread existence on teardown",
-                        exc_info=True,
-                    )
-
-                if thread_has_checkpoints:
-                    try:
-                        thread_url = build_langsmith_thread_url(thread_id)
-                        if thread_url:
-                            console.print()
-                            ls_hint = Text(
-                                "View this thread in LangSmith: ", style="dim"
-                            )
-                            ls_hint.append(
-                                thread_url,
-                                style=Style(dim=True, link=thread_url),
-                            )
-                            console.print(ls_hint)
-                    except Exception:
-                        logger.debug(
-                            "Could not display LangSmith thread URL on teardown",
-                            exc_info=True,
-                        )
-
-                    if return_code == 0:
-                        console.print()
-                        console.print("[dim]Resume this thread with:[/dim]")
-                        hint = Text("dcode -r ", style="cyan")
-                        hint.append(str(thread_id), style="cyan")
-                        console.print(hint)
+                _render_teardown_thread_hints(
+                    console, thread_id, return_code=return_code
+                )
 
             # Warn about available update on exit
             try:

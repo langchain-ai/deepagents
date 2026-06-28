@@ -93,6 +93,14 @@ Debug logging is configured **once**, on the `deepagents_code` package logger, b
 - Every module should create its logger with `logging.getLogger(__name__)` so it stays inside the `deepagents_code.*` hierarchy and inherits the package handler. Don't set `logger.propagate = False` or attach your own handlers.
 - The handler only attaches when `DEEPAGENTS_CODE_DEBUG` is truthy; the no-op path is a single env-var read, so it's safe on the startup hot path. See `DEVELOPMENT.md` for the `DEEPAGENTS_CODE_DEBUG` / `DEEPAGENTS_CODE_DEBUG_FILE` env vars.
 
+## Orchestration with `js_eval`
+
+When fanning work out over N items (a tournament bracket, a list of topics, a batch of files), drive the whole fan-out from a **single** `js_eval` call. The QuickJS sandbox persists `globalThis` across consecutive `js_eval` calls in the same trace, so use it as the accumulator instead of restating arrays or re-declaring schemas between calls — restating is wasted prompt tokens billed every step.
+
+- **One `js_eval` for N items, not N `js_eval` calls.** When generating N outputs, write a single `js_eval` with an inner `for` (or `Promise.all`) loop over `await task({description: ...})`. Issuing one `js_eval` per item re-bills the topic list and surrounding context on every call and is the dominant cost lever in long-tail traces. Outlier trace `019f0dee-6cac-7223-8c77-67ee3e2ce46f` took 34 `js_eval` calls / 1.72M tokens on a 16-item haiku tournament by spawning one `task()` per topic; peer trace `019f0dff-9a3f-7742-8f00-c46d807f7e29` ran the same prompt in 6 `js_eval` calls / ~810k tokens by batching the generation phase into one loop.
+- **`globalThis` is the accumulator.** Park the topic list, generated items, schemas, and intermediate results on `globalThis` (e.g. `globalThis.topics = [...]`, `globalThis.haikus = []`) in the first `js_eval` and read them back in subsequent calls. Do not re-paste arrays you already computed.
+- **Declare schemas once.** Judge schemas and other structured-output schemas belong either in the skill that defines the workflow or at the top of the orchestration `js_eval`, declared once on `globalThis`. Re-declaring the same Zod/JSON schema on every call is the same kind of prompt re-billing as restating topic lists.
+
 ## CLI help screen
 
 The `deepagents-code --help` screen is hand-maintained in `ui.show_help()`, separate from the argparse definitions in `main.parse_args()`. When adding a new CLI flag, update **both** files. A drift-detection test (`test_args.TestHelpScreenDrift`) fails if a flag is registered in argparse but missing from the help screen.

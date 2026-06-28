@@ -2,9 +2,10 @@
 
 `config list` prints the static manifest (every tunable option, its type,
 default, and where it can be set). `config show` resolves each option against
-the live environment and `config.toml`, reporting the effective value and which
-source provided it. `config get <key>` does the same for a single option.
-`config path` prints the on-disk config locations.
+the app credential store (for credentials), the live environment, and
+`config.toml`, reporting the effective value and which source provided it.
+`config get <key>` does the same for a single option. `config path` prints the
+on-disk config locations.
 
 Secret-flagged options (API keys and other credentials) are never printed by
 value — `config show`/`config get` report only whether they are set and from
@@ -21,7 +22,9 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import os
 import sys
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from deepagents_code.output import write_json
@@ -130,20 +133,119 @@ def setup_config_parser(
 # --- Resolution -------------------------------------------------------------
 
 
-def _resolve(option: ConfigOption, toml_data: dict[str, Any]) -> tuple[bool, str, Any]:
-    """Resolve an option via the shared manifest resolver.
+@dataclass(frozen=True, slots=True)
+class _StoredCredentialView:
+    """Snapshot of the `/auth` credential store for one command invocation.
 
-    Delegates to `config_manifest.resolve_scalar` so `config show`/`get`
-    report exactly what the runtime reads.
+    Built once per `config show`/`get` so the store is read and parsed a single
+    time rather than once per credential option.
+    """
+
+    keys: dict[str, str] = field(repr=False)
+    """Provider/service name to stored API key, for `api_key` entries only.
+
+    `repr=False` keeps the secret key values out of the dataclass repr, so an
+    accidental log/`%r` of the view can't leak them.
+    """
+
+    error: str | None = None
+    """Secret-free remediation message when the store was unreadable, else `None`.
+
+    Never holds the underlying exception text (which can echo file bytes) or any
+    key value.
+    """
+
+
+_STORE_UNREADABLE_HINT = (
+    "credential store unreadable; showing env/config.toml resolution instead. "
+    "Re-add keys via /auth (or delete a corrupt auth.json)."
+)
+"""Fixed, secret-free notice surfaced when `auth.json` cannot be read."""
+
+
+def _load_stored_credentials() -> _StoredCredentialView:
+    """Read every `/auth`-stored API key once, degrading a corrupt store to empty.
+
+    Reading the store a single time (rather than once per credential option)
+    keeps `config show` to one `auth.json` parse and one warning. A corrupt
+    store is logged once and reported via the returned `error`, so resolution
+    degrades to env/`config.toml` instead of failing the command — and the
+    corruption stays visible in the output rather than masquerading as an empty
+    store.
+
+    Returns:
+        A `_StoredCredentialView` whose `keys` map holds stored `api_key` values
+        by provider, and whose `error` is set only when the store was unreadable.
+    """
+    from deepagents_code import auth_store
+
+    try:
+        creds = auth_store.load_credentials()
+    except RuntimeError:
+        # Omit the exception text on purpose: it can echo file contents, and the
+        # remediation is identical regardless of the specific parse failure.
+        logger.warning("Could not read stored credentials; treating as absent")
+        return _StoredCredentialView(keys={}, error=_STORE_UNREADABLE_HINT)
+    keys = {
+        provider: entry["key"]
+        for provider, entry in creds.items()
+        if entry["type"] == "api_key" and entry["key"]
+    }
+    return _StoredCredentialView(keys=keys)
+
+
+def _resolve(
+    option: ConfigOption,
+    toml_data: dict[str, Any],
+    *,
+    stored: _StoredCredentialView | None = None,
+) -> tuple[bool, str, Any]:
+    """Resolve an option for display, reporting what the runtime actually reads.
+
+    Credential options follow runtime precedence: a present `DEEPAGENTS_CODE_`
+    env override wins (the model factory reads it via `resolve_env_var` even
+    after `apply_stored_credentials` bridges a stored key onto the canonical
+    var), then a key stored via `/auth`, then the canonical env/`config.toml`.
+    Everything else delegates straight to `config_manifest.resolve_scalar`.
+
+    Args:
+        option: The option to resolve.
+        toml_data: Parsed `config.toml` contents.
+        stored: Pre-loaded credential-store snapshot. When `None`, the store is
+            read on demand — fine for one-off calls, but callers resolving many
+            options should load it once and pass it so `auth.json` is parsed a
+            single time.
 
     Returns:
         `(is_set, source, value)`, where `is_set` is `False` when the value
         came from the typed default.
     """
     from deepagents_code.config_manifest import resolve_scalar
+    from deepagents_code.model_config import ProviderAuthSource
+
+    if (
+        option.group == "Credentials"
+        and option.provider is not None
+        and not _has_prefixed_env_override(option)
+    ):
+        if stored is None:
+            stored = _load_stored_credentials()
+        key = stored.keys.get(option.provider)
+        if key is not None:
+            return True, ProviderAuthSource.STORED.value, key
 
     value, source = resolve_scalar(option, toml_data=toml_data)
     return source != "default", source, value
+
+
+def _has_prefixed_env_override(option: ConfigOption) -> bool:
+    """Return whether an option's `DEEPAGENTS_CODE_` env var is present."""
+    if option.env_var is None:
+        return False
+    prefix = "DEEPAGENTS_CODE_"
+    if option.env_var.startswith(prefix):
+        return False
+    return f"{prefix}{option.env_var}" in os.environ
 
 
 def _display_value(option: ConfigOption, *, is_set: bool, value: object) -> str:
@@ -172,13 +274,25 @@ def _display_value(option: ConfigOption, *, is_set: bool, value: object) -> str:
     return text
 
 
-def _source_label(source: str) -> str:
+def _source_label(source: str, *, option: ConfigOption | None = None) -> str:
     """Render the source column for human output.
 
     Returns:
         Source label for the value's origin.
     """
+    if option is not None and option.group == "Credentials":
+        env = _env_source_name(source)
+        if env is not None and env.startswith("DEEPAGENTS_CODE_"):
+            return f"{source}; session override"
     return source
+
+
+def _env_source_name(source: str) -> str | None:
+    """Return the env var name from an `env (...)` source label, if present."""
+    prefix = "env ("
+    if not source.startswith(prefix) or not source.endswith(")"):
+        return None
+    return source[len(prefix) : -1]
 
 
 def _with_availability(option: ConfigOption, text: str) -> str:
@@ -212,6 +326,36 @@ def _missing_extra_hint(option: ConfigOption) -> bool:
 # --- Commands ---------------------------------------------------------------
 
 
+def _show_json_row(
+    option: ConfigOption,
+    *,
+    is_set: bool,
+    source: str,
+    value: object,
+    store_error: str | None,
+) -> dict[str, Any]:
+    """Build one `config show --json` row, redacting secrets and flagging store errors.
+
+    Returns:
+        A JSON-serializable row. Redacted options report presence only (`value`
+            is `None`); a `store_error` key is added to credential rows when
+            the `/auth` store was unreadable, so a corrupt store is
+            distinguishable from an empty one in the bug-report artifact.
+    """
+    row: dict[str, Any] = {
+        "key": option.key,
+        "group": option.group,
+        "source": source,
+        "set": is_set,
+        "redacted": option.redacted,
+        # Redact secret values: report presence only.
+        "value": None if option.redacted else value,
+    }
+    if store_error and option.group == "Credentials":
+        row["store_error"] = store_error
+    return row
+
+
 def _run_show(output_format: OutputFormat) -> int:
     """Resolve every option and print its effective value and source.
 
@@ -225,23 +369,24 @@ def _run_show(output_format: OutputFormat) -> int:
     # app actually reads, not just shell exports.
     _ensure_bootstrap()
     toml_data = load_config_toml()
+    # Read the credential store once; `_resolve` reuses this snapshot rather than
+    # re-parsing `auth.json` per credential option.
+    stored = _load_stored_credentials()
 
     options = get_config_options()
-    resolved = [(opt, *_resolve(opt, toml_data)) for opt in options]
+    resolved = [(opt, *_resolve(opt, toml_data, stored=stored)) for opt in options]
 
     if output_format == "json":
         write_json(
             "config show",
             [
-                {
-                    "key": opt.key,
-                    "group": opt.group,
-                    "source": source,
-                    "set": is_set,
-                    "redacted": opt.redacted,
-                    # Redact secret values: report presence only.
-                    "value": None if opt.redacted else value,
-                }
+                _show_json_row(
+                    opt,
+                    is_set=is_set,
+                    source=source,
+                    value=value,
+                    store_error=stored.error,
+                )
                 for opt, is_set, source, value in resolved
             ],
         )
@@ -253,13 +398,18 @@ def _run_show(output_format: OutputFormat) -> int:
     from deepagents_code.config_manifest import iter_groups
 
     console.print()
+    if stored.error:
+        console.print(
+            f"[yellow]Warning:[/yellow] {escape(stored.error)}", highlight=False
+        )
+        console.print()
     for group in iter_groups(options):
         console.print(f"[bold]{group}[/bold]")
         for opt, is_set, source, value in resolved:
             if opt.group != group:
                 continue
             display = _display_value(opt, is_set=is_set, value=value)
-            source_label = _source_label(source)
+            source_label = _source_label(source, option=opt)
             # `display` and `source_label` may contain Rich markup from env/TOML
             # or terminal metadata; escape them so values can't break rendering.
             display_text = escape(display)
@@ -342,19 +492,23 @@ def _run_get(key: str, output_format: OutputFormat) -> int:
 
     _ensure_bootstrap()
     toml_data = load_config_toml()
-    is_set, source, value = _resolve(option, toml_data)
+    # Only credential options consult the store, so skip the read (and its
+    # warning) for everything else.
+    stored = _load_stored_credentials() if option.group == "Credentials" else None
+    is_set, source, value = _resolve(option, toml_data, stored=stored)
+    store_error = stored.error if stored is not None else None
 
     if output_format == "json":
-        write_json(
-            "config get",
-            {
-                "key": option.key,
-                "source": source,
-                "set": is_set,
-                "redacted": option.redacted,
-                "value": None if option.redacted else value,
-            },
-        )
+        payload: dict[str, Any] = {
+            "key": option.key,
+            "source": source,
+            "set": is_set,
+            "redacted": option.redacted,
+            "value": None if option.redacted else value,
+        }
+        if store_error:
+            payload["store_error"] = store_error
+        write_json("config get", payload)
         return 0
 
     from rich.markup import escape
@@ -362,11 +516,15 @@ def _run_get(key: str, output_format: OutputFormat) -> int:
     from deepagents_code.config import console
 
     display = _display_value(option, is_set=is_set, value=value)
-    source_label = _source_label(source)
+    source_label = _source_label(source, option=option)
     console.print(
         f"{option.key} = {escape(display)}  [dim]({escape(source_label)})[/dim]",
         highlight=False,
     )
+    if store_error:
+        console.print(
+            f"[yellow]Warning:[/yellow] {escape(store_error)}", highlight=False
+        )
     return 0
 
 
@@ -471,17 +629,15 @@ def _config_paths() -> list[tuple[str, Any, bool]]:
         ("recent models", DEFAULT_STATE_DIR / RECENT_MODELS_FILENAME),
     ]
 
+    from deepagents_code._paths import PathState, classify_path
+
     rows: list[tuple[str, Any, bool]] = []
     for label, path in candidates:
         if path is None:
             continue
-        try:
-            exists = path.exists()
-        except OSError:
-            # A permission/transient FS error is not the same as "missing"; log
-            # it (at debug, to keep normal output clean) so a developer can tell
-            # the two apart when triaging a `config path` report.
-            logger.debug("Could not stat %s", path, exc_info=True)
-            exists = False
+        # `classify_path` logs unreadable paths at debug level. `config path`
+        # reports a plain exists/missing bool, so unreadable still collapses to
+        # missing here while `doctor` can surface it as a problem.
+        exists = classify_path(path) is PathState.EXISTS
         rows.append((label, path, exists))
     return rows

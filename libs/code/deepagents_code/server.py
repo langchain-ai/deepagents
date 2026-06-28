@@ -18,6 +18,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
+from urllib.parse import quote
 
 from deepagents_code.config import _INHERITED_PYTHONPATH_ENV
 
@@ -27,7 +28,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_HOST = "127.0.0.1"
-_DEFAULT_PORT = 2024
+_EPHEMERAL_PORT = 0
+"""Sentinel port meaning "let `start()` pick a free ephemeral port".
+
+The server is internal and ephemeral — callers reach it via `ServerProcess.url`,
+never a typed-in address — so it deliberately avoids binding the well-known
+`langgraph dev` default (2024). Leaving 2024 free lets users run their own
+`langgraph dev` projects alongside `deepagents-code` without a port collision.
+"""
 _HEALTH_POLL_INTERVAL_LOCAL = 0.1
 _HEALTH_POLL_INTERVAL_REMOTE = 0.3
 _HEALTH_TIMEOUT = 60
@@ -104,7 +112,7 @@ def _find_free_port(host: str) -> int:
         return s.getsockname()[1]
 
 
-def get_server_url(host: str = _DEFAULT_HOST, port: int = _DEFAULT_PORT) -> str:
+def get_server_url(host: str = _DEFAULT_HOST, port: int = _EPHEMERAL_PORT) -> str:
     """Build the server base URL.
 
     Args:
@@ -136,7 +144,7 @@ def _extract_startup_error_marker(output: str) -> str | None:
 def generate_langgraph_json(
     output_dir: str | Path,
     *,
-    graph_ref: str = "./server_graph.py:graph",
+    graph_ref: str = "./server_graph.py:make_graph",
     env_file: str | None = None,
     checkpointer_path: str | None = None,
 ) -> Path:
@@ -144,7 +152,8 @@ def generate_langgraph_json(
 
     Args:
         output_dir: Directory to write the config file.
-        graph_ref: Python module:variable reference to the graph.
+        graph_ref: Python "module:attribute" reference to the graph, where the
+            attribute is a graph factory (e.g. `make_graph`) or a graph object.
         env_file: Optional path to an env file.
         checkpointer_path: Import path to an async context manager that yields a
             `BaseCheckpointSaver`. When set, the server persists checkpoint data
@@ -364,26 +373,35 @@ class ServerProcess:
         self,
         *,
         host: str = _DEFAULT_HOST,
-        port: int = _DEFAULT_PORT,
+        port: int = _EPHEMERAL_PORT,
         config_dir: str | Path | None = None,
         owns_config_dir: bool = False,
+        scaffold: Callable[[Path], None] | None = None,
     ) -> None:
         """Initialize server process manager.
 
         Args:
             host: Host to bind the server to.
-            port: Initial port to bind the server to.
+            port: Initial port to bind the server to. Defaults to
+                `_EPHEMERAL_PORT` (0), so `start()` picks a free port and avoids
+                squatting the well-known `langgraph dev` default (2024).
 
-                May be reassigned automatically by `start()` if the port is
-                already in use.
+                An explicit port is honored, but `start()` still falls back to a
+                free port if it is already in use.
             config_dir: Directory containing `langgraph.json`.
             owns_config_dir: When `True`, the server will delete `config_dir`
                 on `stop()`.
+            scaffold: Optional callable that (re)generates the working
+                directory's `langgraph.json` and supporting files. When the
+                config is missing at `start()` (e.g. the temp dir was purged
+                between the initial boot and a later `/restart`), it is invoked
+                to rebuild the workspace instead of failing.
         """
         self.host = host
         self.port = port
         self.config_dir = Path(config_dir) if config_dir else None
         self._owns_config_dir = owns_config_dir
+        self._scaffold = scaffold
         self._process: subprocess.Popen | None = None
         self._temp_dir: tempfile.TemporaryDirectory | None = None
         self._log_file: tempfile.NamedTemporaryFile | None = None  # ty: ignore[invalid-type-form]
@@ -442,16 +460,45 @@ class ServerProcess:
             work_dir = Path(self._temp_dir.name)
 
         config_path = work_dir / "langgraph.json"
+        if not config_path.exists() and self._scaffold is not None:
+            # The config can vanish between the initial boot and a later
+            # `/restart` (e.g. the OS tmp reaper purging the temp work dir).
+            # Rebuild it rather than failing the restart.
+            logger.info("langgraph.json missing in %s; rescaffolding", work_dir)
+            try:
+                work_dir.mkdir(parents=True, exist_ok=True)
+                self._scaffold(work_dir)
+            except OSError as exc:
+                # Surface the failure with restart context instead of letting a
+                # bare OSError (e.g. ENOSPC/EACCES on a degraded temp fs) escape
+                # stripped of the recovery framing. Chained so the root cause
+                # stays in the traceback.
+                msg = f"Failed to rescaffold server workspace at {work_dir}: {exc}"
+                raise RuntimeError(msg) from exc
         if not config_path.exists():
-            msg = (
-                f"langgraph.json not found in {work_dir}. "
-                "Call generate_langgraph_json() first."
-            )
+            if self._scaffold is not None:
+                # The scaffold hook ran but produced no langgraph.json (a silent
+                # no-op or a write to the wrong path). The "call
+                # generate_langgraph_json() first" advice below would misdirect,
+                # since the scaffold is exactly that call run internally.
+                contents = sorted(p.name for p in work_dir.iterdir())
+                msg = (
+                    f"Rescaffolding {work_dir} did not produce langgraph.json "
+                    f"(directory contents: {contents})."
+                )
+            else:
+                msg = (
+                    f"langgraph.json not found in {work_dir}. "
+                    "Call generate_langgraph_json() first."
+                )
             raise RuntimeError(msg)
 
-        if _port_in_use(self.host, self.port):
+        if self.port == _EPHEMERAL_PORT:
             self.port = _find_free_port(self.host)
-            logger.info("Default port in use, using port %d instead", self.port)
+            logger.info("Using ephemeral port %d for langgraph dev server", self.port)
+        elif _port_in_use(self.host, self.port):
+            self.port = _find_free_port(self.host)
+            logger.info("Requested port in use, using port %d instead", self.port)
 
         cmd = _build_server_cmd(config_path, host=self.host, port=self.port)
         env = _build_server_env()
@@ -483,6 +530,84 @@ class ServerProcess:
         except Exception:
             self.stop()
             raise
+
+    async def wait_for_graph_ready(
+        self,
+        graph_name: str = "agent",
+        *,
+        timeout: float = _HEALTH_TIMEOUT,  # noqa: ASYNC109
+    ) -> None:
+        """Resolve the served graph once so lazy startup failures surface early.
+
+        Args:
+            graph_name: Registered graph name from `langgraph.json`.
+            timeout: Max seconds to wait for the graph readiness request.
+
+        Raises:
+            RuntimeError: If the server process exits or the graph endpoint
+                does not return a successful response.
+        """
+        import httpx
+
+        if self._process is None:
+            msg = "Server process is not running"
+            raise RuntimeError(msg)
+
+        graph_url = f"{self.url}/assistants/{quote(graph_name, safe='')}/graph"
+        deadline = time.monotonic() + timeout
+
+        async with httpx.AsyncClient() as client:
+            while time.monotonic() < deadline:
+                if self._process.poll() is not None:
+                    msg = f"Server process exited with code {self._process.returncode}"
+                    output = self._read_log_file()
+                    if output:
+                        summary = _extract_startup_error_marker(output)
+                        if summary:
+                            msg += f": {summary}"
+                        msg += f"\n{output[-_LOG_TAIL_CHARS:]}"
+                    raise RuntimeError(msg)
+
+                remaining = max(0.1, deadline - time.monotonic())
+                try:
+                    resp = await client.get(graph_url, timeout=remaining)
+                except (httpx.TransportError, httpx.TimeoutException, OSError) as exc:
+                    output = self._read_log_file()
+                    summary = _extract_startup_error_marker(output)
+                    if self._process.poll() is not None:
+                        msg = (
+                            f"Server process exited with code "
+                            f"{self._process.returncode}"
+                        )
+                    else:
+                        msg = (
+                            f"Server graph '{graph_name}' did not initialize within "
+                            f"{timeout}s"
+                        )
+                    if summary:
+                        msg += f": {summary}"
+                    if output:
+                        msg += f"\n{output[-_LOG_TAIL_CHARS:]}"
+                    raise RuntimeError(msg) from exc
+
+                if resp.status_code == 200:  # noqa: PLR2004
+                    logger.info("Server graph %s is ready at %s", graph_name, self.url)
+                    return
+
+                output = self._read_log_file()
+                msg = (
+                    f"Server graph '{graph_name}' failed readiness check "
+                    f"(status: {resp.status_code})"
+                )
+                summary = _extract_startup_error_marker(output)
+                if summary:
+                    msg += f": {summary}"
+                if output:
+                    msg += f"\n{output[-_LOG_TAIL_CHARS:]}"
+                raise RuntimeError(msg)
+
+        msg = f"Server graph '{graph_name}' did not initialize within {timeout}s"
+        raise RuntimeError(msg)
 
     def _stop_process(self) -> None:
         """Stop only the server subprocess and its log file.

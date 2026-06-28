@@ -225,19 +225,19 @@ def _scan_downloaded_tasks(
     return examples
 
 
-def _dataset_ref(dataset_name: str, version: str) -> str:
+def _dataset_ref(dataset_name: str, _version: str | None = None) -> str:
     """Return the Harbor dataset reference accepted by current registry clients.
 
     Args:
-        dataset_name: Harbor dataset name, with or without an embedded version.
-        version: Harbor dataset version to append when `dataset_name` is unversioned.
+        dataset_name: Harbor dataset reference, such as
+            `terminal-bench/terminal-bench-2`.
+        _version: Deprecated. Harbor dataset refs should include the dataset version
+            in `dataset_name`.
 
     Returns:
-        A Harbor dataset reference in `name@version` form when needed.
+        The Harbor dataset reference.
     """
-    if "@" in dataset_name or not version:
-        return dataset_name
-    return f"{dataset_name}@{version}"
+    return dataset_name
 
 
 async def _await_download_result(
@@ -250,7 +250,7 @@ async def _await_download_result(
 def _download_dataset(
     dataset_name: str,
     *,
-    version: str,
+    version: str | None = None,
     overwrite: bool,
     output_dir: Path,
 ) -> list[DownloadedDatasetItem]:
@@ -261,8 +261,9 @@ def _download_dataset(
     boundary keeps the rest of the module unchanged.
 
     Args:
-        dataset_name: Harbor dataset name.
-        version: Harbor dataset version.
+        dataset_name: Harbor dataset reference.
+        version: Deprecated. Harbor dataset refs should include the dataset version
+            in `dataset_name`.
         overwrite: Whether to overwrite cached remote tasks.
         output_dir: Directory where Harbor should download tasks.
 
@@ -281,20 +282,22 @@ def _download_dataset(
     return result
 
 
-def create_dataset(dataset_name: str, version: str = "head", overwrite: bool = False) -> None:
+def create_dataset(dataset_name: str, version: str | None = None, overwrite: bool = False) -> None:
     """Create a LangSmith dataset from Harbor tasks.
 
     Args:
-        dataset_name: Dataset name (used for both Harbor download and
-            LangSmith dataset).
-        version: Harbor dataset version.
+        dataset_name: Dataset reference used for both Harbor download and
+            LangSmith dataset.
+        version: Deprecated. Harbor dataset refs should include the dataset version
+            in `dataset_name`.
         overwrite: Whether to overwrite cached remote tasks.
     """
     langsmith_client = Client()
     output_dir = Path(tempfile.mkdtemp(prefix="harbor_tasks_"))
     print(f"Using temporary directory: {output_dir}")
 
-    print(f"Downloading dataset '{dataset_name}@{version}' from Harbor registry...")
+    ref = _dataset_ref(dataset_name, version)
+    print(f"Downloading dataset '{ref}' from Harbor registry...")
     downloaded_tasks = _download_dataset(
         dataset_name,
         version=version,
@@ -323,12 +326,13 @@ def create_dataset(dataset_name: str, version: str = "head", overwrite: bool = F
     print(f"Dataset ID: {dataset.id}")
 
 
-def ensure_dataset(dataset_name: str, version: str = "head", overwrite: bool = False) -> None:
+def ensure_dataset(dataset_name: str, version: str | None = None, overwrite: bool = False) -> None:
     """Create the dataset if it does not already exist.
 
     Args:
         dataset_name: Dataset name to look up in LangSmith.
-        version: Harbor dataset version to use when creating the dataset.
+        version: Deprecated. Harbor dataset refs should include the dataset version
+            in `dataset_name`.
         overwrite: Whether to overwrite cached remote tasks when creating
             the dataset.
     """

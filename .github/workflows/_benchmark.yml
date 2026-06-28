@@ -43,7 +43,7 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
     steps:
       - name: "Checkout"
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: "Set up Python + uv"
         uses: ./.github/actions/uv_setup
@@ -57,7 +57,7 @@ jobs:
         run: uv sync --group test
 
       - name: "Run benchmarks"
-        uses: CodSpeedHQ/action@9d332c4d90b43981c3e55ae8e38e68709996240f # v4.17.0
+        uses: CodSpeedHQ/action@a4a36bb07c0638b0b4ca52bf1f3dad1b4289e52f # v4.18.1
         with:
           working-directory: ${{ inputs.working-directory }}
           run: make bench
@@ -65,7 +65,7 @@ jobs:
 
       - name: "Run memory benchmarks"
         if: ${{ inputs.has-memory-benchmarks }}
-        uses: CodSpeedHQ/action@9d332c4d90b43981c3e55ae8e38e68709996240f # v4.17.0
+        uses: CodSpeedHQ/action@a4a36bb07c0638b0b4ca52bf1f3dad1b4289e52f # v4.18.1
         with:
           working-directory: ${{ inputs.working-directory }}
           run: make bench-memory

@@ -1,8 +1,8 @@
-"""Programmatic tool calling (PTC) support for ``CodeInterpreterMiddleware``.
+"""Programmatic tool calling (PTC) support for `CodeInterpreterMiddleware`.
 
 PTC exposes the agent's LangChain tools inside the JavaScript REPL as
-``tools.<camelCaseName>(input)`` async functions. Instead of issuing
-N serial tool calls, the model writes one ``eval`` that loops / parallelises
+`tools.<camelCaseName>(input)` async functions. Instead of issuing
+N serial tool calls, the model writes one `eval` that loops / parallelises
 / chains tools in-code:
 
     const [a, b] = await Promise.all([
@@ -14,10 +14,10 @@ Two pieces live here:
 
 - filtering — turn the live agent toolset into the subset exposed to PTC
 - prompt rendering — render a short TS-ish API-reference block describing
-  each exposed tool, so the model knows the call shape
+    each exposed tool, so the model knows the call shape
 
 The host-function bridge that actually invokes each tool lives in
-``_repl.py`` next to the rest of the context wiring.
+`_repl.py` next to the rest of the context wiring.
 """
 
 from __future__ import annotations
@@ -34,6 +34,16 @@ if TYPE_CHECKING:
 
 PTCOption = list[str | BaseTool]
 
+_RESERVED_SUBAGENT_TASK_NAME = "task"
+
+_TASK_IN_PTC_MSG = (
+    "The subagent `task` tool cannot be exposed via `ptc`. It is always "
+    "available as the top-level `task()` global inside the REPL (with "
+    "`subagentType`, `label`, and `responseSchema` support); exposing it through "
+    "the `tools.*` namespace would create a second, conflicting dispatch path "
+    'that drops `responseSchema`. Remove "task" from `ptc`.'
+)
+
 
 def filter_tools_for_ptc(
     tools: Sequence[BaseTool],
@@ -41,22 +51,27 @@ def filter_tools_for_ptc(
     *,
     self_tool_name: str,
 ) -> list[BaseTool]:
-    """Return the subset of ``tools`` exposed inside the REPL.
+    """Return the subset of `tools` exposed inside the REPL.
 
-    ``self_tool_name`` is the REPL's own tool name; it is *always* excluded
-    to prevent the model from recursing ``tools.eval("tools.eval(...)")``.
+    `self_tool_name` is the REPL's own tool name; it is *always* excluded
+    to prevent the model from recursing `tools.eval("tools.eval(...)")`.
     If the model wants a nested eval, it can just write nested code in one
     call — that's the whole point of PTC.
 
-    ``config`` is allowlist-only:
+    `config` is allowlist-only:
 
-    - ``str`` entries: expose matching tool names from ``tools``.
-    - ``BaseTool`` entries: expose those tools directly (minus
-      ``self_tool_name``).
+    - `str` entries: expose matching tool names from `tools`.
+    - `BaseTool` entries: expose those tools directly (minus
+        `self_tool_name`).
 
-    Mixed lists are supported and merged. Explicit ``BaseTool`` entries
+    Mixed lists are supported and merged. Explicit `BaseTool` entries
     are included first, then name-matched agent tools are appended.
     Duplicate tool names are deduplicated.
+
+    The subagent `task` tool is reserved and may not appear in `config`
+    (by name or instance) — it is always available as the `task()` global,
+    so a `tools.task` PTC variant would be a conflicting, degraded duplicate.
+    A `"task"` entry raises `ValueError`.
 
     Warning:
         PTC tool calls execute through the REPL bridge and currently do
@@ -68,10 +83,14 @@ def filter_tools_for_ptc(
         allow_names: set[str] = set()
         for entry in config:
             if isinstance(entry, BaseTool):
+                if entry.name == _RESERVED_SUBAGENT_TASK_NAME:
+                    raise ValueError(_TASK_IN_PTC_MSG)
                 if entry.name != self_tool_name:
                     explicit_tools.append(entry)
                 continue
             if isinstance(entry, str):
+                if entry == _RESERVED_SUBAGENT_TASK_NAME:
+                    raise ValueError(_TASK_IN_PTC_MSG)
                 allow_names.add(entry)
                 continue
             msg = "ptc list entries must be str or BaseTool"
@@ -98,7 +117,7 @@ def filter_tools_for_ptc(
 
 
 def to_camel_case(name: str) -> str:
-    """Convert ``snake_case`` / ``kebab-case`` → ``camelCase``."""
+    """Convert `snake_case` / `kebab-case` → `camelCase`."""
     return _prompt.to_camel_case(name)
 
 

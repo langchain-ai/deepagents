@@ -6,10 +6,17 @@ this module focuses on the in-app slash dispatch in `DeepAgentsApp`.
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.widgets.messages import AppMessage, ErrorMessage
+
+MANUAL_EXTRA_COMMAND = (
+    "curl -LsSf https://langch.in/dcode | DEEPAGENTS_CODE_EXTRAS=quickjs bash"
+)
 
 
 async def test_install_slash_usage_when_no_extra() -> None:
@@ -52,11 +59,14 @@ async def test_install_slash_known_extra_runs() -> None:
         perform_mock.assert_awaited_once()
 
 
-async def test_install_slash_provider_extra_recommends_restart_slash() -> None:
-    """Provider extras advertise `/restart`, not a full relaunch.
+async def test_install_slash_provider_extra_no_owned_server_recommends_relaunch() -> (
+    None
+):
+    """With no owned server, `/restart` can't respawn — recommend a relaunch.
 
-    The langgraph subprocess is what imports model-provider packages, so
-    respawning that subprocess via `/restart` picks them up without exiting.
+    The test harness has no app-owned LangGraph subprocess, so the one-keypress
+    restart prompt is skipped and a `/restart` would have nothing to respawn;
+    the surfaced guidance is a full relaunch, not `/restart`.
     """
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
@@ -72,19 +82,120 @@ async def test_install_slash_provider_extra_recommends_restart_slash() -> None:
             await app._handle_command("/install fireworks")
             await pilot.pause()
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
-        success = next(
-            m for m in app_msgs if "Installed extra 'fireworks'" in str(m._content)
-        )
-        assert "/restart" in str(success._content)
+        contents = " ".join(str(m._content) for m in app_msgs)
+        assert "Installed extra 'fireworks'" in contents
+        assert "Relaunch dcode" in contents
+        # No owned subprocess to respawn, so `/restart` is not recommended.
+        assert "/restart" not in contents
 
 
-async def test_install_slash_standalone_extra_recommends_full_relaunch() -> None:
-    """Standalone extras must require a full relaunch, not `/restart`.
+async def test_offer_restart_busy_recommends_restart_not_relaunch() -> None:
+    """An owned-but-busy server points at `/restart`, never a relaunch.
 
-    `quickjs` and other `STANDALONE_EXTRAS` are wired into the TUI parent
-    at startup via `verify_interpreter_deps`, so a subprocess respawn
-    won't pick them up — the user has to exit and re-run dcode.
+    `/restart` respawns the owned subprocess (same effect as a relaunch,
+    without exiting), so a "relaunch dcode" hint would be redundant noise.
     """
+    app = DeepAgentsApp()
+    app._server_proc = MagicMock()
+    app._server_kwargs = {"model_name": "fireworks:fake"}
+    app._agent_running = True
+    app._connecting = False
+    app._mount_message = AsyncMock()  # ty: ignore
+
+    await app._offer_restart_after_install("fireworks")
+
+    contents = " ".join(
+        str(c.args[0]._content)
+        for c in app._mount_message.await_args_list  # ty: ignore
+    )
+    assert "/restart" in contents
+    assert "relaunch" not in contents.lower()
+
+
+async def test_offer_restart_no_owned_server_recommends_relaunch() -> None:
+    """A remote/not-owned server can't be `/restart`ed — recommend relaunch."""
+    app = DeepAgentsApp()
+    app._server_proc = None
+    app._server_kwargs = None
+    app._mount_message = AsyncMock()  # ty: ignore
+
+    await app._offer_restart_after_install("fireworks")
+
+    contents = " ".join(
+        str(c.args[0]._content)
+        for c in app._mount_message.await_args_list  # ty: ignore
+    )
+    assert "Relaunch dcode" in contents
+    assert "/restart" not in contents
+
+
+async def test_offer_restart_state_flip_surfaces_fallback() -> None:
+    """An explicit "restart" that can't run (state flipped) isn't a silent no-op.
+
+    The pre-prompt guards pass (owned + idle), but server state can change
+    while the user reads the prompt, so `_restart_after_install` returns False.
+    The handler must surface a fallback rather than letting the chosen restart
+    silently do nothing.
+    """
+    app = DeepAgentsApp()
+    app._server_proc = MagicMock()
+    app._server_kwargs = {"model_name": "fireworks:fake"}
+    app._agent_running = False
+    app._connecting = False
+    app._mount_message = AsyncMock()  # ty: ignore
+    app._push_screen_wait = AsyncMock(return_value="restart")  # ty: ignore
+    app._restart_after_install = AsyncMock(return_value=False)  # ty: ignore
+
+    await app._offer_restart_after_install("fireworks")
+
+    app._restart_after_install.assert_awaited_once_with("fireworks")  # ty: ignore
+    contents = " ".join(
+        str(c.args[0]._content)
+        for c in app._mount_message.await_args_list  # ty: ignore
+    )
+    assert "Couldn't restart the server automatically to load" in contents
+
+
+async def test_install_slash_provider_extra_skips_redundant_hint_when_prompted() -> (
+    None
+):
+    """When the restart prompt is offered, no redundant `/restart` hint appears.
+
+    Popping a "restart now?" button while also printing "Run `/restart`" is
+    confusing, so the manual hint is reserved for when the prompt can't show.
+    """
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Pretend dcode owns an idle server so the one-keypress prompt is offered.
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "fireworks:fake"}
+        app._agent_running = False
+        app._connecting = False
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ),
+            # The user dismisses the prompt without restarting now.
+            patch.object(app, "_push_screen_wait", new=AsyncMock(return_value="later")),
+            patch.object(
+                app, "_restart_server_manual", new=AsyncMock(return_value=True)
+            ),
+        ):
+            await app._handle_command("/install fireworks")
+            await pilot.pause()
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        contents = " ".join(str(m._content) for m in app_msgs)
+        assert "Installed extra 'fireworks'" in contents
+        # The button is the call to action; no inline "Run /restart" hint.
+        assert "/restart" not in contents
+
+
+async def test_install_slash_standalone_extra_recommends_relaunch() -> None:
+    """Compatibility standalone extras still point at a full relaunch."""
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -104,7 +215,8 @@ async def test_install_slash_standalone_extra_recommends_full_relaunch() -> None
         )
         rendered = str(success._content)
         assert "/restart" not in rendered
-        assert "relaunch dcode" in rendered
+        assert "relaunch dcode" in rendered.lower()
+        assert "--interpreter" not in rendered
 
 
 async def test_install_slash_unknown_extra_requires_force() -> None:
@@ -180,6 +292,14 @@ async def test_install_slash_failure_surfaces_log_path_and_manual_cmd() -> None:
                 return_value="/tmp/deepagents-install.log",
             ),
             patch(
+                "deepagents_code.update_check.install_extra_command",
+                return_value=MANUAL_EXTRA_COMMAND,
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_recovery_command",
+                return_value=MANUAL_EXTRA_COMMAND,
+            ),
+            patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
                 return_value=(False, "resolver: conflict"),
@@ -192,7 +312,8 @@ async def test_install_slash_failure_surfaces_log_path_and_manual_cmd() -> None:
         assert "Install failed" in joined
         assert "resolver: conflict" in joined
         assert "/tmp/deepagents-install.log" in joined
-        assert "uv tool install -U 'deepagents-code" in joined
+        assert "curl -LsSf https://langch.in/dcode" in joined
+        assert "DEEPAGENTS_CODE_EXTRAS=quickjs bash" in joined
         assert "quickjs" in joined
 
 
@@ -208,6 +329,14 @@ async def test_install_slash_exception_surfaces_log_path_and_manual_cmd() -> Non
                 return_value="/tmp/deepagents-install.log",
             ),
             patch(
+                "deepagents_code.update_check.install_extra_command",
+                return_value=MANUAL_EXTRA_COMMAND,
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_recovery_command",
+                return_value=MANUAL_EXTRA_COMMAND,
+            ),
+            patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
                 side_effect=OSError("disk full"),
@@ -220,8 +349,118 @@ async def test_install_slash_exception_surfaces_log_path_and_manual_cmd() -> Non
         assert "OSError" in joined
         assert "disk full" in joined
         assert "/tmp/deepagents-install.log" in joined
-        assert "uv tool install -U 'deepagents-code" in joined
+        assert "curl -LsSf https://langch.in/dcode" in joined
+        assert "DEEPAGENTS_CODE_EXTRAS=quickjs bash" in joined
         assert "quickjs" in joined
+
+
+async def test_install_slash_failure_renders_recovery_bracket_literally() -> None:
+    """A uv recovery command's `[extra]` bracket renders literally in the TUI.
+
+    The TUI mounts recovery commands as Textual `Content`, so — unlike the
+    Rich-markup CLI path — the bracket must not be backslash-escaped.
+    """
+    uv_cmd = "uv tool install -U 'deepagents-code[quickjs]'"
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value="/tmp/deepagents-install.log",
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_command",
+                return_value=MANUAL_EXTRA_COMMAND,
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_recovery_command",
+                return_value=uv_cmd,
+            ),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=(False, "resolver: conflict"),
+            ),
+        ):
+            await app._handle_command("/install quickjs")
+            await pilot.pause()
+        joined = "\n".join(str(m._content) for m in app.query(ErrorMessage))
+        assert "deepagents-code[quickjs]" in joined
+        assert "deepagents-code\\[quickjs]" not in joined
+
+
+async def test_install_slash_failure_recovery_error_keeps_prior_command() -> None:
+    """A recovery-command error on a failed install keeps the prior command.
+
+    The TUI shows the command resolved before the failure rather than crashing
+    or showing nothing.
+    """
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value="/tmp/deepagents-install.log",
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_command",
+                return_value=MANUAL_EXTRA_COMMAND,
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_recovery_command",
+                side_effect=ValueError("bad receipt"),
+            ),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=(False, "resolver: conflict"),
+            ),
+        ):
+            await app._handle_command("/install quickjs")
+            await pilot.pause()
+        joined = "\n".join(str(m._content) for m in app.query(ErrorMessage))
+        assert "Install failed" in joined
+        assert MANUAL_EXTRA_COMMAND in joined
+
+
+async def test_install_slash_exception_recovery_error_keeps_prior_command() -> None:
+    """A raised install plus a failed recovery command keeps the prior command.
+
+    When `perform_install_extra` raises and the recovery command also fails, the
+    TUI still surfaces the command resolved before the failure.
+    """
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value="/tmp/deepagents-install.log",
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_command",
+                return_value=MANUAL_EXTRA_COMMAND,
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_recovery_command",
+                side_effect=ValueError("bad receipt"),
+            ),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                side_effect=OSError("disk full"),
+            ),
+        ):
+            await app._handle_command("/install quickjs")
+            await pilot.pause()
+        joined = "\n".join(str(m._content) for m in app.query(ErrorMessage))
+        assert "OSError" in joined
+        assert MANUAL_EXTRA_COMMAND in joined
 
 
 async def test_install_slash_editable_install_refuses() -> None:
@@ -507,6 +746,7 @@ async def test_install_restart_capable_extra_offers_restart_when_idle() -> None:
                 new_callable=AsyncMock,
                 return_value=(True, ""),
             ),
+            patch.object(app, "_ensure_restart_prompt_loaded") as preload,
             patch.object(
                 app, "_push_screen_wait", new=AsyncMock(return_value="restart")
             ) as prompt,
@@ -520,6 +760,8 @@ async def test_install_restart_capable_extra_offers_restart_when_idle() -> None:
         ):
             await app._handle_command("/install fireworks")
             await pilot.pause()
+        # The modal is preloaded before the upgrade can rewrite our own tree.
+        preload.assert_called_once()
         prompt.assert_awaited_once()
         restart.assert_awaited_once()
         assert calls == ["reload", "clear", "restart"]
@@ -527,6 +769,8 @@ async def test_install_restart_capable_extra_offers_restart_when_idle() -> None:
             str(m._content) for m in app.query(AppMessage) if not m._is_markdown
         ]
         assert any("Restart complete." in m for m in app_msgs)
+        # The transient progress status is cleared once the restart succeeds.
+        assert not any("Restarting server..." in m for m in app_msgs)
 
 
 async def test_install_restart_capable_extra_defer_skips_restart() -> None:
@@ -647,6 +891,7 @@ async def test_install_package_offers_restart_when_idle() -> None:
                 new_callable=AsyncMock,
                 return_value=(True, ""),
             ),
+            patch.object(app, "_ensure_restart_prompt_loaded") as preload,
             patch.object(
                 app, "_push_screen_wait", new=AsyncMock(return_value="restart")
             ) as prompt,
@@ -660,6 +905,8 @@ async def test_install_package_offers_restart_when_idle() -> None:
         ):
             await app._handle_command("/install langchain-custom --package --force")
             await pilot.pause()
+        # The modal is preloaded before the upgrade can rewrite our own tree.
+        preload.assert_called_once()
         prompt.assert_awaited_once()
         restart.assert_awaited_once()
         assert calls == ["reload", "clear", "restart"]
@@ -751,7 +998,7 @@ async def test_install_restart_prompt_mount_failure_leaves_manual_hint() -> None
 
 
 async def test_install_restart_failure_omits_complete_message() -> None:
-    """A failed restart shows the attempt but never claims completion."""
+    """A failed restart removes the attempt and never claims completion."""
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -780,5 +1027,109 @@ async def test_install_restart_failure_omits_complete_message() -> None:
         app_msgs = [
             str(m._content) for m in app.query(AppMessage) if not m._is_markdown
         ]
-        assert any("Restarting server..." in m for m in app_msgs)
+        assert not any("Restarting server..." in m for m in app_msgs)
         assert not any("Restart complete." in m for m in app_msgs)
+
+
+async def test_install_restart_raising_removes_transient_and_propagates() -> None:
+    """A raising restart clears the transient before the exception propagates.
+
+    The transient "Restarting server..." status mounts before
+    `_restart_server_manual()` is awaited, so the `try/finally` in
+    `_restart_after_install` exists solely to remove it when the restart raises
+    (not merely returns `False`). On a raise the transient must be gone, the
+    completion banner must never mount, and the exception must propagate.
+    """
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "fireworks:fake"}
+
+        with (
+            patch("deepagents_code.config.settings.reload_from_environment", list),
+            patch("deepagents_code.model_config.clear_caches", lambda: None),
+            patch.object(
+                app,
+                "_restart_server_manual",
+                new=AsyncMock(side_effect=RuntimeError("respawn exploded")),
+            ) as restart,
+            pytest.raises(RuntimeError, match="respawn exploded"),
+        ):
+            await app._restart_after_install("fireworks")
+
+        await pilot.pause()
+        restart.assert_awaited_once()
+        app_msgs = [
+            str(m._content) for m in app.query(AppMessage) if not m._is_markdown
+        ]
+        assert not any("Restarting server..." in m for m in app_msgs)
+        assert not any("Restart complete." in m for m in app_msgs)
+
+
+async def test_offer_restart_survives_missing_restart_prompt_module() -> None:
+    """A missing `restart_prompt` module must degrade, not crash the TUI.
+
+    `/install` runs `uv tool install -U 'deepagents-code[...]'`, which rewrites
+    deepagents-code's own on-disk tree mid-session. A first import of the
+    restart modal on the post-install path then reads the half-replaced tree
+    and raises `ModuleNotFoundError`. The handler must degrade to the manual
+    `/restart` hint instead of letting the import crash the app.
+    """
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "fireworks:fake"}
+        app._agent_running = False
+        app._connecting = False
+        push = AsyncMock(return_value="restart")
+        with (
+            # `None` in sys.modules makes the `from`-import raise
+            # `ModuleNotFoundError` — a deterministic stand-in for the import
+            # failure a half-replaced on-disk tree causes after a self-upgrade.
+            patch.dict(
+                sys.modules,
+                {"deepagents_code.widgets.restart_prompt": None},
+            ),
+            patch.object(app, "_push_screen_wait", new=push),
+            patch.object(
+                app, "_restart_server_manual", new=AsyncMock(return_value=True)
+            ) as restart,
+        ):
+            # Must not raise despite the unimportable modal.
+            await app._offer_restart_after_install("fireworks")
+            await pilot.pause()
+        # The modal was never mounted and no restart was attempted.
+        push.assert_not_awaited()
+        restart.assert_not_awaited()
+
+
+def test_ensure_restart_prompt_loaded_caches_module() -> None:
+    """Preloading leaves the restart modal resident in `sys.modules`.
+
+    This is the actual fix: importing the modal before the self-upgrade
+    rewrites the on-disk tree means the post-install import in
+    `_offer_restart_after_install` resolves from `sys.modules` rather than the
+    mutated tree. Dropping the resident copy first forces a real import.
+    """
+    with patch.dict(sys.modules):
+        sys.modules.pop("deepagents_code.widgets.restart_prompt", None)
+        DeepAgentsApp._ensure_restart_prompt_loaded()
+        assert "deepagents_code.widgets.restart_prompt" in sys.modules
+
+
+def test_ensure_restart_prompt_loaded_swallows_missing_module() -> None:
+    """A failed preload is best-effort and must not raise.
+
+    `None` in `sys.modules` makes `import deepagents_code.widgets.restart_prompt`
+    raise `ModuleNotFoundError`, standing in for the half-replaced tree left by
+    a self-upgrade. The preload swallows it so the install continues; the
+    post-install import then falls back to its own guard.
+    """
+    with patch.dict(
+        sys.modules,
+        {"deepagents_code.widgets.restart_prompt": None},
+    ):
+        # Must not raise despite the unimportable module.
+        DeepAgentsApp._ensure_restart_prompt_loaded()

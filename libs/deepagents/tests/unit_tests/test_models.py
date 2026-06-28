@@ -13,6 +13,7 @@ from langchain_core.language_models import BaseChatModel
 from deepagents._models import (
     get_model_identifier,
     get_model_provider,
+    is_bedrock_model,
     model_matches_spec,
     resolve_model,
 )
@@ -44,6 +45,7 @@ from deepagents.profiles.provider.provider_profiles import (
     apply_provider_profile,
     get_provider_profile,
 )
+from tests.unit_tests.chat_model import GenericFakeChatModel
 
 _OPENROUTER_AZURE_IGNORE = {"ignore": ["azure"]}
 """Expected default value of `openrouter_provider` injected by the SDK profile."""
@@ -218,6 +220,65 @@ class TestGetModelProvider:
         model._get_ls_params = MagicMock(side_effect=TypeError("unexpected"))
         assert get_model_provider(model) is None
 
+    def test_returns_none_when_get_ls_params_returns_non_mapping(self) -> None:
+        # A custom integration may return `None` instead of a mapping; this
+        # must not raise `AttributeError` on the subsequent `.get`.
+        model = _make_model({})
+        model._get_ls_params = MagicMock(return_value=None)
+        assert get_model_provider(model) is None
+
+
+class TestIsBedrockModel:
+    """Tests for `is_bedrock_model`."""
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "bedrock:anthropic.claude-3-5-sonnet-20240620-v1:0",
+            "bedrock_converse:us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+            "aws:amazon.nova-pro-v1:0",
+            "anthropic_bedrock:us.anthropic.claude-sonnet-4-6-20251117-v1:0",
+            "amazon.nova-pro-v1:0",
+            "us.amazon.nova-pro-v1:0",
+        ],
+    )
+    def test_detects_bedrock_provider_strings(self, model: str) -> None:
+        assert is_bedrock_model(model) is True
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "amazon.titan-text-express-v1:0",
+            "anthropic:claude-3-opus",
+            "openai:gpt-5",
+        ],
+    )
+    def test_rejects_non_bedrock_provider_strings(self, model: str) -> None:
+        assert is_bedrock_model(model) is False
+
+    @pytest.mark.parametrize(
+        "provider",
+        ["amazon_bedrock", "anthropic-bedrock", "bedrock", "bedrock_converse", "aws"],
+    )
+    def test_detects_bedrock_model_providers(self, provider: str) -> None:
+        model = _make_model({})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": provider})
+        assert is_bedrock_model(model) is True
+
+    @pytest.mark.parametrize(
+        "model_cls",
+        ["ChatAnthropicBedrock", "ChatBedrock", "ChatBedrockConverse", "ChatBedrockNovaSonic"],
+    )
+    def test_detects_bedrock_model_classes_when_provider_unavailable(self, model_cls: str) -> None:
+        model = type(model_cls, (GenericFakeChatModel,), {})(messages=iter([]))
+        model._get_ls_params = MagicMock(return_value={})
+        assert is_bedrock_model(model) is True
+
+    def test_rejects_non_bedrock_model_provider(self) -> None:
+        model = _make_model({})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "anthropic"})
+        assert is_bedrock_model(model) is False
+
 
 class TestModelMatchesSpec:
     """Tests for `model_matches_spec`."""
@@ -227,8 +288,64 @@ class TestModelMatchesSpec:
         assert model_matches_spec(model, "claude-sonnet-4-6") is True
 
     def test_provider_prefixed_match(self) -> None:
+        # Set `ls_provider` explicitly so this exercises the provider-match
+        # path rather than the identifier-only fallback (an unset mock returns
+        # a non-mapping, which would route through the fallback instead).
         model = _make_model({"model_name": "claude-sonnet-4-6"})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "anthropic"})
         assert model_matches_spec(model, "anthropic:claude-sonnet-4-6") is True
+
+    def test_provider_prefixed_match_checks_provider_when_available(self) -> None:
+        model = _make_model({"model_name": "gpt-5.5"})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "openai"})
+
+        assert model_matches_spec(model, "openai:gpt-5.5") is True
+        assert model_matches_spec(model, "openai_codex:gpt-5.5") is False
+
+    def test_provider_match_normalizes_langsmith_provider_spelling(self) -> None:
+        model = _make_model({"model_name": "gpt-5.5"})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "openai-codex"})
+
+        assert model_matches_spec(model, "openai_codex:gpt-5.5") is True
+
+    def test_provider_match_normalizes_spec_provider_spelling(self) -> None:
+        # The reverse of the case above: a hyphenated spec must match an
+        # underscored `ls_provider`. Normalization is applied to both operands,
+        # so neither spelling direction should read as a mismatch.
+        model = _make_model({"model_name": "gpt-5.5"})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "openai_codex"})
+
+        assert model_matches_spec(model, "openai-codex:gpt-5.5") is True
+
+    @pytest.mark.parametrize(
+        ("spec_provider", "ls_provider"),
+        [
+            ("azure_openai", "azure"),
+            ("mistralai", "mistral"),
+            ("nvidia", "NVIDIA"),
+        ],
+    )
+    def test_provider_match_normalizes_langchain_provider_aliases(self, spec_provider: str, ls_provider: str) -> None:
+        model = _make_model({"model_name": "provider-model"})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": ls_provider})
+
+        assert model_matches_spec(model, f"{spec_provider}:provider-model") is True
+
+    def test_provider_prefixed_match_falls_back_when_provider_unknown(self) -> None:
+        model = _make_model({"model_name": "claude-sonnet-4-6"})
+        model._get_ls_params = MagicMock(return_value={})
+
+        assert model_matches_spec(model, "anthropic:claude-sonnet-4-6") is True
+
+    def test_provider_prefixed_match_falls_back_when_ls_params_non_mapping(
+        self,
+    ) -> None:
+        # `_get_ls_params` returning `None` must fall back to identifier-only
+        # matching rather than raising `AttributeError` out of the match.
+        model = _make_model({"model_name": "gpt-5.5"})
+        model._get_ls_params = MagicMock(return_value=None)
+
+        assert model_matches_spec(model, "openai:gpt-5.5") is True
 
     def test_no_match(self) -> None:
         model = _make_model({"model_name": "claude-sonnet-4-6"})

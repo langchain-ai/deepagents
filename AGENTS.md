@@ -83,6 +83,7 @@ Follow Conventional Commits. See `.github/workflows/pr_lint.yml` for allowed typ
 - Start the text after `type(scope):` with a lowercase letter, unless the first word is a proper noun (e.g. `Azure`, `GitHub`, `OpenAI`) or a named entity (class, function, method, parameter, or variable name).
 - Wrap named entities in backticks so they render as code. Proper nouns are left unadorned.
 - Keep titles short and descriptive — save detail for the body.
+- For version-branch sync PRs, use a title like `chore(repo): sync main into vX.Y`. Do not use `release` as the scope; PR title lint reserves `release` for the type and disallows it as a scope.
 
 Examples:
 
@@ -350,7 +351,7 @@ When adding a new partner package, update these files:
 - `.github/workflows/release.yml` – Add to `package` input options and `setup` job mapping
 - `.github/workflows/release-please.yml` – Add release detection output and trigger job
 - `release-please-config.json` – Add package entry under `packages`
-- `.release-please-manifest.json` – Add initial version entry
+- `.release-please-manifest.json` – Add the latest-released baseline; for a new package whose first release should be `0.0.1`, use `0.0.0`
 - `.github/RELEASING.md` – Add to Managed Packages table
 - `.github/workflows/harbor.yml` – Add sandbox option and credential check (sandbox-backed partners only)
 

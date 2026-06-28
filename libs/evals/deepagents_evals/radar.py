@@ -46,7 +46,7 @@ EVAL_CATEGORIES: list[str] = _categories_raw.get("radar_categories", _categories
 """Radar-eligible eval category names.
 
 Order determines axis placement on the radar chart (clockwise from top).
-Categories like ``unit_test`` that verify SDK plumbing rather than model
+Categories like `unit_test` that verify SDK plumbing rather than model
 capability are excluded from this list.
 """
 

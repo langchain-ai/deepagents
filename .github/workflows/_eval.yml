@@ -4,7 +4,7 @@
 # upstream by `prep` (`_SAFE_SPEC_RE` in `.github/scripts/models.py`); this
 # workflow trusts that contract.
 
-name: "📊 Eval"
+name: "🔧 Eval run (internal)"
 
 on:
   workflow_call:
@@ -114,29 +114,18 @@ jobs:
         working-directory: libs/evals
     env:
       PYTEST_ADDOPTS: "--evals-report-file evals_report.json"
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      BASETEN_API_KEY: ${{ secrets.BASETEN_API_KEY }}
-      FIREWORKS_API_KEY: ${{ secrets.FIREWORKS_API_KEY }}
-      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
       LANGSMITH_TRACING: "true"
       LANGSMITH_EXPERIMENT: ${{ inputs.model }}
-      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
-      OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
       OLLAMA_HOST: "https://ollama.com"
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       # Group all OpenRouter calls in this per-model eval job under a stable
       # session ID derived from GHA runner env. Picked up by ChatOpenRouter
       # via from_env (langchain-openrouter >= 0.2.2). Re-runs get a new
       # session via run_attempt; different models get distinct sessions via
       # artifact_key.
       OPENROUTER_SESSION_ID: deepagents-evals-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.artifact_key }}
-      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
@@ -252,6 +241,17 @@ jobs:
       - name: "📊 Run Evals"
         env:
           MODEL: ${{ inputs.model }}
+          ANTHROPIC_API_KEY: ${{ inputs.provider == 'anthropic' && secrets.ANTHROPIC_API_KEY || '' }}
+          BASETEN_API_KEY: ${{ inputs.provider == 'baseten' && secrets.BASETEN_API_KEY || '' }}
+          FIREWORKS_API_KEY: ${{ inputs.provider == 'fireworks' && secrets.FIREWORKS_API_KEY || '' }}
+          GOOGLE_API_KEY: ${{ inputs.provider == 'google_genai' && secrets.GOOGLE_API_KEY || '' }}
+          GROQ_API_KEY: ${{ inputs.provider == 'groq' && secrets.GROQ_API_KEY || '' }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          NVIDIA_API_KEY: ${{ inputs.provider == 'nvidia' && secrets.NVIDIA_API_KEY || '' }}
+          OLLAMA_API_KEY: ${{ inputs.provider == 'ollama' && secrets.OLLAMA_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ inputs.provider == 'openai' && secrets.OPENAI_API_KEY || '' }}
+          OPENROUTER_API_KEY: ${{ inputs.provider == 'openrouter' && secrets.OPENROUTER_API_KEY || '' }}
+          XAI_API_KEY: ${{ inputs.provider == 'xai' && secrets.XAI_API_KEY || '' }}
         run: make evals MODEL="$MODEL"
 
       - name: "🔍 Check eval report"
@@ -363,6 +363,17 @@ jobs:
         continue-on-error: true
         env:
           ANALYSIS_MODEL: ${{ inputs.analysis_model }}
+          ANTHROPIC_API_KEY: ${{ startsWith(inputs.analysis_model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
+          BASETEN_API_KEY: ${{ startsWith(inputs.analysis_model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
+          FIREWORKS_API_KEY: ${{ startsWith(inputs.analysis_model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}
+          GOOGLE_API_KEY: ${{ startsWith(inputs.analysis_model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
+          GROQ_API_KEY: ${{ startsWith(inputs.analysis_model, 'groq:') && secrets.GROQ_API_KEY || '' }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          NVIDIA_API_KEY: ${{ startsWith(inputs.analysis_model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
+          OLLAMA_API_KEY: ${{ startsWith(inputs.analysis_model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ startsWith(inputs.analysis_model, 'openai:') && secrets.OPENAI_API_KEY || '' }}
+          OPENROUTER_API_KEY: ${{ startsWith(inputs.analysis_model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
+          XAI_API_KEY: ${{ startsWith(inputs.analysis_model, 'xai:') && secrets.XAI_API_KEY || '' }}
         run: uv run python ../../.github/scripts/analyze_eval_failures.py evals_report.json
 
       - name: "📤 Upload failure analysis"

@@ -65,7 +65,10 @@
         "pyproject.toml",
         "deepagents_cli/_version.py"
       ],
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [
+        "libs/cli/tests"
+      ]
     },
     "libs/deepagents": {
       "release-type": "python",
@@ -77,7 +80,10 @@
         "pyproject.toml",
         "deepagents/_version.py"
       ],
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [
+        "libs/deepagents/tests"
+      ]
     },
     "libs/acp": {
       "release-type": "python",
@@ -89,7 +95,10 @@
         "pyproject.toml",
         "deepagents_acp/_version.py"
       ],
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [
+        "libs/acp/tests"
+      ]
     },
     "libs/code": {
       "release-type": "python",
@@ -101,7 +110,10 @@
         "pyproject.toml",
         "deepagents_code/_version.py"
       ],
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [
+        "libs/code/tests"
+      ]
     },
     "libs/talon": {
       "release-type": "python",
@@ -113,7 +125,10 @@
         "pyproject.toml",
         "deepagents_talon/_version.py"
       ],
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [
+        "libs/talon/tests"
+      ]
     },
     "libs/partners/daytona": {
       "release-type": "python",
@@ -125,7 +140,10 @@
         "pyproject.toml",
         "langchain_daytona/_version.py"
       ],
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [
+        "libs/partners/daytona/tests"
+      ]
     },
     "libs/partners/modal": {
       "release-type": "python",
@@ -137,7 +155,10 @@
         "pyproject.toml",
         "langchain_modal/_version.py"
       ],
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [
+        "libs/partners/modal/tests"
+      ]
     },
     "libs/partners/runloop": {
       "release-type": "python",
@@ -149,7 +170,25 @@
         "pyproject.toml",
         "langchain_runloop/_version.py"
       ],
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [
+        "libs/partners/runloop/tests"
+      ]
+    },
+    "libs/partners/vercel": {
+      "release-type": "python",
+      "package-name": "langchain-vercel-sandbox",
+      "component": "langchain-vercel-sandbox",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "pyproject.toml",
+        "langchain_vercel_sandbox/_version.py"
+      ],
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [
+        "libs/partners/vercel/tests"
+      ]
     },
     "libs/partners/quickjs": {
       "release-type": "python",
@@ -161,7 +200,10 @@
         "pyproject.toml",
         "langchain_quickjs/_version.py"
       ],
-      "changelog-path": "CHANGELOG.md"
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [
+        "libs/partners/quickjs/tests"
+      ]
     }
   },
   "tag-separator": "==",

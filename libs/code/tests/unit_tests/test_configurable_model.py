@@ -1,17 +1,21 @@
 """Tests for ConfigurableModelMiddleware."""
 
+import asyncio
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
+import pytest
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
-from deepagents_code._cli_context import CLIContext
+from deepagents_code._cli_context import CLIContext, CLIContextSchema
 from deepagents_code.agent import build_model_identity_section
 from deepagents_code.configurable_model import (
     ConfigurableModelMiddleware,
+    _get_context,
     _is_anthropic_model,
 )
 
@@ -27,7 +31,7 @@ def _make_model(name: str) -> MagicMock:
 
 def _make_request(
     model: BaseChatModel,
-    context: CLIContext | None = None,
+    context: object = None,
     model_settings: dict[str, Any] | None = None,
     system_prompt: str | None = None,
 ) -> ModelRequest:
@@ -92,6 +96,37 @@ class TestNoOverride:
         )
         assert captured[0] is request
 
+    def test_dict_context_reconstructs_approval_fields(self) -> None:
+        request = _make_request(
+            _make_model("claude-sonnet-4-6"),
+            context={
+                "auto_approve": True,
+                "approval_mode_key": "approval-key",
+            },
+        )
+
+        ctx = _get_context(request)
+
+        assert ctx is not None
+        assert ctx.auto_approve is True
+        assert ctx.approval_mode_key == "approval-key"
+
+    @pytest.mark.parametrize("key", [None, 1, object()])
+    def test_dict_context_coerces_non_string_approval_key(self, key: object) -> None:
+        request = _make_request(
+            _make_model("claude-sonnet-4-6"),
+            context={
+                "auto_approve": True,
+                "approval_mode_key": key,
+            },
+        )
+
+        ctx = _get_context(request)
+
+        assert ctx is not None
+        assert ctx.auto_approve is True
+        assert ctx.approval_mode_key is None
+
     def test_same_model_spec(self) -> None:
         request = _make_request(
             _make_model("claude-sonnet-4-6"),
@@ -105,14 +140,33 @@ class TestNoOverride:
 
     def test_provider_prefixed_spec_matches(self) -> None:
         request = _make_request(
-            _make_model("claude-sonnet-4-6"),
-            context=CLIContext(model="anthropic:claude-sonnet-4-6"),
+            _make_model("gpt-5.5"),
+            context=CLIContext(model="openai:gpt-5.5"),
         )
         captured: list[ModelRequest] = []
         _mw.wrap_model_call(
             request, lambda r: (captured.append(r), _make_response())[1]
         )
         assert captured[0] is request
+
+    def test_provider_prefixed_spec_mismatch_overrides_same_model_name(self) -> None:
+        request = _make_request(
+            _make_model("gpt-5.5"),
+            context=CLIContextSchema(model="openai_codex:gpt-5.5"),
+        )
+        replacement = _make_model("gpt-5.5")
+        replacement._get_ls_params.return_value = {"ls_provider": "openai-codex"}
+        captured: list[ModelRequest] = []
+
+        with patch(
+            _PATCH_CREATE, return_value=_make_model_result(replacement)
+        ) as create:
+            _mw.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+
+        create.assert_called_once_with("openai_codex:gpt-5.5")
+        assert captured[0].model is replacement
 
     def test_none_runtime(self) -> None:
         request = ModelRequest(
@@ -176,15 +230,31 @@ class TestModelSwap:
         request = _make_request(original, context=CLIContext(model="openai:gpt-5.5"))
 
         captured: list[ModelRequest] = []
+        offloaded: list[
+            tuple[Callable[..., object], tuple[object, ...], dict[str, object]]
+        ] = []
 
         async def handler(r: ModelRequest) -> ModelResponse[Any]:  # noqa: RUF029
             captured.append(r)
             return _make_response()
 
-        with patch(_PATCH_CREATE, return_value=_make_model_result(override)):
+        async def fake_to_thread(
+            func: Callable[..., object], /, *args: object, **kwargs: object
+        ) -> object:
+            await asyncio.sleep(0)
+            offloaded.append((func, args, kwargs))
+            return func(*args, **kwargs)
+
+        with (
+            patch(_PATCH_CREATE, return_value=_make_model_result(override)) as create,
+            patch(
+                "deepagents_code.configurable_model.asyncio.to_thread", fake_to_thread
+            ),
+        ):
             await _mw.awrap_model_call(request, handler)
 
         assert captured[0].model is override
+        assert offloaded == [(create, ("openai:gpt-5.5",), {})]
 
     def test_class_path_provider_swapped(self) -> None:
         """Config-defined class_path provider resolves through create_model."""

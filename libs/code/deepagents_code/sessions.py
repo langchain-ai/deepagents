@@ -11,6 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, NotRequired, TypedDict, cast
 
+from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
@@ -228,8 +230,8 @@ def format_relative_timestamp(iso_timestamp: str | None) -> str:
     days = hours // 24
     if days < 30:  # noqa: PLR2004
         return f"{days}d ago"
-    months = days // 30
-    if months < 12:  # noqa: PLR2004
+    if days < 365:  # noqa: PLR2004
+        months = days // 30
         return f"{months}mo ago"
     years = days // 365
     return f"{years}y ago"
@@ -403,26 +405,6 @@ async def list_threads(
         if sort_by == "updated" and branch is None and cwd is None:
             _cache_recent_threads(agent_name, limit, threads)
         return threads
-
-
-async def populate_thread_message_counts(threads: list[ThreadInfo]) -> list[ThreadInfo]:
-    """Populate `message_count` for an existing thread list.
-
-    This is used by the `/threads` modal to render rows quickly, then backfill
-    counts in the background without issuing a second thread-list query.
-
-    Args:
-        threads: Thread rows to enrich in place.
-
-    Returns:
-        The same list object with `message_count` values populated.
-    """
-    if not threads:
-        return threads
-
-    async with _connect() as conn:
-        await _populate_message_counts(conn, threads)
-    return threads
 
 
 async def populate_thread_checkpoint_details(
@@ -677,43 +659,6 @@ def _cache_recent_threads(
 def _copy_threads(threads: list[ThreadInfo]) -> list[ThreadInfo]:
     """Return shallow-copied thread rows."""
     return [ThreadInfo(**thread) for thread in threads]
-
-
-async def _extract_initial_prompt(
-    conn: aiosqlite.Connection,
-    thread_id: str,
-    serde: JsonPlusSerializer,
-) -> str | None:
-    """Extract the first human message from the latest checkpoint.
-
-    Args:
-        conn: Database connection.
-        thread_id: The thread ID to extract from.
-        serde: Serializer for decoding checkpoint data.
-
-    Returns:
-        First human message content, or None if not found.
-    """
-    summary = await _load_latest_checkpoint_summary(conn, thread_id, serde)
-    return summary.initial_prompt
-
-
-async def populate_thread_initial_prompts(threads: list[ThreadInfo]) -> None:
-    """Populate `initial_prompt` for thread rows in the background.
-
-    Args:
-        threads: Thread rows to enrich in place.
-    """
-    if not threads:
-        return
-
-    async with _connect() as conn:
-        await _populate_checkpoint_fields(
-            conn,
-            threads,
-            include_message_count=False,
-            include_initial_prompt=True,
-        )
 
 
 async def _populate_checkpoint_fields(
@@ -1054,43 +999,6 @@ async def _load_message_counts_from_writes_batch(
     return {tid: len(messages) for tid, messages in reduced.items()}
 
 
-async def _load_latest_checkpoint_summary(
-    conn: aiosqlite.Connection,
-    thread_id: str,
-    serde: JsonPlusSerializer,
-) -> _CheckpointSummary:
-    """Load checkpoint-derived summary data from the latest checkpoint row.
-
-    Returns:
-        Message-count and prompt data extracted from the latest checkpoint row.
-    """
-    query = """
-        SELECT type, checkpoint
-        FROM checkpoints
-        WHERE thread_id = ?
-        ORDER BY checkpoint_id DESC
-        LIMIT 1
-    """
-    async with conn.execute(query, (thread_id,)) as cursor:
-        row = await cursor.fetchone()
-        if not row or not row[0] or not row[1]:
-            return _CheckpointSummary(message_count=None, initial_prompt=None)
-
-        type_str, checkpoint_blob = row
-        try:
-            data = serde.loads_typed((type_str, checkpoint_blob))
-        except (ValueError, TypeError, KeyError, AttributeError):
-            logger.warning(
-                "Failed to deserialize checkpoint for thread %s; "
-                "message count and initial prompt may be incomplete",
-                thread_id,
-                exc_info=True,
-            )
-            return _CheckpointSummary(message_count=None, initial_prompt=None)
-
-    return _summarize_checkpoint(data)
-
-
 def _summarize_checkpoint(data: object) -> _CheckpointSummary:
     """Extract message count and initial human prompt from checkpoint data.
 
@@ -1130,23 +1038,32 @@ def _checkpoint_messages(data: object) -> list[object] | None:
 
 
 def _initial_prompt_from_messages(messages: list[object]) -> str | None:
-    """Return the first human message content from a message list.
+    """Return the first non-system human message content from a message list.
 
     Accepts both LangChain `HumanMessage` objects (with `type == "human"`) and
     plain dicts in OpenAI chat shape (`{"role": "user", "content": ...}`). The
     first write to the `messages` channel is the raw user input passed to the
     agent, which is preserved verbatim as a dict; subsequent writes are
     serialized `BaseMessage` instances produced after the model runs.
+
+    Synthetic `[SYSTEM]`-prefixed human messages (e.g. an interrupt
+    cancellation notice) are skipped so they never surface as a thread's prompt.
     """
     for msg in messages:
         if getattr(msg, "type", None) == "human":
-            return _coerce_prompt_text(getattr(msg, "content", None))
-        if isinstance(msg, dict):
+            prompt = _coerce_prompt_text(getattr(msg, "content", None))
+        elif isinstance(msg, dict):
             msg_dict = cast("dict[str, object]", msg)
             role = msg_dict.get("role")
             type_ = msg_dict.get("type")
-            if role in {"user", "human"} or type_ == "human":
-                return _coerce_prompt_text(msg_dict.get("content"))
+            if role not in {"user", "human"} and type_ != "human":
+                continue
+            prompt = _coerce_prompt_text(msg_dict.get("content"))
+        else:
+            continue
+        if prompt is not None and prompt.startswith(SYSTEM_MESSAGE_PREFIX):
+            continue
+        return prompt
     return None
 
 

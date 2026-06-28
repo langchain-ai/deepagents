@@ -27,6 +27,7 @@ from deepagents_code.widgets.chat_input import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Coroutine
     from pathlib import Path
 
     from textual.pilot import Pilot
@@ -226,6 +227,48 @@ class _RecordingApp(App[None]):
 
     def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         self.submitted.append(event)
+
+
+async def _noop() -> None:
+    pass
+
+
+class _RefreshController:
+    def __init__(self) -> None:
+        self.force_values: list[bool] = []
+
+    def warm_cache(self, *, force: bool = False) -> Coroutine[object, object, None]:
+        self.force_values.append(force)
+        return _noop()
+
+
+class TestChatInputFileCacheRefresh:
+    def test_refresh_file_cache_uses_exclusive_worker(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        chat = ChatInput()
+        controller = _RefreshController()
+        worker_calls: list[dict[str, object]] = []
+
+        def fake_run_worker(
+            work: Coroutine[object, object, None], **kwargs: object
+        ) -> None:
+            work.close()
+            worker_calls.append(kwargs)
+
+        monkeypatch.setattr(chat, "_file_controller", controller, raising=False)
+        monkeypatch.setattr(chat, "run_worker", fake_run_worker)
+
+        chat._refresh_file_cache()
+
+        assert controller.force_values == [True]
+        assert worker_calls == [
+            {
+                "exclusive": True,
+                "group": "file-cache-refresh",
+                "exit_on_error": False,
+            }
+        ]
 
 
 class TestChatInputScrollbar:

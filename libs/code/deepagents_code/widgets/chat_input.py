@@ -1671,7 +1671,8 @@ class ChatInput(Vertical):
         if file_controller is not None:
             self.run_worker(
                 file_controller.warm_cache(force=True),
-                exclusive=False,
+                exclusive=True,
+                group="file-cache-refresh",
                 exit_on_error=False,
             )
 

@@ -456,6 +456,127 @@ class TestThreadSelectorTabSort:
                 assert not updated_cell.has_class("thread-cell-sorted")
                 assert sort_select.value == "created_at"
 
+    async def test_sort_change_persists_preference(self) -> None:
+        """Switching the sort dropdown should persist the new preference."""
+        mock_save = MagicMock(return_value=True)
+        with (
+            _patch_list_threads(),
+            _patch_columns(),
+            patch(
+                "deepagents_code.model_config.save_thread_sort_order",
+                mock_save,
+            ),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                sort_select = screen.query_one("#thread-sort-select", Select)
+
+                sort_select.value = "created_at"
+                await pilot.pause()
+                await app.workers.wait_for_complete()
+                mock_save.assert_any_call("created_at")
+
+                sort_select.value = "updated_at"
+                await pilot.pause()
+                await app.workers.wait_for_complete()
+                mock_save.assert_any_call("updated_at")
+
+    async def test_sort_save_failure_notifies(self) -> None:
+        """A failed sort-order save should surface a warning notification."""
+        mock_save = MagicMock(return_value=False)
+        with (
+            _patch_list_threads(),
+            _patch_columns(),
+            patch(
+                "deepagents_code.model_config.save_thread_sort_order",
+                mock_save,
+            ),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                sort_select = screen.query_one("#thread-sort-select", Select)
+
+                with patch.object(app, "notify") as mock_notify:
+                    sort_select.value = "created_at"
+                    await pilot.pause()
+                    await app.workers.wait_for_complete()
+                    await pilot.pause()
+
+                mock_notify.assert_any_call(
+                    "Could not save sort preference", severity="warning"
+                )
+
+    async def test_reselecting_active_sort_is_noop(self) -> None:
+        """Re-applying the active sort order should not persist or re-sort.
+
+        The early return in `_apply_sort_selection` must fire before any
+        persistence or rebuild work when the selection is unchanged.
+        """
+        mock_save = MagicMock(return_value=True)
+        with (
+            _patch_list_threads(),
+            _patch_columns(),
+            patch(
+                "deepagents_code.model_config.save_thread_sort_order",
+                mock_save,
+            ),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                assert screen._sort_by_updated is True
+
+                screen._apply_sort_selection(True)
+                await pilot.pause()
+                await app.workers.wait_for_complete()
+
+                assert screen._sort_by_updated is True
+                mock_save.assert_not_called()
+
+    async def test_confirming_delete_ignores_sort_select_change(self) -> None:
+        """Sort dropdown changes are ignored while a delete is being confirmed."""
+        mock_save = MagicMock(return_value=True)
+        with (
+            _patch_list_threads(),
+            _patch_columns(),
+            patch(
+                "deepagents_code.model_config.save_thread_sort_order",
+                mock_save,
+            ),
+        ):
+            app = ThreadSelectorTestApp()
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                assert screen._sort_by_updated is True
+                sort_select = screen.query_one("#thread-sort-select", Select)
+                screen._confirming_delete = True
+
+                sort_select.value = "created_at"
+                for _ in range(10):
+                    await pilot.pause()
+
+                # The guard short-circuits before mutating sort state.
+                assert screen._sort_by_updated is True
+                mock_save.assert_not_called()
+
     async def test_sorted_header_column_is_highlighted(self) -> None:
         """The active sort column should be highlighted without extra text."""
         with _patch_list_threads(), _patch_columns():

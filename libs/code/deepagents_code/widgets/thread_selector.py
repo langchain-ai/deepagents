@@ -698,10 +698,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     Arrows move the cursor, Page Up/Down jump by a visual page, Enter
     selects the highlighted thread, Ctrl+D opens the delete-confirmation
-    overlay, Tab/Shift+Tab rotate focus through the filter input and
-    column toggle checkboxes, and Esc dismisses. All bindings use
+    overlay, Tab/Shift+Tab rotate focus through the filter input, the
+    scope/sort/agent dropdowns, and the relative-timestamp and
+    column-visibility checkboxes, and Esc dismisses. All bindings use
     `priority=True` so they take precedence over the embedded filter
-    `Input` and checkbox widgets; vim-style `j`/`k` bindings are
+    `Input`, `Select`, and checkbox widgets; vim-style `j`/`k` bindings are
     deliberately omitted because they would prevent typing those letters
     into the always-focused filter input.
     """
@@ -1285,7 +1286,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                     yield Static("Options", classes="thread-controls-title")
                     yield Static(
                         (
-                            "Tab through scope, sort, and column options. "
+                            "Tab through scope, sort, agent, and column options. "
                             "Column visibility persists between sessions."
                         ),
                         classes="thread-controls-help",
@@ -2174,14 +2175,6 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             help_widget.update(self._build_help_text())
         except NoMatches:
             logger.debug("Help widget #thread-help not found during update")
-
-        with contextlib.suppress(NoMatches):
-            sort_select = self.query_one(f"#{_SORT_SELECT_ID}", Select)
-            value = (
-                _SORT_VALUE_UPDATED if self._sort_by_updated else _SORT_VALUE_CREATED
-            )
-            if sort_select.value != value:
-                sort_select.value = value
 
     def _update_controls_overflow_hint(self) -> None:
         """Show an ellipsis when the options pane has hidden rows below."""

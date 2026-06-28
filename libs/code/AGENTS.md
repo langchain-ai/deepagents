@@ -133,3 +133,14 @@ To add a new slash command: (1) add a `SlashCommand` entry to `COMMANDS`, (2) se
 - `Settings.has_*` property in `config.py` — only needed if referenced by `detect_provider()` fallback logic
 
 Model discovery, credential checking, and UI integration are automatic once `PROVIDER_API_KEY_ENV` is populated and the `langchain-*` package is installed.
+
+## Recovering from structured-output validation failures on batched work
+
+When a tool result (typically from `js_eval` or another code-interpreter tool) reports `StructuredOutputValidationError` referencing `response_format` — i.e. the model's structured output was truncated or otherwise invalid JSON — the failure is almost always driven by an oversized N-item batch exceeding the model's structured-output token budget. Do not retry the same call shape.
+
+- Identify the batch parameter (the `N` items being generated or processed in a single call).
+- Halve `N` and retry the call with the smaller batch, chunking the remainder. Continue halving on repeated structured-output failures.
+- If `N` is already `≤ 1`, surface the structured-output failure to the user as a hard error. Do not loop.
+- Never retry the same batch shape more than once against the same `StructuredOutputValidationError` class — the second attempt will fail the same way and burns tokens for no progress.
+
+For N-item aggregate workflows (tournaments, ranked lists, batch generation), prefer the `n-item-aggregate-workflow` built-in skill, which defaults to a generation chunk size of 8 and lowers the chunk size automatically on a structured-output validation failure.

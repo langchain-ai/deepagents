@@ -8747,7 +8747,7 @@ class DeepAgentsApp(App):
                 "Commands: /quit, /agents, /auth, /clear, /force-clear, "
                 "/copy, /goal, /offload, /editor, "
                 "/mcp, /model [--model-params JSON] [--default], "
-                "/notifications, /reload, /restart, /rubric, /criteria, "
+                "/notifications, /reload, /restart, /rubric, "
                 "/skill:<name>, /remember, "
                 "/skill-creator, /theme, /timestamps, /tokens, /threads, /trace, "
                 "/update, /auto-update, /install, /changelog, /docs, "

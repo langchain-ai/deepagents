@@ -483,7 +483,7 @@ class TestFireworksSessionSettings:
         assert captured[0].model is request.model
         assert captured[0].model_settings == {
             "prompt_cache_key": "thread-123",
-            "extra_headers": {"x-multi-turn-session-id": "thread-123"},
+            "extra_headers": {"x-session-affinity": "thread-123"},
         }
 
     def test_existing_headers_preserved_and_session_affinity_not_overwritten(
@@ -509,7 +509,6 @@ class TestFireworksSessionSettings:
             "extra_headers": {
                 "Authorization": "Bearer custom",
                 "X-Session-Affinity": "custom-session",
-                "x-multi-turn-session-id": "thread-123",
             }
         }
 
@@ -545,7 +544,7 @@ class TestFireworksSessionSettings:
         assert captured[0].model is override
         assert captured[0].model_settings == {
             "prompt_cache_key": "thread-123",
-            "extra_headers": {"x-multi-turn-session-id": "thread-123"},
+            "extra_headers": {"x-session-affinity": "thread-123"},
         }
 
     async def test_async_fireworks_model_gets_session_settings(self) -> None:
@@ -563,7 +562,7 @@ class TestFireworksSessionSettings:
 
         assert captured[0].model_settings == {
             "prompt_cache_key": "thread-123",
-            "extra_headers": {"x-multi-turn-session-id": "thread-123"},
+            "extra_headers": {"x-session-affinity": "thread-123"},
         }
 
     def test_empty_thread_id_skips_session_settings(self) -> None:
@@ -616,17 +615,15 @@ class TestFireworksSessionSettings:
 
         assert captured[0].model_settings == {
             "prompt_cache_key": "custom-cache",
-            "extra_headers": {"x-multi-turn-session-id": "thread-123"},
+            "extra_headers": {"x-session-affinity": "thread-123"},
         }
 
-    def test_existing_multi_turn_header_case_insensitive(self) -> None:
-        """A differently-cased multi-turn header is not duplicated."""
+    def test_existing_session_affinity_header_case_insensitive(self) -> None:
+        """A differently-cased session-affinity header is not duplicated."""
         request = _make_request(
             self._fireworks_model(),
             context=CLIContext(thread_id="thread-123"),
-            model_settings={
-                "extra_headers": {"X-Multi-Turn-Session-ID": "custom-multi"}
-            },
+            model_settings={"extra_headers": {"X-Session-Affinity": "custom-session"}},
         )
         captured: list[ModelRequest] = []
 
@@ -635,8 +632,7 @@ class TestFireworksSessionSettings:
         )
 
         assert captured[0].model_settings == {
-            "prompt_cache_key": "thread-123",
-            "extra_headers": {"X-Multi-Turn-Session-ID": "custom-multi"},
+            "extra_headers": {"X-Session-Affinity": "custom-session"},
         }
 
     def test_caller_model_settings_not_mutated(self) -> None:

@@ -82,11 +82,8 @@ _ANTHROPIC_ONLY_SETTINGS: set[str] = {"cache_control"}
 `AnthropicPromptCachingMiddleware`) that are not accepted by other providers and
 must be stripped on cross-provider swap."""
 
-_FIREWORKS_MULTI_TURN_SESSION_HEADER = "x-multi-turn-session-id"
-"""Fireworks header populated from the active Deep Agents Code thread ID."""
-
 _FIREWORKS_SESSION_AFFINITY_HEADER = "x-session-affinity"
-"""Legacy Fireworks prompt-cache affinity header."""
+"""Fireworks prompt-cache affinity header populated from the active thread ID."""
 
 
 def _has_header(headers: Mapping[object, object], target: str) -> bool:
@@ -105,9 +102,9 @@ def _with_fireworks_session_settings(
 ) -> dict[str, Any] | None:
     """Return model settings with Fireworks session settings added if needed.
 
-    Existing settings are preserved and never overwritten. `prompt_cache_key` is
-    the preferred typed form for prompt-cache affinity; the raw
-    `x-session-affinity` header is also treated as caller-provided affinity.
+    Existing settings are preserved and never overwritten. Missing
+    `x-session-affinity` headers are populated directly so Fireworks can route
+    the conversation to the prompt-cache session for the active thread.
 
     Returns:
         A new `model_settings` dict with the missing session settings added, or
@@ -127,13 +124,12 @@ def _with_fireworks_session_settings(
         return None
 
     updated: dict[str, Any] = {}
-    if "prompt_cache_key" not in model_settings and not _has_header(
-        headers, _FIREWORKS_SESSION_AFFINITY_HEADER
-    ):
+    has_session_affinity = _has_header(headers, _FIREWORKS_SESSION_AFFINITY_HEADER)
+    if "prompt_cache_key" not in model_settings and not has_session_affinity:
         updated["prompt_cache_key"] = thread_id
 
-    if not _has_header(headers, _FIREWORKS_MULTI_TURN_SESSION_HEADER):
-        headers[_FIREWORKS_MULTI_TURN_SESSION_HEADER] = thread_id
+    if not has_session_affinity:
+        headers[_FIREWORKS_SESSION_AFFINITY_HEADER] = thread_id
         updated["extra_headers"] = headers
 
     if not updated:

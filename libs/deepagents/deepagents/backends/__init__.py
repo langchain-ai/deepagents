@@ -5,6 +5,7 @@ from deepagents.backends.context_hub import ContextHubBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.langsmith import LangSmithSandbox
 from deepagents.backends.local_shell import DEFAULT_EXECUTE_TIMEOUT, LocalShellBackend
+from deepagents.backends.persistence import persists_to_filesystem
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import (
@@ -25,4 +26,5 @@ __all__ = [
     "NamespaceFactory",
     "StateBackend",
     "StoreBackend",
+    "persists_to_filesystem",
 ]

@@ -16,6 +16,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents._tools import _apply_tool_description_overrides, _tool_name
 from deepagents._version import __version__
+from deepagents.backends import FilesystemBackend
 from deepagents.graph import (
     _REQUIRED_MIDDLEWARE_CLASSES,
     _REQUIRED_MIDDLEWARE_NAMES,
@@ -75,6 +76,27 @@ class TestCreateDeepAgentMetadata:
         agent = create_deep_agent(model=model)
         assert agent.config is not None
         assert agent.config["metadata"]["ls_integration"] == "deepagents"
+
+    def test_persists_to_filesystem_defaults_false(self) -> None:
+        """Default backend is StateBackend, which doesn't persist to filesystem."""
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        agent = create_deep_agent(model=model)
+        assert agent.config is not None
+        assert agent.config["metadata"]["persists_to_filesystem"] is False
+
+    def test_persists_to_filesystem_true_for_filesystem_backend(self, tmp_path):
+        """FilesystemBackend should set persists_to_filesystem to True."""
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        agent = create_deep_agent(model=model, backend=FilesystemBackend())
+        assert agent.config is not None
+        assert agent.config["metadata"]["persists_to_filesystem"] is True
+
+    def test_persists_to_filesystem_false_for_factory_backend(self) -> None:
+        """Factory backends can't be checked at compile time, so metadata is False."""
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        agent = create_deep_agent(model=model, backend=lambda _rt: FilesystemBackend())
+        assert agent.config is not None
+        assert agent.config["metadata"]["persists_to_filesystem"] is False
 
 
 class TestProfileForModel:

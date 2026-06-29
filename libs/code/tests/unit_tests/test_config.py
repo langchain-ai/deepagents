@@ -2219,16 +2219,25 @@ class TestLangsmithSecretRedaction:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """When the SDK cannot disable tracing, enable env vars are cleared.
+        """When the SDK cannot disable tracing, all enable env vars are cleared.
 
         This is the worst-case fail-closed path: redaction setup raised and the
-        SDK's `configure(enabled=False)` raised too, so the only remaining barrier
-        is removing the env vars the LangChain tracer falls back to.
+        SDK's `configure(enabled=False)` raised too, so the only remaining
+        barrier is removing every env var the LangChain tracer falls back to —
+        both the canonical names and their `DEEPAGENTS_CODE_`-prefixed forms.
         """
         import os
 
+        from deepagents_code.config import _TRACING_ENABLE_ENV_VARS
+        from deepagents_code.model_config import _ENV_PREFIX
+
         monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_test")
-        monkeypatch.setenv("LANGSMITH_TRACING", "true")
+        enable_vars = [
+            *_TRACING_ENABLE_ENV_VARS,
+            *(f"{_ENV_PREFIX}{var}" for var in _TRACING_ENABLE_ENV_VARS),
+        ]
+        for var in enable_vars:
+            monkeypatch.setenv(var, "true")
 
         with (
             patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
@@ -2237,7 +2246,32 @@ class TestLangsmithSecretRedaction:
         ):
             assert configure_langsmith_secret_redaction() is False
 
-        assert "LANGSMITH_TRACING" not in os.environ
+        for var in enable_vars:
+            assert var not in os.environ, f"{var} should have been cleared"
+
+    def test_fails_closed_when_redaction_toggle_lookup_raises(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An unexpected error from the redaction-toggle lookup fails closed.
+
+        `is_langsmith_redaction_enabled()` runs inside the fail-closed boundary,
+        so even an unexpected exception there disables tracing rather than
+        escaping the function and leaving tracing live but unredacted.
+        """
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_test")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+
+        with (
+            patch(
+                "deepagents_code.config.is_langsmith_redaction_enabled",
+                side_effect=RuntimeError("boom"),
+            ),
+            patch("langsmith.configure") as configure,
+        ):
+            assert configure_langsmith_secret_redaction() is False
+
+        configure.assert_called_once_with(enabled=False)
 
     def test_reconfigures_on_each_call(
         self,

@@ -565,7 +565,27 @@ async def execute_task_textual(
         message_content = final_input
 
     thread_id = session_state.thread_id
-    config = build_stream_config(thread_id, assistant_id, sandbox_type=sandbox_type)
+    # Advance the per-thread turn markers (coding-agent-v1 turn_id/turn_number)
+    # once per user prompt, before building the stream config. `session_state`
+    # is duck-typed (`Any`): the production `TextualSessionState` always has
+    # `advance_turn`, but lightweight callers/test doubles may not, so probe for
+    # it and degrade to no turn markers rather than raising.
+    advance_turn = getattr(session_state, "advance_turn", None)
+    if callable(advance_turn):
+        turn_id, turn_number = advance_turn()
+    else:
+        turn_id, turn_number = None, None
+    # `build_stream_config` does blocking git filesystem reads and may shell out
+    # to `git`; offload it so the Textual event loop stays responsive. Advancing
+    # the turn markers above is pure/cheap and stays on the loop.
+    config = await asyncio.to_thread(
+        build_stream_config,
+        thread_id,
+        assistant_id,
+        sandbox_type=sandbox_type,
+        turn_id=turn_id,
+        turn_number=turn_number,
+    )
 
     await dispatch_hook("session.start", {"thread_id": thread_id})
 

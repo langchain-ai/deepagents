@@ -1217,10 +1217,17 @@ async def run_non_interactive(
 
     thread_id = generate_thread_id()
 
+    # One user turn per process: fresh turn id, turn_number 1.
+    from uuid import uuid4
+
     from deepagents_code.config import build_stream_config
 
     config: RunnableConfig = build_stream_config(
-        thread_id, assistant_id, sandbox_type=sandbox_type
+        thread_id,
+        assistant_id,
+        sandbox_type=sandbox_type,
+        turn_id=str(uuid4()),
+        turn_number=1,
     )
 
     thread_url_lookup: ThreadUrlLookupState | None = None

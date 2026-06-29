@@ -1141,6 +1141,24 @@ class _ThreadHistoryPayload:
     """Persisted `_model_spec` from the checkpoint, or `""` for legacy threads
     saved before model persistence existed."""
 
+    rubric: str | None = None
+    """Persisted sticky rubric, if any."""
+
+    goal_objective: str | None = None
+    """Persisted active goal objective, if any."""
+
+    goal_status: str | None = None
+    """Persisted active goal status, if any."""
+
+    goal_rubric: str | None = None
+    """Persisted accepted goal criteria, if any."""
+
+    pending_goal_objective: str | None = None
+    """Persisted pending goal objective, if any."""
+
+    pending_goal_rubric: str | None = None
+    """Persisted pending goal criteria, if any."""
+
 
 def _new_thread_id() -> str:
     """Deferred-import wrapper around `sessions.generate_thread_id`.
@@ -1987,6 +2005,9 @@ class DeepAgentsApp(App):
 
         self._active_goal: str | None = None
         """Goal objective accepted by the user and backed by the active rubric."""
+
+        self._goal_status: str | None = None
+        """Status for the active goal (`active`, `blocked`, or `complete`)."""
 
         self._pending_goal_objective: str | None = None
         """Goal objective awaiting user acceptance of proposed criteria."""
@@ -7378,6 +7399,46 @@ class DeepAgentsApp(App):
         await self._mount_message(UserMessage(command))
         await self._mount_message(AppMessage(msg))
 
+    def _goal_state_update(self) -> dict[str, Any]:
+        """Build checkpoint state for TUI-owned goal/rubric metadata.
+
+        Returns:
+            State update dict for the current goal/rubric metadata.
+        """
+        return {
+            "rubric": self._active_rubric,
+            "_goal_objective": self._active_goal,
+            "_goal_status": self._goal_status,
+            "_goal_rubric": self._active_rubric if self._active_goal else None,
+            "_pending_goal_objective": self._pending_goal_objective,
+            "_pending_goal_rubric": self._pending_goal_rubric,
+        }
+
+    async def _persist_goal_rubric_state(self) -> None:
+        """Persist TUI-owned goal/rubric metadata to the current thread."""
+        if not self._agent or not self._lc_thread_id:
+            return
+        config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
+        try:
+            await self._agent.aupdate_state(config, self._goal_state_update())
+        except Exception:
+            logger.warning("Failed to persist goal/rubric state", exc_info=True)
+            self.notify(
+                "Could not persist goal/rubric state for this thread.",
+                severity="warning",
+                markup=False,
+            )
+
+    def _restore_goal_rubric_state(self, payload: _ThreadHistoryPayload) -> None:
+        """Restore TUI-owned goal/rubric metadata from a thread payload."""
+        self._active_goal = payload.goal_objective
+        self._goal_status = payload.goal_status
+        self._active_rubric = payload.goal_rubric or payload.rubric
+        self._pending_goal_objective = payload.pending_goal_objective
+        self._pending_goal_rubric = payload.pending_goal_rubric
+        self._next_rubric = None
+        self._sync_status_rubric()
+
     async def _handle_goal_command(self, command: str) -> None:
         """Handle `/goal` as a user-approved rubric proposal workflow."""
         remainder = command.strip()[len("/goal") :].strip()
@@ -7406,11 +7467,13 @@ class DeepAgentsApp(App):
         if subcommand == "clear":
             await self._mount_message(UserMessage(command))
             self._active_goal = None
+            self._goal_status = None
             self._pending_goal_objective = None
             self._pending_goal_rubric = None
             self._active_rubric = None
             self._next_rubric = None
             self._sync_status_rubric()
+            await self._persist_goal_rubric_state()
             await self._mount_message(AppMessage("Goal and rubric cleared."))
             return
 
@@ -7422,7 +7485,8 @@ class DeepAgentsApp(App):
         """Render active or pending goal state."""
         lines: list[str] = []
         if self._active_goal:
-            lines.append(f"Active goal:\n{self._active_goal}")
+            status = self._goal_status or "active"
+            lines.append(f"Goal status: {status}\n{self._active_goal}")
         if self._active_rubric:
             lines.append(f"Accepted criteria:\n{self._active_rubric}")
         if self._pending_goal_objective and self._pending_goal_rubric:
@@ -7460,6 +7524,7 @@ class DeepAgentsApp(App):
             return
         self._pending_goal_objective = objective
         self._pending_goal_rubric = rubric
+        await self._persist_goal_rubric_state()
         await self._mount_message(
             AppMessage(
                 f"Proposed acceptance criteria for goal:\n{rubric}\n\n"
@@ -7507,11 +7572,13 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage("Usage: /goal edit <criteria>"))
             return
         self._active_goal = objective
+        self._goal_status = "active"
         self._active_rubric = rubric
         self._next_rubric = None
         self._pending_goal_objective = None
         self._pending_goal_rubric = None
         self._sync_status_rubric()
+        await self._persist_goal_rubric_state()
         await self._mount_message(
             AppMessage(
                 "Goal accepted. Rubric set.\n\n"
@@ -7564,9 +7631,11 @@ class DeepAgentsApp(App):
                 return
             self._active_rubric = arg
             self._active_goal = None
+            self._goal_status = None
             self._pending_goal_objective = None
             self._pending_goal_rubric = None
             self._sync_status_rubric()
+            await self._persist_goal_rubric_state()
             await self._mount_message(AppMessage("Rubric set."))
             return
 
@@ -7593,9 +7662,11 @@ class DeepAgentsApp(App):
             self._active_rubric = None
             self._next_rubric = None
             self._active_goal = None
+            self._goal_status = None
             self._pending_goal_objective = None
             self._pending_goal_rubric = None
             self._sync_status_rubric()
+            await self._persist_goal_rubric_state()
             await self._mount_message(AppMessage("Rubric cleared."))
             return
 
@@ -7685,9 +7756,11 @@ class DeepAgentsApp(App):
             return
         self._active_rubric = rubric
         self._active_goal = None
+        self._goal_status = None
         self._pending_goal_objective = None
         self._pending_goal_rubric = None
         self._sync_status_rubric()
+        await self._persist_goal_rubric_state()
         await self._mount_message(AppMessage(f"Rubric set from {path}."))
 
     async def _show_rubric_model_selector(self) -> None:
@@ -8996,10 +9069,37 @@ class DeepAgentsApp(App):
         )
         raw_spec = state_values.get("_model_spec")
         model_spec = raw_spec if isinstance(raw_spec, str) else ""
+        raw_rubric = state_values.get("rubric")
+        raw_goal_objective = state_values.get("_goal_objective")
+        raw_goal_status = state_values.get("_goal_status")
+        raw_goal_rubric = state_values.get("_goal_rubric")
+        raw_pending_goal_objective = state_values.get("_pending_goal_objective")
+        raw_pending_goal_rubric = state_values.get("_pending_goal_rubric")
+        payload = _ThreadHistoryPayload(
+            [],
+            context_tokens,
+            model_spec,
+            rubric=raw_rubric if isinstance(raw_rubric, str) else None,
+            goal_objective=(
+                raw_goal_objective if isinstance(raw_goal_objective, str) else None
+            ),
+            goal_status=raw_goal_status if isinstance(raw_goal_status, str) else None,
+            goal_rubric=raw_goal_rubric if isinstance(raw_goal_rubric, str) else None,
+            pending_goal_objective=(
+                raw_pending_goal_objective
+                if isinstance(raw_pending_goal_objective, str)
+                else None
+            ),
+            pending_goal_rubric=(
+                raw_pending_goal_rubric
+                if isinstance(raw_pending_goal_rubric, str)
+                else None
+            ),
+        )
         messages = state_values.get("messages", [])
 
         if not messages:
-            return _ThreadHistoryPayload([], context_tokens, model_spec)
+            return payload
 
         # RemoteGraph.aget_state returns values as raw JSON dicts; convert to
         # LangChain message objects so _convert_messages_to_data works.
@@ -9010,7 +9110,17 @@ class DeepAgentsApp(App):
 
         # Offload conversion so large histories don't block the UI loop.
         data = await asyncio.to_thread(self._convert_messages_to_data, messages)
-        return _ThreadHistoryPayload(data, context_tokens, model_spec)
+        return _ThreadHistoryPayload(
+            data,
+            payload.context_tokens,
+            payload.model_spec,
+            rubric=payload.rubric,
+            goal_objective=payload.goal_objective,
+            goal_status=payload.goal_status,
+            goal_rubric=payload.goal_rubric,
+            pending_goal_objective=payload.pending_goal_objective,
+            pending_goal_rubric=payload.pending_goal_rubric,
+        )
 
     async def _adopt_resumed_model_if_needed(
         self,
@@ -9143,6 +9253,8 @@ class DeepAgentsApp(App):
                 if preloaded_payload is not None
                 else await self._fetch_thread_history_data(history_thread_id)
             )
+            self._restore_goal_rubric_state(payload)
+
             # Adopt the resumed thread's model (session-only) so the session
             # continues on the model it was last using, not the global default.
             # One-shot: only on the initial `-r` resume, never on in-session

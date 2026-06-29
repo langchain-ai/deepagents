@@ -9,8 +9,9 @@ Registers two checkpointed, schema-private channels and writes them from
     the turn, read from `runtime.context["effective_model"]`. Lets `dcode -r`
     restore the model the resumed thread was actually using instead of falling
     back to the user's global default.
+- `_goal_*` — TUI-owned goal/rubric metadata restored when resuming a thread.
 
-Both are facts the CLI reads back from `state_values` on thread resume so it
+These are facts the CLI reads back from `state_values` on thread resume so it
 can rehydrate the session without replaying or re-tokenizing history.
 
 Persisting from inside the graph (rather than via a separate client-side
@@ -47,6 +48,21 @@ class ResumeState(AgentState):
 
     _model_spec: Annotated[NotRequired[str], PrivateStateAttr]
     """`provider:model` spec effectively in use for the latest turn."""
+
+    _goal_objective: Annotated[NotRequired[str | None], PrivateStateAttr]
+    """Accepted goal objective restored by the TUI on resume."""
+
+    _goal_status: Annotated[NotRequired[str | None], PrivateStateAttr]
+    """Goal lifecycle status (`active`, `blocked`, `complete`, or `None`)."""
+
+    _goal_rubric: Annotated[NotRequired[str | None], PrivateStateAttr]
+    """Accepted rubric associated with `_goal_objective`."""
+
+    _pending_goal_objective: Annotated[NotRequired[str | None], PrivateStateAttr]
+    """Goal objective awaiting acceptance of proposed criteria."""
+
+    _pending_goal_rubric: Annotated[NotRequired[str | None], PrivateStateAttr]
+    """Proposed criteria awaiting user acceptance."""
 
 
 def _extract_context_tokens(message: AIMessage) -> int | None:

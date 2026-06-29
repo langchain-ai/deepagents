@@ -47,6 +47,7 @@ from deepagents_code.app import (
     _build_whats_new_message,
     _display_model_label,
     _extra_is_ready,
+    _ThreadHistoryPayload,
 )
 from deepagents_code.event_bus import ExternalEvent
 from deepagents_code.widgets.chat_input import ChatInput
@@ -4667,11 +4668,37 @@ class TestGoalCommand:
             await pilot.pause()
 
             assert app._active_goal == "add refresh tokens"
+            assert app._goal_status == "active"
             assert app._active_rubric == "- tests pass"
             assert app._pending_goal_objective is None
             assert app._pending_goal_rubric is None
             assert app._status_bar is not None
             assert app._status_bar.rubric_label == "✓ Rubric set"
+
+    async def test_goal_accept_persists_thread_metadata(self) -> None:
+        """Accepted goals should be checkpointed on the current thread."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            updater = SimpleNamespace(aupdate_state=AsyncMock())
+            app._agent = updater
+            app._lc_thread_id = "thread-1"
+            app._pending_goal_objective = "add refresh tokens"
+            app._pending_goal_rubric = "- tests pass"
+
+            await app._handle_command("/goal accept")
+
+            updater.aupdate_state.assert_awaited_once_with(
+                {"configurable": {"thread_id": "thread-1"}},
+                {
+                    "rubric": "- tests pass",
+                    "_goal_objective": "add refresh tokens",
+                    "_goal_status": "active",
+                    "_goal_rubric": "- tests pass",
+                    "_pending_goal_objective": None,
+                    "_pending_goal_rubric": None,
+                },
+            )
 
     async def test_goal_edit_accepts_revised_criteria(self) -> None:
         """`/goal edit` should accept user-edited criteria."""
@@ -4688,6 +4715,33 @@ class TestGoalCommand:
             assert app._active_rubric == "tests pass; docs updated"
             assert app._pending_goal_objective is None
             assert app._pending_goal_rubric is None
+
+    async def test_restore_goal_rubric_state_updates_status(self) -> None:
+        """Resumed thread metadata should restore TUI goal/rubric state."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            payload = _ThreadHistoryPayload(
+                [],
+                0,
+                "",
+                goal_objective="add refresh tokens",
+                goal_status="blocked",
+                goal_rubric="- tests pass",
+                rubric="- fallback rubric",
+                pending_goal_objective="draft goal",
+                pending_goal_rubric="- draft criteria",
+            )
+
+            app._restore_goal_rubric_state(payload)
+
+            assert app._active_goal == "add refresh tokens"
+            assert app._goal_status == "blocked"
+            assert app._active_rubric == "- tests pass"
+            assert app._pending_goal_objective == "draft goal"
+            assert app._pending_goal_rubric == "- draft criteria"
+            assert app._status_bar is not None
+            assert app._status_bar.rubric_label == "✓ Rubric set"
 
     async def test_goal_clear_clears_goal_and_rubric(self) -> None:
         """`/goal clear` should clear goal-backed rubric state."""

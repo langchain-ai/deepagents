@@ -343,6 +343,17 @@ REGISTRY: tuple[Model, ...] = (
         "Fireworks",
     ),
     Model(
+        "fireworks:accounts/fireworks/models/nemotron-3-ultra-nvfp4",
+        frozenset(
+            {
+                "harbor:open-fireworks",
+                "harbor:fireworks",
+            }
+        ),
+        "Nemotron 3 Ultra NVFP4",
+        "Fireworks",
+    ),
+    Model(
         "fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking",
         frozenset(
             {

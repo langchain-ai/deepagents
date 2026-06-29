@@ -77,6 +77,7 @@ on:
           - "fireworks:accounts/fireworks/models/minimax-m2p7"
           - "fireworks:accounts/fireworks/models/minimax-m3"
           - "fireworks:accounts/fireworks/models/nvidia-nemotron-3-super-120b-a12b-fp8"
+          - "fireworks:accounts/fireworks/models/nemotron-3-ultra-nvfp4"
           - "fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking"
           - "google_genai:gemini-2.5-flash"
           - "google_genai:gemini-2.5-pro"

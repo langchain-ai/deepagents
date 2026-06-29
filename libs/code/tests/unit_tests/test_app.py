@@ -4695,6 +4695,7 @@ class TestGoalCommand:
                     "_goal_objective": "add refresh tokens",
                     "_goal_status": "active",
                     "_goal_rubric": "- tests pass",
+                    "_goal_status_note": None,
                     "_pending_goal_objective": None,
                     "_pending_goal_rubric": None,
                 },

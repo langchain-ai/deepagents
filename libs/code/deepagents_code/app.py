@@ -1153,6 +1153,9 @@ class _ThreadHistoryPayload:
     goal_rubric: str | None = None
     """Persisted accepted goal criteria, if any."""
 
+    goal_status_note: str | None = None
+    """Persisted evidence or blocker note, if any."""
+
     pending_goal_objective: str | None = None
     """Persisted pending goal objective, if any."""
 
@@ -2008,6 +2011,9 @@ class DeepAgentsApp(App):
 
         self._goal_status: str | None = None
         """Status for the active goal (`active`, `blocked`, or `complete`)."""
+
+        self._goal_status_note: str | None = None
+        """Evidence or blocker note recorded by the model's goal tool."""
 
         self._pending_goal_objective: str | None = None
         """Goal objective awaiting user acceptance of proposed criteria."""
@@ -7410,6 +7416,7 @@ class DeepAgentsApp(App):
             "_goal_objective": self._active_goal,
             "_goal_status": self._goal_status,
             "_goal_rubric": self._active_rubric if self._active_goal else None,
+            "_goal_status_note": self._goal_status_note,
             "_pending_goal_objective": self._pending_goal_objective,
             "_pending_goal_rubric": self._pending_goal_rubric,
         }
@@ -7433,6 +7440,7 @@ class DeepAgentsApp(App):
         """Restore TUI-owned goal/rubric metadata from a thread payload."""
         self._active_goal = payload.goal_objective
         self._goal_status = payload.goal_status
+        self._goal_status_note = payload.goal_status_note
         self._active_rubric = payload.goal_rubric or payload.rubric
         self._pending_goal_objective = payload.pending_goal_objective
         self._pending_goal_rubric = payload.pending_goal_rubric
@@ -7468,6 +7476,7 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             self._active_goal = None
             self._goal_status = None
+            self._goal_status_note = None
             self._pending_goal_objective = None
             self._pending_goal_rubric = None
             self._active_rubric = None
@@ -7487,6 +7496,8 @@ class DeepAgentsApp(App):
         if self._active_goal:
             status = self._goal_status or "active"
             lines.append(f"Goal status: {status}\n{self._active_goal}")
+        if self._goal_status_note:
+            lines.append(f"Status note:\n{self._goal_status_note}")
         if self._active_rubric:
             lines.append(f"Accepted criteria:\n{self._active_rubric}")
         if self._pending_goal_objective and self._pending_goal_rubric:
@@ -7573,6 +7584,7 @@ class DeepAgentsApp(App):
             return
         self._active_goal = objective
         self._goal_status = "active"
+        self._goal_status_note = None
         self._active_rubric = rubric
         self._next_rubric = None
         self._pending_goal_objective = None
@@ -7632,6 +7644,7 @@ class DeepAgentsApp(App):
             self._active_rubric = arg
             self._active_goal = None
             self._goal_status = None
+            self._goal_status_note = None
             self._pending_goal_objective = None
             self._pending_goal_rubric = None
             self._sync_status_rubric()
@@ -7663,6 +7676,7 @@ class DeepAgentsApp(App):
             self._next_rubric = None
             self._active_goal = None
             self._goal_status = None
+            self._goal_status_note = None
             self._pending_goal_objective = None
             self._pending_goal_rubric = None
             self._sync_status_rubric()
@@ -9073,6 +9087,7 @@ class DeepAgentsApp(App):
         raw_goal_objective = state_values.get("_goal_objective")
         raw_goal_status = state_values.get("_goal_status")
         raw_goal_rubric = state_values.get("_goal_rubric")
+        raw_goal_status_note = state_values.get("_goal_status_note")
         raw_pending_goal_objective = state_values.get("_pending_goal_objective")
         raw_pending_goal_rubric = state_values.get("_pending_goal_rubric")
         payload = _ThreadHistoryPayload(
@@ -9085,6 +9100,9 @@ class DeepAgentsApp(App):
             ),
             goal_status=raw_goal_status if isinstance(raw_goal_status, str) else None,
             goal_rubric=raw_goal_rubric if isinstance(raw_goal_rubric, str) else None,
+            goal_status_note=(
+                raw_goal_status_note if isinstance(raw_goal_status_note, str) else None
+            ),
             pending_goal_objective=(
                 raw_pending_goal_objective
                 if isinstance(raw_pending_goal_objective, str)
@@ -9118,6 +9136,7 @@ class DeepAgentsApp(App):
             goal_objective=payload.goal_objective,
             goal_status=payload.goal_status,
             goal_rubric=payload.goal_rubric,
+            goal_status_note=payload.goal_status_note,
             pending_goal_objective=payload.pending_goal_objective,
             pending_goal_rubric=payload.pending_goal_rubric,
         )

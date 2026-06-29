@@ -58,6 +58,9 @@ class ResumeState(AgentState):
     _goal_rubric: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Accepted rubric associated with `_goal_objective`."""
 
+    _goal_status_note: Annotated[NotRequired[str | None], PrivateStateAttr]
+    """Evidence or blocker note recorded by `update_goal`."""
+
     _pending_goal_objective: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Goal objective awaiting acceptance of proposed criteria."""
 

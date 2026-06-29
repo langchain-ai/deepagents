@@ -1491,9 +1491,10 @@ def create_cli_agent(
     # and writes them from `after_model` (token count from the latest
     # `AIMessage.usage_metadata`, model spec from `context["effective_model"]`).
     # The CLI reads them back from `state_values` on thread resume.
+    from deepagents_code.goal_tools import GoalToolsMiddleware
     from deepagents_code.resume_state import ResumeStateMiddleware
 
-    agent_middleware.append(ResumeStateMiddleware())
+    agent_middleware.extend([ResumeStateMiddleware(), GoalToolsMiddleware()])
 
     # Add ask_user middleware (must be early so its tool is available)
     if enable_ask_user:

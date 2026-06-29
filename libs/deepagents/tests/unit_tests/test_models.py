@@ -1221,7 +1221,11 @@ class TestNemotronUltraProfile:
         assert "<final_answer_completeness>" in profile.system_prompt_suffix
 
     def test_nemotron_ultra_bundles_middleware(self) -> None:
-        """The profile ships its three middleware in order (suffix + middleware bundle)."""
+        """The profile ships its middleware in order (suffix + middleware bundle).
+
+        Includes the GLM-5.2 behavioral middleware (Finalize, Ramble) pulled in to
+        target the budget-timeout and ramble failure modes.
+        """
         profile = _get_harness_profile("NVIDIA:nvidia/nemotron-3-ultra-550b-a55b")
         assert profile is not None
         names = [type(m).__name__ for m in profile.materialize_extra_middleware()]
@@ -1230,11 +1234,34 @@ class TestNemotronUltraProfile:
             "ToolRetryMiddleware",
             "NemotronToolMessageShim",
             "NemotronTextToolCallParser",
+            "FinalizeMiddleware",
+            "RambleMiddleware",
         ]
 
     def test_nemotron_ultra_does_not_apply_to_other_nvidia_models(self) -> None:
         """Per-model keys keep other NVIDIA-catalog models unchanged."""
         assert _get_harness_profile("NVIDIA:nvidia/llama-3.1-nemotron-nano-8b") is None
+
+    def test_nemotron_ultra_has_completion_discipline_blocks(self) -> None:
+        """Carry verification + batching guidance pulled from GLM-5.2.
+
+        The earlier 'don't reconsider' clause that conflicted with verifying
+        before declaring done is removed.
+        """
+        profile = _get_harness_profile("NVIDIA:nvidia/nemotron-3-ultra-550b-a55b")
+        assert profile is not None
+        suffix = profile.system_prompt_suffix
+        assert "<verification_discipline>" in suffix
+        assert "<work_in_batches>" in suffix
+        # pypi-server fix: persist a service beyond the launching shell, re-verify fresh
+        assert "persistent service" in suffix
+        assert "fresh" in suffix
+        # torch / write-compressor fix: don't trust a happy-path check you picked
+        assert "not a proxy" in suffix
+        # reconciled: the conflicting premature-completion phrasing is removed
+        assert "second-guess" not in suffix
+        # kept: the anti-loop tool line still present
+        assert "never re-issue the same failing call" in suffix
 
     def test_tool_message_shim_fills_empty_content(self) -> None:
         """The shim replaces empty tool content; non-empty content is untouched."""

@@ -38,6 +38,10 @@ from langchain.agents.middleware import ToolRetryMiddleware
 from langchain.agents.middleware.types import AgentMiddleware, ExtendedModelResponse, ModelResponse
 from langchain_core.messages import AIMessage, ToolMessage
 
+from deepagents.profiles.harness._fireworks_glm_5p2_middleware import (
+    FinalizeMiddleware,
+    RambleMiddleware,
+)
 from deepagents.profiles.harness.harness_profiles import (
     HarnessProfile,
     _register_harness_profile_impl,
@@ -297,8 +301,54 @@ Verify state with tools instead of recalling it: read a file before describing i
 </grounding>
 
 <reasoning_discipline>
-Reason only as much as needed to choose the next action, then act. Do not re-derive or second-guess a conclusion you have already reached; once a step is settled, proceed rather than reconsider it. If a tool call fails, read the error and change the call before retrying — never re-issue the same failing call unchanged.
+Reason only as much as needed to choose the next action, then act. If a tool call fails, read the error and change the call before retrying — never re-issue the same failing call unchanged.
 </reasoning_discipline>
+
+<verification_discipline>
+Before treating a task as done:
+
+- Cover every output and constraint. Re-read the request and list every output
+  it names — each file path, and each field, section, format, name, ordering,
+  value range, or "all vs. one" rule stated about it. Confirm each one against
+  your work (`ls`, `cat`); a single missing output or unmet constraint leaves
+  the task unfinished.
+
+- Verify the real behavior, not a proxy. Exercise the actual required operation
+  end-to-end against adversarial and boundary inputs — the specific scenarios,
+  parameter names, and edge cases the task describes — not a happy-path case you
+  picked yourself. A check that only runs inputs you chose can pass while the
+  behavior is still wrong.
+
+- Make it reproducible from a clean state. Your work has to function for someone
+  starting fresh, not only in the shell you built it in. A service must keep
+  running on its own — a managed or persistent service, not a process tied to
+  the shell that launched it (which dies when that shell exits). A script must
+  run using only what is already installed; if you installed something ad hoc to
+  make it work, it will fail elsewhere. Confirm it from a brand-new shell —
+  restart the service, open a fresh session, re-run the script — not just where
+  you built it.
+
+- Stay within the task's scope. Modify only what the task asks you to produce or
+  change, and don't reach into state it never named — don't rewrite shared
+  history, migrate schemas, or regenerate or delete files you weren't asked to.
+  This limits what you touch, not how much you do: doing the full work a task
+  needs — installing packages, configuring and starting services, building out a
+  complete setup — is expected, not a violation. Once your output is computed and
+  cross-checked, record it and stop; don't launch another long run just to
+  re-confirm a result you've already validated.
+</verification_discipline>
+
+<work_in_batches>
+When iterating — building, testing, debugging, or reverse-engineering — do as
+much as possible per command rather than one probe per turn. Script the whole
+cycle (build, run, check) so it prints one consolidated result you can act on,
+instead of running a command, reading a single value, and stopping. When
+inspecting an unknown file, binary, or data structure, extract the specific
+values you need in one pass rather than querying them one at a time. If one step
+is unavoidably long (a large training, sampling, or build run), start it in the
+background with a timeout and poll for completion, rather than blocking on a
+single multi-minute command.
+</work_in_batches>
 
 <completion>
 Do only what the task requires, then stop and give a concise final answer.
@@ -334,24 +384,37 @@ When advising on an operational workflow, support process, automation, or routin
 """Text appended to the assembled base system prompt."""
 
 
+def _build_extra_middleware() -> list[AgentMiddleware]:
+    """Build fresh middleware instances for each assembled stack.
+
+    Used as the profile's ``extra_middleware`` factory so each stack (main agent,
+    general-purpose subagent, declarative subagents) gets its own instances rather
+    than sharing per-run state — `FinalizeMiddleware` and `RambleMiddleware` (pulled
+    from the GLM-5.2 profile) track per-run nudge state.
+    """
+    return [
+        ReadFileContinuationNoticeMiddleware(),
+        ToolRetryMiddleware(
+            max_retries=1,
+            tools=list(_FILESYSTEM_TOOLS),
+            on_failure="continue",
+            initial_delay=0.0,
+            backoff_factor=1.0,
+            max_delay=0.0,
+            jitter=False,
+        ),
+        NemotronToolMessageShim(),
+        NemotronTextToolCallParser(),
+        FinalizeMiddleware(),
+        RambleMiddleware(),
+    ]
+
+
 def register() -> None:
     """Register the built-in Nemotron 3 Ultra harness profile (suffix + middleware)."""
     profile = HarnessProfile(
         system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX,
-        extra_middleware=[
-            ReadFileContinuationNoticeMiddleware(),
-            ToolRetryMiddleware(
-                max_retries=1,
-                tools=list(_FILESYSTEM_TOOLS),
-                on_failure="continue",
-                initial_delay=0.0,
-                backoff_factor=1.0,
-                max_delay=0.0,
-                jitter=False,
-            ),
-            NemotronToolMessageShim(),
-            NemotronTextToolCallParser(),
-        ],
+        extra_middleware=_build_extra_middleware,
     )
     for spec in _NEMOTRON_ULTRA_MODEL_SPECS:
         _register_harness_profile_impl(spec, profile)

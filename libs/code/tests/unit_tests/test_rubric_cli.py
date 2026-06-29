@@ -158,6 +158,12 @@ class TestServerConfigRubric:
         assert restored.rubric_model == "anthropic:claude-sonnet-4-6"
         assert restored.rubric_max_iterations == 5
 
+    def test_empty_rubric_model_env_clears_override(self) -> None:
+        env = {f"{SERVER_ENV_PREFIX}RUBRIC_MODEL": ""}
+        with patch.dict(os.environ, env, clear=False):
+            restored = ServerConfig.from_env()
+        assert restored.rubric_model is None
+
     def test_from_cli_args_forwards_rubric_settings(self) -> None:
         config = ServerConfig.from_cli_args(
             project_context=None,

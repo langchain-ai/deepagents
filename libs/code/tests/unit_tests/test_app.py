@@ -4744,6 +4744,33 @@ class TestGoalCommand:
             assert app._status_bar is not None
             assert app._status_bar.rubric_label == "✓ Rubric set"
 
+    async def test_sync_goal_rubric_state_refreshes_agent_tool_updates(self) -> None:
+        """Agent-side `update_goal` changes should update live TUI state."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._lc_thread_id = "thread-1"
+            app._active_goal = "add refresh tokens"
+            app._goal_status = "active"
+            app._active_rubric = "- tests pass"
+
+            fetch = AsyncMock(
+                return_value={
+                    "_goal_objective": "add refresh tokens",
+                    "_goal_status": "complete",
+                    "_goal_rubric": "- tests pass",
+                    "_goal_status_note": "tests pass",
+                }
+            )
+            with patch.object(app, "_get_thread_state_values", fetch):
+                await app._sync_goal_rubric_state_from_thread()
+
+            fetch.assert_awaited_once_with("thread-1")
+            assert app._active_goal == "add refresh tokens"
+            assert app._goal_status == "complete"
+            assert app._goal_status_note == "tests pass"
+            assert app._active_rubric == "- tests pass"
+
     async def test_goal_clear_clears_goal_and_rubric(self) -> None:
         """`/goal clear` should clear goal-backed rubric state."""
         app = DeepAgentsApp(agent=MagicMock())

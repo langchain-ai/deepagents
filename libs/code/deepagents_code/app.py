@@ -7418,6 +7418,58 @@ class DeepAgentsApp(App):
         self._next_rubric = None
         self._sync_status_rubric()
 
+    async def _sync_goal_rubric_state_from_thread(self) -> None:
+        """Refresh TUI-owned goal/rubric metadata from the active checkpoint."""
+        if not self._lc_thread_id:
+            return
+        try:
+            state_values = await self._get_thread_state_values(self._lc_thread_id)
+        except Exception:
+            logger.debug("Failed to refresh goal/rubric state", exc_info=True)
+            return
+        rubric = state_values.get("rubric")
+        goal_objective = state_values.get("_goal_objective")
+        goal_status = state_values.get("_goal_status")
+        goal_rubric = state_values.get("_goal_rubric")
+        goal_status_note = state_values.get("_goal_status_note")
+        pending_goal_objective = state_values.get("_pending_goal_objective")
+        pending_goal_rubric = state_values.get("_pending_goal_rubric")
+        payload = _ThreadHistoryPayload(
+            [],
+            0,
+            "",
+            rubric=rubric if isinstance(rubric, str) else None,
+            goal_objective=(
+                goal_objective if isinstance(goal_objective, str) else None
+            ),
+            goal_status=goal_status if isinstance(goal_status, str) else None,
+            goal_rubric=goal_rubric if isinstance(goal_rubric, str) else None,
+            goal_status_note=(
+                goal_status_note if isinstance(goal_status_note, str) else None
+            ),
+            pending_goal_objective=(
+                pending_goal_objective
+                if isinstance(pending_goal_objective, str)
+                else None
+            ),
+            pending_goal_rubric=(
+                pending_goal_rubric if isinstance(pending_goal_rubric, str) else None
+            ),
+        )
+        if not any(
+            (
+                payload.rubric,
+                payload.goal_objective,
+                payload.goal_status,
+                payload.goal_rubric,
+                payload.goal_status_note,
+                payload.pending_goal_objective,
+                payload.pending_goal_rubric,
+            )
+        ):
+            return
+        self._restore_goal_rubric_state(payload)
+
     async def _handle_goal_command(self, command: str) -> None:
         """Handle `/goal` as a user-approved rubric proposal workflow."""
         remainder = command.strip()[len("/goal") :].strip()
@@ -8867,6 +8919,7 @@ class DeepAgentsApp(App):
         # Agent-executed commands and tools can mutate repo state (e.g. git
         # checkout inside an execute call), so refresh the footer on turn end.
         self._schedule_git_branch_refresh()
+        await self._sync_goal_rubric_state_from_thread()
 
         try:
             await self._maybe_drain_deferred()

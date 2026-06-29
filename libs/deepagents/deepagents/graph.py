@@ -720,13 +720,13 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 matched_classes=_subagent_matched_classes,
                 matched_names=_subagent_matched_names,
             )
-            # Inherit only the main-agent middleware entries that replace an
-            # existing default in this subagent's stack. Subagent-spec entries
-            # are applied second so the spec always wins over the main agent.
+            # Inherit main-agent overrides for default slots the spec hasn't claimed;
+            # spec entries follow so they win for any overlapping names.
+            _spec_mw = spec.get("middleware", [])
+            _spec_names = {m.name for m in _spec_mw}
             _subagent_names = {m.name for m in subagent_middleware}
-            _inheritable_from_main = [m for m in (middleware or []) if m.name in _subagent_names]
-            subagent_middleware = _apply_custom_middleware(subagent_middleware, _inheritable_from_main, _subagent_original_name_to_index)
-            subagent_middleware = _apply_custom_middleware(subagent_middleware, spec.get("middleware", []), _subagent_original_name_to_index)
+            _combined_mw = [m for m in (middleware or []) if m.name in _subagent_names and m.name not in _spec_names] + _spec_mw
+            subagent_middleware = _apply_custom_middleware(subagent_middleware, _combined_mw, _subagent_original_name_to_index)
             subagent_middleware = _apply_excluded_middleware(
                 subagent_middleware,
                 _subagent_profile,
@@ -800,10 +800,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             matched_classes=_main_matched_classes,
             matched_names=_main_matched_names,
         )
-        # Inherit only the main-agent middleware entries that replace an existing
-        # default (i.e. whose name is already in the GP stack). This propagates
-        # overrides (e.g. a custom FilesystemMiddleware) without leaking caller-
-        # specific additions that don't belong in the GP subagent.
+    # Inherit only middleware that overrides an existing default in the GP stack.
+    # This propagates overrides (e.g. a custom FilesystemMiddleware) without
+    # carrying over middleware that's specific to the main agent.
         _gp_names = {m.name for m in gp_middleware}
         _gp_inheritable = [m for m in (middleware or []) if m.name in _gp_names]
         gp_middleware = _apply_custom_middleware(gp_middleware, _gp_inheritable, _gp_original_name_to_index)

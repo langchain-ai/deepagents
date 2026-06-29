@@ -2458,3 +2458,137 @@ class TestUserMiddlewareOverride:
 
         stack = mock_create.call_args.kwargs["middleware"]
         assert any(m is custom for m in stack)
+
+
+class TestSubagentMiddlewareInheritance:
+    """GP and declarative subagents inherit main-agent overrides for default middleware slots."""
+
+    _GP_NAME = "general-purpose"
+
+    def _setup(
+        self,
+        user_mw: list[Any],
+        subagents: list[SubAgent] | None = None,
+        *,
+        enable_gp: bool = True,
+    ) -> tuple[list[Any], SubAgentMiddleware]:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "mwinhrt",
+                HarnessProfile(
+                    general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=enable_gp),
+                ),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(
+                    model="mwinhrt:some-model",
+                    subagents=subagents or [],
+                    middleware=user_mw,
+                )
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+        main_stack = mock_create.call_args.kwargs["middleware"]
+        sub_mw = next(m for m in main_stack if isinstance(m, SubAgentMiddleware))
+        return main_stack, sub_mw
+
+    def test_gp_subagent_inherits_main_middleware_override(self) -> None:
+        """A main-agent SummarizationMiddleware override is propagated to the GP subagent."""
+        custom = SummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+            trigger=("tokens", 50_000),
+        )
+        _, sub_mw = self._setup([custom], enable_gp=True)
+        gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
+        summ_entries = [m for m in gp_spec["middleware"] if isinstance(m, _DeepAgentsSummarizationMiddleware)]
+        assert len(summ_entries) == 1
+        assert summ_entries[0] is custom
+
+    def test_declarative_subagent_inherits_main_middleware_override(self) -> None:
+        """A declarative subagent with no spec override inherits the main-agent's SummarizationMiddleware."""
+        custom = SummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+            trigger=("tokens", 50_000),
+        )
+        subagent: SubAgent = {
+            "name": "helper",
+            "description": "A helper subagent",
+            "system_prompt": "You are a helper.",
+        }
+        _, sub_mw = self._setup([custom], subagents=[subagent], enable_gp=False)
+        helper_spec = next(s for s in sub_mw._subagents if s.get("name") == "helper")
+        summ_entries = [m for m in helper_spec["middleware"] if isinstance(m, _DeepAgentsSummarizationMiddleware)]
+        assert len(summ_entries) == 1
+        assert summ_entries[0] is custom
+
+    def test_declarative_subagent_spec_wins_over_main_override(self) -> None:
+        """When a declarative subagent provides its own middleware, it takes precedence over the main-agent override."""
+        main_custom = SummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+            trigger=("tokens", 50_000),
+        )
+        spec_custom = SummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+            trigger=("tokens", 30_000),
+        )
+        subagent: SubAgent = {
+            "name": "helper",
+            "description": "A helper subagent",
+            "system_prompt": "You are a helper.",
+            "middleware": [spec_custom],
+        }
+        _, sub_mw = self._setup([main_custom], subagents=[subagent], enable_gp=False)
+        helper_spec = next(s for s in sub_mw._subagents if s.get("name") == "helper")
+        summ_entries = [m for m in helper_spec["middleware"] if isinstance(m, _DeepAgentsSummarizationMiddleware)]
+        assert len(summ_entries) == 1
+        assert summ_entries[0] is spec_custom
+        assert summ_entries[0] is not main_custom
+
+    def test_non_default_middleware_not_inherited_by_gp(self) -> None:
+        """Custom middleware whose name doesn't match any GP default is not inherited."""
+
+        class _ParentOnlyMW(SummarizationMiddleware):
+            @property
+            def name(self) -> str:
+                return "ParentOnlyMW"
+
+        custom = _ParentOnlyMW(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+        )
+        _, sub_mw = self._setup([custom], enable_gp=True)
+        gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
+        assert not any(m is custom for m in gp_spec["middleware"])
+
+    def test_non_default_middleware_not_inherited_by_declarative_subagent(self) -> None:
+        """Custom middleware whose name isn't in the subagent's default stack is not inherited."""
+
+        class _ParentOnlyMW(SummarizationMiddleware):
+            @property
+            def name(self) -> str:
+                return "ParentOnlyMW"
+
+        custom = _ParentOnlyMW(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+        )
+        subagent: SubAgent = {
+            "name": "helper",
+            "description": "A helper subagent",
+            "system_prompt": "You are a helper.",
+        }
+        _, sub_mw = self._setup([custom], subagents=[subagent], enable_gp=False)
+        helper_spec = next(s for s in sub_mw._subagents if s.get("name") == "helper")
+        assert not any(m is custom for m in helper_spec["middleware"])

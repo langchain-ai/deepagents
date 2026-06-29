@@ -215,6 +215,16 @@ REGISTRY: tuple[Model, ...] = (
         "Baseten",
     ),
     Model(
+        "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
+        frozenset(
+            {
+                "harbor:baseten",
+            }
+        ),
+        "Nemotron 3 Ultra 550B A55B",
+        "Baseten",
+    ),
+    Model(
         "baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct",
         frozenset({"eval:set0", "eval:baseten", "harbor:set0", "harbor:baseten"}),
         "Qwen3 Coder 480B A35B",

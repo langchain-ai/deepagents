@@ -64,6 +64,7 @@ on:
           - "baseten:moonshotai/Kimi-K2.5"
           - "baseten:moonshotai/Kimi-K2.6"
           - "baseten:nvidia/Nemotron-120B-A12B"
+          - "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B"
           - "baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct"
           - "fireworks:accounts/fireworks/models/deepseek-v3p2"
           - "fireworks:accounts/fireworks/models/deepseek-v3-0324"

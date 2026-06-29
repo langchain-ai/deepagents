@@ -7559,6 +7559,20 @@ class DeepAgentsApp(App):
         await self._mount_message(UserMessage(command))
         await self._propose_goal_rubric(objective)
 
+    @staticmethod
+    def _goal_usage_text() -> str:
+        """Return user-facing usage instructions for goal commands."""
+        return (
+            "Usage:\n"
+            "  /goal <objective>\n"
+            "  /goal accept\n"
+            "  /goal edit <criteria>\n"
+            "  /goal show\n"
+            "  /goal clear\n\n"
+            "Use /goal when you want dcode to propose acceptance criteria from "
+            "an objective. Use /rubric when you already know the criteria."
+        )
+
     async def _show_goal_state(self) -> None:
         """Render active or pending goal state."""
         lines: list[str] = []
@@ -7580,8 +7594,16 @@ class DeepAgentsApp(App):
                     ),
                 ],
             )
+        if lines:
+            lines.append(
+                "Commands: /goal accept, /goal edit <criteria>, /goal clear"
+                if self._pending_goal_objective
+                else "Commands: /goal clear, /goal show"
+            )
+            await self._mount_message(AppMessage("\n\n".join(lines)))
+            return
         await self._mount_message(
-            AppMessage("\n\n".join(lines) if lines else "No goal set.")
+            AppMessage("No goal set.\n\n" + self._goal_usage_text())
         )
 
     async def _propose_goal_rubric(self, objective: str) -> None:

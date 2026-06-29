@@ -22,7 +22,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/editor` |  | Open prompt in an external editor ($EDITOR) |
 | `/feedback` |  | Send feedback or report an issue |
 | `/force-clear` |  | Stop active work, clear the chat, and start a new thread |
-| `/goal` |  | Draft and accept criteria for a persistent goal |
+| `/goal` |  | Set a persistent objective by drafting acceptance criteria |
 | `/help` |  | Show help and available commands |
 | `/install` |  | Install an optional integration |
 | `/mcp` |  | Manage MCP servers and authentication |
@@ -33,7 +33,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/reload` |  | Reload environment and config |
 | `/remember` |  | Save useful context to memory or skills |
 | `/restart` |  | Restart the agent server |
-| `/rubric` | `/criteria` | Set acceptance criteria for rubric grading |
+| `/rubric` | `/criteria` | Set explicit acceptance criteria for rubric grading |
 | `/skill-creator` |  | Create or refine agent skills |
 | `/theme` |  | Change color theme |
 | `/threads` |  | Browse and resume past threads |

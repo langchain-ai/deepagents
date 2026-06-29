@@ -1557,8 +1557,9 @@ def parse_args() -> argparse.Namespace:
         dest="goal",
         metavar="TEXT",
         help="Goal objective to turn into acceptance criteria before a "
-        "non-interactive run. The generated criteria are used as the active "
-        "rubric. Requires -n or piped stdin.",
+        "non-interactive run. Because headless mode cannot pause for approval, "
+        "the generated criteria are used immediately as the active rubric. "
+        "Requires -n or piped stdin.",
     )
     parser.add_argument(
         "--rubric",

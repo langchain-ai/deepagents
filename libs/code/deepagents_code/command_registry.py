@@ -106,7 +106,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/goal",
-        description="Draft and accept criteria for a persistent goal",
+        description="Set a persistent objective by drafting acceptance criteria",
         bypass_tier=BypassTier.QUEUED,
         hidden_keywords="objective criteria acceptance rubric",
         argument_hint="[<objective>|accept|edit|show|clear]",
@@ -178,7 +178,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/rubric",
-        description="Set acceptance criteria for rubric grading",
+        description="Set explicit acceptance criteria for rubric grading",
         bypass_tier=BypassTier.IMMEDIATE_UI,
         hidden_keywords="criteria acceptance grader grading evaluation",
         argument_hint="[set|next|file|show|clear|model]",

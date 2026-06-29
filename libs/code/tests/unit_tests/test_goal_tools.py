@@ -11,8 +11,63 @@ from deepagents_code.goal_tools import (
     GoalToolsMiddleware,
     GoalToolState,
     _goal_snapshot,
+    _rubric_snapshot,
     _update_goal_command,
 )
+
+
+def test_rubric_snapshot_without_rubric() -> None:
+    """`get_rubric` should report inactive state when no criteria are set."""
+    assert _rubric_snapshot({}) == {
+        "active": False,
+        "criteria": None,
+        "source": None,
+        "grading_status": None,
+    }
+
+
+def test_rubric_snapshot_prefers_current_invocation_rubric() -> None:
+    """The public `rubric` state is what `RubricMiddleware` grades this turn."""
+    assert _rubric_snapshot(
+        {
+            "rubric": "- one-shot criteria",
+            "_sticky_rubric": "- sticky criteria",
+            "_goal_objective": "ship it",
+            "_goal_rubric": "- goal criteria",
+            "_rubric_status": "needs_revision",
+        }
+    ) == {
+        "active": True,
+        "criteria": "- one-shot criteria",
+        "source": "invocation",
+        "grading_status": "needs_revision",
+    }
+
+
+def test_rubric_snapshot_identifies_goal_rubric() -> None:
+    """A goal-backed rubric should be labeled as goal criteria."""
+    assert _rubric_snapshot(
+        {
+            "rubric": "- tests pass",
+            "_goal_objective": "ship it",
+            "_goal_rubric": "- tests pass",
+        }
+    ) == {
+        "active": True,
+        "criteria": "- tests pass",
+        "source": "goal",
+        "grading_status": None,
+    }
+
+
+def test_rubric_snapshot_restores_sticky_rubric_without_public_input() -> None:
+    """Persisted sticky rubric should be visible outside an active turn."""
+    assert _rubric_snapshot({"_sticky_rubric": "- sticky criteria"}) == {
+        "active": True,
+        "criteria": "- sticky criteria",
+        "source": "sticky",
+        "grading_status": None,
+    }
 
 
 def test_goal_snapshot_without_goal_preserves_rubric() -> None:
@@ -135,6 +190,17 @@ def test_update_goal_rejects_empty_note() -> None:
     assert message.tool_call_id == "call-1"
 
 
+def test_get_rubric_tool_invokes_snapshot() -> None:
+    """The registered `get_rubric` tool should delegate to `_rubric_snapshot`."""
+    middleware = GoalToolsMiddleware()
+    get_rubric = next(t for t in middleware.tools if t.name == "get_rubric")
+    result = get_rubric.func(  # ty: ignore[unresolved-attribute]
+        state={"rubric": "- tests pass"}
+    )
+    assert result["criteria"] == "- tests pass"
+    assert result["active"] is True
+
+
 def test_get_goal_tool_invokes_snapshot() -> None:
     """The registered `get_goal` tool should delegate to `_goal_snapshot`."""
     middleware = GoalToolsMiddleware()
@@ -248,6 +314,7 @@ def test_goal_tool_state_marks_goal_fields_private() -> None:
         "_goal_status",
         "_goal_rubric",
         "_goal_status_note",
+        "_sticky_rubric",
     ):
         assert "PrivateStateAttr" in str(annotations[field])
     # `rubric` is the public `RubricMiddleware` input and stays non-private.
@@ -255,6 +322,10 @@ def test_goal_tool_state_marks_goal_fields_private() -> None:
 
 
 def test_goal_tools_middleware_registers_tools() -> None:
-    """Middleware should expose exactly the constrained goal tools."""
+    """Middleware should expose exactly the constrained rubric and goal tools."""
     middleware = GoalToolsMiddleware()
-    assert [tool.name for tool in middleware.tools] == ["get_goal", "update_goal"]
+    assert [tool.name for tool in middleware.tools] == [
+        "get_rubric",
+        "get_goal",
+        "update_goal",
+    ]

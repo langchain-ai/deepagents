@@ -280,7 +280,8 @@ class TestHelpBodyDrift:
         commands_section = match.group(1)
 
         help_cmds = set(re.findall(r"/[a-z][-a-z]*", commands_section))
-        registry_cmds = {cmd.name for cmd in COMMANDS}
+        registry_names = {cmd.name for cmd in COMMANDS}
+        registry_aliases = {alias for cmd in COMMANDS for alias in cmd.aliases}
 
         # Commands intentionally omitted from the help body
         excluded = {"/version"}
@@ -288,8 +289,10 @@ class TestHelpBodyDrift:
         # /skill:<name> is dynamic, not a registry entry; regex extracts "/skill"
         help_cmds.discard("/skill")
 
-        missing = registry_cmds - help_cmds - excluded
-        extra = help_cmds - registry_cmds
+        # Canonical names must appear in help; aliases (e.g. `/criteria`, `/q`)
+        # may also be advertised but are never required.
+        missing = registry_names - help_cmds - excluded
+        extra = help_cmds - registry_names - registry_aliases
 
         assert not missing, (
             f"Commands in COMMANDS but missing from /help body: {missing}\n"

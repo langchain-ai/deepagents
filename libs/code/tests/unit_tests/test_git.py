@@ -409,6 +409,20 @@ class TestParseRepositoryMetadata:
             "langchain-ai/deepagents",
         )
 
+    def test_https_trailing_slash_after_git_suffix(self) -> None:
+        assert parse_repository_metadata("https://github.com/org/repo.git/") == (
+            "https://github.com/org/repo",
+            "github",
+            "org/repo",
+        )
+
+    def test_scp_style_ssh_trailing_slash_after_git_suffix(self) -> None:
+        assert parse_repository_metadata("git@github.com:org/repo.git/") == (
+            "https://github.com/org/repo",
+            "github",
+            "org/repo",
+        )
+
     def test_strips_embedded_credentials(self) -> None:
         result = parse_repository_metadata(
             "https://user:token@gitlab.com/group/project.git"

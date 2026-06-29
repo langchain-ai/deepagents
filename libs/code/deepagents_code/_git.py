@@ -493,7 +493,7 @@ def parse_repository_metadata(remote_url: str) -> tuple[str, str, str] | None:
         host = userhost.rsplit("@", 1)[-1].lower()
         repo_path = repo_path.lstrip("/")
 
-    repo_path = repo_path.removesuffix(".git").strip("/")
+    repo_path = repo_path.strip("/").removesuffix(".git").strip("/")
     if not host or not repo_path:
         return None
 

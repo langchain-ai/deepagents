@@ -49,14 +49,17 @@ Before treating a task as done:
   restart the service, open a fresh session, re-run the script — not just where
   you built it.
 
-- Stay within the task's scope. Modify only what the task asks you to produce or
-  change, and don't reach into state it never named — don't rewrite shared
-  history, migrate schemas, or regenerate or delete files you weren't asked to.
-  This limits what you touch, not how much you do: doing the full work a task
-  needs — installing packages, configuring and starting services, building out a
-  complete setup — is expected, not a violation. Once your output is computed and
-  cross-checked, record it and stop; don't launch another long run just to
-  re-confirm a result you've already validated.
+- Fix the present; don't rewrite the past. Do all the work the task asks for —
+  installing packages, configuring and starting services, building a complete
+  setup is expected. But the deliverable is the current state: the working files
+  and live config. When the thing you're changing also appears in a historical or
+  shared record — commit history, logs, backups — correcting the present is
+  enough; rewriting that record (rebasing or amending old commits, force-pushing,
+  history-filtering tools) to erase that the old value ever existed is a separate,
+  destructive act — don't do it unless the task explicitly asks. "Remove X from
+  the repository" means make the current files correct, not rewrite their history.
+  Once your output is computed and cross-checked, record it and stop; don't launch
+  another long run just to re-confirm a result you've already validated.
 </verification_discipline>
 
 <work_in_batches>

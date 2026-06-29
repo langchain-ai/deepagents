@@ -315,7 +315,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     skills: list[str] | None = None,
     memory: list[str] | None = None,
     permissions: list[FilesystemPermission] | None = None,
-    disable_tools: frozenset[str] = frozenset(),
     backend: BackendProtocol | BackendFactory | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
     response_format: ResponseFormat[ResponseT] | type[ResponseT] | dict[str, Any] | None = None,
@@ -597,10 +596,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         cache: The cache to use for the agent.
 
             Passed through to [`create_agent`][langchain.agents.create_agent].
-        disable_tools: Set of filesystem tool names to remove from the agent's
-            tool list. `read_file` cannot be disabled and raises `ValueError`
-            if included. Applies to the main agent and all subagents.
-
     Returns:
         A configured deep agent.
 
@@ -666,6 +661,17 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
     backend = backend if backend is not None else StateBackend()
 
+    # Extract a caller-supplied FilesystemMiddleware from `middleware`, if any.
+    # Its disable_tools is forwarded to the main agent and GP subagent so both
+    # share the same tool restrictions without requiring a separate parameter.
+    _caller_fs_mw: FilesystemMiddleware | None = None
+    _caller_middleware: list[AgentMiddleware[Any, Any, Any]] = list(middleware)
+    for _i, _mw in enumerate(_caller_middleware):
+        if isinstance(_mw, FilesystemMiddleware):
+            _caller_fs_mw = cast("FilesystemMiddleware", _caller_middleware.pop(_i))
+            break
+    _main_disable_tools: frozenset[str] = _caller_fs_mw._disable_tools if _caller_fs_mw is not None else frozenset()
+
     # Process caller-supplied subagents first so the decision of whether to
     # auto-add the default general-purpose subagent can factor in an explicit
     # override, and so its middleware stack (including any factory-based
@@ -691,13 +697,22 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             # Resolve permissions: subagent's own rules take priority, else inherit parent's
             subagent_permissions = spec.get("permissions", permissions)
 
+            # Extract FilesystemMiddleware from spec's middleware (if provided).
+            # Its disable_tools replaces the default; the remainder is appended normally.
+            _spec_mw: list[AgentMiddleware[Any, Any, Any]] = list(spec.get("middleware", []))
+            _spec_fs_mw: FilesystemMiddleware | None = None
+            for _si, _smw in enumerate(_spec_mw):
+                if isinstance(_smw, FilesystemMiddleware):
+                    _spec_fs_mw = cast("FilesystemMiddleware", _spec_mw.pop(_si))
+                    break
+
             # Build middleware: base stack + skills (if specified) + user's middleware
             subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
                 TodoListMiddleware(),
                 FilesystemMiddleware(
                     backend=backend,
                     custom_tool_descriptions=_subagent_profile.tool_description_overrides,
-                    disable_tools=spec.get("disable_tools", frozenset()),
+                    disable_tools=_spec_fs_mw._disable_tools if _spec_fs_mw is not None else frozenset(),
                     _permissions=subagent_permissions,
                 ),
                 create_summarization_middleware(subagent_model, backend),
@@ -725,7 +740,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 matched_classes=_subagent_matched_classes,
                 matched_names=_subagent_matched_names,
             )
-            subagent_middleware = _apply_custom_middleware(subagent_middleware, spec.get("middleware", []), _subagent_original_name_to_index)
+            subagent_middleware = _apply_custom_middleware(subagent_middleware, _spec_mw, _subagent_original_name_to_index)
             subagent_middleware = _apply_excluded_middleware(
                 subagent_middleware,
                 _subagent_profile,
@@ -779,7 +794,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             FilesystemMiddleware(
                 backend=backend,
                 custom_tool_descriptions=_profile.tool_description_overrides,
-                disable_tools=disable_tools,
+                disable_tools=_main_disable_tools,
                 _permissions=permissions,
             ),
             create_summarization_middleware(model, backend),
@@ -845,7 +860,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         FilesystemMiddleware(
             backend=backend,
             custom_tool_descriptions=_profile.tool_description_overrides,
-            disable_tools=disable_tools,
+            disable_tools=_main_disable_tools,
             _permissions=permissions,
         )
     )
@@ -875,7 +890,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # Currently this supports agents deployed via LangSmith deployments.
         deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
 
-    # Harness-profile middleware goes between core middleware and memory so
+    # Harness-profile middleware goes between user middleware and memory so
     # that memory updates (which change the system prompt) don't invalidate the
     # Anthropic prompt cache prefix.
     deepagent_middleware.extend(_profile.materialize_extra_middleware())
@@ -905,7 +920,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         matched_classes=_main_matched_classes,
         matched_names=_main_matched_names,
     )
-    deepagent_middleware = _apply_custom_middleware(deepagent_middleware, middleware or [], _main_original_name_to_index)
+    deepagent_middleware = _apply_custom_middleware(deepagent_middleware, _caller_middleware, _main_original_name_to_index)
     deepagent_middleware = _apply_excluded_middleware(
         deepagent_middleware,
         _profile,

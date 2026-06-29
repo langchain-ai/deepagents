@@ -61,7 +61,10 @@ class SubAgent(TypedDict):
 
             Use the format `'provider:model-name'` (e.g., `'openai:gpt-5.5'`).
         middleware: Additional middleware for custom behavior, logging,
-            or rate limiting.
+            or rate limiting. To restrict filesystem tools, include a
+            `FilesystemMiddleware(disable_tools=...)` instance here — it
+            will be used as the subagent's filesystem middleware instead of
+            the default one.
         interrupt_on: Configure human-in-the-loop for specific tools.
 
             Requires a checkpointer.
@@ -119,14 +122,6 @@ class SubAgent(TypedDict):
     Rules are evaluated in declaration order; the first match wins.
     `FilesystemMiddleware` enforces these rules for the built-in filesystem
     tools on the subagent stack.
-    """
-
-    disable_tools: NotRequired[frozenset[str]]
-    """Filesystem tool names to remove from this subagent's tool list.
-
-    Accepts any subset of the tools provided by `FilesystemMiddleware`:
-    ``ls``, ``write_file``, ``edit_file``, ``delete``, ``glob``, ``grep``,
-    ``execute``. ``read_file`` cannot be disabled.
     """
 
     response_format: NotRequired[ResponseFormat[Any] | type | dict[str, Any]]

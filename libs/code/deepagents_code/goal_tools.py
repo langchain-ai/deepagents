@@ -43,12 +43,10 @@ RubricSource = Literal["goal", "sticky", "invocation"]
 
 GOAL_TOOLS_SYSTEM_PROMPT = """## Goal and Rubric Tools
 
-The user may set a persistent goal with `/goal` and acceptance criteria with `/rubric` or `/criteria`.
-Use `get_rubric` to inspect the current criteria.
-When a goal is active, use `get_goal` to inspect the objective, accepted criteria, and status.
-Use `update_goal` only when you have evidence that the goal is complete or blocked.
-Completion is only recorded after the accepted rubric is satisfied.
-Do not pause, resume, clear, replace, or create goals yourself; those are user-controlled lifecycle actions."""  # noqa: E501
+Use `get_rubric` to inspect active acceptance criteria before deciding whether work is
+complete.
+When a goal is active, use `get_goal` to inspect the objective and current status.
+Use `update_goal` only when you have evidence that the goal is complete or blocked."""
 """Model-visible guidance injected before each request by `GoalToolsMiddleware`."""
 
 ResponseT = TypeVar("ResponseT")

@@ -887,6 +887,15 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         settings_field="deepagents_langchain_project",
     ),
     ConfigOption(
+        key="tracing.langsmith_redact",
+        group="Tracing",
+        summary="Redact detected secrets from LangSmith agent traces before upload.",
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.LANGSMITH_REDACT,
+        toml_keys=("tracing", "langsmith_redact"),
+    ),
+    ConfigOption(
         key="tracing.user_id",
         group="Tracing",
         summary="User identifier attached to LangSmith trace metadata.",

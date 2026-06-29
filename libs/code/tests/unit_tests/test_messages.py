@@ -997,6 +997,41 @@ class TestToolCallMessageEditFileOutput:
             assert app.msg._has_expandable_output() is False
 
 
+class TestToolCallMessageSuccessStatus:
+    """A successful call with no output shows a "Success!" status marker."""
+
+    async def test_success_without_output_shows_success_status(self) -> None:
+        """edit_file (no visible output) shows the success marker instead of hiding."""
+        from deepagents_code.config import get_glyphs
+
+        app = _tool_msg_app("edit_file", {"file_path": "/tmp/f.py"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(
+                "Successfully replaced 1 instance(s) of the string in '/tmp/f.py'"
+            )
+            await pilot.pause()
+
+            assert app.msg._status_widget is not None
+            assert app.msg._status_widget.display is True
+            assert app.msg._status_widget.has_class("success")
+            content = app.msg._status_widget._Static__content  # ty: ignore
+            assert get_glyphs().checkmark in content.plain
+            assert "Success!" in content.plain
+
+    async def test_success_with_output_keeps_status_hidden(self) -> None:
+        """A tool whose output speaks for itself keeps the status hidden."""
+        app = _tool_msg_app("read_file", {"file_path": "/tmp/f.py"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("line one\nline two")
+            await pilot.pause()
+
+            assert app.msg._status_widget is not None
+            assert app.msg._status_widget.display is False
+            assert not app.msg._status_widget.has_class("success")
+
+
 class TestToolCallMessageExpandHint:
     """Tests for the preview/expand hint on collapsed tool output."""
 

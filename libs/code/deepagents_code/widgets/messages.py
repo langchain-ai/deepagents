@@ -1111,6 +1111,7 @@ class ToolCallMessage(Vertical):
             case "success":
                 self._status = "success"
                 self._output = output
+                self._show_success_status()
                 self._update_output_display()
             case "error":
                 self._status = "error"
@@ -1222,11 +1223,28 @@ class ToolCallMessage(Vertical):
         self._status = "success"
         # Strip redundant success trailer — the UI already conveys success
         self._output = _strip_success_exit_line(result)
-        if self._status_widget:
-            self._status_widget.remove_class("pending")
-            # Hide status on success - output speaks for itself
-            self._status_widget.display = False
+        self._show_success_status()
         self._update_output_display()
+
+    def _show_success_status(self) -> None:
+        """Render the status marker for a completed successful call.
+
+        When the call produces visible output it speaks for itself and the
+        status stays hidden; otherwise show a "Success!" marker so a completed
+        call (e.g. `edit_file`) isn't left without any outcome indicator.
+        """
+        if self._status_widget is None:
+            return
+        self._status_widget.remove_class("pending")
+        if self._format_output(self._output, is_preview=False).content.plain.strip():
+            self._status_widget.remove_class("success")
+            self._status_widget.display = False
+            return
+        glyph = get_glyphs().checkmark
+        colors = theme.get_theme_colors(self)
+        self._status_widget.add_class("success")
+        self._status_widget.update(Content.styled(f"{glyph} Success!", colors.success))
+        self._status_widget.display = True
 
     def set_error(self, error: str) -> None:
         """Mark the tool call as failed.

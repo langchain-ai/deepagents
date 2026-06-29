@@ -1,0 +1,21 @@
+libs/code/tests/unit_tests/test_command_registry.py
+  s_9992bef2fb2403::t_3848331a75c298 283-284,292-295
+libs/code/tests/unit_tests/test_goal_tools.py
+  s_9992bef2fb2403::t_2a078d947e0d03 14,19-72,193-203,317,325,327-331
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "160a8d430cff2bd6192a90fbaff8e831ef16d94e",
+  "prompts": {},
+  "sessions": {
+    "s_9992bef2fb2403": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "865cc8f0-b9fe-4ee9-956b-6f5fca0cbd6d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

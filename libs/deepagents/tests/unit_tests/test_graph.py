@@ -2471,6 +2471,7 @@ class TestSubagentMiddlewareInheritance:
         subagents: list[SubAgent] | None = None,
         *,
         enable_gp: bool = True,
+        excluded_middleware: frozenset[type[Any]] | None = None,
     ) -> tuple[list[Any], SubAgentMiddleware]:
         original = dict(_HARNESS_PROFILES)
         try:
@@ -2478,6 +2479,7 @@ class TestSubagentMiddlewareInheritance:
                 "mwinhrt",
                 HarnessProfile(
                     general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=enable_gp),
+                    excluded_middleware=excluded_middleware or frozenset(),
                 ),
             )
             fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
@@ -2592,3 +2594,42 @@ class TestSubagentMiddlewareInheritance:
         _, sub_mw = self._setup([custom], subagents=[subagent], enable_gp=False)
         helper_spec = next(s for s in sub_mw._subagents if s.get("name") == "helper")
         assert not any(m is custom for m in helper_spec["middleware"])
+
+    def test_gp_excluded_default_wins_over_inherited_override(self) -> None:
+        """Profile exclusion on a default GP slot wins even when the main agent supplies a replacement."""
+        custom = SummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+            trigger=("tokens", 50_000),
+        )
+        _, sub_mw = self._setup(
+            [custom],
+            enable_gp=True,
+            excluded_middleware=frozenset({_DeepAgentsSummarizationMiddleware}),
+        )
+        gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
+        assert not any(isinstance(m, _DeepAgentsSummarizationMiddleware) for m in gp_spec["middleware"])
+
+    def test_declarative_subagent_excluded_default_wins_over_inherited_override(self) -> None:
+        """Profile exclusion on a default subagent slot wins even when the main agent supplies a replacement."""
+        custom = SummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+            trigger=("tokens", 50_000),
+        )
+        # Subagent must specify the same model string so it resolves the "mwinhrt"
+        # profile (which carries the exclusion), rather than falling back to defaults.
+        subagent: SubAgent = {
+            "name": "helper",
+            "description": "A helper subagent",
+            "system_prompt": "You are a helper.",
+            "model": "mwinhrt:some-model",
+        }
+        _, sub_mw = self._setup(
+            [custom],
+            subagents=[subagent],
+            enable_gp=False,
+            excluded_middleware=frozenset({_DeepAgentsSummarizationMiddleware}),
+        )
+        helper_spec = next(s for s in sub_mw._subagents if s.get("name") == "helper")
+        assert not any(isinstance(m, _DeepAgentsSummarizationMiddleware) for m in helper_spec["middleware"])

@@ -121,6 +121,19 @@ class TestRubricGating:
         # The removed flag must not resurface in the guidance.
         assert "--rubric-file" not in result.stderr
 
+    def test_goal_without_non_interactive_errors(self) -> None:
+        result = _run_cli_main_devnull_stdin(["--goal", "add refresh tokens"])
+        assert result.returncode == 2, result.stderr
+        assert "--non-interactive" in result.stderr
+        assert "--goal" in result.stderr
+
+    def test_goal_and_rubric_are_mutually_exclusive(self) -> None:
+        result = _run_cli_main_devnull_stdin(
+            ["-n", "implement", "--goal", "do X", "--rubric", "tests pass"]
+        )
+        assert result.returncode == 2, result.stderr
+        assert "mutually exclusive" in result.stderr
+
 
 class TestServerConfigRubric:
     """Rubric grader settings round-trip through env serialization."""
@@ -174,9 +187,14 @@ class TestHeaderIndicator:
         header = _build_non_interactive_header("agent", "thread-1", rubric_active=True)
         assert "Rubric: active" in header.plain
 
+    def test_goal_active_marker(self) -> None:
+        header = _build_non_interactive_header("agent", "thread-1", goal_active=True)
+        assert "Goal: active" in header.plain
+
     def test_no_marker_when_inactive(self) -> None:
         header = _build_non_interactive_header("agent", "thread-1", rubric_active=False)
         assert "Rubric" not in header.plain
+        assert "Goal" not in header.plain
 
 
 def _render_event(data: dict) -> str:

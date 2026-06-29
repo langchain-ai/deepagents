@@ -103,14 +103,6 @@ _DEFERRED_START_NOTICE = (
     "Deep Agents will ask for credentials for the selected provider."
 )
 
-_GOAL_RUBRIC_SYSTEM_PROMPT = (
-    "You draft acceptance criteria for a coding agent goal.\n\n"
-    "Return only a concise markdown bullet list of criteria the user can review "
-    "before work begins. Each criterion should be concrete, testable, and framed "
-    "as a definition of done. Include criteria for tests, scope control, and "
-    "user-visible behavior when relevant. Do not start implementing the goal."
-)
-
 # Serializes process-local read-modify-write operations for `config.toml`.
 # Without this, overlapping global-theme and per-terminal-theme saves can each
 # read the same pre-mutation state and then clobber the other's keys.
@@ -164,27 +156,6 @@ def _read_text_file_expanding_user(path_arg: str) -> tuple[Path, str]:
     """
     path = Path(path_arg).expanduser()
     return path, path.read_text(encoding="utf-8")
-
-
-def _message_content_to_text(content: object) -> str:
-    """Convert chat-model message content to plain text.
-
-    Returns:
-        Plain-text representation of message content.
-    """
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for block in content:
-            if isinstance(block, str):
-                parts.append(block)
-            elif isinstance(block, dict):
-                text = block.get("text")
-                if isinstance(text, str):
-                    parts.append(text)
-        return "\n".join(parts)
-    return str(content)
 
 
 def _create_model_with_deepagents_import_lock(
@@ -7550,20 +7521,14 @@ class DeepAgentsApp(App):
         Returns:
             Proposed acceptance criteria text.
         """
-        from langchain_core.messages import HumanMessage, SystemMessage
+        from deepagents_code.goal_rubric import generate_goal_rubric
 
-        result = _create_model_with_deepagents_import_lock(
-            self._effective_model_spec(),
-            extra_kwargs=self._model_params_override,
-            profile_overrides=self._profile_override,
+        return generate_goal_rubric(
+            objective,
+            model_spec=self._effective_model_spec(),
+            model_params=self._model_params_override,
+            profile_override=self._profile_override,
         )
-        response = result.model.invoke(
-            [
-                SystemMessage(content=_GOAL_RUBRIC_SYSTEM_PROMPT),
-                HumanMessage(content=f"Goal:\n{objective}"),
-            ],
-        )
-        return _message_content_to_text(response.content)
 
     async def _accept_pending_goal_rubric(self) -> None:
         """Accept the pending model-proposed goal criteria."""

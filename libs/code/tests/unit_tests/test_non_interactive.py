@@ -1087,6 +1087,30 @@ class TestNonInteractivePrompt:
         assert user_msg["additional_kwargs"]["__skill"]["name"] == "code-review"
         assert user_msg["additional_kwargs"]["__skill"]["args"] == "review this patch"
 
+    async def test_run_agent_loop_adds_goal_metadata_to_stream_input(self) -> None:
+        """`--goal` runs should seed goal metadata alongside the rubric."""
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(return_value=_async_iter([]))
+        console = Console(quiet=True)
+
+        await _run_agent_loop(
+            mock_agent,
+            "implement refresh tokens",
+            {"configurable": {"thread_id": "thread-1"}},
+            console,
+            MagicMock(),
+            quiet=True,
+            rubric="- tests pass",
+            goal="add refresh tokens",
+        )
+
+        stream_input = mock_agent.astream.call_args.args[0]
+        assert stream_input["rubric"] == "- tests pass"
+        assert stream_input["_goal_objective"] == "add refresh tokens"
+        assert stream_input["_goal_status"] == "active"
+        assert stream_input["_goal_rubric"] == "- tests pass"
+        assert stream_input["_goal_status_note"] is None
+
     async def test_initial_skill_missing_returns_error_without_starting_server(
         self,
     ) -> None:

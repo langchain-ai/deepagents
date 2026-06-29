@@ -1553,6 +1553,14 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--goal",
+        dest="goal",
+        metavar="TEXT",
+        help="Goal objective to turn into acceptance criteria before a "
+        "non-interactive run. The generated criteria are used as the active "
+        "rubric. Requires -n or piped stdin.",
+    )
+    parser.add_argument(
         "--rubric",
         dest="rubric",
         metavar="TEXT|@PATH",
@@ -2693,9 +2701,23 @@ def cli_main() -> None:
             )
             sys.exit(2)
 
+        if (
+            getattr(args, "goal", None) is not None
+            and getattr(args, "rubric", None) is not None
+        ):
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --goal and --rubric are mutually "
+                "exclusive. Use --goal to generate criteria or --rubric to "
+                "provide them directly."
+            )
+            sys.exit(2)
+
         rubric_set = any(
             getattr(args, attr, None) is not None
             for attr in (
+                "goal",
                 "rubric",
                 "rubric_model",
                 "rubric_max_iterations",
@@ -2705,10 +2727,10 @@ def cli_main() -> None:
             from rich.console import Console as _Console
 
             _Console(stderr=True).print(
-                "[bold red]Error:[/bold red] --rubric/--rubric-model/"
+                "[bold red]Error:[/bold red] --goal/--rubric/--rubric-model/"
                 "--rubric-max-iterations require "
                 "--non-interactive (-n) or piped stdin\n"
-                "  dcode -n 'implement X' --rubric 'tests pass; minimal diff'"
+                "  dcode -n 'implement X' --goal 'add OAuth refresh handling'"
             )
             sys.exit(2)
 
@@ -3375,6 +3397,15 @@ def cli_main() -> None:
             )
             _warn_if_interpreter_disabled_by_sandbox(args)
 
+            goal_text = getattr(args, "goal", None)
+            if goal_text is not None and not goal_text.strip():
+                from rich.console import Console as _Console
+
+                _Console(stderr=True).print(
+                    "[bold red]Error:[/bold red] --goal must not be empty."
+                )
+                sys.exit(2)
+
             try:
                 rubric_text = _resolve_rubric_text(getattr(args, "rubric", None))
             except ValueError as exc:
@@ -3407,6 +3438,7 @@ def cli_main() -> None:
                             enable_interpreter=enable_interpreter,
                             interpreter_ptc=interpreter_ptc,
                             max_turns=getattr(args, "max_turns", None),
+                            goal=getattr(args, "goal", None),
                             rubric=rubric_text,
                             rubric_model=getattr(args, "rubric_model", None),
                             rubric_max_iterations=getattr(

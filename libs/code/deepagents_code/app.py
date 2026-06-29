@@ -10407,13 +10407,13 @@ class DeepAgentsApp(App):
 
         if pruned_ids:
             self._message_store.mark_pruned(pruned_ids)
-
-        # Drop any group summaries whose members were all pruned away so a
-        # stray collapsed line never lingers above the window.
-        for summary in list(self.query(ToolGroupSummary)):
-            if not summary.has_attached_members:
-                with suppress(Exception):
-                    await summary.remove()
+            # Drop any group summaries whose members were all pruned away so a
+            # stray collapsed line never lingers above the window. Only reachable
+            # when something was actually pruned this pass.
+            for summary in list(self.query(ToolGroupSummary)):
+                if not summary.has_attached_members:
+                    with suppress(Exception):
+                        await summary.remove()
 
     def _close_active_tool_group(self) -> None:
         """Finalize the open tool group into its collapsed past-tense form."""
@@ -10462,7 +10462,7 @@ class DeepAgentsApp(App):
             if isinstance(child, ToolCallMessage):
                 groupable = (
                     child.tool_name != "ask_user"
-                    and child._status == ToolStatus.SUCCESS
+                    and child.is_success
                     and not child.has_class("-grouped")
                 )
                 if not groupable:

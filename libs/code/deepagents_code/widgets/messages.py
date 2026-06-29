@@ -2326,6 +2326,21 @@ class ToolCallMessage(Vertical):
         return self._tool_name
 
     @property
+    def is_success(self) -> bool:
+        """Whether the tool completed successfully."""
+        return self._status == "success"
+
+    @property
+    def is_failed(self) -> bool:
+        """Whether the tool errored or was rejected (should stay visible)."""
+        return self._status in {"error", "rejected"}
+
+    @property
+    def is_pending(self) -> bool:
+        """Whether the tool has not finished (awaiting approval or running)."""
+        return self._status in {"pending", "running"}
+
+    @property
     def has_expandable_args(self) -> bool:
         """Whether the tool's args are large enough to deserve a collapsible block.
 
@@ -2557,8 +2572,6 @@ class ToolGroupSummary(Static):
     """
 
     _SPINNER_INTERVAL: ClassVar[float] = 0.1
-    _FAILED_STATUSES: ClassVar[frozenset[str]] = frozenset({"error", "rejected"})
-    _PENDING_STATUSES: ClassVar[frozenset[str]] = frozenset({"pending", "running"})
 
     _collapsed: var[bool] = var(True)
 
@@ -2584,10 +2597,13 @@ class ToolGroupSummary(Static):
         super().__init__("", **kwargs)
         self._tools = list(tools or [])
         self._collapsible = list(collapsible or [])
-        self._live = live
         self._finalized = not live
         self._spinner_pos = 0
         self._timer: Timer | None = None
+        # Cached summary phrasing, rebuilt only when membership changes (not on
+        # every spinner tick). None means "recompute on next render".
+        self._present_text: str | None = None
+        self._past_text: str | None = None
 
     def on_mount(self) -> None:
         """Apply initial visibility, render, and arm the spinner if live."""
@@ -2605,6 +2621,7 @@ class ToolGroupSummary(Static):
         for widget in extra:
             widget.add_class("-grouped")
             self._collapsible.append(widget)
+        self._present_text = self._past_text = None
         self._apply_visibility()
         self._render_line()
         self._sync_timer()
@@ -2634,10 +2651,6 @@ class ToolGroupSummary(Static):
         """Whether any collapsed widget is still attached to the DOM."""
         return any(widget.is_attached for widget in self._collapsible)
 
-    def set_collapsed(self, *, collapsed: bool) -> None:
-        """Set the collapsed state explicitly."""
-        self._collapsed = collapsed
-
     def toggle(self) -> None:
         """Toggle between collapsed and expanded."""
         self._collapsed = not self._collapsed
@@ -2658,21 +2671,25 @@ class ToolGroupSummary(Static):
         Returns:
             True if at least one member tool has not finished.
         """
-        return any(tool._status in self._PENDING_STATUSES for tool in self._tools)
+        return any(tool.is_pending for tool in self._tools)
 
     def _evict_failed(self) -> None:
         """Un-fold errored/rejected tools so failures stay visible."""
-        for tool in [t for t in self._tools if t._status in self._FAILED_STATUSES]:
+        failed = [t for t in self._tools if t.is_failed]
+        if not failed:
+            return
+        for tool in failed:
             self._tools.remove(tool)
             if tool in self._collapsible:
                 self._collapsible.remove(tool)
             tool.remove_class("-grouped")
             if tool.is_attached:
                 tool.display = True
+        self._present_text = self._past_text = None
 
     def _sync_timer(self) -> None:
         """Run the spinner timer only while live members are in progress."""
-        if self._live and not self._finalized and self._in_progress():
+        if not self._finalized and self._in_progress():
             if self._timer is None:
                 self._timer = self.set_interval(self._SPINNER_INTERVAL, self._tick)
         else:
@@ -2696,39 +2713,52 @@ class ToolGroupSummary(Static):
             if self.is_attached:
                 self.remove()
             return
-        if not self._in_progress():
+        in_progress = self._in_progress()
+        if not in_progress:
             self._stop_timer()
-        self._render_line()
+        self._render_line(in_progress=in_progress)
 
     def _apply_visibility(self) -> None:
         """Show or hide every folded widget per the collapsed state."""
         visible = not self._collapsed
         for widget in self._collapsible:
-            if widget.is_attached:
+            if widget.is_attached and widget.display != visible:
                 widget.display = visible
 
-    def _render_line(self) -> None:
-        """Refresh the summary line for the current tense and collapsed state."""
+    def _render_line(self, *, in_progress: bool | None = None) -> None:
+        """Refresh the summary line for the current tense and collapsed state.
+
+        Args:
+            in_progress: Pre-computed progress state to avoid re-scanning members
+                on the spinner hot path; recomputed when omitted.
+        """
         if not self.is_attached:
             return
-        names = [tool.tool_name for tool in self._tools]
-        glyphs = get_glyphs()
-        if not names:
+        if not self._tools:
             self.update(Content(""))
             return
-        if self._live and not self._finalized and self._in_progress():
+        glyphs = get_glyphs()
+        if in_progress is None:
+            in_progress = self._in_progress()
+        if not self._finalized and in_progress:
+            if self._present_text is None:
+                self._present_text = summarize_tool_group(
+                    [tool.tool_name for tool in self._tools], tense="present"
+                )
             frames = glyphs.spinner_frames
             spinner = frames[self._spinner_pos % len(frames)]
-            text = summarize_tool_group(names, tense="present")
-            self.update(Content(f"{spinner} {text}{glyphs.ellipsis}"))
+            self.update(Content(f"{spinner} {self._present_text}{glyphs.ellipsis}"))
         else:
             mark = (
                 glyphs.disclosure_collapsed
                 if self._collapsed
                 else glyphs.disclosure_expanded
             )
-            text = summarize_tool_group(names, tense="past")
-            self.update(Content(f"{mark} {text}"))
+            if self._past_text is None:
+                self._past_text = summarize_tool_group(
+                    [tool.tool_name for tool in self._tools], tense="past"
+                )
+            self.update(Content(f"{mark} {self._past_text}"))
 
 
 class DiffMessage(Static):

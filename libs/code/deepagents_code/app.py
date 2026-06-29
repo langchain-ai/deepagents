@@ -1616,6 +1616,7 @@ class DeepAgentsApp(App):
         resume_thread: str | None = None,
         initial_prompt: str | None = None,
         initial_skill: str | None = None,
+        initial_goal: str | None = None,
         startup_cmd: str | None = None,
         launch_init: bool = False,
         mcp_server_info: list[MCPServerInfo] | None = None,
@@ -1654,6 +1655,8 @@ class DeepAgentsApp(App):
                 Requires `server_kwargs` to be set; ignored otherwise.
             initial_prompt: Optional prompt to auto-submit when session starts
             initial_skill: Optional skill name to invoke when session starts.
+            initial_goal: Optional goal objective to draft criteria for when
+                session starts.
             startup_cmd: Optional shell command to run at startup before the
                 first prompt is accepted.
 
@@ -1802,6 +1805,14 @@ class DeepAgentsApp(App):
         """Skill name to auto-invoke after first paint (from `--skill`).
 
         Normalized to lowercase; `None` when not provided.
+        """
+
+        self._initial_goal = (
+            initial_goal.strip() if initial_goal and initial_goal.strip() else None
+        )
+        """Goal objective to draft criteria for after first paint (from `--goal`).
+
+        `None` when not provided.
         """
 
         self._startup_cmd = (
@@ -6104,9 +6115,13 @@ class DeepAgentsApp(App):
         return value.removeprefix(prefix)
 
     def _has_initial_submission(self) -> bool:
-        """Return whether startup should auto-submit a prompt or skill."""
-        return self._initial_skill is not None or bool(
-            self._initial_prompt and self._initial_prompt.strip(),
+        """Return whether startup should auto-submit prompt, skill, or goal."""
+        return (
+            self._initial_skill is not None
+            or self._initial_goal is not None
+            or bool(
+                self._initial_prompt and self._initial_prompt.strip(),
+            )
         )
 
     async def _run_session_start_sequence(self) -> None:
@@ -6287,6 +6302,9 @@ class DeepAgentsApp(App):
                     self._initial_skill,
                     self._initial_prompt or "",
                 )
+                return
+            if self._initial_goal is not None:
+                await self._handle_goal_command(f"/goal {self._initial_goal}")
                 return
             if self._initial_prompt and self._initial_prompt.strip():
                 await self._handle_user_message(self._initial_prompt)
@@ -8101,7 +8119,7 @@ class DeepAgentsApp(App):
         """Render current rubric state."""
         lines: list[str] = []
         if self._active_rubric:
-            lines.append(f"Sticky rubric:\n{self._active_rubric}")
+            lines.append(f"Rubric:\n{self._active_rubric}")
         if self._next_rubric:
             lines.append(f"Next-turn rubric:\n{self._next_rubric}")
         if self._rubric_model:
@@ -14811,6 +14829,7 @@ async def run_textual_app(
     resume_thread: str | None = None,
     initial_prompt: str | None = None,
     initial_skill: str | None = None,
+    initial_goal: str | None = None,
     startup_cmd: str | None = None,
     launch_init: bool = False,
     mcp_server_info: list[MCPServerInfo] | None = None,
@@ -14848,6 +14867,8 @@ async def run_textual_app(
             Resolved asynchronously during TUI startup.
         initial_prompt: Optional prompt to auto-submit when session starts.
         initial_skill: Optional skill name to invoke when session starts.
+        initial_goal: Optional goal objective to draft criteria for when
+            session starts.
         startup_cmd: Optional shell command to run at startup before the first
             prompt is accepted. Output is rendered in the transcript and
             non-zero exits warn but do not abort the session.
@@ -14896,6 +14917,7 @@ async def run_textual_app(
         resume_thread=resume_thread,
         initial_prompt=initial_prompt,
         initial_skill=initial_skill,
+        initial_goal=initial_goal,
         startup_cmd=startup_cmd,
         launch_init=launch_init,
         mcp_server_info=mcp_server_info,

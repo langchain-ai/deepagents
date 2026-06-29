@@ -180,6 +180,27 @@ class TestInitialPromptOnMount:
 
         assert submitted == [("code-review", "  keep leading whitespace", None)]
 
+    async def test_initial_goal_triggers_goal_review(self) -> None:
+        """When `--goal` is set, startup should draft goal criteria in TUI."""
+        mock_agent = MagicMock()
+        app = DeepAgentsApp(
+            agent=mock_agent,
+            thread_id="new-thread-123",
+            initial_goal="  add refresh tokens  ",
+        )
+        submitted: list[str] = []
+
+        async def capture(command: str) -> None:  # noqa: RUF029
+            submitted.append(command)
+
+        app._handle_goal_command = capture  # ty: ignore
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await pilot.pause()
+
+        assert submitted == ["/goal add refresh tokens"]
+
     async def test_initial_skill_runs_after_server_ready(self) -> None:
         """Deferred startup should invoke the requested skill after connect."""
         app = DeepAgentsApp(
@@ -481,6 +502,7 @@ class TestStartupSequence:
         [
             {"initial_prompt": "hello world"},
             {"initial_skill": "code-review"},
+            {"initial_goal": "add refresh tokens"},
         ],
     )
     async def test_resumed_model_adopts_before_initial_submission(
@@ -5161,6 +5183,20 @@ class TestRubricCommand:
                 "Usage:\n  /rubric set <criteria>" in str(w._content)
                 for w in app.query(AppMessage)
             )
+
+    async def test_rubric_show_labels_active_rubric_plainly(self) -> None:
+        """`/rubric show` should label the active criteria as just `Rubric`."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_rubric = "tests pass"
+
+            await app._handle_command("/rubric show")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Rubric:\ntests pass" in rendered
+            assert "Sticky rubric:" not in rendered
 
     async def test_rubric_set_passes_sticky_rubric_to_turn(self) -> None:
         """`/rubric set` should apply to subsequent TUI agent turns."""

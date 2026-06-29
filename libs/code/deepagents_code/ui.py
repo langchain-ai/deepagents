@@ -186,6 +186,10 @@ def show_help() -> None:
         "  --max-turns N              Max agentic turns before stopping (needs -n)"
     )
     console.print(
+        "  --goal TEXT                Draft goal criteria; opens review in TUI, "
+        "auto-applies with -n/stdin"
+    )
+    console.print(
         "  --rubric TEXT|@PATH        Acceptance criteria to grade against; "
         "'@path' reads a file relative to cwd, '~' ok (needs -n)"
     )

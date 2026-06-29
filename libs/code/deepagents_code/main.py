@@ -1556,10 +1556,9 @@ def parse_args() -> argparse.Namespace:
         "--goal",
         dest="goal",
         metavar="TEXT",
-        help="Goal objective to turn into acceptance criteria before a "
-        "non-interactive run. Because headless mode cannot pause for approval, "
-        "the generated criteria are used immediately as the active rubric. "
-        "Requires -n or piped stdin.",
+        help="Goal objective to turn into acceptance criteria. In interactive "
+        "mode, opens a review prompt on launch; with -n or piped stdin, uses "
+        "the generated criteria immediately as the active rubric.",
     )
     parser.add_argument(
         "--rubric",
@@ -1845,6 +1844,7 @@ async def run_textual_cli_async(
     resume_thread: str | None = None,
     initial_prompt: str | None = None,
     initial_skill: str | None = None,
+    initial_goal: str | None = None,
     startup_cmd: str | None = None,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
@@ -1887,6 +1887,8 @@ async def run_textual_cli_async(
             Resolved asynchronously inside the TUI.
         initial_prompt: Optional prompt to auto-submit when session starts
         initial_skill: Optional skill name to invoke when the session starts.
+        initial_goal: Optional goal objective to draft criteria for when the
+            session starts.
         startup_cmd: Shell command to run at startup before the first prompt.
 
             Output is rendered in the transcript; non-zero exits warn but
@@ -2006,6 +2008,7 @@ async def run_textual_cli_async(
             resume_thread=resume_thread,
             initial_prompt=initial_prompt,
             initial_skill=initial_skill,
+            initial_goal=initial_goal,
             startup_cmd=startup_cmd,
             launch_init=should_run_onboarding(),
             profile_override=profile_override,
@@ -2715,23 +2718,48 @@ def cli_main() -> None:
             )
             sys.exit(2)
 
-        rubric_set = any(
+        goal_text = getattr(args, "goal", None)
+        if goal_text is not None and not goal_text.strip():
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --goal must not be empty."
+            )
+            sys.exit(2)
+        if (
+            goal_text is not None
+            and not args.non_interactive_message
+            and (
+                getattr(args, "initial_prompt", None)
+                or getattr(args, "initial_skill", None)
+            )
+        ):
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --goal cannot be combined with "
+                "-m/--message or --skill in interactive mode.\n"
+                "  dcode --goal 'add OAuth refresh handling'\n"
+                "  dcode -n 'implement X' --goal 'add OAuth refresh handling'"
+            )
+            sys.exit(2)
+
+        non_interactive_rubric_set = any(
             getattr(args, attr, None) is not None
             for attr in (
-                "goal",
                 "rubric",
                 "rubric_model",
                 "rubric_max_iterations",
             )
         )
-        if rubric_set and not args.non_interactive_message:
+        if non_interactive_rubric_set and not args.non_interactive_message:
             from rich.console import Console as _Console
 
             _Console(stderr=True).print(
-                "[bold red]Error:[/bold red] --goal/--rubric/--rubric-model/"
+                "[bold red]Error:[/bold red] --rubric/--rubric-model/"
                 "--rubric-max-iterations require "
                 "--non-interactive (-n) or piped stdin\n"
-                "  dcode -n 'implement X' --goal 'add OAuth refresh handling'"
+                "  dcode -n 'implement X' --rubric 'tests pass'"
             )
             sys.exit(2)
 
@@ -3398,15 +3426,6 @@ def cli_main() -> None:
             )
             _warn_if_interpreter_disabled_by_sandbox(args)
 
-            goal_text = getattr(args, "goal", None)
-            if goal_text is not None and not goal_text.strip():
-                from rich.console import Console as _Console
-
-                _Console(stderr=True).print(
-                    "[bold red]Error:[/bold red] --goal must not be empty."
-                )
-                sys.exit(2)
-
             try:
                 rubric_text = _resolve_rubric_text(getattr(args, "rubric", None))
             except ValueError as exc:
@@ -3534,6 +3553,7 @@ def cli_main() -> None:
                         resume_thread=resume_thread,
                         initial_prompt=getattr(args, "initial_prompt", None),
                         initial_skill=getattr(args, "initial_skill", None),
+                        initial_goal=getattr(args, "goal", None),
                         startup_cmd=getattr(args, "startup_cmd", None),
                         mcp_config_path=getattr(args, "mcp_config", None),
                         no_mcp=getattr(args, "no_mcp", False),

@@ -1229,6 +1229,7 @@ class TestNemotronUltraProfile:
             "ReadFileContinuationNoticeMiddleware",
             "ToolRetryMiddleware",
             "NemotronToolMessageShim",
+            "NemotronTextToolCallParser",
         ]
 
     def test_nemotron_ultra_does_not_apply_to_other_nvidia_models(self) -> None:
@@ -1280,6 +1281,109 @@ class TestNemotronUltraProfile:
         wrapped = "\n".join(rows)
         no_false_notice = mw._annotate(req, ToolMessage(content=wrapped, tool_call_id="t5"))
         assert "[read_file returned" not in no_false_notice.content
+
+
+# Exact text-format tool call observed from Nemotron on OpenRouter (trace a100901a,
+# write-compressor step 19): emitted as message content instead of a structured call.
+_NEMOTRON_TEXT_TOOL_CALL = (
+    "<function=execute>\n<parameter>\n<parameter name=command>\ncd /app && python3 compress.py\n</parameter>\n</function>\n</tool_call>\n"
+)
+
+
+class TestNemotronTextToolCallRepair:
+    """Tests for parsing/ repairing Nemotron's text-format tool calls."""
+
+    def test_parses_observed_sample(self) -> None:
+        """The exact observed `<function=execute>` text yields one structured call."""
+        from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
+            _parse_text_tool_calls,
+        )
+
+        calls, leftover = _parse_text_tool_calls(_NEMOTRON_TEXT_TOOL_CALL)
+        assert len(calls) == 1
+        assert calls[0]["name"] == "execute"
+        assert calls[0]["args"] == {"command": "cd /app && python3 compress.py"}
+        assert calls[0]["type"] == "tool_call"
+        assert isinstance(calls[0]["id"], str) and calls[0]["id"]
+        assert "<function=" not in leftover
+
+    def test_parses_multiple_blocks_and_multiple_params(self) -> None:
+        """Multiple function blocks and multiple parameters are all captured."""
+        from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
+            _parse_text_tool_calls,
+        )
+
+        text = (
+            "<function=write_file>\n"
+            "<parameter name=file_path>/app/x.py</parameter>\n"
+            "<parameter name=content>print(1)</parameter>\n"
+            "</function>\n"
+            "<function=ls>\n<parameter name=path>/app</parameter>\n</function>\n"
+        )
+        calls, _ = _parse_text_tool_calls(text)
+        assert [c["name"] for c in calls] == ["write_file", "ls"]
+        assert calls[0]["args"] == {"file_path": "/app/x.py", "content": "print(1)"}
+        assert calls[1]["args"] == {"path": "/app"}
+        ids = [c["id"] for c in calls]
+        assert len(set(ids)) == 2  # unique ids
+
+    def test_no_function_block_returns_empty(self) -> None:
+        """Plain prose with no function block parses to no calls, content unchanged."""
+        from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
+            _parse_text_tool_calls,
+        )
+
+        calls, leftover = _parse_text_tool_calls("All done. The file is saved.")
+        assert calls == []
+        assert leftover == "All done. The file is saved."
+
+    def test_repair_populates_tool_calls_on_model_response(self) -> None:
+        """Middleware rewrites a text-only AIMessage in a ModelResponse into tool_calls."""
+        from langchain.agents.middleware.types import ModelResponse  # noqa: PLC0415
+        from langchain_core.messages import AIMessage  # noqa: PLC0415
+
+        from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
+            NemotronTextToolCallParser,
+        )
+
+        msg = AIMessage(content=_NEMOTRON_TEXT_TOOL_CALL)
+        assert msg.tool_calls == []  # text call is NOT structured
+        repaired = NemotronTextToolCallParser._repair(ModelResponse(result=[msg]))
+        ai = repaired.result[-1]
+        assert len(ai.tool_calls) == 1
+        assert ai.tool_calls[0]["name"] == "execute"
+        assert ai.tool_calls[0]["args"] == {"command": "cd /app && python3 compress.py"}
+
+    def test_repair_passes_through_structured_calls(self) -> None:
+        """A message that already has structured tool_calls is returned untouched."""
+        from langchain.agents.middleware.types import ModelResponse  # noqa: PLC0415
+        from langchain_core.messages import AIMessage  # noqa: PLC0415
+
+        from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
+            NemotronTextToolCallParser,
+        )
+
+        good = AIMessage(
+            content="",
+            tool_calls=[{"name": "execute", "args": {"command": "ls"}, "id": "c1", "type": "tool_call"}],
+        )
+        repaired = NemotronTextToolCallParser._repair(ModelResponse(result=[good]))
+        assert repaired.result[-1].tool_calls == good.tool_calls
+
+    def test_repair_passes_through_plain_text(self) -> None:
+        """A normal final-answer message (no function block) is returned untouched."""
+        from langchain.agents.middleware.types import ModelResponse  # noqa: PLC0415
+        from langchain_core.messages import AIMessage  # noqa: PLC0415
+
+        from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
+            NemotronTextToolCallParser,
+        )
+
+        msg = AIMessage(content="Done. The package is built.")
+        repaired = NemotronTextToolCallParser._repair(ModelResponse(result=[msg]))
+        ai = repaired.result[-1]
+        assert ai.tool_calls == []
+        assert ai.content == "Done. The package is built."
 
 
 class TestProfilePluginLoader:

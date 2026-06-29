@@ -30,11 +30,13 @@ Source: https://developer.nvidia.com/blog/nvidia-nemotron-3-ultra-powers-faster-
 
 from __future__ import annotations
 
+import re
+import uuid
 from typing import TYPE_CHECKING
 
 from langchain.agents.middleware import ToolRetryMiddleware
-from langchain.agents.middleware.types import AgentMiddleware
-from langchain_core.messages import ToolMessage
+from langchain.agents.middleware.types import AgentMiddleware, ExtendedModelResponse, ModelResponse
+from langchain_core.messages import AIMessage, ToolMessage
 
 from deepagents.profiles.harness.harness_profiles import (
     HarnessProfile,
@@ -45,7 +47,8 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from typing import Any
 
-    from langchain.agents.middleware.types import ToolCallRequest
+    from langchain.agents.middleware.types import ModelCallResult, ModelRequest, ToolCallRequest
+    from langchain_core.messages.tool import ToolCall
     from langgraph.types import Command
 
 _NEMOTRON_ULTRA_MODEL_SPECS: tuple[str, ...] = (
@@ -190,6 +193,101 @@ class ReadFileContinuationNoticeMiddleware(AgentMiddleware):
         return self._annotate(request, await handler(request))
 
 
+_FUNCTION_BLOCK_RE = re.compile(r"<function=([^>\s]+)\s*>(.*?)</function>", re.DOTALL)
+"""Matches a `<function=NAME> ... </function>` text tool-call block."""
+
+_PARAMETER_RE = re.compile(r"<parameter\s+name=([^>\s]+)\s*>(.*?)</parameter>", re.DOTALL)
+"""Matches a `<parameter name=KEY>VALUE</parameter>` pair inside a function block."""
+
+
+def _parse_text_tool_calls(content: str) -> tuple[list[ToolCall], str]:
+    """Parse Nemotron's text-format tool calls into structured tool calls.
+
+    Some Nemotron deployments (notably via OpenRouter) intermittently emit a tool
+    call as message *content* using a `<function=NAME><parameter name=K>V</parameter>
+    </function>` template instead of a structured tool call, so the agent never
+    executes it. This converts each such block into a LangChain ``ToolCall``. The
+    template is tolerated loosely: unquoted `name=`, multi-line values, stray
+    nameless `<parameter>` openers, and an orphan `</tool_call>` are all handled.
+
+    Args:
+        content: The model message text.
+
+    Returns:
+        A ``(tool_calls, leftover_content)`` pair. ``tool_calls`` is empty (and the
+        content returned unchanged) when no `<function=...>` block is present.
+    """
+    calls: list[ToolCall] = []
+    for block in _FUNCTION_BLOCK_RE.finditer(content):
+        name = block.group(1).strip("\"'")
+        args = {param.group(1).strip("\"'"): param.group(2).strip() for param in _PARAMETER_RE.finditer(block.group(2))}
+        calls.append({"name": name, "args": args, "id": uuid.uuid4().hex, "type": "tool_call"})
+    if not calls:
+        return [], content
+    leftover = _FUNCTION_BLOCK_RE.sub("", content).replace("</tool_call>", "").strip()
+    return calls, leftover
+
+
+class NemotronTextToolCallParser(AgentMiddleware):
+    """Repair tool calls the model emits as text content instead of structured calls.
+
+    When the model returns an ``AIMessage`` with no structured ``tool_calls`` but a
+    `<function=...>` block in its content, parse that block into structured
+    ``tool_calls`` so the agent executes it rather than stalling on unrun text.
+    Messages that already carry structured ``tool_calls`` (the common case) and
+    ordinary prose answers are returned untouched.
+    """
+
+    name = "NemotronTextToolCallParser"
+
+    @staticmethod
+    def _repair_message(message: AIMessage) -> AIMessage:
+        if message.tool_calls:
+            return message
+        content = message.content
+        text = content if isinstance(content, str) else "".join(part.get("text", "") for part in content if isinstance(part, dict))
+        if "<function=" not in text:
+            return message
+        calls, leftover = _parse_text_tool_calls(text)
+        if not calls:
+            return message
+        return message.model_copy(update={"tool_calls": calls, "content": leftover})
+
+    @staticmethod
+    def _repair_response(response: ModelResponse) -> ModelResponse:
+        return ModelResponse(
+            result=[NemotronTextToolCallParser._repair_message(m) if isinstance(m, AIMessage) else m for m in response.result],
+            structured_response=response.structured_response,
+        )
+
+    @staticmethod
+    def _repair(result: ModelCallResult) -> ModelCallResult:
+        if isinstance(result, ExtendedModelResponse):
+            return ExtendedModelResponse(
+                model_response=NemotronTextToolCallParser._repair_response(result.model_response),
+                command=result.command,
+            )
+        if isinstance(result, AIMessage):
+            return NemotronTextToolCallParser._repair_message(result)
+        if isinstance(result, ModelResponse):
+            return NemotronTextToolCallParser._repair_response(result)
+        return result
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], ModelCallResult],
+    ) -> ModelCallResult:
+        return self._repair(handler(request))
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], Awaitable[ModelCallResult]],
+    ) -> ModelCallResult:
+        return self._repair(await handler(request))
+
+
 _SYSTEM_PROMPT_SUFFIX: str = """<approach>
 Plan briefly before acting. When several reads or lookups are independent, issue them as parallel tool calls rather than one at a time.
 </approach>
@@ -252,6 +350,7 @@ def register() -> None:
                 jitter=False,
             ),
             NemotronToolMessageShim(),
+            NemotronTextToolCallParser(),
         ],
     )
     for spec in _NEMOTRON_ULTRA_MODEL_SPECS:

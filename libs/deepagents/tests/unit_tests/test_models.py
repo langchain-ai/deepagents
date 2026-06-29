@@ -1239,6 +1239,26 @@ class TestNemotronUltraProfile:
             "StallBreakerMiddleware",
         ]
 
+    def test_nemotron_ultra_raises_finalize_turn_budget(self) -> None:
+        """Nemotron gets a higher turn budget than the GLM-5.2 default.
+
+        Reasoning-heavy Nemotron uses turns less efficiently and hit the inherited
+        GLM hard cap (72) with wall-clock budget to spare on long-horizon tasks, so
+        the profile raises the turn ceiling. Model-general (all tasks), not env-set.
+        """
+        from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
+            _FINALIZE_HARD_TURNS,
+            _FINALIZE_SOFT_TURNS,
+        )
+
+        assert _FINALIZE_SOFT_TURNS > 54  # above the GLM-5.2 default soft cap
+        assert _FINALIZE_HARD_TURNS > 72  # above the GLM-5.2 default hard cap
+        profile = _get_harness_profile("NVIDIA:nvidia/nemotron-3-ultra-550b-a55b")
+        assert profile is not None
+        finalize = next(m for m in profile.materialize_extra_middleware() if type(m).__name__ == "FinalizeMiddleware")
+        assert finalize._soft_override == _FINALIZE_SOFT_TURNS
+        assert finalize._hard_override == _FINALIZE_HARD_TURNS
+
     def test_nemotron_ultra_does_not_apply_to_other_nvidia_models(self) -> None:
         """Per-model keys keep other NVIDIA-catalog models unchanged."""
         assert _get_harness_profile("NVIDIA:nvidia/llama-3.1-nemotron-nano-8b") is None

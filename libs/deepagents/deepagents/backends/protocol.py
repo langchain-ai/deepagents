@@ -849,6 +849,26 @@ class ExecuteResponse:
     """Whether the output was truncated due to backend limitations."""
 
 
+@dataclass(frozen=True, slots=True)
+class ExecuteOffloadResult:
+    """Result of [`BaseSandbox.execute_with_offload`][deepagents.backends.sandbox.BaseSandbox.execute_with_offload].
+
+    `offloaded` describes the capture mechanism and is kept off `ExecuteResponse`
+    (which an ordinary `execute` never sets).
+    """
+
+    offloaded: bool
+    """Whether the output was left at the capture path.
+
+    When `True`, `response.output` holds only a head/tail preview and the full
+    output lives at the capture path on the sandbox filesystem. When `False`,
+    `response.output` is the complete output.
+    """
+
+    response: ExecuteResponse
+    """The command result. `response.truncated` indicates the output hit the size cap."""
+
+
 class SandboxBackendProtocol(BackendProtocol):
     """Extension of `BackendProtocol` that adds shell command execution.
 

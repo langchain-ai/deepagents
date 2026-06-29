@@ -135,12 +135,88 @@ def _terminal_row_count(console: "Console", text: str) -> int:
     return max(1, len(console.render_lines(Text(text), console.options)))
 
 
-def _confirm_launch_after_restart(console: "Console", version: str) -> None:
-    """Rewrite the pre-restart `Launching...` line as `Launched.` in-place.
+def _should_check_teardown_thread(
+    thread_id: str | None,
+    *,
+    request_count: int,
+    resume_thread: str | None,
+) -> bool:
+    """Return whether teardown should query for checkpointed thread content.
+
+    Any session that owns a thread may have persisted a checkpoint, so the only
+    gate is whether a thread exists. `request_count` and `resume_thread` are
+    accepted and ignored: an interrupted first turn can checkpoint before any
+    usage metadata is recorded, so they are not a reliable proxy. They remain in
+    the signature so callers need not change if the gate later grows selective.
+    """
+    del request_count, resume_thread
+    return bool(thread_id)
+
+
+def _render_teardown_thread_hints(
+    console: "Console",
+    thread_id: str,
+    *,
+    return_code: int,
+) -> None:
+    """Print the LangSmith link and resume hint for a checkpointed thread.
+
+    Both hints share a single `thread_exists` lookup to avoid spinning up a
+    second event loop and aiosqlite connection during teardown. Every failure is
+    logged at debug and swallowed: teardown convenience output must never crash
+    the exit path.
+
+    Args:
+        console: Console to print the hints to.
+        thread_id: Thread whose checkpoints back the hints.
+        return_code: Process exit code; the resume hint is shown only on a clean
+            exit (`0`).
+    """
+    from rich.style import Style
+    from rich.text import Text
+
+    from deepagents_code.config import build_langsmith_thread_url
+    from deepagents_code.sessions import thread_exists
+
+    try:
+        thread_has_checkpoints = asyncio.run(thread_exists(thread_id))
+    except Exception:
+        logger.debug(
+            "Could not check thread existence on teardown",
+            exc_info=True,
+        )
+        return
+
+    if not thread_has_checkpoints:
+        return
+
+    try:
+        thread_url = build_langsmith_thread_url(thread_id)
+        if thread_url:
+            console.print()
+            ls_hint = Text("View this thread in LangSmith: ", style="dim")
+            ls_hint.append(thread_url, style=Style(dim=True, link=thread_url))
+            console.print(ls_hint)
+    except Exception:
+        logger.debug(
+            "Could not display LangSmith thread URL on teardown",
+            exc_info=True,
+        )
+
+    if return_code == 0:
+        console.print()
+        console.print("[dim]Resume this thread with:[/dim]")
+        hint = Text("dcode -r ", style="cyan")
+        hint.append(str(thread_id), style="cyan")
+        console.print(hint)
+
+
+def _confirm_update_after_restart(console: "Console", version: str) -> None:
+    """Rewrite the pre-restart `Launching...` line as a stable update status.
 
     The `Updated to v{version}. Launching...` line is printed by the previous
     generation right before `os.execv`; this runs in the re-exec'd process to
-    retroactively confirm the launch once the new version is actually running.
+    clear the transient action once the new version is actually running.
 
     The in-place rewrite is attempted only on a real terminal: `os.execv` does
     nothing between that print and this process's first output, so the cursor
@@ -173,7 +249,7 @@ def _confirm_launch_after_restart(console: "Console", version: str) -> None:
                 (ControlType.ERASE_IN_LINE, 2),
             )
         )
-    console.print(f"[green]Updated to v{version}. Launched.[/green]", highlight=False)
+    console.print(f"[green]Updated to v{version}.[/green]", highlight=False)
 
 
 def _run_startup_auto_update(console: "Console") -> None:
@@ -220,16 +296,16 @@ def _run_startup_auto_update(console: "Console") -> None:
         restarted_for = os.environ.pop(RESTARTED_AFTER_UPDATE, None)
         if restarted_for is not None and is_installed_version_at_least(restarted_for):
             # The re-exec landed on the upgraded version, so the prior
-            # "Launching..." line is now accurate as "Launched.".
+            # "Launching..." line can be replaced with a stable completed status.
             try:
-                _confirm_launch_after_restart(console, restarted_for)
+                _confirm_update_after_restart(console, restarted_for)
             except Exception:
                 # The upgrade already succeeded; this rewrite is purely
                 # cosmetic. Swallow rendering glitches with their own guard so
                 # the outer fail-soft handler does not misreport a successful
                 # upgrade as "Auto-update failed". The prior "Launching..."
                 # line simply stays.
-                logger.debug("Post-restart launch confirmation failed", exc_info=True)
+                logger.debug("Post-restart update confirmation failed", exc_info=True)
         available, latest = get_cached_update_available()
         if not available or latest is None:
             return
@@ -3399,16 +3475,9 @@ def cli_main() -> None:
             # Resolve recent-agent fallback only for actual session launches.
             assistant_id = _resolve_agent_arg(args)
             # Interactive mode - handle thread resume
-            from rich.style import Style
             from rich.text import Text
 
-            from deepagents_code.config import (
-                build_langsmith_thread_url,
-            )
-            from deepagents_code.sessions import (
-                generate_thread_id,
-                thread_exists,
-            )
+            from deepagents_code.sessions import generate_thread_id
 
             # Instead of resolving thread_id here with synchronous asyncio.run()
             # DB calls, pass the raw resume request to the TUI and let it
@@ -3488,32 +3557,18 @@ def cli_main() -> None:
                 console.print(Text(traceback.format_exc(), style="dim"))
                 sys.exit(1)
 
-            # Show LangSmith thread link for threads with checkpointed
-            # content (same table that backs the `/threads` listing).
-            if thread_id:
-                try:
-                    thread_url = build_langsmith_thread_url(thread_id)
-                    if thread_url and asyncio.run(thread_exists(thread_id)):
-                        console.print()
-                        ls_hint = Text("View this thread in LangSmith: ", style="dim")
-                        ls_hint.append(
-                            thread_url,
-                            style=Style(dim=True, link=thread_url),
-                        )
-                        console.print(ls_hint)
-                except Exception:
-                    logger.debug(
-                        "Could not display LangSmith thread URL on teardown",
-                        exc_info=True,
-                    )
-
-            # Show resume hint on exit for threads with checkpointed content.
-            if thread_id and return_code == 0 and asyncio.run(thread_exists(thread_id)):
-                console.print()
-                console.print("[dim]Resume this thread with:[/dim]")
-                hint = Text("dcode -r ", style="cyan")
-                hint.append(str(thread_id), style="cyan")
-                console.print(hint)
+            # Show LangSmith thread link and resume hint for threads with
+            # checkpointed content. The `thread_id is not None` check narrows the
+            # type to `str` for the helper; `_should_check_teardown_thread` gates
+            # whether the teardown lookup runs at all.
+            if thread_id is not None and _should_check_teardown_thread(
+                thread_id,
+                request_count=result.session_stats.request_count,
+                resume_thread=args.resume_thread,
+            ):
+                _render_teardown_thread_hints(
+                    console, thread_id, return_code=return_code
+                )
 
             # Warn about available update on exit
             try:

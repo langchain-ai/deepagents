@@ -48,6 +48,10 @@ def _binary_read_result(file_path: str, raw: bytes) -> ReadResult:
 class LangSmithSandbox(BaseSandbox):
     """LangSmith sandbox implementation conforming to [`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol]."""
 
+    # LangSmith sandbox images ship a POSIX shell + coreutils compatible with the
+    # capture wrapper, so opt in to capture-at-source offload for `execute`.
+    enable_capture_offload = True
+
     def __init__(self, sandbox: Sandbox) -> None:
         """Create a backend wrapping an existing LangSmith sandbox.
 

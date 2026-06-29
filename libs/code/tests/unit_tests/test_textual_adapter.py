@@ -661,7 +661,6 @@ class TestBuildStreamConfig:
     def setup_method(self) -> None:
         """Clear the git lookup caches between tests."""
         config_module._git_branch_cache.clear()
-        config_module._git_commit_cache.clear()
         config_module._repo_metadata_cache.clear()
 
     def test_coding_agent_identity_block_present(self) -> None:
@@ -867,6 +866,27 @@ class TestGetGitBranch:
         mock_resolve.assert_called_once_with("/tmp/repo")
 
 
+class TestGetGitCommitSha:
+    """Tests for `_get_git_commit_sha` freshness."""
+
+    def test_resolves_commit_fresh_on_each_call(self) -> None:
+        """HEAD moves mid-session, so the SHA must be re-resolved every call."""
+        with (
+            patch(
+                "deepagents_code.config.Path.cwd",
+                return_value=Path("/tmp/repo"),
+            ),
+            patch(
+                "deepagents_code._git.resolve_git_commit_sha",
+                side_effect=["sha-before", "sha-after"],
+            ) as mock_resolve,
+        ):
+            assert config_module._get_git_commit_sha() == "sha-before"
+            assert config_module._get_git_commit_sha() == "sha-after"
+
+        assert mock_resolve.call_count == 2
+
+
 class TestGetGitBranchOSError:
     """Tests for _get_git_branch when Path.cwd() raises OSError."""
 
@@ -889,7 +909,6 @@ class TestBuildStreamConfigOSError:
     def setup_method(self) -> None:
         """Clear the git lookup caches between tests."""
         config_module._git_branch_cache.clear()
-        config_module._git_commit_cache.clear()
         config_module._repo_metadata_cache.clear()
 
     def test_cwd_absent_on_oserror(self) -> None:

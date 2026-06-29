@@ -1366,12 +1366,28 @@ class TextualSessionState:
             thread_id: Optional thread ID (generates UUID7 if not provided)
         """
         self.auto_approve = auto_approve
-        self.thread_id = thread_id or _new_thread_id()
         self.approval_mode_key: str | None = None
         self.turn_number = 0
         """1-based user-turn count for the thread (coding-agent-v1 turn_number)."""
         self.turn_id: str | None = None
         """Stable id for the current user turn (coding-agent-v1 turn_id)."""
+        # Set the backing field directly: the setter resets turn markers, which
+        # don't exist yet.
+        self._thread_id = thread_id or _new_thread_id()
+
+    @property
+    def thread_id(self) -> str:
+        """Active LangGraph thread id for the session."""
+        return self._thread_id
+
+    @thread_id.setter
+    def thread_id(self, value: str) -> None:
+        # Per-thread turn markers (coding-agent-v1): restart on every thread
+        # change so traces never inherit the prior thread's sequence.
+        if value != self._thread_id:
+            self.turn_number = 0
+            self.turn_id = None
+        self._thread_id = value
 
     def advance_turn(self) -> tuple[str, int]:
         """Begin a new user turn, advancing the per-thread turn markers.
@@ -1394,10 +1410,8 @@ class TextualSessionState:
         Returns:
             The new thread_id.
         """
-        self.thread_id = _new_thread_id()
+        self.thread_id = _new_thread_id()  # setter resets the turn markers
         self.approval_mode_key = None
-        self.turn_number = 0
-        self.turn_id = None
         return self.thread_id
 
 

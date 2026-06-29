@@ -1238,15 +1238,17 @@ def _get_git_branch() -> str | None:
     return branch
 
 
-_git_commit_cache: dict[str, str | None] = {}
-"""Per-cwd cache of resolved git commit SHAs (mirrors `_git_branch_cache`)."""
-
 _repo_metadata_cache: dict[str, tuple[str, str, str] | None] = {}
 """Per-cwd cache of resolved `(repository_url, provider, name)` tuples."""
 
 
 def _get_git_commit_sha() -> str | None:
-    """Return the current `HEAD` commit SHA, or `None` if unavailable."""
+    """Return the current `HEAD` commit SHA, or `None` if unavailable.
+
+    Resolved fresh on every call (unlike the branch/repo lookups): `HEAD` moves
+    whenever the agent or user commits, checks out, or resets within a session,
+    and each turn's trace must record the commit that was current for that turn.
+    """
     from deepagents_code._git import resolve_git_commit_sha
 
     try:
@@ -1254,17 +1256,12 @@ def _get_git_commit_sha() -> str | None:
     except OSError:
         logger.debug("Could not determine cwd for git commit lookup", exc_info=True)
         return None
-    if cwd in _git_commit_cache:
-        return _git_commit_cache[cwd]
 
     try:
-        sha = resolve_git_commit_sha(cwd) or None
+        return resolve_git_commit_sha(cwd) or None
     except OSError:
         logger.debug("Could not determine git commit", exc_info=True)
-        sha = None
-
-    _git_commit_cache[cwd] = sha
-    return sha
+        return None
 
 
 def _get_repository_metadata() -> tuple[str, str, str] | None:

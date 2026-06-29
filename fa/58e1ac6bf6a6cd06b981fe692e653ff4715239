@@ -1,0 +1,45 @@
+libs/code/deepagents_code/goal_rubric.py
+  s_2fa9887ff15041::t_4c7a6ef0116901 111-113
+libs/code/deepagents_code/goal_tools.py
+  s_2fa9887ff15041::t_31886ee174627b 164-166
+libs/code/tests/unit_tests/test_textual_adapter.py
+  s_2fa9887ff15041::t_d620f6dad5f73c 1191-1220
+libs/code/tests/unit_tests/test_app.py
+  s_2fa9887ff15041::t_5ed2b2802c5d2e 5843-5858
+  s_2fa9887ff15041::t_8a2f3d16c09bcb 5422-5456
+  s_2fa9887ff15041::t_cb7b456f2d01e1 5227-5246
+libs/code/deepagents_code/main.py
+  s_2fa9887ff15041::t_9dfadce5135816 2712-2720
+  s_2fa9887ff15041::t_89eddc684c1708 2725-2727
+libs/code/tests/unit_tests/test_goal_review.py
+  s_2fa9887ff15041::t_3fa8d661fd04dd 104-189
+libs/code/tests/unit_tests/test_command_registry.py
+  s_2fa9887ff15041::t_06fc25fbc28819 273-283,293-302
+  s_2fa9887ff15041::t_36598336e0faa3 303
+libs/code/tests/unit_tests/test_rubric_cli.py
+  s_2fa9887ff15041::t_7cae1de84669aa 169-188
+libs/code/deepagents_code/config.py
+  s_2fa9887ff15041::t_d47e8b4815c358 2922-2924
+  s_2fa9887ff15041::t_719b3122a28954 2963-2965
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "fa58e1ac6bf6a6cd06b981fe692e653ff4715239",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  },
+  "sessions": {
+    "s_2fa9887ff15041": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cef1a545-badd-4424-8a78-be754bbe8bc2",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

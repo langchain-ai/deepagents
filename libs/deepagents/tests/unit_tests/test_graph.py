@@ -2326,6 +2326,24 @@ class TestUserMiddlewareOverride:
             create_deep_agent(model="anthropic:claude-sonnet-4-6", middleware=user_mw)
         return mock_create.call_args.kwargs["middleware"]
 
+    def test_custom_middleware_precedes_prompt_caching(self) -> None:
+        """User middleware must wrap outside AnthropicPromptCachingMiddleware.
+
+        The relative order fixes the Anthropic prompt-cache prefix: user
+        middleware that mutates the request/system prompt has to run before the
+        cache breakpoint, else it can invalidate the cached prefix.
+        """
+        custom = _named_mw("CustomMW")
+        stack = self._run([custom])
+
+        custom_idx = next(i for i, m in enumerate(stack) if m is custom)
+        pc_idx = next(
+            (i for i, m in enumerate(stack) if m.name == "AnthropicPromptCachingMiddleware"),
+            None,
+        )
+        assert pc_idx is not None, f"expected prompt caching middleware in stack; got {[m.name for m in stack]}"
+        assert custom_idx < pc_idx, f"user middleware must precede prompt caching; got order {[m.name for m in stack]}"
+
     def test_summarization_middleware_replaces_default(self) -> None:
         """Passing SummarizationMiddleware in middleware= replaces the built-in instance."""
         custom = SummarizationMiddleware(

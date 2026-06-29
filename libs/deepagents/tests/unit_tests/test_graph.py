@@ -2460,8 +2460,8 @@ class TestUserMiddlewareOverride:
         assert any(m is custom for m in stack)
 
 
-class TestSubagentMiddlewareInheritance:
-    """GP and declarative subagents inherit main-agent overrides for default middleware slots."""
+class TestSubagentMiddlewareIsolation:
+    """GP inherits main-agent overrides; declarative subagents build stacks independently."""
 
     _GP_NAME = "general-purpose"
 
@@ -2502,8 +2502,10 @@ class TestSubagentMiddlewareInheritance:
         sub_mw = next(m for m in main_stack if isinstance(m, SubAgentMiddleware))
         return main_stack, sub_mw
 
-    def test_gp_subagent_inherits_main_middleware_override(self) -> None:
-        """A main-agent SummarizationMiddleware override is propagated to the GP subagent."""
+    # ── GP inherits main-agent overrides ──────────────────────────────────────
+
+    def test_gp_inherits_main_middleware_override(self) -> None:
+        """GP subagent receives the main agent's SummarizationMiddleware override."""
         custom = SummarizationMiddleware(
             model=GenericFakeChatModel(messages=iter([])),
             backend=StateBackend(),
@@ -2515,88 +2517,21 @@ class TestSubagentMiddlewareInheritance:
         assert len(summ_entries) == 1
         assert summ_entries[0] is custom
 
-    def test_declarative_subagent_inherits_main_middleware_override(self) -> None:
-        """A declarative subagent with no spec override inherits the main-agent's SummarizationMiddleware."""
-        custom = SummarizationMiddleware(
-            model=GenericFakeChatModel(messages=iter([])),
-            backend=StateBackend(),
-            trigger=("tokens", 50_000),
-        )
-        subagent: SubAgent = {
-            "name": "helper",
-            "description": "A helper subagent",
-            "system_prompt": "You are a helper.",
-        }
-        _, sub_mw = self._setup([custom], subagents=[subagent], enable_gp=False)
-        helper_spec = next(s for s in sub_mw._subagents if s.get("name") == "helper")
-        summ_entries = [m for m in helper_spec["middleware"] if isinstance(m, _DeepAgentsSummarizationMiddleware)]
-        assert len(summ_entries) == 1
-        assert summ_entries[0] is custom
-
-    def test_declarative_subagent_spec_wins_over_main_override(self) -> None:
-        """When a declarative subagent provides its own middleware, it takes precedence over the main-agent override."""
-        main_custom = SummarizationMiddleware(
-            model=GenericFakeChatModel(messages=iter([])),
-            backend=StateBackend(),
-            trigger=("tokens", 50_000),
-        )
-        spec_custom = SummarizationMiddleware(
-            model=GenericFakeChatModel(messages=iter([])),
-            backend=StateBackend(),
-            trigger=("tokens", 30_000),
-        )
-        subagent: SubAgent = {
-            "name": "helper",
-            "description": "A helper subagent",
-            "system_prompt": "You are a helper.",
-            "middleware": [spec_custom],
-        }
-        _, sub_mw = self._setup([main_custom], subagents=[subagent], enable_gp=False)
-        helper_spec = next(s for s in sub_mw._subagents if s.get("name") == "helper")
-        summ_entries = [m for m in helper_spec["middleware"] if isinstance(m, _DeepAgentsSummarizationMiddleware)]
-        assert len(summ_entries) == 1
-        assert summ_entries[0] is spec_custom
-        assert summ_entries[0] is not main_custom
-
-    def test_non_default_middleware_not_inherited_by_gp(self) -> None:
-        """Custom middleware whose name doesn't match any GP default is not inherited."""
+    def test_gp_does_not_inherit_non_default_main_middleware(self) -> None:
+        """Main-agent middleware whose name isn't a GP default is not inherited by GP."""
 
         class _ParentOnlyMW(SummarizationMiddleware):
             @property
             def name(self) -> str:
                 return "ParentOnlyMW"
 
-        custom = _ParentOnlyMW(
-            model=GenericFakeChatModel(messages=iter([])),
-            backend=StateBackend(),
-        )
+        custom = _ParentOnlyMW(model=GenericFakeChatModel(messages=iter([])), backend=StateBackend())
         _, sub_mw = self._setup([custom], enable_gp=True)
         gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
         assert not any(m is custom for m in gp_spec["middleware"])
 
-    def test_non_default_middleware_not_inherited_by_declarative_subagent(self) -> None:
-        """Custom middleware whose name isn't in the subagent's default stack is not inherited."""
-
-        class _ParentOnlyMW(SummarizationMiddleware):
-            @property
-            def name(self) -> str:
-                return "ParentOnlyMW"
-
-        custom = _ParentOnlyMW(
-            model=GenericFakeChatModel(messages=iter([])),
-            backend=StateBackend(),
-        )
-        subagent: SubAgent = {
-            "name": "helper",
-            "description": "A helper subagent",
-            "system_prompt": "You are a helper.",
-        }
-        _, sub_mw = self._setup([custom], subagents=[subagent], enable_gp=False)
-        helper_spec = next(s for s in sub_mw._subagents if s.get("name") == "helper")
-        assert not any(m is custom for m in helper_spec["middleware"])
-
-    def test_gp_excluded_default_wins_over_inherited_override(self) -> None:
-        """Profile exclusion on a default GP slot wins even when the main agent supplies a replacement."""
+    def test_gp_profile_exclusion_wins_over_inherited_override(self) -> None:
+        """Profile exclusion on a GP default slot wins even when the main agent supplies a replacement."""
         custom = SummarizationMiddleware(
             model=GenericFakeChatModel(messages=iter([])),
             backend=StateBackend(),
@@ -2610,15 +2545,46 @@ class TestSubagentMiddlewareInheritance:
         gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
         assert not any(isinstance(m, _DeepAgentsSummarizationMiddleware) for m in gp_spec["middleware"])
 
-    def test_declarative_subagent_excluded_default_wins_over_inherited_override(self) -> None:
-        """Profile exclusion on a default subagent slot wins even when the main agent supplies a replacement."""
+    # ── Declarative subagents are isolated from main-agent overrides ──────────
+
+    def test_declarative_subagent_does_not_inherit_main_middleware_override(self) -> None:
+        """Declarative subagent with no spec middleware is not affected by main-agent overrides."""
         custom = SummarizationMiddleware(
             model=GenericFakeChatModel(messages=iter([])),
             backend=StateBackend(),
             trigger=("tokens", 50_000),
         )
-        # Subagent must specify the same model string so it resolves the "mwinhrt"
-        # profile (which carries the exclusion), rather than falling back to defaults.
+        subagent: SubAgent = {
+            "name": "helper",
+            "description": "A helper subagent",
+            "system_prompt": "You are a helper.",
+        }
+        _, sub_mw = self._setup([custom], subagents=[subagent], enable_gp=False)
+        helper_spec = next(s for s in sub_mw._subagents if s.get("name") == "helper")
+        assert not any(m is custom for m in helper_spec["middleware"])
+        assert any(isinstance(m, _DeepAgentsSummarizationMiddleware) for m in helper_spec["middleware"])
+
+    def test_declarative_subagent_spec_middleware_replaces_default(self) -> None:
+        """Spec-supplied middleware replaces the matching default in that subagent's stack."""
+        spec_custom = SummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+            trigger=("tokens", 30_000),
+        )
+        subagent: SubAgent = {
+            "name": "helper",
+            "description": "A helper subagent",
+            "system_prompt": "You are a helper.",
+            "middleware": [spec_custom],
+        }
+        _, sub_mw = self._setup([], subagents=[subagent], enable_gp=False)
+        helper_spec = next(s for s in sub_mw._subagents if s.get("name") == "helper")
+        summ_entries = [m for m in helper_spec["middleware"] if isinstance(m, _DeepAgentsSummarizationMiddleware)]
+        assert len(summ_entries) == 1
+        assert summ_entries[0] is spec_custom
+
+    def test_declarative_subagent_profile_exclusion_removes_default(self) -> None:
+        """Profile-excluded middleware is removed from a declarative subagent's stack."""
         subagent: SubAgent = {
             "name": "helper",
             "description": "A helper subagent",
@@ -2626,7 +2592,7 @@ class TestSubagentMiddlewareInheritance:
             "model": "mwinhrt:some-model",
         }
         _, sub_mw = self._setup(
-            [custom],
+            [],
             subagents=[subagent],
             enable_gp=False,
             excluded_middleware=frozenset({_DeepAgentsSummarizationMiddleware}),

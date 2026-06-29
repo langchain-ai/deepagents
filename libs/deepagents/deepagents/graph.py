@@ -720,12 +720,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 matched_classes=_subagent_matched_classes,
                 matched_names=_subagent_matched_names,
             )
-            # Inherit main-agent overrides for default slots the spec hasn't claimed;
-            # spec entries follow so they win for any overlapping names.
-            _spec_mw = spec.get("middleware", [])
-            _spec_names = {m.name for m in _spec_mw}
-            _combined_mw = [m for m in (middleware or []) if m.name in _subagent_original_name_to_index and m.name not in _spec_names] + _spec_mw
-            subagent_middleware = _apply_custom_middleware(subagent_middleware, _combined_mw, _subagent_original_name_to_index)
+            subagent_middleware = _apply_custom_middleware(subagent_middleware, spec.get("middleware", []), _subagent_original_name_to_index)
             subagent_middleware = _apply_excluded_middleware(
                 subagent_middleware,
                 _subagent_profile,
@@ -791,7 +786,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         gp_middleware.extend(_profile.materialize_extra_middleware())
 
         _append_prompt_caching_middleware(gp_middleware)
-
         _gp_original_name_to_index = {m.name: i for i, m in enumerate(gp_middleware)}
         gp_middleware = _apply_excluded_middleware(
             gp_middleware,

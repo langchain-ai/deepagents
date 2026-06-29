@@ -4671,6 +4671,15 @@ class TestGoalCommand:
         future.set_result(result)
         return future
 
+    def test_goal_usage_text_explains_goal_vs_rubric(self) -> None:
+        """Goal help should clearly distinguish drafting from explicit criteria."""
+        usage = DeepAgentsApp._goal_usage_text()
+
+        assert "Use /goal when you have a plain-language objective" in usage
+        assert "draft a checklist and ask before applying it" in usage
+        assert "Use /rubric to set the checklist text directly." in usage
+        assert "when you want dcode to propose" not in usage
+
     async def test_goal_command_proposes_pending_rubric(self) -> None:
         """`/goal <objective>` should draft criteria for widget review."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -4833,7 +4842,7 @@ class TestGoalCommand:
                 assert app._pending_goal_review_widget is not None
 
     async def test_goal_accept_sets_sticky_rubric(self) -> None:
-        """Accepting a proposed goal should set the active rubric."""
+        """Accepting a proposed goal should set the rubric and start work."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -4842,11 +4851,15 @@ class TestGoalCommand:
             request = AsyncMock(
                 return_value=self._goal_review_future({"type": "accepted"})
             )
+            handle = AsyncMock()
 
-            with patch.object(app, "_request_goal_review", request):
+            with (
+                patch.object(app, "_request_goal_review", request),
+                patch.object(app, "_handle_user_message", handle),
+            ):
                 await app._review_pending_goal_rubric()
-            await pilot.pause()
-            await pilot.pause()
+                await pilot.pause()
+                await pilot.pause()
 
             assert app._active_goal == "add refresh tokens"
             assert app._goal_status == "active"
@@ -4855,6 +4868,7 @@ class TestGoalCommand:
             assert app._pending_goal_rubric is None
             assert app._status_bar is not None
             assert app._status_bar.rubric_label == "✓ Rubric set"
+            handle.assert_awaited_once_with("add refresh tokens")
 
     async def test_goal_accept_persists_thread_metadata(self) -> None:
         """Accepted goals should be checkpointed on the current thread."""
@@ -4870,9 +4884,12 @@ class TestGoalCommand:
                 return_value=self._goal_review_future({"type": "accepted"})
             )
 
-            with patch.object(app, "_request_goal_review", request):
+            with (
+                patch.object(app, "_request_goal_review", request),
+                patch.object(app, "_handle_user_message", AsyncMock()),
+            ):
                 await app._review_pending_goal_rubric()
-            await pilot.pause()
+                await pilot.pause()
 
             updater.aupdate_state.assert_awaited_once_with(
                 {"configurable": {"thread_id": "thread-1"}},
@@ -4908,14 +4925,20 @@ class TestGoalCommand:
                 return_value=self._goal_review_future({"type": "accepted"})
             )
 
-            with patch.object(app, "_request_goal_review", request):
+            with (
+                patch.object(app, "_request_goal_review", request),
+                patch.object(app, "_handle_user_message", AsyncMock()),
+            ):
                 await app._review_pending_goal_rubric()
-            await pilot.pause()
+                await pilot.pause()
 
             remote.aensure_thread.assert_awaited_once_with(
                 {"configurable": {"thread_id": "thread-1"}}
             )
             remote.aupdate_state.assert_awaited_once()
+            update_args = remote.aupdate_state.await_args
+            assert update_args is not None
+            assert update_args.kwargs["as_node"] == "model"
 
     async def test_initial_goal_acceptance_submits_objective(self) -> None:
         """Accepted startup goals should immediately start the rubric-backed task."""
@@ -4945,10 +4968,13 @@ class TestGoalCommand:
                 )
             )
 
-            with patch.object(app, "_request_goal_review", request):
+            with (
+                patch.object(app, "_request_goal_review", request),
+                patch.object(app, "_handle_user_message", AsyncMock()),
+            ):
                 await app._review_pending_goal_rubric()
-            await pilot.pause()
-            await pilot.pause()
+                await pilot.pause()
+                await pilot.pause()
 
             assert app._active_goal == "add refresh tokens"
             assert app._active_rubric == "tests pass; docs updated"
@@ -5141,7 +5167,10 @@ class TestGoalCommand:
                 return_value=self._goal_review_future({"type": "accepted"})
             )
 
-            with patch.object(app, "_request_goal_review", request):
+            with (
+                patch.object(app, "_request_goal_review", request),
+                patch.object(app, "_handle_user_message", AsyncMock()),
+            ):
                 await app._review_pending_goal_rubric()
             await pilot.pause()
             await pilot.pause()

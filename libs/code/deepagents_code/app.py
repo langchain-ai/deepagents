@@ -7570,6 +7570,10 @@ class DeepAgentsApp(App):
         try:
             if remote := self._remote_agent():
                 await remote.aensure_thread(remote_config)
+                await remote.aupdate_state(
+                    config, self._goal_state_update(), as_node="model"
+                )
+                return True
             await self._agent.aupdate_state(config, self._goal_state_update())
         except Exception:
             logger.warning("Failed to persist goal/rubric state", exc_info=True)
@@ -7779,9 +7783,9 @@ class DeepAgentsApp(App):
             "  /goal <objective>\n"
             "  /goal show\n"
             "  /goal clear\n\n"
-            "Use /goal when you want dcode to propose acceptance criteria from "
-            "an objective. Review the proposal in the review prompt. Use "
-            "/rubric when you already know the criteria."
+            "Use /goal when you have a plain-language objective; dcode will "
+            "draft a checklist and ask before applying it. Use /rubric to set "
+            "the checklist text directly."
         )
 
     async def _show_goal_state(self) -> None:
@@ -8000,7 +8004,7 @@ class DeepAgentsApp(App):
             )
         if self._initial_goal is not None and objective == self._initial_goal:
             self._initial_goal = None
-            await self._handle_user_message(objective)
+        await self._handle_user_message(objective)
 
     def _sync_status_rubric(self) -> None:
         """Reflect active rubric state in the status bar."""

@@ -4792,6 +4792,49 @@ class TestGoalCommand:
             assert app._status_bar is not None
             assert app._status_bar.rubric_label == ""
 
+    async def test_goal_accept_warns_when_persist_fails(self) -> None:
+        """A failed thread write must not show an unqualified success banner."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = SimpleNamespace(
+                aupdate_state=AsyncMock(side_effect=RuntimeError("down"))
+            )
+            app._lc_thread_id = "thread-1"
+            app._pending_goal_objective = "add refresh tokens"
+            app._pending_goal_rubric = "- tests pass"
+
+            await app._handle_command("/goal accept")
+            await pilot.pause()
+
+            # State still applies in-session, but the user is told it was not
+            # saved rather than seeing a plain "Goal accepted." banner.
+            assert app._active_goal == "add refresh tokens"
+            assert any(
+                "will not survive" in str(w._content) for w in app.query(ErrorMessage)
+            )
+
+    def test_clear_all_goal_rubric_state_resets_every_field(self) -> None:
+        """The shared clear helper must null every correlated field at once."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._active_goal = "g"
+        app._goal_status = "blocked"
+        app._goal_status_note = "note"
+        app._active_rubric = "r"
+        app._next_rubric = "x"
+        app._pending_goal_objective = "p"
+        app._pending_goal_rubric = "pr"
+
+        app._clear_all_goal_rubric_state()
+
+        assert app._active_goal is None
+        assert app._goal_status is None
+        assert app._goal_status_note is None
+        assert app._active_rubric is None
+        assert app._next_rubric is None
+        assert app._pending_goal_objective is None
+        assert app._pending_goal_rubric is None
+
 
 class TestRubricCommand:
     """Tests for interactive rubric state and turn plumbing."""
@@ -4906,6 +4949,56 @@ class TestRubricCommand:
                 await app._handle_command("/rubric model")
 
             show_selector.assert_awaited_once()
+
+    async def test_rubric_model_bare_echoes_command(self) -> None:
+        """Bare `/rubric model` should echo the command like its siblings."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(
+                app,
+                "_show_rubric_model_selector",
+                new_callable=AsyncMock,
+            ):
+                await app._handle_command("/rubric model")
+                await pilot.pause()
+
+            assert any(
+                "/rubric model" in str(w._content) for w in app.query(UserMessage)
+            )
+
+    async def test_rubric_set_clears_stale_goal_tracking(self) -> None:
+        """`/rubric set` must drop a stale status note and one-shot rubric."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._goal_status_note = "blocked on docs"
+            app._next_rubric = "stale next"
+
+            await app._handle_command("/rubric set tests pass")
+            await pilot.pause()
+
+            assert app._active_rubric == "tests pass"
+            assert app._goal_status_note is None
+            assert app._next_rubric is None
+
+    async def test_clear_command_resets_goal_status_fields(self) -> None:
+        """`/clear` must reset goal status and note, not just the rubric."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "add refresh tokens"
+            app._goal_status = "blocked"
+            app._goal_status_note = "waiting on docs"
+            app._active_rubric = "tests pass"
+
+            await app._handle_command("/clear")
+            await pilot.pause()
+
+            assert app._goal_status is None
+            assert app._goal_status_note is None
+            assert app._active_goal is None
+            assert app._active_rubric is None
 
     async def test_criteria_alias_sets_rubric(self) -> None:
         """`/criteria` should behave as an alias for `/rubric`."""

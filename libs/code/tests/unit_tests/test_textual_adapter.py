@@ -926,6 +926,52 @@ class TestFormatRubricEvent:
             == "✓ Rubric satisfied"
         )
 
+    def test_start_event_without_int_iteration_omits_number(self) -> None:
+        """A non-integer iteration should fall back to the unnumbered label."""
+        assert (
+            _format_rubric_event(
+                {"type": "rubric_evaluation_start", "iteration": None},
+            )
+            == "⏳ Grading against rubric…"
+        )
+
+    def test_max_iterations_reached_event(self) -> None:
+        """Hitting the iteration cap should warn the user it is unsatisfied."""
+        assert (
+            _format_rubric_event(
+                {"type": "rubric_evaluation_end", "result": "max_iterations_reached"},
+            )
+            == "⚠ Rubric not satisfied (max iterations reached)"
+        )
+
+    def test_grader_failure_results_render_warning(self) -> None:
+        """Grader failures should surface as warnings with the explanation."""
+        assert (
+            _format_rubric_event(
+                {
+                    "type": "rubric_evaluation_end",
+                    "result": "failed",
+                    "explanation": "timeout",
+                },
+            )
+            == "⚠ Rubric grader failed: timeout"
+        )
+        assert (
+            _format_rubric_event(
+                {"type": "rubric_evaluation_end", "result": "grader_error"},
+            )
+            == "⚠ Rubric grader error"
+        )
+
+    def test_unknown_terminal_result_renders_fallback(self) -> None:
+        """An unrecognized terminal result must not be silently dropped."""
+        assert (
+            _format_rubric_event(
+                {"type": "rubric_evaluation_end", "result": "something_new"},
+            )
+            == "⚠ Rubric grading ended"
+        )
+
     def test_unrelated_event_returns_none(self) -> None:
         """Only rubric events should render rubric messages."""
         assert _format_rubric_event({"type": "subagent_start"}) is None

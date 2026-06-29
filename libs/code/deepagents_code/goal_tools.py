@@ -18,6 +18,7 @@ from langchain.agents.middleware.types import (
     ContextT,
     ModelRequest,
     ModelResponse,
+    PrivateStateAttr,
 )
 from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
@@ -40,12 +41,19 @@ ResponseT = TypeVar("ResponseT")
 
 
 class GoalToolState(AgentState):
-    """State fields used by goal tools."""
+    """State fields used by goal tools.
 
-    _goal_objective: NotRequired[str | None]
-    _goal_status: NotRequired[str | None]
-    _goal_rubric: NotRequired[str | None]
-    _goal_status_note: NotRequired[str | None]
+    The `_goal_*` channels mirror `ResumeState` and must carry `PrivateStateAttr`
+    so they stay out of the public graph input/output schema. Middleware state
+    schemas are merged with later entries winning, so bare (non-private)
+    re-declarations here would override `ResumeState`'s private annotations and
+    leak the fields into the public schema.
+    """
+
+    _goal_objective: Annotated[NotRequired[str | None], PrivateStateAttr]
+    _goal_status: Annotated[NotRequired[str | None], PrivateStateAttr]
+    _goal_rubric: Annotated[NotRequired[str | None], PrivateStateAttr]
+    _goal_status_note: Annotated[NotRequired[str | None], PrivateStateAttr]
     rubric: NotRequired[str | None]
 
 
@@ -68,12 +76,15 @@ def _goal_snapshot(state: dict[str, Any]) -> dict[str, Any]:
             "criteria": rubric if isinstance(rubric, str) else None,
             "note": None,
         }
-    status = state.get("_goal_status")
+    raw_status = state.get("_goal_status")
+    status = raw_status if isinstance(raw_status, str) and raw_status else "active"
     note = state.get("_goal_status_note")
     return {
-        "active": status not in {"complete", None},
+        # A goal is active until it is complete; `blocked` is still unfinished.
+        # Derive `active` from `status` so the two never disagree.
+        "active": status != "complete",
         "objective": objective,
-        "status": status if isinstance(status, str) else "active",
+        "status": status,
         "criteria": rubric if isinstance(rubric, str) else None,
         "note": note if isinstance(note, str) else None,
     }
@@ -89,13 +100,16 @@ def _update_goal_command(
     """Build the constrained `update_goal` command.
 
     Args:
-        status: Terminal goal status requested by the model.
-        note: Evidence or blocker explanation.
+        status: Goal status the model is reporting (`complete` or `blocked`).
+        note: Evidence the goal is complete, or the specific blocker. Required;
+            the status is not committed without it.
         tool_call_id: Tool call ID for the returned `ToolMessage`.
         state: Current graph state injected by LangGraph.
 
     Returns:
-        Command updating goal metadata and returning a tool response.
+        Command updating goal metadata and returning a tool response. When no
+        goal is set or `note` is empty, no status is committed and the
+        `ToolMessage` explains what the model must do instead.
     """
     objective = state.get("_goal_objective")
     if not isinstance(objective, str) or not objective:
@@ -110,14 +124,32 @@ def _update_goal_command(
             }
         )
     clean_note = note.strip()
-    content = f"Goal marked {status}."
-    if clean_note:
-        content += f" {clean_note}"
+    if not clean_note:
+        # Evidence is required: refuse to commit a status with no justification
+        # rather than silently storing an empty note.
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=(
+                            f"Provide a note with evidence before marking the "
+                            f"goal {status}."
+                        ),
+                        tool_call_id=tool_call_id,
+                    )
+                ]
+            }
+        )
     return Command(
         update={
             "_goal_status": status,
-            "_goal_status_note": clean_note or None,
-            "messages": [ToolMessage(content=content, tool_call_id=tool_call_id)],
+            "_goal_status_note": clean_note,
+            "messages": [
+                ToolMessage(
+                    content=f"Goal marked {status}. {clean_note}",
+                    tool_call_id=tool_call_id,
+                )
+            ],
         }
     )
 
@@ -137,8 +169,12 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         ) -> dict[str, Any]:
             """Read the current persistent goal and accepted criteria.
 
+            Call this before deciding whether work is done to see the objective,
+            its accepted criteria, the current status, and any prior note.
+
             Returns:
-                Current goal snapshot.
+                Goal snapshot with `active`, `objective`, `status`, `criteria`,
+                and `note` keys.
             """
             return _goal_snapshot(state)
 
@@ -150,6 +186,18 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             state: Annotated[dict[str, Any], InjectedState],
         ) -> Command[Any]:
             """Mark the current goal complete or blocked with evidence.
+
+            Use `complete` only when the accepted criteria are satisfied; use
+            `blocked` when you cannot proceed without user input. Do not create,
+            pause, resume, clear, or replace goals — those are user-controlled.
+
+            Args:
+                status: `complete` when the criteria are met, `blocked` when you
+                    are stuck and need the user.
+                note: Evidence the criteria are satisfied, or the specific
+                    blocker. Required — the status is not recorded without it.
+                tool_call_id: Injected tool call ID for the tool response.
+                state: Injected graph state holding the current goal.
 
             Returns:
                 Command that updates goal status and returns a tool message.
@@ -184,7 +232,7 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         return handler(
             request.override(
                 system_message=SystemMessage(
-                    content=cast("list[str | dict[Any, Any]]", content)
+                    content=cast("list[str | dict[str, str]]", content)
                 )
             )
         )
@@ -212,7 +260,7 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         return await handler(
             request.override(
                 system_message=SystemMessage(
-                    content=cast("list[str | dict[Any, Any]]", content)
+                    content=cast("list[str | dict[str, str]]", content)
                 )
             )
         )

@@ -1,7 +1,9 @@
-"""Middleware that persists per-checkpoint state needed to resume a thread.
+"""Schema and middleware for per-checkpoint state restored when resuming.
 
-Registers two checkpointed, schema-private channels and writes them from
-`after_model`:
+`ResumeState` declares several checkpointed, schema-private channels. They fall
+into two groups with *different* write paths:
+
+Written by `ResumeStateMiddleware.after_model`, from inside the graph:
 
 - `_context_tokens` — total context tokens from the latest
     `AIMessage.usage_metadata`. Powers `/tokens` and the status bar.
@@ -9,22 +11,33 @@ Registers two checkpointed, schema-private channels and writes them from
     the turn, read from `runtime.context["effective_model"]`. Lets `dcode -r`
     restore the model the resumed thread was actually using instead of falling
     back to the user's global default.
-- `_goal_*` — TUI-owned goal/rubric metadata restored when resuming a thread.
 
-These are facts the CLI reads back from `state_values` on thread resume so it
-can rehydrate the session without replaying or re-tokenizing history.
+Written by the TUI client, via `aupdate_state` (see
+`DeepAgentsApp._persist_goal_rubric_state`) — these are user/agent-owned and
+have no model-node write site:
 
-Persisting from inside the graph (rather than via a separate client-side
-`aupdate_state` call) keeps the write on the same checkpoint as the model
-response and avoids creating a standalone `UpdateState` run in LangSmith.
-Because both values are versioned channel state, resuming a specific
+- `_goal_objective` / `_goal_status` / `_goal_rubric` / `_goal_status_note` —
+    the accepted goal and its lifecycle status; `_goal_status`/`_goal_status_note`
+    are also written from inside the graph by the agent's `update_goal` tool.
+- `_pending_goal_objective` / `_pending_goal_rubric` — a proposed goal awaiting
+    user acceptance of its criteria.
+
+All of these are facts the CLI reads back from `state_values` on thread resume
+so it can rehydrate the session without replaying or re-tokenizing history.
+
+The `after_model` channels are persisted from inside the graph (rather than via
+a separate client-side `aupdate_state` call) so the write rides the same
+checkpoint as the model response and avoids creating a standalone `UpdateState`
+run in LangSmith. Because they are versioned channel state, resuming a specific
 checkpoint yields the values as of *that* checkpoint — not a thread-level
-aggregate. It also works identically against local and remote (HTTP) graphs.
+aggregate. The goal/rubric channels are necessarily client-written because the
+user sets them outside any model turn. Both paths work identically against
+local and remote (HTTP) graphs.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, Any, NotRequired
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -39,6 +52,13 @@ from deepagents_code._cli_context import CLIContextSchema
 if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
+GoalStatus = Literal["active", "blocked", "complete"]
+"""Lifecycle status of a TUI-owned goal.
+
+`active` and `blocked` are unfinished states; `complete` is terminal. A blocked
+goal is still considered active (unfinished) by `get_goal`.
+"""
+
 
 class ResumeState(AgentState):
     """Extends agent state with per-checkpoint facts restored on resume."""
@@ -52,7 +72,7 @@ class ResumeState(AgentState):
     _goal_objective: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Accepted goal objective restored by the TUI on resume."""
 
-    _goal_status: Annotated[NotRequired[str | None], PrivateStateAttr]
+    _goal_status: Annotated[NotRequired[GoalStatus | None], PrivateStateAttr]
     """Goal lifecycle status (`active`, `blocked`, `complete`, or `None`)."""
 
     _goal_rubric: Annotated[NotRequired[str | None], PrivateStateAttr]

@@ -219,8 +219,8 @@ def _format_rubric_event(data: dict[str, Any]) -> str | None:
     """Format a rubric custom-stream event for the chat transcript.
 
     Returns:
-        A user-visible message for rubric events, or `None` for unrelated custom
-            stream events.
+        A user-visible message for rubric events, or `None` for custom stream
+            events that are not rubric events.
     """
     event_type = data.get("type")
     if event_type == "rubric_evaluation_start":
@@ -250,7 +250,10 @@ def _format_rubric_event(data: dict[str, Any]) -> str | None:
     if result in {"failed", "grader_error"}:
         label = "grader failed" if result == "failed" else "grader error"
         return "⚠ Rubric " + label + (f": {explanation}" if explanation else "")
-    return None
+    # A `rubric_evaluation_end` with an unrecognized result is still a terminal
+    # grading event; surface it rather than silently dropping it (e.g. if the
+    # SDK adds a new verdict the chat would otherwise go quiet mid-turn).
+    return "⚠ Rubric grading ended" + (f": {explanation}" if explanation else "")
 
 
 class TextualUIAdapter:

@@ -1,0 +1,8 @@
+{
+  "id": 16000248,
+  "context_window_id": 4,
+  "dataset": "trec_coarse",
+  "answer": "['abbreviation', 'numeric value', 'human being']",
+  "answer_type": "ANSWER_TYPE.LABEL",
+  "model": "oracle"
+}

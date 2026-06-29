@@ -1,0 +1,8 @@
+{
+  "id": 16000225,
+  "context_window_id": 3,
+  "dataset": "trec_coarse",
+  "answer": "[26179]",
+  "answer_type": "ANSWER_TYPE.USER",
+  "model": "oracle"
+}

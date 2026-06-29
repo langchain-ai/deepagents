@@ -62,7 +62,7 @@ stage-harbor-local-deps: ## Stage checked-out packages for Harbor LangGraph sand
 # OOLONG long-context dataset — generated from HuggingFace and committed; the run
 # matrix is just args (subset / context_len / n-examples). Re-run to refresh.
 HARBOR_OOLONG_DATASET ?= deepagents_harbor/oolong/dataset
-OOLONG_GEN_ARGS ?= --dataset trec_coarse --context-len 1024 --n-examples 0
+OOLONG_GEN_ARGS ?= --dataset trec_coarse --context-len 65536 --n-examples 0
 
 oolong-tasks: ## Regenerate the committed OOLONG Harbor dataset
 	uv run python deepagents_harbor/oolong/generate_oolong_tasks.py $(OOLONG_GEN_ARGS) --out $(HARBOR_OOLONG_DATASET)

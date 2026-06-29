@@ -1,0 +1,3 @@
+In the above data, which of the labels is the least common? Give your final answer in the form 'Label: answer' where answer is one of the labels: location, description and abstract concept, numeric value, abbreviation, human being, entity.
+
+The document you must analyze is at `/app/context.txt`. Read it in full, determine the answer, then write **only** your final answer to `/app/answer.txt` (create the file if it does not exist). Answer in the exact format the question requests.

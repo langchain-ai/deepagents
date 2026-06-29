@@ -1,8 +1,0 @@
-{
-  "id": 10000013,
-  "context_window_id": 0,
-  "dataset": "trec_coarse",
-  "answer": "['less common than']",
-  "answer_type": "ANSWER_TYPE.COMPARISON",
-  "model": "oracle"
-}

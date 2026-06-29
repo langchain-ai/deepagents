@@ -41,14 +41,19 @@ oolong/
 ## Generate
 
 ```bash
-# from libs/evals/
+# from libs/evals/ — regenerate the committed dataset (trec_coarse @ 65536, 50 tasks)
+make oolong-tasks
+
+# or call the generator directly for a custom bucket / smaller smoke set
 python3 deepagents_harbor/oolong/generate_oolong_tasks.py \
-    --dataset trec_coarse --context-len 1024 --n-examples 1
+    --dataset trec_coarse --context-len 65536 --n-examples 0
 ```
 
-`--n-examples 0` emits the full bucket. The fetched rows are cached under
-`.cache/` (gitignored), so re-runs are offline. Stdlib-only — no agent stack
-needed to generate.
+The committed dataset is the `trec_coarse` **65536-token** bucket — the
+north-star bucket PR #4213 evaluates (`1024`/`8192` are only useful as cheap
+plumbing smokes). `--n-examples 0` emits the full ~50-row bucket. Fetched rows
+are cached under `.cache/` (gitignored), so re-runs are offline. Stdlib-only —
+no agent stack needed to generate.
 
 ## The agent-agnostic design
 
@@ -70,8 +75,8 @@ The verifier runs the **official** `synth_process_response` over the agent's
 ## Verified (oracle)
 
 ```bash
-# from libs/evals/, using an env with harbor installed
-harbor run -p deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000000 \
+# from libs/evals/, using an env with harbor installed (--n-tasks 1 = one task from the dataset)
+harbor run -p deepagents_harbor/oolong/dataset --n-tasks 1 \
     -a oracle -e docker -k 1
 # → Mean: 1.000
 ```
@@ -90,7 +95,7 @@ a QuickJS `eval` program (`CodeInterpreterMiddleware`) and aggregates in JS.
 ```bash
 # from libs/evals/, after: make stage-harbor-local-deps
 harbor run \
-  -p deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-10000000 \
+  -p deepagents_harbor/oolong/dataset --n-tasks 1 \
   --agent langgraph \
   --ak project_path=deepagents_harbor/langgraph_project \
   --ak config=langgraph.json \
@@ -99,7 +104,7 @@ harbor run \
   --ae 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}' \
   --ae 'UV_PRERELEASE=allow' \
   --env docker -k 1
-# → Mean: 1.000   (agent reads /app/context.txt, writes /app/answer.txt; verifier grades it)
+# (agent reads /app/context.txt, writes /app/answer.txt; verifier grades it)
 ```
 
 Verified end-to-end in Docker: the agent invokes the `eval` tool and scores 1.0

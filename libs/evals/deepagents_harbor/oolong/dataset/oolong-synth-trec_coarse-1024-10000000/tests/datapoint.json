@@ -1,8 +1,0 @@
-{
-  "id": 10000000,
-  "context_window_id": 0,
-  "dataset": "trec_coarse",
-  "answer": "['abbreviation']",
-  "answer_type": "ANSWER_TYPE.LABEL",
-  "model": "oracle"
-}

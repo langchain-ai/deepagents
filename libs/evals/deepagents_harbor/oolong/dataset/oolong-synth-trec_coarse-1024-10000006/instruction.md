@@ -1,3 +1,0 @@
-In the above data, is label 'abbreviation' more common, less common, or the same frequency as label 'description and abstract concept'? Give your final answer in the form 'Answer: abbreviation is [X] description and abstract concept', where [X] is 'more common than', 'less common than', or 'same frequency as'.
-
-The document you must analyze is at `/app/context.txt`. Read it in full, determine the answer, then write **only** your final answer to `/app/answer.txt` (create the file if it does not exist). Answer in the exact format the question requests.

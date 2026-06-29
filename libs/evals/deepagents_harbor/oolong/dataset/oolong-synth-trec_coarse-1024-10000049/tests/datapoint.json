@@ -1,8 +1,0 @@
-{
-  "id": 10000049,
-  "context_window_id": 1,
-  "dataset": "trec_coarse",
-  "answer": "['human being']",
-  "answer_type": "ANSWER_TYPE.LABEL",
-  "model": "oracle"
-}

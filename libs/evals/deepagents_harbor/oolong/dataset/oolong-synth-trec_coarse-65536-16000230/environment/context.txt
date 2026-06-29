@@ -1,0 +1,1593 @@
+The following lines contain 1585 general-knowledge questions, one per line. Each question has an answer that can be described as one of 6 categories: 'location', 'description and abstract concept', 'numeric value', 'abbreviation', 'human being', 'entity'.
+
+You will be asked to answer questions about the aggregate label statistics across all 1585 examples in this dataset. Do not try to guess, estimate, or approximate the result. Calculate the exact answer given these datapoints.
+
+Date: Jun 12, 2025 || User: 28579 || Instance: What makes you fat ?
+Date: Dec 11, 2022 || User: 12940 || Instance: What is the name of a book written by Aaron Hass ?
+Date: Mar 25, 2025 || User: 19514 || Instance: How many cables support the main span of the Golden Gate Bridge ?
+Date: May 27, 2024 || User: 34718 || Instance: What is hypertext ?
+Date: Sep 29, 2023 || User: 74195 || Instance: What does SIDS stand for ?
+Date: Jun 04, 2023 || User: 28623 || Instance: What blood sport features a movement called a veronica ?
+Date: May 08, 2023 || User: 56559 || Instance: What book does Holden Caulfield appear in ?
+Date: Nov 28, 2022 || User: 64049 || Instance: Who killed more people , Hitler or Stalin ?
+Date: Sep 29, 2023 || User: 14602 || Instance: What are the names of Jack 's original roommates on Three 's Company ?
+Date: Aug 13, 2022 || User: 66765 || Instance: What U.S. President had brothers-in-law in the Confederate army ?
+Date: Aug 13, 2024 || User: 40020 || Instance: What two countries are separated by the Bering Strait ?
+Date: Aug 13, 2024 || User: 53648 || Instance: How long does it take to hike the entire Appalachian Trail ?
+Date: Apr 15, 2025 || User: 43142 || Instance: What is a common anti-AIDS drug ?
+Date: Mar 08, 2025 || User: 43865 || Instance: What does the word LASER mean ?
+Date: Nov 04, 2022 || User: 94607 || Instance: What is dew point ?
+Date: Jul 30, 2024 || User: 46659 || Instance: What racehorse won an Associated Press poll as the greatest horse of the 20th century ?
+Date: Jul 26, 2023 || User: 45613 || Instance: What poet wrote : `` ... I have promises to keep , and miles to go before I sleep '' ?
+Date: Apr 06, 2022 || User: 73294 || Instance: What is the origin of Boxing Day ?
+Date: Jan 07, 2024 || User: 90432 || Instance: What phenomenon would you expect to read about in the monthly publication The Bigfoot News ?
+Date: Dec 18, 2023 || User: 22117 || Instance: Why was the zipper invented ?
+Date: Feb 19, 2023 || User: 28618 || Instance: What is the amount of money owed for illegally having a dog on a beach ?
+Date: Apr 13, 2025 || User: 37074 || Instance: Where is Qatar ?
+Date: Jul 28, 2022 || User: 21769 || Instance: What costume designer decided that Michael Jackson should only wear one glove ?
+Date: Feb 28, 2025 || User: 33472 || Instance: What city was Martin Luther King Jr. assassinated in ?
+Date: Jun 28, 2023 || User: 84650 || Instance: What is the abbreviated form of the National Bureau of Investigation ?
+Date: Jul 10, 2022 || User: 19514 || Instance: How often are brain cells replaced ?
+Date: Nov 13, 2024 || User: 66331 || Instance: What country lies directly south of Detroit ?
+Date: May 31, 2023 || User: 65702 || Instance: How does a bill become law ?
+Date: Aug 01, 2023 || User: 53265 || Instance: What were the first words spoken on a film sound track ?
+Date: Jan 24, 2023 || User: 64494 || Instance: What is ethylene ?
+Date: May 24, 2025 || User: 59542 || Instance: What does storm wave mean in Japanese ?
+Date: Apr 28, 2022 || User: 17518 || Instance: What does S.O.S. stand for ?
+Date: Sep 22, 2024 || User: 54517 || Instance: How many people in the world speak French ?
+Date: Jun 23, 2023 || User: 54517 || Instance: What lake is Sheboygan on ?
+Date: Oct 12, 2022 || User: 14602 || Instance: Where is Rider College located ?
+Date: Mar 21, 2025 || User: 53687 || Instance: How many people did Randy Steven Craft murder ?
+Date: May 09, 2024 || User: 68994 || Instance: How can I get a comic character I made copyrighted and published ?
+Date: Sep 06, 2022 || User: 75482 || Instance: Where can stocks be traded on-line ?
+Date: Apr 14, 2022 || User: 73294 || Instance: What is the acronym for the rating system for air conditioner efficiency ?
+Date: Dec 23, 2023 || User: 27509 || Instance: What does a philatelist collect ?
+Date: Jan 04, 2025 || User: 64494 || Instance: What 's the farthest planet from the sun ?
+Date: Apr 12, 2025 || User: 99279 || Instance: How do I love thee ?
+Date: Mar 24, 2022 || User: 92160 || Instance: What is the Kashmir issue ?
+Date: Nov 03, 2024 || User: 91835 || Instance: What does R.E.M. stand for , as in the rock group R.E.M. ?
+Date: Dec 08, 2023 || User: 21917 || Instance: Where are the busiest Amtrak rail stations in the U.S. ?
+Date: Jun 13, 2024 || User: 98837 || Instance: What brand of jeans did Calvin Klein admit in a 1984 interview he felt more comfortable wearing ?
+Date: Nov 20, 2022 || User: 49497 || Instance: What is a `` False Moon '' ?
+Date: Dec 07, 2022 || User: 55423 || Instance: What does RCA stand for ?
+Date: Jan 11, 2025 || User: 19439 || Instance: How is bubble wrap made ?
+Date: Jan 16, 2025 || User: 91835 || Instance: What are the languages spoken by the natives in Afghanistan ?
+Date: Apr 07, 2023 || User: 31643 || Instance: What does snafu stand for ?
+Date: Apr 26, 2024 || User: 34086 || Instance: Where are there aborigines ?
+Date: Mar 05, 2024 || User: 28361 || Instance: Who was the lawyer for Randy Steven Craft ?
+Date: May 23, 2022 || User: 88499 || Instance: What does `` extended definition '' mean and how would one write a paper on it ?
+Date: Aug 31, 2024 || User: 21363 || Instance: How many equal angles are there in an isosceles triangle ?
+Date: Nov 21, 2022 || User: 39033 || Instance: What does G.M.T. stand for ?
+Date: Mar 12, 2025 || User: 53373 || Instance: How many athletes did Puerto Rico enter in the 1984 Winter Olympics ?
+Date: Jun 20, 2025 || User: 93886 || Instance: Where is Ayer 's rock ?
+Date: Nov 01, 2024 || User: 44938 || Instance: Why is hockey so violent ?
+Date: Jul 10, 2023 || User: 14602 || Instance: What was the name of the Protestant revolt against the supremacy of the Pope ?
+Date: Jul 30, 2024 || User: 75482 || Instance: In South Korea , how many American Soldiers are there ?
+Date: Mar 18, 2022 || User: 76648 || Instance: What is the name of the police officer who tried to keep order in Top Cat 's neighborhood ?
+Date: Jul 30, 2022 || User: 21363 || Instance: What country has problems with hooligans ?
+Date: Jan 13, 2023 || User: 34487 || Instance: What is the acronym for the National Bureau of Investigation ?
+Date: Dec 27, 2022 || User: 86233 || Instance: Which is the most-used computer program ?
+Date: Jul 13, 2022 || User: 56559 || Instance: How many home runs did Babe Ruth hit in his lifetime ?
+Date: Jul 02, 2024 || User: 68930 || Instance: What is LMDS ?
+Date: Sep 28, 2023 || User: 28618 || Instance: What William Makepeace Thackeray novel was made into a film by Stanley Kubrick ?
+Date: Nov 15, 2024 || User: 12695 || Instance: What year did the United States pass the Copyright law ?
+Date: Mar 19, 2022 || User: 56559 || Instance: What is Bombay duck ?
+Date: Nov 08, 2024 || User: 89725 || Instance: What son of a 15-year-old Mexican girl and a half-Irish father became the world 's most famous Greek ?
+Date: Jan 05, 2023 || User: 14100 || Instance: Why did the chicken cross the road ?
+Date: Jun 04, 2025 || User: 64791 || Instance: How many electoral college votes does Colorado have ?
+Date: Aug 17, 2023 || User: 22282 || Instance: Which produces the longer sperm - an elephant or a mouse ?
+Date: May 12, 2022 || User: 15917 || Instance: What writer-journalist made his mark describing colorful Broadway and underworld characters ?
+Date: Nov 17, 2024 || User: 16993 || Instance: How can you stop the itch from poison ivy ?
+Date: Nov 20, 2022 || User: 67296 || Instance: What animal has been called The Poor Man 's Cow ?
+Date: Jul 08, 2024 || User: 30159 || Instance: Who died with more than 1 , 000 U.S. patents to his credit ?
+Date: Aug 11, 2024 || User: 70745 || Instance: How do I start a web based business ?
+Date: Feb 07, 2025 || User: 65565 || Instance: What Asian country once thrilled to the sport of cricket fighting ?
+Date: Sep 26, 2023 || User: 68930 || Instance: Who was nicknamed The Little Corporal ?
+Date: May 04, 2024 || User: 43916 || Instance: Who created the character James Bond ?
+Date: May 15, 2023 || User: 53022 || Instance: What is the largest and most expensive freeway construction project in the U.S. right now ?
+Date: Dec 27, 2022 || User: 24837 || Instance: What presidential administration challenged Americans to explore The New Frontier ?
+Date: May 26, 2024 || User: 63819 || Instance: What state in the U.S. has the most blacks ?
+Date: Jun 16, 2024 || User: 71374 || Instance: What baseball player was walked the most times ?
+Date: Feb 28, 2024 || User: 82292 || Instance: Where 's the GUM department store ?
+Date: May 13, 2024 || User: 58124 || Instance: What does the word LASER mean ?
+Date: May 05, 2022 || User: 46645 || Instance: How do I know someone is truly in love with me ?
+Date: Jul 20, 2024 || User: 39497 || Instance: What mountain range is traversed by the highest railroad in the world ?
+Date: Feb 14, 2024 || User: 98968 || Instance: Why is Microsoft 's Windows 3 software so successful ?
+Date: Jul 17, 2024 || User: 11026 || Instance: What city is served by Logan International Airport ?
+Date: May 03, 2025 || User: 47089 || Instance: What does a chiropodist treat ?
+Date: Jan 01, 2025 || User: 34086 || Instance: What was the target rate for M3 growth in 1992 ?
+Date: Jul 05, 2022 || User: 97045 || Instance: How many people die of tuberculosis yearly ?
+Date: Mar 04, 2022 || User: 43722 || Instance: What makes hamburgers taste like steakburgers ?
+Date: Jan 07, 2025 || User: 14621 || Instance: What 's the world 's longest suspension bridge ?
+Date: May 07, 2025 || User: 10341 || Instance: What class is categorized as the bourgeoisie ?
+Date: Apr 09, 2024 || User: 42433 || Instance: Who directed The Wild Bunch ?
+Date: Apr 20, 2025 || User: 66195 || Instance: Where can I get U.S. economic statistics ?
+Date: Dec 16, 2022 || User: 33037 || Instance: What is the former name of Zimbabwe ?
+Date: Nov 10, 2023 || User: 27800 || Instance: What is the mascot for Notre Dame University ?
+Date: Apr 09, 2025 || User: 33037 || Instance: What facial feature did Walt Disney sport that none of Disney 's employees is allowed to ?
+Date: Mar 14, 2025 || User: 63031 || Instance: How many gallons of water go over Niagra Falls every second ?
+Date: Jun 25, 2024 || User: 56211 || Instance: What did Shostakovich write for Rostropovich ?
+Date: Dec 25, 2024 || User: 55950 || Instance: Who released the Internet worm in the late 1980s ?
+Date: Jun 24, 2024 || User: 88273 || Instance: Who was the original Humpty Dumpty ?
+Date: Aug 29, 2023 || User: 73294 || Instance: What overalls are named for Dungri , a suburb of Bombay ?
+Date: May 06, 2024 || User: 27800 || Instance: What 's the abbreviation for limited partnership ?
+Date: May 08, 2022 || User: 67185 || Instance: What French designer declared : `` The jean is the destructor ! It is a dictator ! It is destroying creativity. The jean must be stopped ! '' ?
+Date: May 18, 2024 || User: 29016 || Instance: What appointments secretary to Richard Nixon went to jail ?
+Date: Jan 20, 2023 || User: 73294 || Instance: What did Esquire name Ash Hole of the Year for 1980 ?
+Date: Aug 19, 2024 || User: 24837 || Instance: What 1950 film won seven Oscars , including best picture ?
+Date: Jun 22, 2023 || User: 98423 || Instance: Which Doonesbury character was likely to turn into a werewolf ?
+Date: Dec 22, 2022 || User: 29275 || Instance: How can you define time ?
+Date: Apr 24, 2023 || User: 53265 || Instance: What cocktail inspired John Doxat to write the book Stirred-Not Shaken ?
+Date: Nov 15, 2024 || User: 59013 || Instance: What is the longest river in the United States ?
+Date: Jul 22, 2024 || User: 11784 || Instance: What ocean was Amelia Earhart flying over when she disappeared ?
+Date: Jul 06, 2024 || User: 12695 || Instance: How does a scientific calculator work ?
+Date: Dec 19, 2024 || User: 33599 || Instance: Who wrote ` Hamlet ' ?
+Date: May 06, 2024 || User: 98837 || Instance: What does the acronym CPR mean ?
+Date: May 22, 2025 || User: 73315 || Instance: What island is home to statues called Mauis ?
+Date: Feb 25, 2023 || User: 83439 || Instance: In a computer , what does SCSI mean ?
+Date: Feb 13, 2024 || User: 83107 || Instance: What Shakespearean play featured Shylock ?
+Date: Mar 20, 2024 || User: 99117 || Instance: How many colleges are in Wyoming ?
+Date: Nov 18, 2023 || User: 36043 || Instance: How many feet more than 2 is the average height of the Great Wall of China ?
+Date: May 14, 2024 || User: 52930 || Instance: What newspaper serves Salt Lake City ?
+Date: Dec 18, 2024 || User: 87941 || Instance: What is the trademark of a Washington Redskin 's fan ?
+Date: Jun 15, 2023 || User: 43638 || Instance: What is a Cartesian Diver ?
+Date: Sep 02, 2022 || User: 19986 || Instance: What city is the Kentucky Horse Park near ?
+Date: Apr 05, 2023 || User: 63448 || Instance: Who won the Nobel Peace Prize in 1991 ?
+Date: Jun 01, 2025 || User: 34414 || Instance: Name a tiger that is extinct .
+Date: Aug 21, 2024 || User: 90704 || Instance: What is the connection between New Krypton and Daxam ?
+Date: May 26, 2024 || User: 10742 || Instance: How much money are Dumbo 's ears insured for ?
+Date: Jun 30, 2022 || User: 99117 || Instance: What is the purpose of BIOS ?
+Date: Jan 06, 2024 || User: 29776 || Instance: How do you write MLA style bibliographies for an Internet source ?
+Date: Aug 04, 2022 || User: 29911 || Instance: What is the population of the largest Chilean city
+Date: Jun 13, 2023 || User: 82292 || Instance: What auto race was Wilbur Reed the first to win three times ?
+Date: Feb 13, 2025 || User: 88424 || Instance: What percent liked Thatcher after she had been in power for a decade ?
+Date: Jan 21, 2024 || User: 42442 || Instance: What hide-and-seek game is played around a tin can ?
+Date: Dec 25, 2024 || User: 65702 || Instance: What does `` antidisestablishmentarianism '' mean ?
+Date: Sep 06, 2023 || User: 59257 || Instance: About how many Americans are still unaccounted for from the Vietnam war ?
+Date: Jun 27, 2023 || User: 43142 || Instance: What is the present Pope named ?
+Date: Jul 02, 2022 || User: 99492 || Instance: What is the abbreviation for Original Equipment Manufacturer ?
+Date: Nov 30, 2024 || User: 98837 || Instance: What fast food is prepared with a `` secret blend of 11 herbs and spices ? ''
+Date: Feb 25, 2022 || User: 23281 || Instance: How do clouds form ?
+Date: Jun 16, 2025 || User: 58321 || Instance: How do you fix squeaky floors ?
+Date: Apr 30, 2022 || User: 98013 || Instance: What is the difference between New York-style and Chicago-style pizza ?
+Date: Mar 29, 2023 || User: 57329 || Instance: What is the purpose of the SysRq key on my computer keyboard ?
+Date: Aug 15, 2022 || User: 36043 || Instance: Who is the president of Stanford University ?
+Date: Jan 03, 2023 || User: 19439 || Instance: What relative of the racoon is sometimes known as the cat-bear ?
+Date: Nov 19, 2022 || User: 85897 || Instance: What radio , TV and movie character did Jackie Gleason and William Bendix play ?
+Date: Mar 31, 2023 || User: 65702 || Instance: What soft drink first appeared in the Old Corner Drug Store in Waco , Texas , in 1885 ?
+Date: Jun 13, 2024 || User: 76648 || Instance: How many people died because of a smoking problem in 1997 ?
+Date: Jan 17, 2024 || User: 29911 || Instance: What is the name of the city that Maurizio Pellegrin lives in ?
+Date: May 24, 2022 || User: 76648 || Instance: Who was President of Costa Rica in 1994 ?
+Date: Jan 08, 2024 || User: 34475 || Instance: What is the approximate population of Las Vegas , N.M ?
+Date: Dec 31, 2022 || User: 29016 || Instance: What does Ms. , Miss , and Mrs. stand for ?
+Date: Jul 28, 2022 || User: 89725 || Instance: What color is an Arctic fox in winter ?
+Date: Jul 08, 2023 || User: 73315 || Instance: What city was John F. Kennedy nominated for president in ?
+Date: Apr 17, 2022 || User: 52492 || Instance: What film marked Robert Redford 's directorial debut ?
+Date: Jan 09, 2024 || User: 60431 || Instance: What is Remembrance Day all about ?
+Date: Mar 18, 2023 || User: 34101 || Instance: What cigarette is `` a whole new world '' ?
+Date: Mar 28, 2025 || User: 75748 || Instance: What is federal income tax ?
+Date: Jan 27, 2025 || User: 85897 || Instance: What two vegetables are combined in succotash ?
+Date: Mar 12, 2024 || User: 66268 || Instance: Where did makeup originate ?
+Date: Dec 29, 2024 || User: 40243 || Instance: What films featured the character Popeye Doyle ?
+Date: Dec 12, 2023 || User: 79671 || Instance: What does INRI stand for when used on Jesus ' cross ?
+Date: Jun 01, 2024 || User: 60081 || Instance: What 's bottled in jeroboams ?
+Date: Dec 31, 2024 || User: 46645 || Instance: What Michelangelo sculpture is in Saint Peter 's Cathedral , Basilica , ?
+Date: Jan 28, 2024 || User: 14621 || Instance: What country has declared one-fifth of its territory off-limits to Russians ?
+Date: Jun 03, 2024 || User: 42541 || Instance: Who is the President of Pergament ?
+Date: Feb 18, 2024 || User: 25456 || Instance: How do you ask a total stranger out on a date ?
+Date: May 10, 2023 || User: 86557 || Instance: What first-aid product `` Helps the hurt stop hurting '' ?
+Date: Apr 12, 2024 || User: 24024 || Instance: When reading classified ads , what does EENTY : other stand for ?
+Date: Jul 12, 2024 || User: 37539 || Instance: What brand of white rum is still made in Cuba ?
+Date: Sep 15, 2024 || User: 15971 || Instance: Who stopped making diary entries on May 31 , 1669 , because he thought he was going blind ?
+Date: Jun 23, 2022 || User: 22282 || Instance: What is the gestation period for human pregnancies ?
+Date: Aug 21, 2023 || User: 19439 || Instance: Who was the star of Leave It to Beaver ?
+Date: Dec 31, 2023 || User: 14675 || Instance: What are the names of Richard Nixon 's two daughters ?
+Date: Sep 29, 2022 || User: 50904 || Instance: What does verdandi mean ?
+Date: Jun 27, 2022 || User: 44699 || Instance: What happened to Answers.com ?
+Date: Feb 21, 2025 || User: 22476 || Instance: What is a geoscientist ?
+Date: Jun 29, 2024 || User: 53022 || Instance: How many islands make up Antigua ?
+Date: Mar 19, 2025 || User: 95329 || Instance: In the past 8 years who have the MVP players for the NHL been ?
+Date: May 28, 2023 || User: 26801 || Instance: What is InterLata Internet service ?
+Date: Oct 09, 2023 || User: 28618 || Instance: What film was based on the play Everybody Comes to Rick 's ?
+Date: Mar 30, 2024 || User: 52930 || Instance: What product does `` Mrs. Olsen '' promote ?
+Date: Jun 22, 2023 || User: 73458 || Instance: Who is Henry Butler ?
+Date: Feb 16, 2023 || User: 25064 || Instance: What effect does LSD have on the brain ?
+Date: Jun 29, 2023 || User: 10864 || Instance: What sports event is Meyer Wolfsheim supposed to have fixed in The Great Gatsby ?
+Date: May 01, 2022 || User: 12695 || Instance: How can I find out how much income tax is paid on Social Security income on the 1998 income tax ?
+Date: Sep 18, 2022 || User: 43091 || Instance: What is thalassemia ?
+Date: May 30, 2022 || User: 50223 || Instance: What is the temperature today ?
+Date: Apr 21, 2023 || User: 86458 || Instance: How many propellers helped power the plane the Wright brothers flew into history ?
+Date: Dec 08, 2024 || User: 74802 || Instance: What was the name of Betty Boop 's dog ?
+Date: Jan 12, 2023 || User: 70341 || Instance: How many points make up a perfect fivepin bowling score ?
+Date: May 30, 2025 || User: 94607 || Instance: What creature scares people in the film `` Jaws '' ?
+Date: Jul 17, 2022 || User: 86233 || Instance: What 1920s cowboy star rode Tony the Wonder Horse ?
+Date: Feb 17, 2023 || User: 19867 || Instance: How much do tuberculosis combatting drugs cost ?
+Date: Apr 19, 2024 || User: 59911 || Instance: What European country abandoned postage stamps in 1923 because printing them cost more than their face value ?
+Date: Jun 05, 2025 || User: 91835 || Instance: Where can I find a list of all the companies in America that offer a direct stock purchase plan ?
+Date: Jun 21, 2023 || User: 37246 || Instance: What predators exist on Antarctica ?
+Date: Jan 26, 2025 || User: 94079 || Instance: What is a movie that Kevin Costner made about Sioux Indians ?
+Date: Mar 08, 2025 || User: 58739 || Instance: How do chickens have baby chicks ?
+Date: Aug 25, 2023 || User: 19801 || Instance: Which country is the largest country in Latin America ?
+Date: Mar 21, 2025 || User: 89725 || Instance: Who recorded the 1957 hit Tammy ?
+Date: Jan 26, 2023 || User: 53265 || Instance: How many colored squares are there on a Rubik 's Cube ?
+Date: Mar 03, 2022 || User: 33599 || Instance: What fowl grabs the spotlight after the Chinese Year of the Monkey ?
+Date: Sep 14, 2022 || User: 29776 || Instance: What species was Winnie the Pooh ?
+Date: May 18, 2023 || User: 15620 || Instance: What is infomatics ?
+Date: Nov 17, 2024 || User: 82292 || Instance: Where can I find the lyrics for the song ` Getting Married Today ' from the musical ` Company ' ?
+Date: Feb 19, 2022 || User: 99492 || Instance: How many different countries export coffee ?
+Date: Jun 16, 2024 || User: 15412 || Instance: Which one of the Great Lakes is entirely within U.S. territory ?
+Date: May 22, 2024 || User: 86557 || Instance: Who is the prophet of the religion of Islam ?
+Date: Nov 18, 2023 || User: 25431 || Instance: What does the donation process entail ?
+Date: Feb 26, 2024 || User: 54828 || Instance: What does CPR stand for ?
+Date: Dec 06, 2024 || User: 75748 || Instance: How many eyes does a bat have ?
+Date: Nov 22, 2022 || User: 19439 || Instance: How many points is a bullseye worth in darts ?
+Date: Jan 19, 2024 || User: 99117 || Instance: What 's the abbreviation for trinitrotoluene ?
+Date: Oct 11, 2024 || User: 11999 || Instance: How does a glacier form ?
+Date: Jun 02, 2023 || User: 89660 || Instance: Who was Santos-Dumont ?
+Date: Dec 01, 2023 || User: 12987 || Instance: What two states is Washington D.C. between ?
+Date: May 16, 2022 || User: 11376 || Instance: What four-legged creature did a Cornell University study say would make man 's best companion in space ?
+Date: Jan 25, 2023 || User: 63819 || Instance: What is the largest natural lake in Pennsylvania ?
+Date: Mar 27, 2025 || User: 70341 || Instance: What U.S. state lived under six flags ?
+Date: Feb 24, 2024 || User: 97658 || Instance: Who was Garrett Morgan married to ?
+Date: Jan 02, 2025 || User: 59257 || Instance: What meat complemented sweet potatoes and peas in the first TV dinner ?
+Date: Dec 22, 2024 || User: 50773 || Instance: How did the Great Depression affect Japan 's history ?
+Date: Jan 03, 2023 || User: 34086 || Instance: Where can I get a complete listing of showtimes in my area ?
+Date: Sep 12, 2023 || User: 68994 || Instance: What country has the highest arson rate ?
+Date: Sep 10, 2023 || User: 13344 || Instance: What CBS soap opera was interrupted by the bulletin of John F. Kennedy 's assassination ?
+Date: Jul 02, 2023 || User: 71218 || Instance: What does `` B.Y.O.B. '' mean ?
+Date: Nov 12, 2024 || User: 29016 || Instance: Who sang the song `` Hooked on a Feeling '' in the dancing baby episode of `` Ally Mcbeal '' ?
+Date: Jul 02, 2024 || User: 97045 || Instance: How many villi are found in the small intestine ?
+Date: Jun 15, 2023 || User: 21769 || Instance: Where can I find up-to-date coastal ocean surface temperature information , preferably along North America and the Caribbean ?
+Date: Sep 06, 2024 || User: 12695 || Instance: Who makes chicken `` finger lickin '' good ?
+Date: Mar 19, 2023 || User: 53460 || Instance: Who was Gerald Ford 's vice president ?
+Date: Apr 29, 2023 || User: 90384 || Instance: On what continent is Mozambique ?
+Date: May 16, 2022 || User: 59911 || Instance: What is Dick Clark 's date of birth ?
+Date: Dec 21, 2022 || User: 41747 || Instance: What weapon is the mythological character Apollo most proficient with ?
+Date: Jul 03, 2024 || User: 50223 || Instance: What does Visine get out ?
+Date: Oct 18, 2024 || User: 55950 || Instance: What 's the traditional drink at the Kentucky Derby ?
+Date: Feb 23, 2022 || User: 27800 || Instance: What is different about the red and black fox ?
+Date: Apr 27, 2025 || User: 81609 || Instance: What is Larry King 's job ?
+Date: Mar 26, 2022 || User: 22117 || Instance: What is the abbreviation for Original Equipment Manufacturer ?
+Date: Jun 11, 2024 || User: 96376 || Instance: Who wrote NN DT NNP NNP '' ?
+Date: Sep 17, 2023 || User: 66268 || Instance: What British TV series inspired All in the Family ?
+Date: Aug 12, 2024 || User: 43865 || Instance: How did Lee Harvey Oswald purchase his rifle ?
+Date: Jun 07, 2022 || User: 95329 || Instance: Where can I buy a hat like the kind Jay Kay from Jamiroquai wears ?
+Date: Mar 13, 2022 || User: 34711 || Instance: What does camera-ready art mean ?
+Date: Jan 16, 2023 || User: 25485 || Instance: On what river is Rome built ?
+Date: Dec 05, 2022 || User: 71941 || Instance: What famous comedian recently tried without success to revive the play ?
+Date: May 11, 2023 || User: 75482 || Instance: What are the powers and weaknesses of Green Lantern 's ring ?
+Date: Jul 12, 2022 || User: 43916 || Instance: Where are some great educational resources for parents and teachers ?
+Date: Jan 28, 2024 || User: 24231 || Instance: What product did Robert Conrad dare people to knock off his shoulder ?
+Date: Sep 21, 2024 || User: 70745 || Instance: What line of candy products included Super Skrunch and Peanut Butter Oompas ?
+Date: Oct 15, 2023 || User: 10340 || Instance: What did Louis Cartier invent for aviator Santos Dumont in 1940 ?
+Date: May 12, 2025 || User: 40243 || Instance: How many bends are there in a standard paper clip ?
+Date: Jul 30, 2024 || User: 40243 || Instance: How many soldiers were involved in the last Panama invasion by the United States of America ?
+Date: Aug 08, 2022 || User: 90504 || Instance: What animal occurs in Spielberg 's `` Jaws '' ?
+Date: Jan 24, 2023 || User: 88674 || Instance: What war did Florence Nightingale tend the troops in ?
+Date: Jul 24, 2022 || User: 46645 || Instance: How can I get some free technical information on Electric Vehicle ?
+Date: Jan 17, 2024 || User: 14100 || Instance: Why do rooftops give off steam after a big rainstorm ?
+Date: Feb 10, 2024 || User: 53265 || Instance: What was the V-8 Juice slogan : `` the tastebud '' ?
+Date: Apr 07, 2022 || User: 81609 || Instance: How long do you have to pay back debt after claiming chapter 11 bankruptcy ?
+Date: Jan 05, 2025 || User: 75718 || Instance: What are the factors leading to the high teen pregnancy rate in Spartanburg , South Carolina ?
+Date: Mar 07, 2025 || User: 14621 || Instance: What is the Golden Rule ?
+Date: Apr 22, 2023 || User: 37037 || Instance: How big is a normal size penis for a 15-year-old ?
+Date: Oct 16, 2024 || User: 69837 || Instance: What 's the Southern dish made of pigs ' small intestines ?
+Date: Nov 09, 2023 || User: 48101 || Instance: How many calories are there in a Big Mac ?
+Date: Mar 06, 2023 || User: 81263 || Instance: Where can I find full written draft of CTBT ?
+Date: Jul 02, 2023 || User: 19986 || Instance: Why do magnets attract ?
+Date: Apr 01, 2022 || User: 70745 || Instance: What is the origin of the typing practice sentence `` Now is the time for all good men to come to the aid of their country '' ?
+Date: Jan 02, 2025 || User: 70745 || Instance: Where is Romania located ?
+Date: Nov 10, 2022 || User: 98013 || Instance: What line of luggage is named after a famous American flier ?
+Date: Apr 04, 2022 || User: 17875 || Instance: What is the VDRL test of blood ?
+Date: Jan 04, 2025 || User: 57432 || Instance: What desert has been called The Garden of Allah ?
+Date: Mar 09, 2025 || User: 22117 || Instance: What comic strip sometimes features a mailman named Beasley ?
+Date: Jan 02, 2023 || User: 57432 || Instance: Where is Natchitoches , Louisiana ?
+Date: Aug 17, 2022 || User: 25456 || Instance: What common livestock have the greatest variety of breeds ?
+Date: Nov 22, 2022 || User: 14621 || Instance: In what area of the world was the Six Day War fought ?
+Date: Jun 29, 2022 || User: 47026 || Instance: What is real time processing ?
+Date: Mar 29, 2022 || User: 57329 || Instance: What does IQ stand for ?
+Date: Feb 07, 2025 || User: 88768 || Instance: How can I stop or slow down aging ?
+Date: May 04, 2023 || User: 40243 || Instance: How do you get a girl to have sex with you ?
+Date: Jan 20, 2025 || User: 19986 || Instance: What is the origin of the word `` Teddy bear '' ?
+Date: Nov 21, 2024 || User: 15917 || Instance: What fruit does the ficus produce ?
+Date: Mar 31, 2022 || User: 14471 || Instance: What does NASA stand for ?
+Date: Jul 20, 2022 || User: 92160 || Instance: What materials did the three little pigs use to build their houses ?
+Date: Apr 20, 2022 || User: 15203 || Instance: Name the two mystical ravens Odin has at his command .
+Date: Mar 27, 2023 || User: 72638 || Instance: In what year was the Berlin Wall erected ?
+Date: Jan 26, 2024 || User: 24837 || Instance: Who co-starred with Julie Andrews in Mary Poppins ?
+Date: Aug 05, 2022 || User: 17055 || Instance: What do the letters D.C. stand for in Washington , D.C. ?
+Date: Feb 22, 2022 || User: 59911 || Instance: How far do you have to run if you hit a home run ?
+Date: Apr 05, 2022 || User: 53373 || Instance: What does NASDAQ stand for ?
+Date: May 30, 2022 || User: 75962 || Instance: What was the name of the computer in ` 2001 : A Space Odyssey ' ?
+Date: Jul 18, 2023 || User: 64494 || Instance: What is the richest state in the U.S. ?
+Date: Apr 23, 2022 || User: 98423 || Instance: What is the difference between college and graduate school ?
+Date: Apr 05, 2025 || User: 89725 || Instance: What are bottle caps with presidents ' pictures inside worth ?
+Date: Oct 11, 2023 || User: 39806 || Instance: What does JESSICA mean ?
+Date: Sep 15, 2024 || User: 30736 || Instance: What animal causes the biggest threat to humans ?
+Date: Jul 31, 2022 || User: 92915 || Instance: What are the world 's three largest oceans , in order of size ?
+Date: Feb 22, 2022 || User: 22117 || Instance: What does BTU mean ?
+Date: Feb 11, 2024 || User: 30159 || Instance: Who is the richest woman in the world ?
+Date: Jun 25, 2023 || User: 20477 || Instance: What is p.m. an abbreviation for , as in 5 p.m. ?
+Date: Feb 27, 2022 || User: 31689 || Instance: What is the most expensive car in the world ?
+Date: Oct 16, 2023 || User: 91835 || Instance: What city has the two steepest streets in the U.S. ?
+Date: Feb 23, 2022 || User: 53162 || Instance: How do I increase my biceps ' size ?
+Date: May 04, 2025 || User: 59257 || Instance: How many calories are there in soy sauce ?
+Date: Mar 03, 2022 || User: 86355 || Instance: What does R.E.M. stand for , as in the rock group R.E.M. ?
+Date: Dec 19, 2022 || User: 35398 || Instance: How can I find a phone number of someone if I only know their email address ?
+Date: Dec 22, 2023 || User: 37539 || Instance: What National Basketball Association superstar told his story in Giant Steps ?
+Date: Apr 29, 2023 || User: 22117 || Instance: How many years ago did Led Zeppelin release its last album ?
+Date: Nov 28, 2022 || User: 28361 || Instance: What is dry ice ?
+Date: Jun 29, 2022 || User: 40243 || Instance: Who was the first person to study the stars ?
+Date: Jul 02, 2023 || User: 68994 || Instance: What children 's tale contains the line : `` Come , Cinderslut , and hold this skein of wool for me '' ?
+Date: Jun 11, 2024 || User: 25456 || Instance: In Waugh 's `` A Handful of Dust , '' what does the mad old man force the hero to do every afternoon ?
+Date: Oct 19, 2023 || User: 39828 || Instance: What plant has the largest seed ?
+Date: Oct 10, 2024 || User: 83107 || Instance: What is the largest museum in the world ?
+Date: Nov 20, 2022 || User: 72675 || Instance: What is the origin of the atom ?
+Date: Apr 14, 2024 || User: 28618 || Instance: How many emperors were there in the Roman Empire ?
+Date: Nov 10, 2023 || User: 10742 || Instance: Who is Olive Oyl 's brother ?
+Date: Jun 08, 2023 || User: 22282 || Instance: What is the Amish religion ?
+Date: Sep 06, 2022 || User: 99279 || Instance: What was the backup singing group for Roy Rogers ?
+Date: Dec 29, 2024 || User: 34487 || Instance: What country is bounded in part by the Indian Ocean and Coral and Tasman seas ?
+Date: Oct 07, 2022 || User: 65702 || Instance: What does IBM stand for ?
+Date: Feb 16, 2024 || User: 83439 || Instance: What state capital comes last alphabetically ?
+Date: Jul 21, 2022 || User: 66268 || Instance: How does it make its colors ?
+Date: Mar 22, 2024 || User: 88499 || Instance: What does NAFTA stand for ?
+Date: Dec 12, 2022 || User: 88499 || Instance: What is a camel hair brush actually made out of ?
+Date: Apr 02, 2024 || User: 20575 || Instance: How many pounds are there in a stone ?
+Date: Jul 24, 2023 || User: 11784 || Instance: Who was the inventor of the stove ?
+Date: Mar 25, 2022 || User: 29776 || Instance: What Nevada center has been dubbed The Biggest Little City in the World ?
+Date: Feb 21, 2025 || User: 85524 || Instance: Kosovo is a province of what country ?
+Date: Sep 17, 2024 || User: 86585 || Instance: What Hall of Fame pitcher started three World Series Games for the New York Yankees in 1962 ?
+Date: Oct 29, 2023 || User: 68064 || Instance: Who is Stephen Hawking ?
+Date: Mar 16, 2024 || User: 99279 || Instance: What kind of patent did Ermal Fraze get in 1963 ?
+Date: Dec 27, 2024 || User: 97045 || Instance: What does A&W of root beer fame stand for ?
+Date: Dec 08, 2023 || User: 68930 || Instance: What web sites are linked to the Report on Genesis Eldercare ?
+Date: Jan 13, 2025 || User: 73294 || Instance: CPR is the abbreviation for what ?
+Date: Dec 11, 2024 || User: 20879 || Instance: How do doctors diagnose bone cancer ?
+Date: Aug 19, 2023 || User: 40243 || Instance: What were the three prophecies the witches make to Macbeth ?
+Date: Jun 20, 2025 || User: 55423 || Instance: What two animals are specifically mentioned as being in Noah 's Ark ?
+Date: Aug 02, 2024 || User: 29016 || Instance: What D.H. Lawrence novel was originally titled Tenderness ?
+Date: Jul 24, 2022 || User: 29016 || Instance: Who is the actress Bette Davis once said she wished she looked like ?
+Date: Jun 05, 2023 || User: 64494 || Instance: Why do girls have to wear training bras ?
+Date: Sep 14, 2022 || User: 14602 || Instance: What 's a male witch called ?
+Date: Mar 24, 2025 || User: 98142 || Instance: What does ` PSI ' stand for ?
+Date: Feb 20, 2025 || User: 25125 || Instance: What is Tetrinet ?
+Date: Jan 13, 2025 || User: 56211 || Instance: Who portrayed Etta Place , companion to Butch Cassidey and the Sundance Kid ?
+Date: Aug 06, 2023 || User: 10742 || Instance: What is the acronym for the National Bureau of Investigation ?
+Date: May 04, 2024 || User: 64180 || Instance: What Triple Crown-winning horse took the 1973 Belmont Stakes by 31 lengths ?
+Date: May 25, 2025 || User: 43865 || Instance: Who wrote The Red Badge of Courage ?
+Date: Mar 10, 2025 || User: 43916 || Instance: What Nantucket shipwreck killed more divers exploring it than the 52 people it sank with ?
+Date: Apr 15, 2022 || User: 64494 || Instance: What does palindromic mean ?
+Date: Aug 16, 2022 || User: 73315 || Instance: What are the four largest mountain ranges on the Asian continent ?
+Date: Oct 17, 2024 || User: 34475 || Instance: What are the names of all the seas in the world and what ocean do they drain into ?
+Date: Jul 20, 2023 || User: 68450 || Instance: What does `` saute '' mean ?
+Date: Sep 09, 2022 || User: 34414 || Instance: What comedian created a punch-drunk pugilist named Cauliflower McPugg ?
+Date: Apr 14, 2024 || User: 98013 || Instance: What does pH stand for ?
+Date: May 13, 2022 || User: 14675 || Instance: What is troilism ?
+Date: Nov 21, 2023 || User: 43865 || Instance: Where was George Washington born ?
+Date: Dec 01, 2023 || User: 14954 || Instance: What does the Greek word polis mean , as in Minneapolis ?
+Date: Sep 29, 2022 || User: 22282 || Instance: On which flight did Fawaz Younis commit air piracy and hostage taking ?
+Date: Mar 07, 2022 || User: 57484 || Instance: What country saw the origin of the Asian Flu ?
+Date: Nov 29, 2023 || User: 63031 || Instance: What molecules include fluorine , sodium and magnesium ?
+Date: Jul 21, 2023 || User: 12987 || Instance: How is ` qigong ' properly pronounced ?
+Date: Jul 08, 2022 || User: 49124 || Instance: What jockey won 17 Triple Crown races ?
+Date: Nov 29, 2022 || User: 74906 || Instance: How many innings constitute an official baseball game ?
+Date: Jul 04, 2024 || User: 86557 || Instance: Who is the Queen of Holland ?
+Date: Aug 21, 2023 || User: 17584 || Instance: What is the Peloponnesian League ?
+Date: Feb 22, 2025 || User: 71374 || Instance: Which Kevin Costner movie involves the Sioux Indians ?
+Date: Sep 13, 2022 || User: 55466 || Instance: How many fingers are used to draw a bow ?
+Date: May 01, 2024 || User: 50913 || Instance: How do they find or choose witnesses to an execution ?
+Date: Feb 16, 2023 || User: 90690 || Instance: Who killed Gandhi ?
+Date: Jun 02, 2024 || User: 59257 || Instance: What kind of flowers does detective Nero Wolfe raise ?
+Date: Sep 14, 2024 || User: 10421 || Instance: How do you find out what is allowed to claim as a contibution for income tax purposes ?
+Date: Sep 30, 2023 || User: 95329 || Instance: How much stronger is the new vitreous carbon material invented by the Tokyo Institute of Technology compared with the material made from cellulose ?
+Date: Jun 17, 2023 || User: 55643 || Instance: What are the Cleveland Indians also called ?
+Date: Oct 31, 2022 || User: 12959 || Instance: How many movies has Drew Barrymore been in ?
+Date: May 03, 2025 || User: 76648 || Instance: What spider makes a superb pet , even said to recognize its master ?
+Date: Dec 17, 2022 || User: 52492 || Instance: What percentage of the body is muscle ?
+Date: Apr 20, 2023 || User: 73315 || Instance: What was the name of the Crimean meeting of Roosevelt , Churchill , and Stalin ?
+Date: Jun 28, 2023 || User: 27938 || Instance: How many colonies did Germany get to keep after World War I ?
+Date: Nov 27, 2022 || User: 35398 || Instance: What was the first Gilbert and Sullivan opera ?
+Date: Mar 30, 2022 || User: 94883 || Instance: What is Archimedes famous for ?
+Date: May 27, 2024 || User: 49124 || Instance: What is HDLC ?
+Date: Nov 22, 2024 || User: 12695 || Instance: What is the function of the appendix ?
+Date: Feb 29, 2024 || User: 54517 || Instance: How do you solve `` Rubik 's Cube '' ?
+Date: May 21, 2024 || User: 92160 || Instance: What are the major differences in the Catholic and Methodist religions ?
+Date: Sep 01, 2022 || User: 74751 || Instance: Where is Logan Airport ?
+Date: Oct 18, 2024 || User: 77337 || Instance: What was the name of the flight that Fawaz Younis hijacked ?
+Date: Jun 22, 2022 || User: 67715 || Instance: What is the design of the ship Titanic ?
+Date: Mar 09, 2024 || User: 29275 || Instance: What country other than Germany invaded Poland in September 1939 ?
+Date: Mar 23, 2023 || User: 19439 || Instance: What does the word camaro mean , from the GM car the Camaro ?
+Date: Jan 11, 2024 || User: 86355 || Instance: How tall is the replica of the Matterhorn at Disneyland ?
+Date: Aug 18, 2022 || User: 34475 || Instance: What is the only animal that can turn its stomach inside out ?
+Date: Oct 17, 2024 || User: 24231 || Instance: Who asked you to do the Loco-Motion with her in 1962 ?
+Date: Jul 30, 2022 || User: 56211 || Instance: How much of the earth 's surface is permanently frozen ?
+Date: Mar 18, 2024 || User: 10421 || Instance: How many types of lemurs are there ?
+Date: Dec 16, 2023 || User: 72675 || Instance: Who was the first woman to run the mile in less than 4 36893 minutes ?
+Date: Jun 05, 2022 || User: 70341 || Instance: How much money did the Marcos steal from their country ?
+Date: Sep 16, 2024 || User: 33455 || Instance: What do I need to learn to design web pages ?
+Date: May 09, 2023 || User: 15412 || Instance: What is the last name of Lucy and Linus from the Peanut 's comic strip ?
+Date: Mar 14, 2023 || User: 34566 || Instance: Who is Coronado ?
+Date: Dec 06, 2023 || User: 42442 || Instance: How much is a Canadian 1967 twenty dollar gold coin worth ?
+Date: Feb 14, 2025 || User: 17875 || Instance: What sea surrounds the Cayman Islands ?
+Date: Jan 28, 2025 || User: 36043 || Instance: What plants are found in an estuary ?
+Date: Jul 07, 2024 || User: 81177 || Instance: What is Candlemas Day ?
+Date: Apr 07, 2022 || User: 42433 || Instance: Who was considered to be the father of psychology ?
+Date: Feb 11, 2025 || User: 98013 || Instance: What attracts tourists to Reims ?
+Date: Dec 23, 2022 || User: 91835 || Instance: What are the benefits of home school ?
+Date: Sep 23, 2024 || User: 61214 || Instance: What non-alcoholic syrup is made from pomegranate juice ?
+Date: Jan 27, 2024 || User: 28618 || Instance: What was the name of the 1899 policy forced on China by which all nations had equal trading rights ?
+Date: May 14, 2025 || User: 25977 || Instance: What Broadway show introduced the song Some Enchanted Evening ?
+Date: Jan 26, 2025 || User: 11999 || Instance: What does the abbreviation OAS stand for ?
+Date: Jan 07, 2024 || User: 48017 || Instance: What makes popcorn pop ?
+Date: Feb 25, 2025 || User: 38883 || Instance: What does NASDAQ stand for ?
+Date: Nov 24, 2022 || User: 53373 || Instance: How many `` eyes '' does a coconut have ?
+Date: Jan 03, 2024 || User: 53265 || Instance: Where did Luther display his `` Ninety-Five Theses '' ?
+Date: Apr 15, 2025 || User: 37539 || Instance: How long do cardinal eggs incubate ?
+Date: May 19, 2025 || User: 72612 || Instance: What is the abbreviation of General Motors ?
+Date: Dec 20, 2024 || User: 29776 || Instance: Where is the Henry Ford Museum ?
+Date: Feb 26, 2022 || User: 63031 || Instance: What 's a male `` cuckquean '' ?
+Date: May 03, 2022 || User: 68930 || Instance: Who started the Dominos Pizza chain ?
+Date: Jun 11, 2024 || User: 98423 || Instance: What is the contents of proposition 98 ?
+Date: Jul 16, 2023 || User: 55643 || Instance: What is the definition of the term `` weapons system '' ?
+Date: Jan 27, 2024 || User: 14100 || Instance: What is the definition of cosmology ?
+Date: Feb 02, 2023 || User: 81263 || Instance: Whose acceptance speech of more than 3 minutes prompted a time limit on Academy Award thank-yous ?
+Date: Feb 19, 2025 || User: 29388 || Instance: In which year was the cartoon character Chilly Willy created ?
+Date: Jan 23, 2024 || User: 64494 || Instance: Why does a woman have to be a virgin to be a nun ?
+Date: Aug 06, 2022 || User: 58321 || Instance: What country was Brian Boru an 11th-century king of ?
+Date: Sep 08, 2023 || User: 95504 || Instance: What is the origin of the word trigonometry ?
+Date: Dec 28, 2024 || User: 53460 || Instance: What fast-food magnate 's initials graced the left sleeve of the San Diego Padres ' baseball uniforms in 1984 ?
+Date: Jan 26, 2024 || User: 29666 || Instance: What causes blue balls ?
+Date: Jun 29, 2023 || User: 68834 || Instance: What is the chemiosmotic theory ?
+Date: Jan 10, 2023 || User: 28361 || Instance: What does RCA stand for ?
+Date: Nov 08, 2022 || User: 58321 || Instance: What 's the most delicate-tasting member of the onion family ?
+Date: Jan 09, 2024 || User: 22200 || Instance: What TV show did John Sebastian sing the theme for ?
+Date: Jun 04, 2023 || User: 65550 || Instance: What robust U.S. President imported his own instructor after seeing a judo match ?
+Date: Nov 14, 2023 || User: 11999 || Instance: Who portrayed portly criminologist Carl Hyatt on Checkmate ?
+Date: Mar 16, 2025 || User: 90957 || Instance: In a computer , what does SCSI mean ?
+Date: Apr 18, 2022 || User: 64791 || Instance: From what cause does tuberculosis stem ?
+Date: Nov 06, 2022 || User: 52930 || Instance: In what city does Maurizio Pellegrin now live ?
+Date: Dec 25, 2022 || User: 18964 || Instance: What does the name Shawn mean ?
+Date: May 05, 2023 || User: 41747 || Instance: The operating system that runs on IBM-compatible machines is called what ?
+Date: Mar 24, 2022 || User: 19514 || Instance: What kind of people took part in Shays ' Rebellion in Massachusetts in 1787 ?
+Date: Feb 01, 2023 || User: 57329 || Instance: What animals do you find in the stock market ?
+Date: Apr 29, 2024 || User: 76648 || Instance: Why does a candle go out when we blow on it ?
+Date: Mar 24, 2023 || User: 47197 || Instance: What kind of sports team is the Buffalo Sabres ?
+Date: Apr 28, 2024 || User: 49124 || Instance: What creature is the absolute fastest in moving in the world , birds , mammals , etc. , ?
+Date: Mar 22, 2022 || User: 22282 || Instance: Who is the fastest guitarist ?
+Date: Oct 15, 2023 || User: 33245 || Instance: What are equity securities ?
+Date: Dec 12, 2022 || User: 34585 || Instance: Name a female figure skater .
+Date: Oct 29, 2022 || User: 66211 || Instance: What carries sperm up into the pelvic region ?
+Date: Apr 15, 2024 || User: 11345 || Instance: What feathered cartoon characters do Yugoslavians know as Vlaja , Gaja , and Raja ?
+Date: Oct 16, 2024 || User: 66211 || Instance: What do the number 1 , 2 , and 4 mean on Dr. Pepper bottles ?
+Date: Feb 03, 2023 || User: 56211 || Instance: How many people in America snore ?
+Date: Aug 30, 2023 || User: 33676 || Instance: Where does chocolate come from ?
+Date: Mar 27, 2022 || User: 73315 || Instance: What is the quantity of American soldiers still unaccounted for from the Vietnam war ?
+Date: Nov 02, 2024 || User: 45613 || Instance: What is SAP ?
+Date: Apr 13, 2023 || User: 22117 || Instance: How many times a day does the typical person go to the bathroom ?
+Date: Jul 30, 2024 || User: 73294 || Instance: Who played the part of the Godfather in the movie , ` The Godfather ' ?
+Date: Sep 24, 2023 || User: 57432 || Instance: What is the history of Valentine 's Day cards ?
+Date: Mar 22, 2022 || User: 64049 || Instance: In what medium is Stuart Hamblen considered to be the first singing cowboy ?
+Date: Dec 08, 2023 || User: 83107 || Instance: Who invented the pull-tab opener on cans ?
+Date: Nov 28, 2023 || User: 40209 || Instance: What people make up half the Soviet Union 's population ?
+Date: Mar 16, 2023 || User: 19514 || Instance: What is the best-selling television soundtrack of all time ?
+Date: May 11, 2022 || User: 50223 || Instance: What 's the Olympic motto ?
+Date: Oct 08, 2023 || User: 36043 || Instance: Which airplane was Fawaz Younis convicted of hijacking ?
+Date: Apr 13, 2022 || User: 42442 || Instance: What causes headaches ?
+Date: May 27, 2025 || User: 43142 || Instance: What sport features slotbacks , tailbacks , and touchbacks ?
+Date: Apr 12, 2022 || User: 86585 || Instance: What does a farrier put shoes on ?
+Date: May 01, 2024 || User: 15203 || Instance: What is the largest island in the Mediterranean Sea ?
+Date: Oct 27, 2023 || User: 14100 || Instance: What is the name of the disease that actress Hunter Tylo 's baby girl has ?
+Date: Dec 17, 2022 || User: 57975 || Instance: How many people did the United Nations commit to help restore order and distribute humanitarian relief in Somalia in September 1992 ?
+Date: Apr 25, 2022 || User: 83634 || Instance: Where was chop suey invented ?
+Date: Sep 04, 2024 || User: 54517 || Instance: What 4-foot-9 actress in 1984 became the first performer to win an Oscar for playing a character of the opposite sex ?
+Date: Jan 18, 2025 || User: 80824 || Instance: What is the address for the main government office in Rome , Italy ?
+Date: Nov 23, 2023 || User: 80824 || Instance: What `` little red car '' is mentioned in pop singer Prince 's hit song ?
+Date: Sep 14, 2023 || User: 15917 || Instance: How does an abacus work ?
+Date: Oct 08, 2023 || User: 14675 || Instance: What TV comedian worked with White Fang , Black Tooth and Pookie the Lion ?
+Date: Aug 22, 2022 || User: 57432 || Instance: Where on the Internet can I find a song lyrics database similar to the International Lyrics Server ?
+Date: May 08, 2022 || User: 73294 || Instance: What 's the abbreviation for limited partnership ?
+Date: Feb 16, 2023 || User: 76144 || Instance: What does e=mc2 mean ?
+Date: Dec 06, 2024 || User: 34475 || Instance: What does BUD stand for ?
+Date: Nov 01, 2024 || User: 76828 || Instance: What album put The Beatles on the cover of Time in 1967 ?
+Date: Aug 28, 2024 || User: 67173 || Instance: How many cities are there in Utah ?
+Date: Jan 20, 2025 || User: 54097 || Instance: What was the name of the American ship sunk by a mine in Havana harbor , causing the Spanish-American war ?
+Date: Apr 21, 2024 || User: 56390 || Instance: What 's the U.S. Navy hymn ?
+Date: Mar 05, 2023 || User: 43142 || Instance: What 's the meaning of the name Tatiana ?
+Date: Nov 07, 2022 || User: 72675 || Instance: How do I find a snowboarding website ?
+Date: Oct 30, 2022 || User: 68994 || Instance: What does U.S.S.R. stand for ?
+Date: Apr 27, 2024 || User: 52492 || Instance: Who was William Henry Harrison ?
+Date: Aug 25, 2024 || User: 99279 || Instance: How do plants make food ?
+Date: Mar 03, 2024 || User: 19514 || Instance: What country contains Africa 's northernmost point ?
+Date: Jan 29, 2024 || User: 29275 || Instance: What is a firewall ?
+Date: Apr 01, 2024 || User: 66268 || Instance: What is object-oriented design ?
+Date: Apr 16, 2023 || User: 14602 || Instance: How can SQL queries be improved ?
+Date: Jun 01, 2023 || User: 56211 || Instance: A corgi is a kind of what ?
+Date: Nov 23, 2023 || User: 11784 || Instance: When Superman needs to get away from it all , where does he go ?
+Date: Feb 18, 2025 || User: 78669 || Instance: What kind of animals are Dorsets , Lincolns , Oxfords and Southdowns ?
+Date: Oct 27, 2024 || User: 15203 || Instance: Who do Herb and Tootsie live next door to ?
+Date: Jun 09, 2024 || User: 57329 || Instance: What does the abbreviation IOC stand for ?
+Date: May 30, 2025 || User: 68351 || Instance: What is the Islamic equivalent of the Red Cross ?
+Date: Jun 01, 2025 || User: 46645 || Instance: What does e.g. stand for ?
+Date: Jul 12, 2023 || User: 44488 || Instance: What Shakespeare play opens with the line : `` Now is the winter of our discontent.. . '' ?
+Date: Jan 06, 2023 || User: 86458 || Instance: What is the world record for the longest hair ?
+Date: Jan 18, 2025 || User: 85101 || Instance: What English playwright penned : `` Where the bee sucks , so shall I '' ?
+Date: May 13, 2022 || User: 12987 || Instance: What sea separates Naples and Algiers ?
+Date: Jul 17, 2022 || User: 12987 || Instance: What is the fastest commercial automobile that can be bought in the US ?
+Date: Jun 30, 2023 || User: 50773 || Instance: What does HIV stand for ?
+Date: Oct 26, 2024 || User: 34414 || Instance: What does `` Semper Fidelis '' mean ?
+Date: Oct 13, 2022 || User: 21917 || Instance: Which sex is twice as likely to contract leprosy ?
+Date: Mar 12, 2023 || User: 53373 || Instance: Where did Dylan Thomas die ?
+Date: Dec 30, 2022 || User: 27800 || Instance: How many people die from snakebite poisoning in the U.S. per year ?
+Date: Dec 25, 2022 || User: 99675 || Instance: What does Ouija mean ?
+Date: Jun 02, 2023 || User: 10421 || Instance: About how many soldiers died in World War II ?
+Date: May 14, 2023 || User: 28513 || Instance: What are the names of the tourist attractions in Reims ?
+Date: Jul 15, 2022 || User: 80403 || Instance: How effective are condoms in protecting against AIDS ?
+Date: Apr 18, 2025 || User: 19703 || Instance: What is the name of the Islamic counterpart to the Red Cross ?
+Date: Aug 09, 2024 || User: 75482 || Instance: What is the nickname of the Cleveland Indians ?
+Date: Oct 26, 2023 || User: 35398 || Instance: What `` melts in your mouth , not in your hands '' .
+Date: May 31, 2025 || User: 66211 || Instance: Who is the President of Ghana ?
+Date: Dec 23, 2022 || User: 86557 || Instance: Who was Whitcomb Judson ?
+Date: Sep 18, 2024 || User: 28623 || Instance: What are those little blue reflectors in the middle of the road for ?
+Date: Feb 15, 2024 || User: 24179 || Instance: What does Choo Choo Charlie say ?
+Date: Nov 26, 2024 || User: 61857 || Instance: What is the brand name of the chemical daminozide ?
+Date: Dec 12, 2023 || User: 66211 || Instance: Where is Microsoft 's corporate headquarters located ?
+Date: Feb 28, 2024 || User: 50904 || Instance: What kind of guitar did Jimi Hendrix play ?
+Date: Apr 07, 2022 || User: 10120 || Instance: What is the only gland in humans that can regenerate itself ?
+Date: Jun 04, 2024 || User: 80199 || Instance: What is Butterfield 8 in Butterfield 8 ?
+Date: Jul 11, 2022 || User: 41161 || Instance: What is ouzo ?
+Date: Jul 12, 2022 || User: 91835 || Instance: Garry Kasparov plays what game ?
+Date: Jun 01, 2024 || User: 86355 || Instance: What is an annotated bibliography ?
+Date: Sep 03, 2024 || User: 66268 || Instance: What is a phalanx ?
+Date: Jul 04, 2023 || User: 15203 || Instance: What was another name for East Germany ?
+Date: Dec 24, 2023 || User: 70341 || Instance: What President served for five years , six months and 2 days ?
+Date: Dec 03, 2024 || User: 14602 || Instance: Who was the star witness at the Senate Watergate hearings ?
+Date: Apr 01, 2025 || User: 60081 || Instance: How do you get a broken cork out of a bottle ?
+Date: Dec 09, 2024 || User: 86557 || Instance: In what Olympic Games did Nadia Comaneci become popular ?
+Date: Mar 15, 2023 || User: 98013 || Instance: What does VCR stand for ?
+Date: Nov 10, 2022 || User: 20068 || Instance: What Robert Louis Stevenson novel was inspired by Deacon William Brodie , a cabinetmaker by day and burglar by night ?
+Date: May 10, 2025 || User: 33037 || Instance: What do I call the sons and daughters of my first cousins ?
+Date: Mar 21, 2025 || User: 69708 || Instance: How do you become a dentist ?
+Date: Apr 25, 2023 || User: 81263 || Instance: How many bones are there in the human hand ?
+Date: Jun 11, 2022 || User: 67474 || Instance: Who died 1 feet from where John F. Kennedy did ?
+Date: Nov 25, 2024 || User: 66268 || Instance: How come light bulbs go out ?
+Date: Oct 08, 2023 || User: 85897 || Instance: What detective lives on Punchbowl Hill and has 11 children ?
+Date: Oct 23, 2024 || User: 66331 || Instance: Who was the first President to appoint a woman to head a cabinet ?
+Date: Mar 05, 2025 || User: 89789 || Instance: Who took the toys donated for the Doodyville Orphans ' Fund and kept them for himself ?
+Date: Nov 12, 2024 || User: 43916 || Instance: What cancer is commonly associated with AIDS ?
+Date: Aug 12, 2022 || User: 70766 || Instance: What future President became Senate majority whip under Harry Truman ?
+Date: Apr 02, 2024 || User: 60955 || Instance: What is the per-capita income of Colombia , South America , ?
+Date: Apr 13, 2024 || User: 50904 || Instance: What was the sequel to The Pink Panther ?
+Date: Feb 22, 2024 || User: 98837 || Instance: How many inches apart are adjacent pins in tenpin bowling ?
+Date: Nov 01, 2023 || User: 73729 || Instance: What mountain range marks the border of France and Spain ?
+Date: Mar 16, 2025 || User: 70745 || Instance: What horse did Zorro ride ?
+Date: Jun 07, 2023 || User: 95329 || Instance: What personality traits are Capricorns said to have ?
+Date: May 17, 2024 || User: 39891 || Instance: What was the minimum wage in 1991 ?
+Date: Feb 24, 2023 || User: 78669 || Instance: What is the population of Ohio ?
+Date: Jan 08, 2023 || User: 10341 || Instance: What country do the Galapagos Islands belong to ?
+Date: Apr 03, 2025 || User: 59542 || Instance: Who sings the themes for `` Dawson 's Creek '' and `` Felicity '' ?
+Date: Jan 06, 2023 || User: 15620 || Instance: What is the acreage of the Chappellet vineyard ?
+Date: Nov 13, 2022 || User: 60081 || Instance: What war added jeep and quisling to the English language ?
+Date: Oct 26, 2024 || User: 73540 || Instance: What do players try to do when the music stops in a game of musical chairs ?
+Date: Jul 27, 2023 || User: 54517 || Instance: Who is the composer of `` Canon in D Major '' ?
+Date: Feb 26, 2025 || User: 15971 || Instance: How many people died in the Vietnam war ?
+Date: Jan 22, 2023 || User: 79898 || Instance: What are the rites accompanying the circumcision of a newly born-child in Judaism called ?
+Date: Dec 22, 2022 || User: 31689 || Instance: In Sinclair Lewis ' `` Main Street , '' what was the name of the typical American town ?
+Date: Feb 20, 2024 || User: 35871 || Instance: What film opens with an assassin tumbling from the Seattle Space Needle ?
+Date: Apr 10, 2023 || User: 29275 || Instance: What is a turnkey contract ?
+Date: May 30, 2024 || User: 89660 || Instance: What tools do you use to crewel ?
+Date: Oct 21, 2024 || User: 10742 || Instance: What does the name Gina mean ?
+Date: Jun 30, 2022 || User: 98013 || Instance: What is probability theory ?
+Date: Mar 10, 2023 || User: 53022 || Instance: Who is Stein Eriksen ?
+Date: Mar 28, 2022 || User: 75748 || Instance: What are the chemicals used in glowsticks ?
+Date: Nov 12, 2022 || User: 95329 || Instance: What is the origin of the expression `` four-letter word '' ?
+Date: May 19, 2025 || User: 63819 || Instance: What 's the population of Biloxi , Mississippi ?
+Date: May 10, 2022 || User: 83439 || Instance: What does idle mean ?
+Date: Jun 01, 2023 || User: 21437 || Instance: How does a submarine operate ?
+Date: Dec 29, 2022 || User: 75248 || Instance: What other name were the `` Little Rascals '' known as ?
+Date: Jun 08, 2025 || User: 60081 || Instance: What is the electronic device used to produce visual displays corresponding to electric signals ?
+Date: Jun 18, 2022 || User: 72675 || Instance: What is Michael Jackson 's father 's name ?
+Date: Jul 20, 2023 || User: 52069 || Instance: What is a multiplexer ?
+Date: Mar 06, 2024 || User: 57432 || Instance: On average , how many miles are there to the moon ?
+Date: Jun 02, 2024 || User: 68994 || Instance: What TV quiz show left the air in 1975 to the tune of Vera Lynn 's We 'll Meet Again ?
+Date: Apr 26, 2025 || User: 34430 || Instance: How many casinos are in Atlantic City , NJ ?
+Date: Feb 08, 2025 || User: 22282 || Instance: What President-to-be was the first member of Congress to enlist following the attack on Pearl Harbor ?
+Date: Sep 18, 2023 || User: 53022 || Instance: What Frenchman claimed the following ? If God did not exist , it would be necessary to invent him . ''
+Date: Oct 25, 2022 || User: 75962 || Instance: What does LOL mean ?
+Date: Dec 08, 2022 || User: 15620 || Instance: What famed London criminal court was once a feudal castle ?
+Date: Nov 08, 2022 || User: 33599 || Instance: What is the C programming language ?
+Date: Aug 06, 2024 || User: 75800 || Instance: What is average salary of restaurant manager in United States ?
+Date: Sep 04, 2023 || User: 34086 || Instance: What are the seven deadly sins ?
+Date: Jun 14, 2022 || User: 55423 || Instance: What country has the most time zones , with 11 ?
+Date: Mar 13, 2023 || User: 45613 || Instance: What was the name of the U.S. 's first manned space program ?
+Date: Feb 26, 2025 || User: 46645 || Instance: What is Nicholas Cage 's occupation ?
+Date: Jul 03, 2023 || User: 14100 || Instance: What is the nature of snow and how is the formation of snow different from that of ice ?
+Date: Jun 28, 2022 || User: 99171 || Instance: Mississippi has what name for a state nickname ?
+Date: May 30, 2025 || User: 20068 || Instance: What type is a snail ?
+Date: Oct 09, 2024 || User: 74751 || Instance: How many holes are there in a tenpin bowling ball ?
+Date: Jan 22, 2024 || User: 78669 || Instance: Who wrote the sci-fi trilogy Foundation , Foundation and Empire , and Second Foundation ?
+Date: May 02, 2023 || User: 86217 || Instance: What was the name of the US helicopter pilot shot down over North Korea ?
+Date: Jan 18, 2025 || User: 43594 || Instance: What is the origin of the word , magic ?
+Date: Oct 06, 2024 || User: 19439 || Instance: What is `` cat scratch fever '' ?
+Date: Oct 05, 2024 || User: 64049 || Instance: What is a tonne ?
+Date: Nov 13, 2022 || User: 95190 || Instance: What canal does the Thatcher Ferry Bridge span ?
+Date: Apr 05, 2025 || User: 80354 || Instance: What kinds of animals are in Cambodia ?
+Date: Nov 29, 2022 || User: 46645 || Instance: What city has a newspaper called The Plain Dealer ?
+Date: May 19, 2022 || User: 28623 || Instance: How does the Nintendo `` Zapper '' work ?
+Date: Sep 06, 2022 || User: 29379 || Instance: What city is . KDGE Radio located in ?
+Date: Apr 14, 2022 || User: 41747 || Instance: In what part of Africa is Mozambique located ?
+Date: Mar 06, 2024 || User: 54517 || Instance: What is BPH ?
+Date: Feb 03, 2023 || User: 66211 || Instance: Who shot and killed himself while painting Wheatfield with Crows ?
+Date: Sep 04, 2022 || User: 34913 || Instance: What is the origin of infinity ?
+Date: Apr 10, 2025 || User: 57432 || Instance: What breed of dog was the `` Little Rascals '' dog ?
+Date: Nov 02, 2023 || User: 59257 || Instance: Who was Confucius ?
+Date: Sep 10, 2023 || User: 89660 || Instance: How much money was the minimum wage in 1991 ?
+Date: Nov 19, 2023 || User: 17875 || Instance: What is the difference between a board of directors and an advisory board ?
+Date: Feb 22, 2024 || User: 44867 || Instance: What was the name of Aristotle Onassis 's yacht ?
+Date: Apr 27, 2023 || User: 81758 || Instance: In what war was the first submarine used ?
+Date: Jul 06, 2023 || User: 56211 || Instance: What ship did Lloyd M. Bucher command ?
+Date: Aug 31, 2022 || User: 45613 || Instance: What sign is The Water Carrier the zodiacal symbol for ?
+Date: Jun 14, 2023 || User: 12695 || Instance: What color beans did the ancient Romans refuse to eat ?
+Date: Jul 18, 2023 || User: 15059 || Instance: What actor , who had greatest fame on TV , became the father of triplets ?
+Date: Jun 21, 2025 || User: 91975 || Instance: How do you tell somebody you like them ?
+Date: Mar 13, 2025 || User: 72675 || Instance: Name a flying mammal .
+Date: Oct 14, 2023 || User: 28618 || Instance: What does IQ stand for ?
+Date: Oct 10, 2023 || User: 16717 || Instance: How many fiddlers did Old King Cole have ?
+Date: May 20, 2022 || User: 57329 || Instance: What German city do Italians call The Monaco of Bavaria ?
+Date: Dec 23, 2023 || User: 45613 || Instance: Who is the president of Bolivia ?
+Date: Mar 25, 2023 || User: 20068 || Instance: What two vessels fought the first sea battle between iron-covered ships ?
+Date: Apr 03, 2024 || User: 19093 || Instance: What do the names Andrew and Christina mean ?
+Date: Jan 02, 2023 || User: 31643 || Instance: What basketball maneuver did Bert Loomis invent ?
+Date: Jan 27, 2023 || User: 88499 || Instance: What does the abbreviation AIDS stand for ?
+Date: Jun 12, 2022 || User: 44205 || Instance: What is the geographical center of the US including Alaska and Hawaii ?
+Date: Sep 26, 2022 || User: 78906 || Instance: What is the proof that houseplants metabolize carcinogens ?
+Date: Feb 06, 2025 || User: 99492 || Instance: What is the population of the United States ?
+Date: Nov 08, 2023 || User: 53265 || Instance: Who wrote ` Dubliners ' ?
+Date: May 06, 2025 || User: 88768 || Instance: What state does Martha Stewart live in ?
+Date: Sep 28, 2022 || User: 12294 || Instance: Which thrilled taste buds first - Snickers or 3 Musketeers ?
+Date: Mar 14, 2023 || User: 55423 || Instance: In what part of the world is Mozambique ?
+Date: Dec 02, 2023 || User: 89725 || Instance: What was the orca 's name that died of a fungal infection at Sea World ?
+Date: Jun 25, 2024 || User: 40243 || Instance: What composer was awarded the Medal of Honor by Franklin D. Roosevelt ?
+Date: Mar 10, 2022 || User: 55950 || Instance: What trade did the 15th and 16th century Portuguese hope to control between Asia and Europe ?
+Date: Jan 11, 2025 || User: 29016 || Instance: Who was the first American in space ?
+Date: Dec 30, 2022 || User: 83439 || Instance: What are the numbers that fit into Fermont 's last theorem ?
+Date: Jan 05, 2024 || User: 70745 || Instance: Name the largest country in South America .
+Date: May 20, 2023 || User: 59911 || Instance: What stadium do the Miami Dolphins play their home games in ?
+Date: Jun 18, 2022 || User: 89725 || Instance: What 's the term for a limestone deposit rising from the floor of a cave ?
+Date: Sep 19, 2022 || User: 42442 || Instance: What is deadrise , nautical , ?
+Date: Oct 04, 2024 || User: 66211 || Instance: What country is the largest diamond producer ?
+Date: Feb 28, 2025 || User: 90384 || Instance: What percentage of the silver production is done by independent silversmiths ?
+Date: May 17, 2025 || User: 30159 || Instance: How can I transport files from one computer to another ?
+Date: Mar 18, 2022 || User: 13344 || Instance: What are the Valdez Principles ?
+Date: Oct 07, 2022 || User: 80824 || Instance: What is the capital of Kosovo ?
+Date: Oct 14, 2022 || User: 24231 || Instance: Who played the Ringo Kid in the 1939 film Stagecoach ?
+Date: Aug 27, 2022 || User: 98423 || Instance: What country 's royal house is Bourbon-Parma ?
+Date: Nov 13, 2024 || User: 76828 || Instance: Who were the five Marx brothers ?
+Date: May 16, 2024 || User: 59231 || Instance: Who sings the song `` Drink to me with thine eyes '' by Ben Johnson ?
+Date: Apr 25, 2025 || User: 88768 || Instance: What 1966 boob tube bomb took astronauts back to prehistoric times ?
+Date: Feb 28, 2023 || User: 17089 || Instance: What movie did Steven Spielberg direct in 1975 ?
+Date: Nov 05, 2024 || User: 75482 || Instance: CNN is the abbreviation for what ?
+Date: May 24, 2024 || User: 54828 || Instance: What was the worst hurricane ?
+Date: Jun 11, 2023 || User: 98837 || Instance: What is the exchange rate between England and the U.S. ?
+Date: Oct 02, 2023 || User: 66331 || Instance: How many bails are there in a cricket wicket ?
+Date: Jan 29, 2023 || User: 90704 || Instance: What does `` B.Y.O.B. '' mean ?
+Date: Jul 14, 2022 || User: 75962 || Instance: What city houses the U.S. headquarters of Procter and Gamble ?
+Date: Dec 30, 2023 || User: 42433 || Instance: What is the classic definition of tragic hero ?
+Date: Mar 19, 2025 || User: 37394 || Instance: What developed a crack in 1835 while tolling the death of U.S. Chief Justice John Marshall ?
+Date: Jun 09, 2022 || User: 15412 || Instance: How did the 7th inning stretch get started ?
+Date: Sep 06, 2024 || User: 91901 || Instance: Why are electric cars less efficient in the northeast than in California ?
+Date: Nov 14, 2024 || User: 53022 || Instance: What 's the meaning of the Latin battle cry : Ad arma , ad arma .
+Date: Sep 11, 2022 || User: 42442 || Instance: What is the distinction of Erle Stanley Gardner 's The Case of the Terrified Typist ?
+Date: Feb 19, 2024 || User: 63448 || Instance: What credit card features a centurion on its face ?
+Date: Jun 29, 2024 || User: 83439 || Instance: Who else was considered for the role of Luke Skywalker when George Lucas was casting for Star Wars ?
+Date: Oct 05, 2023 || User: 89725 || Instance: What 's the common name for a Japanese dwarf tree ?
+Date: Jan 14, 2023 || User: 76648 || Instance: What was the infamous pseudonym of Peter Sutcliffe ?
+Date: Aug 14, 2023 || User: 42442 || Instance: What 's the biggest-selling U.S. magazine aimed at a black audience ?
+Date: Jan 12, 2025 || User: 42433 || Instance: What animals did The Amazing Three masquerade as ?
+Date: Oct 08, 2024 || User: 97045 || Instance: What 's the official language of Algeria ?
+Date: Nov 24, 2024 || User: 63819 || Instance: What 's approaching when a cyclist shouts : `` Oil '' ?
+Date: Jun 04, 2025 || User: 33472 || Instance: What is the difference between a fruit and a vegetable ?
+Date: Dec 24, 2022 || User: 28513 || Instance: Musician Ray Charles plays what instrument ?
+Date: Aug 16, 2022 || User: 46645 || Instance: How much money does a back injury lawsuit get ?
+Date: Jun 11, 2023 || User: 36043 || Instance: What color is `` ash '' ?
+Date: Apr 10, 2023 || User: 73315 || Instance: Who headed Hitler 's infamous Gestapo ?
+Date: Jan 23, 2025 || User: 42433 || Instance: What 's the mystery of the Bermuda Triangle ?
+Date: Dec 03, 2023 || User: 15620 || Instance: Where can I find detailed information about Manchukuo ?
+Date: Nov 12, 2023 || User: 28623 || Instance: What video game hero do some of his fans call Chomper ?
+Date: Oct 28, 2023 || User: 54097 || Instance: What happens to the female body with lack of sleep and food ?
+Date: Apr 04, 2025 || User: 52930 || Instance: What does MSG stand for ?
+Date: Mar 18, 2025 || User: 19986 || Instance: What Italian city of 155 were Leonardo da Vinci , Michaelangelo , and Machiavelli all working in ?
+Date: Apr 12, 2022 || User: 27800 || Instance: Who invented Make-up ?
+Date: Oct 04, 2024 || User: 15917 || Instance: What is ethology ?
+Date: Oct 27, 2023 || User: 68834 || Instance: What are emblazoned on the Jolly Roger ?
+Date: Mar 28, 2025 || User: 20778 || Instance: How is a hydrogen bomb different from a nuclear bomb ?
+Date: Feb 19, 2022 || User: 82292 || Instance: What strait links the Mediterranean Sea and the Atlantic Ocean ?
+Date: Nov 24, 2023 || User: 78669 || Instance: What is `` snoogans '' ?
+Date: Jun 30, 2022 || User: 64791 || Instance: What 's the second-largest island in the world ?
+Date: Mar 31, 2025 || User: 52492 || Instance: What is an aortic abdominal aneurysm ?
+Date: Aug 13, 2022 || User: 55643 || Instance: Who was the lawyer for Randy Craft ?
+Date: Mar 19, 2024 || User: 10341 || Instance: What are the side effects of mevacor ?
+Date: Feb 14, 2025 || User: 81609 || Instance: What program do I need to run a .tbk file ?
+Date: Aug 31, 2024 || User: 24231 || Instance: Where must a soccer goalie stand to be permitted to handle the ball ?
+Date: Aug 31, 2024 || User: 85897 || Instance: What deck of cards includes the Wheel of Fortune , the Lovers , and Death ?
+Date: Aug 16, 2024 || User: 42433 || Instance: What did John F. Kennedy consider his greatest blunder in office ?
+Date: Jul 31, 2024 || User: 82292 || Instance: Which airplane did Fawaz Younis hijack ?
+Date: Oct 28, 2022 || User: 76828 || Instance: Who spoke the only word in Mel Brooks 's Silent Movie ?
+Date: Apr 07, 2022 || User: 91975 || Instance: What was the favorite sport of Tom Wolfe 's The Pump House Gang ?
+Date: Dec 21, 2022 || User: 64494 || Instance: How was the ACLU formed ?
+Date: Nov 17, 2022 || User: 18365 || Instance: Where did he get the title ?
+Date: Sep 04, 2023 || User: 80824 || Instance: Who were the four famous founders of United Artists ?
+Date: Nov 13, 2024 || User: 97045 || Instance: What rum is so `` mixable '' it is a one-brand bar ?
+Date: Sep 08, 2024 || User: 46645 || Instance: How can you prevent it ?
+Date: Oct 16, 2022 || User: 14621 || Instance: Who created Billy Pilgrim , a survivor of the Dresden firestorm ?
+Date: Sep 26, 2022 || User: 98837 || Instance: What is the meaning of the name Ella ?
+Date: Apr 19, 2023 || User: 28513 || Instance: What comedian was born Allen Stewart Konigsberg ?
+Date: Oct 18, 2024 || User: 53460 || Instance: What country would you visit to ski in the Dolomites ?
+Date: Jun 21, 2023 || User: 88768 || Instance: Name the country of giants twelve times the size of man in `` Gulliver 's Travels . ''
+Date: Dec 04, 2022 || User: 22282 || Instance: Who portrayed Fatman in the television show , `` Jake and the Fatman '' ?
+Date: Mar 02, 2022 || User: 76828 || Instance: What is the full name of the PLO ?
+Date: Oct 21, 2023 || User: 29776 || Instance: What is hypnotherapy ?
+Date: Aug 04, 2024 || User: 67173 || Instance: What Texas city got its name from the Spanish for `` yellow '' ?
+Date: Jan 22, 2025 || User: 56559 || Instance: Name the Ranger who was always after Yogi Bear .
+Date: Feb 25, 2025 || User: 27800 || Instance: Where can I find a website that gives comparisons of good prices ?
+Date: Jul 26, 2023 || User: 38735 || Instance: In the Miller Lite TV commercial , who is the creature ?
+Date: Oct 24, 2022 || User: 34487 || Instance: Where is Inoco based ?
+Date: Feb 11, 2024 || User: 80824 || Instance: Who was the inventor of silly putty ?
+Date: Aug 21, 2022 || User: 64049 || Instance: What animals acted as lapwarmers for American colonists in church ?
+Date: May 19, 2022 || User: 14602 || Instance: How many words are there in the Spanish language ?
+Date: Jun 16, 2025 || User: 15917 || Instance: What Colorado city owns its own glacier ?
+Date: Feb 05, 2023 || User: 35398 || Instance: Which NBA players had jersey number 0 ?
+Date: Jul 23, 2023 || User: 42433 || Instance: Where is Guam ?
+Date: Jul 24, 2024 || User: 90384 || Instance: What is the difference between the anus and the rectum ?
+Date: Feb 11, 2024 || User: 27800 || Instance: How many mines can still be found in the Falklands after the war ended ?
+Date: Apr 21, 2022 || User: 54517 || Instance: What is a `` repeating voter '' ?
+Date: Jun 19, 2025 || User: 37539 || Instance: What actor said in A Day at the Races : `` Either he 's dead or my watch has stopped '' ?
+Date: Oct 13, 2024 || User: 59257 || Instance: What 's the name of the temple that is located near the capital city of Laos ?
+Date: Jan 20, 2025 || User: 91975 || Instance: What does a man suffering from diphallic terata have ?
+Date: Mar 25, 2022 || User: 97516 || Instance: Which is the wealthiest country in the world ?
+Date: Sep 10, 2024 || User: 43916 || Instance: What does the T.S. stand for in T.S. Eliot 's name ?
+Date: Jun 01, 2024 || User: 88768 || Instance: Where is the oldest living thing on earth ?
+Date: May 28, 2023 || User: 17055 || Instance: What does IOC stand for ?
+Date: Nov 06, 2023 || User: 28618 || Instance: What beer 's name is translated as `` lion brew '' ?
+Date: Sep 17, 2023 || User: 57432 || Instance: When reading classified ads , what does EENTY : other stand for ?
+Date: Oct 30, 2023 || User: 53022 || Instance: What populous state covers 49 , 576 square miles ?
+Date: Sep 17, 2023 || User: 50164 || Instance: What do West Indian steel bands use as instruments ?
+Date: May 22, 2023 || User: 83107 || Instance: How does the tail affect the flight of a kite ?
+Date: Nov 11, 2022 || User: 19514 || Instance: How do you throw a housewarming party ?
+Date: Oct 10, 2022 || User: 22117 || Instance: What makes Black Hills , South Dakota a tourist attraction ?
+Date: May 17, 2025 || User: 50223 || Instance: In what city is the US Declaration of Independence located ?
+Date: Dec 01, 2022 || User: 84650 || Instance: What country is home to Heineken beer ?
+Date: May 19, 2025 || User: 28513 || Instance: What is the population of Japan ?
+Date: Mar 15, 2024 || User: 14602 || Instance: Ray Charles is best known for playing what instrument ?
+Date: Jul 01, 2022 || User: 40020 || Instance: What airport is on the Piccadilly subway line ?
+Date: Sep 01, 2023 || User: 19439 || Instance: What country was Hitler the chancellor of ?
+Date: Oct 21, 2023 || User: 66268 || Instance: What caused the division between the Anglicans and the Vatican ?
+Date: Jun 10, 2025 || User: 93103 || Instance: What happened during the Blackhawk Indian war of 1832 ?
+Date: Jul 23, 2023 || User: 98013 || Instance: How long does it take light to reach the Earth from the Sun ?
+Date: Jun 24, 2022 || User: 88674 || Instance: What is form drag ?
+Date: May 31, 2025 || User: 19444 || Instance: What two body parts grow all your life ?
+Date: Jul 15, 2024 || User: 53022 || Instance: What did San Francisco 's Milt Harper grow that measured 24 inches from tip to tip in 1974 ?
+Date: Dec 08, 2022 || User: 29016 || Instance: What powdered soft drink mix went into space ?
+Date: Nov 10, 2024 || User: 91778 || Instance: What is Doegs ?
+Date: Apr 15, 2025 || User: 91835 || Instance: What country has the largest sheep population ?
+Date: Jul 20, 2023 || User: 11999 || Instance: What actor came to dinner in Guess Who 's Coming to Dinner ?
+Date: May 30, 2025 || User: 21363 || Instance: How many spears are there on Kenya 's flag ?
+Date: Feb 12, 2025 || User: 85897 || Instance: How do you do a bibliography with an unknown author ?
+Date: May 21, 2022 || User: 57367 || Instance: How do you get to the top of the Eiffel Tower ?
+Date: Oct 08, 2023 || User: 66331 || Instance: What must a Las Vegas blackjack dealer do when he reaches 16 ?
+Date: Jul 02, 2024 || User: 80019 || Instance: What is paracetamol ?
+Date: Nov 04, 2024 || User: 19439 || Instance: Name a medicine commonly used to combat AIDS ?
+Date: Feb 11, 2023 || User: 25456 || Instance: What video format was an alternative to VHS ?
+Date: Mar 17, 2025 || User: 98013 || Instance: Who is stationed at Camp Swampy in the comic strips ?
+Date: Nov 28, 2022 || User: 36231 || Instance: Describe the Long March .
+Date: May 29, 2023 || User: 15203 || Instance: What 1953 film won Frank Sinatra a best supporting actor Oscar ?
+Date: Sep 14, 2024 || User: 36730 || Instance: What 2 statues did France give to other countries ?
+Date: Dec 24, 2024 || User: 15971 || Instance: What is April 's gemstone ?
+Date: Feb 02, 2025 || User: 12987 || Instance: What is the only modern language that capitalizes its singular first-person pronoun ?
+Date: May 27, 2025 || User: 89660 || Instance: What do most tourists visit in Reims ?
+Date: Jun 24, 2022 || User: 86818 || Instance: What ocean is the largest in the world ?
+Date: May 08, 2024 || User: 12987 || Instance: What does the name `` Justin '' mean ?
+Date: Jan 07, 2024 || User: 86355 || Instance: What ill-fated craft was captained by Ernst Lehmann ?
+Date: Mar 12, 2022 || User: 56211 || Instance: What chess outcome results when a player has no legal move ?
+Date: May 27, 2023 || User: 73294 || Instance: What state has the most Indians ?
+Date: Dec 07, 2024 || User: 59257 || Instance: What is RCD ?
+Date: Sep 24, 2022 || User: 86458 || Instance: Who was the 1st U.S. President ?
+Date: Mar 18, 2025 || User: 83439 || Instance: What is the difference between a preface and a foreword ?
+Date: Jul 02, 2022 || User: 14675 || Instance: Which of the following people is not associated with Andy Warhol ?
+Date: Mar 15, 2023 || User: 34086 || Instance: What does the `` c '' stand for in the equation E=mc2 ?
+Date: Apr 28, 2025 || User: 31643 || Instance: How can I find online spelling , and punctuation drills for my 6th grader ?
+Date: Mar 13, 2023 || User: 97045 || Instance: What 's the highest-ranking suit in bridge ?
+Date: Aug 07, 2023 || User: 11784 || Instance: What is the origin of the midwest slang , ` you 're darn tootin ' ?
+Date: Aug 29, 2023 || User: 57432 || Instance: CNN is an acronym for what ?
+Date: Sep 18, 2023 || User: 13574 || Instance: What product `` doubles your pleasure , doubles your fun '' ?
+Date: Sep 19, 2023 || User: 11872 || Instance: What Pope inaugurated Vatican International Radio ?
+Date: Feb 22, 2024 || User: 38283 || Instance: How many visitors go to the Vatican each year ?
+Date: Nov 15, 2022 || User: 86458 || Instance: What golfer has been called Ohio Fats and Blobbo ?
+Date: Feb 23, 2024 || User: 31689 || Instance: What are the four most widely-used languages in North America ?
+Date: Feb 07, 2025 || User: 19117 || Instance: What 's nature 's purpose for tornadoes ?
+Date: Aug 31, 2022 || User: 33376 || Instance: Who is the director and editor of the movie Big starring Tom Hanks ?
+Date: Apr 27, 2024 || User: 31643 || Instance: Why are there letters on the telephone ? Why are there no Q or Z ?
+Date: May 25, 2022 || User: 98013 || Instance: What was the name of Baretta 's cockatoo ?
+Date: Apr 02, 2024 || User: 34414 || Instance: What United States President had dreamed that he was assassinated ?
+Date: Jul 29, 2023 || User: 53265 || Instance: What is osteichthyes ?
+Date: May 10, 2023 || User: 41747 || Instance: What is the name of the managing director of Apricot Computer ?
+Date: Feb 27, 2023 || User: 86458 || Instance: What is the abbreviated expression for the National Bureau of Investigation ?
+Date: Jun 18, 2024 || User: 40243 || Instance: Where can I find out the top 1 singles ?
+Date: Jun 01, 2023 || User: 75962 || Instance: What 1942 espionage movie reunited director John Huston with Maltese Falconers Humphrey Bogart , Mary Astor , and Sidney Greenstreet ?
+Date: Oct 18, 2022 || User: 11999 || Instance: What was the price of Varian Associates ' vacuum products division ?
+Date: Feb 17, 2025 || User: 33472 || Instance: Who loved Flash Gordon besides Dale ?
+Date: Jun 15, 2023 || User: 43916 || Instance: Name the country which Honecker lived in .
+Date: Oct 09, 2022 || User: 15620 || Instance: What do river otters eat ?
+Date: Apr 22, 2023 || User: 60081 || Instance: Who was Secretary of State during the Nixon administration ?
+Date: Dec 06, 2022 || User: 95920 || Instance: Name the product that is `` at your grocer 's , at your fingertips . ''
+Date: Apr 03, 2022 || User: 58321 || Instance: When it 's time to relax , what one beer stands clear ?
+Date: Jul 14, 2022 || User: 11784 || Instance: Where did the term `` 86 '' come from ?
+Date: Aug 06, 2023 || User: 56211 || Instance: What sound does Olympia , Washington , overlook ?
+Date: Nov 07, 2024 || User: 24837 || Instance: What Rocky Mountain ridge separates North America 's eastward and westward-flowing rivers ?
+Date: Sep 17, 2022 || User: 38046 || Instance: Name a technique widely used to detect birth defects ?
+Date: Jan 10, 2025 || User: 10421 || Instance: What was the name of Robert Fulton 's most famous steamboat ?
+Date: May 16, 2022 || User: 55931 || Instance: How long does it take for Spider-Man 's web to evaporate ?
+Date: Dec 09, 2022 || User: 34414 || Instance: Who portrayed Sherlock Holmes in 14 films between 1939 and 1946 ?
+Date: Jun 06, 2022 || User: 29275 || Instance: What is the name of the song that Dracula plays on the organ ?
+Date: Nov 25, 2024 || User: 68930 || Instance: What famous communist leader died in Mexico City ?
+Date: Jul 28, 2024 || User: 86557 || Instance: How did Super President gain his powers on the animated series ?
+Date: Aug 24, 2024 || User: 15412 || Instance: Where is Glasgow ?
+Date: Apr 10, 2022 || User: 73294 || Instance: What 's the largest island in the West Indies ?
+Date: Jul 28, 2022 || User: 92160 || Instance: What London street is the home of British journalism ?
+Date: Mar 24, 2024 || User: 46645 || Instance: What does the channel ESPN stand for ?
+Date: Feb 23, 2023 || User: 88674 || Instance: How much could you rent a Volkswagen bug for in 1966 ?
+Date: Jun 14, 2022 || User: 59542 || Instance: What Green Bay Packers coach philosophized : `` There 's nothing that stokes the fire like hate '' ?
+Date: Mar 24, 2023 || User: 20068 || Instance: How many Community Chest cards are there in Monopoly ?
+Date: Sep 30, 2023 || User: 29016 || Instance: How long does it take the typical American to eat 23 quarts of ice cream ?
+Date: Sep 09, 2024 || User: 67843 || Instance: What city is found in the city of OZ ?
+Date: May 23, 2024 || User: 50223 || Instance: What 1927 silent film received an international revival in 1981 ?
+Date: Sep 10, 2024 || User: 25456 || Instance: What is DEET ?
+Date: Sep 09, 2023 || User: 52492 || Instance: When was CNN 's first broadcast ?
+Date: Jan 04, 2024 || User: 70745 || Instance: What causes panic attacks ?
+Date: Aug 15, 2023 || User: 15917 || Instance: What is the difference between classical conditioning and operant conditioning ?
+Date: Jun 28, 2024 || User: 43865 || Instance: What are `` darning needles '' and `` horse stingers '' better known as ?
+Date: Mar 05, 2023 || User: 66211 || Instance: Who did Arthur H. Bremer try to assassinate on May 15 , 1972 ?
+Date: Apr 18, 2022 || User: 68834 || Instance: Where can I get information and statistics on countries and nations ?
+Date: Jan 22, 2024 || User: 59542 || Instance: What fictional character is known as the `` melancholy Dane '' ?
+Date: Oct 22, 2022 || User: 12731 || Instance: Who made the most appearances in the center square on Hollywood Squares ?
+Date: Aug 03, 2022 || User: 48527 || Instance: How many horses died during the civil war ?
+Date: Aug 17, 2024 || User: 50904 || Instance: What is the city in which Maurizio Pellegrin lives called ?
+Date: Jul 09, 2022 || User: 29016 || Instance: How do you pronounce `` Tzimisce '' ?
+Date: Jan 30, 2025 || User: 66331 || Instance: Who was the famous door-to-door brush salesman ?
+Date: Jul 14, 2022 || User: 86557 || Instance: What is crabgrass ?
+Date: Feb 22, 2025 || User: 85897 || Instance: What kind of puzzle first appeared in the U.S. in the New York World on December 21 , 1913 ?
+Date: Sep 15, 2024 || User: 65331 || Instance: What is the difference between a bachelor and a 1 bedroom apartment ?
+Date: Mar 11, 2025 || User: 21363 || Instance: What board game does a `` wood-pusher '' play poorly ?
+Date: May 15, 2024 || User: 65421 || Instance: What is the recommended daily requirement for folic acid for pregnant women ?
+Date: Jul 29, 2024 || User: 73294 || Instance: Name the disposable razor that `` costs about 19 cents . ''
+Date: Jun 18, 2022 || User: 36043 || Instance: Who were leaders of the Byzantine empire ?
+Date: Aug 11, 2024 || User: 29275 || Instance: What is capitalism according to Max Weber ?
+Date: Jul 21, 2022 || User: 83439 || Instance: What is RAM in the computer ?
+Date: Aug 13, 2022 || User: 79095 || Instance: What does CNN stand for ?
+Date: Dec 06, 2024 || User: 63819 || Instance: What was the former residence of Scottish kings in Edinburgh ?
+Date: Jan 28, 2023 || User: 83084 || Instance: What do the letters CE stand for on so many products , particularly electrical , purchased now ?
+Date: Jun 12, 2022 || User: 34487 || Instance: What does the number 33 on the Rolling Rock beer bottle mean ?
+Date: Apr 29, 2025 || User: 27800 || Instance: What was the killer whale who died at Sea World of a fungal infection named ?
+Date: Mar 02, 2025 || User: 22282 || Instance: Who said `` the only thing we have to fear is fear itself '' ?
+Date: Mar 15, 2025 || User: 21769 || Instance: What song did Patti Page set people dancing to in 1950 ?
+Date: Jun 07, 2023 || User: 20068 || Instance: What was a California prayer book to an Old West gambler ?
+Date: Jun 11, 2022 || User: 36043 || Instance: What university was Woodrow Wilson President of ?
+Date: Jun 21, 2022 || User: 19439 || Instance: What 's the second-most-used murder weapon in the U.S. ?
+Date: Mar 18, 2025 || User: 61901 || Instance: What phone number can I call to have a tree planted ?
+Date: May 07, 2023 || User: 82292 || Instance: How many watts make a kilowatt ?
+Date: Sep 17, 2022 || User: 17055 || Instance: What is the Milky Way ?
+Date: Dec 23, 2024 || User: 28513 || Instance: What was the distinguishing mark on the `` Little Rascals '' dog ?
+Date: Jun 21, 2024 || User: 41408 || Instance: How is the word ` qigong ' pronounced ?
+Date: Nov 22, 2022 || User: 36043 || Instance: Who is Peter Weir ?
+Date: Jan 17, 2024 || User: 99279 || Instance: What is HDLC ?
+Date: Mar 30, 2023 || User: 97045 || Instance: What bordering country is due north of Costa Rica ?
+Date: Apr 16, 2022 || User: 34475 || Instance: Where is the highest point in Japan ?
+Date: May 15, 2024 || User: 53022 || Instance: What U.S. state comes last in an alphabetical list ?
+Date: Aug 24, 2022 || User: 69837 || Instance: What are Christopher Marlowe 's and Shakespeare 's literary contributions to English literature ?
+Date: Mar 10, 2022 || User: 98879 || Instance: How much waste does an average dairy cow produce in a day ?
+Date: May 11, 2024 || User: 45613 || Instance: How many names are there for Eskimo people ?
+Date: Nov 21, 2023 || User: 45354 || Instance: Whose funeral train traveled from Washington D.C. to Springfield , Illinois ?
+Date: May 31, 2022 || User: 25456 || Instance: Why can 't you taste anything when you have a cold ?
+Date: Apr 19, 2025 || User: 19439 || Instance: What chocolate bar created by Frank Mars and his wife is often called a Milky Way with peanuts ?
+Date: Jan 16, 2023 || User: 19439 || Instance: What does S.O.S. stand for ?
+Date: May 06, 2023 || User: 53444 || Instance: What was the name of the orca that died of a fungal infection ?
+Date: Nov 13, 2022 || User: 65702 || Instance: What effects do nitrates have on the environment ?
+Date: Mar 26, 2023 || User: 57432 || Instance: What is the origin of music ?
+Date: Aug 01, 2024 || User: 67173 || Instance: What book did Aaron Hass write ?
+Date: Jul 19, 2022 || User: 86355 || Instance: How many Americans have HIV ?
+Date: Sep 17, 2024 || User: 89725 || Instance: How do you make a paintball ?
+Date: Jan 16, 2025 || User: 66211 || Instance: What 's the percentage of children aged two through eleven who watch ` 'The Simpsons ' ?
+Date: Aug 18, 2024 || User: 70341 || Instance: What was Jimmy Durante 's theme song ?
+Date: Oct 09, 2022 || User: 33897 || Instance: What 's a `` Drinker respirator '' better known as ?
+Date: May 10, 2024 || User: 86557 || Instance: Who penned : `` Neither a borrower nor a lender be '' ?
+Date: May 23, 2024 || User: 11809 || Instance: How many times larger than life size is the Statue of Liberty ?
+Date: Jun 20, 2023 || User: 98843 || Instance: What is `` the bear of beers '' ?
+Date: Apr 22, 2024 || User: 22282 || Instance: What joins white wine to put the spritz in a Spritzer ?
+Date: May 28, 2023 || User: 63448 || Instance: How did serfdom develop in and then leave Russia ?
+Date: Jan 27, 2023 || User: 59542 || Instance: What does NN O `` mean when used as a prefix in Irish surnames ?
+Date: Apr 04, 2024 || User: 68994 || Instance: What is IOC an abbreviation of ?
+Date: Nov 22, 2024 || User: 53022 || Instance: What date did man first land on the moon ?
+Date: Oct 09, 2022 || User: 83084 || Instance: Who invented television ?
+Date: Sep 28, 2023 || User: 98423 || Instance: What is the best selling computer model ever ?
+Date: Sep 26, 2024 || User: 46645 || Instance: Who was Tiny Tim 's father ?
+Date: Dec 13, 2024 || User: 27800 || Instance: What was the name of the ball game played by the mayans ?
+Date: Aug 31, 2022 || User: 90572 || Instance: What do peacocks mate with ?
+Date: Jun 26, 2022 || User: 68834 || Instance: What is the state nickname of Mississippi ?
+Date: Jun 19, 2023 || User: 91835 || Instance: Where was Lincoln assassinated ?
+Date: Mar 16, 2024 || User: 82108 || Instance: How much did a knight 's armor weigh ?
+Date: Mar 26, 2023 || User: 31527 || Instance: What can be done about snoring ?
+Date: Sep 23, 2024 || User: 66765 || Instance: What famed river was Hernando de Soto the first European to see ?
+Date: Jun 16, 2024 || User: 36043 || Instance: What does Larry King do for a living ?
+Date: Apr 21, 2022 || User: 78817 || Instance: What city is Logan Airport in ?
+Date: Apr 17, 2024 || User: 88768 || Instance: Who sells Viagra ?
+Date: Jun 18, 2023 || User: 68994 || Instance: What is the history of the soft drink Mr. Pibb ?
+Date: Sep 12, 2023 || User: 35398 || Instance: In what country is a stuck-out tongue a friendly greeting ?
+Date: Jan 24, 2023 || User: 11999 || Instance: How many Gutenberg Bibles are there ?
+Date: May 29, 2025 || User: 17875 || Instance: What is Nitrox diving ?
+Date: Aug 14, 2022 || User: 54097 || Instance: Who did the Seven Mules block for ?
+Date: Oct 20, 2024 || User: 72805 || Instance: How do you make panoramic sugar eggs for Easter - the ones with the scene inside ?
+Date: Mar 15, 2023 || User: 78669 || Instance: What country offered Albert Einstein its presidency in 1952 ?
+Date: Dec 21, 2023 || User: 33037 || Instance: Why are there no white lines on pro footballs ?
+Date: Mar 25, 2025 || User: 71927 || Instance: What is the location of McCarren Airport ?
+Date: Jan 25, 2023 || User: 98423 || Instance: What country boasts Ismail 's Palace and the Palace of King Farouk ?
+Date: Sep 07, 2022 || User: 57215 || Instance: Name the operating system that runs on IBM-compatible machines .
+Date: Jan 17, 2023 || User: 92160 || Instance: What Asian leader was known as The Little Brown Saint ?
+Date: May 03, 2025 || User: 81263 || Instance: How can I find out how much it costs to raise a baby for six months ?
+Date: Mar 02, 2025 || User: 63031 || Instance: What did Jack exchange with the butcher for a handful of beans ?
+Date: May 18, 2023 || User: 43916 || Instance: What TV station did Mary Richards work for ?
+Date: May 16, 2023 || User: 22282 || Instance: How do you identify prime numbers ?
+Date: Nov 20, 2024 || User: 52930 || Instance: How is digital audio used ?
+Date: Apr 14, 2024 || User: 57432 || Instance: What country is the setting for Edgar Allan Poe 's The Pit and the Pendulum ?
+Date: Sep 09, 2024 || User: 75748 || Instance: What was the first TV set to include a remote control ?
+Date: Feb 22, 2024 || User: 43916 || Instance: Who was the king who was forced to agree to the Magna Carta ?
+Date: May 04, 2024 || User: 41639 || Instance: What is the abbreviation of General Motors ?
+Date: Oct 19, 2024 || User: 68834 || Instance: What is splatterpunk ?
+Date: Dec 21, 2024 || User: 29776 || Instance: What are the Greek numerals ?
+Date: Jan 29, 2025 || User: 55950 || Instance: Name Dondi 's adoptive grandfather .
+Date: Aug 03, 2022 || User: 19986 || Instance: How many years of schooling after highschool does it take to become a neurosurgeon ?
+Date: Mar 24, 2023 || User: 10742 || Instance: What was the name of Captain Bligh 's ship ?
+Date: Jan 25, 2025 || User: 31643 || Instance: What does BTU mean ?
+Date: Nov 20, 2022 || User: 64049 || Instance: What book is subtitled The Preservation of Favoured Races in the Struggle for Life ?
+Date: May 24, 2024 || User: 92160 || Instance: How does marijuana lead to other drugs ?
+Date: Jul 18, 2022 || User: 95504 || Instance: What country boasts the southernmost point in continental Europe ?
+Date: May 10, 2022 || User: 95504 || Instance: What was the number of assassinations and attempts to assassinate in the U.S. since 1865 ?
+Date: Apr 22, 2024 || User: 49984 || Instance: What film had Bette Davis creating a scandal by wearing a daring red gown to a society ball ?
+Date: May 04, 2022 || User: 46645 || Instance: What novel has Big Brother watching ?
+Date: Aug 23, 2022 || User: 54828 || Instance: At what age did Rossini stop writing opera ?
+Date: Jun 09, 2022 || User: 71374 || Instance: How many millimeters are in a mile ?
+Date: Feb 22, 2025 || User: 56211 || Instance: What are boxcars ?
+Date: Jun 03, 2024 || User: 66331 || Instance: What facial feature typically contains about 55 hairs ?
+Date: Jan 08, 2024 || User: 23550 || Instance: What does the name Kelly mean ?
+Date: Mar 16, 2022 || User: 92160 || Instance: What New England state covers 5.9 square miles ?
+Date: May 28, 2024 || User: 88499 || Instance: How can I search for a word within my own webpage ?
+Date: Mar 02, 2024 || User: 41721 || Instance: What country boasts the most dams ?
+Date: May 14, 2025 || User: 15203 || Instance: What is the time it takes a typist to type a screenplay that is 100 pages long ?
+Date: Aug 22, 2023 || User: 24837 || Instance: Who created the World Wide Web , WWW ?
+Date: Mar 09, 2023 || User: 42507 || Instance: Who is Samuel F. Pickering ?
+Date: Jan 07, 2024 || User: 68930 || Instance: What is the origin of head lice ?
+Date: Apr 26, 2022 || User: 68351 || Instance: In Hemingway 's `` Old Man and the Sea , '' what kind of fish does the old man catch ?
+Date: Mar 11, 2022 || User: 32112 || Instance: How do you build a solar car for a high school experiment ?
+Date: Mar 31, 2023 || User: 62047 || Instance: What do the letters CE stand for on so many products , particularly electrical , purchased now ?
+Date: May 13, 2024 || User: 74751 || Instance: What is the brand name of a chemical used to control ripening ?
+Date: Feb 01, 2023 || User: 97658 || Instance: What is the chemical composition of a Barbie ?
+Date: Nov 01, 2023 || User: 59257 || Instance: Name Alvin 's brothers
+Date: Dec 07, 2024 || User: 32112 || Instance: How many species of the Great White shark are there ?
+Date: May 29, 2024 || User: 17055 || Instance: What is the US Federal Government website for Standard Industrial Classification codes , SIC , ?
+Date: Oct 26, 2023 || User: 82292 || Instance: What is the most famous German word in the English language ?
+Date: Mar 15, 2024 || User: 81263 || Instance: Who shot Billy the Kid ?
+Date: Jun 07, 2024 || User: 73315 || Instance: What U.S. President was the first to breed mules ?
+Date: Apr 14, 2024 || User: 19006 || Instance: How do I keep cats out of my flower garden for good ?
+Date: Sep 26, 2024 || User: 24231 || Instance: How many miles are there between Tel Aviv , Israel and Memphis , Tennessee ?
+Date: Jan 26, 2023 || User: 11784 || Instance: What is the average age of a member of the team that worked on the Manhatten Project ?
+Date: Aug 09, 2023 || User: 33037 || Instance: What did the crocodile swallow in Peter Pan ?
+Date: May 30, 2022 || User: 68834 || Instance: What was the Great Britain population from 1699-172 ?
+Date: Dec 23, 2023 || User: 88674 || Instance: How many horses are there on a polo team ?
+Date: Nov 04, 2023 || User: 86233 || Instance: What does the abbreviation cwt. ?
+Date: Jan 28, 2024 || User: 36043 || Instance: What U.S. vice-president once declared : `` If you 've seen one slum , you 've seen them all '' ?
+Date: Aug 22, 2023 || User: 95504 || Instance: What does the abbreviation AIDS stand for ?
+Date: Aug 06, 2022 || User: 50223 || Instance: What format was the major competition of VHS ?
+Date: Oct 16, 2022 || User: 53265 || Instance: When was General Manuel Noriega ousted as the leader of Panama and turned over to U.S. authorities ?
+Date: Feb 26, 2023 || User: 98837 || Instance: How do they find an epicenter ?
+Date: Dec 24, 2024 || User: 45613 || Instance: What is the definition of low island ?
+Date: May 30, 2022 || User: 61600 || Instance: Who portrayed `` the man without a face '' in the movie of the same name ?
+Date: Oct 18, 2022 || User: 74751 || Instance: Who served as inspiration for the schoolteacher portrayed by Robin Williams in `` Dead Poets Society '' ?
+Date: Mar 25, 2024 || User: 73294 || Instance: What enigmatic U.S. vice president was once tried and acquitted for treason in a plot to set up his own independent empire in the West ?
+Date: Jun 03, 2023 || User: 11013 || Instance: What is DTMF ?
+Date: Jun 11, 2022 || User: 53022 || Instance: What is the average age a horse lives ?
+Date: May 11, 2023 || User: 29275 || Instance: What is a caul ?
+Date: Aug 26, 2023 || User: 89725 || Instance: What is the name of the largest city in Chile , South America ?
+Date: Mar 19, 2024 || User: 62484 || Instance: What is the highest waterfall in the United States ?
+Date: Jan 02, 2024 || User: 54828 || Instance: What is AFS ?
+Date: Aug 22, 2023 || User: 48017 || Instance: The Orange Bowl is in what city ?
+Date: Jan 18, 2025 || User: 43865 || Instance: Where did Woodstock take place ?
+Date: Aug 04, 2023 || User: 43346 || Instance: How were the days of the week named ?
+Date: Jun 06, 2025 || User: 31643 || Instance: What is the occupation of Nicholas Cage ?
+Date: Jan 16, 2023 || User: 34475 || Instance: What is the name of the brilliant British economist behind its creation ?
+Date: Jun 20, 2025 || User: 43865 || Instance: What was the average life expectancy during the Stone Age ?
+Date: Feb 13, 2024 || User: 14675 || Instance: What is the abbreviation of the company name ` General Motors ' ?
+Date: Jun 24, 2024 || User: 41364 || Instance: How does crosstalk relate to InSb thickness in infrared detectors ?
+Date: Jul 04, 2023 || User: 66635 || Instance: What poem contains the line , `` grow old with me the best is yet to be '' .
+Date: Dec 18, 2024 || User: 63819 || Instance: Why did the world enter a global depression in 1929 ?
+Date: Aug 16, 2023 || User: 15971 || Instance: Who developed potlatch ?
+Date: Feb 10, 2025 || User: 37539 || Instance: Where does Ray Bradbury 's Chronicles take place ?
+Date: Jul 19, 2024 || User: 11999 || Instance: How do I find out about jobs ?
+Date: Apr 29, 2025 || User: 48853 || Instance: What is Cabarnet Sauvignon ?
+Date: Feb 25, 2023 || User: 79402 || Instance: What President had never held an elected office until he was elected to the White House ?
+Date: Mar 12, 2025 || User: 83084 || Instance: What is an Angelus ?
+Date: Feb 24, 2023 || User: 99279 || Instance: Why should cigarette smoking be banned ?
+Date: Jun 12, 2024 || User: 89725 || Instance: How long does it take the moon to revolve around the Earth ?
+Date: Jul 01, 2022 || User: 97658 || Instance: Which soft drink does Madonna advertise for ?
+Date: Mar 23, 2024 || User: 83084 || Instance: What character did Tex Avery first create upon arriving at MGM ?
+Date: Dec 12, 2023 || User: 90553 || Instance: With whom did Bush compare Saddam Hussein ?
+Date: Apr 11, 2024 || User: 82292 || Instance: What is the origin of the word Ozymandias ?
+Date: Apr 17, 2025 || User: 67043 || Instance: Who was named Admiral of the Ocean Seas and Viceroy and Governor General of all the islands he might discover , and also granted 10-?? of all profits of his voyage .
+Date: Aug 24, 2024 || User: 29776 || Instance: Who was the first host of Person to Person ?
+Date: Oct 28, 2023 || User: 30159 || Instance: What is the West Virginia state animal ?
+Date: Feb 22, 2025 || User: 71374 || Instance: What articles of clothing are tokens in Monopoly ?
+Date: May 10, 2023 || User: 68834 || Instance: What is the highest number of home runs on record for any one game ?
+Date: Aug 22, 2022 || User: 59257 || Instance: What country is the world 's largest importer of cognac ?
+Date: Jan 25, 2024 || User: 78669 || Instance: What is HTML ?
+Date: Jul 26, 2022 || User: 80824 || Instance: Why do the chickenpoxs last so long ?
+Date: May 22, 2022 || User: 85659 || Instance: What bay divides Maryland 's Eastern and Western Shores ?
+Date: Dec 14, 2022 || User: 34086 || Instance: What film was Jude Law in ?
+Date: Apr 24, 2023 || User: 83734 || Instance: What was the name of the sitcom that Alyssa Milano starred in with Tony Danza ?
+Date: Aug 13, 2024 || User: 68994 || Instance: How does a rainbow form ?
+Date: Mar 15, 2025 || User: 28361 || Instance: How many letters appear with the numbers 2 to 9 on a telephone dial ?
+Date: Jun 10, 2023 || User: 28361 || Instance: Who is the current UN Secretary General ?
+Date: Apr 15, 2025 || User: 33108 || Instance: What is the abbreviation of the National Bureau of Investigation ?
+Date: Jun 08, 2022 || User: 43142 || Instance: What kind of creatures are black , yellow , and brown bullheads ?
+Date: Jan 23, 2023 || User: 49911 || Instance: Who was the second person ever to wear Iron Man 's armor ?
+Date: Oct 30, 2024 || User: 62800 || Instance: What Irwin Allen bomb has Richard Widmark saying he 'll be `` the first officer in history to get his butt kicked by a mess of bugs ! '' ?
+Date: Mar 14, 2023 || User: 55643 || Instance: What Tom Wolfe book is about the Mercury astronauts ?
+Date: Mar 23, 2022 || User: 34414 || Instance: What is the full form of .com ?
+Date: Mar 07, 2025 || User: 64049 || Instance: What is the name of the planet that the Ewoks live on ?
+Date: Jan 13, 2024 || User: 13344 || Instance: What Peter Blatty novel recounts the horrors of Regan MacNeil 's possession by the devil ?
+Date: Sep 08, 2022 || User: 68351 || Instance: Where is Windsor Castle ?
+Date: Jan 03, 2023 || User: 66765 || Instance: What is AFS ?
+Date: Jan 10, 2025 || User: 75150 || Instance: What did The Gas House Gang play ?
+Date: Jan 17, 2024 || User: 29016 || Instance: What is proposition 98 about ?
+Date: Aug 22, 2024 || User: 94607 || Instance: When are the Oscars Academy Awards in 1999 ?
+Date: Feb 23, 2024 || User: 60081 || Instance: What happens when a body part falls asleep ?
+Date: Nov 16, 2024 || User: 34916 || Instance: Why do they sterilize the needle for lethal injection ?
+Date: Mar 03, 2023 || User: 59911 || Instance: What happened in dogtown in 1899 to make that year remembered ?
+Date: Jan 15, 2025 || User: 70341 || Instance: What daily newspaper will `` help you see clearer across the USA '' ?
+Date: Mar 28, 2022 || User: 21363 || Instance: What ocean liner burned and sank in Hong Kong harbor ?
+Date: Mar 26, 2023 || User: 82986 || Instance: How many hours of work does it take a typist to complete a 100-page screenplay ?
+Date: Nov 16, 2024 || User: 10359 || Instance: Who leads the star ship Enterprise in Star Trek ?
+Date: Oct 15, 2022 || User: 29016 || Instance: What is the full form of .com ?
+Date: Sep 09, 2023 || User: 81263 || Instance: Name the designer of the shoe that spawned millions of plastic imitations , known as ` jellies ' .
+Date: Jan 04, 2023 || User: 21769 || Instance: Who found Hawaii ?
+Date: Mar 11, 2023 || User: 35398 || Instance: Why do heavier objects travel downhill faster ?
+Date: Jul 26, 2023 || User: 29911 || Instance: Which killer whale died at Sea World of a fungal infection ?
+Date: Jun 26, 2024 || User: 15620 || Instance: What 's the Red Planet ?
+Date: Dec 20, 2022 || User: 80785 || Instance: What is the abbreviation for micro ?
+Date: Jul 09, 2023 || User: 53022 || Instance: How many people were executed for Abraham Lincoln 's assassination ?
+Date: Jun 11, 2023 || User: 59257 || Instance: What does CPR stand for ?
+Date: Jun 14, 2022 || User: 94607 || Instance: What are the first names of the famous husband-and-wife acting team of Lunt and Fontanne ?
+Date: Jun 28, 2024 || User: 75962 || Instance: What are the rules to `` snow golf '' ?
+Date: May 29, 2023 || User: 95504 || Instance: What does gringo mean ?
+Date: Oct 18, 2023 || User: 81609 || Instance: What country did the Mau Mau Uprising take place in ?
+Date: Dec 11, 2022 || User: 21363 || Instance: What soft drink not only has its own video game , but was featured in its own Marvel comic book ?
+Date: Mar 04, 2025 || User: 29776 || Instance: How many acres in a mile ?
+Date: Mar 21, 2022 || User: 51834 || Instance: How do wasps make their nests ?
+Date: Dec 25, 2023 || User: 29275 || Instance: What town was the setting for The Music Man ?
+Date: May 20, 2022 || User: 10341 || Instance: Who liberated 19th century Sicily and Naples ?
+Date: Feb 15, 2023 || User: 28149 || Instance: What are the world 's four oceans ?
+Date: Apr 27, 2024 || User: 54517 || Instance: What is the leading pecan and peanut growing state ?
+Date: Jan 08, 2023 || User: 92160 || Instance: What does an emperor do ?
+Date: Sep 01, 2024 || User: 50223 || Instance: What country did King Wenceslas rule ?
+Date: Jun 18, 2022 || User: 29776 || Instance: What state full of milk and honey was the destination in The Grapes of Wrath ?
+Date: Oct 29, 2024 || User: 25442 || Instance: What is software piracy ?
+Date: Apr 03, 2023 || User: 26518 || Instance: What was the name of the `` Little Rascals '' dog ?
+Date: Jul 06, 2024 || User: 53265 || Instance: What is the definition of `` chancery '' file in real estate ?
+Date: Nov 01, 2022 || User: 59257 || Instance: What is Linux ?
+Date: Sep 24, 2024 || User: 52930 || Instance: What famed gangland slaughter cut into the membership of Bugs Moran 's outfit ?
+Date: Oct 04, 2024 || User: 74751 || Instance: What was the `` Dead Man 's Hand '' ?
+Date: Apr 26, 2025 || User: 54828 || Instance: What does BMW stand for ?
+Date: Sep 24, 2024 || User: 10742 || Instance: Why do they call it a `` funny bone '' ?
+Date: Jun 24, 2022 || User: 17480 || Instance: What does CNN stand for ?
+Date: Sep 17, 2023 || User: 99117 || Instance: Who invented the Moog Synthesizer ?
+Date: May 23, 2023 || User: 17055 || Instance: How do I legally make my own will and testament ?
+Date: Jan 16, 2023 || User: 15412 || Instance: What is the starting salary for beginning lawyers ?
+Date: Sep 01, 2022 || User: 10421 || Instance: What countries have the best math students ?
+Date: Sep 02, 2023 || User: 14621 || Instance: What is the origin of `` jiggy '' as in getting jiggy with it ?
+Date: Apr 26, 2022 || User: 69837 || Instance: Which comic strip was never turned into a Broadway musical ?
+Date: Oct 08, 2023 || User: 32449 || Instance: What is the average life expectancy of a male in Ireland in 1996 ?
+Date: Apr 04, 2025 || User: 25456 || Instance: What does MSG stand for ?
+Date: Aug 30, 2022 || User: 28361 || Instance: What TV series features the adventures of a married couple named Jonathan and Jennifer ?
+Date: Feb 18, 2023 || User: 95329 || Instance: What does e.g. stand for ?
+Date: Jun 07, 2023 || User: 34487 || Instance: What then-derogatory term was applied to the painters Monet , Sisley , Pissarro , Renoir and Degas ?
+Date: Apr 29, 2025 || User: 20068 || Instance: What is hebephrenia ?
+Date: Jan 10, 2025 || User: 29911 || Instance: Where does Barney Rubble go to work after he drops Fred off in the `` Flintstones '' cartoon series ?
+Date: Nov 16, 2024 || User: 14621 || Instance: What is Chiricahua the name of ?
+Date: Jul 01, 2024 || User: 89660 || Instance: What U.S. state boasts Leif Ericson Park ?
+Date: Jun 16, 2023 || User: 51733 || Instance: What was Paul Bunyan 's ox 's name ?
+Date: Mar 05, 2024 || User: 85897 || Instance: How many quarters equal a pound ?
+Date: Sep 12, 2024 || User: 29016 || Instance: How many consecutive baseball games did Lou Gehrig play ?
+Date: Feb 18, 2025 || User: 86557 || Instance: What did Martin Luther post on the church door at Wittenberg ?
+Date: Dec 28, 2023 || User: 58016 || Instance: What is the most advanced handheld calculator in the world ?
+Date: Apr 20, 2022 || User: 34475 || Instance: Where does the Santa Fe Trail begin and end ?
+Date: Sep 04, 2024 || User: 88768 || Instance: How would I find the price of different organs that have been donated ?
+Date: Sep 21, 2023 || User: 88674 || Instance: Why are haunted houses popular ?
+Date: Nov 03, 2022 || User: 66331 || Instance: Name of King Arthur 's sword ?
+Date: Apr 02, 2023 || User: 64494 || Instance: Where did the myth of Santa Claus originate ?
+Date: Mar 22, 2023 || User: 48017 || Instance: What cheery fellow got the ZIP code 9971 from the U.S. Postal Service in 1963 ?
+Date: Aug 08, 2023 || User: 84650 || Instance: What Apollo 11 astronaut minded the store while Armstrong and Aldrin made history ?
+Date: Dec 26, 2022 || User: 68834 || Instance: Which of these are authors ?
+Date: Jul 01, 2023 || User: 27475 || Instance: What is the celtic symbol for `` life '' ?
+Date: Nov 27, 2023 || User: 83084 || Instance: What soft drink tells us to `` Go Hawaiian '' ?
+Date: Dec 26, 2023 || User: 84882 || Instance: What country boasts the most cars per mile of road ?
+Date: May 13, 2023 || User: 31643 || Instance: What disease did August von Wassermann develop a specific test for in 196 ?
+Date: Aug 31, 2023 || User: 68930 || Instance: How much electricity does the brain need to work ?
+Date: May 10, 2024 || User: 82292 || Instance: Who is the only prime minister of Canada to serve 22 years but not necessarily consecutively ?
+Date: Jul 15, 2023 || User: 75748 || Instance: Aspartame is also called what ?
+Date: Apr 04, 2022 || User: 14100 || Instance: What year did Germany sign its nonaggression pact with the Soviet Union ?
+Date: Aug 01, 2024 || User: 43142 || Instance: Where can I find the best free evidence for debate about Russia ?
+Date: Aug 11, 2022 || User: 68994 || Instance: What major airline has the best safety record in the world ?
+Date: Sep 02, 2022 || User: 94607 || Instance: What is the abbreviation of the company name ` General Motors ' ?
+Date: Nov 15, 2024 || User: 70745 || Instance: What sport do you shag flies in ?
+Date: Mar 22, 2024 || User: 21075 || Instance: What does the name Jenna mean ?
+Date: Jun 10, 2022 || User: 90384 || Instance: What is IOC an abbreviation of ?
+Date: Jan 07, 2023 || User: 24231 || Instance: What 1965 film had Jack Lemmon portraying a cartoonist ?
+Date: Sep 24, 2023 || User: 37539 || Instance: What does BMW stand for ?
+Date: Mar 29, 2025 || User: 52930 || Instance: What future movie treat was introduced to American colonists in 1603 by Native Americans ?
+Date: Apr 05, 2022 || User: 52492 || Instance: How many feet high is the hurdle in front of a runner 's steeplechase water jump ?
+Date: Jun 10, 2023 || User: 64687 || Instance: What is the name of a Salt Lake City newspaper ?
+Date: Oct 12, 2022 || User: 21917 || Instance: What non-conformist abstract painter was dubbed Jack The Dripper by Time ?
+Date: Jul 22, 2024 || User: 42442 || Instance: What was the nickname of Frederick I , Holy Roman Emperor and King of Germany ?
+Date: Jan 09, 2023 || User: 60081 || Instance: What attorneys work for The Center for the Defense of Free Enterprise ?
+Date: Oct 06, 2023 || User: 17055 || Instance: What cooking oil has `` corn goodness '' ?
+Date: Dec 22, 2024 || User: 57432 || Instance: What lawyer won the largest divorce settlement , $85 million , in U.S. history for Sheika Dena Al-Farri ?
+Date: Mar 04, 2022 || User: 90704 || Instance: What six-foot temperance advocate wielded her hatchet on saloons ?
+Date: Sep 13, 2023 || User: 16688 || Instance: What country has the port of Haifa ?
+Date: Oct 25, 2024 || User: 89725 || Instance: How large is Missouri 's population ?
+Date: Aug 10, 2022 || User: 28618 || Instance: What Tokyo street glitters with famed department stores and nightclubs ?
+Date: Mar 18, 2025 || User: 95329 || Instance: What is white chocolate ?
+Date: Feb 23, 2023 || User: 73181 || Instance: Where is the location of the Orange Bowl ?
+Date: Aug 30, 2023 || User: 86233 || Instance: What is the executor in a will ?
+Date: Jul 14, 2024 || User: 24313 || Instance: What is the definition of the Scrabble word ` syzygy ' ?
+Date: Oct 12, 2024 || User: 19986 || Instance: What planet did Percival Lovell discover ?
+Date: Feb 24, 2025 || User: 55423 || Instance: What does U.S.S.R. stand for ?
+Date: May 01, 2022 || User: 53460 || Instance: Who invented basketball ?
+Date: Feb 04, 2025 || User: 40243 || Instance: Where is Belize located ?
+Date: Oct 20, 2022 || User: 25431 || Instance: Who invented the stethoscope ?
+Date: Apr 06, 2025 || User: 81609 || Instance: Who made the musical plea Be True to Your School ?
+Date: Aug 10, 2022 || User: 59911 || Instance: What city is wiener schnitzel named for ?
+Date: Dec 24, 2023 || User: 86458 || Instance: Who was the first animal into space ?
+Date: May 04, 2022 || User: 85897 || Instance: How many member states are in the UN ?
+Date: May 09, 2023 || User: 35891 || Instance: What did Englishman John Hawkins begin selling to New World colonists in 1562 ?
+Date: Feb 21, 2024 || User: 68930 || Instance: What will a compass do in outer space ?
+Date: Dec 07, 2022 || User: 75522 || Instance: Who made Stonehenge ?
+Date: Apr 02, 2022 || User: 49124 || Instance: What is Betsy Ross famous for ?
+Date: Jun 17, 2025 || User: 50223 || Instance: How do they produce vitamins ?
+Date: May 10, 2024 || User: 70341 || Instance: What are the current immigration laws in US ?
+Date: Sep 04, 2024 || User: 65702 || Instance: What is the abbreviated term used for the National Bureau of Investigation ?
+Date: Mar 03, 2023 || User: 68930 || Instance: Name a movie that the actress , Sandra Bullock , had a role in .
+Date: May 06, 2023 || User: 49680 || Instance: What TV series featured Neal , a martini-drinking St. Bernard ?
+Date: May 23, 2024 || User: 57432 || Instance: Where is the Thomas Edison Museum ?
+Date: Aug 06, 2023 || User: 44022 || Instance: How many seats does the Batmobile sport ?
+Date: Aug 18, 2022 || User: 28623 || Instance: What famous singing cowboy owns the California Angels baseball team ?
+Date: Jan 14, 2023 || User: 92160 || Instance: What continent pushes up the Executive Committee mountain range ?
+Date: Jan 31, 2024 || User: 42620 || Instance: What country did King Gustav V reign over from 197 to 195 ?
+Date: Dec 04, 2022 || User: 19478 || Instance: What are the capital cities of the two large countries that occupy the Iberian peninsula in Europe ?
+Date: Dec 08, 2023 || User: 33599 || Instance: What is the name given to a group of geese ?
+Date: Jan 14, 2025 || User: 20068 || Instance: How many meters are in a mile ?
+Date: Aug 28, 2023 || User: 39555 || Instance: What state did Helen Keller call home ?
+Date: Nov 09, 2022 || User: 29776 || Instance: What do the letters ZIP stand for in the phrase `` ZIP code '' ?
+Date: Oct 09, 2022 || User: 82766 || Instance: What state has the longest Great Lakes shoreline ?
+Date: Jun 28, 2022 || User: 45613 || Instance: What body of water does the Yukon River empty into ?
+Date: May 21, 2024 || User: 71374 || Instance: What is the name of the Indian who became prime minister by beating Mrs. Gandhi in the 1977 election ?
+Date: Oct 09, 2023 || User: 14602 || Instance: Name the vessel used by the Atari Force in the DC comics .
+Date: Nov 20, 2022 || User: 40243 || Instance: Which large U.S. city had the highest murder rate for 1988 ?
+Date: Jun 28, 2023 || User: 44358 || Instance: What is the origin of the word `` sideburns '' ?
+Date: Jun 16, 2023 || User: 19986 || Instance: How fast does the fastest car go ?
+Date: Nov 13, 2023 || User: 28623 || Instance: Why did the Aztecs first think the Spanish were Gods ?
+Date: Apr 16, 2024 || User: 21917 || Instance: What was the first minimum wage ?
+Date: Jul 01, 2023 || User: 19514 || Instance: What is a urologist ?
+Date: Feb 26, 2022 || User: 88674 || Instance: What is a bone marrow transplant ?
+Date: Mar 07, 2025 || User: 80502 || Instance: How many people hike ?
+Date: May 04, 2024 || User: 75748 || Instance: Who lived on the shores of the Gitchee Gumee River ?
+Date: Jun 07, 2025 || User: 25456 || Instance: What European race sees the winner of its mountain stage awarded a jersey with large red polka dots ?
+Date: May 15, 2023 || User: 92798 || Instance: What does an echidna look like ?
+Date: May 31, 2023 || User: 98013 || Instance: How does a hurricane form ?
+Date: Jul 06, 2024 || User: 21363 || Instance: When did Fraze get his first patent for the pull-tab can ?
+Date: May 03, 2023 || User: 90704 || Instance: Whose first presidential order was : `` Let 's get this goddamn thing airborne '' ?
+Date: Jul 22, 2024 || User: 59542 || Instance: What computer operating system is on the most computers ?
+Date: Nov 08, 2023 || User: 92160 || Instance: Why do some clothing labels say `` Use a nonchlorine bleach '' ?
+Date: Oct 17, 2024 || User: 58371 || Instance: What is home banking ?
+Date: May 07, 2024 || User: 86458 || Instance: What Caribbean cult did Marcus Garvey originate ?
+Date: Apr 22, 2022 || User: 32112 || Instance: What landmark Italian restaurant can be found at 239 West 48th Street , New York City ?
+Date: Jul 10, 2024 || User: 66211 || Instance: What causes rust ?
+Date: May 05, 2022 || User: 59257 || Instance: What film dramatized the Scopes monkey trial ?
+Date: Feb 12, 2025 || User: 21769 || Instance: What are Britain 's two longest rivers ?
+Date: Apr 12, 2023 || User: 24231 || Instance: What should the temperature be set at while baking Peachy Oat Muffins ?
+Date: Apr 01, 2023 || User: 58926 || Instance: What journalist can be found in and around Walden Puddle ?
+Date: Dec 07, 2023 || User: 10742 || Instance: What was Mao 's second name ?
+Date: Mar 18, 2022 || User: 99279 || Instance: How many warmup pitches does a reliever get coming into a baseball game ?
+Date: Jun 18, 2024 || User: 97658 || Instance: Name a Salt Lake City newspaper .
+Date: Mar 26, 2022 || User: 96622 || Instance: What is the origin of the word `` mind '' ?
+Date: Nov 19, 2022 || User: 45613 || Instance: What is BPH ?
+Date: Sep 21, 2023 || User: 63819 || Instance: What 's a short ton ?
+Date: Aug 28, 2022 || User: 12695 || Instance: What does the word `` meta '' mean ?
+Date: May 07, 2022 || User: 59911 || Instance: What actor and World War II airman had a $5 , 0 bounty put on his head by Hermann Goering ?
+Date: May 01, 2022 || User: 38079 || Instance: How long was Mao 's 1930s Long March ?
+Date: May 17, 2025 || User: 29776 || Instance: Why do eyes sometimes look red in photographs ?
+Date: Apr 21, 2023 || User: 99117 || Instance: How much money can a person be fined for having a dog on a beach ?
+Date: Nov 02, 2022 || User: 88499 || Instance: Which of the following rock 'n roll stars has a `` star '' on Hollywood Boulevard ?
+Date: Jan 19, 2023 || User: 72370 || Instance: How do movie blues screens work ?
+Date: Jun 30, 2023 || User: 76828 || Instance: Who portrayed Carl Bernstein in All the President 's Men ?
+Date: Jan 30, 2024 || User: 11784 || Instance: What are chloroplasts ?
+Date: Dec 19, 2023 || User: 83084 || Instance: What football bowl game 's first queen was Hallie Woods ?
+Date: Apr 26, 2023 || User: 51029 || Instance: What was known as the Spice Island ?
+Date: Mar 10, 2023 || User: 21573 || Instance: What J.R.R. Tolkien book features Bilbo Baggins as the central character ?
+Date: Feb 01, 2024 || User: 74195 || Instance: What makes salt ?
+Date: Mar 14, 2025 || User: 28063 || Instance: How many different kinds of ice cream are there ?
+Date: Sep 27, 2022 || User: 84650 || Instance: What do the letters ZIP stand for in the phrase `` ZIP code '' ?
+Date: Apr 03, 2025 || User: 29275 || Instance: What TV series changed the names to protect the innocent ?
+Date: Jan 28, 2025 || User: 34487 || Instance: What is the daily requirement of folic acid for an expectant mother ?
+Date: Jan 02, 2024 || User: 32112 || Instance: What 's the maximum length , in inches , of a first baseman 's glove ?
+Date: Mar 01, 2024 || User: 43142 || Instance: In what year did China and the Republic of Korea establish diplomatic relations ?
+Date: Feb 09, 2025 || User: 10421 || Instance: What is the only vegetable that starts with `` z '' ?
+Date: Sep 25, 2023 || User: 15917 || Instance: How many shots can a stock M16 hold ?
+Date: May 08, 2024 || User: 44451 || Instance: Name four famous cartoon cats .
+Date: Sep 18, 2022 || User: 34475 || Instance: Who is Malaysia 's 43rd prime minister ?
+Date: May 16, 2025 || User: 27800 || Instance: What are the five most expensive cities in the world ?
+Date: Oct 06, 2024 || User: 15203 || Instance: Who starred in the movie The War of the Worlds ?
+Date: Apr 24, 2024 || User: 76021 || Instance: What does ` PSI ' stand for ?
+Date: Jan 26, 2024 || User: 11161 || Instance: What 's the most extensively grown and eaten food ?
+Date: Apr 13, 2025 || User: 13347 || Instance: What are the two cities in Dicken 's `` A Tale of Two Cities '' ?
+Date: Jul 21, 2023 || User: 59911 || Instance: Who sent the brief message `` I came , I saw , I conquered '' ?
+Date: Mar 29, 2025 || User: 83084 || Instance: What is the abbreviation of the National Bureau of Investigation ?
+Date: Dec 10, 2022 || User: 56211 || Instance: What is the correct way to abbreviate cc. at the bottom of a business letter ?
+Date: Feb 19, 2025 || User: 59614 || Instance: In what nation is Edessa located nowadays ?
+Date: May 02, 2025 || User: 12695 || Instance: What is Beethoven 's 9th symphony called ?
+Date: Mar 26, 2022 || User: 72675 || Instance: What country was Erich Honecker the leader of ?
+Date: Apr 15, 2025 || User: 94607 || Instance: What food of the three bears did Goldilocks eat ?
+Date: Oct 16, 2022 || User: 76648 || Instance: What is the filmmakers collabrative ?
+Date: Sep 08, 2024 || User: 59131 || Instance: What car was driven in the 199 release of `` Smokey and the Bandit '' ?
+Date: Apr 01, 2022 || User: 85897 || Instance: What country received all the Nobel Prizes awarded in 1976 ?
+Date: Oct 01, 2022 || User: 42433 || Instance: What was the first ready-to-eat breakfast cereal ?
+Date: Nov 11, 2024 || User: 21233 || Instance: What member of The Little Rascals has an on-again , off-again sweetheart in Darla Hood ?
+Date: May 04, 2025 || User: 31070 || Instance: What U.S. state has sagebrush as its state flower ?
+Date: May 19, 2024 || User: 73315 || Instance: What meter was invented by C.C. Magee in 1935 ?
+Date: Oct 12, 2024 || User: 64791 || Instance: Who is the one Independent Member of Congress ?
+Date: Aug 03, 2023 || User: 63031 || Instance: What is the Scotch `` for people who know the difference '' ?
+Date: Jun 04, 2025 || User: 41747 || Instance: What are values ?
+Date: Oct 07, 2024 || User: 82421 || Instance: Who makes the `` Die Hard '' car battery ?
+Date: Apr 09, 2025 || User: 33472 || Instance: What are all the southern states of the United States ?
+Date: Apr 22, 2024 || User: 84650 || Instance: How much does it cost , average or whatever is available , to produce and send junk mail catalogues in the US ? , DT CD NN NN ,
+Date: Dec 26, 2023 || User: 97045 || Instance: What is the origin of thank you notes ?
+Date: Oct 17, 2024 || User: 88499 || Instance: What is the address of the famous Mexican star `` Thalia '' ?
+Date: Jul 22, 2022 || User: 27800 || Instance: Who wrote The Look of Love after viewing Ursula Andress ?
+Date: Apr 07, 2023 || User: 43865 || Instance: What Peruvian city is home to the mummified body of Francisco Pizarro ?
+Date: Nov 28, 2023 || User: 31197 || Instance: Where is the Loop ?
+Date: Mar 23, 2024 || User: 10742 || Instance: What is the oldest ethnological museum in the world ?
+Date: Aug 02, 2022 || User: 79704 || Instance: What is the circumorbital hematoma ?
+Date: Aug 20, 2022 || User: 33037 || Instance: What is the origin and the meaning of the name , `` Hajo ? ''
+Date: Jun 02, 2024 || User: 74751 || Instance: What Broadway musical was inspired by Cervantes 's Don Quixote ?
+Date: Feb 23, 2022 || User: 82748 || Instance: What will happen when sodium is put in water ?
+Date: Dec 13, 2024 || User: 76828 || Instance: Which Vietnamese terrorist is now a UN delegate in Doonesbury ?
+Date: Mar 05, 2022 || User: 48473 || Instance: What is Nicholas Cage 's profession ?
+Date: Dec 29, 2024 || User: 17055 || Instance: What is the abbreviation for micro ?
+Date: Mar 05, 2022 || User: 54517 || Instance: What country are you visiting if you land at President Duvalier Airport ?
+Date: May 23, 2024 || User: 29776 || Instance: What are the characters ' names in the Scooby-Doo cartoon ?
+Date: Mar 08, 2022 || User: 42442 || Instance: What does caliente mean , in English ?
+Date: May 24, 2023 || User: 17875 || Instance: How can I find out what year a Beanie Baby was introduced ?
+Date: May 20, 2023 || User: 40243 || Instance: What sign is the best love match for a horoscope sign ?
+Date: Mar 28, 2022 || User: 54828 || Instance: How can I find online spelling ?
+Date: Nov 03, 2023 || User: 15620 || Instance: What is time ?
+Date: Sep 27, 2024 || User: 34487 || Instance: What 's the abbreviation for trinitrotoluene ?
+Date: Dec 15, 2022 || User: 85897 || Instance: How do you make dumplings ?
+Date: Mar 27, 2023 || User: 66221 || Instance: What killed Bob Marley ?
+Date: Jun 09, 2025 || User: 92160 || Instance: How do companies cut paper so thin ?
+Date: Oct 08, 2022 || User: 16367 || Instance: What is the life span of the average monkey ?
+Date: Oct 04, 2022 || User: 59320 || Instance: Where can I buy a pony on the Big Island for my daughter ?
+Date: Apr 10, 2025 || User: 19986 || Instance: What does the acronym CPR mean ?
+Date: Dec 04, 2024 || User: 40243 || Instance: What is gymnophobia ?
+Date: Dec 31, 2022 || User: 36043 || Instance: Where did the Maya people live ?
+Date: Jan 13, 2024 || User: 94383 || Instance: What is DSL ?
+Date: Jun 15, 2024 || User: 68930 || Instance: What country contains the westernmost point in South America ?
+Date: Jun 13, 2023 || User: 63031 || Instance: What are the alveoli ?
+Date: Oct 13, 2023 || User: 35398 || Instance: Where are the Union Stockyards ?
+Date: Apr 06, 2023 || User: 35398 || Instance: What are the four largest mountain ranges in the continental United States ?
+Date: May 23, 2025 || User: 52930 || Instance: What does INRI stand for when used on Jesus ' cross ?
+Date: Jul 18, 2022 || User: 21363 || Instance: What year did the War of 1812 begin ?
+Date: May 26, 2024 || User: 17875 || Instance: What rabbit got its name because its ears resembled those of a jackass ?
+Date: Jan 01, 2024 || User: 90208 || Instance: What is the origin of blue for boys and pink for girls ?
+Date: Jul 16, 2024 || User: 31643 || Instance: In which Tennessee Williams play is one of the characters killed and devoured by a mob of starving children ?
+Date: Feb 14, 2025 || User: 89725 || Instance: What is La Nina ?
+Date: Aug 27, 2023 || User: 53373 || Instance: What five cards make up a perfect Cribbage hand ?
+Date: Oct 07, 2022 || User: 12695 || Instance: What was the proper Laugh-In respones to : `` Say goodnight , Dick '' ?
+Date: Apr 25, 2025 || User: 63819 || Instance: How would someone go about becoming an organ donor ?
+Date: Jan 15, 2025 || User: 12053 || Instance: In what year did Joe DiMaggio compile his 56-game hitting streak ?
+Date: May 13, 2024 || User: 54452 || Instance: Where does Mother Angelica live ?
+Date: Mar 15, 2023 || User: 99117 || Instance: Who is the Voyager project manager ?
+Date: Apr 26, 2024 || User: 42442 || Instance: What was the death toll at the eruption of Mount Pinatubo ?
+Date: May 03, 2025 || User: 15917 || Instance: Where can I find the names of all the 15 Pokemon ?
+Date: May 07, 2023 || User: 96695 || Instance: How many of every 10 members of the Rodeo Cowboys Association have never worked a ranch ?
+Date: Jun 21, 2023 || User: 91835 || Instance: What 's a perfect score in a gymnastics exercise ?
+Date: Jun 20, 2023 || User: 81609 || Instance: What is the only primate to lack pigment in the palms of its hands ?
+Date: Nov 19, 2022 || User: 10341 || Instance: What was Eduard Shevardnadze 's job in the Soviet Union ?
+Date: Apr 04, 2022 || User: 27800 || Instance: What eating utensils are used for handicapped kids ?
+Date: Nov 27, 2023 || User: 34086 || Instance: How does an ion drive work ?
+Date: Mar 05, 2022 || User: 50223 || Instance: What does IOC stand for ?
+Date: Sep 23, 2022 || User: 14621 || Instance: What province is Edmonton located in ?
+Date: May 25, 2024 || User: 59257 || Instance: What two New York Yankee pitchers swapped wives and families ?
+Date: Nov 09, 2022 || User: 15917 || Instance: Who was the author of `` John Brown 's Body '' ?
+Date: Jul 23, 2023 || User: 38979 || Instance: What planet gave bith to Superman ?
+Date: Jul 28, 2024 || User: 15971 || Instance: What causes tuberculosis ?
+Date: Jan 16, 2025 || User: 53373 || Instance: How long after intercourse does it take to find out if you are pregnant ?
+Date: Mar 13, 2024 || User: 86614 || Instance: What is tyvek ?
+Date: May 11, 2025 || User: 83124 || Instance: What baseball team owner and sailor is known as The Mouth of the South ?
+Date: Dec 20, 2024 || User: 73315 || Instance: What is a First World country ?
+Date: Jun 18, 2022 || User: 35398 || Instance: What became the biggest cash crop in the U.S. in 1983 , surpassing corn ?
+Date: Aug 13, 2024 || User: 55950 || Instance: What sprawling U.S. state boasts the most airports ?
+Date: Jan 02, 2023 || User: 11958 || Instance: What is Nathan Hamill 's role in the new Star Wars prequel ?
+Date: Jan 07, 2025 || User: 52930 || Instance: What international amateur sports spectacle was first telecast in 1956 ?
+Date: Dec 22, 2022 || User: 72675 || Instance: What causes canker sores in the mouth ?
+Date: Mar 18, 2023 || User: 80824 || Instance: What creative genius said : `` Everything comes to him who hustles while he waits '' ?
+Date: Jul 15, 2023 || User: 91975 || Instance: Why is Rush 's 2112 called 2112 ?
+Date: Apr 04, 2025 || User: 43142 || Instance: What crooner joined The Andrews Sisters for Pistol Packin Mama ?
+Date: Jun 08, 2025 || User: 17055 || Instance: What is DSL ?
+Date: May 03, 2022 || User: 52848 || Instance: What California bridge was Don Brown the first to cross , on May 27 , 1937 ?
+Date: Jul 26, 2024 || User: 89660 || Instance: Who are the top 10 richest people in the world ?
+Date: Apr 13, 2022 || User: 83084 || Instance: What was the first domesticated bird ?
+Date: May 22, 2022 || User: 21769 || Instance: What musical instrument did Prewitt play in James Jones 's From Here to Eternity ?
+Date: Apr 22, 2025 || User: 74442 || Instance: Where are the leading medical groups specializing in lung diseases ?
+Date: Jun 07, 2025 || User: 28618 || Instance: What is a transistor ?
+Date: May 27, 2022 || User: 94360 || Instance: When was the first flush toilet invented ?
+Date: Mar 14, 2024 || User: 59911 || Instance: How many people on the ground were killed from the bombing of Pan Am Flight 103 over Lockerbie , Scotland , December 21 , CD .
+Date: Mar 30, 2024 || User: 74906 || Instance: What country is proud to claim Volcano National Park ?
+Date: Jun 11, 2023 || User: 29911 || Instance: How many Israeli athletes were killed at the Munich Olympics ?
+Date: Jun 28, 2022 || User: 99492 || Instance: What is the capital of Burkina Faso ?
+Date: Aug 29, 2024 || User: 86233 || Instance: What Russian city used to be called St. Petersburg and Petrograd ?
+Date: Feb 14, 2024 || User: 34414 || Instance: How many milliseconds in a second ?
+Date: Feb 03, 2023 || User: 33599 || Instance: What are pushed and coupled in hump yards ?
+Date: Jun 24, 2024 || User: 53373 || Instance: What is Occam 's Razor ?
+Date: Dec 12, 2022 || User: 17055 || Instance: What was Darth Vader 's son named ?
+Date: Jun 18, 2022 || User: 49124 || Instance: What TV sitcom character had the maiden name Ethel Potter ?
+Date: Sep 18, 2023 || User: 41067 || Instance: How many furlongs are there in a mile-and-a-quarter recetrack ?
+Date: May 30, 2024 || User: 48017 || Instance: What is multimedia ?
+Date: Apr 20, 2025 || User: 72580 || Instance: Who wrote the poem that starts `` I love your lips when they 're wet with wine and red with a warm desire '' ?
+Date: Nov 13, 2023 || User: 75962 || Instance: What island has a park called The Battery at is southern tip ?
+Date: May 08, 2022 || User: 28672 || Instance: What was the name of the first Russian astronaut to do a spacewalk ?
+Date: May 28, 2023 || User: 22282 || Instance: How do I change a file from an ART file to a JPEG or Bitmap file ?
+Date: Feb 23, 2022 || User: 27877 || Instance: What anesthetic did Queen Victoria allow to be used for the birth of her seventh child , in 1853 ?
+Date: Jul 02, 2024 || User: 34475 || Instance: What is the movie Jonathan Livingstone Seagull ?
+Date: Jul 08, 2022 || User: 20068 || Instance: What country 's capital is Lagos ?
+Date: Jun 01, 2024 || User: 68994 || Instance: What field sport did dentist William Beers promote and write a standard book of rules for ?
+Date: Aug 01, 2022 || User: 98013 || Instance: Where did guinea pigs originate ?
+Date: Jul 28, 2023 || User: 42433 || Instance: What is the capital of Italy ?
+Date: Feb 09, 2024 || User: 27800 || Instance: How can I easily remove red wine stains from t-shirts ?
+Date: Nov 08, 2022 || User: 42433 || Instance: Where did the Wright brothers make their first flight ?
+Date: Oct 07, 2023 || User: 86557 || Instance: What does the abbreviation IOC stand for ?
+Date: Jul 24, 2022 || User: 84975 || Instance: What shape-shifting menace did Rom come to Earth to fight ?
+Date: Feb 23, 2023 || User: 57329 || Instance: What international sport was originally called hurley ?
+Date: Jul 30, 2023 || User: 20068 || Instance: How does the speed the magnet spins in a generator affect the output of the generator ?
+Date: Oct 21, 2024 || User: 11968 || Instance: What is `` alternative '' anymore ?
+Date: Dec 18, 2022 || User: 17055 || Instance: What 2th-century American poet wrote a four-volume biography of Abraham Lincoln ?
+Date: Mar 02, 2023 || User: 31689 || Instance: What artist 's studio was the Bateau-Lavoir in Montmartre ?
+Date: Feb 07, 2025 || User: 57432 || Instance: What sport is Chris Jogis a top player of ?
+Date: Dec 12, 2023 || User: 59257 || Instance: Where is Procter & Gamble based in the U.S. ?
+Date: Oct 23, 2022 || User: 11784 || Instance: What little boy and dog live in a shoe ?
+Date: Mar 02, 2024 || User: 55423 || Instance: What state in the United States covers the largest area ?
+Date: Oct 12, 2023 || User: 98423 || Instance: What bestselling modern poet was the co-founder of the famous City Lights Bookshop in San Francisco ?
+Date: Aug 20, 2022 || User: 34475 || Instance: What is the life expectancy of an elephant ?
+Date: Apr 07, 2022 || User: 66331 || Instance: What was the outcome of the 1945 Yalta Conference ?
+Date: Mar 18, 2022 || User: 17055 || Instance: What U.S. city was named for St. Francis of Assisi ?
+Date: Oct 11, 2024 || User: 68834 || Instance: What was the name of the movie that starred Sharon Stone and Arnold Schwarzenegger ?
+Date: Jun 30, 2024 || User: 40243 || Instance: What is the origin of the Christmas tree ?
+Date: Sep 08, 2024 || User: 91835 || Instance: What 's the favorite food of dragonflies ?
+Date: Jun 12, 2025 || User: 85897 || Instance: Italy is the largest producer of what ?
+Date: Sep 08, 2022 || User: 14621 || Instance: What is the length of border between the Ukraine and Russia ?
+Date: Jun 10, 2022 || User: 40243 || Instance: What was John F. Kennedy 's 1960 campaign song ?
+Date: Oct 26, 2023 || User: 88768 || Instance: Why do people shake hands to show friendliness ?
+Date: Aug 18, 2023 || User: 15620 || Instance: What kind of books does Fodor 's publish ?
+Date: Feb 17, 2022 || User: 68834 || Instance: What was the monster in Spielberg 's film `` Jaws '' ?
+Date: Aug 14, 2022 || User: 34414 || Instance: What is SVHS ?
+Date: Jan 03, 2023 || User: 56559 || Instance: What famed wall supports the Badaling turret ?
+Date: Mar 11, 2023 || User: 15413 || Instance: What Jules Verne novel features scientists held captive in the submarine Nautilus ?
+Date: Mar 30, 2024 || User: 98423 || Instance: What was Mel Gibson 's first movie ?
+Date: Apr 14, 2022 || User: 36043 || Instance: What is the virus HIV ?
+Date: Jul 11, 2022 || User: 35398 || Instance: Name the creator of `` The Muppets '' .
+Date: Nov 23, 2022 || User: 34487 || Instance: What is the nickname of Pennsylvania ?
+Date: Feb 19, 2023 || User: 33037 || Instance: What is the fastest computer ?
+Date: Apr 22, 2024 || User: 85897 || Instance: What garment was named for Bradley , Voorhees and Day ?
+Date: Aug 07, 2022 || User: 68622 || Instance: How many members of a family could be drafted in the U.S. military during World War II ?
+Date: Feb 09, 2024 || User: 72675 || Instance: What Scottish poet penned To a Mouse and To a Louse ?
+Date: Dec 10, 2024 || User: 17875 || Instance: What was `` America 's recessed-filter cigarette '' ?
+Date: Mar 14, 2024 || User: 66211 || Instance: How much did Mercury spend on advertising in 1993 ?
+Date: Jun 22, 2023 || User: 29275 || Instance: What nation boarders Mozambique ?
+Date: Jun 19, 2023 || User: 68834 || Instance: What book is the follow-up to Future Shock ?
+Date: Aug 30, 2022 || User: 90384 || Instance: What is the oldest website on the Internet ?
+Date: Mar 16, 2022 || User: 99492 || Instance: What does Knight Ridder publish ?
+Date: Sep 16, 2023 || User: 29911 || Instance: What causes someone to be ticklish ?
+Date: Feb 08, 2023 || User: 10341 || Instance: What shampoo prevents eczema , seborrhea , and psoriasis ?
+Date: May 11, 2025 || User: 12695 || Instance: What is it like to experience a near death episode ?
+Date: Mar 26, 2025 || User: 21363 || Instance: How much Coca Cola is drunk in one day in the world ?
+Date: Nov 25, 2024 || User: 89660 || Instance: What 's the staff of life mentioned in the Lord 's Prayer ?
+Date: Oct 06, 2023 || User: 39232 || Instance: What are the biggest Indian airports ?
+Date: Mar 10, 2022 || User: 63819 || Instance: What was the Vietnam War ?
+Date: Sep 18, 2023 || User: 70341 || Instance: How do you say I love you in Spanish ?
+Date: Jan 15, 2023 || User: 58321 || Instance: What Dickens novel has David carrying the message `` Barkis is willin '' to Peggy ?
+Date: Apr 04, 2022 || User: 62717 || Instance: What will the weather be today ?
+Date: Oct 19, 2024 || User: 36043 || Instance: Who was the captain of the tanker , Exxon Valdez , involved in the oil spill in Prince William Sound , Alaska , 1989 ?
+Date: Mar 29, 2025 || User: 19986 || Instance: What U.S. Air Force general led the first bombing raid over Tokyo ?
+Date: Nov 02, 2022 || User: 83084 || Instance: Who was the first black woman to star in the Folies Bergeres ?
+Date: Sep 18, 2023 || User: 90384 || Instance: Who invented the radio ?
+Date: Aug 24, 2023 || User: 90704 || Instance: What is the difference between fatalism and determinism ?
+Date: Apr 24, 2024 || User: 98837 || Instance: What is the name of the country which Hitler ruled ?
+Date: Sep 30, 2024 || User: 49124 || Instance: What longtime game show host dropped dead while jogging in Central Park in 1984 ?
+Date: Mar 13, 2025 || User: 74751 || Instance: What condiment do the Dutch dip their French fries in ?
+Date: Jan 22, 2023 || User: 12695 || Instance: What beer advertised that it had `` three rings '' ?
+Date: Mar 09, 2025 || User: 86355 || Instance: What 's the middle name of movie producer Joseph E. Levine ?
+Date: Feb 16, 2023 || User: 95504 || Instance: How does one correctly pronounce ` qigong ' ?
+Date: May 09, 2025 || User: 55423 || Instance: What is a leper ?
+Date: Jun 26, 2023 || User: 89660 || Instance: Who is the mathematician that won the Noble Prize for Literature in 1950 ?
+Date: Apr 05, 2022 || User: 43865 || Instance: What is the name of a language spoken by the Sioux ?
+Date: May 05, 2024 || User: 69880 || Instance: Where is Mozambique located ?
+Date: Nov 10, 2022 || User: 31643 || Instance: What is RCD ?
+Date: Dec 18, 2024 || User: 17875 || Instance: What famous male vocalist has the same name as the composer of the opera Hansel and Gretel ?
+Date: Apr 12, 2023 || User: 41747 || Instance: Who claimed he killed 4 , 280 buffalo as food for the crew building the Kansas Pacific Railway ?
+Date: Jun 17, 2025 || User: 56211 || Instance: Who did Sonny Liston succeed as world heavyweight boxing champion ?
+Date: Feb 09, 2024 || User: 36501 || Instance: What countries earn the most from tourism ?
+Date: Oct 14, 2023 || User: 56211 || Instance: How did names come about ?
+Date: Nov 17, 2024 || User: 74195 || Instance: Who are the nomadic hunting and gathering tribe of the Kalahari Desert in Africa ?
+Date: Jun 13, 2025 || User: 55950 || Instance: What European city do Nicois live in ?
+Date: Aug 22, 2022 || User: 28513 || Instance: What does LOL mean ?
+Date: Oct 18, 2023 || User: 24231 || Instance: What are Cobol , Fortran , and Pascal ?
+Date: Oct 17, 2024 || User: 83107 || Instance: What do the figures represent on the Easter Island ?
+Date: May 31, 2025 || User: 68834 || Instance: What was the date of CNN 's first broadcast ?
+Date: Aug 29, 2022 || User: 98423 || Instance: Which infectious disease kills the most people worldwide ?
+Date: Jun 13, 2024 || User: 66765 || Instance: What do you get by adding Lactobacillus bulgaricus to milk ?
+Date: Feb 11, 2024 || User: 43865 || Instance: What U.S. state records the least rainfall ?
+Date: Aug 01, 2022 || User: 29776 || Instance: What are the Arabic Numerals from 1 to 10 ?
+Date: Nov 06, 2022 || User: 89660 || Instance: How does James Bond like his martinis ?
+Date: Jul 31, 2022 || User: 68994 || Instance: Who is Pia Zadora 's millionaire husband and mentor ?
+Date: Apr 16, 2025 || User: 59257 || Instance: What is Dr. Seuss ' most popular book ?
+Date: Jun 18, 2024 || User: 65702 || Instance: Who wrote The Secret Life of Walter Mitty ?
+Date: Oct 03, 2022 || User: 15917 || Instance: Which is a real berry : blackberry , cranberry , raspberry , strawberry ?
+Date: Jul 15, 2023 || User: 52492 || Instance: What 's the capital of Taiwan ?
+Date: Jul 05, 2023 || User: 97045 || Instance: What is an auto-commentary ?
+Date: Aug 23, 2022 || User: 95383 || Instance: What are snowballs to a hot-rodder ?
+Date: Jan 27, 2023 || User: 33599 || Instance: What is the purpose of a car bra ?
+Date: Mar 29, 2024 || User: 56211 || Instance: Where is Procter & Gamble headquartered in the U.S. ?
+Date: Apr 07, 2024 || User: 74906 || Instance: What was the species of Winnie the Pooh ?
+Date: Sep 23, 2022 || User: 19514 || Instance: What does the E stand for in the equation E=mc2 ?
+Date: Mar 31, 2023 || User: 56559 || Instance: How is the new Ford Econoline van F25 V1 engine ?
+Date: Dec 26, 2023 || User: 27800 || Instance: What organ contains the islands of Langerhans ?
+Date: Jun 09, 2025 || User: 79514 || Instance: What is her profession ?
+Date: Apr 05, 2025 || User: 52930 || Instance: Who did Sara Jane Moore try to assassinate ?
+Date: May 14, 2023 || User: 83084 || Instance: What city 's the kickoff point for climbs of Mount Everest ?
+Date: May 06, 2024 || User: 53373 || Instance: What does the abbreviation OAS stand for ?
+Date: Jun 14, 2022 || User: 99117 || Instance: Which two states enclose Chesapeake Bay ?
+Date: Dec 29, 2024 || User: 70745 || Instance: How is silk screening done ?
+Date: Aug 08, 2022 || User: 61141 || Instance: Name the Islamic counterpart to the Red Cross .
+Date: Feb 02, 2023 || User: 91975 || Instance: Where is it planned to berth the merchant ship , Lane Victory , which Merchant Marine veterans are converting into a floating museum ?
+Date: Dec 07, 2022 || User: 71092 || Instance: What term does a Czech use to describe a Pole ?
+Date: Aug 03, 2022 || User: 40243 || Instance: Who painted `` Soft Self-Portrait with Grilled Bacon '' ?
+Date: Nov 29, 2024 || User: 95504 || Instance: What is the difference between microprocessors & microcontrollers ?
+Date: Aug 22, 2022 || User: 86585 || Instance: Who killed Martin Luther King ?
+Date: Jul 15, 2022 || User: 74906 || Instance: How do I find a web address for a company ?
+Date: Sep 25, 2022 || User: 53022 || Instance: What 1915 film was the first to gross $5 million ?
+Date: Feb 28, 2023 || User: 43137 || Instance: What is the cost of the drugs used in tuberculosis treatments ?
+Date: Mar 08, 2025 || User: 52930 || Instance: What steps can be taken to prevent diabetes ?
+Date: Nov 09, 2023 || User: 83439 || Instance: Who does Shakespeare 's Antonio borrow 3 , 0 ducats from ?
+Date: Feb 05, 2023 || User: 32112 || Instance: What cereal goes `` snap , crackle , pop '' ?
+Date: Oct 07, 2023 || User: 43916 || Instance: How many rows of whiskers does a cat have ?
+Date: Mar 06, 2025 || User: 52492 || Instance: What king boycotted Prince Charles 's wedding ?
+Date: Jun 25, 2023 || User: 91975 || Instance: What does the abbreviation cwt. ?
+Date: Jun 12, 2024 || User: 15620 || Instance: Boxing Day is celebrated on what date ?
+Date: Jul 20, 2023 || User: 73873 || Instance: Who is the director of intergovernmental affairs for the San Diego county ?
+Date: Sep 10, 2024 || User: 19439 || Instance: What are a baseball team 's firemen ?
+Date: May 13, 2023 || User: 42442 || Instance: Where does most of the marijuana entering the United States come from ?
+Date: Oct 13, 2024 || User: 75482 || Instance: What is a hyperlink ?
+Date: Jun 19, 2023 || User: 34475 || Instance: Which type of submarine was bought recently by South Korea ?
+Date: Dec 21, 2022 || User: 28623 || Instance: Where is Basque country located ?
+Date: Mar 21, 2024 || User: 67173 || Instance: Which Beatles disc cover honors the Rolling Stones ?
+Date: Apr 17, 2025 || User: 76648 || Instance: Where can I find a case on Americans with Disabilities Act of 199 ?
+Date: Jan 28, 2024 || User: 63819 || Instance: Which medium is Hamblen the first singing cowboy in ?
+Date: Oct 17, 2024 || User: 15620 || Instance: What is deconstructionism ?
+Date: Oct 12, 2023 || User: 98423 || Instance: What natural attractions draw the most visitors in the United States ?
+Date: Aug 24, 2022 || User: 52492 || Instance: What species is a colt ?
+Date: Mar 23, 2025 || User: 34475 || Instance: What is a Chinese `` spouting '' bowl ?
+Date: Jun 25, 2023 || User: 41747 || Instance: What organic fuel do bog-dwellers use a `` slane '' to cut ?
+Date: Aug 10, 2024 || User: 98170 || Instance: What 's the Hungarian word for pepper ?
+Date: Nov 03, 2023 || User: 78669 || Instance: Who was the bandleader mentor of Ella Fitzgerald with whom she cowrote `` A_Tisket , A-Tasket '' ?
+Date: Apr 02, 2024 || User: 29776 || Instance: What does snafu stand for ?
+Date: Apr 12, 2025 || User: 66765 || Instance: What was the Long March in China ?
+Date: Feb 17, 2023 || User: 53460 || Instance: What is the history of Spartacus , the Roman slave and gladiator ?
+Date: Jul 13, 2024 || User: 34487 || Instance: What does EKG stand for ?
+Date: Mar 26, 2024 || User: 13344 || Instance: What mythical figure carries an hourglass and a scythe ?
+Date: May 23, 2022 || User: 21917 || Instance: What 's the oldest capital city in the Americas ?
+Date: Aug 09, 2022 || User: 86585 || Instance: Name the two youngsters saved by the animated Moby Dick .
+Date: Jul 27, 2024 || User: 99279 || Instance: Name the ship Beany and Cecil sailed .
+Date: Nov 09, 2024 || User: 24231 || Instance: What is the abbreviated expression for the National Bureau of Investigation ?
+Date: Feb 17, 2025 || User: 70745 || Instance: What 2th-century fictional character attends Pencey Prep School ?
+Date: Sep 28, 2023 || User: 68994 || Instance: Who wrote `` The Scarlet Letter '' ?
+Date: May 13, 2023 || User: 10341 || Instance: What state on the Gulf of Mexico has its lowest point five feet below sea level ?
+Date: Jan 05, 2024 || User: 29016 || Instance: How do you exterminate bees that are in the walls of your home ? Will bee eggs remain over winter ?
+Date: Jan 28, 2023 || User: 73294 || Instance: Why do airliners crash vs. gliding down ?
+Date: Aug 25, 2023 || User: 72675 || Instance: What is witch hazel ?
+Date: Feb 17, 2023 || User: 79751 || Instance: What U.S. city is known as The Rubber Capital of the World ?
+Date: Jun 11, 2025 || User: 29776 || Instance: What does Tiffany mean ?
+Date: Nov 23, 2023 || User: 28618 || Instance: How many people died on D-Day ?
+Date: Jul 30, 2022 || User: 90704 || Instance: What city 's theatrical district has been dubbed The Roaring Forties ?
+Date: Nov 01, 2022 || User: 19986 || Instance: How long is the world 's largest ship , in meters ?
+Date: Jul 30, 2022 || User: 40243 || Instance: What Honeymooners actress did Television magazine name as 1953 's most promising star ?
+Date: Feb 27, 2025 || User: 81764 || Instance: What is the name of the president of Garmat U.S.A ?
+Date: May 18, 2025 || User: 66268 || Instance: What do chefs call The Master Spice ?
+Date: Apr 08, 2024 || User: 29776 || Instance: What is Franz Kafka 's short story `` A Country Doctor '' trying to tell us ?
+Date: Dec 27, 2022 || User: 33814 || Instance: What does Lloyd 's Lutine Bell announce ?
+Date: Jul 21, 2024 || User: 73294 || Instance: How do you clean an LCD monitor screen ?
+Date: Jun 01, 2022 || User: 14602 || Instance: What does the channel ESPN stand for ?
+Date: Aug 26, 2022 || User: 71573 || Instance: What is the cause of endangered species ?
+Date: Jan 14, 2025 || User: 86557 || Instance: What is the name of the Michelangelo painting that shows two hands with fingers touching ?
+Date: May 30, 2024 || User: 69837 || Instance: How do I impress a guy ?
+Date: Jun 16, 2023 || User: 52930 || Instance: How many minutes were there on the original GE College Bowl clock ?
+Date: Jul 18, 2024 || User: 61223 || Instance: What is Boston Kreme ?
+Date: Sep 02, 2024 || User: 88499 || Instance: What kind of animal is Babar ?
+Date: Jan 19, 2024 || User: 54517 || Instance: What 's the difference and advantages of selecting a Super VHS VCR over plain VHS model ?
+Date: May 23, 2022 || User: 50223 || Instance: What 's an auberge in France ?
+Date: Dec 05, 2024 || User: 22117 || Instance: Who was the first woman golfer to earn a million ?
+Date: Feb 28, 2025 || User: 78669 || Instance: What author did photographer Yousuf Karsh call `` the shiest man I ever met '' ?
+Date: Dec 28, 2024 || User: 68834 || Instance: What city is terrorized by Dracula in The Night Stalker ?
+Date: Jun 13, 2024 || User: 57432 || Instance: What do the red-and-white stripes on a barbershop pole stand for ?
+Date: May 19, 2024 || User: 46204 || Instance: To what does Microsoft 's Windows 3 owe its success ?
+Date: Oct 30, 2022 || User: 95329 || Instance: What did Richard Feynman say upon hearing he would receive the Nobel Prize in Physics ?
+Date: Oct 24, 2022 || User: 91835 || Instance: When was the first Barbie produced ?
+Date: May 31, 2024 || User: 32112 || Instance: What flower did Vincent Van Gogh paint ?
+Date: Nov 26, 2022 || User: 99279 || Instance: What is the Islamic counterpart to the Red Cross ?
+Date: Apr 21, 2025 || User: 26412 || Instance: How much is Clara Peller being paid by Wendy 's to say `` Where 's the beef '' ?
+Date: May 17, 2023 || User: 86557 || Instance: What is the difference between ninjitsu and kung fu ?
+Date: Nov 22, 2024 || User: 45218 || Instance: What comedienne calls her sister-in-law Captain Bligh and her mother-in-law Moby Dick ?
+Date: Sep 25, 2024 || User: 10341 || Instance: What is the origin of the candy cane at Christmas ?
+Date: May 01, 2022 || User: 21917 || Instance: What does Ms. , Miss , and Mrs. stand for ?
+Date: Feb 06, 2024 || User: 19439 || Instance: What 's the fifth-largest country in the world ?
+Date: May 23, 2022 || User: 54125 || Instance: What is the secret of the universe ?
+Date: Jan 03, 2025 || User: 14621 || Instance: What city did the Mormons establish as their headquarters in 1847 ?
+Date: Sep 28, 2024 || User: 53460 || Instance: What were the first three cities to have a population of more than a million ?
+Date: Oct 12, 2024 || User: 14675 || Instance: What is the normal resting heart rate of a healthy adult ?
+Date: Jan 12, 2025 || User: 46645 || Instance: What animal was the heat-seeking missile called the Sidewinder named for ?
+Date: Apr 13, 2025 || User: 24343 || Instance: Who was the first woman in space ?
+Date: May 16, 2022 || User: 98013 || Instance: What is LMDS ?
+Date: Jun 11, 2022 || User: 53460 || Instance: What did Warlock wear on his forehead in Marvel comics ?
+Date: Mar 28, 2024 || User: 88499 || Instance: What playing card symbolizes death ?
+Date: Oct 01, 2022 || User: 36043 || Instance: Shea and Gould closed their Los Angeles office for what reason ?
+Date: May 11, 2024 || User: 58321 || Instance: What are the 7 Wonders of the World ?
+Date: Oct 31, 2024 || User: 33472 || Instance: What is the meaning of caliente , in English , ?
+Date: Feb 23, 2025 || User: 31643 || Instance: What chemicals are used in lethal injection ?
+Date: Nov 18, 2024 || User: 21917 || Instance: What 's the American dollar equivalent for 8 pounds in the U.K. ?
+Date: May 30, 2025 || User: 28513 || Instance: What effect does friction have on perpetual motion ?
+Date: May 23, 2022 || User: 72675 || Instance: What did the Chinese emperor present to the English soldier Gordon in recognition of his services in quelling rebellions ?
+Date: Feb 19, 2023 || User: 11784 || Instance: What is the hair style called that new military recruits receive ?
+Date: Mar 13, 2023 || User: 86355 || Instance: What two European countries entered the War of American Independence against the British ?
+Date: Feb 17, 2025 || User: 53265 || Instance: How did shipyard inspector James J. Kilroy designate equipment as being satisfactory ?
+Date: Aug 27, 2024 || User: 55423 || Instance: Saddam Hussein was compared to whom by President Bush ?
+Date: May 07, 2024 || User: 68930 || Instance: What 's the difference between carelessness and carefreeness ?
+Date: Jan 22, 2024 || User: 21708 || Instance: What 's the second-lightest element ?
+Date: Jul 04, 2024 || User: 20068 || Instance: How many people own pets ?
+Date: Nov 19, 2024 || User: 98837 || Instance: How do birds have sex ?
+Date: Nov 24, 2022 || User: 33599 || Instance: Who won the first World Series ?
+Date: Dec 16, 2022 || User: 40074 || Instance: How is an executioner determined ?
+Date: Dec 19, 2023 || User: 94607 || Instance: What does SIDS stand for ?
+Date: Mar 17, 2025 || User: 65702 || Instance: How do I find out the exact time of a sunset for a particular day ?
+Date: Nov 28, 2023 || User: 41747 || Instance: Which area produces the least acidic coffee ?
+Date: Apr 05, 2022 || User: 34086 || Instance: Why are the ears your center of balance ?
+Date: Jul 30, 2024 || User: 43142 || Instance: Name the person who burst through the screen in the Lite beer commercials .
+Date: Feb 07, 2023 || User: 70745 || Instance: What does NASA stand for ?
+Date: Nov 06, 2024 || User: 15620 || Instance: Where can I find correct tabs for Third Eye Blind songs ?
+Date: Nov 12, 2022 || User: 59542 || Instance: What nationality were the 123 people who died in the Black Hole of Calcutta ?
+Date: Feb 18, 2023 || User: 59911 || Instance: What drink is made up of rum , coconut milk and pineapple ?
+Date: Jan 18, 2024 || User: 36043 || Instance: What is the English meaning of caliente ?
+Date: Apr 05, 2024 || User: 15971 || Instance: What arch can you see from the Place de la Concorde ?
+Date: Sep 18, 2022 || User: 89725 || Instance: What author of the Days of Our Lives Cookbook signed on in 198 as Liz Chandler in TV 's Days of Our Lives ?
+Date: Jul 13, 2022 || User: 76839 || Instance: Who wrote the lyrics to Porgy and Bess ?
+Date: Mar 17, 2025 || User: 64791 || Instance: How many elevators do you ride to reach the top floor of the Empire State Building ?
+Date: Jun 02, 2023 || User: 14621 || Instance: What does a spermologer collect ?
+Date: Jul 03, 2024 || User: 66211 || Instance: Why do roosters sing at five o 'clock in the morning ?
+Date: Jun 28, 2023 || User: 30159 || Instance: What is the difference between a generator and an alternator ?
+Recall: the preceding lines contain 1585 general-knowledge questions, one per line. Each question has an answer that can be described as one of 6 categories: 'location', 'description and abstract concept', 'numeric value', 'abbreviation', 'human being', 'entity'.
+
+You will be asked to answer questions about the aggregate label statistics across all 1585 examples in this dataset. Do not try to guess, estimate, or approximate the result. Calculate the exact answer given these datapoints.
+

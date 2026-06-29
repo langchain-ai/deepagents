@@ -1,8 +1,0 @@
-{
-  "id": 10000024,
-  "context_window_id": 0,
-  "dataset": "trec_coarse",
-  "answer": "['description and abstract concept']",
-  "answer_type": "ANSWER_TYPE.LABEL",
-  "model": "oracle"
-}

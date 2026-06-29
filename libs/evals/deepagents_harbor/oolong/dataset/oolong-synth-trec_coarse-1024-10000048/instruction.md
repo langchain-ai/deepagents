@@ -1,3 +1,0 @@
-For the following question, only consider the subset of instances that are associated with user IDs 96342. Among instances associated with these users, which of the labels is the most common? Give your final answer in the form 'Label: answer' where answer is one of the labels: human being.
-
-The document you must analyze is at `/app/context.txt`. Read it in full, determine the answer, then write **only** your final answer to `/app/answer.txt` (create the file if it does not exist). Answer in the exact format the question requests.

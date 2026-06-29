@@ -5943,7 +5943,13 @@ class DeepAgentsApp(App):
         Returns:
             `True` when a proposal worker was cancelled.
         """
-        if self._goal_proposal_worker is None:
+        worker = self._goal_proposal_worker
+        if worker is None:
+            return False
+        from textual.worker import WorkerState
+
+        if worker.state not in {WorkerState.PENDING, WorkerState.RUNNING}:
+            self._goal_proposal_worker = None
             return False
         self._cancel_goal_proposal_worker()
         self.call_after_refresh(
@@ -7730,6 +7736,7 @@ class DeepAgentsApp(App):
         self._restore_goal_rubric_state(payload)
         if one_shot_rubric_consumed:
             await self._persist_goal_rubric_state()
+        await self._remount_pending_goal_rubric_review()
         self._last_consumed_next_rubric = None
         self._last_consumed_next_previous_rubric = None
 
@@ -7906,6 +7913,19 @@ class DeepAgentsApp(App):
         self._cancel_goal_review_task()
         result_future = await self._request_goal_review(objective, rubric)
         self.call_after_refresh(self._schedule_goal_review_task, result_future)
+
+    async def _remount_pending_goal_rubric_review(self) -> None:
+        """Restore an actionable review prompt for a persisted pending goal."""
+        if not self._pending_goal_objective or not self._pending_goal_rubric:
+            return
+        task = self._goal_review_task
+        if self._pending_goal_review_widget is not None:
+            return
+        if task is not None and not task.done():
+            return
+        if task is not None:
+            self._goal_review_task = None
+        await self._start_pending_goal_rubric_review()
 
     def _schedule_goal_review_task(
         self,
@@ -9689,6 +9709,7 @@ class DeepAgentsApp(App):
             # persisted spec) could leave it armed for a later in-session
             # `/threads` switch.
             await self._adopt_resumed_model_if_needed(model_spec=payload.model_spec)
+            await self._remount_pending_goal_rubric_review()
 
             if not payload.messages:
                 return

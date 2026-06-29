@@ -4841,6 +4841,33 @@ class TestGoalCommand:
                 assert app._pending_goal_rubric == "- replacement criteria"
                 assert app._pending_goal_review_widget is not None
 
+    async def test_escape_ignores_completed_goal_proposal_worker(self) -> None:
+        """Esc on a visible review should ignore stale completed workers."""
+        from textual.worker import WorkerState
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_goal_objective = "add refresh tokens"
+            app._pending_goal_rubric = "- tests pass"
+            await app._start_pending_goal_rubric_review()
+            await pilot.pause()
+
+            cancel = MagicMock()
+            worker = SimpleNamespace(state=WorkerState.SUCCESS, cancel=cancel)
+            app._goal_proposal_worker = cast("Any", worker)
+
+            app.action_interrupt()
+            await pilot.pause()
+            await pilot.pause()
+
+            cancel.assert_not_called()
+            assert app._goal_proposal_worker is None
+            assert app._pending_goal_objective is None
+            assert app._pending_goal_rubric is None
+            assert app._pending_goal_review_widget is None
+            assert not any(app.query(GoalReviewMenu))
+
     async def test_goal_accept_sets_sticky_rubric(self) -> None:
         """Accepting a proposed goal should set the rubric and start work."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -5041,6 +5068,42 @@ class TestGoalCommand:
             assert app._pending_goal_rubric == "- draft criteria"
             assert app._status_bar is not None
             assert app._status_bar.rubric_label == "✓ Rubric set"
+
+    async def test_load_thread_history_remounts_pending_goal_review(self) -> None:
+        """Resumed pending goal proposals should be actionable in the prompt."""
+        app = DeepAgentsApp(agent=MagicMock())
+        handle = AsyncMock()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            payload = _ThreadHistoryPayload(
+                [],
+                0,
+                "",
+                pending_goal_objective="add refresh tokens",
+                pending_goal_rubric="- tests pass",
+            )
+
+            with patch.object(app, "_handle_user_message", handle):
+                await app._load_thread_history(
+                    thread_id="thread-1",
+                    preloaded_payload=payload,
+                )
+                await pilot.pause()
+
+                menu = app.query_one(GoalReviewMenu)
+                assert app._pending_goal_review_widget is menu
+                assert app._goal_review_task is not None
+
+                menu.action_accept()
+                await pilot.pause()
+                await pilot.pause()
+
+            assert app._active_goal == "add refresh tokens"
+            assert app._active_rubric == "- tests pass"
+            assert app._pending_goal_objective is None
+            assert app._pending_goal_rubric is None
+            assert app._pending_goal_review_widget is None
+            handle.assert_awaited_once_with("add refresh tokens")
 
     async def test_restore_uses_sticky_rubric_over_public_rubric(self) -> None:
         """Graph input `rubric` should not overwrite explicit sticky state."""

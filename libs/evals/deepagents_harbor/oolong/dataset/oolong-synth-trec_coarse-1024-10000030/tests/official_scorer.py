@@ -25,10 +25,9 @@ from typing import Any
 
 import dateutil.parser
 
-# ruff: noqa: BLE001, DTZ007, PLC0207
-# Vendored verbatim from upstream (MIT). Lint disabled to preserve the official
-# code's exact behavior — broad excepts, magic numbers, naive datetime, and
-# split() semantics are all intentional and must not be "fixed".
+# Vendored verbatim from upstream (MIT) — excluded from ruff + ty in pyproject.toml
+# to preserve the official code's exact behavior (broad excepts, magic numbers,
+# naive datetime, split() semantics, loose typing). Do not "fix" these.
 
 
 def synth_attempt_answer_parse(answer: str) -> tuple[str, str]:

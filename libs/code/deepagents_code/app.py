@@ -1984,6 +1984,9 @@ class DeepAgentsApp(App):
         self._last_consumed_next_rubric: str | None = None
         """One-shot rubric value consumed by the latest submitted turn."""
 
+        self._last_consumed_next_previous_rubric: str | None = None
+        """Sticky rubric value that was active before the latest one-shot turn."""
+
         self._rubric_model: str | None = (server_kwargs or {}).get("rubric_model")
         """Optional grader model spec for rubric evaluation."""
 
@@ -7556,6 +7559,7 @@ class DeepAgentsApp(App):
         self._active_rubric = None
         self._next_rubric = None
         self._last_consumed_next_rubric = None
+        self._last_consumed_next_previous_rubric = None
         self._reset_goal_tracking()
 
     def _restore_goal_rubric_state(self, payload: _ThreadHistoryPayload) -> None:
@@ -7578,12 +7582,14 @@ class DeepAgentsApp(App):
         """Refresh TUI-owned goal/rubric metadata from the active checkpoint."""
         if not self._lc_thread_id:
             self._last_consumed_next_rubric = None
+            self._last_consumed_next_previous_rubric = None
             return
         try:
             state_values = await self._get_thread_state_values(self._lc_thread_id)
         except Exception:
             logger.debug("Failed to refresh goal/rubric state", exc_info=True)
             self._last_consumed_next_rubric = None
+            self._last_consumed_next_previous_rubric = None
             return
         rubric = state_values.get("rubric")
         sticky_rubric_recorded = "_sticky_rubric" in state_values
@@ -7631,6 +7637,7 @@ class DeepAgentsApp(App):
             )
         ):
             self._last_consumed_next_rubric = None
+            self._last_consumed_next_previous_rubric = None
             return
         if (
             not payload.sticky_rubric_recorded
@@ -7640,7 +7647,7 @@ class DeepAgentsApp(App):
                 payload.messages,
                 payload.context_tokens,
                 payload.model_spec,
-                rubric=None,
+                rubric=self._last_consumed_next_previous_rubric,
                 sticky_rubric=payload.sticky_rubric,
                 sticky_rubric_recorded=payload.sticky_rubric_recorded,
                 goal_objective=payload.goal_objective,
@@ -7651,6 +7658,7 @@ class DeepAgentsApp(App):
                 pending_goal_rubric=payload.pending_goal_rubric,
             )
         self._last_consumed_next_rubric = None
+        self._last_consumed_next_previous_rubric = None
         self._restore_goal_rubric_state(payload)
 
     async def _handle_goal_command(self, command: str) -> None:
@@ -7734,13 +7742,15 @@ class DeepAgentsApp(App):
         if not objective.strip():
             await self._mount_message(AppMessage("Usage: /goal <objective>"))
             return
-        await self._mount_message(AppMessage("Drafting acceptance criteria for goal…"))
+        await self._set_spinner("Drafting acceptance criteria")
         try:
             rubric = await asyncio.to_thread(self._generate_goal_rubric, objective)
         except Exception as exc:
             logger.exception("Failed to propose rubric for goal")
             await self._mount_message(ErrorMessage(_build_model_switch_error_body(exc)))
             return
+        finally:
+            await self._set_spinner(None)
         rubric = rubric.strip()
         if not rubric:
             await self._mount_message(
@@ -8981,6 +8991,7 @@ class DeepAgentsApp(App):
         rubric = self._next_rubric or self._active_rubric
         if self._next_rubric is not None:
             self._last_consumed_next_rubric = self._next_rubric
+            self._last_consumed_next_previous_rubric = self._active_rubric
             await self._persist_goal_rubric_state()
             self._next_rubric = None
             self._sync_status_rubric()

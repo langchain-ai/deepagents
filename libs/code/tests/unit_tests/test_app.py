@@ -4659,20 +4659,53 @@ class TestGoalCommand:
                     return_value="- tests pass\n- no unrelated files",
                 ),
                 patch.object(app, "_request_goal_review", request),
+                patch.object(
+                    app, "_set_spinner", new_callable=AsyncMock
+                ) as set_spinner,
             ):
                 await app._handle_command("/goal add refresh tokens")
                 await pilot.pause()
 
+            set_spinner.assert_has_awaits(
+                [call("Drafting acceptance criteria"), call(None)]
+            )
             request.assert_awaited_once_with(
                 "add refresh tokens", "- tests pass\n- no unrelated files"
             )
             assert app._pending_goal_objective is None
             assert app._pending_goal_rubric is None
             assert app._active_rubric is None
+            assert not any(
+                "Drafting acceptance criteria" in str(w._content)
+                for w in app.query(AppMessage)
+            )
             assert any(
                 "Review the proposal below" in str(w._content)
                 for w in app.query(AppMessage)
             )
+
+    async def test_goal_command_clears_spinner_when_drafting_fails(self) -> None:
+        """Drafting failures should dismiss the goal spinner."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch.object(
+                    app,
+                    "_generate_goal_rubric",
+                    side_effect=RuntimeError("model down"),
+                ),
+                patch.object(
+                    app, "_set_spinner", new_callable=AsyncMock
+                ) as set_spinner,
+            ):
+                await app._handle_command("/goal add refresh tokens")
+                await pilot.pause()
+
+            set_spinner.assert_has_awaits(
+                [call("Drafting acceptance criteria"), call(None)]
+            )
+            assert any("model down" in str(w._content) for w in app.query(ErrorMessage))
 
     async def test_goal_accept_sets_sticky_rubric(self) -> None:
         """Accepting a proposed goal should set the active rubric."""
@@ -4894,6 +4927,8 @@ class TestGoalCommand:
         app._goal_status_note = "note"
         app._active_rubric = "r"
         app._next_rubric = "x"
+        app._last_consumed_next_rubric = "x"
+        app._last_consumed_next_previous_rubric = "r"
         app._pending_goal_objective = "p"
         app._pending_goal_rubric = "pr"
 
@@ -4904,6 +4939,8 @@ class TestGoalCommand:
         assert app._goal_status_note is None
         assert app._active_rubric is None
         assert app._next_rubric is None
+        assert app._last_consumed_next_rubric is None
+        assert app._last_consumed_next_previous_rubric is None
         assert app._pending_goal_objective is None
         assert app._pending_goal_rubric is None
 
@@ -4978,6 +5015,7 @@ class TestRubricCommand:
             await pilot.pause()
             app._lc_thread_id = "thread-1"
             app._last_consumed_next_rubric = "update docs"
+            app._last_consumed_next_previous_rubric = None
             fetch = AsyncMock(
                 return_value={"rubric": "update docs", "_sticky_rubric": None}
             )
@@ -4989,8 +5027,29 @@ class TestRubricCommand:
             assert app._active_rubric is None
             assert app._next_rubric is None
             assert app._last_consumed_next_rubric is None
+            assert app._last_consumed_next_previous_rubric is None
             assert app._status_bar is not None
             assert app._status_bar.rubric_label == ""
+
+    async def test_rubric_next_legacy_sync_preserves_previous_sticky(self) -> None:
+        """If marker persistence failed, cleanup should keep prior sticky state."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._lc_thread_id = "thread-1"
+            app._active_rubric = "sticky"
+            app._last_consumed_next_rubric = "one shot"
+            app._last_consumed_next_previous_rubric = "sticky"
+            fetch = AsyncMock(return_value={"rubric": "one shot"})
+
+            with patch.object(app, "_get_thread_state_values", fetch):
+                await app._sync_goal_rubric_state_from_thread()
+
+            assert app._active_rubric == "sticky"
+            assert app._last_consumed_next_rubric is None
+            assert app._last_consumed_next_previous_rubric is None
+            assert app._status_bar is not None
+            assert app._status_bar.rubric_label == "✓ Rubric set"
 
     async def test_rubric_next_persists_sticky_marker_before_turn(self) -> None:
         """The pre-turn write distinguishes one-shot graph input from sticky state."""

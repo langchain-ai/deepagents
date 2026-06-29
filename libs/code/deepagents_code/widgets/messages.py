@@ -2656,9 +2656,18 @@ class ToolGroupSummary(Static):
         self._collapsed = not self._collapsed
 
     def watch__collapsed(self, _collapsed: bool) -> None:
-        """Re-render and re-apply member visibility when the state changes."""
-        self._apply_visibility()
-        self._render_line()
+        """Re-render and re-apply member visibility when the state changes.
+
+        Coalesced into one repaint so expanding a multi-tool group reveals every
+        row at once instead of bouncing the transcript per member.
+        """
+        if not self.is_attached:
+            self._apply_visibility()
+            self._render_line()
+            return
+        with self.app.batch_update():
+            self._apply_visibility()
+            self._render_line()
 
     def on_click(self, event: Click) -> None:
         """Toggle the group on click."""
@@ -2703,7 +2712,9 @@ class ToolGroupSummary(Static):
     def _tick(self) -> None:
         """Advance the spinner, eject failures, and flip to past tense when done."""
         self._spinner_pos += 1
+        before = len(self._tools)
         self._evict_failed()
+        evicted = len(self._tools) != before
         if self._collapsed:
             # Re-assert hidden state in case a member was shown externally
             # (e.g. ToolCallMessage.clear_awaiting_approval after HITL).
@@ -2716,7 +2727,11 @@ class ToolGroupSummary(Static):
         in_progress = self._in_progress()
         if not in_progress:
             self._stop_timer()
-        self._render_line(in_progress=in_progress)
+        # A bare spinner advance keeps the line height; only relayout when
+        # membership changed (eviction) or the line flips to past tense.
+        self._render_line(
+            in_progress=in_progress, layout=evicted or not in_progress
+        )
 
     def _apply_visibility(self) -> None:
         """Show or hide every folded widget per the collapsed state."""
@@ -2725,17 +2740,22 @@ class ToolGroupSummary(Static):
             if widget.is_attached and widget.display != visible:
                 widget.display = visible
 
-    def _render_line(self, *, in_progress: bool | None = None) -> None:
+    def _render_line(
+        self, *, in_progress: bool | None = None, layout: bool = True
+    ) -> None:
         """Refresh the summary line for the current tense and collapsed state.
 
         Args:
             in_progress: Pre-computed progress state to avoid re-scanning members
                 on the spinner hot path; recomputed when omitted.
+            layout: Whether the update may change the line's height. The spinner
+                hot path passes False so a bare glyph swap doesn't relayout the
+                whole transcript 10x/second.
         """
         if not self.is_attached:
             return
         if not self._tools:
-            self.update(Content(""))
+            self.update(Content(""), layout=layout)
             return
         glyphs = get_glyphs()
         if in_progress is None:
@@ -2747,7 +2767,10 @@ class ToolGroupSummary(Static):
                 )
             frames = glyphs.spinner_frames
             spinner = frames[self._spinner_pos % len(frames)]
-            self.update(Content(f"{spinner} {self._present_text}{glyphs.ellipsis}"))
+            self.update(
+                Content(f"{spinner} {self._present_text}{glyphs.ellipsis}"),
+                layout=layout,
+            )
         else:
             mark = (
                 glyphs.disclosure_collapsed
@@ -2758,7 +2781,7 @@ class ToolGroupSummary(Static):
                 self._past_text = summarize_tool_group(
                     [tool.tool_name for tool in self._tools], tense="past"
                 )
-            self.update(Content(f"{mark} {self._past_text}"))
+            self.update(Content(f"{mark} {self._past_text}"), layout=layout)
 
 
 class DiffMessage(Static):

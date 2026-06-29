@@ -10324,16 +10324,6 @@ class DeepAgentsApp(App):
             isinstance(widget, ToolCallMessage) and widget.tool_name != "ask_user"
         )
         is_diff = isinstance(widget, DiffMessage)
-        if not (is_groupable_tool or is_diff):
-            self._close_active_tool_group()
-            # Re-derive groups for any tools mounted outside this path (resumed
-            # history), which carry no live group.
-            await self._regroup_completed_tools()
-        elif is_groupable_tool and (
-            self._active_tool_group is None or not self._active_tool_group.is_attached
-        ):
-            self._active_tool_group = ToolGroupSummary(live=True)
-            await self._mount_before_queued(messages, self._active_tool_group)
 
         # Store message data for virtualization
         message_data = MessageData.from_widget(widget)
@@ -10341,22 +10331,43 @@ class DeepAgentsApp(App):
             # Keep the widget DOM id == store id so pruning can locate a
             # mounted widget (and its timestamp footer) from its MessageData.
             widget.id = message_data.id
-        self._message_store.append(message_data)
         footer = self._build_message_timestamp_footer(
             message_data, visible=self._message_timestamps_visible
         )
 
-        await self._mount_before_queued(messages, widget)
-        if footer is not None:
-            await self._mount_before_queued(messages, footer)
+        # Coalesce the whole mount-and-fold sequence into a single repaint.
+        # Otherwise mounting a groupable tool paints it at full height, then
+        # folding it into the group hides it on the next frame — bouncing the
+        # bottom-anchored transcript on every tool call.
+        with self.batch_update():
+            if not (is_groupable_tool or is_diff):
+                self._close_active_tool_group()
+                # Re-derive groups for any tools mounted outside this path
+                # (resumed history), which carry no live group.
+                await self._regroup_completed_tools()
+            elif is_groupable_tool and (
+                self._active_tool_group is None
+                or not self._active_tool_group.is_attached
+            ):
+                self._active_tool_group = ToolGroupSummary(live=True)
+                await self._mount_before_queued(messages, self._active_tool_group)
 
-        # Fold the freshly-mounted tool/diff into the open group so it hides
-        # immediately (must run after mount so display toggles take effect).
-        if self._active_tool_group is not None and self._active_tool_group.is_attached:
-            if is_groupable_tool:
-                self._active_tool_group.add_member(widget)
-            elif is_diff:
-                self._active_tool_group.add_collapsible(widget)
+            self._message_store.append(message_data)
+
+            await self._mount_before_queued(messages, widget)
+            if footer is not None:
+                await self._mount_before_queued(messages, footer)
+
+            # Fold the freshly-mounted tool/diff into the open group so it hides
+            # immediately (must run after mount so display toggles take effect).
+            if (
+                self._active_tool_group is not None
+                and self._active_tool_group.is_attached
+            ):
+                if is_groupable_tool:
+                    self._active_tool_group.add_member(widget)
+                elif is_diff:
+                    self._active_tool_group.add_collapsible(widget)
 
         # Prune old widgets if window exceeded
         await self._prune_old_messages()
@@ -10456,31 +10467,34 @@ class DeepAgentsApp(App):
             run_collapsible = []
             run_anchor = None
 
-        for child in list(messages.children):
-            if child.has_class(_MESSAGE_TIMESTAMP_FOOTER_CLASS):
-                continue  # footers are transparent to grouping
-            if isinstance(child, ToolCallMessage):
-                groupable = (
-                    child.tool_name != "ask_user"
-                    and child.is_success
-                    and not child.has_class("-grouped")
-                )
-                if not groupable:
-                    await flush()
-                    continue
-                if run_anchor is None:
-                    run_anchor = child
-                run_tools.append(child)
-                run_collapsible.append(child)
-                continue
-            if isinstance(child, DiffMessage):
-                # A diff belongs to the tool above it; never starts a run.
-                if run_anchor is not None:
+        # One repaint for the whole regroup — a single hydration or boundary
+        # pass can fold several runs and hide many rows at once.
+        with self.batch_update():
+            for child in list(messages.children):
+                if child.has_class(_MESSAGE_TIMESTAMP_FOOTER_CLASS):
+                    continue  # footers are transparent to grouping
+                if isinstance(child, ToolCallMessage):
+                    groupable = (
+                        child.tool_name != "ask_user"
+                        and child.is_success
+                        and not child.has_class("-grouped")
+                    )
+                    if not groupable:
+                        await flush()
+                        continue
+                    if run_anchor is None:
+                        run_anchor = child
+                    run_tools.append(child)
                     run_collapsible.append(child)
-                continue
-            # Assistant text, notices, an existing summary, etc. end the run.
+                    continue
+                if isinstance(child, DiffMessage):
+                    # A diff belongs to the tool above it; never starts a run.
+                    if run_anchor is not None:
+                        run_collapsible.append(child)
+                    continue
+                # Assistant text, notices, an existing summary, etc. end the run.
+                await flush()
             await flush()
-        await flush()
 
     @staticmethod
     async def _mount_tool_group_summary(

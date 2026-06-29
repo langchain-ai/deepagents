@@ -1114,7 +1114,13 @@ class _ThreadHistoryPayload:
     saved before model persistence existed."""
 
     rubric: str | None = None
-    """Persisted sticky rubric, if any."""
+    """Legacy persisted rubric or graph rubric input, if any."""
+
+    sticky_rubric: str | None = None
+    """Persisted sticky rubric, if explicitly recorded by the TUI."""
+
+    sticky_rubric_recorded: bool = False
+    """Whether the checkpoint explicitly recorded TUI sticky rubric state."""
 
     goal_objective: str | None = None
     """Persisted active goal objective, if any."""
@@ -1974,6 +1980,9 @@ class DeepAgentsApp(App):
 
         self._next_rubric: str | None = None
         """One-shot acceptance criteria applied to the next agent turn only."""
+
+        self._last_consumed_next_rubric: str | None = None
+        """One-shot rubric value consumed by the latest submitted turn."""
 
         self._rubric_model: str | None = (server_kwargs or {}).get("rubric_model")
         """Optional grader model spec for rubric evaluation."""
@@ -7470,6 +7479,7 @@ class DeepAgentsApp(App):
         """
         return {
             "rubric": self._active_rubric,
+            "_sticky_rubric": self._active_rubric,
             "_goal_objective": self._active_goal,
             "_goal_status": self._goal_status,
             "_goal_rubric": self._active_rubric if self._active_goal else None,
@@ -7545,6 +7555,7 @@ class DeepAgentsApp(App):
         """
         self._active_rubric = None
         self._next_rubric = None
+        self._last_consumed_next_rubric = None
         self._reset_goal_tracking()
 
     def _restore_goal_rubric_state(self, payload: _ThreadHistoryPayload) -> None:
@@ -7552,7 +7563,12 @@ class DeepAgentsApp(App):
         self._active_goal = payload.goal_objective
         self._goal_status = payload.goal_status
         self._goal_status_note = payload.goal_status_note
-        self._active_rubric = payload.goal_rubric or payload.rubric
+        if payload.goal_rubric:
+            self._active_rubric = payload.goal_rubric
+        elif payload.sticky_rubric_recorded:
+            self._active_rubric = payload.sticky_rubric
+        else:
+            self._active_rubric = payload.rubric
         self._pending_goal_objective = payload.pending_goal_objective
         self._pending_goal_rubric = payload.pending_goal_rubric
         self._next_rubric = None
@@ -7561,13 +7577,17 @@ class DeepAgentsApp(App):
     async def _sync_goal_rubric_state_from_thread(self) -> None:
         """Refresh TUI-owned goal/rubric metadata from the active checkpoint."""
         if not self._lc_thread_id:
+            self._last_consumed_next_rubric = None
             return
         try:
             state_values = await self._get_thread_state_values(self._lc_thread_id)
         except Exception:
             logger.debug("Failed to refresh goal/rubric state", exc_info=True)
+            self._last_consumed_next_rubric = None
             return
         rubric = state_values.get("rubric")
+        sticky_rubric_recorded = "_sticky_rubric" in state_values
+        sticky_rubric = state_values.get("_sticky_rubric")
         goal_objective = state_values.get("_goal_objective")
         goal_status = state_values.get("_goal_status")
         goal_rubric = state_values.get("_goal_rubric")
@@ -7579,6 +7599,8 @@ class DeepAgentsApp(App):
             0,
             "",
             rubric=rubric if isinstance(rubric, str) else None,
+            sticky_rubric=(sticky_rubric if isinstance(sticky_rubric, str) else None),
+            sticky_rubric_recorded=sticky_rubric_recorded,
             goal_objective=(
                 goal_objective if isinstance(goal_objective, str) else None
             ),
@@ -7599,6 +7621,7 @@ class DeepAgentsApp(App):
         if not any(
             (
                 payload.rubric,
+                payload.sticky_rubric_recorded,
                 payload.goal_objective,
                 payload.goal_status,
                 payload.goal_rubric,
@@ -7607,7 +7630,27 @@ class DeepAgentsApp(App):
                 payload.pending_goal_rubric,
             )
         ):
+            self._last_consumed_next_rubric = None
             return
+        if (
+            not payload.sticky_rubric_recorded
+            and payload.rubric == self._last_consumed_next_rubric
+        ):
+            payload = _ThreadHistoryPayload(
+                payload.messages,
+                payload.context_tokens,
+                payload.model_spec,
+                rubric=None,
+                sticky_rubric=payload.sticky_rubric,
+                sticky_rubric_recorded=payload.sticky_rubric_recorded,
+                goal_objective=payload.goal_objective,
+                goal_status=payload.goal_status,
+                goal_rubric=payload.goal_rubric,
+                goal_status_note=payload.goal_status_note,
+                pending_goal_objective=payload.pending_goal_objective,
+                pending_goal_rubric=payload.pending_goal_rubric,
+            )
+        self._last_consumed_next_rubric = None
         self._restore_goal_rubric_state(payload)
 
     async def _handle_goal_command(self, command: str) -> None:
@@ -8937,6 +8980,8 @@ class DeepAgentsApp(App):
 
         rubric = self._next_rubric or self._active_rubric
         if self._next_rubric is not None:
+            self._last_consumed_next_rubric = self._next_rubric
+            await self._persist_goal_rubric_state()
             self._next_rubric = None
             self._sync_status_rubric()
 
@@ -9250,6 +9295,7 @@ class DeepAgentsApp(App):
         raw_spec = state_values.get("_model_spec")
         model_spec = raw_spec if isinstance(raw_spec, str) else ""
         raw_rubric = state_values.get("rubric")
+        raw_sticky_rubric = state_values.get("_sticky_rubric")
         raw_goal_objective = state_values.get("_goal_objective")
         raw_goal_status = state_values.get("_goal_status")
         raw_goal_rubric = state_values.get("_goal_rubric")
@@ -9261,6 +9307,10 @@ class DeepAgentsApp(App):
             context_tokens,
             model_spec,
             rubric=raw_rubric if isinstance(raw_rubric, str) else None,
+            sticky_rubric=(
+                raw_sticky_rubric if isinstance(raw_sticky_rubric, str) else None
+            ),
+            sticky_rubric_recorded="_sticky_rubric" in state_values,
             goal_objective=(
                 raw_goal_objective if isinstance(raw_goal_objective, str) else None
             ),
@@ -9299,6 +9349,8 @@ class DeepAgentsApp(App):
             payload.context_tokens,
             payload.model_spec,
             rubric=payload.rubric,
+            sticky_rubric=payload.sticky_rubric,
+            sticky_rubric_recorded=payload.sticky_rubric_recorded,
             goal_objective=payload.goal_objective,
             goal_status=payload.goal_status,
             goal_rubric=payload.goal_rubric,

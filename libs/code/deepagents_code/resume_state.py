@@ -19,6 +19,9 @@ have no model-node write site:
 - `_goal_objective` / `_goal_status` / `_goal_rubric` / `_goal_status_note` —
     the accepted goal and its lifecycle status; `_goal_status`/`_goal_status_note`
     are also written from inside the graph by the agent's `update_goal` tool.
+- `_sticky_rubric` — the TUI-owned persistent rubric. This is separate from
+    the public `rubric` graph input so one-shot rubric turns can be checkpointed
+    without being restored as sticky state.
 - `_pending_goal_objective` / `_pending_goal_rubric` — a proposed goal awaiting
     user acceptance of its criteria.
 
@@ -80,6 +83,9 @@ class ResumeState(AgentState):
 
     _goal_status_note: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Evidence or blocker note recorded by `update_goal`."""
+
+    _sticky_rubric: Annotated[NotRequired[str | None], PrivateStateAttr]
+    """Persistent rubric owned by the TUI, distinct from graph input `rubric`."""
 
     _pending_goal_objective: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Goal objective awaiting acceptance of proposed criteria."""

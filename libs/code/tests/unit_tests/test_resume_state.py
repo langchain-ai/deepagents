@@ -28,6 +28,11 @@ class TestResumeState:
         """ResumeState declares the `_model_spec` channel."""
         assert "_model_spec" in ResumeState.__annotations__
 
+    def test_sticky_rubric_field_is_private(self):
+        """Persistent TUI rubrics must not leak through the public schema."""
+        annotation = ResumeState.__annotations__["_sticky_rubric"]
+        assert "PrivateStateAttr" in str(annotation)
+
     def test_middleware_exposes_state_schema(self):
         """ResumeStateMiddleware registers the correct state schema."""
         assert ResumeStateMiddleware.state_schema is ResumeState

@@ -4718,6 +4718,7 @@ class TestGoalCommand:
                 {"configurable": {"thread_id": "thread-1"}},
                 {
                     "rubric": "- tests pass",
+                    "_sticky_rubric": "- tests pass",
                     "_goal_objective": "add refresh tokens",
                     "_goal_status": "active",
                     "_goal_rubric": "- tests pass",
@@ -4762,6 +4763,8 @@ class TestGoalCommand:
                 goal_status="blocked",
                 goal_rubric="- tests pass",
                 rubric="- fallback rubric",
+                sticky_rubric="- sticky rubric",
+                sticky_rubric_recorded=True,
                 pending_goal_objective="draft goal",
                 pending_goal_rubric="- draft criteria",
             )
@@ -4773,6 +4776,39 @@ class TestGoalCommand:
             assert app._active_rubric == "- tests pass"
             assert app._pending_goal_objective == "draft goal"
             assert app._pending_goal_rubric == "- draft criteria"
+            assert app._status_bar is not None
+            assert app._status_bar.rubric_label == "✓ Rubric set"
+
+    async def test_restore_uses_sticky_rubric_over_public_rubric(self) -> None:
+        """Graph input `rubric` should not overwrite explicit sticky state."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            payload = _ThreadHistoryPayload(
+                [],
+                0,
+                "",
+                rubric="- one shot",
+                sticky_rubric="- sticky",
+                sticky_rubric_recorded=True,
+            )
+
+            app._restore_goal_rubric_state(payload)
+
+            assert app._active_rubric == "- sticky"
+            assert app._status_bar is not None
+            assert app._status_bar.rubric_label == "✓ Rubric set"
+
+    async def test_restore_legacy_rubric_without_sticky_marker(self) -> None:
+        """Old checkpoints should still restore `rubric` as sticky state."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            payload = _ThreadHistoryPayload([], 0, "", rubric="- legacy")
+
+            app._restore_goal_rubric_state(payload)
+
+            assert app._active_rubric == "- legacy"
             assert app._status_bar is not None
             assert app._status_bar.rubric_label == "✓ Rubric set"
 
@@ -4933,6 +4969,74 @@ class TestRubricCommand:
             assert mock_execute.await_args is not None
             assert mock_execute.await_args.kwargs["rubric"] == "update docs"
             assert app._next_rubric is None
+            assert app._status_bar.rubric_label == ""
+
+    async def test_rubric_next_sync_does_not_restore_as_sticky(self) -> None:
+        """A checkpointed one-shot rubric should not become sticky on cleanup."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._lc_thread_id = "thread-1"
+            app._last_consumed_next_rubric = "update docs"
+            fetch = AsyncMock(
+                return_value={"rubric": "update docs", "_sticky_rubric": None}
+            )
+
+            with patch.object(app, "_get_thread_state_values", fetch):
+                await app._sync_goal_rubric_state_from_thread()
+
+            fetch.assert_awaited_once_with("thread-1")
+            assert app._active_rubric is None
+            assert app._next_rubric is None
+            assert app._last_consumed_next_rubric is None
+            assert app._status_bar is not None
+            assert app._status_bar.rubric_label == ""
+
+    async def test_rubric_next_persists_sticky_marker_before_turn(self) -> None:
+        """The pre-turn write distinguishes one-shot graph input from sticky state."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            updater = SimpleNamespace(aupdate_state=AsyncMock())
+            app._agent = updater
+            app._lc_thread_id = "thread-1"
+            await app._handle_command("/rubric next update docs")
+            await pilot.pause()
+
+            with (
+                patch(
+                    "deepagents_code.textual_adapter.execute_task_textual",
+                    new_callable=AsyncMock,
+                ),
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    AsyncMock(
+                        return_value={
+                            "rubric": "update docs",
+                            "_sticky_rubric": None,
+                        }
+                    ),
+                ),
+            ):
+                await app._run_agent_task("hello")
+
+            updater.aupdate_state.assert_awaited_once_with(
+                {"configurable": {"thread_id": "thread-1"}},
+                {
+                    "rubric": None,
+                    "_sticky_rubric": None,
+                    "_goal_objective": None,
+                    "_goal_status": None,
+                    "_goal_rubric": None,
+                    "_goal_status_note": None,
+                    "_pending_goal_objective": None,
+                    "_pending_goal_rubric": None,
+                },
+            )
+            assert app._active_rubric is None
+            assert app._next_rubric is None
+            assert app._status_bar is not None
             assert app._status_bar.rubric_label == ""
 
     async def test_rubric_next_falls_back_to_sticky_label_after_turn(self) -> None:

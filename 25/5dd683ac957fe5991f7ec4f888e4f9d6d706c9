@@ -1,0 +1,19 @@
+libs/code/COMMANDS.md
+  s_0794854f38222d::t_ff706d848bc5a9 25,36
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "255dd683ac957fe5991f7ec4f888e4f9d6d706c9",
+  "prompts": {},
+  "sessions": {
+    "s_0794854f38222d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "be04b189-b490-4e14-b54e-e5719769e294",
+        "model": "unknown"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

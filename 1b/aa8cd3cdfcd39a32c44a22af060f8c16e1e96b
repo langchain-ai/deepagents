@@ -1,0 +1,18 @@
+libs/code/deepagents_code/agent.py
+  h_9f69767fa5fabf 1337,1339,1342
+libs/code/deepagents_code/_server_config.py
+  h_9f69767fa5fabf 245,252
+libs/code/deepagents_code/non_interactive.py
+  h_9f69767fa5fabf 785-787,1082
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "1baa8cd3cdfcd39a32c44a22af060f8c16e1e96b",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

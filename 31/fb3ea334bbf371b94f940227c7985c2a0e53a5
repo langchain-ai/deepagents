@@ -1,0 +1,19 @@
+libs/code/deepagents_code/goal_rubric.py
+  s_29fb3efbadac6b::t_4eddca67636804 1-70
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "31fb3ea334bbf371b94f940227c7985c2a0e53a5",
+  "prompts": {},
+  "sessions": {
+    "s_29fb3efbadac6b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a7c3e14d999f750a4",
+        "model": "unknown"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

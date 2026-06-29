@@ -9,6 +9,7 @@ import locale
 import logging
 import os
 import signal
+import threading
 import time
 import webbrowser
 from pathlib import Path
@@ -50,7 +51,9 @@ from deepagents_code.app import (
     _ThreadHistoryPayload,
 )
 from deepagents_code.event_bus import ExternalEvent
+from deepagents_code.widgets.ask_user import AskUserTextArea
 from deepagents_code.widgets.chat_input import ChatInput
+from deepagents_code.widgets.goal_review import GoalReviewMenu, GoalReviewResult
 from deepagents_code.widgets.launch_init import (
     LaunchDependenciesScreen,
     LaunchNameScreen,
@@ -4636,9 +4639,11 @@ class TestGoalCommand:
     """Tests for goal-backed rubric proposal workflow."""
 
     @staticmethod
-    def _goal_review_future(result: dict[str, Any]) -> asyncio.Future[dict[str, Any]]:
+    def _goal_review_future(
+        result: GoalReviewResult,
+    ) -> asyncio.Future[GoalReviewResult]:
         """Return a completed goal-review widget Future."""
-        future: asyncio.Future[dict[str, Any]] = (
+        future: asyncio.Future[GoalReviewResult] = (
             asyncio.get_running_loop().create_future()
         )
         future.set_result(result)
@@ -4665,6 +4670,7 @@ class TestGoalCommand:
             ):
                 await app._handle_command("/goal add refresh tokens")
                 await pilot.pause()
+                await pilot.pause()
 
             set_spinner.assert_has_awaits(
                 [call("Drafting acceptance criteria"), call(None)]
@@ -4683,6 +4689,41 @@ class TestGoalCommand:
                 "Review the proposal below" in str(w._content)
                 for w in app.query(AppMessage)
             )
+            assert not any(
+                "- tests pass" in str(w._content) for w in app.query(AppMessage)
+            )
+
+    async def test_goal_submit_keeps_review_input_responsive(self) -> None:
+        """Submitting `/goal` through chat should leave review keys responsive."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat = app.query_one(ChatInput)
+            chat.set_value_at_end("/goal add refresh tokens")
+            await pilot.pause()
+
+            with patch.object(
+                app,
+                "_generate_goal_rubric",
+                return_value="- tests pass\n- no unrelated files",
+            ):
+                await pilot.press("enter")
+                for _ in range(10):
+                    await pilot.pause()
+                    if app._pending_goal_review_widget is not None:
+                        break
+
+            menu = app.query_one(GoalReviewMenu)
+            assert app._pending_goal_review_widget is menu
+            assert app._goal_review_task is not None
+            assert app.focused is menu
+
+            await pilot.press("e")
+            await pilot.pause()
+
+            edit = menu.query_one(".goal-review-edit-input", AskUserTextArea)
+            assert edit.display is True
+            assert app.focused is edit
 
     async def test_goal_command_clears_spinner_when_drafting_fails(self) -> None:
         """Drafting failures should dismiss the goal spinner."""
@@ -4701,11 +4742,69 @@ class TestGoalCommand:
             ):
                 await app._handle_command("/goal add refresh tokens")
                 await pilot.pause()
+                await pilot.pause()
 
             set_spinner.assert_has_awaits(
                 [call("Drafting acceptance criteria"), call(None)]
             )
             assert any("model down" in str(w._content) for w in app.query(ErrorMessage))
+
+    async def test_escape_cancels_goal_criteria_generation(self) -> None:
+        """Esc while `/goal` is drafting criteria should cancel the proposal."""
+        app = DeepAgentsApp(agent=MagicMock())
+        started = threading.Event()
+        release = threading.Event()
+        calls: list[str] = []
+
+        def generate(
+            objective: str,
+            *,
+            feedback: str | None = None,  # noqa: ARG001
+            previous_criteria: str | None = None,  # noqa: ARG001
+        ) -> str:
+            calls.append(objective)
+            if objective == "add refresh tokens":
+                started.set()
+                release.wait(timeout=5)
+                return "- stale criteria"
+            return "- replacement criteria"
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(app, "_generate_goal_rubric", side_effect=generate):
+                await app._handle_command("/goal add refresh tokens")
+                for _ in range(10):
+                    await pilot.pause()
+                    if started.is_set():
+                        break
+                assert started.is_set()
+                assert app._goal_proposal_worker is not None
+
+                app.action_interrupt()
+                await pilot.pause()
+                await pilot.pause()
+                release.set()
+                await pilot.pause()
+
+                assert app._goal_proposal_worker is None
+                assert app._pending_goal_objective is None
+                assert app._pending_goal_rubric is None
+                assert app._pending_goal_review_widget is None
+                assert any(
+                    str(w._content) == "Goal proposal cancelled."
+                    for w in app.query(AppMessage)
+                )
+                assert not any(app.query(GoalReviewMenu))
+                await app._handle_command("/goal add audit logs")
+                for _ in range(10):
+                    await pilot.pause()
+                    if app._pending_goal_review_widget is not None:
+                        break
+
+                assert calls == ["add refresh tokens", "add audit logs"]
+                assert app._pending_goal_objective == "add audit logs"
+                assert app._pending_goal_rubric == "- replacement criteria"
+                assert app._pending_goal_review_widget is not None
 
     async def test_goal_accept_sets_sticky_rubric(self) -> None:
         """Accepting a proposed goal should set the active rubric."""
@@ -4720,6 +4819,7 @@ class TestGoalCommand:
 
             with patch.object(app, "_request_goal_review", request):
                 await app._review_pending_goal_rubric()
+            await pilot.pause()
             await pilot.pause()
 
             assert app._active_goal == "add refresh tokens"
@@ -4746,6 +4846,7 @@ class TestGoalCommand:
 
             with patch.object(app, "_request_goal_review", request):
                 await app._review_pending_goal_rubric()
+            await pilot.pause()
 
             updater.aupdate_state.assert_awaited_once_with(
                 {"configurable": {"thread_id": "thread-1"}},
@@ -4777,11 +4878,44 @@ class TestGoalCommand:
             with patch.object(app, "_request_goal_review", request):
                 await app._review_pending_goal_rubric()
             await pilot.pause()
+            await pilot.pause()
 
             assert app._active_goal == "add refresh tokens"
             assert app._active_rubric == "tests pass; docs updated"
             assert app._pending_goal_objective is None
             assert app._pending_goal_rubric is None
+
+    async def test_goal_review_reject_with_message_regenerates(self) -> None:
+        """Rejecting with feedback should draft a new criteria proposal."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_goal_objective = "add refresh tokens"
+            app._pending_goal_rubric = "- model draft"
+            future = self._goal_review_future(
+                {
+                    "type": "rejected",
+                    "message": "include docs and migration notes",
+                }
+            )
+
+            with patch.object(
+                app,
+                "_propose_goal_rubric",
+                new_callable=AsyncMock,
+            ) as propose:
+                await app._finish_pending_goal_rubric_review(future)
+                await pilot.pause()
+
+            propose.assert_awaited_once_with(
+                "add refresh tokens",
+                feedback="include docs and migration notes",
+                previous_criteria="- model draft",
+            )
+            assert app._active_goal is None
+            assert app._active_rubric is None
+            assert app._pending_goal_objective == "add refresh tokens"
+            assert app._pending_goal_rubric == "- model draft"
 
     async def test_restore_goal_rubric_state_updates_status(self) -> None:
         """Resumed thread metadata should restore TUI goal/rubric state."""
@@ -4911,11 +5045,37 @@ class TestGoalCommand:
             with patch.object(app, "_request_goal_review", request):
                 await app._review_pending_goal_rubric()
             await pilot.pause()
+            await pilot.pause()
 
             # State still applies in-session, but the user is told it was not
             # saved rather than seeing a plain "Goal accepted." banner.
             assert app._active_goal == "add refresh tokens"
             assert any(
+                "will not survive" in str(w._content) for w in app.query(ErrorMessage)
+            )
+
+    async def test_goal_cancel_omits_unsaved_thread_warning(self) -> None:
+        """Cancelling a goal proposal should not render the generic save warning."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = SimpleNamespace(
+                aupdate_state=AsyncMock(side_effect=RuntimeError("down"))
+            )
+            app._lc_thread_id = "thread-1"
+            app._pending_goal_objective = "add refresh tokens"
+            app._pending_goal_rubric = "- tests pass"
+            future = self._goal_review_future({"type": "cancelled"})
+
+            await app._finish_pending_goal_rubric_review(future)
+
+            assert app._pending_goal_objective is None
+            assert app._pending_goal_rubric is None
+            assert any(
+                str(w._content) == "Goal proposal cancelled."
+                for w in app.query(AppMessage)
+            )
+            assert not any(
                 "will not survive" in str(w._content) for w in app.query(ErrorMessage)
             )
 

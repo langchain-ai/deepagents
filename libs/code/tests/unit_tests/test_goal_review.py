@@ -6,6 +6,7 @@ import asyncio
 from pathlib import Path
 
 from textual.app import App, ComposeResult
+from textual.widgets import Markdown
 
 from deepagents_code.widgets.ask_user import AskUserTextArea
 from deepagents_code.widgets.goal_review import GoalReviewMenu, GoalReviewResult
@@ -20,6 +21,18 @@ class _GoalReviewTestApp(App[None]):
 
 class TestGoalReviewMenu:
     """Tests for goal criteria review interactions."""
+
+    async def test_markdown_omits_goal_text(self) -> None:
+        """The review widget should show criteria without restating the goal."""
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            markdown = app.query_one(".goal-review-markdown", Markdown)
+
+            assert "add refresh tokens" not in markdown.source
+            assert "- tests pass" in markdown.source
+            assert "Proposed criteria" in markdown.source
 
     async def test_accept_resolves_accepted(self) -> None:
         """Accept should resolve with the accepted result."""
@@ -61,6 +74,73 @@ class TestGoalReviewMenu:
                 "type": "edited",
                 "criteria": "- tests pass\n- docs updated",
             }
+
+    async def test_reject_with_message_submits_feedback(self) -> None:
+        """Reject with message should submit feedback for regeneration."""
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#goal-review", GoalReviewMenu)
+            future: asyncio.Future[GoalReviewResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            menu.action_reject_with_message()
+            text_input = menu.query_one(".goal-review-edit-input", AskUserTextArea)
+            assert text_input.display is True
+            assert text_input.text == ""
+
+            text_input.text = "include docs and migration notes"
+            menu._submit_rejection()
+
+            assert await future == {
+                "type": "rejected",
+                "message": "include docs and migration notes",
+            }
+
+    async def test_edit_mode_keeps_quick_keys_in_text_input(self) -> None:
+        """Quick-key characters should type text instead of triggering menu actions."""
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#goal-review", GoalReviewMenu)
+            future: asyncio.Future[GoalReviewResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            menu.action_edit()
+            text_input = menu.query_one(".goal-review-edit-input", AskUserTextArea)
+            text_input.text = ""
+            await pilot.press("y", "e", "n")
+
+            assert text_input.text == "yen"
+            assert future.done() is False
+            assert text_input.display is True
+
+    async def test_edit_mode_preserves_text_area_navigation_keys(self) -> None:
+        """Backspace and arrow keys should keep normal TextArea behavior."""
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#goal-review", GoalReviewMenu)
+            future: asyncio.Future[GoalReviewResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            menu.action_edit()
+            text_input = menu.query_one(".goal-review-edit-input", AskUserTextArea)
+            text_input.text = ""
+            await pilot.press("a", "b", "left", "backspace", "c")
+
+            assert text_input.text == "cb"
+            assert future.done() is False
+            assert text_input.display is True
 
     async def test_cancel_closes_edit_before_cancelling_proposal(self) -> None:
         """Esc from edit mode should return to menu before cancelling the proposal."""

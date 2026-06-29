@@ -2040,6 +2040,12 @@ class DeepAgentsApp(App):
         self._pending_goal_review_widget: GoalReviewMenu | None = None
         """Currently-mounted goal criteria review prompt awaiting a decision."""
 
+        self._goal_proposal_worker: Worker[None] | None = None
+        """Active worker drafting or mounting a goal criteria proposal."""
+
+        self._goal_review_task: asyncio.Task[None] | None = None
+        """Active task awaiting a mounted goal criteria review decision."""
+
         # Agent & shell run state
         self._agent_worker: Worker[None] | None = None
         """Active `_run_agent_task` worker, tracked so it can be cancelled
@@ -5906,6 +5912,41 @@ class DeepAgentsApp(App):
                 exc_info=True,
             )
 
+    def _cancel_goal_review_task(self) -> None:
+        """Cancel any pending goal review continuation task."""
+        task = self._goal_review_task
+        self._goal_review_task = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    def _cancel_goal_proposal_worker(self) -> None:
+        """Cancel any pending goal proposal worker."""
+        worker = self._goal_proposal_worker
+        self._goal_proposal_worker = None
+        if worker is not None:
+            worker.cancel()
+
+    def _cancel_goal_proposal_generation(self) -> bool:
+        """Cancel in-flight goal criteria generation.
+
+        Returns:
+            `True` when a proposal worker was cancelled.
+        """
+        if self._goal_proposal_worker is None:
+            return False
+        self._cancel_goal_proposal_worker()
+        self.call_after_refresh(
+            lambda: asyncio.create_task(self._mount_goal_proposal_cancelled())
+        )
+        return True
+
+    async def _mount_goal_proposal_cancelled(self) -> None:
+        """Clear pending goal proposal state and show a cancellation message."""
+        self._clear_pending_goal_rubric()
+        await self._set_spinner(None)
+        await self._persist_goal_rubric_state()
+        await self._mount_message(AppMessage("Goal proposal cancelled."))
+
     async def _request_goal_review(
         self,
         objective: str,
@@ -5920,6 +5961,7 @@ class DeepAgentsApp(App):
         result_future: asyncio.Future[GoalReviewResult] = loop.create_future()
 
         if self._pending_goal_review_widget is not None:
+            self._cancel_goal_review_task()
             self._pending_goal_review_widget.action_cancel()
             widget = self._pending_goal_review_widget
             self._pending_goal_review_widget = None
@@ -7683,6 +7725,10 @@ class DeepAgentsApp(App):
 
         if subcommand == "clear":
             await self._mount_message(UserMessage(command))
+            self._cancel_goal_proposal_worker()
+            self._cancel_goal_review_task()
+            if self._pending_goal_review_widget is not None:
+                self._pending_goal_review_widget.action_cancel()
             self._clear_all_goal_rubric_state()
             self._sync_status_rubric()
             persisted = await self._persist_goal_rubric_state()
@@ -7693,7 +7739,11 @@ class DeepAgentsApp(App):
 
         objective = remainder
         await self._mount_message(UserMessage(command))
-        await self._propose_goal_rubric(objective)
+        self._cancel_goal_proposal_worker()
+        self._goal_proposal_worker = self.run_worker(
+            self._propose_goal_rubric(objective),
+            exclusive=False,
+        )
 
     @staticmethod
     def _goal_usage_text() -> str:
@@ -7737,14 +7787,37 @@ class DeepAgentsApp(App):
             AppMessage("No goal set.\n\n" + self._goal_usage_text())
         )
 
-    async def _propose_goal_rubric(self, objective: str) -> None:
-        """Ask the current model to propose acceptance criteria for a goal."""
+    async def _propose_goal_rubric(
+        self,
+        objective: str,
+        *,
+        feedback: str | None = None,
+        previous_criteria: str | None = None,
+    ) -> None:
+        """Ask the current model to propose acceptance criteria for a goal.
+
+        Args:
+            objective: Goal objective to turn into criteria.
+            feedback: Optional user feedback for regenerating criteria.
+            previous_criteria: Optional criteria the user rejected.
+
+        Raises:
+            CancelledError: If the proposal worker is interrupted.
+        """
         if not objective.strip():
             await self._mount_message(AppMessage("Usage: /goal <objective>"))
             return
         await self._set_spinner("Drafting acceptance criteria")
         try:
-            rubric = await asyncio.to_thread(self._generate_goal_rubric, objective)
+            rubric = await asyncio.to_thread(
+                self._generate_goal_rubric,
+                objective,
+                feedback=feedback,
+                previous_criteria=previous_criteria,
+            )
+        except asyncio.CancelledError:
+            self._clear_pending_goal_rubric()
+            raise
         except Exception as exc:
             logger.exception("Failed to propose rubric for goal")
             await self._mount_message(ErrorMessage(_build_model_switch_error_body(exc)))
@@ -7761,15 +7834,26 @@ class DeepAgentsApp(App):
         self._pending_goal_rubric = rubric
         persisted = await self._persist_goal_rubric_state()
         await self._mount_goal_rubric_result(
-            f"Proposed acceptance criteria for goal:\n{rubric}\n\n"
-            "Review the proposal below. Choose Accept to use it, choose Other "
-            "to revise it, or press Esc to cancel.",
+            "Proposed acceptance criteria are ready.\n\n"
+            "Review the proposal below. Choose Accept to use it, Edit to revise "
+            "it, Reject with message to regenerate it, or press Esc to cancel.",
             persisted=persisted,
         )
-        await self._review_pending_goal_rubric()
+        await self._start_pending_goal_rubric_review()
 
-    def _generate_goal_rubric(self, objective: str) -> str:
+    def _generate_goal_rubric(
+        self,
+        objective: str,
+        *,
+        feedback: str | None = None,
+        previous_criteria: str | None = None,
+    ) -> str:
         """Generate acceptance criteria for `objective` with the current chat model.
+
+        Args:
+            objective: Goal objective to turn into criteria.
+            feedback: Optional user feedback for regenerating criteria.
+            previous_criteria: Optional criteria the user rejected.
 
         Returns:
             Proposed acceptance criteria text.
@@ -7781,28 +7865,86 @@ class DeepAgentsApp(App):
             model_spec=self._effective_model_spec(),
             model_params=self._model_params_override,
             profile_override=self._profile_override,
+            feedback=feedback,
+            previous_criteria=previous_criteria,
         )
 
-    async def _review_pending_goal_rubric(self) -> None:
-        """Review a pending goal proposal with the ask-user interrupt widget."""
+    async def _start_pending_goal_rubric_review(self) -> None:
+        """Mount the pending goal review prompt and schedule its continuation."""
         objective = self._pending_goal_objective
         rubric = self._pending_goal_rubric
         if not objective or not rubric:
             return
 
+        self._cancel_goal_review_task()
         result_future = await self._request_goal_review(objective, rubric)
-        result = await result_future
-        if result["type"] == "accepted":
-            await self._accept_goal_rubric(rubric)
-            return
-        if result["type"] == "edited":
-            await self._accept_goal_rubric(result["criteria"])
-            return
+        self.call_after_refresh(self._schedule_goal_review_task, result_future)
 
-        self._clear_pending_goal_rubric()
-        persisted = await self._persist_goal_rubric_state()
-        await self._mount_goal_rubric_result(
-            "Goal proposal cancelled.", persisted=persisted
+    def _schedule_goal_review_task(
+        self,
+        result_future: asyncio.Future[GoalReviewResult],
+    ) -> None:
+        """Start the task that handles a mounted goal review decision."""
+        self._cancel_goal_review_task()
+        self._goal_review_task = asyncio.create_task(
+            self._finish_pending_goal_rubric_review(result_future)
+        )
+
+    async def _finish_pending_goal_rubric_review(
+        self,
+        result_future: asyncio.Future[GoalReviewResult],
+    ) -> None:
+        """Apply the user's pending goal review decision.
+
+        Raises:
+            CancelledError: If the review continuation is superseded.
+        """
+        task = asyncio.current_task()
+        try:
+            result = await result_future
+            if result["type"] == "accepted":
+                await self._accept_goal_rubric(self._pending_goal_rubric or "")
+                return
+            if result["type"] == "edited":
+                await self._accept_goal_rubric(result["criteria"])
+                return
+            if result["type"] == "rejected":
+                self._regenerate_goal_rubric_from_feedback(result["message"])
+                return
+
+            self._clear_pending_goal_rubric()
+            await self._persist_goal_rubric_state()
+            await self._mount_message(AppMessage("Goal proposal cancelled."))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Failed to finish goal review")
+            await self._mount_message(
+                ErrorMessage("Goal review failed unexpectedly. Please try again.")
+            )
+        finally:
+            if self._goal_review_task is task:
+                self._goal_review_task = None
+
+    async def _review_pending_goal_rubric(self) -> None:
+        """Review a pending goal proposal with the ask-user interrupt widget."""
+        await self._start_pending_goal_rubric_review()
+
+    def _regenerate_goal_rubric_from_feedback(self, feedback: str) -> None:
+        """Start a new goal criteria proposal from rejection feedback."""
+        objective = self._pending_goal_objective
+        previous_criteria = self._pending_goal_rubric
+        feedback = feedback.strip()
+        if not objective or not previous_criteria or not feedback:
+            return
+        self._cancel_goal_proposal_worker()
+        self._goal_proposal_worker = self.run_worker(
+            self._propose_goal_rubric(
+                objective,
+                feedback=feedback,
+                previous_criteria=previous_criteria,
+            ),
+            exclusive=False,
         )
 
     async def _accept_goal_rubric(self, rubric: str) -> None:
@@ -9910,6 +10052,12 @@ class DeepAgentsApp(App):
                 self._pending_ask_user_widget.action_cancel()
             except (AttributeError, RuntimeError):
                 logger.exception("force-clear: failed to cancel pending ask-user")
+        self._cancel_goal_proposal_worker()
+        if self._pending_goal_review_widget:
+            try:
+                self._pending_goal_review_widget.action_cancel()
+            except (AttributeError, RuntimeError):
+                logger.exception("force-clear: failed to cancel pending goal review")
         if self._shell_running and self._shell_worker:
             self._shell_worker.cancel()
         if self._agent_running and self._agent_worker:
@@ -10025,6 +10173,15 @@ class DeepAgentsApp(App):
         # worker, following the same pattern as the approval widget above.
         if self._pending_ask_user_widget:
             self._pending_ask_user_widget.action_cancel()
+            self._quit_pending = False
+            return
+
+        if self._cancel_goal_proposal_generation():
+            self._quit_pending = False
+            return
+
+        if self._pending_goal_review_widget:
+            self._pending_goal_review_widget.action_cancel()
             self._quit_pending = False
             return
 
@@ -10195,6 +10352,13 @@ class DeepAgentsApp(App):
         # worker, following the same pattern as the approval widget above.
         if self._pending_ask_user_widget:
             self._pending_ask_user_widget.action_cancel()
+            return
+
+        if self._cancel_goal_proposal_generation():
+            return
+
+        if self._pending_goal_review_widget:
+            self._pending_goal_review_widget.action_cancel()
             return
 
         # If queued messages exist, pop the last one (LIFO) instead of
@@ -10674,6 +10838,7 @@ class DeepAgentsApp(App):
         if (
             self._pending_approval_widget
             or self._pending_ask_user_widget
+            or self._pending_goal_review_widget
             or self._is_input_focused()
         ):
             return
@@ -10695,7 +10860,11 @@ class DeepAgentsApp(App):
         self._chat_input.set_cursor_blink(blink=self._cursor_blink_enabled)
         if isinstance(self.screen, ModalScreen):
             return
-        if self._pending_approval_widget or self._pending_ask_user_widget:
+        if (
+            self._pending_approval_widget
+            or self._pending_ask_user_widget
+            or self._pending_goal_review_widget
+        ):
             return
         self._chat_input.focus_input()
 
@@ -10731,8 +10900,12 @@ class DeepAgentsApp(App):
             return
         if isinstance(self.screen, ModalScreen):
             return
-        # Don't steal focus from approval or ask_user widgets
-        if self._pending_approval_widget or self._pending_ask_user_widget:
+        # Don't steal focus from active inline prompt widgets.
+        if (
+            self._pending_approval_widget
+            or self._pending_ask_user_widget
+            or self._pending_goal_review_widget
+        ):
             return
         self.call_after_refresh(self._chat_input.focus_input)
 
@@ -12693,6 +12866,12 @@ class DeepAgentsApp(App):
 
         worker = event.worker
         group = worker.group or ""
+        if worker is self._goal_proposal_worker and event.state in {
+            WorkerState.SUCCESS,
+            WorkerState.CANCELLED,
+            WorkerState.ERROR,
+        }:
+            self._goal_proposal_worker = None
         if event.state != WorkerState.ERROR or worker.error is None:
             return
         if group.startswith("mcp-login-"):

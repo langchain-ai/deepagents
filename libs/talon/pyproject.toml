@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-talon"
-version = "0.0.1"
+version = "0.0.2"
 description = "Local runtime host for long-running Deep Agents channels and schedules (experimental)"
 readme = "README.md"
 requires-python = ">=3.11"

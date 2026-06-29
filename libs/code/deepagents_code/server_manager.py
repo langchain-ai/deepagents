@@ -285,7 +285,6 @@ async def start_server_and_get_agent(
     enable_interpreter: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
-    enable_rubric: bool = False,
     rubric_model: str | None = None,
     rubric_max_iterations: int = 3,
     mcp_config_path: str | None = None,
@@ -315,7 +314,6 @@ async def start_server_and_get_agent(
         interpreter_ptc: Override for `settings.interpreter_ptc` (PTC allowlist).
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
-        enable_rubric: Install `RubricMiddleware` for rubric grading.
         rubric_model: Grader model spec; `None` reuses the main model.
         rubric_max_iterations: Grader iterations per rubric attempt.
         mcp_config_path: Path to MCP config.
@@ -364,7 +362,6 @@ async def start_server_and_get_agent(
         enable_interpreter=enable_interpreter,
         interpreter_ptc=interpreter_ptc,
         interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
-        enable_rubric=enable_rubric,
         rubric_model=rubric_model,
         rubric_max_iterations=rubric_max_iterations,
         mcp_config_path=mcp_config_path,
@@ -422,7 +419,6 @@ async def server_session(
     enable_interpreter: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
-    enable_rubric: bool = False,
     rubric_model: str | None = None,
     rubric_max_iterations: int = 3,
     mcp_config_path: str | None = None,
@@ -455,7 +451,6 @@ async def server_session(
         interpreter_ptc: Override for `settings.interpreter_ptc` (PTC allowlist).
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
-        enable_rubric: Install `RubricMiddleware` for rubric grading.
         rubric_model: Grader model spec; `None` reuses the main model.
         rubric_max_iterations: Grader iterations per rubric attempt.
         mcp_config_path: Path to MCP config.
@@ -489,7 +484,6 @@ async def server_session(
             enable_interpreter=enable_interpreter,
             interpreter_ptc=interpreter_ptc,
             interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
-            enable_rubric=enable_rubric,
             rubric_model=rubric_model,
             rubric_max_iterations=rubric_max_iterations,
             mcp_config_path=mcp_config_path,

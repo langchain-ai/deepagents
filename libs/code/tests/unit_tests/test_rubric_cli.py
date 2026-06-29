@@ -123,17 +123,15 @@ class TestRubricGating:
 
 
 class TestServerConfigRubric:
-    """Rubric fields round-trip through the env serialization."""
+    """Rubric grader settings round-trip through env serialization."""
 
     def test_defaults(self) -> None:
         config = ServerConfig()
-        assert config.enable_rubric is False
         assert config.rubric_model is None
         assert config.rubric_max_iterations == 3
 
     def test_round_trip(self) -> None:
         original = ServerConfig(
-            enable_rubric=True,
             rubric_model="anthropic:claude-sonnet-4-6",
             rubric_max_iterations=5,
         )
@@ -144,11 +142,10 @@ class TestServerConfigRubric:
         }
         with patch.dict(os.environ, env, clear=False):
             restored = ServerConfig.from_env()
-        assert restored.enable_rubric is True
         assert restored.rubric_model == "anthropic:claude-sonnet-4-6"
         assert restored.rubric_max_iterations == 5
 
-    def test_from_cli_args_forwards_rubric(self) -> None:
+    def test_from_cli_args_forwards_rubric_settings(self) -> None:
         config = ServerConfig.from_cli_args(
             project_context=None,
             model_name=None,
@@ -161,7 +158,6 @@ class TestServerConfigRubric:
             sandbox_setup=None,
             enable_shell=True,
             enable_ask_user=False,
-            enable_rubric=True,
             rubric_model="openai:gpt-5.1",
             rubric_max_iterations=7,
             mcp_config_path=None,
@@ -169,7 +165,6 @@ class TestServerConfigRubric:
             trust_project_mcp=None,
             interactive=True,
         )
-        assert config.enable_rubric is True
         assert config.rubric_model == "openai:gpt-5.1"
         assert config.rubric_max_iterations == 7
 

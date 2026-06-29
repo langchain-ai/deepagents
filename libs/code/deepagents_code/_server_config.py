@@ -258,14 +258,6 @@ class ServerConfig:
     `interpreter_ptc="all"` is paired with non-`auto_approve` mode.
     """
 
-    enable_rubric: bool = False
-    """Install `RubricMiddleware` so the agent self-evaluates against a
-    caller-supplied rubric.
-
-    A no-op until a `rubric` is supplied on invocation state, so it is safe
-    to enable unconditionally.
-    """
-
     rubric_model: str | None = None
     """Grader model spec for `RubricMiddleware` (e.g. `'anthropic:...'`).
 
@@ -363,7 +355,6 @@ class ServerConfig:
             "INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE": str(
                 self.interpreter_ptc_acknowledge_unsafe
             ).lower(),
-            "ENABLE_RUBRIC": str(self.enable_rubric).lower(),
             "RUBRIC_MODEL": self.rubric_model,
             "RUBRIC_MAX_ITERATIONS": str(self.rubric_max_iterations),
             "SANDBOX_TYPE": self.sandbox_type,
@@ -414,7 +405,6 @@ class ServerConfig:
             interpreter_ptc_acknowledge_unsafe=_read_env_bool(
                 "INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE"
             ),
-            enable_rubric=_read_env_bool("ENABLE_RUBRIC"),
             rubric_model=_read_env_str("RUBRIC_MODEL"),
             rubric_max_iterations=_read_env_int("RUBRIC_MAX_ITERATIONS", default=3),
             sandbox_type=_read_env_str("SANDBOX_TYPE"),
@@ -452,7 +442,6 @@ class ServerConfig:
         enable_interpreter: bool | None = None,
         interpreter_ptc: str | list[str] | None = None,
         interpreter_ptc_acknowledge_unsafe: bool = False,
-        enable_rubric: bool = False,
         rubric_model: str | None = None,
         rubric_max_iterations: int = 3,
         mcp_config_path: str | None,
@@ -488,7 +477,6 @@ class ServerConfig:
             interpreter_ptc: Override for `settings.interpreter_ptc`.
             interpreter_ptc_acknowledge_unsafe: Mirror of
                 `settings.interpreter_ptc_acknowledge_unsafe`.
-            enable_rubric: Install `RubricMiddleware` for rubric grading.
             rubric_model: Grader model spec; `None` reuses the main model.
             rubric_max_iterations: Grader iterations per rubric attempt.
             mcp_config_path: Path to MCP config.
@@ -518,7 +506,6 @@ class ServerConfig:
             enable_interpreter=resolved_enable_interpreter,
             interpreter_ptc=interpreter_ptc,
             interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
-            enable_rubric=enable_rubric,
             rubric_model=rubric_model,
             rubric_max_iterations=rubric_max_iterations,
             sandbox_type=sandbox_type,

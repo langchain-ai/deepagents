@@ -1260,7 +1260,6 @@ async def run_non_interactive(
             enable_interpreter=enable_interpreter,
             interpreter_ptc=interpreter_ptc,
             interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
-            enable_rubric=rubric is not None,
             rubric_model=rubric_model,
             rubric_max_iterations=(
                 rubric_max_iterations if rubric_max_iterations is not None else 3

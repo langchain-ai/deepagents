@@ -9,6 +9,7 @@ import re
 import shutil
 import tempfile
 import tomllib
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -1249,7 +1250,6 @@ def create_cli_agent(
     enable_skills: bool = True,
     enable_shell: bool = True,
     enable_interpreter: bool = False,
-    enable_rubric: bool = False,
     rubric_model: str | BaseChatModel | None = None,
     rubric_max_iterations: int = 3,
     checkpointer: BaseCheckpointSaver | None = None,
@@ -1328,11 +1328,6 @@ def create_cli_agent(
             `interpreter_ptc_acknowledge_unsafe=True`.
 
             Requires the core `langchain-quickjs` dependency.
-        enable_rubric: Install `RubricMiddleware` so the agent self-evaluates
-            against a caller-supplied rubric and loops until satisfied.
-
-            The middleware is a no-op until a `rubric` is supplied on
-            invocation state, so it is safe to enable unconditionally.
         rubric_model: Grader model for `RubricMiddleware`.
 
             A `'provider:model'` string or `BaseChatModel`.
@@ -1724,7 +1719,12 @@ def create_cli_agent(
 
     # Rubric-driven self-evaluation. The middleware is a no-op until a
     # `rubric` is supplied on invocation state, so installing it is safe.
-    if enable_rubric:
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="The middleware `RubricMiddleware` is in beta",
+            category=Warning,
+        )
         agent_middleware.append(
             RubricMiddleware(
                 model=rubric_model if rubric_model is not None else model,

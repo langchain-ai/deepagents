@@ -237,6 +237,8 @@ def _format_rubric_event(data: dict[str, Any]) -> str | None:
 
     result = data.get("result")
     explanation = str(data.get("explanation") or "").strip()
+    if result is None:
+        return None
     if result == "satisfied":
         return f"{glyphs.checkmark} Rubric satisfied"
     if result == "needs_revision":

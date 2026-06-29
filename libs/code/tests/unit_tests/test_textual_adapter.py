@@ -986,6 +986,10 @@ class TestFormatRubricEvent:
             == "⚠ Rubric grading ended"
         )
 
+    def test_end_event_without_result_returns_none(self) -> None:
+        """Partial end events should not render a spurious warning."""
+        assert _format_rubric_event({"type": "rubric_evaluation_end"}) is None
+
     def test_unrelated_event_returns_none(self) -> None:
         """Only rubric events should render rubric messages."""
         assert _format_rubric_event({"type": "subagent_start"}) is None

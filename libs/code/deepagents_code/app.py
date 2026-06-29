@@ -7972,6 +7972,7 @@ class DeepAgentsApp(App):
         except Exception as exc:
             logger.exception("Failed to propose rubric for goal")
             await self._mount_message(ErrorMessage(_build_model_switch_error_body(exc)))
+            await self._remount_pending_goal_rubric_review()
             return
         finally:
             await self._set_spinner(None)
@@ -7980,6 +7981,7 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 ErrorMessage("The model returned an empty rubric.")
             )
+            await self._remount_pending_goal_rubric_review()
             return
         self._pending_goal_objective = objective
         self._pending_goal_rubric = rubric

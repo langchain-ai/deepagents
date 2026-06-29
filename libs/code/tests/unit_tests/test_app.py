@@ -5144,6 +5144,34 @@ class TestGoalCommand:
             assert app._pending_goal_objective == "add refresh tokens"
             assert app._pending_goal_rubric == "- model draft"
 
+    async def test_goal_review_regeneration_failure_remounts_pending_review(
+        self,
+    ) -> None:
+        """A failed rejection retry should leave the old proposal actionable."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_goal_objective = "add refresh tokens"
+            app._pending_goal_rubric = "- model draft"
+
+            with patch.object(
+                app,
+                "_generate_goal_rubric",
+                side_effect=RuntimeError("model down"),
+            ):
+                await app._propose_goal_rubric(
+                    "add refresh tokens",
+                    feedback="include docs and migration notes",
+                    previous_criteria="- model draft",
+                )
+                await pilot.pause()
+
+            menu = app.query_one(GoalReviewMenu)
+            assert app._pending_goal_review_widget is menu
+            assert app._pending_goal_objective == "add refresh tokens"
+            assert app._pending_goal_rubric == "- model draft"
+            assert any("model down" in str(w._content) for w in app.query(ErrorMessage))
+
     async def test_restore_goal_rubric_state_updates_status(self) -> None:
         """Resumed thread metadata should restore TUI goal/rubric state."""
         app = DeepAgentsApp(agent=MagicMock())

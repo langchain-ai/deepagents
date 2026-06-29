@@ -55,6 +55,8 @@ from deepagents.middleware.subagents import (
 from deepagents.middleware.summarization import create_summarization_middleware
 from deepagents.profiles.harness.harness_profiles import (
     GeneralPurposeSubagentProfile,
+    ProfileSuffixContext,
+    _append_profile_suffix,
     _apply_profile_prompt,
     _harness_profile_for_model,
 )
@@ -703,7 +705,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 "tools": subagent_tools or [],
                 "middleware": subagent_middleware,
             }
-            processed_spec["system_prompt"] = _apply_profile_prompt(_subagent_profile, spec["system_prompt"])
+            processed_spec["system_prompt"] = _apply_profile_prompt(
+                _subagent_profile,
+                spec["system_prompt"],
+                suffix_context=ProfileSuffixContext._from_middleware(subagent_middleware),
+            )
             if subagent_interrupt_on is not None:
                 processed_spec["interrupt_on"] = subagent_interrupt_on
             inline_subagents.append(processed_spec)
@@ -749,17 +755,23 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             "tools": _tools or [],
             "middleware": gp_middleware,
         }
+        gp_suffix_context = ProfileSuffixContext._from_middleware(gp_middleware)
         if gp_profile.description is not None:
             general_purpose_spec["description"] = gp_profile.description
         if gp_profile.system_prompt is not None:
             # GP-specific override beats `profile.base_system_prompt`; only the
             # profile suffix layers on top.
-            gp_prompt = gp_profile.system_prompt
-            if _profile.system_prompt_suffix is not None:
-                gp_prompt = gp_prompt + "\n\n" + _profile.system_prompt_suffix
-            general_purpose_spec["system_prompt"] = gp_prompt
+            general_purpose_spec["system_prompt"] = _append_profile_suffix(
+                _profile,
+                gp_profile.system_prompt,
+                suffix_context=gp_suffix_context,
+            )
         else:
-            general_purpose_spec["system_prompt"] = _apply_profile_prompt(_profile, GENERAL_PURPOSE_SUBAGENT["system_prompt"])
+            general_purpose_spec["system_prompt"] = _apply_profile_prompt(
+                _profile,
+                GENERAL_PURPOSE_SUBAGENT["system_prompt"],
+                suffix_context=gp_suffix_context,
+            )
         gp_interrupt_on = _merge_fs_interrupt_on(
             _build_interrupt_on_from_permissions(permissions or []),
             interrupt_on,
@@ -854,7 +866,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         required_names=_REQUIRED_MIDDLEWARE_NAMES,
     )
 
-    base_prompt = _apply_profile_prompt(_profile, BASE_AGENT_PROMPT)
+    base_prompt = _apply_profile_prompt(
+        _profile,
+        BASE_AGENT_PROMPT,
+        suffix_context=ProfileSuffixContext._from_middleware(deepagent_middleware),
+    )
     if system_prompt is None:
         final_system_prompt: str | SystemMessage = base_prompt
     elif isinstance(system_prompt, SystemMessage):

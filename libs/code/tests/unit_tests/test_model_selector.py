@@ -1372,6 +1372,133 @@ class TestFilteredModelsWidgetSync:
         assert screen._filtered_models[1] != grouped[1]
 
 
+class TestAvailabilityOrdering:
+    """The default view floats usable providers above unavailable ones."""
+
+    @staticmethod
+    def _status(state: ProviderAuthState, provider: str) -> ProviderAuthStatus:
+        if state is ProviderAuthState.CONFIGURED:
+            return ProviderAuthStatus(
+                state=state, provider=provider, source=ProviderAuthSource.STORED
+            )
+        if state is ProviderAuthState.MISSING:
+            return ProviderAuthStatus(
+                state=state, provider=provider, env_var=f"{provider.upper()}_API_KEY"
+            )
+        return ProviderAuthStatus(state=state, provider=provider)
+
+    def test_provider_availability_rank_orders_states(self) -> None:
+        """Usable < unknown < missing < not-installed, regardless of auth."""
+        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen._install_extras = {"baseten": "baseten"}
+        rank = screen._provider_availability_rank
+
+        configured = rank(
+            "openai_codex", self._status(ProviderAuthState.CONFIGURED, "openai_codex")
+        )
+        not_required = rank(
+            "ollama", self._status(ProviderAuthState.NOT_REQUIRED, "ollama")
+        )
+        unknown = rank("custom", self._status(ProviderAuthState.UNKNOWN, "custom"))
+        missing = rank("openai", self._status(ProviderAuthState.MISSING, "openai"))
+        # A configured but not-installed provider still sinks to the bottom.
+        uninstalled = rank(
+            "baseten", self._status(ProviderAuthState.CONFIGURED, "baseten")
+        )
+
+        assert configured == not_required
+        assert configured < unknown < missing < uninstalled
+
+    async def test_available_provider_floats_to_top_in_default_view(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A configured provider listed last renders first when unfiltered."""
+        from deepagents_code.widgets import model_selector
+
+        def fake_auth(provider: str) -> ProviderAuthStatus:
+            state = (
+                ProviderAuthState.CONFIGURED
+                if provider == "openai_codex"
+                else ProviderAuthState.MISSING
+            )
+            return self._status(state, provider)
+
+        monkeypatch.setattr(model_selector, "get_provider_auth_status", fake_auth)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen._curated = False
+            screen._recommended_only = False
+            screen._filter_text = ""
+            screen._recent_specs = []
+            screen._install_extras = {}
+            # Codex (the only configured provider) is declared last.
+            models = [
+                ("anthropic:claude-opus-4-8", "anthropic"),
+                ("openai:gpt-5.5", "openai"),
+                ("openai_codex:gpt-5.5", "openai_codex"),
+            ]
+            screen._unfiltered_models = list(models)
+            screen._all_models = list(models)
+            screen._filtered_models = list(models)
+            screen._selected_index = 0
+
+            await screen._update_display()
+
+            providers = [provider for _, provider in screen._filtered_models]
+            assert providers[0] == "openai_codex"
+            assert providers.index("openai_codex") < providers.index("anthropic")
+            assert providers.index("openai_codex") < providers.index("openai")
+
+    async def test_search_view_keeps_score_order(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A filtered search ignores availability and keeps fuzzy-score order."""
+        from deepagents_code.widgets import model_selector
+
+        def fake_auth(provider: str) -> ProviderAuthStatus:
+            state = (
+                ProviderAuthState.CONFIGURED
+                if provider == "openai_codex"
+                else ProviderAuthState.MISSING
+            )
+            return self._status(state, provider)
+
+        monkeypatch.setattr(model_selector, "get_provider_auth_status", fake_auth)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen._curated = False
+            screen._recommended_only = False
+            screen._recent_specs = []
+            screen._install_extras = {}
+            screen._all_models = [
+                ("openai:gpt-5.5", "openai"),
+                ("openai_codex:gpt-5.5", "openai_codex"),
+            ]
+            # Simulate a score-sorted filtered list with the missing-credential
+            # provider ranked first; availability must not reorder it.
+            screen._filter_text = "gpt"
+            screen._filtered_models = [
+                ("openai:gpt-5.5", "openai"),
+                ("openai_codex:gpt-5.5", "openai_codex"),
+            ]
+            screen._selected_index = 0
+
+            await screen._update_display()
+
+            providers = [provider for _, provider in screen._filtered_models]
+            assert providers[0] == "openai"
+
+
 class TestCuratedModelSelection:
     """Tests for onboarding curated model selection."""
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -1323,8 +1324,11 @@ class TestLoadToolsFromConfigOAuth:
         assert isinstance(recorded[0].get("auth"), OAuthClientProvider)
         await manager.cleanup()
 
-    async def test_discovery_reauth_marks_server_unauthenticated(self) -> None:
-        """OAuth re-auth during discovery is surfaced as unauthenticated."""
+    async def test_discovery_reauth_marks_server_unauthenticated(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """OAuth re-auth during discovery is surfaced without warning tracebacks."""
         from mcp.shared.auth import OAuthToken
 
         storage = FileTokenStorage(
@@ -1344,6 +1348,8 @@ class TestLoadToolsFromConfigOAuth:
             raise ExceptionGroup(msg, [MCPReauthRequiredError("notion")])
             yield
 
+        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_tools")
+
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):
             config = {
                 "mcpServers": {
@@ -1360,6 +1366,15 @@ class TestLoadToolsFromConfigOAuth:
         assert isinstance(manager, MCPSessionManager)
         assert server_infos[0].status == "unauthenticated"
         assert "re-authentication" in (server_infos[0].error or "")
+        warning_records = [
+            record
+            for record in caplog.records
+            if record.name == "deepagents_code.mcp_tools"
+            and record.levelno == logging.WARNING
+        ]
+        assert warning_records
+        assert all(record.exc_info is None for record in warning_records)
+        assert "Exception Group Traceback" not in caplog.text
         await manager.cleanup()
 
 
@@ -1452,6 +1467,7 @@ class TestResolveAndLoadMcpTools:
         mock_classify: MagicMock,
         mock_load: AsyncMock,
         tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Project remote MCP entries do not reach the loader without trust.
 
@@ -1467,7 +1483,11 @@ class TestResolveAndLoadMcpTools:
                             "transport": "http",
                             "url": "http://169.254.169.254",
                             "headers": {"X-Token": "${OPENAI_API_KEY}"},
-                        }
+                        },
+                        "docs-langchain": {
+                            "transport": "http",
+                            "url": "https://docs.langchain.com/mcp",
+                        },
                     }
                 }
             )
@@ -1475,6 +1495,7 @@ class TestResolveAndLoadMcpTools:
         mock_discover.return_value = [project_cfg]
         mock_classify.return_value = ([], [project_cfg])
         mock_load.return_value = ([], None, [])
+        caplog.set_level(logging.WARNING, logger="deepagents_code.mcp_tools")
 
         tools, _manager, _infos = await resolve_and_load_mcp_tools(
             trust_project_mcp=False,
@@ -1482,6 +1503,10 @@ class TestResolveAndLoadMcpTools:
 
         assert tools == []
         assert mock_load.call_count == 0
+        assert "Skipped untrusted project MCP servers:\n" in caplog.text
+        assert "- evil [http]: http://169.254.169.254" in caplog.text
+        assert "- docs-langchain [http]: https://docs.langchain.com/mcp" in caplog.text
+        assert "; docs-langchain" not in caplog.text
 
     @patch("deepagents_code.mcp_tools._load_tools_from_config")
     @patch("deepagents_code.mcp_tools.classify_discovered_configs")

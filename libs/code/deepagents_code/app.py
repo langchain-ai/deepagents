@@ -7681,10 +7681,11 @@ class DeepAgentsApp(App):
             self._last_consumed_next_rubric = None
             self._last_consumed_next_previous_rubric = None
             return
-        if (
-            not payload.sticky_rubric_recorded
+        one_shot_rubric_consumed = (
+            self._last_consumed_next_rubric is not None
             and payload.rubric == self._last_consumed_next_rubric
-        ):
+        )
+        if one_shot_rubric_consumed and not payload.sticky_rubric_recorded:
             payload = _ThreadHistoryPayload(
                 payload.messages,
                 payload.context_tokens,
@@ -7699,14 +7700,16 @@ class DeepAgentsApp(App):
                 pending_goal_objective=payload.pending_goal_objective,
                 pending_goal_rubric=payload.pending_goal_rubric,
             )
+        self._restore_goal_rubric_state(payload)
+        if one_shot_rubric_consumed:
+            await self._persist_goal_rubric_state()
         self._last_consumed_next_rubric = None
         self._last_consumed_next_previous_rubric = None
-        self._restore_goal_rubric_state(payload)
 
     async def _handle_goal_command(self, command: str) -> None:
         """Handle `/goal` as a user-approved rubric proposal workflow."""
         remainder = command.strip()[len("/goal") :].strip()
-        subcommand = remainder.partition(" ")[0].lower()
+        subcommand = remainder.lower()
 
         if not remainder or subcommand in {"show", "status"}:
             await self._mount_message(UserMessage(command))

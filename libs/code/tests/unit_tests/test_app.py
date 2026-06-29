@@ -5031,6 +5031,35 @@ class TestGoalCommand:
             assert app._status_bar is not None
             assert app._status_bar.rubric_label == ""
 
+    @pytest.mark.parametrize("verb", ["show", "status", "accept", "edit", "clear"])
+    async def test_goal_reserved_word_objective_drafts_goal(self, verb: str) -> None:
+        """Reserved words only act as `/goal` subcommands when used alone."""
+        app = DeepAgentsApp(agent=MagicMock())
+        proposal = object()
+        worker = object()
+        objective = f"{verb} stale cache handling"
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "existing goal"
+            app._active_rubric = "- existing rubric"
+            app._sync_status_rubric()
+
+            with (
+                patch.object(
+                    app,
+                    "_propose_goal_rubric",
+                    new=MagicMock(return_value=proposal),
+                ) as propose,
+                patch.object(app, "run_worker", return_value=worker) as run_worker,
+            ):
+                await app._handle_command(f"/goal {objective}")
+
+            propose.assert_called_once_with(objective)
+            run_worker.assert_called_once_with(proposal, exclusive=False)
+            assert app._goal_proposal_worker is worker
+            assert app._active_goal == "existing goal"
+            assert app._active_rubric == "- existing rubric"
+
     async def test_goal_accept_warns_when_persist_fails(self) -> None:
         """A failed thread write should warn without dumping criteria as an error."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -5185,6 +5214,8 @@ class TestRubricCommand:
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
+            updater = SimpleNamespace(aupdate_state=AsyncMock())
+            app._agent = updater
             app._lc_thread_id = "thread-1"
             app._last_consumed_next_rubric = "update docs"
             app._last_consumed_next_previous_rubric = None
@@ -5202,6 +5233,40 @@ class TestRubricCommand:
             assert app._last_consumed_next_previous_rubric is None
             assert app._status_bar is not None
             assert app._status_bar.rubric_label == ""
+
+    async def test_rubric_next_sync_clears_checkpoint_rubric(self) -> None:
+        """Consumed one-shot rubrics should be cleared from thread state."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            updater = SimpleNamespace(aupdate_state=AsyncMock())
+            app._agent = updater
+            app._lc_thread_id = "thread-1"
+            app._last_consumed_next_rubric = "update docs"
+            app._last_consumed_next_previous_rubric = None
+            fetch = AsyncMock(
+                return_value={"rubric": "update docs", "_sticky_rubric": None}
+            )
+
+            with patch.object(app, "_get_thread_state_values", fetch):
+                await app._sync_goal_rubric_state_from_thread()
+
+            state_update = {
+                "rubric": None,
+                "_sticky_rubric": None,
+                "_goal_objective": None,
+                "_goal_status": None,
+                "_goal_rubric": None,
+                "_goal_status_note": None,
+                "_pending_goal_objective": None,
+                "_pending_goal_rubric": None,
+            }
+            config = {"configurable": {"thread_id": "thread-1"}}
+            updater.aupdate_state.assert_awaited_once_with(config, state_update)
+            assert app._active_rubric is None
+            assert app._next_rubric is None
+            assert app._last_consumed_next_rubric is None
+            assert app._last_consumed_next_previous_rubric is None
 
     async def test_rubric_next_legacy_sync_preserves_previous_sticky(self) -> None:
         """If marker persistence failed, cleanup should keep prior sticky state."""
@@ -5252,18 +5317,19 @@ class TestRubricCommand:
             ):
                 await app._run_agent_task("hello")
 
-            updater.aupdate_state.assert_awaited_once_with(
-                {"configurable": {"thread_id": "thread-1"}},
-                {
-                    "rubric": None,
-                    "_sticky_rubric": None,
-                    "_goal_objective": None,
-                    "_goal_status": None,
-                    "_goal_rubric": None,
-                    "_goal_status_note": None,
-                    "_pending_goal_objective": None,
-                    "_pending_goal_rubric": None,
-                },
+            state_update = {
+                "rubric": None,
+                "_sticky_rubric": None,
+                "_goal_objective": None,
+                "_goal_status": None,
+                "_goal_rubric": None,
+                "_goal_status_note": None,
+                "_pending_goal_objective": None,
+                "_pending_goal_rubric": None,
+            }
+            config = {"configurable": {"thread_id": "thread-1"}}
+            updater.aupdate_state.assert_has_awaits(
+                [call(config, state_update), call(config, state_update)]
             )
             assert app._active_rubric is None
             assert app._next_rubric is None

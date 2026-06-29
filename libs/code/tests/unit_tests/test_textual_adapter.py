@@ -2247,6 +2247,96 @@ class TestExecuteTaskTextualTextThenToolSpinner:
         )
 
 
+class TestExecuteTaskTextualRubricRevisionStreaming:
+    """Regression coverage for rubric-driven assistant reattempts."""
+
+    async def test_rubric_feedback_starts_new_assistant_message(self) -> None:
+        """A rubric-injected human turn must separate assistant attempts."""
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        class FakeAssistantMessage:
+            def __init__(self, content: str = "", **kwargs: str | None) -> None:
+                self.id = kwargs.get("id")
+                self._content = content
+
+            async def append_content(self, text: str) -> None:
+                self._content += text
+
+            async def stop_stream(self) -> None:
+                pass
+
+            async def write_initial_content(self) -> None:
+                pass
+
+        chunks = [
+            ((), "messages", (_text_message("Hi Mason."), {})),
+            (
+                (),
+                "messages",
+                (
+                    HumanMessage(
+                        content="Please revise.",
+                        name="rubric_grader",
+                        additional_kwargs={"lc_source": "rubric_grader"},
+                    ),
+                    {},
+                ),
+            ),
+            (
+                (),
+                "custom",
+                {"type": "rubric_evaluation_start", "iteration": 0},
+            ),
+            (
+                (),
+                "custom",
+                {
+                    "type": "rubric_evaluation_end",
+                    "result": "needs_revision",
+                    "explanation": "say yellow",
+                    "criteria": [],
+                },
+            ),
+            ((), "messages", (_text_message("yellow yellow"), {})),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        with patch(
+            "deepagents_code.textual_adapter.AssistantMessage",
+            side_effect=FakeAssistantMessage,
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+                adapter=adapter,
+            )
+
+        assistant_messages = [
+            widget for widget in mounted if isinstance(widget, FakeAssistantMessage)
+        ]
+        assert [msg._content for msg in assistant_messages] == [
+            "Hi Mason.",
+            "yellow yellow",
+        ]
+
+        app_messages = [widget for widget in mounted if isinstance(widget, AppMessage)]
+        app_text = [str(widget._content) for widget in app_messages]
+        assert app_text == [
+            "⏳ Grading against rubric (iteration 1)…",
+            "↻ Rubric needs revision: say yellow",
+        ]
+
+
 class TestExecuteTaskTextualHITLShellSuppression:
     """Tests for shell-tool widget suppression during HITL approval."""
 

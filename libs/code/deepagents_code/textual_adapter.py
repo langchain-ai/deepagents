@@ -837,6 +837,7 @@ async def execute_task_textual(
                                 assistant_message_by_namespace,
                             )
                             pending_text_by_namespace[ns_key] = ""
+                            assistant_message_by_namespace.pop(ns_key, None)
                         continue
 
                     if isinstance(message, ToolMessage):

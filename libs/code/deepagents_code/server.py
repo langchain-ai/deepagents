@@ -39,7 +39,7 @@ never a typed-in address — so it deliberately avoids binding the well-known
 _HEALTH_POLL_INTERVAL_LOCAL = 0.1
 _HEALTH_POLL_INTERVAL_REMOTE = 0.3
 _HEALTH_TIMEOUT = 60
-_SHUTDOWN_TIMEOUT = 5
+_SHUTDOWN_TIMEOUT = 3
 _LOG_TAIL_CHARS = 3000
 """Max chars of subprocess log appended to the early-exit `RuntimeError`
 message. Enough to carry a Python traceback without flooding the TUI banner

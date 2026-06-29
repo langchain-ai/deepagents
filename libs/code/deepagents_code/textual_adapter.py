@@ -380,7 +380,7 @@ def _read_mentioned_file(file_path: Path, max_embed_bytes: int) -> str:
             "use read_file tool to view)"
         )
     content = file_path.read_text(encoding="utf-8")
-    return f"\n### {file_path.name}\nPath: `{file_path}`\n```\n{content}\n```"
+    return f"\n### {file_path.name}\nPath: `{file_path}`\n```text\n{content}\n```"
 
 
 def _is_renderable_subagent_event(data: Any, *, is_main_agent: bool) -> bool:  # noqa: ANN401  # custom-stream payload is dynamic
@@ -575,6 +575,7 @@ async def execute_task_textual(
             # direction, but the same store write also propagates turning it on.
             if context is None:
                 context = CLIContext()
+            context["thread_id"] = thread_id
             auto_approve = bool(session_state.auto_approve)
             context["auto_approve"] = auto_approve
             try:

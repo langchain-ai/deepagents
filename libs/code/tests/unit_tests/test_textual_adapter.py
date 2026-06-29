@@ -29,6 +29,7 @@ from deepagents_code.textual_adapter import (
     _build_interrupted_ai_message,
     _handle_interrupt_cleanup,
     _is_summarization_chunk,
+    _read_mentioned_file,
     execute_task_textual,
     format_token_count,
     print_usage_table,
@@ -981,6 +982,7 @@ class TestExecuteTaskTextualAutoApproveInput:
         assert not isinstance(stream_input, Command)
         assert stream_input == {"messages": [{"role": "user", "content": "hi"}]}
         assert agent.contexts[0]["auto_approve"] is True
+        assert agent.contexts[0]["thread_id"] == "thread-1"
         key = approval_mode_key("thread-1")
         assert agent.contexts[0]["approval_mode_key"] == key
         assert agent.store_items == [
@@ -1112,6 +1114,8 @@ class TestExecuteTaskTextualAutoApproveInput:
         assert len(agent.contexts) == 2
         assert agent.contexts[0]["auto_approve"] is False
         assert agent.contexts[1]["auto_approve"] is True
+        assert agent.contexts[0]["thread_id"] == "thread-1"
+        assert agent.contexts[1]["thread_id"] == "thread-1"
         key = approval_mode_key("thread-1")
         assert agent.contexts[0]["approval_mode_key"] == key
         assert agent.contexts[1]["approval_mode_key"] == key
@@ -3413,3 +3417,29 @@ class TestPrintUsageTable:
         print_usage_table(stats, wall_time=0.01, console=console)
         output = buf.getvalue()
         assert output.strip() == ""
+
+
+class TestReadMentionedFile:
+    """Tests for `_read_mentioned_file` inline embedding."""
+
+    def test_embeds_small_file_in_text_fence(self, tmp_path: Path) -> None:
+        """A small mentioned file is embedded in a ```text fenced block."""
+        target = tmp_path / "note.txt"
+        target.write_text("alpha\nbeta", encoding="utf-8")
+
+        snippet = _read_mentioned_file(target, max_embed_bytes=1024)
+
+        assert "```text\nalpha\nbeta\n```" in snippet
+        assert f"Path: `{target}`" in snippet
+
+    def test_oversized_file_returns_reference_without_fence(
+        self, tmp_path: Path
+    ) -> None:
+        """A file over the embed threshold is referenced, not fenced."""
+        target = tmp_path / "big.txt"
+        target.write_text("x" * 4096, encoding="utf-8")
+
+        snippet = _read_mentioned_file(target, max_embed_bytes=1024)
+
+        assert "too large to embed" in snippet
+        assert "```" not in snippet

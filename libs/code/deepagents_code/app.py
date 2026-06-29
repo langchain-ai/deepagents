@@ -95,6 +95,7 @@ from deepagents_code.widgets.subagent_panel import SubagentPanel
 from deepagents_code.widgets.welcome import WelcomeBanner
 
 logger = logging.getLogger(__name__)
+_GRACEFUL_EXIT_WAIT_SECONDS = 2.0
 _monotonic = time.monotonic
 
 _DEFERRED_START_NOTICE = (
@@ -1986,10 +1987,11 @@ class DeepAgentsApp(App):
         """True while a `!` shell command is executing."""
 
         self._pending_shell_messages: list[BaseMessage] = []
-        """Non-incognito `!` command/output messages awaiting flush.
+        """Non-incognito `!` runs awaiting flush, one per command.
 
-        `!` runs outside the agent graph, so its command/output are buffered
-        here and written into thread state on the next user send (see
+        `!` runs outside the agent graph, so each run is buffered here as a
+        single structured `HumanMessage` (command + output) and written into
+        thread state on the next user send (see
         `_flush_pending_shell_messages`) — never proactively. `!!` (incognito)
         never appends here."""
 
@@ -2198,6 +2200,9 @@ class DeepAgentsApp(App):
 
         self._git_branch_refresh_task: asyncio.Task[None] | None = None
         """Latest background git-branch refresh task, if one is running."""
+
+        self._graceful_exit_task: asyncio.Task[None] | None = None
+        """Fire-and-forget task for deferred exit after agent worker cancellation."""
 
         self._last_typed_at: float | None = None
         """Typing-aware approval deferral state."""
@@ -6860,10 +6865,10 @@ class DeepAgentsApp(App):
             if output:
                 if incognito:
                     await self._mount_message(
-                        AppMessage(f"```\n{output}\n```", markdown=True),
+                        AppMessage(f"```text\n{output}\n```", markdown=True),
                     )
                 else:
-                    msg = AssistantMessage(f"```\n{output}\n```")
+                    msg = AssistantMessage(f"```text\n{output}\n```")
                     await self._mount_message(msg)
                     await msg.write_initial_content()
             else:
@@ -6915,8 +6920,8 @@ class DeepAgentsApp(App):
         their command/output never reach the checkpoint the model reads. Rather
         than write to thread state immediately (which would spend a model turn
         on output the user may never reference), the command/output are queued
-        here as a `HumanMessage`/`AIMessage` pair and flushed when the user
-        sends their next message (see `_flush_pending_shell_messages`). `!!`
+        here as a structured `HumanMessage` and flushed when the user sends
+        their next message (see `_flush_pending_shell_messages`). `!!`
         (incognito) callers skip this and stay local-only.
 
         Args:
@@ -6924,16 +6929,23 @@ class DeepAgentsApp(App):
             output: Combined stdout/stderr captured from the command.
             returncode: Process exit code, or `None` if unavailable.
         """
-        from langchain_core.messages import AIMessage, HumanMessage
+        from langchain_core.messages import HumanMessage
 
-        status = f"\n[Command exited with code {returncode}]" if returncode else ""
+        code = returncode if returncode is not None else "unknown"
         body = output or "(no output)"
-        self._pending_shell_messages.extend(
-            [
-                HumanMessage(content=f"!{command}"),
-                AIMessage(content=f"```\n{body}\n```{status}"),
-            ]
+        content = (
+            "<user_shell_command>\n"
+            "<command>\n"
+            f"{command}\n"
+            "</command>\n"
+            "<result>\n"
+            f"Exit code: {code}\n"
+            "Output:\n"
+            f"{body}\n"
+            "</result>\n"
+            "</user_shell_command>"
         )
+        self._pending_shell_messages.append(HumanMessage(content=content))
 
     async def _flush_pending_shell_messages(self) -> None:
         """Write buffered `!` command/output into thread state, then clear it.
@@ -9410,6 +9422,15 @@ class DeepAgentsApp(App):
             return_code: Exit code (non-zero for errors).
             message: Optional message to display on exit.
         """
+        # A second exit() while a graceful exit is already pending means the
+        # user is forcing the issue (e.g. mashing Ctrl+D/Ctrl+C). Tear down
+        # immediately rather than arming another bounded wait — the first call
+        # already ran cleanup and cancelled the worker, so re-running it would
+        # only make the force-quit wait out another window.
+        if self._graceful_exit_task is not None and not self._graceful_exit_task.done():
+            super().exit(result=result, return_code=return_code, message=message)
+            return
+
         # Merge in-flight turn stats before any cleanup that might raise.
         # When the agent worker is cancelled (e.g. Ctrl+D during a pending tool
         # call), the worker's finally block will see _inflight_turn_stats is
@@ -9471,7 +9492,72 @@ class DeepAgentsApp(App):
                 exc_info=True,
             )
         restore_iterm_cursor_guide()
-        super().exit(result=result, return_code=return_code, message=message)
+
+        # Defer super().exit() so the agent worker's cancellation handler
+        # (which, for remote agents, sends a server-side run cancel, and in all
+        # cases persists interrupt state) has a bounded window to complete
+        # before the event loop is torn down. This gives the server a chance to
+        # finish persisting the in-flight run's trace instead of being
+        # SIGTERM'd mid-request.
+        agent_worker = self._agent_worker if self._agent_running else None
+
+        if agent_worker is not None and not agent_worker.is_finished:
+
+            async def _graceful_exit() -> None:
+                from textual.worker import WorkerCancelled, WorkerFailed
+
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(agent_worker.wait()),
+                        timeout=_GRACEFUL_EXIT_WAIT_SECONDS,
+                    )
+                except (asyncio.CancelledError, WorkerCancelled):
+                    # Expected: exit() cancelled the worker above, so its
+                    # cancellation handler ran to completion. Nothing to flag.
+                    logger.debug(
+                        "Agent worker cancelled cleanly before app exit",
+                        exc_info=True,
+                    )
+                except (TimeoutError, WorkerFailed):
+                    # The worker did not finish within the window, so the
+                    # in-flight run's server-side trace may be incomplete.
+                    # Surface above debug so the loss isn't silent.
+                    logger.warning(
+                        "Agent worker did not finish persisting before app "
+                        "exit; the in-flight run's trace may be incomplete",
+                        exc_info=True,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Agent worker wait raised unexpectedly before app exit",
+                        exc_info=True,
+                    )
+                finally:
+                    # This is the only call that stops the event loop, so it
+                    # must run on every path the try/except can take, including
+                    # an unexpected BaseException (e.g. SystemExit) propagating
+                    # out of the wait. Guard the teardown itself so a failure
+                    # here can't leave this fire-and-forget task with an
+                    # unretrieved exception; a non-Exception (SystemExit,
+                    # KeyboardInterrupt) still propagates. Explicit super()
+                    # form: the zero-arg super() can't resolve its implicit
+                    # __class__/self binding inside this nested coroutine, so
+                    # name the class and instance.
+                    try:
+                        super(DeepAgentsApp, self).exit(
+                            result=result,
+                            return_code=return_code,
+                            message=message,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "super().exit() raised during deferred teardown",
+                            exc_info=True,
+                        )
+
+            self._graceful_exit_task = asyncio.ensure_future(_graceful_exit())
+        else:
+            super().exit(result=result, return_code=return_code, message=message)
 
     def _get_subagent_panel(self) -> SubagentPanel | None:
         """Return the subagent fan-out panel, or None if not yet mounted.
@@ -10162,12 +10248,17 @@ class DeepAgentsApp(App):
         )
         self.push_screen(screen, handle_result)
 
-    async def _show_auth_manager(self) -> None:
+    async def _show_auth_manager(self, *, initial_provider: str | None = None) -> None:
         """Show the `/auth` credential manager modal.
 
         State changes persist via `auth_store`; the manager refreshes its
         own option labels after each save/delete, so this caller only needs
         to refocus the chat input on close.
+
+        Args:
+            initial_provider: Provider to start highlighted — set when
+                reopening after an install-on-select so the cursor lands on
+                the just-installed provider instead of the top of the list.
         """
         from deepagents_code.widgets.auth import AuthManagerScreen
 
@@ -10182,13 +10273,17 @@ class DeepAgentsApp(App):
                 from functools import partial
 
                 self.call_later(
-                    partial(self._install_provider_then_reopen_auth, extra),
+                    partial(
+                        self._install_provider_then_reopen_auth,
+                        extra,
+                        provider=screen.pending_install_provider,
+                    ),
                 )
                 return
             task = asyncio.create_task(self._resume_server_after_auth_change())
             task.add_done_callback(_log_task_exception)
 
-        screen = AuthManagerScreen()
+        screen = AuthManagerScreen(initial_provider=initial_provider)
         self.push_screen(screen, handle_result)
 
     def on_auth_manager_screen_credential_saved(self, event: Message) -> None:
@@ -10258,14 +10353,18 @@ class DeepAgentsApp(App):
         await self._retry_startup_with_model(model_spec, extra_kwargs=extra_kwargs)
         return True
 
-    async def _install_provider_then_reopen_auth(self, extra: str) -> None:
+    async def _install_provider_then_reopen_auth(
+        self, extra: str, *, provider: str | None = None
+    ) -> None:
         """Install a provider's extra from `/auth`, then reopen the manager.
 
         Args:
             extra: The extra that installs the selected provider's integration.
+            provider: The provider being installed, highlighted in the
+                reopened manager so the cursor lands on it ready for a key.
         """
         if await self._install_extra(extra, auto_restart=True):
-            await self._show_auth_manager()
+            await self._show_auth_manager(initial_provider=provider)
             return
         # `_install_extra` returns `False` both when the install genuinely
         # failed (it already surfaced the reason) and when the package landed
@@ -10277,7 +10376,7 @@ class DeepAgentsApp(App):
             from deepagents_code.model_config import clear_caches
 
             clear_caches()
-            await self._show_auth_manager()
+            await self._show_auth_manager(initial_provider=provider)
             return
         if ready is None:
             # Introspection couldn't confirm the state (rare). Don't dead-end
@@ -10288,6 +10387,12 @@ class DeepAgentsApp(App):
                     "Reopen `/auth` to add a key once it has.",
                 ),
             )
+            return
+        # `ready is False`: the extra genuinely didn't install. `_install_extra`
+        # has already surfaced the reason to the user, so stay in chat rather
+        # than reopen — but log it so an "install button did nothing" report is
+        # debuggable without relying on that sibling method's invariant.
+        logger.debug("Provider extra %r not importable after install attempt", extra)
 
     def _switch_agent(self, agent_name: str) -> None:
         """Switch to a different agent and hot-restart the backing server.

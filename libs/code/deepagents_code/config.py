@@ -365,6 +365,12 @@ _TRACING_API_KEY_ENV_VARS = ("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY")
 _TRACING_ENDPOINT_ENV_VARS = ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT")
 """Env vars that point tracing at a non-default (self-hosted/proxied) endpoint."""
 
+_TRACING_RUNS_ENDPOINTS_ENV_VARS = (
+    "LANGSMITH_RUNS_ENDPOINTS",
+    "LANGCHAIN_RUNS_ENDPOINTS",
+)
+"""Env vars the LangSmith SDK parses into replica trace ingestion targets."""
+
 
 class _LangSmithProfileConfig(Protocol):
     """Subset of LangSmith profile client config fields used at bootstrap."""
@@ -522,21 +528,26 @@ def _disable_orphaned_tracing() -> None:
     resolvable, unset the flags so tracing never starts.
 
     A custom endpoint (`LANGSMITH_ENDPOINT`/`LANGCHAIN_ENDPOINT`, or a profile
-    `api_url`) signals a self-hosted or proxied LangSmith that may ingest without
-    an API key, so an explicitly configured endpoint is trusted and left alone
-    rather than risk disabling a working keyless setup. The SDK loggers are
-    quieted separately by `_quiet_sdk_tracing_logging`, so any residual ingest
-    errors stay off the TUI.
+    `api_url`) or replica endpoints (`LANGSMITH_RUNS_ENDPOINTS`/
+    `LANGCHAIN_RUNS_ENDPOINTS`) signal tracing can upload without a top-level
+    API key, so those explicitly configured targets are trusted and left alone.
+    The SDK loggers are quieted separately by `_quiet_sdk_tracing_logging`, so
+    any residual ingest errors stay off the TUI.
     """
     global _orphaned_tracing_disabled_notice  # noqa: PLW0603
 
     if not _tracing_enabled():
         return
 
+    env = dict(os.environ)
     has_custom_endpoint = any(
-        (os.environ.get(var) or "").strip() for var in _TRACING_ENDPOINT_ENV_VARS
+        (env.get(var) or "").strip() for var in _TRACING_ENDPOINT_ENV_VARS
     )
-    if has_custom_endpoint or _has_langsmith_profile_custom_endpoint():
+    if (
+        has_custom_endpoint
+        or _has_langsmith_profile_custom_endpoint()
+        or _has_langsmith_runs_endpoints_from(env)
+    ):
         return
 
     has_key = any(
@@ -576,7 +587,7 @@ def _apply_default_langsmith_project() -> None:
 
 
 def apply_stored_langsmith_auth(*, replace_project: bool = False) -> None:
-    """Apply a `/auth`-stored LangSmith key and tracing settings now.
+    """Apply a `/auth`-stored LangSmith key, tracing, and redaction now.
 
     Args:
         replace_project: Whether the stored LangSmith project should replace
@@ -591,6 +602,7 @@ def apply_stored_langsmith_auth(*, replace_project: bool = False) -> None:
     _apply_stored_langsmith_tracing(replace_project=replace_project)
     _disable_orphaned_tracing()
     _apply_default_langsmith_project()
+    configure_langsmith_secret_redaction()
 
 
 def _apply_stored_langsmith_tracing(*, replace_project: bool = False) -> None:
@@ -2621,6 +2633,107 @@ def get_langsmith_project_name() -> str | None:
     )
 
 
+def is_langsmith_redaction_enabled() -> bool:
+    """Return whether LangSmith secret redaction is enabled for agent traces."""
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("tracing.langsmith_redact")
+    if option is None:
+        return True
+    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    return bool(value)
+
+
+def configure_langsmith_secret_redaction() -> bool:
+    """Install the LangSmith SDK secret anonymizer for active agent tracing.
+
+    This is a fail-closed security control: when redaction is requested but the
+    redacting client cannot be installed, tracing is disabled rather than risk
+    uploading unredacted secrets to LangSmith.
+
+    Returns:
+        `True` when a redacting LangSmith client was configured, `False` when
+        tracing is inactive, has no upload target, redaction is disabled, or the
+        redacting client could not be installed (tracing is then disabled).
+    """
+    from deepagents_code._env_vars import LANGSMITH_REDACT
+
+    env = dict(os.environ)
+    # Cheap env-var checks first so the common (tracing-off) startup path skips
+    # the TOML read in `is_langsmith_redaction_enabled`.
+    if not (_tracing_enabled_from(env) and _tracing_can_upload_from(env)):
+        return False
+    if not is_langsmith_redaction_enabled():
+        logger.warning(
+            "LangSmith tracing is active but secret redaction is disabled via "
+            "%s; secrets may be uploaded to traces unredacted.",
+            LANGSMITH_REDACT,
+        )
+        return False
+
+    try:
+        from langsmith import Client, configure
+        from langsmith.anonymizer import create_secret_anonymizer
+
+        api_key = _resolve_env_var_from(
+            env,
+            "LANGSMITH_API_KEY",
+        ) or _resolve_env_var_from(env, "LANGCHAIN_API_KEY")
+        api_url = _tracing_endpoint_from(env)
+        kwargs: dict[str, Any] = {"anonymizer": create_secret_anonymizer()}
+        if api_key:
+            kwargs["api_key"] = api_key
+        if api_url:
+            kwargs["api_url"] = api_url
+        # Reinstall the redacting client on every call rather than caching it:
+        # callers such as `/auth` re-authentication may rotate credentials, and
+        # a cached client could leave a stale or non-redacting client in place —
+        # a fail-open risk this control exists to prevent.
+        configure(client=Client(**kwargs))
+    except Exception:
+        logger.exception(
+            "Failed to install LangSmith secret redaction; disabling tracing so "
+            "unredacted secrets are not uploaded.",
+        )
+        _fail_closed_disable_tracing()
+        return False
+
+    logger.info("LangSmith secret redaction enabled for agent traces.")
+    return True
+
+
+def _fail_closed_disable_tracing() -> None:
+    """Best-effort disable LangSmith tracing after a redaction setup failure.
+
+    Tries the SDK's global tracing switch first. If even that call fails, the
+    canonical tracing-enable env vars (and their `DEEPAGENTS_CODE_`-prefixed
+    forms) are cleared as a last-resort barrier: the LangChain tracer consults
+    the global switch first but falls back to these env vars, so removing them
+    prevents an unredacted upload when the global switch could not be set.
+    """
+    try:
+        from langsmith import configure
+
+        configure(enabled=False)
+    except Exception:
+        logger.exception(
+            "Failed to disable LangSmith tracing via the SDK after a redaction "
+            "setup failure; clearing tracing env vars as a fallback.",
+        )
+    else:
+        return
+
+    from deepagents_code.model_config import _ENV_PREFIX
+
+    for var in _TRACING_ENABLE_ENV_VARS:
+        os.environ.pop(var, None)
+        os.environ.pop(f"{_ENV_PREFIX}{var}", None)
+
+
 def get_langsmith_replica_projects() -> list[str]:
     """Extra LangSmith project names to dual-write agent traces to.
 
@@ -2788,6 +2901,62 @@ def _tracing_has_credentials_from(env: dict[str, str]) -> bool:
     """
     has_key = any(_resolve_env_var_from(env, var) for var in _TRACING_API_KEY_ENV_VARS)
     return has_key or _has_langsmith_profile_credentials(env)
+
+
+def _has_langsmith_runs_endpoints_from(env: dict[str, str]) -> bool:
+    """Return whether replica trace ingestion targets are configured.
+
+    Mirrors the LangSmith SDK's accepted `LANGSMITH_RUNS_ENDPOINTS` shapes: a
+    JSON list of `{"api_url": "...", "api_key": "..."}` objects, or a JSON
+    object mapping URL to API key. Invalid entries are ignored because the SDK
+    ignores them too.
+
+    Args:
+        env: Environment mapping to read.
+    """
+    raw = next(
+        (
+            env[var]
+            for var in _TRACING_RUNS_ENDPOINTS_ENV_VARS
+            if (env.get(var) or "").strip()
+        ),
+        None,
+    )
+    if raw is None:
+        return False
+
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return False
+
+    if isinstance(parsed, list):
+        return any(
+            isinstance(item, dict)
+            and isinstance(item.get("api_url"), str)
+            and isinstance(item.get("api_key"), str)
+            for item in parsed
+        )
+    if isinstance(parsed, dict):
+        return any(isinstance(value, str) for value in parsed.values())
+    return False
+
+
+def _tracing_can_upload_from(env: dict[str, str]) -> bool:
+    """Return whether tracing has credentials or an ingestion endpoint.
+
+    Custom and replica endpoints are supported as keyless ingestion targets, so
+    redaction must be configured whenever tracing could still upload without an
+    API key.
+
+    Args:
+        env: Environment mapping to read.
+    """
+    return (
+        _tracing_has_credentials_from(env)
+        or _tracing_endpoint_from(env) is not None
+        or _has_langsmith_runs_endpoints_from(env)
+    )
 
 
 def _tracing_endpoint_from(env: dict[str, str]) -> str | None:

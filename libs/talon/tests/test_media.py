@@ -41,6 +41,17 @@ def test_build_inbound_text_bounds_document_extraction(tmp_path: Path) -> None:
     assert "large.txt" in text
 
 
+def test_build_inbound_text_includes_video_path(tmp_path: Path) -> None:
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"video")
+
+    text = build_inbound_text("watch this", {"media_type": "video", "media_paths": [str(video)]})
+
+    assert "watch this" in text
+    assert f"Received video attachment: {video}" in text
+    assert "unsupported" not in text
+
+
 def test_build_model_content_uses_inbound_image_data_url(tmp_path: Path) -> None:
     image = tmp_path / "image.png"
     image.write_bytes(b"not-a-real-png")

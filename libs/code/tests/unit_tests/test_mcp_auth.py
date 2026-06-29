@@ -8,7 +8,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 from unittest.mock import patch
 
 import pytest
@@ -102,6 +102,23 @@ def _make_oauth_metadata(token_endpoint: str = "https://auth.example/token"):
         token_endpoint=AnyHttpUrl(token_endpoint),
         response_types_supported=["code"],
         grant_types_supported=["authorization_code", "refresh_token"],
+    )
+
+
+def _make_client_info_with_secret(
+    auth_method: Literal["client_secret_basic", "client_secret_post", "none"],
+):
+    from mcp.shared.auth import AnyUrl, OAuthClientInformationFull
+
+    # Public clients (`none`) carry no secret; confidential clients do.
+    client_secret = None if auth_method == "none" else "client-secret"
+    return OAuthClientInformationFull(
+        client_id="client-id",
+        client_secret=client_secret,
+        token_endpoint_auth_method=auth_method,
+        redirect_uris=[AnyUrl("http://localhost/callback")],
+        grant_types=["authorization_code", "refresh_token"],
+        response_types=["code"],
     )
 
 
@@ -495,6 +512,66 @@ class TestExpiryAwareOAuthClientProvider:
         assert "/.well-known/oauth-protected-resource" in str(discovery_request.url)
         await flow.aclose()
 
+    @pytest.mark.parametrize(
+        ("interactive", "expected"),
+        [(False, True), (True, False)],
+    )
+    async def test_delegated_flow_toggles_reauth_log_suppression(
+        self,
+        fake_home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        interactive: bool,
+        expected: bool,
+    ) -> None:
+        """The contextvar is set during delegation only for non-interactive runs.
+
+        Guards the wiring between `build_oauth_provider(interactive=...)` and the
+        filter: the SDK flow logs synchronously inside the delegated generator,
+        so the suppression flag must be visible there. A fake SDK flow records
+        what the contextvar reads at that point.
+        """
+        del fake_home
+        import httpx
+        from mcp.client.auth import OAuthClientProvider
+
+        from deepagents_code.mcp_auth import (
+            _SUPPRESS_EXPECTED_REAUTH_LOGS,
+            build_oauth_provider,
+        )
+
+        observed: dict[str, bool] = {}
+
+        async def fake_flow(
+            self: OAuthClientProvider,
+            request: httpx.Request,
+        ):
+            del self
+            observed["suppressed"] = _SUPPRESS_EXPECTED_REAUTH_LOGS.get()
+            _ = yield request
+
+        monkeypatch.setattr(OAuthClientProvider, "async_auth_flow", fake_flow)
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        await storage.set_tokens(_make_tokens())
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=interactive,
+        )
+        flow = provider.async_auth_flow(
+            httpx.Request("POST", "https://mcp.notion.com/mcp")
+        )
+        await anext(flow)
+        await flow.aclose()
+
+        assert observed["suppressed"] is expected
+        # The flag never leaks past the flow.
+        assert _SUPPRESS_EXPECTED_REAUTH_LOGS.get() is False
+
     async def test_delegated_flow_forwards_responses_on_every_iteration(
         self,
         fake_home: Path,
@@ -542,6 +619,198 @@ class TestExpiryAwareOAuthClientProvider:
             "/.well-known/oauth-protected-resource"
         )
         await flow.aclose()
+
+
+@pytest.mark.usefixtures("fake_home")
+class TestBasicAuthClientIdStripping:
+    """Tests for dropping the duplicate body `client_id` under HTTP Basic auth."""
+
+    def _build_provider(
+        self,
+        auth_method: Literal["client_secret_basic", "client_secret_post", "none"],
+    ):
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        storage = FileTokenStorage("pylon")
+        provider = build_oauth_provider(
+            server_name="pylon",
+            server_url="https://mcp.usepylon.com/mcp",
+            storage=storage,
+            interactive=False,
+        )
+        provider.context.client_info = _make_client_info_with_secret(auth_method)
+        return provider
+
+    def test_basic_auth_drops_body_client_id(self) -> None:
+        """`client_secret_basic` carries credentials in the header, not the body.
+
+        This wrapper strips the redundant body `client_id`. The SDK itself
+        already strips `client_secret` for Basic auth, which the final
+        assertion pins (see `test_sdk_still_injects_client_id_under_basic_auth`
+        for the contract the wrapper depends on).
+        """
+        provider = self._build_provider("client_secret_basic")
+
+        data, headers = provider.context.prepare_token_auth(
+            {
+                "grant_type": "authorization_code",
+                "client_id": "client-id",
+                "client_secret": "client-secret",
+            },
+            {"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+        assert headers["Authorization"].startswith("Basic ")
+        assert "client_id" not in data
+        assert "client_secret" not in data  # stripped by the SDK, not this wrapper
+
+    def test_post_auth_retains_body_client_id(self) -> None:
+        """`client_secret_post` keeps both fields in the body and adds no header."""
+        provider = self._build_provider("client_secret_post")
+
+        data, headers = provider.context.prepare_token_auth(
+            {
+                "grant_type": "authorization_code",
+                "client_id": "client-id",
+            },
+            {"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+        assert "Authorization" not in headers
+        assert data["client_id"] == "client-id"
+        assert data["client_secret"] == "client-secret"
+
+    def test_none_auth_retains_body_client_id(self) -> None:
+        """`none` (public client) sends no header, so the body keeps `client_id`."""
+        provider = self._build_provider("none")
+
+        data, headers = provider.context.prepare_token_auth(
+            {
+                "grant_type": "authorization_code",
+                "client_id": "client-id",
+            },
+            {"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+        assert "Authorization" not in headers
+        assert data["client_id"] == "client-id"
+
+    def test_sdk_still_injects_client_id_under_basic_auth(self) -> None:
+        """Pin the SDK contract this wrapper depends on.
+
+        Unwrapped, the SDK leaves `client_id` in the token-request body under
+        Basic auth (it strips only `client_secret`). If upstream ever strips
+        `client_id` too, this wrapper becomes a silent no-op; this test fails
+        loudly instead, flagging the workaround as obsolete.
+        """
+        from mcp.client.auth.oauth2 import OAuthContext
+
+        provider = self._build_provider("client_secret_basic")
+
+        # Call the SDK's method via the class to bypass the instance-level wrap
+        # installed in `__init__` and observe the SDK's own behavior.
+        data, headers = OAuthContext.prepare_token_auth(
+            provider.context,
+            {
+                "grant_type": "authorization_code",
+                "client_id": "client-id",
+                "client_secret": "client-secret",
+            },
+            {"Content-Type": "application/x-www-form-urlencoded"},
+        )
+
+        assert headers["Authorization"].startswith("Basic ")
+        assert data["client_id"] == "client-id"
+        assert "client_secret" not in data
+
+
+class TestExpectedReauthLogFilter:
+    """Tests for suppressing noisy SDK OAuth logs during non-interactive reauth."""
+
+    def test_suppresses_expected_sdk_oauth_logs(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Expected non-interactive reauth logs are replaced by our login hint."""
+        from deepagents_code.mcp_auth import _SUPPRESS_EXPECTED_REAUTH_LOGS
+
+        sdk_logger = logging.getLogger("mcp.client.auth.oauth2")
+        caplog.set_level(logging.WARNING, logger="mcp.client.auth.oauth2")
+        server = "notion"
+        reauth = MCPReauthRequiredError(server)
+        msg = "boom"
+        unexpected = RuntimeError(msg)
+        token = _SUPPRESS_EXPECTED_REAUTH_LOGS.set(True)
+        try:
+            sdk_logger.warning("Token refresh failed: 400")
+            sdk_logger.error(
+                "OAuth flow error",
+                exc_info=(type(reauth), reauth, reauth.__traceback__),
+            )
+            sdk_logger.error(
+                "OAuth flow error",
+                exc_info=(type(unexpected), unexpected, unexpected.__traceback__),
+            )
+        finally:
+            _SUPPRESS_EXPECTED_REAUTH_LOGS.reset(token)
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert messages == ["OAuth flow error"]
+        exc_info = caplog.records[0].exc_info
+        assert exc_info is not None
+        assert isinstance(exc_info[1], RuntimeError)
+
+    def test_transient_refresh_failure_is_not_suppressed(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Transient refresh statuses (5xx/429) stay visible, not relabeled reauth.
+
+        The SDK logs `Token refresh failed: <status>` for any non-200. A `503`
+        means the provider is down and the refresh token is still valid, so the
+        operator must see it rather than be steered toward a pointless re-login.
+        """
+        from deepagents_code.mcp_auth import _SUPPRESS_EXPECTED_REAUTH_LOGS
+
+        sdk_logger = logging.getLogger("mcp.client.auth.oauth2")
+        caplog.set_level(logging.WARNING, logger="mcp.client.auth.oauth2")
+        token = _SUPPRESS_EXPECTED_REAUTH_LOGS.set(True)
+        try:
+            sdk_logger.warning("Token refresh failed: 503")
+            sdk_logger.warning("Token refresh failed: 429")
+            sdk_logger.warning("Token refresh failed: 400")
+        finally:
+            _SUPPRESS_EXPECTED_REAUTH_LOGS.reset(token)
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert messages == [
+            "Token refresh failed: 503",
+            "Token refresh failed: 429",
+        ]
+
+    def test_passes_through_when_not_suppressing(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """With the contextvar unset, the process-wide filter is inert.
+
+        The filter is installed on the SDK logger for every consumer of that
+        logger, so its default-off behavior guards against globally swallowing
+        real OAuth errors outside a non-interactive reauth window.
+        """
+        sdk_logger = logging.getLogger("mcp.client.auth.oauth2")
+        caplog.set_level(logging.WARNING, logger="mcp.client.auth.oauth2")
+        reauth = MCPReauthRequiredError("notion")
+
+        # No `_SUPPRESS_EXPECTED_REAUTH_LOGS.set(...)`: contextvar at default.
+        sdk_logger.warning("Token refresh failed: 400")
+        sdk_logger.error(
+            "OAuth flow error",
+            exc_info=(type(reauth), reauth, reauth.__traceback__),
+        )
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert messages == ["Token refresh failed: 400", "OAuth flow error"]
 
 
 class TestFindReauthRequired:
@@ -774,6 +1043,34 @@ class TestBuildOAuthProvider:
         assert metadata.token_endpoint_auth_method == "none"
         assert metadata.redirect_uris is not None
         assert [str(uri) for uri in metadata.redirect_uris] == [_SLACK_REDIRECT_URI]
+
+    def test_interactive_mode_maps_to_reauth_log_suppression(
+        self,
+        fake_home: Path,
+    ) -> None:
+        """Only non-interactive providers suppress expected reauth SDK logs.
+
+        Interactive sessions keep the SDK's OAuth diagnostics; non-interactive
+        runs replace the expected reauth noise with our login hint.
+        """
+        del fake_home
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        non_interactive = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=FileTokenStorage("notion"),
+            interactive=False,
+        )
+        interactive = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=FileTokenStorage("notion"),
+            interactive=True,
+        )
+
+        assert cast("Any", non_interactive)._suppress_expected_reauth_logs is True
+        assert cast("Any", interactive)._suppress_expected_reauth_logs is False
 
     async def test_refresh_uses_cached_oauth_metadata_endpoint(
         self,

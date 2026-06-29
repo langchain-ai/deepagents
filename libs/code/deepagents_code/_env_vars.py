@@ -122,6 +122,9 @@ KITTY_KEYBOARD = "DEEPAGENTS_CODE_KITTY_KEYBOARD"
 LANGSMITH_PROJECT = "DEEPAGENTS_CODE_LANGSMITH_PROJECT"
 """Override LangSmith project name for agent traces."""
 
+LANGSMITH_REDACT = "DEEPAGENTS_CODE_LANGSMITH_REDACT"
+"""Toggle LangSmith secret redaction for agent traces (defaults to on)."""
+
 LANGSMITH_REPLICA_PROJECTS = "DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS"
 """Comma-separated LangSmith project names to *also* write agent traces to.
 

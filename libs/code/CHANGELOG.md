@@ -2,6 +2,19 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.27](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.26...deepagents-code==0.1.27) (2026-06-26)
+
+### Features
+
+* Show last update check time in `dcode doctor` ([#4307](https://github.com/langchain-ai/deepagents/issues/4307)) ([b669f37](https://github.com/langchain-ai/deepagents/commit/b669f37fb08998cfbf983da76f57822215614e7b))
+
+### Bug Fixes
+
+* `dcode doctor` shows `not configured` for unset tracing ([#4318](https://github.com/langchain-ai/deepagents/issues/4318)) ([e323d0c](https://github.com/langchain-ai/deepagents/commit/e323d0c7d91f3b11e03a016c14cf52008dc66b55))
+* Drop duplicate token-request `client_id` under Basic auth ([#4323](https://github.com/langchain-ai/deepagents/issues/4323)) ([426dfad](https://github.com/langchain-ai/deepagents/commit/426dfad3ea1e453914cb87efa8fc70fb85a9efcb))
+* Include skill invocations in input history ([#4211](https://github.com/langchain-ai/deepagents/issues/4211)) ([7b8d0b2](https://github.com/langchain-ai/deepagents/commit/7b8d0b2ec184e0d9a0cbe858a0d9a7128791969d))
+* Offload `create_model` in server graph factory to unblock Codex ([#4324](https://github.com/langchain-ai/deepagents/issues/4324)) ([064ea0c](https://github.com/langchain-ai/deepagents/commit/064ea0c6851353d0b0bc347a0758149765688945))
+
 ## [0.1.26](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.25...deepagents-code==0.1.26) (2026-06-26)
 
 ### Bug Fixes

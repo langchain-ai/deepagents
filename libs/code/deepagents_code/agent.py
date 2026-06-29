@@ -9,13 +9,14 @@ import re
 import shutil
 import tempfile
 import tomllib
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, LocalShellBackend
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
+from deepagents.middleware import MemoryMiddleware, RubricMiddleware, SkillsMiddleware
 
 # Backwards-compat flag: SDKs before 0.5.4 accept only `list[str]` for
 # `SkillsMiddleware.sources`; newer SDKs expose the `SkillSource` alias
@@ -1249,6 +1250,8 @@ def create_cli_agent(
     enable_skills: bool = True,
     enable_shell: bool = True,
     enable_interpreter: bool = False,
+    rubric_model: str | BaseChatModel | None = None,
+    rubric_max_iterations: int = 3,
     checkpointer: BaseCheckpointSaver | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
     cwd: str | Path | None = None,
@@ -1325,6 +1328,13 @@ def create_cli_agent(
             `interpreter_ptc_acknowledge_unsafe=True`.
 
             Requires the core `langchain-quickjs` dependency.
+        rubric_model: Grader model for `RubricMiddleware`.
+
+            A `'provider:model'` string or `BaseChatModel`.
+
+            When `None`, the main `model` is reused.
+        rubric_max_iterations: Grader iterations per rubric attempt before the
+            agent terminates with `'max_iterations_reached'`.
         checkpointer: Optional checkpointer for session persistence.
             When `None`, the graph is compiled without a checkpointer.
         mcp_server_info: MCP server metadata to surface in the system prompt.
@@ -1706,6 +1716,21 @@ def create_cli_agent(
     agent_middleware.append(
         create_summarization_tool_middleware(model, composite_backend)
     )
+
+    # Rubric-driven self-evaluation. The middleware is a no-op until a
+    # `rubric` is supplied on invocation state, so installing it is safe.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="The middleware `RubricMiddleware` is in beta",
+            category=Warning,
+        )
+        agent_middleware.append(
+            RubricMiddleware(
+                model=rubric_model if rubric_model is not None else model,
+                max_iterations=rubric_max_iterations,
+            )
+        )
 
     # Create the agent
     all_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = [

@@ -636,6 +636,8 @@ PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
     #                 SDK reads ANTHROPIC_BASE_URL.
     #   azure_openai  AzureChatOpenAI and the openai SDK both read
     #                 AZURE_OPENAI_ENDPOINT.
+    #   baseten       ChatBaseten reads BASETEN_BASE_URL, then falls back to
+    #                 BASETEN_API_BASE.
     #   cohere        langchain_cohere passes base_url=None, so the cohere SDK's
     #                 CO_API_URL is what takes effect.
     #   deepseek      ChatDeepSeek reads DEEPSEEK_API_BASE (alias base_url).
@@ -662,16 +664,18 @@ PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
     # sit on the openai SDK, whose only base-URL env var is the shared
     # OPENAI_BASE_URL. That name is intentionally NOT listed under those
     # providers: writing or clearing it under another provider's name would
-    # clobber the user's real OpenAI endpoint. In practice the integration always
-    # passes base_url explicitly, so the shared fallback never fires.
+    # clobber the user's real OpenAI endpoint. Each is listed above under its own
+    # dedicated name(s) instead. In practice the integration always passes
+    # base_url explicitly, so the shared fallback never fires.
     #
-    # Omitted (no dedicated, provider-specific endpoint env var): baseten
-    # (hardcoded default + base_url arg), litellm (api_base arg, per-provider
-    # env), google_vertexai (endpoint derived from the region). A `/auth`
-    # endpoint for these still resolves through the stored-credential step of
-    # `get_base_url` and reaches the model as the `base_url` kwarg.
+    # Omitted (no dedicated, provider-specific endpoint env var): litellm
+    # (api_base arg, per-provider env), google_vertexai (endpoint derived from the
+    # region). A `/auth` endpoint for these still resolves through the
+    # stored-credential step of `get_base_url` and reaches the model as the
+    # `base_url` kwarg.
     "anthropic": ("ANTHROPIC_BASE_URL", "ANTHROPIC_API_URL"),
     "azure_openai": ("AZURE_OPENAI_ENDPOINT",),
+    "baseten": ("BASETEN_BASE_URL", "BASETEN_API_BASE"),
     "cohere": ("CO_API_URL",),
     "deepseek": ("DEEPSEEK_API_BASE",),
     "fireworks": ("FIREWORKS_BASE_URL", "FIREWORKS_API_BASE"),
@@ -689,13 +693,14 @@ PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
 }
 """Every base-URL env var a provider's SDK may read.
 
-Element `[0]` is the *canonical* name — the one we write a stored endpoint to,
-and the one `get_base_url` reads through `resolve_env_var` so `base_url` gets the
-same `DEEPAGENTS_CODE_*` > plain-var precedence as API keys. The remaining names
-are alternates the SDK might also honor; `apply_stored_credentials` clears them
-when applying or resetting an endpoint, so a stale value (e.g. an inherited
-gateway URL) can't leak through. Clearing every name is what lets the write path
-treat the canonical as authoritative regardless of which name the SDK prefers.
+Element `[0]` is the *canonical* name — the one we write a stored endpoint to.
+`get_base_url` reads each name in tuple order through `resolve_env_var`, so every
+base URL gets the same `DEEPAGENTS_CODE_*` > plain-var precedence as API keys.
+The remaining names are alternates the SDK might also honor;
+`apply_stored_credentials` clears them when applying or resetting an endpoint, so
+a stale value (e.g. an inherited gateway URL) can't leak through. Clearing every
+name is what lets the write path treat the canonical as authoritative regardless
+of which name the SDK prefers.
 
 The key and its endpoint are a coherent pair: a gateway key only works against
 the gateway URL, a provider-native key only against the provider's own endpoint,
@@ -1968,6 +1973,26 @@ def get_credential_env_var(provider: str) -> str | None:
     return PROVIDER_API_KEY_ENV.get(provider)
 
 
+def get_base_url_env_vars(provider: str) -> tuple[str, ...]:
+    """Return base-URL env var names for a provider in resolution order.
+
+    Checks the config file's `base_url_env` first (user override), then falls
+    back to the hardcoded `PROVIDER_BASE_URL_ENV` map.
+
+    Args:
+        provider: Provider name.
+
+    Returns:
+        Environment variable names, or an empty tuple if the provider has no
+        base-URL env var (config-declared or built-in).
+    """
+    config = ModelConfig.load()
+    config_env = config.get_base_url_env(provider)
+    if config_env:
+        return (config_env,)
+    return PROVIDER_BASE_URL_ENV.get(provider, ())
+
+
 def get_base_url_env_var(provider: str) -> str | None:
     """Return the canonical base-URL env var name for a provider.
 
@@ -1982,11 +2007,8 @@ def get_base_url_env_var(provider: str) -> str | None:
         Environment variable name, or None if the provider has no base-URL env
         var (config-declared or built-in).
     """
-    config = ModelConfig.load()
-    config_env = config.get_base_url_env(provider)
-    if config_env:
-        return config_env
-    return _canonical_base_url_env(provider)
+    env_vars = get_base_url_env_vars(provider)
+    return env_vars[0] if env_vars else None
 
 
 def get_default_base_url_env(provider: str) -> str | None:
@@ -2010,11 +2032,11 @@ def get_default_base_url_env(provider: str) -> str | None:
         The `DEEPAGENTS_CODE_`-prefixed env var name still in effect after a
         blank save, or `None`.
     """
-    env_var = get_base_url_env_var(provider)
-    if not env_var:
-        return None
-    prefixed = f"{_ENV_PREFIX}{env_var}"
-    return prefixed if os.environ.get(prefixed) else None
+    for env_var in get_base_url_env_vars(provider):
+        prefixed = f"{_ENV_PREFIX}{env_var}"
+        if os.environ.get(prefixed):
+            return prefixed
+    return None
 
 
 def is_service(name: str) -> bool:
@@ -2468,16 +2490,17 @@ class ModelConfig:
         Resolution order (first match wins):
 
         1. `base_url` in the provider's `config.toml` section.
-        2. The provider's base-URL env var via `resolve_env_var`, so
-            `DEEPAGENTS_CODE_{VAR}` beats the plain `{VAR}` — mirroring how API
-            keys resolve. This also surfaces the value `apply_stored_credentials`
-            bridged in from a `/auth` credential, and the gateway-provisioned
-            URL in the default (no-override) case.
+        2. The provider's base-URL env vars via `resolve_env_var`, in provider
+            precedence order, so `DEEPAGENTS_CODE_{VAR}` beats the plain `{VAR}`
+            for each name — mirroring how API keys resolve. This also surfaces
+            the value `apply_stored_credentials` bridged in from a `/auth`
+            credential, and the gateway-provisioned URL in the default
+            (no-override) case.
         3. The endpoint stored with a `/auth` credential. This is the source
             for providers that have no base-URL env var (e.g. an OpenAI-
-            compatible provider like OpenRouter, Groq, or Baseten): step 2 has
-            no name to read, so the stored endpoint is taken directly. It then
-            reaches the model as the `base_url` constructor kwarg via
+            compatible provider like Litellm): step 2 has no name to read, so
+            the stored endpoint is taken directly. It then reaches the model as
+            the `base_url` constructor kwarg via
             `_get_provider_kwargs`, the same path a `config.toml` literal uses.
             For providers that *do* have an env var, the stored endpoint already
             arrives via step 2 (it was bridged onto the env var), so this step
@@ -2504,12 +2527,16 @@ class ModelConfig:
         config_url = provider.get("base_url") if provider else None
         if config_url:
             return config_url
-        env_var = (provider.get("base_url_env") if provider else None) or (
-            _canonical_base_url_env(provider_name)
+        config_env = provider.get("base_url_env") if provider else None
+        env_vars = (
+            (config_env,)
+            if config_env
+            else PROVIDER_BASE_URL_ENV.get(provider_name, ())
         )
-        resolved = resolve_env_var(env_var) if env_var else None
-        if resolved:
-            return resolved
+        for env_var in env_vars:
+            resolved = resolve_env_var(env_var)
+            if resolved:
+                return resolved
         try:
             return auth_store.get_stored_base_url(provider_name)
         except RuntimeError:

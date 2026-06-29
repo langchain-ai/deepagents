@@ -1384,7 +1384,7 @@ class ToolCallMessage(Vertical):
             "ls": self._format_ls_output,
             "read_file": self._format_file_output,
             "write_file": self._format_file_output,
-            "edit_file": self._format_file_output,
+            "edit_file": self._format_edit_file_output,
             "grep": self._format_search_output,
             "glob": self._format_search_output,
             "execute": self._format_shell_output,
@@ -1733,6 +1733,21 @@ class ToolCallMessage(Vertical):
             f"{row[0]:>{width}}  {row[1]}" if row else line
             for line, row in zip(lines, parsed, strict=True)
         )
+
+    def _format_edit_file_output(
+        self, output: str, *, is_preview: bool = False
+    ) -> FormattedOutput:
+        """Render edit_file output, hiding the redundant success line.
+
+        On success the status glyph and the diff already convey the outcome, so
+        the "Successfully replaced ..." line adds nothing; errors still render.
+
+        Returns:
+            Empty FormattedOutput on success, otherwise the file formatter.
+        """
+        if self._status == "success":
+            return FormattedOutput(content=Content(""))
+        return self._format_file_output(output, is_preview=is_preview)
 
     def _format_file_output(
         self, output: str, *, is_preview: bool = False

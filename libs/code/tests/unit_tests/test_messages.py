@@ -951,6 +951,52 @@ class TestToolCallMessageSearchOutput:
         assert result.content.plain.split("\n") == lines
 
 
+class TestToolCallMessageEditFileOutput:
+    """edit_file hides its success result line but still surfaces errors."""
+
+    def test_edit_file_success_renders_no_lines(self) -> None:
+        """A successful edit shows no output — the status glyph speaks for it."""
+        msg = ToolCallMessage("edit_file", {"file_path": "/tmp/f.py"})
+        msg._status = "success"
+
+        result = msg._format_edit_file_output(
+            "Successfully replaced 1 instance(s) of the string in '/tmp/f.py'",
+            is_preview=False,
+        )
+
+        assert result.content.plain == ""
+        assert result.truncation is None
+
+    def test_edit_file_error_still_renders(self) -> None:
+        """Errors must still render so failures stay visible."""
+        msg = ToolCallMessage("edit_file", {"file_path": "/tmp/f.py"})
+        msg._status = "error"
+
+        result = msg._format_edit_file_output(
+            "Error: String not found in file", is_preview=False
+        )
+
+        assert "String not found in file" in result.content.plain
+
+    async def test_edit_file_success_hides_output_rows(self) -> None:
+        """End to end: a successful edit_file leaves no visible output rows."""
+        app = _tool_msg_app("edit_file", {"file_path": "/tmp/f.py"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(
+                "Successfully replaced 2 instance(s) of the string in '/tmp/f.py'"
+            )
+            await pilot.pause()
+
+            assert app.msg._preview_row is not None
+            assert app.msg._full_row is not None
+            assert app.msg._hint_widget is not None
+            assert app.msg._preview_row.display is False
+            assert app.msg._full_row.display is False
+            assert app.msg._hint_widget.display is False
+            assert app.msg._has_expandable_output() is False
+
+
 class TestToolCallMessageExpandHint:
     """Tests for the preview/expand hint on collapsed tool output."""
 

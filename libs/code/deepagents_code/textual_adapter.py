@@ -688,6 +688,14 @@ async def execute_task_textual(
                     if formatted_rubric_event is not None and is_main_agent:
                         await adapter._mount_message(AppMessage(formatted_rubric_event))
                         continue
+                    if formatted_rubric_event is not None:
+                        # Rubric events come from the main agent today; a
+                        # non-main namespace would be dropped by the gate above,
+                        # so leave a breadcrumb if that ever changes.
+                        logger.debug(
+                            "Dropping rubric event from non-main namespace %r",
+                            ns_key,
+                        )
                     if (
                         adapter._on_subagent_event is not None
                         and _is_renderable_subagent_event(

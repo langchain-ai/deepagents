@@ -40,7 +40,15 @@ local and remote (HTTP) graphs.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    Any,
+    Literal,
+    NotRequired,
+    cast,
+    get_args,
+)
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -61,6 +69,29 @@ GoalStatus = Literal["active", "blocked", "complete"]
 `active` and `blocked` are unfinished states; `complete` is terminal. A blocked
 goal is still considered active (unfinished) by `get_goal`.
 """
+
+_GOAL_STATUS_VALUES: frozenset[str] = frozenset(get_args(GoalStatus))
+
+
+def coerce_goal_status(value: object) -> GoalStatus | None:
+    """Narrow a persisted goal-status value to a known `GoalStatus`.
+
+    A corrupt or forward-version checkpoint can carry an unexpected status
+    string (or a non-string). Coercing to `None` rather than passing the raw
+    value through keeps the `GoalStatus` `Literal` load-bearing on the read
+    path, so an unknown status is treated as "no goal status" instead of a
+    silently active goal. Callers should log the discard separately so it is
+    surfaced rather than dropped.
+
+    Args:
+        value: Raw value read from checkpoint state.
+
+    Returns:
+        The value when it is a recognized `GoalStatus`, otherwise `None`.
+    """
+    if isinstance(value, str) and value in _GOAL_STATUS_VALUES:
+        return cast("GoalStatus", value)
+    return None
 
 
 class ResumeState(AgentState):

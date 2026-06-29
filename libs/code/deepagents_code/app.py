@@ -159,16 +159,20 @@ def _read_text_file_expanding_user(path_arg: str) -> tuple[Path, str]:
 
 
 def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> None:
-    """Log persisted goal/rubric channels that are present but not strings.
+    """Log persisted goal/rubric channels that are present but malformed.
 
     The TUI defensively coerces malformed channel values to `None` on resume
     and post-turn sync. Without this breadcrumb a corrupted checkpoint would
     drop goal state with no trace, which contradicts the "surface, don't drop"
-    stance the rest of the resume path takes.
+    stance the rest of the resume path takes. Covers both non-string values and
+    a `_goal_status` string that is not a recognized `GoalStatus`, since the
+    latter is normalized to `None` by `coerce_goal_status`.
 
     Args:
         state_values: Raw checkpoint state values.
     """
+    from deepagents_code.resume_state import coerce_goal_status
+
     for channel in (
         "rubric",
         "_sticky_rubric",
@@ -186,6 +190,12 @@ def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> None:
                 channel,
                 type(value).__name__,
             )
+        elif (
+            channel == "_goal_status"
+            and isinstance(value, str)
+            and coerce_goal_status(value) is None
+        ):
+            logger.debug("Discarding unknown persisted goal status %r", value)
 
 
 def _create_model_with_deepagents_import_lock(
@@ -276,6 +286,7 @@ if TYPE_CHECKING:
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.model_config import MissingProviderPackageError
     from deepagents_code.remote_client import RemoteAgent
+    from deepagents_code.resume_state import GoalStatus
     from deepagents_code.server import ServerProcess
     from deepagents_code.skills.load import ExtendedSkillMetadata
     from deepagents_code.textual_adapter import TextualUIAdapter
@@ -1155,8 +1166,12 @@ class _ThreadHistoryPayload:
     goal_objective: str | None = None
     """Persisted active goal objective, if any."""
 
-    goal_status: str | None = None
-    """Persisted active goal status, if any."""
+    goal_status: GoalStatus | None = None
+    """Persisted active goal status, if any.
+
+    Coerced to a known `GoalStatus` (or `None`) at construction; an unrecognized
+    persisted value is dropped.
+    """
 
     goal_rubric: str | None = None
     """Persisted accepted goal criteria, if any."""
@@ -2028,13 +2043,18 @@ class DeepAgentsApp(App):
         self._last_consumed_next_previous_rubric: str | None = None
         """Sticky rubric value that was active before the latest one-shot turn."""
 
+        self._goal_rubric_sync_warned: bool = False
+        """Whether the user was already warned that a goal/rubric refresh failed.
+        Reset on the next successful refresh so the warning is not repeated every
+        turn while a transient read failure persists."""
+
         self._rubric_model: str | None = (server_kwargs or {}).get("rubric_model")
         """Optional grader model spec for rubric evaluation."""
 
         self._active_goal: str | None = None
         """Goal objective accepted by the user and backed by the active rubric."""
 
-        self._goal_status: str | None = None
+        self._goal_status: GoalStatus | None = None
         """Status for the active goal (`active`, `blocked`, or `complete`)."""
 
         self._goal_status_note: str | None = None
@@ -5982,8 +6002,12 @@ class DeepAgentsApp(App):
             self._goal_proposal_worker = None
             return False
         self._cancel_goal_proposal_worker()
-        self.call_after_refresh(
-            lambda: asyncio.create_task(self._mount_goal_proposal_cancelled())
+        # Use a worker (not a bare `create_task`) so any failure routes through
+        # Textual's worker handling instead of becoming an unhandled-task error.
+        self.run_worker(
+            self._mount_goal_proposal_cancelled(),
+            group="goal-proposal-cancel",
+            exclusive=False,
         )
         return True
 
@@ -7718,6 +7742,8 @@ class DeepAgentsApp(App):
 
     async def _sync_goal_rubric_state_from_thread(self) -> None:
         """Refresh TUI-owned goal/rubric metadata from the active checkpoint."""
+        from deepagents_code.resume_state import coerce_goal_status
+
         if not self._lc_thread_id:
             self._last_consumed_next_rubric = None
             self._last_consumed_next_previous_rubric = None
@@ -7725,10 +7751,22 @@ class DeepAgentsApp(App):
         try:
             state_values = await self._get_thread_state_values(self._lc_thread_id)
         except Exception:
-            logger.debug("Failed to refresh goal/rubric state", exc_info=True)
-            self._last_consumed_next_rubric = None
-            self._last_consumed_next_previous_rubric = None
+            # This refresh is the only path that reflects the agent's
+            # `update_goal` completion/block into the transcript and status bar,
+            # so a swallowed failure would silently lose that signal. Surface it
+            # (once) rather than dropping to DEBUG. Leave the consumed one-shot
+            # rubric bookkeeping intact so a later successful sync can still
+            # reconcile it.
+            logger.warning("Failed to refresh goal/rubric state", exc_info=True)
+            if not self._goal_rubric_sync_warned:
+                self._goal_rubric_sync_warned = True
+                self.notify(
+                    "Could not refresh goal status from the thread; the "
+                    "displayed goal state may be stale.",
+                    severity="warning",
+                )
             return
+        self._goal_rubric_sync_warned = False
         _warn_discarded_goal_channels(state_values)
         rubric = state_values.get("rubric")
         sticky_rubric_recorded = "_sticky_rubric" in state_values
@@ -7749,7 +7787,7 @@ class DeepAgentsApp(App):
             goal_objective=(
                 goal_objective if isinstance(goal_objective, str) else None
             ),
-            goal_status=goal_status if isinstance(goal_status, str) else None,
+            goal_status=coerce_goal_status(goal_status),
             goal_rubric=goal_rubric if isinstance(goal_rubric, str) else None,
             goal_status_note=(
                 goal_status_note if isinstance(goal_status_note, str) else None
@@ -8104,14 +8142,17 @@ class DeepAgentsApp(App):
         """Reflect active rubric and goal state in the status bar."""
         if self._status_bar is None:
             return
+        from deepagents_code.config import get_glyphs
+
+        glyphs = get_glyphs()
         if self._active_goal and self._goal_status == "complete":
-            self._status_bar.set_rubric_label("✓ Goal complete")
+            self._status_bar.set_rubric_label(f"{glyphs.checkmark} Goal complete")
         elif self._active_goal and self._goal_status == "blocked":
-            self._status_bar.set_rubric_label("⚠ Goal blocked")
+            self._status_bar.set_rubric_label(f"{glyphs.warning} Goal blocked")
         elif self._next_rubric:
-            self._status_bar.set_rubric_label("✓ Rubric: next turn")
+            self._status_bar.set_rubric_label(f"{glyphs.checkmark} Rubric: next turn")
         elif self._active_rubric:
-            self._status_bar.set_rubric_label("✓ Rubric set")
+            self._status_bar.set_rubric_label(f"{glyphs.checkmark} Rubric set")
         else:
             self._status_bar.set_rubric_label("")
 
@@ -9583,6 +9624,8 @@ class DeepAgentsApp(App):
             Payload containing converted message data, the persisted
             context-token count, and the persisted model spec (if any).
         """
+        from deepagents_code.resume_state import coerce_goal_status
+
         state_values = await self._get_thread_state_values(thread_id)
         raw_tokens = state_values.get("_context_tokens")
         context_tokens = (
@@ -9611,7 +9654,7 @@ class DeepAgentsApp(App):
             goal_objective=(
                 raw_goal_objective if isinstance(raw_goal_objective, str) else None
             ),
-            goal_status=raw_goal_status if isinstance(raw_goal_status, str) else None,
+            goal_status=coerce_goal_status(raw_goal_status),
             goal_rubric=raw_goal_rubric if isinstance(raw_goal_rubric, str) else None,
             goal_status_note=(
                 raw_goal_status_note if isinstance(raw_goal_status_note, str) else None
@@ -13011,7 +13054,8 @@ class DeepAgentsApp(App):
 
         worker = event.worker
         group = worker.group or ""
-        if worker is self._goal_proposal_worker and event.state in {
+        was_goal_proposal_worker = worker is self._goal_proposal_worker
+        if was_goal_proposal_worker and event.state in {
             WorkerState.SUCCESS,
             WorkerState.CANCELLED,
             WorkerState.ERROR,
@@ -13050,6 +13094,22 @@ class DeepAgentsApp(App):
                     error=worker.error
                     if isinstance(worker.error, Exception)
                     else RuntimeError(str(worker.error)),
+                ),
+            )
+        elif was_goal_proposal_worker:
+            # `_propose_goal_rubric` handles its own errors and normally ends in
+            # SUCCESS; reaching ERROR means an exception escaped its handler.
+            # Without this net the spinner would clear with no explanation.
+            logger.warning(
+                "Goal proposal worker failed unexpectedly: %s",
+                worker.error,
+                exc_info=worker.error,
+            )
+            self.call_later(
+                self._mount_message,
+                ErrorMessage(
+                    "Drafting acceptance criteria failed unexpectedly. "
+                    "Try `/goal <objective>` again."
                 ),
             )
 

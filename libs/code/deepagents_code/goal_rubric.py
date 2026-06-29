@@ -108,4 +108,6 @@ def generate_goal_rubric(
             ),
         ],
     )
-    return response.text
+    # Coerce a `None` text to `""` so callers surface the clean "empty rubric"
+    # message instead of an `AttributeError` from a later `.strip()`.
+    return response.text or ""

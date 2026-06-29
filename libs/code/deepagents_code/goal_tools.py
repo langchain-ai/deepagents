@@ -30,11 +30,15 @@ from typing_extensions import override
 # Runtime (not TYPE_CHECKING) import: LangChain resolves the state-schema
 # annotations via `get_type_hints(include_extras=True)` to find the
 # `PrivateStateAttr` markers, so `GoalStatus` must be importable at runtime or
-# schema construction raises `NameError`.
-from deepagents_code.resume_state import GoalStatus  # noqa: TC001
+# schema construction raises `NameError`. `coerce_goal_status` is used at
+# runtime by `_goal_snapshot`.
+from deepagents_code.resume_state import GoalStatus, coerce_goal_status
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+
+RubricSource = Literal["goal", "sticky", "invocation"]
+"""Where the active rubric criteria came from, as reported to the model."""
 
 GOAL_TOOLS_SYSTEM_PROMPT = (
     "The user may set a persistent goal with `/goal` and acceptance criteria "
@@ -58,11 +62,16 @@ class RubricSnapshot(TypedDict):
     criteria: str | None
     """Current acceptance criteria, or `None` when no rubric is set."""
 
-    source: str | None
+    source: RubricSource | None
     """Where the criteria came from: `goal`, `sticky`, `invocation`, or `None`."""
 
     grading_status: str | None
-    """Latest `RubricMiddleware` grading status, if a graded turn has run."""
+    """Latest `RubricMiddleware` grading status for the in-progress or
+    just-completed graded turn, or `None`.
+
+    The middleware clears this at the start of the next graded turn, so
+    a `None` does not imply grading never ran.
+    """
 
 
 class GoalSnapshot(TypedDict):
@@ -79,11 +88,12 @@ class GoalSnapshot(TypedDict):
     objective: str | None
     """Active goal objective, or `None` when no goal is set."""
 
-    status: str | None
+    status: GoalStatus | None
     """Lifecycle status, or `None` when no goal is set.
 
-    Typed `str` rather than `GoalStatus` because the snapshot tolerates any
-    persisted value, defaulting to `"active"` for a set-but-unlabeled goal.
+    A set-but-unlabeled or unrecognized persisted value is normalized to
+    `"active"` by `coerce_goal_status`, so this is always a known `GoalStatus`
+    when a goal is set.
     """
 
     criteria: str | None
@@ -134,7 +144,7 @@ def _rubric_snapshot(state: dict[str, Any]) -> RubricSnapshot:
     sticky_rubric = _clean_state_text(state, "_sticky_rubric")
     objective = _clean_state_text(state, "_goal_objective")
 
-    source: str | None = None
+    source: RubricSource | None = None
     if criteria is not None:
         if objective is not None and goal_rubric == criteria:
             source = "goal"
@@ -177,8 +187,9 @@ def _goal_snapshot(state: dict[str, Any]) -> GoalSnapshot:
             "criteria": rubric["criteria"],
             "note": None,
         }
-    raw_status = state.get("_goal_status")
-    status = raw_status if isinstance(raw_status, str) and raw_status else "active"
+    # A set-but-unlabeled or unrecognized status defaults to "active"; an
+    # unknown persisted value never leaks to the model as a bogus status.
+    status: GoalStatus = coerce_goal_status(state.get("_goal_status")) or "active"
     note = _clean_state_text(state, "_goal_status_note")
     return {
         # A goal is active until it is complete; `blocked` is still unfinished.
@@ -284,10 +295,11 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         def get_goal(
             state: Annotated[dict[str, Any], InjectedState],
         ) -> GoalSnapshot:
-            """Read the current persistent goal and accepted criteria.
+            """Read the current persistent goal and acceptance criteria.
 
             Call this before deciding whether work is done to see the objective,
-            its accepted criteria, the current status, and any prior note.
+            the current acceptance criteria (which may come from the goal or a
+            standalone rubric), the current status, and any prior note.
 
             Returns:
                 Goal snapshot with `active`, `objective`, `status`, `criteria`,

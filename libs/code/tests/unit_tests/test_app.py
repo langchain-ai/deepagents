@@ -5184,6 +5184,97 @@ class TestGoalCommand:
             assert app._goal_status_note == "tests pass"
             assert app._active_rubric == "- tests pass"
 
+    async def test_sync_goal_rubric_state_drops_unknown_status(self) -> None:
+        """An unrecognized persisted goal status normalizes to None."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._lc_thread_id = "thread-1"
+            app._active_goal = "add refresh tokens"
+            app._goal_status = "active"
+
+            fetch = AsyncMock(
+                return_value={
+                    "_goal_objective": "add refresh tokens",
+                    "_goal_status": "deleted",
+                    "_goal_rubric": "- tests pass",
+                }
+            )
+            with patch.object(app, "_get_thread_state_values", fetch):
+                await app._sync_goal_rubric_state_from_thread()
+
+            assert app._goal_status is None
+            assert app._active_goal == "add refresh tokens"
+
+    async def test_sync_goal_rubric_state_drops_non_str_status(self) -> None:
+        """A non-string persisted goal status normalizes to None."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._lc_thread_id = "thread-1"
+            app._active_goal = "add refresh tokens"
+            app._goal_status = "active"
+
+            fetch = AsyncMock(
+                return_value={
+                    "_goal_objective": "add refresh tokens",
+                    "_goal_status": 123,
+                    "_goal_rubric": "- tests pass",
+                }
+            )
+            with patch.object(app, "_get_thread_state_values", fetch):
+                await app._sync_goal_rubric_state_from_thread()
+
+            assert app._goal_status is None
+
+    async def test_sync_goal_rubric_state_warns_once_on_read_failure(self) -> None:
+        """A failed checkpoint read warns the user once and keeps bookkeeping."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._lc_thread_id = "thread-1"
+            app._last_consumed_next_rubric = "- one shot"
+
+            notifications: list[str] = []
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    AsyncMock(side_effect=RuntimeError("boom")),
+                ),
+                patch.object(
+                    app,
+                    "notify",
+                    lambda message, *a, **k: notifications.append(message),  # noqa: ARG005
+                ),
+            ):
+                await app._sync_goal_rubric_state_from_thread()
+                await app._sync_goal_rubric_state_from_thread()
+
+            # Surfaced once (not per turn) and the one-shot bookkeeping survives
+            # the transient failure so a later successful sync can reconcile it.
+            assert len(notifications) == 1
+            assert app._goal_rubric_sync_warned is True
+            assert app._last_consumed_next_rubric == "- one shot"
+
+    async def test_fetch_thread_history_coerces_unknown_goal_status(self) -> None:
+        """Loading a thread with an unknown status drops it to None."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            fetch = AsyncMock(
+                return_value={
+                    "_goal_objective": "add refresh tokens",
+                    "_goal_status": "archived",
+                    "_goal_rubric": "- tests pass",
+                }
+            )
+            with patch.object(app, "_get_thread_state_values", fetch):
+                payload = await app._fetch_thread_history_data("thread-1")
+
+            assert payload.goal_status is None
+            assert payload.goal_objective == "add refresh tokens"
+
     async def test_goal_show_uses_labeled_sections(self) -> None:
         """`/goal show` should render goal, status, criteria, and commands."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -5680,6 +5771,57 @@ class TestRubricCommand:
             assert app._active_rubric == "tests pass\nno unrelated files"
             assert app._status_bar is not None
             assert app._status_bar.rubric_label == "✓ Rubric set"
+
+    async def test_rubric_file_reports_unparsable_path(self) -> None:
+        """An unbalanced quote in the path should report a parse error."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command('/rubric file "unterminated')
+            await pilot.pause()
+
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "Could not parse path" in errors
+            assert app._active_rubric is None
+
+    async def test_rubric_file_rejects_multiple_path_tokens(self) -> None:
+        """More than one path token should show usage, not read a file."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/rubric file first second")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Usage: /rubric file <path>" in rendered
+            assert app._active_rubric is None
+
+    async def test_rubric_file_reports_missing_file(self, tmp_path: Path) -> None:
+        """A path that does not exist should report a read error."""
+        missing = tmp_path / "nope.md"
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command(f"/rubric file {missing}")
+            await pilot.pause()
+
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "Could not read rubric file" in errors
+            assert app._active_rubric is None
+
+    async def test_rubric_file_reports_empty_file(self, tmp_path: Path) -> None:
+        """A whitespace-only rubric file should be rejected as empty."""
+        empty = tmp_path / "empty.md"
+        empty.write_text("   \n", encoding="utf-8")
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command(f"/rubric file {empty}")
+            await pilot.pause()
+
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "is empty" in errors
+            assert app._active_rubric is None
 
     async def test_rubric_model_bare_opens_grader_model_selector(self) -> None:
         """Bare `/rubric model` should open the grader-model picker."""

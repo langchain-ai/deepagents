@@ -129,6 +129,28 @@ class TestRubricGating:
         assert "cannot be combined" in result.stderr
         assert "--goal" in result.stderr
 
+    def test_rubric_model_without_non_interactive_errors(self) -> None:
+        result = _run_cli_main_devnull_stdin(
+            ["--rubric-model", "anthropic:claude-sonnet-4-6"]
+        )
+        assert result.returncode == 2, result.stderr
+        assert "--non-interactive" in result.stderr
+        assert "--rubric-model" in result.stderr
+
+    def test_rubric_max_iterations_without_non_interactive_errors(self) -> None:
+        result = _run_cli_main_devnull_stdin(["--rubric-max-iterations", "5"])
+        assert result.returncode == 2, result.stderr
+        assert "--non-interactive" in result.stderr
+        assert "--rubric-max-iterations" in result.stderr
+
+    def test_goal_with_skill_errors(self) -> None:
+        result = _run_cli_main_devnull_stdin(
+            ["--goal", "add refresh tokens", "--skill", "code-review"]
+        )
+        assert result.returncode == 2, result.stderr
+        assert "cannot be combined" in result.stderr
+        assert "--skill" in result.stderr
+
     def test_goal_with_non_interactive_errors(self) -> None:
         result = _run_cli_main_devnull_stdin(
             ["-n", "implement", "--goal", "add refresh tokens"]

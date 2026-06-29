@@ -11,6 +11,7 @@ from deepagents_code.resume_state import (
     ResumeStateMiddleware,
     _extract_context_tokens,
     _extract_model_spec,
+    coerce_goal_status,
 )
 
 
@@ -36,6 +37,24 @@ class TestResumeState:
     def test_middleware_exposes_state_schema(self):
         """ResumeStateMiddleware registers the correct state schema."""
         assert ResumeStateMiddleware.state_schema is ResumeState
+
+
+class TestCoerceGoalStatus:
+    """Tests for `coerce_goal_status`."""
+
+    def test_returns_known_statuses(self) -> None:
+        assert coerce_goal_status("active") == "active"
+        assert coerce_goal_status("blocked") == "blocked"
+        assert coerce_goal_status("complete") == "complete"
+
+    def test_unknown_string_coerces_to_none(self) -> None:
+        assert coerce_goal_status("deleted") is None
+        assert coerce_goal_status("") is None
+
+    def test_non_string_coerces_to_none(self) -> None:
+        assert coerce_goal_status(None) is None
+        assert coerce_goal_status(123) is None
+        assert coerce_goal_status(["active"]) is None
 
 
 class TestExtractContextTokens:

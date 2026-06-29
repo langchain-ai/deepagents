@@ -11322,7 +11322,7 @@ class DeepAgentsApp(App):
                     )
 
     def action_toggle_tool_output(self) -> None:
-        """Toggle expand/collapse of the most recent tool output or skill body."""
+        """Toggle the most recent collapsible unit (group, skill, or tool)."""
         # Pending ask_user takes precedence so Ctrl+O toggles the question card.
         if self._pending_ask_user_widget is not None:
             try:
@@ -11334,41 +11334,31 @@ class DeepAgentsApp(App):
                     tool_msg.toggle_args()
                     return
 
-        # A collapsed/expanded tool group is the most recent collapsible unit
-        # once a step's tools have been folded; toggle the latest one.
+        # Toggle whichever collapsible unit is most recent in DOM order — a tool
+        # group, a skill body, or a standalone tool row — so content mounted
+        # after a group stays reachable instead of always hitting the last group.
+        # Grouped tool rows are folded into their summary, so skip them here.
         try:
-            group_summaries = list(self.query(ToolGroupSummary))
+            messages = self.query_one("#messages", Container)
         except NoMatches:
-            group_summaries = []
-        if group_summaries:
-            group_summaries[-1].toggle()
             return
-
-        # Try skill messages first (most recent collapsible content)
-        try:
-            skill_messages = list(self.query(SkillMessage))
-        except NoMatches:
-            skill_messages = []
-        for skill_msg in reversed(skill_messages):
-            if skill_msg._stripped_body.strip():
-                skill_msg.toggle_body()
+        for child in reversed(list(messages.children)):
+            if isinstance(child, ToolGroupSummary):
+                child.toggle()
                 return
-
-        # Fall back to tool messages with output or expandable args
-        try:
-            tool_messages = list(self.query(ToolCallMessage))
-        except NoMatches:
-            tool_messages = []
-        for tool_msg in reversed(tool_messages):
-            if tool_msg.has_output and tool_msg.has_expandable_output:
-                tool_msg.toggle_output()
+            if isinstance(child, SkillMessage) and child._stripped_body.strip():
+                child.toggle_body()
                 return
-            if tool_msg.has_expandable_args:
-                tool_msg.toggle_args()
-                return
-            if tool_msg.has_output:
-                tool_msg.toggle_output()
-                return
+            if isinstance(child, ToolCallMessage) and not child.has_class("-grouped"):
+                if child.has_output and child.has_expandable_output:
+                    child.toggle_output()
+                    return
+                if child.has_expandable_args:
+                    child.toggle_args()
+                    return
+                if child.has_output:
+                    child.toggle_output()
+                    return
 
     # Approval menu action handlers (delegated from App-level bindings)
     # NOTE: These only activate when approval widget is pending

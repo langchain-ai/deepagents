@@ -270,9 +270,9 @@ class TestHelpBodyDrift:
             Path(__file__).resolve().parents[2] / "deepagents_code" / "app.py"
         ).read_text()
 
-        # Isolate the "Commands: ..." section (before "Interactive Features")
+        # Isolate the /help "Commands: ..." section (before "Interactive Features").
         match = re.search(
-            r'"Commands:\s*(.*?)(?=Interactive Features)',
+            r'help_body = \(\s*"Commands:\s*(.*?)(?=Interactive Features)',
             app_src,
             re.DOTALL,
         )

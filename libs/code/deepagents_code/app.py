@@ -6066,15 +6066,9 @@ class DeepAgentsApp(App):
         loop = asyncio.get_running_loop()
         result_future: asyncio.Future[GoalReviewResult] = loop.create_future()
 
-        if self._pending_goal_review_widget is not None:
-            self._cancel_goal_review_task()
-            self._pending_goal_review_widget.action_cancel()
-            widget = self._pending_goal_review_widget
-            self._pending_goal_review_widget = None
-            await self._remove_goal_review_widget(
-                widget,
-                context="goal-review replacement cleanup",
-            )
+        await self._cancel_pending_goal_review(
+            context="goal-review replacement cleanup",
+        )
 
         from deepagents_code.widgets.goal_review import GoalReviewMenu
 
@@ -7735,6 +7729,49 @@ class DeepAgentsApp(App):
         self._last_consumed_next_previous_rubric = None
         self._reset_goal_tracking()
 
+    @staticmethod
+    def _goal_rubric_payload_from_state(
+        state_values: dict[str, Any],
+        *,
+        messages: list[MessageData],
+        context_tokens: int,
+        model_spec: str,
+    ) -> _ThreadHistoryPayload:
+        """Build a thread payload from raw checkpoint channel values.
+
+        Centralizes the per-channel `str`/`GoalStatus` coercion shared by the
+        history-load and turn-end sync paths so a new persisted channel only
+        has to be wired up in one place.
+
+        Args:
+            state_values: Raw channel values from the checkpoint.
+            messages: Converted message data (empty for metadata-only reads).
+            context_tokens: Persisted context-token count.
+            model_spec: Persisted model spec, or `""` for legacy threads.
+
+        Returns:
+            Payload with goal/rubric channels coerced to known types.
+        """
+        from deepagents_code.resume_state import coerce_goal_status
+
+        def _as_str(value: object) -> str | None:
+            return value if isinstance(value, str) else None
+
+        return _ThreadHistoryPayload(
+            messages,
+            context_tokens,
+            model_spec,
+            rubric=_as_str(state_values.get("rubric")),
+            sticky_rubric=_as_str(state_values.get("_sticky_rubric")),
+            sticky_rubric_recorded="_sticky_rubric" in state_values,
+            goal_objective=_as_str(state_values.get("_goal_objective")),
+            goal_status=coerce_goal_status(state_values.get("_goal_status")),
+            goal_rubric=_as_str(state_values.get("_goal_rubric")),
+            goal_status_note=_as_str(state_values.get("_goal_status_note")),
+            pending_goal_objective=_as_str(state_values.get("_pending_goal_objective")),
+            pending_goal_rubric=_as_str(state_values.get("_pending_goal_rubric")),
+        )
+
     def _restore_goal_rubric_state(self, payload: _ThreadHistoryPayload) -> None:
         """Restore TUI-owned goal/rubric metadata from a thread payload."""
         self._active_goal = payload.goal_objective
@@ -7781,11 +7818,27 @@ class DeepAgentsApp(App):
 
     async def _sync_goal_rubric_state_from_thread(self) -> None:
         """Refresh TUI-owned goal/rubric metadata from the active checkpoint."""
-        from deepagents_code.resume_state import coerce_goal_status
-
         if not self._lc_thread_id:
             self._last_consumed_next_rubric = None
             self._last_consumed_next_previous_rubric = None
+            return
+        # The fetched checkpoint is only needed to reflect the agent's
+        # `update_goal` tool, which can only run while a goal is active. When no
+        # goal/rubric state is engaged locally (and no one-shot rubric reconcile
+        # is pending), nothing server-side could have changed these channels, so
+        # skip the per-turn `aget_state` round-trip (and full message-history
+        # deserialization). Resume populates these locals before any turn runs,
+        # so a thread with persisted state never reaches this fast path empty.
+        if not (
+            self._active_goal
+            or self._active_rubric
+            or self._next_rubric
+            or self._goal_status_note
+            or self._pending_goal_objective
+            or self._pending_goal_rubric
+            or self._last_consumed_next_rubric is not None
+            or self._last_consumed_next_previous_rubric is not None
+        ):
             return
         try:
             state_values = await self._get_thread_state_values(self._lc_thread_id)
@@ -7811,38 +7864,11 @@ class DeepAgentsApp(App):
                 "Some saved goal/rubric state was corrupted and was not restored.",
                 severity="warning",
             )
-        rubric = state_values.get("rubric")
-        sticky_rubric_recorded = "_sticky_rubric" in state_values
-        sticky_rubric = state_values.get("_sticky_rubric")
-        goal_objective = state_values.get("_goal_objective")
-        goal_status = state_values.get("_goal_status")
-        goal_rubric = state_values.get("_goal_rubric")
-        goal_status_note = state_values.get("_goal_status_note")
-        pending_goal_objective = state_values.get("_pending_goal_objective")
-        pending_goal_rubric = state_values.get("_pending_goal_rubric")
-        payload = _ThreadHistoryPayload(
-            [],
-            0,
-            "",
-            rubric=rubric if isinstance(rubric, str) else None,
-            sticky_rubric=(sticky_rubric if isinstance(sticky_rubric, str) else None),
-            sticky_rubric_recorded=sticky_rubric_recorded,
-            goal_objective=(
-                goal_objective if isinstance(goal_objective, str) else None
-            ),
-            goal_status=coerce_goal_status(goal_status),
-            goal_rubric=goal_rubric if isinstance(goal_rubric, str) else None,
-            goal_status_note=(
-                goal_status_note if isinstance(goal_status_note, str) else None
-            ),
-            pending_goal_objective=(
-                pending_goal_objective
-                if isinstance(pending_goal_objective, str)
-                else None
-            ),
-            pending_goal_rubric=(
-                pending_goal_rubric if isinstance(pending_goal_rubric, str) else None
-            ),
+        payload = self._goal_rubric_payload_from_state(
+            state_values,
+            messages=[],
+            context_tokens=0,
+            model_spec="",
         )
         if not any(
             (
@@ -9734,8 +9760,6 @@ class DeepAgentsApp(App):
             Payload containing converted message data, the persisted
             context-token count, and the persisted model spec (if any).
         """
-        from deepagents_code.resume_state import coerce_goal_status
-
         state_values = await self._get_thread_state_values(thread_id)
         raw_tokens = state_values.get("_context_tokens")
         context_tokens = (
@@ -9748,41 +9772,11 @@ class DeepAgentsApp(App):
                 "Some saved goal/rubric state was corrupted and was not restored.",
                 severity="warning",
             )
-        raw_rubric = state_values.get("rubric")
-        raw_sticky_rubric = state_values.get("_sticky_rubric")
-        raw_goal_objective = state_values.get("_goal_objective")
-        raw_goal_status = state_values.get("_goal_status")
-        raw_goal_rubric = state_values.get("_goal_rubric")
-        raw_goal_status_note = state_values.get("_goal_status_note")
-        raw_pending_goal_objective = state_values.get("_pending_goal_objective")
-        raw_pending_goal_rubric = state_values.get("_pending_goal_rubric")
-        payload = _ThreadHistoryPayload(
-            [],
-            context_tokens,
-            model_spec,
-            rubric=raw_rubric if isinstance(raw_rubric, str) else None,
-            sticky_rubric=(
-                raw_sticky_rubric if isinstance(raw_sticky_rubric, str) else None
-            ),
-            sticky_rubric_recorded="_sticky_rubric" in state_values,
-            goal_objective=(
-                raw_goal_objective if isinstance(raw_goal_objective, str) else None
-            ),
-            goal_status=coerce_goal_status(raw_goal_status),
-            goal_rubric=raw_goal_rubric if isinstance(raw_goal_rubric, str) else None,
-            goal_status_note=(
-                raw_goal_status_note if isinstance(raw_goal_status_note, str) else None
-            ),
-            pending_goal_objective=(
-                raw_pending_goal_objective
-                if isinstance(raw_pending_goal_objective, str)
-                else None
-            ),
-            pending_goal_rubric=(
-                raw_pending_goal_rubric
-                if isinstance(raw_pending_goal_rubric, str)
-                else None
-            ),
+        payload = self._goal_rubric_payload_from_state(
+            state_values,
+            messages=[],
+            context_tokens=context_tokens,
+            model_spec=model_spec,
         )
         messages = state_values.get("messages", [])
 
@@ -9798,20 +9792,7 @@ class DeepAgentsApp(App):
 
         # Offload conversion so large histories don't block the UI loop.
         data = await asyncio.to_thread(self._convert_messages_to_data, messages)
-        return _ThreadHistoryPayload(
-            data,
-            payload.context_tokens,
-            payload.model_spec,
-            rubric=payload.rubric,
-            sticky_rubric=payload.sticky_rubric,
-            sticky_rubric_recorded=payload.sticky_rubric_recorded,
-            goal_objective=payload.goal_objective,
-            goal_status=payload.goal_status,
-            goal_rubric=payload.goal_rubric,
-            goal_status_note=payload.goal_status_note,
-            pending_goal_objective=payload.pending_goal_objective,
-            pending_goal_rubric=payload.pending_goal_rubric,
-        )
+        return replace(payload, messages=data)
 
     async def _adopt_resumed_model_if_needed(
         self,

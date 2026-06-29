@@ -1431,6 +1431,14 @@ class ToolCallMessage(Vertical):
         if not output:
             return False
 
+        # `read_file` collapses its content entirely by default (the header
+        # already names the file), so any output that formats to something is
+        # expandable regardless of size.
+        if self._tool_name == "read_file":
+            return bool(
+                self._format_output(output, is_preview=False).content.plain.strip()
+            )
+
         if self._tool_name == "write_todos":
             return self._format_output(output, is_preview=True).truncation is not None
 
@@ -2282,6 +2290,18 @@ class ToolCallMessage(Vertical):
         else:
             # Show collapsed preview
             self._full_row.display = False
+            # `read_file` output just echoes the file the agent asked to read,
+            # and the path is already in the header, so the content is noise by
+            # default. Collapse it entirely (no preview) while keeping it
+            # expandable for when the user does want to see what was read.
+            if self._tool_name == "read_file":
+                self._preview_row.display = False
+                ellipsis = get_glyphs().ellipsis
+                self._hint_widget.update(
+                    Content.styled(f"{ellipsis} click or Ctrl+O to expand", "dim")
+                )
+                self._hint_widget.display = True
+                return
             # Truncate the preview only when the output is large enough to
             # warrant it; `write_todos` always uses its compact per-item preview
             # regardless of size.

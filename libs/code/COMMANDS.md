@@ -7,7 +7,7 @@ Regenerate this file with `make commands-catalog` after changing command names,
 aliases, descriptions, visibility, or hidden-command metadata.
 
 
-## Public (29)
+## Public (30)
 
 | Command | Aliases | Description |
 | --- | --- | --- |
@@ -21,6 +21,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/editor` |  | Open prompt in an external editor ($EDITOR) |
 | `/feedback` |  | Send feedback or report an issue |
 | `/force-clear` |  | Stop active work, clear the chat, and start a new thread |
+| `/goal` |  | Draft and accept criteria for a persistent goal |
 | `/help` |  | Show help and available commands |
 | `/install` |  | Install an optional integration |
 | `/mcp` |  | Manage MCP servers and authentication |

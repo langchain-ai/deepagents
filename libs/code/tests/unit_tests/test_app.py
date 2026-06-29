@@ -4631,6 +4631,86 @@ class TestRunAgentTaskMediaTracker:
             assert any("OPENAI_API_KEY" in str(w._content) for w in errors)
 
 
+class TestGoalCommand:
+    """Tests for goal-backed rubric proposal workflow."""
+
+    async def test_goal_command_proposes_pending_rubric(self) -> None:
+        """`/goal <objective>` should draft criteria for user acceptance."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(
+                app,
+                "_generate_goal_rubric",
+                return_value="- tests pass\n- no unrelated files",
+            ):
+                await app._handle_command("/goal add refresh tokens")
+                await pilot.pause()
+
+            assert app._pending_goal_objective == "add refresh tokens"
+            assert app._pending_goal_rubric == "- tests pass\n- no unrelated files"
+            assert app._active_rubric is None
+            assert any(
+                "Accept with `/goal accept`" in str(w._content)
+                for w in app.query(AppMessage)
+            )
+
+    async def test_goal_accept_sets_sticky_rubric(self) -> None:
+        """Accepting a proposed goal should set the active rubric."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_goal_objective = "add refresh tokens"
+            app._pending_goal_rubric = "- tests pass"
+
+            await app._handle_command("/goal accept")
+            await pilot.pause()
+
+            assert app._active_goal == "add refresh tokens"
+            assert app._active_rubric == "- tests pass"
+            assert app._pending_goal_objective is None
+            assert app._pending_goal_rubric is None
+            assert app._status_bar is not None
+            assert app._status_bar.rubric_label == "✓ Rubric set"
+
+    async def test_goal_edit_accepts_revised_criteria(self) -> None:
+        """`/goal edit` should accept user-edited criteria."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_goal_objective = "add refresh tokens"
+            app._pending_goal_rubric = "- model draft"
+
+            await app._handle_command("/goal edit tests pass; docs updated")
+            await pilot.pause()
+
+            assert app._active_goal == "add refresh tokens"
+            assert app._active_rubric == "tests pass; docs updated"
+            assert app._pending_goal_objective is None
+            assert app._pending_goal_rubric is None
+
+    async def test_goal_clear_clears_goal_and_rubric(self) -> None:
+        """`/goal clear` should clear goal-backed rubric state."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "add refresh tokens"
+            app._active_rubric = "- tests pass"
+            app._pending_goal_objective = "other goal"
+            app._pending_goal_rubric = "- draft"
+            app._sync_status_rubric()
+
+            await app._handle_command("/goal clear")
+            await pilot.pause()
+
+            assert app._active_goal is None
+            assert app._active_rubric is None
+            assert app._pending_goal_objective is None
+            assert app._pending_goal_rubric is None
+            assert app._status_bar is not None
+            assert app._status_bar.rubric_label == ""
+
+
 class TestRubricCommand:
     """Tests for interactive rubric state and turn plumbing."""
 

@@ -103,6 +103,14 @@ _DEFERRED_START_NOTICE = (
     "Deep Agents will ask for credentials for the selected provider."
 )
 
+_GOAL_RUBRIC_SYSTEM_PROMPT = (
+    "You draft acceptance criteria for a coding agent goal.\n\n"
+    "Return only a concise markdown bullet list of criteria the user can review "
+    "before work begins. Each criterion should be concrete, testable, and framed "
+    "as a definition of done. Include criteria for tests, scope control, and "
+    "user-visible behavior when relevant. Do not start implementing the goal."
+)
+
 # Serializes process-local read-modify-write operations for `config.toml`.
 # Without this, overlapping global-theme and per-terminal-theme saves can each
 # read the same pre-mutation state and then clobber the other's keys.
@@ -156,6 +164,27 @@ def _read_text_file_expanding_user(path_arg: str) -> tuple[Path, str]:
     """
     path = Path(path_arg).expanduser()
     return path, path.read_text(encoding="utf-8")
+
+
+def _message_content_to_text(content: object) -> str:
+    """Convert chat-model message content to plain text.
+
+    Returns:
+        Plain-text representation of message content.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                text = block.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(parts)
+    return str(content)
 
 
 def _create_model_with_deepagents_import_lock(
@@ -1955,6 +1984,15 @@ class DeepAgentsApp(App):
 
         self._rubric_model: str | None = (server_kwargs or {}).get("rubric_model")
         """Optional grader model spec for rubric evaluation."""
+
+        self._active_goal: str | None = None
+        """Goal objective accepted by the user and backed by the active rubric."""
+
+        self._pending_goal_objective: str | None = None
+        """Goal objective awaiting user acceptance of proposed criteria."""
+
+        self._pending_goal_rubric: str | None = None
+        """Model-proposed acceptance criteria awaiting user acceptance."""
 
         self._message_timestamps_visible = _load_message_timestamps_visible()
         """Whether message timestamp footers are shown in the chat surface.
@@ -7340,6 +7378,148 @@ class DeepAgentsApp(App):
         await self._mount_message(UserMessage(command))
         await self._mount_message(AppMessage(msg))
 
+    async def _handle_goal_command(self, command: str) -> None:
+        """Handle `/goal` as a user-approved rubric proposal workflow."""
+        remainder = command.strip()[len("/goal") :].strip()
+        subcommand, _, arg = remainder.partition(" ")
+        subcommand = subcommand.lower()
+        arg = arg.strip()
+
+        if not remainder or subcommand in {"show", "status"}:
+            await self._mount_message(UserMessage(command))
+            await self._show_goal_state()
+            return
+
+        if subcommand == "accept":
+            await self._mount_message(UserMessage(command))
+            await self._accept_pending_goal_rubric()
+            return
+
+        if subcommand == "edit":
+            await self._mount_message(UserMessage(command))
+            if not arg:
+                await self._mount_message(AppMessage("Usage: /goal edit <criteria>"))
+                return
+            await self._accept_goal_rubric(arg)
+            return
+
+        if subcommand == "clear":
+            await self._mount_message(UserMessage(command))
+            self._active_goal = None
+            self._pending_goal_objective = None
+            self._pending_goal_rubric = None
+            self._active_rubric = None
+            self._next_rubric = None
+            self._sync_status_rubric()
+            await self._mount_message(AppMessage("Goal and rubric cleared."))
+            return
+
+        objective = remainder
+        await self._mount_message(UserMessage(command))
+        await self._propose_goal_rubric(objective)
+
+    async def _show_goal_state(self) -> None:
+        """Render active or pending goal state."""
+        lines: list[str] = []
+        if self._active_goal:
+            lines.append(f"Active goal:\n{self._active_goal}")
+        if self._active_rubric:
+            lines.append(f"Accepted criteria:\n{self._active_rubric}")
+        if self._pending_goal_objective and self._pending_goal_rubric:
+            lines.extend(
+                [
+                    f"Pending goal:\n{self._pending_goal_objective}",
+                    f"Proposed criteria:\n{self._pending_goal_rubric}",
+                    (
+                        "Accept with `/goal accept` or revise with "
+                        "`/goal edit <criteria>`."
+                    ),
+                ],
+            )
+        await self._mount_message(
+            AppMessage("\n\n".join(lines) if lines else "No goal set.")
+        )
+
+    async def _propose_goal_rubric(self, objective: str) -> None:
+        """Ask the current model to propose acceptance criteria for a goal."""
+        if not objective.strip():
+            await self._mount_message(AppMessage("Usage: /goal <objective>"))
+            return
+        await self._mount_message(AppMessage("Drafting acceptance criteria for goal…"))
+        try:
+            rubric = await asyncio.to_thread(self._generate_goal_rubric, objective)
+        except Exception as exc:
+            logger.exception("Failed to propose rubric for goal")
+            await self._mount_message(ErrorMessage(_build_model_switch_error_body(exc)))
+            return
+        rubric = rubric.strip()
+        if not rubric:
+            await self._mount_message(
+                ErrorMessage("The model returned an empty rubric.")
+            )
+            return
+        self._pending_goal_objective = objective
+        self._pending_goal_rubric = rubric
+        await self._mount_message(
+            AppMessage(
+                f"Proposed acceptance criteria for goal:\n{rubric}\n\n"
+                "Accept with `/goal accept`, revise with `/goal edit <criteria>`, "
+                "or cancel with `/goal clear`.",
+            ),
+        )
+
+    def _generate_goal_rubric(self, objective: str) -> str:
+        """Generate acceptance criteria for `objective` with the current chat model.
+
+        Returns:
+            Proposed acceptance criteria text.
+        """
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        result = _create_model_with_deepagents_import_lock(
+            self._effective_model_spec(),
+            extra_kwargs=self._model_params_override,
+            profile_overrides=self._profile_override,
+        )
+        response = result.model.invoke(
+            [
+                SystemMessage(content=_GOAL_RUBRIC_SYSTEM_PROMPT),
+                HumanMessage(content=f"Goal:\n{objective}"),
+            ],
+        )
+        return _message_content_to_text(response.content)
+
+    async def _accept_pending_goal_rubric(self) -> None:
+        """Accept the pending model-proposed goal criteria."""
+        if not self._pending_goal_objective or not self._pending_goal_rubric:
+            await self._mount_message(AppMessage("No pending goal rubric to accept."))
+            return
+        await self._accept_goal_rubric(self._pending_goal_rubric)
+
+    async def _accept_goal_rubric(self, rubric: str) -> None:
+        """Set the active goal and sticky rubric from accepted criteria."""
+        objective = self._pending_goal_objective
+        if not objective:
+            await self._mount_message(AppMessage("No pending goal to accept."))
+            return
+        rubric = rubric.strip()
+        if not rubric:
+            await self._mount_message(AppMessage("Usage: /goal edit <criteria>"))
+            return
+        self._active_goal = objective
+        self._active_rubric = rubric
+        self._next_rubric = None
+        self._pending_goal_objective = None
+        self._pending_goal_rubric = None
+        self._sync_status_rubric()
+        await self._mount_message(
+            AppMessage(
+                "Goal accepted. Rubric set.\n\n"
+                f"Goal:\n{objective}\n\n"
+                f"Criteria:\n{rubric}",
+            ),
+        )
+
     def _sync_status_rubric(self) -> None:
         """Reflect active rubric state in the status bar."""
         if self._status_bar is None:
@@ -7378,6 +7558,9 @@ class DeepAgentsApp(App):
                 await self._mount_message(AppMessage("Usage: /rubric set <criteria>"))
                 return
             self._active_rubric = arg
+            self._active_goal = None
+            self._pending_goal_objective = None
+            self._pending_goal_rubric = None
             self._sync_status_rubric()
             await self._mount_message(AppMessage("Rubric set."))
             return
@@ -7404,6 +7587,9 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             self._active_rubric = None
             self._next_rubric = None
+            self._active_goal = None
+            self._pending_goal_objective = None
+            self._pending_goal_rubric = None
             self._sync_status_rubric()
             await self._mount_message(AppMessage("Rubric cleared."))
             return
@@ -7468,6 +7654,9 @@ class DeepAgentsApp(App):
             )
             return
         self._active_rubric = rubric
+        self._active_goal = None
+        self._pending_goal_objective = None
+        self._pending_goal_rubric = None
         self._sync_status_rubric()
         await self._mount_message(AppMessage(f"Rubric set from {path}."))
 
@@ -7611,7 +7800,7 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             help_body = (
                 "Commands: /quit, /agents, /auth, /clear, /force-clear, "
-                "/copy, /offload, /editor, "
+                "/copy, /goal, /offload, /editor, "
                 "/mcp, /model [--model-params JSON] [--default], "
                 "/notifications, /reload, /restart, /rubric, /criteria, "
                 "/skill:<name>, /remember, "
@@ -7644,6 +7833,8 @@ class DeepAgentsApp(App):
             await self._handle_version_command()
         elif cmd == "/agents":
             await self._show_agent_selector()
+        elif cmd == "/goal" or cmd.startswith("/goal "):
+            await self._handle_goal_command(command)
         elif cmd in {"/rubric", "/criteria"} or cmd.startswith(
             ("/rubric ", "/criteria ")
         ):
@@ -7664,6 +7855,9 @@ class DeepAgentsApp(App):
             self._update_tokens(0)
             self._active_rubric = None
             self._next_rubric = None
+            self._active_goal = None
+            self._pending_goal_objective = None
+            self._pending_goal_rubric = None
             self._sync_status_rubric()
             # Clear status message (e.g., "Interrupted" from previous session)
             self._update_status("")

@@ -105,6 +105,13 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="reset interrupt",
     ),
     SlashCommand(
+        name="/goal",
+        description="Draft and accept criteria for a persistent goal",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="objective criteria acceptance rubric",
+        argument_hint="[<objective>|accept|edit|show|clear]",
+    ),
+    SlashCommand(
         name="/editor",
         description="Open prompt in an external editor ($EDITOR)",
         bypass_tier=BypassTier.QUEUED,

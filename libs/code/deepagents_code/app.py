@@ -85,10 +85,12 @@ from deepagents_code.widgets.message_store import (
 from deepagents_code.widgets.messages import (
     AppMessage,
     AssistantMessage,
+    DiffMessage,
     ErrorMessage,
     QueuedUserMessage,
     SkillMessage,
     ToolCallMessage,
+    ToolGroupSummary,
     UserMessage,
 )
 from deepagents_code.widgets.status import StatusBar
@@ -1105,6 +1107,11 @@ key presses.
 _DEFERRED_APPROVAL_TIMEOUT_SECONDS: float = 30.0
 """Maximum seconds the deferred-approval worker will wait for the user to stop
 typing before showing the approval widget regardless."""
+
+_SPINNER_SHOW_DELAY_SECONDS: float = 0.25
+"""Debounce window before the loading spinner is mounted. Brief thinking gaps
+between fast back-to-back tools resolve within this window, so the spinner
+only appears for genuine pauses instead of flashing in and out each step."""
 
 _RAPID_QUIT_CTRL_C_PRESSES: int = 2
 """Consecutive rapid `Ctrl+C` presses that force the quit sequence.
@@ -2154,6 +2161,16 @@ class DeepAgentsApp(App):
         """Active spinner widget; populated by `_set_spinner(status)` and
         cleared when status resolves to `None`."""
 
+        self._spinner_show_timer: Timer | None = None
+        """Pending debounced spinner-show timer (see `_set_spinner`).
+
+        The spinner is only mounted after a short delay so the rapid
+        hide/show churn between fast back-to-back tools (each step toggles
+        `None` then `"Thinking"`) never flashes it in and out."""
+
+        self._pending_spinner_status: SpinnerStatus = None
+        """Status to display when `_spinner_show_timer` fires."""
+
         self._ui_adapter: TextualUIAdapter | None = None
         """Bridge that renders agent events into widgets; set in `on_mount`."""
 
@@ -2189,6 +2206,10 @@ class DeepAgentsApp(App):
         self._active_user_message: UserMessage | None = None
         """The `UserMessage` widget that started the in-flight turn, tracked so
         it can be dimmed if the turn is interrupted."""
+
+        self._active_tool_group: ToolGroupSummary | None = None
+        """Open tool-group summary for the current step. Tools are folded into
+        it as they stream and it is closed at the next step boundary."""
 
         self._shell_process: asyncio.subprocess.Process | None = None
         """Shell command process tracking for interruption (! commands)."""
@@ -5438,6 +5459,10 @@ class DeepAgentsApp(App):
         added_height = hydrated_count * estimated_height_per_message
         chat.scroll_y = old_scroll_y + added_height
 
+        # Collapse any completed tool runs brought in above the window so
+        # hydrated history matches the live transcript.
+        await self._regroup_completed_tools()
+
     async def _mount_before_queued(self, container: Container, widget: Widget) -> None:
         """Mount a widget in the messages container, before any queued widgets.
 
@@ -5582,7 +5607,9 @@ class DeepAgentsApp(App):
         )
 
         if status is None:
-            # Hide
+            # Hide. Cancel any debounced show first so a pending "Thinking"
+            # doesn't pop in just after the agent moved on to a tool.
+            self._cancel_pending_spinner()
             if self._loading_widget:
                 await self._loading_widget.remove()
                 self._loading_widget = None
@@ -5601,31 +5628,60 @@ class DeepAgentsApp(App):
                 # Cosmetic only — must never break spinner lifecycle.
                 logger.exception("set_terminal_progress raised unexpectedly")
 
-        try:
-            messages = self.query_one("#messages", Container)
-        except NoMatches:
-            # Container was torn down (e.g. shutdown mid-stream). Skip
-            # silently so the streaming loop doesn't crash.
-            return
-
-        if self._loading_widget is None:
-            # Create new
-            self._loading_widget = LoadingWidget(status)
-            await self._mount_before_queued(messages, self._loading_widget)
-        else:
+        if self._loading_widget is not None:
+            # Already visible: update in place immediately (no churn). Cancel
+            # any pending show since we're handling it now.
+            self._cancel_pending_spinner()
+            try:
+                messages = self.query_one("#messages", Container)
+            except NoMatches:
+                return
             # A fresh status update means the agent is active again, so
             # un-pause as a backstop in case an approval future was ever
             # abandoned without completing the resume callback. `resume()` is a
             # no-op when the spinner is not paused.
             self._loading_widget.resume()
-            # Update existing
             self._loading_widget.set_status(status)
             # Reposition via move_child so elapsed-time and animation state
             # carry through; remove + re-mount would reset both.
             if not self._is_spinner_at_correct_position(messages):
                 self._reposition_spinner(messages)
+            return
+
+        # Not currently visible: debounce the mount so the brief gaps between
+        # fast back-to-back tools (each step toggles None -> "Thinking") don't
+        # flash the spinner in and out. A `_set_spinner(None)` arriving inside
+        # the window cancels the pending show.
+        self._pending_spinner_status = status
+        if self._spinner_show_timer is None:
+            self._spinner_show_timer = self.set_timer(
+                _SPINNER_SHOW_DELAY_SECONDS, self._show_pending_spinner
+            )
         # NOTE: Don't call anchor() here - it would re-anchor and drag user back
         # to bottom if they've scrolled away during streaming
+
+    def _cancel_pending_spinner(self) -> None:
+        """Cancel a debounced spinner show, if one is scheduled."""
+        if self._spinner_show_timer is not None:
+            self._spinner_show_timer.stop()
+            self._spinner_show_timer = None
+        self._pending_spinner_status = None
+
+    async def _show_pending_spinner(self) -> None:
+        """Mount the spinner after the debounce window elapses."""
+        self._spinner_show_timer = None
+        status = self._pending_spinner_status
+        self._pending_spinner_status = None
+        if status is None or self._loading_widget is not None:
+            return
+        try:
+            messages = self.query_one("#messages", Container)
+        except NoMatches:
+            return
+        if not messages.is_attached:
+            return
+        self._loading_widget = LoadingWidget(status)
+        await self._mount_before_queued(messages, self._loading_widget)
 
     def _reposition_spinner(self, container: Container) -> None:
         """Move the spinner to its correct position without resetting state.
@@ -9641,6 +9697,11 @@ class DeepAgentsApp(App):
                 ),
                 turn_stats=turn_stats,
             )
+            # Close the final step's group once the turn ends with no trailing
+            # assistant text to trigger the boundary path.
+            with suppress(Exception):
+                self._close_active_tool_group()
+                await self._regroup_completed_tools()
         except Exception as e:  # Resilient tool rendering
             logger.exception("Agent execution failed")
             try:
@@ -9690,6 +9751,9 @@ class DeepAgentsApp(App):
             subagent_panel = self._get_subagent_panel()
             if subagent_panel is not None:
                 subagent_panel.finalize_running()
+            # Collapse the open tool group so an interrupted turn doesn't leave a
+            # summary spinning "Running…" forever (synchronous, cancel-safe).
+            self._close_active_tool_group()
             await self._cleanup_agent_task()
 
     async def _process_next_from_queue(self) -> None:
@@ -10284,6 +10348,26 @@ class DeepAgentsApp(App):
                 pass
             return
 
+        # Eagerly fold tool calls into a single live summary so they are
+        # collapsed from the moment they start, rather than rendering verbose
+        # then snapping shut. A groupable tool joins (or opens) the current
+        # step's group; a diff folds into it; anything else is a step boundary
+        # that closes the group.
+        is_groupable_tool = (
+            isinstance(widget, ToolCallMessage) and widget.tool_name != "ask_user"
+        )
+        is_diff = isinstance(widget, DiffMessage)
+        if not (is_groupable_tool or is_diff):
+            self._close_active_tool_group()
+            # Re-derive groups for any tools mounted outside this path (resumed
+            # history), which carry no live group.
+            await self._regroup_completed_tools()
+        elif is_groupable_tool and (
+            self._active_tool_group is None or not self._active_tool_group.is_attached
+        ):
+            self._active_tool_group = ToolGroupSummary(live=True)
+            await self._mount_before_queued(messages, self._active_tool_group)
+
         # Store message data for virtualization
         message_data = MessageData.from_widget(widget)
         if not widget.id:
@@ -10298,6 +10382,14 @@ class DeepAgentsApp(App):
         await self._mount_before_queued(messages, widget)
         if footer is not None:
             await self._mount_before_queued(messages, footer)
+
+        # Fold the freshly-mounted tool/diff into the open group so it hides
+        # immediately (must run after mount so display toggles take effect).
+        if self._active_tool_group is not None and self._active_tool_group.is_attached:
+            if is_groupable_tool:
+                self._active_tool_group.add_member(widget)
+            elif is_diff:
+                self._active_tool_group.add_collapsible(widget)
 
         # Prune old widgets if window exceeded
         await self._prune_old_messages()
@@ -10349,6 +10441,100 @@ class DeepAgentsApp(App):
         if pruned_ids:
             self._message_store.mark_pruned(pruned_ids)
 
+        # Drop any group summaries whose members were all pruned away so a
+        # stray collapsed line never lingers above the window.
+        for summary in list(self.query(ToolGroupSummary)):
+            if not summary.has_attached_members:
+                with suppress(Exception):
+                    await summary.remove()
+
+    def _close_active_tool_group(self) -> None:
+        """Finalize the open tool group into its collapsed past-tense form."""
+        group = self._active_tool_group
+        self._active_tool_group = None
+        if group is not None and group.is_attached:
+            with suppress(Exception):
+                group.close()
+
+    async def _regroup_completed_tools(self) -> None:
+        """Fold runs of completed tool calls into collapsible group summaries.
+
+        Scans the messages container for maximal runs of consecutive,
+        successfully-completed tool calls (optionally interleaved with their
+        diff previews) and inserts a `ToolGroupSummary` that collapses each run
+        into a single dim line. Footers stay transparent to the scan so a
+        timestamp row between two tools does not split a run.
+
+        Idempotent: tools already folded carry the `-grouped` class and are
+        skipped, so it is safe to call on every stream boundary and on
+        hydration. A run is only collapsed once every tool in it succeeded;
+        a run containing an error/rejection/pending tool is left expanded.
+        """
+        try:
+            messages = self.query_one("#messages", Container)
+        except NoMatches:
+            return
+
+        run_tools: list[ToolCallMessage] = []
+        run_collapsible: list[Widget] = []
+        run_anchor: Widget | None = None
+
+        async def flush() -> None:
+            nonlocal run_tools, run_collapsible, run_anchor
+            if run_tools and run_anchor is not None:
+                await self._mount_tool_group_summary(
+                    messages, run_tools, run_collapsible, run_anchor
+                )
+            run_tools = []
+            run_collapsible = []
+            run_anchor = None
+
+        for child in list(messages.children):
+            if child.has_class(_MESSAGE_TIMESTAMP_FOOTER_CLASS):
+                continue  # footers are transparent to grouping
+            if isinstance(child, ToolCallMessage):
+                groupable = (
+                    child.tool_name != "ask_user"
+                    and child._status == ToolStatus.SUCCESS
+                    and not child.has_class("-grouped")
+                )
+                if not groupable:
+                    await flush()
+                    continue
+                if run_anchor is None:
+                    run_anchor = child
+                run_tools.append(child)
+                run_collapsible.append(child)
+                continue
+            if isinstance(child, DiffMessage):
+                # A diff belongs to the tool above it; never starts a run.
+                if run_anchor is not None:
+                    run_collapsible.append(child)
+                continue
+            # Assistant text, notices, an existing summary, etc. end the run.
+            await flush()
+        await flush()
+
+    @staticmethod
+    async def _mount_tool_group_summary(
+        messages: Container,
+        tools: list[ToolCallMessage],
+        collapsible: list[Widget],
+        anchor: Widget,
+    ) -> None:
+        """Insert a `ToolGroupSummary` before `anchor` and collapse the run."""
+        if not anchor.is_attached:
+            return
+        summary = ToolGroupSummary(tools=list(tools), collapsible=list(collapsible))
+        for widget in collapsible:
+            widget.add_class("-grouped")
+        try:
+            await messages.mount(summary, before=anchor)
+        except Exception:
+            logger.warning("Failed to mount tool group summary", exc_info=True)
+            for widget in collapsible:
+                widget.remove_class("-grouped")
+
     def _set_active_message(self, message_id: str | None) -> None:
         """Set the active streaming message (won't be pruned).
 
@@ -10380,6 +10566,12 @@ class DeepAgentsApp(App):
         self._pending_shell_messages.clear()
         # Clear the message store first
         self._message_store.clear()
+        # Drop the open tool group; its widget is about to leave the DOM.
+        self._active_tool_group = None
+        # Cancel any debounced spinner show and drop the stale ref, since
+        # remove_children() below detaches the current spinner widget.
+        self._cancel_pending_spinner()
+        self._loading_widget = None
         # Drop the tracked in-flight prompt: its widget is about to leave the
         # DOM, so the pointer must not outlive it. Keeps the "cleared screen ⇒
         # nothing to dim" invariant self-enforcing regardless of caller timing.
@@ -11161,6 +11353,16 @@ class DeepAgentsApp(App):
                 if tool_msg.has_expandable_args:
                     tool_msg.toggle_args()
                     return
+
+        # A collapsed/expanded tool group is the most recent collapsible unit
+        # once a step's tools have been folded; toggle the latest one.
+        try:
+            group_summaries = list(self.query(ToolGroupSummary))
+        except NoMatches:
+            group_summaries = []
+        if group_summaries:
+            group_summaries[-1].toggle()
+            return
 
         # Try skill messages first (most recent collapsible content)
         try:

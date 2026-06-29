@@ -55,6 +55,7 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
     from textual.events import MouseMove
     from textual.timer import Timer
+    from textual.widget import Widget
     from textual.widgets import Markdown
     from textual.widgets._markdown import MarkdownStream
 
@@ -2431,6 +2432,303 @@ class ToolCallMessage(Vertical):
             if key in self._args:
                 filtered[key] = self._args[key]
         return filtered
+
+
+# Maps a tool name to the summary category it aggregates under. grep/glob share
+# "search" so a mixed run folds into a single "Searched for N patterns" segment.
+_TOOL_SUMMARY_CATEGORY: dict[str, str] = {
+    "read_file": "read",
+    "write_file": "write",
+    "edit_file": "edit",
+    "delete": "delete",
+    "ls": "ls",
+    "grep": "search",
+    "glob": "search",
+    "execute": "shell",
+    "js_eval": "js",
+    "web_search": "web_search",
+    "fetch_url": "fetch",
+    "task": "task",
+    "write_todos": "todos",
+}
+
+# category -> (present verb, past verb, singular noun, plural noun).
+_TOOL_SUMMARY_PHRASES: dict[str, tuple[str, str, str, str]] = {
+    "read": ("Reading", "Read", "file", "files"),
+    "write": ("Writing", "Wrote", "file", "files"),
+    "edit": ("Editing", "Edited", "file", "files"),
+    "delete": ("Deleting", "Deleted", "file", "files"),
+    "ls": ("Listing", "Listed", "directory", "directories"),
+    "search": ("Searching for", "Searched for", "pattern", "patterns"),
+    "shell": ("Running", "Ran", "shell command", "shell commands"),
+    "js": ("Running", "Ran", "JS evaluation", "JS evaluations"),
+    "fetch": ("Fetching", "Fetched", "URL", "URLs"),
+    "task": ("Running", "Ran", "agent", "agents"),
+}
+
+_Tense = Literal["present", "past"]
+
+
+def _summary_segment(category: str, count: int, tool_name: str, tense: _Tense) -> str:
+    """Phrase a single count segment, e.g. "Read 2 files" / "Reading 2 files".
+
+    Returns:
+        The phrased segment for this category, count, and tense.
+    """
+    if category == "web_search":
+        base = "Searching the web" if tense == "present" else "Searched the web"
+        return base if count == 1 else f"{base} {count} times"
+    if category == "todos":
+        return "Updating todos" if tense == "present" else "Updated todos"
+    phrase = _TOOL_SUMMARY_PHRASES.get(category)
+    if phrase is None:
+        present, past = "Running", "Ran"
+        singular, plural = f"{tool_name} call", f"{tool_name} calls"
+    else:
+        present, past, singular, plural = phrase
+    verb = present if tense == "present" else past
+    noun = singular if count == 1 else plural
+    return f"{verb} {count} {noun}"
+
+
+def summarize_tool_group(tool_names: list[str], *, tense: _Tense = "past") -> str:
+    """Build a one-line summary of a run of tool calls.
+
+    Aggregates by category in first-appearance order and lowercases the lead
+    word of every segment after the first, e.g.
+    `["read_file", "read_file", "execute"]` -> "Read 2 files, ran 1 shell command".
+
+    Returns:
+        The aggregated one-line summary string in the requested tense.
+    """
+    counts: dict[str, int] = {}
+    order: list[str] = []
+    rep_name: dict[str, str] = {}
+    for name in tool_names:
+        category = _TOOL_SUMMARY_CATEGORY.get(name, name)
+        if category not in counts:
+            counts[category] = 0
+            order.append(category)
+            rep_name[category] = name
+        counts[category] += 1
+
+    segments = [
+        _summary_segment(cat, counts[cat], rep_name[cat], tense) for cat in order
+    ]
+    if not segments:
+        return "Running tools" if tense == "present" else "Ran tools"
+    first, *rest = segments
+    lowered = [f"{seg[0].lower()}{seg[1:]}" if seg else seg for seg in rest]
+    return ", ".join([first, *lowered])
+
+
+class ToolGroupSummary(Static):
+    """Collapsed one-line stand-in for an assistant step's tool calls.
+
+    Tools are hidden from the moment they start; this single line shows live
+    progress ("Running 1 shell command…") and flips to the past tense
+    ("Ran 1 shell command") once every tool finishes. Clicking the line or
+    pressing Ctrl+O expands the underlying tool rows (and their diffs).
+
+    Two modes:
+
+    - **live** (streaming): created empty, members added via `add_member` as
+      they mount, a spinner timer animates the line and re-renders present/past
+      tense, and failed tools are ejected back into view so errors stay visible.
+    - **finalized** (`live=False`, used for hydration/resume): a fixed set of
+      completed tools rendered straight to the past tense with no timer.
+
+    Purely presentational — never tracked by the message store; it is re-derived
+    from the mounted tool widgets on each stream boundary and on hydration.
+    """
+
+    DEFAULT_CSS = """
+    ToolGroupSummary {
+        height: auto;
+        padding: 0 1;
+        margin: 0 0 1 0;
+        color: $text-muted;
+        pointer: pointer;
+    }
+
+    ToolGroupSummary:hover {
+        color: $text;
+    }
+    """
+
+    _SPINNER_INTERVAL: ClassVar[float] = 0.1
+    _FAILED_STATUSES: ClassVar[frozenset[str]] = frozenset({"error", "rejected"})
+    _PENDING_STATUSES: ClassVar[frozenset[str]] = frozenset({"pending", "running"})
+
+    _collapsed: var[bool] = var(True)
+
+    def __init__(
+        self,
+        tools: list[ToolCallMessage] | None = None,
+        collapsible: list[Widget] | None = None,
+        *,
+        live: bool = False,
+        **kwargs: Any,
+    ) -> None:
+        """Initialize the summary.
+
+        Args:
+            tools: Tool widgets the summary aggregates (drives its text). May be
+                empty for a live group that grows via `add_member`.
+            collapsible: Every widget hidden/shown with the group, including the
+                tool widgets and any interleaved diff previews.
+            live: When True, animate progress and accept new members until
+                `close`. When False, render a finalized past-tense summary.
+            **kwargs: Additional arguments passed to `Static`.
+        """
+        super().__init__("", **kwargs)
+        self._tools = list(tools or [])
+        self._collapsible = list(collapsible or [])
+        self._live = live
+        self._finalized = not live
+        self._spinner_pos = 0
+        self._timer: Timer | None = None
+
+    def on_mount(self) -> None:
+        """Apply initial visibility, render, and arm the spinner if live."""
+        if is_ascii_mode():
+            self.add_class("-ascii")
+        self._apply_visibility()
+        self._render_line()
+        self._sync_timer()
+
+    def add_member(self, tool: ToolCallMessage, *extra: Widget) -> None:
+        """Add a tool (and any associated widgets) to a live group."""
+        tool.add_class("-grouped")
+        self._tools.append(tool)
+        self._collapsible.append(tool)
+        for widget in extra:
+            widget.add_class("-grouped")
+            self._collapsible.append(widget)
+        self._apply_visibility()
+        self._render_line()
+        self._sync_timer()
+
+    def add_collapsible(self, widget: Widget) -> None:
+        """Attach a non-tool widget (e.g. a diff) to be folded with the group."""
+        widget.add_class("-grouped")
+        self._collapsible.append(widget)
+        if widget.is_attached:
+            widget.display = not self._collapsed
+
+    def close(self) -> None:
+        """Mark the group complete; no further members will join."""
+        self._finalized = True
+        self._evict_failed()
+        self._stop_timer()
+        if not self.is_attached:
+            return
+        if self._tools:
+            self._render_line()
+        else:
+            # Every tool failed and was ejected — nothing left to summarize.
+            self.remove()
+
+    @property
+    def has_attached_members(self) -> bool:
+        """Whether any collapsed widget is still attached to the DOM."""
+        return any(widget.is_attached for widget in self._collapsible)
+
+    def set_collapsed(self, *, collapsed: bool) -> None:
+        """Set the collapsed state explicitly."""
+        self._collapsed = collapsed
+
+    def toggle(self) -> None:
+        """Toggle between collapsed and expanded."""
+        self._collapsed = not self._collapsed
+
+    def watch__collapsed(self, _collapsed: bool) -> None:
+        """Re-render and re-apply member visibility when the state changes."""
+        self._apply_visibility()
+        self._render_line()
+
+    def on_click(self, event: Click) -> None:
+        """Toggle the group on click."""
+        event.stop()
+        self.toggle()
+
+    def _in_progress(self) -> bool:
+        """Whether any member tool is still pending or running.
+
+        Returns:
+            True if at least one member tool has not finished.
+        """
+        return any(tool._status in self._PENDING_STATUSES for tool in self._tools)
+
+    def _evict_failed(self) -> None:
+        """Un-fold errored/rejected tools so failures stay visible."""
+        for tool in [t for t in self._tools if t._status in self._FAILED_STATUSES]:
+            self._tools.remove(tool)
+            if tool in self._collapsible:
+                self._collapsible.remove(tool)
+            tool.remove_class("-grouped")
+            if tool.is_attached:
+                tool.display = True
+
+    def _sync_timer(self) -> None:
+        """Run the spinner timer only while live members are in progress."""
+        if self._live and not self._finalized and self._in_progress():
+            if self._timer is None:
+                self._timer = self.set_interval(self._SPINNER_INTERVAL, self._tick)
+        else:
+            self._stop_timer()
+
+    def _stop_timer(self) -> None:
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
+
+    def _tick(self) -> None:
+        """Advance the spinner, eject failures, and flip to past tense when done."""
+        self._spinner_pos += 1
+        self._evict_failed()
+        if self._collapsed:
+            # Re-assert hidden state in case a member was shown externally
+            # (e.g. ToolCallMessage.clear_awaiting_approval after HITL).
+            self._apply_visibility()
+        if not self._tools:
+            self._stop_timer()
+            if self.is_attached:
+                self.remove()
+            return
+        if not self._in_progress():
+            self._stop_timer()
+        self._render_line()
+
+    def _apply_visibility(self) -> None:
+        """Show or hide every folded widget per the collapsed state."""
+        visible = not self._collapsed
+        for widget in self._collapsible:
+            if widget.is_attached:
+                widget.display = visible
+
+    def _render_line(self) -> None:
+        """Refresh the summary line for the current tense and collapsed state."""
+        if not self.is_attached:
+            return
+        names = [tool.tool_name for tool in self._tools]
+        glyphs = get_glyphs()
+        if not names:
+            self.update(Content(""))
+            return
+        if self._live and not self._finalized and self._in_progress():
+            frames = glyphs.spinner_frames
+            spinner = frames[self._spinner_pos % len(frames)]
+            text = summarize_tool_group(names, tense="present")
+            self.update(Content(f"{spinner} {text}{glyphs.ellipsis}"))
+        else:
+            mark = (
+                glyphs.disclosure_collapsed
+                if self._collapsed
+                else glyphs.disclosure_expanded
+            )
+            text = summarize_tool_group(names, tense="past")
+            self.update(Content(f"{mark} {text}"))
 
 
 class DiffMessage(Static):

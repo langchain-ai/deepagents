@@ -7762,9 +7762,7 @@ class DeepAgentsApp(App):
             self._clear_all_goal_rubric_state()
             self._sync_status_rubric()
             persisted = await self._persist_goal_rubric_state()
-            await self._mount_goal_rubric_result(
-                "Goal and rubric cleared.", persisted=persisted
-            )
+            await self._mount_goal_rubric_result("Goal cleared.", persisted=persisted)
             return
 
         objective = remainder
@@ -7793,16 +7791,17 @@ class DeepAgentsApp(App):
         lines: list[str] = []
         if self._active_goal:
             status = self._goal_status or "active"
-            lines.append(f"Goal status: {status}\n{self._active_goal}")
+            lines.extend([f"Goal:\n{self._active_goal}", f"Status:\n{status}"])
         if self._goal_status_note:
             lines.append(f"Status note:\n{self._goal_status_note}")
         if self._active_rubric:
-            lines.append(f"Accepted criteria:\n{self._active_rubric}")
+            lines.append(f"Criteria:\n{self._active_rubric}")
         if self._pending_goal_objective and self._pending_goal_rubric:
             lines.extend(
                 [
-                    f"Pending goal:\n{self._pending_goal_objective}",
-                    f"Proposed criteria:\n{self._pending_goal_rubric}",
+                    f"Goal:\n{self._pending_goal_objective}",
+                    "Status:\npending review",
+                    f"Criteria:\n{self._pending_goal_rubric}",
                     (
                         "Review the proposal in the review prompt, or run "
                         "`/goal clear` to cancel it."
@@ -7810,7 +7809,7 @@ class DeepAgentsApp(App):
                 ],
             )
         if lines:
-            lines.append("Commands: /goal clear, /goal show")
+            lines.append("Commands:\n/goal clear\n/goal show")
             await self._mount_message(AppMessage("\n\n".join(lines)))
             return
         await self._mount_message(
@@ -8136,11 +8135,12 @@ class DeepAgentsApp(App):
             lines.append(f"Next-turn rubric:\n{self._next_rubric}")
         if self._rubric_model:
             lines.append(f"Rubric grader model: {self._rubric_model}")
-        else:
+        if not lines:
+            await self._mount_message(AppMessage("No rubric set."))
+            return
+        if not self._rubric_model:
             lines.append("Rubric grader model: current chat model")
-        await self._mount_message(
-            AppMessage("\n\n".join(lines) if lines else "No rubric set.")
-        )
+        await self._mount_message(AppMessage("\n\n".join(lines)))
 
     async def _set_rubric_from_file(self, path_arg: str) -> None:
         """Read a rubric file and set it as the sticky rubric."""

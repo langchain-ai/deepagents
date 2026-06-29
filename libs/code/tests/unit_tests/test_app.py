@@ -5102,6 +5102,26 @@ class TestGoalCommand:
             assert app._goal_status_note == "tests pass"
             assert app._active_rubric == "- tests pass"
 
+    async def test_goal_show_uses_labeled_sections(self) -> None:
+        """`/goal show` should render goal, status, criteria, and commands."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "make the app start faster"
+            app._goal_status = "active"
+            app._active_rubric = "- measure baseline\n- improve startup"
+
+            await app._handle_command("/goal show")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Goal:\nmake the app start faster" in rendered
+            assert "Status:\nactive" in rendered
+            assert "Criteria:\n- measure baseline\n- improve startup" in rendered
+            assert "Commands:\n/goal clear\n/goal show" in rendered
+            assert "Goal status:" not in rendered
+            assert "Accepted criteria:" not in rendered
+
     async def test_goal_clear_clears_goal_and_rubric(self) -> None:
         """`/goal clear` should clear goal-backed rubric state."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -5122,6 +5142,9 @@ class TestGoalCommand:
             assert app._pending_goal_rubric is None
             assert app._status_bar is not None
             assert app._status_bar.rubric_label == ""
+            assert any(
+                str(w._content) == "Goal cleared." for w in app.query(AppMessage)
+            )
 
     @pytest.mark.parametrize("verb", ["show", "status", "accept", "edit", "clear"])
     async def test_goal_reserved_word_objective_drafts_goal(self, verb: str) -> None:
@@ -5270,6 +5293,19 @@ class TestRubricCommand:
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "Rubric:\ntests pass" in rendered
             assert "Sticky rubric:" not in rendered
+
+    async def test_rubric_show_without_rubric_reports_empty_state(self) -> None:
+        """Default grader model alone should not make `/rubric show` look set."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await app._handle_command("/rubric show")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "No rubric set." in rendered
+            assert "Rubric grader model: current chat model" not in rendered
 
     async def test_rubric_set_passes_sticky_rubric_to_turn(self) -> None:
         """`/rubric set` should apply to subsequent TUI agent turns."""

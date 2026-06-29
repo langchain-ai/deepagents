@@ -79,9 +79,10 @@ def open_style_link(event: Click) -> None:
     homograph domains) are blocked and not opened; the event bubbles and a
     warning is logged and displayed as a Textual notification.
 
-    On success the event is stopped so it does not bubble further. On failure
-    (e.g. no browser available in a headless environment) the error is logged at
-    debug level and the event bubbles normally.
+    On success the event is stopped so it does not bubble further and an
+    informational toast confirms which URL was opened. On failure (e.g. no
+    browser available in a headless environment) the error is logged at debug
+    level and the event bubbles normally.
 
     Args:
         event: The Textual click event to inspect.
@@ -109,8 +110,23 @@ def open_style_link(event: Click) -> None:
         return
 
     try:
-        webbrowser.open(url)
+        opened = webbrowser.open(url)
     except Exception:
         logger.debug("Could not open browser for URL: %s", url, exc_info=True)
         return
+    if not opened:
+        logger.debug("Browser backend did not open URL: %s", url)
+        return
+    try:
+        app = getattr(event, "app", None)
+        notify = getattr(app, "notify", None)
+        if callable(notify):
+            notify(
+                f"Opening {strip_dangerous_unicode(url)}",
+                severity="information",
+                timeout=4,
+                markup=False,
+            )
+    except (AttributeError, TypeError):
+        logger.debug("Could not send URL-opened notification", exc_info=True)
     event.stop()

@@ -44,14 +44,32 @@ def _event_with_link(url: str) -> SimpleNamespace:
 
 
 def test_open_style_link_opens_browser_and_stops_event() -> None:
-    """Safe links should open and stop event propagation."""
+    """Safe links should open, toast confirmation, and stop event propagation."""
     event = _event_with_link("https://example.com")
 
     with patch("deepagents_code.widgets._links.webbrowser.open") as mock_open:
+        mock_open.return_value = True
         open_style_link(event)  # ty: ignore
 
     mock_open.assert_called_once_with("https://example.com")
     event.stop.assert_called_once()
+    event.app.notify.assert_called_once()
+    args, kwargs = event.app.notify.call_args
+    assert "https://example.com" in args[0]
+    assert kwargs["severity"] == "information"
+    assert kwargs["markup"] is False
+
+
+def test_open_style_link_no_toast_when_browser_does_not_open() -> None:
+    """When the browser backend declines, no toast is shown and event bubbles."""
+    event = _event_with_link("https://example.com")
+
+    with patch("deepagents_code.widgets._links.webbrowser.open") as mock_open:
+        mock_open.return_value = False
+        open_style_link(event)  # ty: ignore
+
+    mock_open.assert_called_once_with("https://example.com")
+    event.stop.assert_not_called()
     event.app.notify.assert_not_called()
 
 

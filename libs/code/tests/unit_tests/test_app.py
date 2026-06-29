@@ -49,6 +49,7 @@ from deepagents_code.app import (
     _display_model_label,
     _extra_is_ready,
     _ThreadHistoryPayload,
+    _warn_discarded_goal_channels,
 )
 from deepagents_code.event_bus import ExternalEvent
 from deepagents_code.widgets.ask_user import AskUserTextArea
@@ -4665,6 +4666,56 @@ class TestRunAgentTaskMediaTracker:
             assert any("OPENAI_API_KEY" in str(w._content) for w in errors)
 
 
+class TestWarnDiscardedGoalChannels:
+    """Tests for surfacing malformed persisted goal/rubric channels on resume."""
+
+    def test_returns_empty_for_valid_state(self) -> None:
+        """Well-formed channel values should produce no discards."""
+        discarded = _warn_discarded_goal_channels(
+            {
+                "_goal_objective": "add refresh tokens",
+                "_goal_status": "active",
+                "_goal_rubric": "- tests pass",
+            }
+        )
+
+        assert discarded == []
+
+    def test_flags_non_str_channel_at_warning(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A non-str persisted channel is discarded and logged at WARNING.
+
+        DEBUG is not attached by default, so the discard must surface at WARNING
+        (not DEBUG) to leave a visible trace.
+        """
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.app"):
+            discarded = _warn_discarded_goal_channels({"_goal_objective": 123})
+
+        assert discarded == ["_goal_objective"]
+        assert any(
+            "_goal_objective" in record.getMessage()
+            and record.levelno == logging.WARNING
+            for record in caplog.records
+        )
+
+    def test_flags_unknown_goal_status(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An unrecognized status string is discarded and surfaced at WARNING."""
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.app"):
+            discarded = _warn_discarded_goal_channels({"_goal_status": "paused"})
+
+        assert discarded == ["_goal_status"]
+        assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+    def test_known_status_is_not_flagged(self) -> None:
+        """A recognized status must not be reported as discarded."""
+        assert _warn_discarded_goal_channels({"_goal_status": "complete"}) == []
+
+
 class TestGoalCommand:
     """Tests for goal-backed rubric proposal workflow."""
 
@@ -5612,6 +5663,85 @@ class TestGoalCommand:
                 "will not survive" in str(w._content) for w in app.query(ErrorMessage)
             )
 
+    async def test_goal_accept_subcommand_redirects_to_review(self) -> None:
+        """Bare `/goal accept`/`/goal edit` should point back to the review prompt."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/goal accept")
+            await pilot.pause()
+
+            assert any(
+                "Goal proposals are reviewed in the review prompt." in str(w._content)
+                for w in app.query(AppMessage)
+            )
+
+    async def test_goal_show_with_no_goal_reports_empty(self) -> None:
+        """`/goal show` with nothing set should report no goal plus usage."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/goal show")
+            await pilot.pause()
+
+            assert any(
+                str(w._content).startswith("No goal set.")
+                for w in app.query(AppMessage)
+            )
+
+    async def test_accept_goal_rubric_without_pending_reports_nothing(self) -> None:
+        """Accepting with no pending objective must not set a half-formed goal."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_goal_objective = None
+
+            await app._accept_goal_rubric("- tests pass")
+
+            assert app._active_goal is None
+            assert any(
+                str(w._content) == "No pending goal to accept."
+                for w in app.query(AppMessage)
+            )
+
+    async def test_accept_goal_rubric_empty_criteria_rejected(self) -> None:
+        """Whitespace-only accepted criteria must be refused, not committed."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_goal_objective = "add refresh tokens"
+
+            await app._accept_goal_rubric("   \n  ")
+
+            assert app._active_goal is None
+            assert app._active_rubric is None
+            assert any(
+                str(w._content) == "Cannot accept empty goal criteria."
+                for w in app.query(AppMessage)
+            )
+
+    async def test_finish_goal_review_exception_surfaces_error(self) -> None:
+        """An unexpected failure mid-review should surface a recovery message."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_goal_objective = "add refresh tokens"
+            app._pending_goal_rubric = "- tests pass"
+            future = self._goal_review_future({"type": "accepted"})
+
+            with patch.object(
+                app,
+                "_accept_goal_rubric",
+                side_effect=RuntimeError("boom"),
+            ):
+                await app._finish_pending_goal_rubric_review(future)
+                await pilot.pause()
+
+            assert any(
+                "Goal review failed unexpectedly. Please try again." in str(w._content)
+                for w in app.query(ErrorMessage)
+            )
+
     def test_clear_all_goal_rubric_state_resets_every_field(self) -> None:
         """The shared clear helper must null every correlated field at once."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -5652,6 +5782,22 @@ class TestRubricCommand:
             assert any(
                 "Usage:\n  /rubric set <criteria>" in str(w._content)
                 for w in app.query(AppMessage)
+            )
+
+    async def test_unknown_rubric_subcommand_shows_usage(self) -> None:
+        """An unrecognized `/rubric` subcommand should fall through to usage."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/rubric bogus")
+            await pilot.pause()
+
+            assert any(
+                "Usage:\n  /rubric set <criteria>" in str(w._content)
+                for w in app.query(AppMessage)
+            )
+            assert any(
+                str(w._content) == "/rubric bogus" for w in app.query(UserMessage)
             )
 
     async def test_rubric_show_labels_active_rubric_plainly(self) -> None:

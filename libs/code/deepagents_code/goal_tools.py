@@ -159,6 +159,8 @@ def _rubric_snapshot(state: dict[str, Any]) -> RubricSnapshot:
         criteria = sticky_rubric
         source = "sticky"
 
+    # `_rubric_status` is owned by the SDK's `RubricMiddleware`, co-composed into
+    # this agent's graph; see the `grading_status` field docstring above.
     grading_status = _clean_state_text(state, "_rubric_status")
     return {
         "active": criteria is not None,
@@ -223,6 +225,11 @@ def _update_goal_command(
         goal is set or `note` is empty, no status is committed and the
         `ToolMessage` explains what the model must do instead.
     """
+    # Enforced preconditions are only: an active goal exists and `note` is
+    # non-empty. Criteria satisfaction is intentionally NOT verified here — the
+    # rubric grader (`RubricMiddleware`) owns that. The tool docstring's "use
+    # complete only when the criteria are satisfied" is model guidance, not an
+    # enforced contract; do not add a criteria check here.
     objective = state.get("_goal_objective")
     if not isinstance(objective, str) or not objective:
         return Command(

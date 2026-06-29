@@ -15,7 +15,7 @@ import uuid
 import webbrowser
 from collections import deque
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, assert_never, cast
 
@@ -158,8 +158,8 @@ def _read_text_file_expanding_user(path_arg: str) -> tuple[Path, str]:
     return path, path.read_text(encoding="utf-8")
 
 
-def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> None:
-    """Log persisted goal/rubric channels that are present but malformed.
+def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> list[str]:
+    """Report persisted goal/rubric channels that are present but malformed.
 
     The TUI defensively coerces malformed channel values to `None` on resume
     and post-turn sync. Without this breadcrumb a corrupted checkpoint would
@@ -168,11 +168,21 @@ def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> None:
     a `_goal_status` string that is not a recognized `GoalStatus`, since the
     latter is normalized to `None` by `coerce_goal_status`.
 
+    Logs each discard at WARNING (DEBUG is not attached by default, so a DEBUG
+    breadcrumb would be invisible in normal use) and returns the discarded
+    channel names so callers can surface a single user-facing notification. Only
+    channel names, value types, and the short `_goal_status` token are logged —
+    never the persisted objective or criteria text.
+
     Args:
         state_values: Raw checkpoint state values.
+
+    Returns:
+        Names of channels whose persisted value was discarded as malformed.
     """
     from deepagents_code.resume_state import coerce_goal_status
 
+    discarded: list[str] = []
     for channel in (
         "rubric",
         "_sticky_rubric",
@@ -185,17 +195,20 @@ def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> None:
     ):
         value = state_values.get(channel)
         if value is not None and not isinstance(value, str):
-            logger.debug(
+            logger.warning(
                 "Discarding non-str persisted channel %s (%s)",
                 channel,
                 type(value).__name__,
             )
+            discarded.append(channel)
         elif (
             channel == "_goal_status"
             and isinstance(value, str)
             and coerce_goal_status(value) is None
         ):
-            logger.debug("Discarding unknown persisted goal status %r", value)
+            logger.warning("Discarding unknown persisted goal status %r", value)
+            discarded.append(channel)
+    return discarded
 
 
 def _create_model_with_deepagents_import_lock(
@@ -5957,7 +5970,7 @@ class DeepAgentsApp(App):
         if self._chat_input:
             self.call_after_refresh(self._chat_input.focus_input)
 
-    async def _remove_goal_review_widget(  # noqa: PLR6301
+    async def _remove_goal_review_widget(  # noqa: PLR6301  # kept an instance method for symmetry with the other _*_goal_review_* helpers
         self,
         widget: GoalReviewMenu,
         *,
@@ -7612,13 +7625,16 @@ class DeepAgentsApp(App):
         Returns:
             State update dict for the current goal/rubric metadata.
         """
+        # Goal-derived fields (`_goal_status`, `_goal_status_note`, `_goal_rubric`)
+        # are gated on an active objective so the persisted dict can never
+        # express a status or note without the goal they describe.
         return {
             "rubric": self._active_rubric,
             "_sticky_rubric": self._active_rubric,
             "_goal_objective": self._active_goal,
-            "_goal_status": self._goal_status,
+            "_goal_status": self._goal_status if self._active_goal else None,
             "_goal_rubric": self._active_rubric if self._active_goal else None,
-            "_goal_status_note": self._goal_status_note,
+            "_goal_status_note": self._goal_status_note if self._active_goal else None,
             "_pending_goal_objective": self._pending_goal_objective,
             "_pending_goal_rubric": self._pending_goal_rubric,
         }
@@ -7777,7 +7793,11 @@ class DeepAgentsApp(App):
                 )
             return
         self._goal_rubric_sync_warned = False
-        _warn_discarded_goal_channels(state_values)
+        if _warn_discarded_goal_channels(state_values):
+            self.notify(
+                "Some saved goal/rubric state was corrupted and was not restored.",
+                severity="warning",
+            )
         rubric = state_values.get("rubric")
         sticky_rubric_recorded = "_sticky_rubric" in state_values
         sticky_rubric = state_values.get("_sticky_rubric")
@@ -7831,20 +7851,10 @@ class DeepAgentsApp(App):
             and payload.rubric == self._last_consumed_next_rubric
         )
         if one_shot_rubric_consumed and not payload.sticky_rubric_recorded:
-            payload = _ThreadHistoryPayload(
-                payload.messages,
-                payload.context_tokens,
-                payload.model_spec,
-                rubric=self._last_consumed_next_previous_rubric,
-                sticky_rubric=payload.sticky_rubric,
-                sticky_rubric_recorded=payload.sticky_rubric_recorded,
-                goal_objective=payload.goal_objective,
-                goal_status=payload.goal_status,
-                goal_rubric=payload.goal_rubric,
-                goal_status_note=payload.goal_status_note,
-                pending_goal_objective=payload.pending_goal_objective,
-                pending_goal_rubric=payload.pending_goal_rubric,
-            )
+            # Same payload with only the one-shot rubric rolled back to the
+            # previous sticky value; `replace` keeps the other fields in lock-step
+            # instead of re-listing all of them.
+            payload = replace(payload, rubric=self._last_consumed_next_previous_rubric)
         previous_status = self._goal_status
         self._restore_goal_rubric_state(payload)
         await self._announce_goal_status_transition(previous_status)
@@ -9649,7 +9659,11 @@ class DeepAgentsApp(App):
         )
         raw_spec = state_values.get("_model_spec")
         model_spec = raw_spec if isinstance(raw_spec, str) else ""
-        _warn_discarded_goal_channels(state_values)
+        if _warn_discarded_goal_channels(state_values):
+            self.notify(
+                "Some saved goal/rubric state was corrupted and was not restored.",
+                severity="warning",
+            )
         raw_rubric = state_values.get("rubric")
         raw_sticky_rubric = state_values.get("_sticky_rubric")
         raw_goal_objective = state_values.get("_goal_objective")

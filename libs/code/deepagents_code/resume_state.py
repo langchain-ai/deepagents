@@ -12,13 +12,14 @@ Written by `ResumeStateMiddleware.after_model`, from inside the graph:
     restore the model the resumed thread was actually using instead of falling
     back to the user's global default.
 
-Written by the TUI client, via `aupdate_state` (see
-`DeepAgentsApp._persist_goal_rubric_state`) — these are user/agent-owned and
-have no model-node write site:
+Written primarily by the TUI client, via `aupdate_state` (see
+`DeepAgentsApp._persist_goal_rubric_state`) — these are user/agent-owned. Most
+have no model-node write site; the two exceptions are called out below:
 
 - `_goal_objective` / `_goal_status` / `_goal_rubric` / `_goal_status_note` —
-    the accepted goal and its lifecycle status; `_goal_status`/`_goal_status_note`
-    are also written from inside the graph by the agent's `update_goal` tool.
+    the accepted goal and its lifecycle status. `_goal_objective`/`_goal_rubric`
+    are client-only, but `_goal_status`/`_goal_status_note` are *also* written
+    from inside the graph by the agent's `update_goal` tool.
 - `_sticky_rubric` — the TUI-owned persistent rubric. This is separate from
     the public `rubric` graph input so one-shot rubric turns can be checkpointed
     without being restored as sticky state.
@@ -33,9 +34,10 @@ a separate client-side `aupdate_state` call) so the write rides the same
 checkpoint as the model response and avoids creating a standalone `UpdateState`
 run in LangSmith. Because they are versioned channel state, resuming a specific
 checkpoint yields the values as of *that* checkpoint — not a thread-level
-aggregate. The goal/rubric channels are necessarily client-written because the
-user sets them outside any model turn. Both paths work identically against
-local and remote (HTTP) graphs.
+aggregate. The goal/rubric channels are client-written because the user sets
+them outside any model turn (except `_goal_status`/`_goal_status_note`, which the
+`update_goal` tool also writes from inside the graph). Both paths work
+identically against local and remote (HTTP) graphs.
 """
 
 from __future__ import annotations

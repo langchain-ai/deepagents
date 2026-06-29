@@ -20,6 +20,7 @@ agent's response text.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 import threading
@@ -161,7 +162,6 @@ async def _terminate_startup_process(proc: Process) -> None:
     Args:
         proc: Process returned by `asyncio.create_subprocess_shell`.
     """
-    import asyncio
     import sys
 
     if proc.returncode is not None:
@@ -504,9 +504,14 @@ def _process_rubric_event(
         state.spinner.stop()
 
     if event_type == "rubric_evaluation_start":
+        # `iteration` is untrusted streamed payload; only render the 1-based
+        # number when it is actually an int, mirroring the interactive twin in
+        # `textual_adapter._format_rubric_event`. A non-int previously raised
+        # `TypeError` here and aborted the whole non-interactive run.
         iteration = data.get("iteration", 0)
+        label = f" (iteration {iteration + 1})" if isinstance(iteration, int) else ""
         console.print(
-            f"[dim]⏳ Grading against rubric (iteration {iteration + 1})…[/dim]",
+            f"[dim]⏳ Grading against rubric{label}…[/dim]",
             highlight=False,
         )
         if state.spinner:
@@ -533,9 +538,19 @@ def _process_rubric_event(
             "[yellow]⚠ Rubric not satisfied (max iterations reached)[/yellow]",
             highlight=False,
         )
-    elif result == "failed":
+    elif result in {"failed", "grader_error"}:
+        label = "grader failed" if result == "failed" else "grader error"
         suffix = f": {escape_markup(explanation)}" if explanation else ""
-        console.print(f"[red]⚠ Rubric grader failed{suffix}[/red]", highlight=False)
+        console.print(f"[red]⚠ Rubric {label}{suffix}[/red]", highlight=False)
+    elif result is not None:
+        # A `rubric_evaluation_end` with an unrecognized result is still a
+        # terminal grading event; surface it rather than letting the run go
+        # quiet mid-task (e.g. if the SDK adds a new verdict). Mirrors the
+        # interactive fallback in `textual_adapter._format_rubric_event`.
+        suffix = f": {escape_markup(explanation)}" if explanation else ""
+        console.print(
+            f"[yellow]⚠ Rubric grading ended{suffix}[/yellow]", highlight=False
+        )
 
     if state.spinner:
         state.spinner.start()
@@ -954,7 +969,6 @@ async def _run_startup_command(
         asyncio.CancelledError: If the caller cancels while the startup command
             is running.
     """
-    import asyncio
     import sys
 
     if not quiet:
@@ -1200,6 +1214,7 @@ async def run_non_interactive(
         return 1
 
     result.apply_to_settings()
+
     thread_id = generate_thread_id()
 
     # One user turn per process: fresh turn id, turn_number 1.
@@ -1220,11 +1235,11 @@ async def run_non_interactive(
         thread_url_lookup = _start_langsmith_thread_url_lookup(thread_id)
         console.print(Text("Running task non-interactively...", style="dim"))
         header = _build_non_interactive_header(
-            assistant_id, thread_id, rubric_active=rubric is not None
+            assistant_id,
+            thread_id,
+            rubric_active=rubric is not None,
         )
         console.print(header)
-
-    import asyncio
 
     from deepagents_code.server_manager import server_session
 

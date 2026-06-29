@@ -270,17 +270,40 @@ class TestHelpBodyDrift:
             Path(__file__).resolve().parents[2] / "deepagents_code" / "app.py"
         ).read_text()
 
-        # Isolate the "Commands: ..." section (before "Interactive Features")
+        # Anchor on the `help_body = (` assignment so an unrelated "Commands:"
+        # literal elsewhere in app.py (e.g. the /goal status display) can never
+        # hijack the match. The assignment is the single source of the /help
+        # body, so assert it is unique — if a second one appears, fail loudly
+        # here rather than silently scraping the wrong block.
+        anchors = re.findall(r"help_body = \(", app_src)
+        assert len(anchors) == 1, (
+            f"Expected exactly one `help_body = (` assignment in app.py, found "
+            f"{len(anchors)}. Update this test's anchor if the /help body moved."
+        )
+
+        # Isolate the /help "Commands: ..." section (before "Interactive Features").
         match = re.search(
-            r'"Commands:\s*(.*?)(?=Interactive Features)',
+            r'help_body = \(\s*"Commands:\s*(.*?)(?=Interactive Features)',
             app_src,
             re.DOTALL,
         )
         assert match, "Could not locate Commands section in help_body"
         commands_section = match.group(1)
 
+        # Sentinel check: the captured section must contain known-present
+        # canonical commands. If the lazy `.*?` ever mis-captures (matching the
+        # wrong region or sweeping unrelated source), this fails with a clear
+        # message instead of surfacing a garbage token like `/non-` from a
+        # comment further down the file.
+        for sentinel in ("/quit", "/help"):
+            assert sentinel in commands_section, (
+                f"Expected {sentinel} in the captured /help Commands section; "
+                "the help_body anchor likely matched the wrong region."
+            )
+
         help_cmds = set(re.findall(r"/[a-z][-a-z]*", commands_section))
-        registry_cmds = {cmd.name for cmd in COMMANDS}
+        registry_names = {cmd.name for cmd in COMMANDS}
+        registry_aliases = {alias for cmd in COMMANDS for alias in cmd.aliases}
 
         # Commands intentionally omitted from the help body
         excluded = {"/version"}
@@ -288,8 +311,10 @@ class TestHelpBodyDrift:
         # /skill:<name> is dynamic, not a registry entry; regex extracts "/skill"
         help_cmds.discard("/skill")
 
-        missing = registry_cmds - help_cmds - excluded
-        extra = help_cmds - registry_cmds
+        # Canonical names must appear in help; aliases (e.g. `/criteria`, `/q`)
+        # may also be advertised but are never required.
+        missing = registry_names - help_cmds - excluded
+        extra = help_cmds - registry_names - registry_aliases
 
         assert not missing, (
             f"Commands in COMMANDS but missing from /help body: {missing}\n"

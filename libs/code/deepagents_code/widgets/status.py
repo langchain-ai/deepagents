@@ -256,8 +256,8 @@ class StatusBar(Horizontal):
             yield Static("", classes="status-message", id="status-message")
             yield Static("", classes="status-cwd", id="cwd-display")
             yield Static("", classes="status-branch", id="branch-display")
-        yield Static("", classes="status-tokens", id="tokens-display")
         yield Static("", classes="status-rubric", id="rubric-display")
+        yield Static("", classes="status-tokens", id="tokens-display")
         yield ModelLabel(id="model-display")
 
     _BRANCH_WIDTH_THRESHOLD = 100

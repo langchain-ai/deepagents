@@ -170,6 +170,14 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="refresh",
     ),
     SlashCommand(
+        name="/rubric",
+        description="Set acceptance criteria for rubric grading",
+        bypass_tier=BypassTier.IMMEDIATE_UI,
+        hidden_keywords="criteria acceptance grader grading evaluation",
+        argument_hint="[set|next|file|show|clear|model]",
+        aliases=("/criteria",),
+    ),
+    SlashCommand(
         name="/restart",
         description="Restart the agent server",
         bypass_tier=BypassTier.ALWAYS,

@@ -7,7 +7,7 @@ Regenerate this file with `make commands-catalog` after changing command names,
 aliases, descriptions, visibility, or hidden-command metadata.
 
 
-## Public (28)
+## Public (29)
 
 | Command | Aliases | Description |
 | --- | --- | --- |
@@ -31,6 +31,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/reload` |  | Reload environment and config |
 | `/remember` |  | Save useful context to memory or skills |
 | `/restart` |  | Restart the agent server |
+| `/rubric` | `/criteria` | Set acceptance criteria for rubric grading |
 | `/skill-creator` |  | Create or refine agent skills |
 | `/theme` |  | Change color theme |
 | `/threads` |  | Browse and resume past threads |

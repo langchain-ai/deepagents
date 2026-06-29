@@ -27,6 +27,7 @@ from deepagents_code.textual_adapter import (
     SessionStats,
     TextualUIAdapter,
     _build_interrupted_ai_message,
+    _format_rubric_event,
     _handle_interrupt_cleanup,
     _is_summarization_chunk,
     _read_mentioned_file,
@@ -887,6 +888,49 @@ class TestIsSummarizationChunk:
         assert _is_summarization_chunk({"langgraph_node": None}) is False
 
 
+class TestFormatRubricEvent:
+    """Tests for rubric custom-stream event formatting."""
+
+    def test_start_event_mentions_iteration(self) -> None:
+        """Start events should surface visible grading state."""
+        assert (
+            _format_rubric_event(
+                {"type": "rubric_evaluation_start", "iteration": 1},
+            )
+            == "⏳ Grading against rubric (iteration 2)…"
+        )
+
+    def test_needs_revision_includes_failed_criteria(self) -> None:
+        """Failed criteria should be shown with actionable gaps."""
+        assert (
+            _format_rubric_event(
+                {
+                    "type": "rubric_evaluation_end",
+                    "result": "needs_revision",
+                    "explanation": "missing coverage",
+                    "criteria": [
+                        {"name": "tests pass", "passed": False, "gap": "not run"},
+                        {"name": "docs", "passed": True},
+                    ],
+                },
+            )
+            == "↻ Rubric needs revision: missing coverage\n  ✗ tests pass — not run"
+        )
+
+    def test_satisfied_event(self) -> None:
+        """Satisfied events should render compact success text."""
+        assert (
+            _format_rubric_event(
+                {"type": "rubric_evaluation_end", "result": "satisfied"},
+            )
+            == "✓ Rubric satisfied"
+        )
+
+    def test_unrelated_event_returns_none(self) -> None:
+        """Only rubric events should render rubric messages."""
+        assert _format_rubric_event({"type": "subagent_start"}) is None
+
+
 class _FakeAgent:
     """Minimal async stream agent used for adapter execution tests."""
 
@@ -988,6 +1032,31 @@ class TestExecuteTaskTextualAutoApproveInput:
         assert agent.store_items == [
             (APPROVAL_MODE_NAMESPACE, key, {"auto_approve": True})
         ]
+
+    async def test_rubric_is_sent_as_graph_state(self) -> None:
+        """Rubrics should travel beside messages, not inside user content."""
+        agent = _SequencedAgent([[]])
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+            rubric="tests pass",
+        )
+
+        stream_input = agent.stream_inputs[0]
+        assert not isinstance(stream_input, Command)
+        assert stream_input == {
+            "messages": [{"role": "user", "content": "hi"}],
+            "rubric": "tests pass",
+        }
 
     async def test_live_approval_write_failure_fails_closed_context(self) -> None:
         """A failed live-mode write must not reuse a stale approval key."""

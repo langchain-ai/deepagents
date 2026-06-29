@@ -4631,6 +4631,150 @@ class TestRunAgentTaskMediaTracker:
             assert any("OPENAI_API_KEY" in str(w._content) for w in errors)
 
 
+class TestRubricCommand:
+    """Tests for interactive rubric state and turn plumbing."""
+
+    async def test_rubric_set_passes_sticky_rubric_to_turn(self) -> None:
+        """`/rubric set` should apply to subsequent TUI agent turns."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/rubric set tests pass")
+            await pilot.pause()
+
+            assert app._active_rubric == "tests pass"
+            assert app._status_bar is not None
+            assert app._status_bar.rubric_label == "✓ Rubric set"
+
+            with patch(
+                "deepagents_code.textual_adapter.execute_task_textual",
+                new_callable=AsyncMock,
+            ) as mock_execute:
+                await app._run_agent_task("hello")
+
+            mock_execute.assert_awaited_once()
+            assert mock_execute.await_args is not None
+            assert mock_execute.await_args.kwargs["rubric"] == "tests pass"
+            assert app._active_rubric == "tests pass"
+
+    async def test_rubric_next_passes_once_and_clears(self) -> None:
+        """`/rubric next` should apply only to the next submitted turn."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/rubric next update docs")
+            await pilot.pause()
+
+            assert app._next_rubric == "update docs"
+            assert app._status_bar is not None
+            assert app._status_bar.rubric_label == "✓ Rubric: next turn"
+
+            with patch(
+                "deepagents_code.textual_adapter.execute_task_textual",
+                new_callable=AsyncMock,
+            ) as mock_execute:
+                await app._run_agent_task("hello")
+
+            mock_execute.assert_awaited_once()
+            assert mock_execute.await_args is not None
+            assert mock_execute.await_args.kwargs["rubric"] == "update docs"
+            assert app._next_rubric is None
+            assert app._status_bar.rubric_label == ""
+
+    async def test_rubric_next_falls_back_to_sticky_label_after_turn(self) -> None:
+        """Clearing a one-shot rubric should reveal the sticky rubric badge."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/rubric set sticky")
+            await app._handle_command("/rubric next one shot")
+            await pilot.pause()
+
+            assert app._status_bar is not None
+            assert app._status_bar.rubric_label == "✓ Rubric: next turn"
+
+            with patch(
+                "deepagents_code.textual_adapter.execute_task_textual",
+                new_callable=AsyncMock,
+            ):
+                await app._run_agent_task("hello")
+
+            assert app._next_rubric is None
+            assert app._active_rubric == "sticky"
+            assert app._status_bar.rubric_label == "✓ Rubric set"
+
+    async def test_rubric_file_sets_sticky_rubric(self, tmp_path: Path) -> None:
+        """`/rubric file` should read criteria from disk."""
+        rubric_file = tmp_path / "rubric.md"
+        rubric_file.write_text("tests pass\nno unrelated files\n", encoding="utf-8")
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command(f"/rubric file {rubric_file}")
+            await pilot.pause()
+
+            assert app._active_rubric == "tests pass\nno unrelated files"
+            assert app._status_bar is not None
+            assert app._status_bar.rubric_label == "✓ Rubric set"
+
+    async def test_rubric_model_bare_opens_grader_model_selector(self) -> None:
+        """Bare `/rubric model` should open the grader-model picker."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(
+                app,
+                "_show_rubric_model_selector",
+                new_callable=AsyncMock,
+            ) as show_selector:
+                await app._handle_command("/rubric model")
+
+            show_selector.assert_awaited_once()
+
+    async def test_criteria_alias_sets_rubric(self) -> None:
+        """`/criteria` should behave as an alias for `/rubric`."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/criteria set no unrelated files")
+            await pilot.pause()
+
+            assert app._active_rubric == "no unrelated files"
+            assert app._status_bar is not None
+            assert app._status_bar.rubric_label == "✓ Rubric set"
+
+    async def test_rubric_clear_resets_status(self) -> None:
+        """`/rubric clear` should clear sticky and one-shot rubric state."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/rubric set sticky")
+            await app._handle_command("/rubric next one shot")
+            await app._handle_command("/rubric clear")
+            await pilot.pause()
+
+            assert app._active_rubric is None
+            assert app._next_rubric is None
+            assert app._status_bar is not None
+            assert app._status_bar.rubric_label == ""
+
+    async def test_clear_command_clears_rubric_state(self) -> None:
+        """Starting a new thread should not carry hidden rubric behavior."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/rubric set sticky")
+            await app._handle_command("/rubric next one shot")
+            await app._handle_command("/clear")
+            await pilot.pause()
+
+            assert app._active_rubric is None
+            assert app._next_rubric is None
+            assert app._status_bar is not None
+            assert app._status_bar.rubric_label == ""
+
+
 class TestBuildAgentErrorBody:
     """Cover the docs-link augmentation for agent-stream errors."""
 

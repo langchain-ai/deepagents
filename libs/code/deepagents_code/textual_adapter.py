@@ -215,6 +215,44 @@ def _is_summarization_chunk(metadata: dict | None) -> bool:
     return metadata.get("lc_source") == "summarization"
 
 
+def _format_rubric_event(data: dict[str, Any]) -> str | None:
+    """Format a rubric custom-stream event for the chat transcript.
+
+    Returns:
+        A user-visible message for rubric events, or `None` for unrelated custom
+            stream events.
+    """
+    event_type = data.get("type")
+    if event_type == "rubric_evaluation_start":
+        iteration = data.get("iteration", 0)
+        if isinstance(iteration, int):
+            return f"⏳ Grading against rubric (iteration {iteration + 1})…"
+        return "⏳ Grading against rubric…"
+    if event_type != "rubric_evaluation_end":
+        return None
+
+    result = data.get("result")
+    explanation = str(data.get("explanation") or "").strip()
+    if result == "satisfied":
+        return "✓ Rubric satisfied"
+    if result == "needs_revision":
+        lines = [
+            "↻ Rubric needs revision" + (f": {explanation}" if explanation else ""),
+        ]
+        for criterion in data.get("criteria", []):
+            if isinstance(criterion, dict) and criterion.get("passed") is False:
+                name = str(criterion.get("name", "criterion"))
+                gap = str(criterion.get("gap", "")).strip()
+                lines.append(f"  ✗ {name}" + (f" — {gap}" if gap else ""))
+        return "\n".join(lines)
+    if result == "max_iterations_reached":
+        return "⚠ Rubric not satisfied (max iterations reached)"
+    if result in {"failed", "grader_error"}:
+        label = "grader failed" if result == "failed" else "grader error"
+        return "⚠ Rubric " + label + (f": {explanation}" if explanation else "")
+    return None
+
+
 class TextualUIAdapter:
     """Adapter for rendering agent output to Textual widgets.
 
@@ -412,6 +450,7 @@ async def execute_task_textual(
     *,
     sandbox_type: str | None = None,
     message_kwargs: dict[str, Any] | None = None,
+    rubric: str | None = None,
     turn_stats: SessionStats | None = None,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
@@ -437,6 +476,8 @@ async def execute_task_textual(
         message_kwargs: Extra fields merged into the stream input message
             dict (e.g., `additional_kwargs` for persisting skill metadata
             in the checkpoint).
+        rubric: Acceptance criteria supplied to `RubricMiddleware` via graph
+            input state.
         turn_stats: Pre-created `SessionStats` to accumulate into.
 
             When the caller holds a reference to the same object, stats are
@@ -555,6 +596,8 @@ async def execute_task_textual(
     # `Command(update=...)` would be rebuilt with `goto=None` by the LangGraph
     # API server and crash `_control_branch` on a fresh thread.
     stream_input: dict | Command = {"messages": [user_msg]}
+    if rubric:
+        stream_input["rubric"] = rubric
 
     # Track summarization lifecycle so spinner status and notification stay in sync.
     summarization_in_progress = False
@@ -635,6 +678,13 @@ async def execute_task_textual(
                 # nested custom events never reach the panel; forwarding must
                 # never raise into the stream loop.
                 if current_stream_mode == "custom":
+                    rubric_message = data if isinstance(data, dict) else None
+                    formatted_rubric_event = (
+                        _format_rubric_event(rubric_message) if rubric_message else None
+                    )
+                    if formatted_rubric_event is not None and is_main_agent:
+                        await adapter._mount_message(AppMessage(formatted_rubric_event))
+                        continue
                     if (
                         adapter._on_subagent_event is not None
                         and _is_renderable_subagent_event(

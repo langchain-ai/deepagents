@@ -145,6 +145,19 @@ def _message_timestamp_footer_id(message_id: str) -> str:
     return f"{message_id}-timestamp-footer"
 
 
+def _read_text_file_expanding_user(path_arg: str) -> tuple[Path, str]:
+    """Read a text file after expanding `~` in a worker thread.
+
+    Args:
+        path_arg: User-supplied file path.
+
+    Returns:
+        Expanded path and file contents.
+    """
+    path = Path(path_arg).expanduser()
+    return path, path.read_text(encoding="utf-8")
+
+
 def _create_model_with_deepagents_import_lock(
     model_spec: str | None = None,
     *,
@@ -1069,6 +1082,7 @@ DeferredActionKind = Literal[
     "chat_output",
     "agent_switch",
     "mcp_login",
+    "rubric_model_switch",
 ]
 """Valid `DeferredAction.kind` values for type-checked deduplication."""
 
@@ -1932,6 +1946,15 @@ class DeepAgentsApp(App):
 
         self._model_install_switching = False
         """True while a provider extra install-then-switch flow is active."""
+
+        self._active_rubric: str | None = None
+        """Sticky acceptance criteria applied to each subsequent agent turn."""
+
+        self._next_rubric: str | None = None
+        """One-shot acceptance criteria applied to the next agent turn only."""
+
+        self._rubric_model: str | None = (server_kwargs or {}).get("rubric_model")
+        """Optional grader model spec for rubric evaluation."""
 
         self._message_timestamps_visible = _load_message_timestamps_visible()
         """Whether message timestamp footers are shown in the chat surface.
@@ -7317,6 +7340,261 @@ class DeepAgentsApp(App):
         await self._mount_message(UserMessage(command))
         await self._mount_message(AppMessage(msg))
 
+    def _sync_status_rubric(self) -> None:
+        """Reflect active rubric state in the status bar."""
+        if self._status_bar is None:
+            return
+        if self._next_rubric:
+            self._status_bar.set_rubric_label("✓ Rubric: next turn")
+        elif self._active_rubric:
+            self._status_bar.set_rubric_label("✓ Rubric set")
+        else:
+            self._status_bar.set_rubric_label("")
+
+    @staticmethod
+    def _rubric_command_remainder(command: str) -> str:
+        """Return text after `/rubric` or `/criteria`."""
+        stripped = command.strip()
+        lowered = stripped.lower()
+        if lowered == "/criteria" or lowered.startswith("/criteria "):
+            return stripped[len("/criteria") :].strip()
+        return stripped[len("/rubric") :].strip()
+
+    async def _handle_rubric_command(self, command: str) -> None:
+        """Handle `/rubric` and `/criteria` slash commands."""
+        remainder = self._rubric_command_remainder(command)
+        subcommand, _, arg = remainder.partition(" ")
+        subcommand = subcommand.lower()
+        arg = arg.strip()
+
+        if not remainder or subcommand in {"show", "status"}:
+            await self._mount_message(UserMessage(command))
+            await self._show_rubric_state()
+            return
+
+        if subcommand == "set":
+            await self._mount_message(UserMessage(command))
+            if not arg:
+                await self._mount_message(AppMessage("Usage: /rubric set <criteria>"))
+                return
+            self._active_rubric = arg
+            self._sync_status_rubric()
+            await self._mount_message(AppMessage("Rubric set."))
+            return
+
+        if subcommand == "next":
+            await self._mount_message(UserMessage(command))
+            if not arg:
+                await self._mount_message(AppMessage("Usage: /rubric next <criteria>"))
+                return
+            self._next_rubric = arg
+            self._sync_status_rubric()
+            await self._mount_message(AppMessage("Rubric set for next turn."))
+            return
+
+        if subcommand == "file":
+            await self._mount_message(UserMessage(command))
+            if not arg:
+                await self._mount_message(AppMessage("Usage: /rubric file <path>"))
+                return
+            await self._set_rubric_from_file(arg)
+            return
+
+        if subcommand == "clear":
+            await self._mount_message(UserMessage(command))
+            self._active_rubric = None
+            self._next_rubric = None
+            self._sync_status_rubric()
+            await self._mount_message(AppMessage("Rubric cleared."))
+            return
+
+        if subcommand == "model":
+            if not arg:
+                await self._show_rubric_model_selector()
+                return
+            await self._mount_message(UserMessage(command))
+            if arg.lower() == "clear":
+                await self._set_rubric_model(None)
+            else:
+                await self._set_rubric_model(arg)
+            return
+
+        await self._mount_message(UserMessage(command))
+        await self._mount_message(
+            AppMessage(
+                "Usage: /rubric [set <criteria>|next <criteria>|file <path>|"
+                "show|clear|model [provider:model|clear]]",
+            ),
+        )
+
+    async def _show_rubric_state(self) -> None:
+        """Render current rubric state."""
+        lines: list[str] = []
+        if self._active_rubric:
+            lines.append(f"Sticky rubric:\n{self._active_rubric}")
+        if self._next_rubric:
+            lines.append(f"Next-turn rubric:\n{self._next_rubric}")
+        if self._rubric_model:
+            lines.append(f"Rubric grader model: {self._rubric_model}")
+        else:
+            lines.append("Rubric grader model: current chat model")
+        await self._mount_message(
+            AppMessage("\n\n".join(lines) if lines else "No rubric set.")
+        )
+
+    async def _set_rubric_from_file(self, path_arg: str) -> None:
+        """Read a rubric file and set it as the sticky rubric."""
+        try:
+            parts = shlex.split(path_arg)
+        except ValueError as exc:
+            await self._mount_message(ErrorMessage(f"Could not parse path: {exc}"))
+            return
+        if len(parts) != 1:
+            await self._mount_message(AppMessage("Usage: /rubric file <path>"))
+            return
+        try:
+            path, text = await asyncio.to_thread(
+                _read_text_file_expanding_user, parts[0]
+            )
+        except OSError as exc:
+            await self._mount_message(
+                ErrorMessage(f"Could not read rubric file: {exc}")
+            )
+            return
+        rubric = text.strip()
+        if not rubric:
+            await self._mount_message(
+                ErrorMessage(f"Rubric file {str(path)!r} is empty.")
+            )
+            return
+        self._active_rubric = rubric
+        self._sync_status_rubric()
+        await self._mount_message(AppMessage(f"Rubric set from {path}."))
+
+    async def _show_rubric_model_selector(self) -> None:
+        """Open the model selector for choosing a rubric grader model."""
+        from deepagents_code.config import settings
+        from deepagents_code.model_config import ModelSpec
+        from deepagents_code.widgets.model_selector import ModelSelectorScreen
+
+        current_provider = settings.model_provider
+        current_model = settings.model_name
+        if self._rubric_model:
+            parsed = ModelSpec.try_parse(self._rubric_model)
+            if parsed:
+                current_provider = parsed.provider
+                current_model = parsed.model
+
+        def handle_result(result: tuple[str, str] | None) -> None:
+            if result is None:
+                if self._chat_input:
+                    self._chat_input.focus_input()
+                return
+            model_spec, _ = result
+            extra = screen.pending_install_extra
+
+            async def apply_selection() -> None:
+                if extra and not await self._install_extra(extra, auto_restart=True):
+                    return
+                await self._set_rubric_model(model_spec)
+
+            self.run_worker(apply_selection(), exclusive=False, group="rubric-model")
+            if self._chat_input:
+                self._chat_input.focus_input()
+
+        screen = ModelSelectorScreen(
+            current_model=current_model,
+            current_provider=current_provider,
+            cli_profile_override=self._profile_override,
+            title="Choose grader model for rubric",
+            description=(
+                "Pick the model used to grade rubric criteria. Clear it with "
+                "`/rubric model clear` to reuse the current chat model."
+            ),
+        )
+        self.push_screen(screen, handle_result)
+
+    async def _set_rubric_model(self, model_spec: str | None) -> None:
+        """Set the grader model used by `RubricMiddleware`."""
+        from functools import partial
+
+        from deepagents_code._env_vars import SERVER_ENV_PREFIX
+        from deepagents_code.config import detect_provider
+        from deepagents_code.model_config import ModelSpec, get_provider_auth_status
+
+        if self._agent_running or self._shell_running or self._connecting:
+            self._defer_action(
+                DeferredAction(
+                    kind="rubric_model_switch",
+                    execute=partial(self._set_rubric_model, model_spec),
+                ),
+            )
+            self.notify("Rubric grader model will switch after current work finishes.")
+            return
+
+        display: str | None = None
+        if model_spec is not None:
+            model_spec = model_spec.removeprefix(":")
+            parsed = ModelSpec.try_parse(model_spec)
+            provider = parsed.provider if parsed else detect_provider(model_spec)
+            model_name = parsed.model if parsed else model_spec
+            auth_status = get_provider_auth_status(provider) if provider else None
+            if auth_status is not None and auth_status.blocks_start:
+                await self._mount_message(
+                    ErrorMessage(
+                        f"Missing credentials: {auth_status.missing_detail()}\n\n"
+                        f"Run `/auth` for the '{auth_status.provider}' provider, "
+                        f"then re-issue `/rubric model {model_spec}`.",
+                    ),
+                )
+                return
+            display = (
+                model_spec if parsed or not provider else f"{provider}:{model_name}"
+            )
+            try:
+                await asyncio.to_thread(
+                    _create_model_with_deepagents_import_lock,
+                    display,
+                    profile_overrides=self._profile_override,
+                )
+            except Exception as exc:
+                logger.exception("Failed to resolve rubric grader model %s", display)
+                await self._mount_message(
+                    ErrorMessage(_build_model_switch_error_body(exc))
+                )
+                return
+
+        previous = self._rubric_model
+        self._rubric_model = display
+        if self._server_kwargs is not None:
+            self._server_kwargs["rubric_model"] = display
+
+        if self._server_proc is not None:
+            self._server_proc.update_env(
+                **{f"{SERVER_ENV_PREFIX}RUBRIC_MODEL": display or ""},
+            )
+            restarted = await self._respawn_server(
+                log_message="Server restart failed while changing rubric model",
+                mcp_failure_log="MCP metadata preload after rubric model change failed",
+                mcp_failure_toast=(
+                    "MCP tool metadata could not be refreshed. Use /mcp to check."
+                ),
+            )
+            if not restarted:
+                self._rubric_model = previous
+                if self._server_kwargs is not None:
+                    self._server_kwargs["rubric_model"] = previous
+                return
+
+        if display:
+            await self._mount_message(
+                AppMessage(f"Rubric grader model set to {display}.")
+            )
+        else:
+            await self._mount_message(
+                AppMessage("Rubric grader model cleared; using current chat model."),
+            )
+
     async def _handle_command(self, command: str) -> None:
         """Handle a slash command.
 
@@ -7335,7 +7613,8 @@ class DeepAgentsApp(App):
                 "Commands: /quit, /agents, /auth, /clear, /force-clear, "
                 "/copy, /offload, /editor, "
                 "/mcp, /model [--model-params JSON] [--default], "
-                "/notifications, /reload, /restart, /skill:<name>, /remember, "
+                "/notifications, /reload, /restart, /rubric, /criteria, "
+                "/skill:<name>, /remember, "
                 "/skill-creator, /theme, /timestamps, /tokens, /threads, /trace, "
                 "/update, /auto-update, /install, /changelog, /docs, "
                 "/feedback, /help\n\n"
@@ -7365,6 +7644,10 @@ class DeepAgentsApp(App):
             await self._handle_version_command()
         elif cmd == "/agents":
             await self._show_agent_selector()
+        elif cmd in {"/rubric", "/criteria"} or cmd.startswith(
+            ("/rubric ", "/criteria ")
+        ):
+            await self._handle_rubric_command(command)
         elif cmd in {"/clear", "/force-clear"}:
             if cmd == "/force-clear":
                 self._force_interrupt_active_work()
@@ -7379,6 +7662,9 @@ class DeepAgentsApp(App):
             self._context_tokens = 0
             self._tokens_approximate = False
             self._update_tokens(0)
+            self._active_rubric = None
+            self._next_rubric = None
+            self._sync_status_rubric()
             # Clear status message (e.g., "Interrupted" from previous session)
             self._update_status("")
             # Reset thread to start fresh conversation
@@ -8173,6 +8459,11 @@ class DeepAgentsApp(App):
             spec = self._effective_model_spec()
             panel.prepare_turn(model_label=_display_model_label(spec))
 
+        rubric = self._next_rubric or self._active_rubric
+        if self._next_rubric is not None:
+            self._next_rubric = None
+            self._sync_status_rubric()
+
         try:
             await execute_task_textual(
                 user_input=message,
@@ -8184,6 +8475,7 @@ class DeepAgentsApp(App):
                 image_tracker=self._image_tracker,
                 sandbox_type=self._sandbox_type,
                 message_kwargs=message_kwargs,
+                rubric=rubric,
                 # `auto_approve` is intentionally omitted here: execute_task_textual
                 # writes it into this context from `session_state.auto_approve` at
                 # the top of every stream iteration, so seeding it would be dead.

@@ -15,11 +15,9 @@ from typing import (
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
-    AgentState,
     ContextT,
     ModelRequest,
     ModelResponse,
-    PrivateStateAttr,
 )
 from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import InjectedToolCallId, tool
@@ -27,12 +25,15 @@ from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
 from typing_extensions import override
 
-# Runtime (not TYPE_CHECKING) import: LangChain resolves the state-schema
-# annotations via `get_type_hints(include_extras=True)` to find the
-# `PrivateStateAttr` markers, so `GoalStatus` must be importable at runtime or
-# schema construction raises `NameError`. `coerce_goal_status` is used at
-# runtime by `_goal_snapshot`.
-from deepagents_code.resume_state import GoalStatus, coerce_goal_status
+# Runtime (not TYPE_CHECKING) imports. `GoalRubricChannels` supplies the shared
+# `PrivateStateAttr`-marked goal/rubric channels that `GoalToolState` extends, so
+# the markers are declared once (see that class). `coerce_goal_status` is used at
+# runtime by `_goal_snapshot`; `GoalStatus` types its result and snapshot fields.
+from deepagents_code.resume_state import (
+    GoalRubricChannels,
+    GoalStatus,
+    coerce_goal_status,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -92,7 +93,12 @@ class GoalSnapshot(TypedDict):
     """
 
     active: bool
-    """Whether the goal is unfinished (derived as `status != "complete"`)."""
+    """Whether the goal is unfinished.
+
+    Derived from `status`: a set goal is active until it is `complete`. `False`
+    when no goal is set (the `objective is None` branch), where `status` is also
+    `None`.
+    """
 
     objective: str | None
     """Active goal objective, or `None` when no goal is set."""
@@ -112,22 +118,21 @@ class GoalSnapshot(TypedDict):
     """Latest evidence or blocker note recorded by `update_goal`."""
 
 
-class GoalToolState(AgentState):
+class GoalToolState(GoalRubricChannels):
     """State fields used by goal tools.
 
-    The `_goal_*` channels mirror `ResumeState` and must carry `PrivateStateAttr`
-    so they stay out of the public graph input/output schema. Middleware state
-    schemas are merged with later entries winning, so bare (non-private)
-    re-declarations here would override `ResumeState`'s private annotations and
-    leak the fields into the public schema.
+    Inherits the shared `_goal_*`/`_sticky_rubric` channels (with their
+    `PrivateStateAttr` markers) from `GoalRubricChannels`, so the goal tools and
+    `ResumeState` cannot drift apart. Adds only the public `rubric` graph input,
+    which is intentionally non-private — it is the `RubricMiddleware` input.
     """
 
-    _goal_objective: Annotated[NotRequired[str | None], PrivateStateAttr]
-    _goal_status: Annotated[NotRequired[GoalStatus | None], PrivateStateAttr]
-    _goal_rubric: Annotated[NotRequired[str | None], PrivateStateAttr]
-    _goal_status_note: Annotated[NotRequired[str | None], PrivateStateAttr]
-    _sticky_rubric: Annotated[NotRequired[str | None], PrivateStateAttr]
     rubric: NotRequired[str | None]
+    """Public `RubricMiddleware` graph input (intentionally non-private).
+
+    Distinct from the TUI-owned `_sticky_rubric`: this is the per-invocation
+    rubric passed in via the graph schema, not checkpointed TUI state.
+    """
 
 
 def _clean_state_text(state: dict[str, Any], key: str) -> str | None:

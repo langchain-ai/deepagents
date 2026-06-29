@@ -2,7 +2,9 @@
 
 from collections.abc import Callable
 from types import SimpleNamespace
+from typing import get_type_hints
 
+from langchain.agents.middleware.types import PrivateStateAttr
 from langchain_core.messages import SystemMessage
 from langgraph.types import Command
 
@@ -328,11 +330,12 @@ async def test_awrap_model_call_appends_guidance_to_existing_prompt() -> None:
 def test_goal_tool_state_marks_goal_fields_private() -> None:
     """`_goal_*` channels must stay private so they don't leak into the schema.
 
-    They are re-declared here purely to carry `PrivateStateAttr`; a bare
-    re-declaration would win the schema merge over `ResumeState` and expose the
-    fields publicly.
+    The channels are inherited from `GoalRubricChannels`. Resolving the full
+    hints the way LangGraph does (`get_type_hints(..., include_extras=True)`,
+    which walks the MRO) confirms the `PrivateStateAttr` markers carry through
+    inheritance, while the public `rubric` input stays non-private.
     """
-    annotations = GoalToolState.__annotations__
+    hints = get_type_hints(GoalToolState, include_extras=True)
     for field in (
         "_goal_objective",
         "_goal_status",
@@ -340,9 +343,9 @@ def test_goal_tool_state_marks_goal_fields_private() -> None:
         "_goal_status_note",
         "_sticky_rubric",
     ):
-        assert "PrivateStateAttr" in str(annotations[field])
+        assert PrivateStateAttr in getattr(hints[field], "__metadata__", ())
     # `rubric` is the public `RubricMiddleware` input and stays non-private.
-    assert "PrivateStateAttr" not in str(annotations["rubric"])
+    assert PrivateStateAttr not in getattr(hints["rubric"], "__metadata__", ())
 
 
 def test_goal_tools_middleware_registers_tools() -> None:

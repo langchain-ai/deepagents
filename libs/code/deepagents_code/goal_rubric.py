@@ -108,7 +108,8 @@ def generate_goal_rubric(
             ),
         ],
     )
-    # `.text` is always a `str` (possibly empty), never `None`. Normalize a
-    # whitespace-only/empty response to `""` so the caller's empty-rubric branch
-    # fires instead of activating a blank rubric.
-    return response.text or ""
+    # On real models `.text` is always a `str` (possibly empty), never `None`.
+    # Strip and coerce so a whitespace-only response normalizes to `""` and the
+    # caller's empty-rubric branch fires instead of activating a blank rubric.
+    # The `or ""` also guards the `None` that test doubles may return.
+    return (response.text or "").strip()

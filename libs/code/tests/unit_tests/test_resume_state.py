@@ -1,8 +1,9 @@
 """Tests for resume-state persistence and token display callbacks."""
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, get_type_hints
 
+from langchain.agents.middleware.types import PrivateStateAttr
 from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents_code.app import DeepAgentsApp
@@ -31,8 +32,14 @@ class TestResumeState:
 
     def test_sticky_rubric_field_is_private(self):
         """Persistent TUI rubrics must not leak through the public schema."""
-        annotation = ResumeState.__annotations__["_sticky_rubric"]
-        assert "PrivateStateAttr" in str(annotation)
+        # `_sticky_rubric` is inherited from `GoalRubricChannels`, so resolve the
+        # full (inherited) hints the way LangGraph does rather than reading
+        # own-keys-only `__annotations__`. `get_type_hints` resolves the marker to
+        # its real object (`PrivateStateAttr`), so assert membership of that
+        # sentinel rather than matching the source text.
+        hints = get_type_hints(ResumeState, include_extras=True)
+        metadata = getattr(hints["_sticky_rubric"], "__metadata__", ())
+        assert PrivateStateAttr in metadata
 
     def test_middleware_exposes_state_schema(self):
         """ResumeStateMiddleware registers the correct state schema."""

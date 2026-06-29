@@ -98,14 +98,17 @@ def coerce_goal_status(value: object) -> GoalStatus | None:
     return None
 
 
-class ResumeState(AgentState):
-    """Extends agent state with per-checkpoint facts restored on resume."""
+class GoalRubricChannels(AgentState):
+    """Goal/rubric state channels shared by every schema that touches them.
 
-    _context_tokens: Annotated[NotRequired[int], PrivateStateAttr]
-    """Total context tokens reported by the model's last `usage_metadata`."""
-
-    _model_spec: Annotated[NotRequired[str], PrivateStateAttr]
-    """`provider:model` spec effectively in use for the latest turn."""
+    Declared once here so each schema that carries these channels —
+    `ResumeState` and `goal_tools.GoalToolState` — inherits the *same*
+    `PrivateStateAttr`-marked annotations. Middleware state schemas merge with
+    later entries winning, so an independent re-declaration that dropped the
+    `PrivateStateAttr` marker would override these and leak the field into the
+    public graph input/output schema. Inheriting from a single base makes that
+    drift unrepresentable.
+    """
 
     _goal_objective: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Accepted goal objective restored by the TUI on resume."""
@@ -121,6 +124,21 @@ class ResumeState(AgentState):
 
     _sticky_rubric: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Persistent rubric owned by the TUI, distinct from graph input `rubric`."""
+
+
+class ResumeState(GoalRubricChannels):
+    """Extends agent state with per-checkpoint facts restored on resume.
+
+    Inherits the shared goal/rubric channels from `GoalRubricChannels` and adds
+    the channels unique to resume: the after-model token/spec facts and the
+    pending-goal proposal awaiting acceptance.
+    """
+
+    _context_tokens: Annotated[NotRequired[int], PrivateStateAttr]
+    """Total context tokens reported by the model's last `usage_metadata`."""
+
+    _model_spec: Annotated[NotRequired[str], PrivateStateAttr]
+    """`provider:model` spec effectively in use for the latest turn."""
 
     _pending_goal_objective: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Goal objective awaiting acceptance of proposed criteria."""

@@ -162,7 +162,6 @@ async def _terminate_startup_process(proc: Process) -> None:
     Args:
         proc: Process returned by `asyncio.create_subprocess_shell`.
     """
-    import asyncio
     import sys
 
     if proc.returncode is not None:
@@ -505,9 +504,14 @@ def _process_rubric_event(
         state.spinner.stop()
 
     if event_type == "rubric_evaluation_start":
+        # `iteration` is untrusted streamed payload; only render the 1-based
+        # number when it is actually an int, mirroring the interactive twin in
+        # `textual_adapter._format_rubric_event`. A non-int previously raised
+        # `TypeError` here and aborted the whole non-interactive run.
         iteration = data.get("iteration", 0)
+        label = f" (iteration {iteration + 1})" if isinstance(iteration, int) else ""
         console.print(
-            f"[dim]⏳ Grading against rubric (iteration {iteration + 1})…[/dim]",
+            f"[dim]⏳ Grading against rubric{label}…[/dim]",
             highlight=False,
         )
         if state.spinner:
@@ -965,7 +969,6 @@ async def _run_startup_command(
         asyncio.CancelledError: If the caller cancels while the startup command
             is running.
     """
-    import asyncio
     import sys
 
     if not quiet:

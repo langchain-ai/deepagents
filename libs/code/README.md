@@ -42,38 +42,6 @@ The fastest way to start using Deep Agents. `deepagents-code` is a pre-built cod
 - **Headless mode** — run non-interactively for scripting and CI
 - **Human-in-the-loop** — approve or reject tool calls before execution
 
-## Goals and rubrics
-
-Use a **goal** when you know the outcome you want, but want `dcode` to propose the acceptance criteria before work begins:
-
-```text
-/goal add OAuth refresh handling
-```
-
-In the TUI, `/goal <objective>` drafts criteria and waits for you to accept or edit them with `/goal accept` or `/goal edit <criteria>`. Once accepted, the goal and criteria are saved on the thread and restored when you resume it. The agent can read the active goal and mark it `complete` or `blocked`, but only you can create, clear, pause, resume, or replace goals.
-
-Use a **rubric** when you already know the acceptance criteria and want them to act as a quality gate:
-
-```text
-/rubric set tests pass; no unrelated files changed; help text is updated
-```
-
-`/rubric` is lower-level than `/goal`: it sets explicit criteria directly. `/rubric next <criteria>` applies criteria to only the next turn. `/criteria` is an alias for `/rubric`.
-
-For headless runs, `--goal` cannot pause for approval. It drafts criteria, prints them in non-quiet mode, and immediately uses them as the active rubric for that run:
-
-```bash
-dcode -n "implement OAuth refresh handling" --goal "add OAuth refresh handling"
-```
-
-Use `--rubric` instead when you want to supply criteria yourself:
-
-```bash
-dcode -n "implement OAuth refresh handling" --rubric "tests pass; no unrelated files changed"
-```
-
-`--goal` and `--rubric` are mutually exclusive.
-
 ## 🔒 Security model
 
 By default, `dcode` trusts the directory you run it in. Human-in-the-loop approval gates model-requested tool calls, but project artifacts are read before any approval prompt.

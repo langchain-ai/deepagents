@@ -2576,6 +2576,7 @@ class DeepAgentsApp(App):
             UI components for the main chat area and status bar.
         """
         from deepagents_code._env_vars import SHOW_HEADER, is_env_truthy
+        from deepagents_code.config import settings
 
         if is_env_truthy(SHOW_HEADER):
             yield _StaticHeader(id="app-header")
@@ -2584,6 +2585,9 @@ class DeepAgentsApp(App):
         # `_ChatScroll` keeps clicks on messages from stealing input focus.
         with _ChatScroll(id="chat"):
             yield WelcomeBanner(
+                model_provider=settings.model_provider or "",
+                model_name=settings.model_name or "",
+                cwd=self._cwd,
                 thread_id=self._lc_thread_id,
                 mcp_tool_count=self._mcp_tool_count,
                 mcp_unauthenticated=self._mcp_unauthenticated,
@@ -2621,7 +2625,11 @@ class DeepAgentsApp(App):
         gc.freeze()
 
         chat = self.query_one("#chat", VerticalScroll)
-        chat.anchor()
+        # Don't anchor at startup: anchoring bottom-sticks content shorter than
+        # the viewport, which would float the welcome banner at the bottom of an
+        # empty chat. The banner sits at the top (like Claude Code); streaming,
+        # shell, command, and thread-resume paths re-anchor/scroll as content
+        # arrives.
         if is_ascii_mode():
             chat.styles.scrollbar_size_vertical = 0
 
@@ -3638,6 +3646,11 @@ class DeepAgentsApp(App):
                     model,
                 )
             self._status_bar.set_model(provider=provider, model=model)
+            try:
+                banner = self.query_one("#welcome-banner", WelcomeBanner)
+                banner.update_model(provider=provider, model=model)
+            except NoMatches:
+                pass
 
         if self._active_mcp_viewer is not None:
             viewer = self._active_mcp_viewer
@@ -15024,6 +15037,14 @@ class DeepAgentsApp(App):
                     provider=settings.model_provider or "",
                     model=settings.model_name or "",
                 )
+            try:
+                banner = self.query_one("#welcome-banner", WelcomeBanner)
+                banner.update_model(
+                    provider=settings.model_provider or "",
+                    model=settings.model_name or "",
+                )
+            except NoMatches:
+                pass
 
             self._last_model_unchanged_message = None
             params_suffix = _format_model_params(extra_kwargs)

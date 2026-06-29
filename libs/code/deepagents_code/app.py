@@ -8195,26 +8195,54 @@ class DeepAgentsApp(App):
     async def _reset_blocked_goal_for_user_turn(self) -> str | None:
         """Move a blocked goal back to active before retrying with user input.
 
+        The agent's `get_goal` tool reads the status from the persisted
+        checkpoint, so the reset is written before the turn runs. A failed write
+        rolls the in-memory flip back to `blocked` so memory and checkpoint never
+        diverge and the model is not handed retry context that `get_goal` would
+        immediately contradict.
+
         Returns:
-            The previous blocker note when a blocked goal was reset, otherwise `None`.
+            The previous blocker note when a blocked goal was reset — an empty
+                string when the blocked goal carried no recorded note.
+
+                `None` only when there was nothing to reset (no active goal,
+                or not blocked) or when persisting the reset failed and was
+                rolled back. Callers branch on `is not None`, so
+                the empty-string case still triggers retry context.
         """
         if not self._active_goal or self._goal_status != "blocked":
             return None
+        # Empty string (not `None`) still signals that a reset occurred; the
+        # caller's `is not None` check keeps retry context firing even when the
+        # blocked goal had no note.
         note = self._goal_status_note or ""
         self._goal_status = "active"
         self._goal_status_note = None
         self._sync_status_rubric()
-        await self._persist_goal_rubric_state()
+        if not await self._persist_goal_rubric_state():
+            # Persist failed (the helper already warned the user). Roll the flip
+            # back so the checkpoint's `blocked` status and in-memory state agree
+            # rather than feeding the model contradictory retry context.
+            self._goal_status = "blocked"
+            self._goal_status_note = note or None
+            self._sync_status_rubric()
+            return None
         return note
 
     @staticmethod
     def _blocked_goal_retry_context(note: str | None) -> str:
         """Build one-turn context telling the agent to re-block if needed.
 
+        A `None` or blank note is rendered as a placeholder so the model still
+        receives coherent context when a goal was blocked without a recorded
+        note.
+
         Returns:
             Model-visible context passed out-of-band from raw user input.
         """
-        clean_note = note.strip() if note else "no blocker note was recorded"
+        # Strip first so a whitespace-only note also falls back, keeping the
+        # rendered `<blocker_note>` from collapsing to an empty placeholder.
+        clean_note = (note or "").strip() or "no blocker note was recorded"
         escaped_note = html.escape(clean_note, quote=False)
         return _BLOCKED_GOAL_RETRY_CONTEXT.format(note=escaped_note)
 
@@ -9285,6 +9313,8 @@ class DeepAgentsApp(App):
             # state so this turn's model sees commands run since the last turn.
             await self._flush_pending_shell_messages()
 
+            # Any send (typed reply or skill invocation) counts as the user
+            # acting on a blocked goal, so reset it and attach one-turn context.
             blocker_note = await self._reset_blocked_goal_for_user_turn()
             blocked_goal_retry_context = (
                 self._blocked_goal_retry_context(blocker_note)

@@ -5935,6 +5935,110 @@ class TestRubricCommand:
                 },
             )
 
+    async def test_active_goal_is_not_reset_and_sends_no_retry_context(self) -> None:
+        """A non-blocked goal turn must not flip state or inject retry context."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "add refresh tokens"
+            app._active_rubric = "tests pass"
+            app._goal_status = "active"
+            app._goal_status_note = None
+            started = asyncio.Event()
+
+            def execute_stub(*_args: object, **_kwargs: object) -> SessionStats:
+                started.set()
+                return SessionStats()
+
+            with patch(
+                "deepagents_code.textual_adapter.execute_task_textual",
+                new=AsyncMock(side_effect=execute_stub),
+            ) as mock_execute:
+                await app._handle_user_message("keep going")
+                await asyncio.wait_for(started.wait(), timeout=1)
+
+            assert mock_execute.await_args is not None
+            assert mock_execute.await_args.kwargs["user_input"] == "keep going"
+            assert mock_execute.await_args.kwargs["blocked_goal_retry_context"] is None
+            assert app._goal_status == "active"
+
+    async def test_skill_invocation_resets_blocked_goal(self) -> None:
+        """A skill send is the user acting on a blocked goal, so it resets it.
+
+        `_invoke_skill` routes through `_send_to_agent`, the same path as a typed
+        reply, so invoking a skill while blocked flips the goal back to active
+        and attaches one-turn retry context.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "add refresh tokens"
+            app._active_rubric = "tests pass"
+            app._goal_status = "blocked"
+            app._goal_status_note = "waiting on provider credentials"
+            started = asyncio.Event()
+
+            def execute_stub(*_args: object, **_kwargs: object) -> SessionStats:
+                started.set()
+                return SessionStats()
+
+            with patch(
+                "deepagents_code.textual_adapter.execute_task_textual",
+                new=AsyncMock(side_effect=execute_stub),
+            ) as mock_execute:
+                await app._send_to_agent("/skill:foo envelope prompt")
+                await asyncio.wait_for(started.wait(), timeout=1)
+
+            assert mock_execute.await_args is not None
+            retry_context = mock_execute.await_args.kwargs["blocked_goal_retry_context"]
+            assert retry_context is not None
+            assert "waiting on provider credentials" in retry_context
+            assert app._goal_status == "active"
+            assert app._goal_status_note is None
+
+    async def test_blocked_goal_retry_context_handles_missing_note(self) -> None:
+        """A blocked goal with no recorded note still yields coherent context."""
+        for note in (None, "", "   "):
+            context = DeepAgentsApp._blocked_goal_retry_context(note)
+            assert "no blocker note was recorded" in context
+
+    async def test_blocked_goal_reset_rolls_back_when_persist_fails(self) -> None:
+        """A failed persist must restore `blocked` so checkpoint and memory agree."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = SimpleNamespace(
+                aupdate_state=AsyncMock(side_effect=RuntimeError("boom"))
+            )
+            app._lc_thread_id = "thread-1"
+            app._active_goal = "add refresh tokens"
+            app._active_rubric = "tests pass"
+            app._goal_status = "blocked"
+            app._goal_status_note = "waiting on provider credentials"
+            started = asyncio.Event()
+
+            def execute_stub(*_args: object, **_kwargs: object) -> SessionStats:
+                started.set()
+                return SessionStats()
+
+            with patch(
+                "deepagents_code.textual_adapter.execute_task_textual",
+                new=AsyncMock(side_effect=execute_stub),
+            ) as mock_execute:
+                await app._handle_user_message("Credentials are configured now")
+                await asyncio.wait_for(started.wait(), timeout=1)
+
+            # The flip was rolled back, so no retry context is sent and the turn
+            # runs with the goal still blocked rather than on diverged state.
+            assert mock_execute.await_args is not None
+            assert (
+                mock_execute.await_args.kwargs["user_input"]
+                == "Credentials are configured now"
+            )
+            assert mock_execute.await_args.kwargs["blocked_goal_retry_context"] is None
+            assert app._goal_status == "blocked"
+            assert app._goal_status_note == "waiting on provider credentials"
+
     async def test_rubric_next_passes_once_and_clears(self) -> None:
         """`/rubric next` should apply only to the next submitted turn."""
         app = DeepAgentsApp(agent=MagicMock())

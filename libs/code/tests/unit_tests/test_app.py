@@ -4714,6 +4714,19 @@ class TestGoalCommand:
 class TestRubricCommand:
     """Tests for interactive rubric state and turn plumbing."""
 
+    async def test_bare_rubric_shows_usage(self) -> None:
+        """Bare `/rubric` should teach the command instead of showing only state."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/rubric")
+            await pilot.pause()
+
+            assert any(
+                "Usage:\n  /rubric set <criteria>" in str(w._content)
+                for w in app.query(AppMessage)
+            )
+
     async def test_rubric_set_passes_sticky_rubric_to_turn(self) -> None:
         """`/rubric set` should apply to subsequent TUI agent turns."""
         app = DeepAgentsApp(agent=MagicMock())

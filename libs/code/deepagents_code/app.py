@@ -7547,7 +7547,12 @@ class DeepAgentsApp(App):
         subcommand = subcommand.lower()
         arg = arg.strip()
 
-        if not remainder or subcommand in {"show", "status"}:
+        if not remainder:
+            await self._mount_message(UserMessage(command))
+            await self._show_rubric_usage()
+            return
+
+        if subcommand in {"show", "status"}:
             await self._mount_message(UserMessage(command))
             await self._show_rubric_state()
             return
@@ -7606,12 +7611,37 @@ class DeepAgentsApp(App):
             return
 
         await self._mount_message(UserMessage(command))
-        await self._mount_message(
-            AppMessage(
-                "Usage: /rubric [set <criteria>|next <criteria>|file <path>|"
-                "show|clear|model [provider:model|clear]]",
-            ),
+        await self._mount_message(AppMessage(self._rubric_usage_text()))
+
+    @staticmethod
+    def _rubric_usage_text() -> str:
+        """Return user-facing usage instructions for rubric commands."""
+        return (
+            "Usage:\n"
+            "  /rubric set <criteria>\n"
+            "  /rubric next <criteria>\n"
+            "  /rubric file <path>\n"
+            "  /rubric show\n"
+            "  /rubric clear\n"
+            "  /rubric model [provider:model|clear]\n\n"
+            "Alias: /criteria"
         )
+
+    async def _show_rubric_usage(self) -> None:
+        """Render rubric command usage with current active state if present."""
+        parts = [self._rubric_usage_text()]
+        if self._active_rubric or self._next_rubric or self._rubric_model:
+            state: list[str] = []
+            if self._active_rubric:
+                state.append("Sticky rubric is set.")
+            if self._next_rubric:
+                state.append("Next-turn rubric is set.")
+            if self._rubric_model:
+                state.append(f"Rubric grader model: {self._rubric_model}")
+            parts.append(
+                "Current state:\n" + "\n".join(f"  - {line}" for line in state)
+            )
+        await self._mount_message(AppMessage("\n\n".join(parts)))
 
     async def _show_rubric_state(self) -> None:
         """Render current rubric state."""

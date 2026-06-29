@@ -1596,6 +1596,46 @@ def find_reauth_required(exc: BaseException) -> MCPReauthRequiredError | None:
     return None
 
 
+def find_oauth_challenge(exc: BaseException) -> bool:
+    """Return whether `exc`'s tree holds a 401 OAuth challenge response.
+
+    Per the MCP authorization spec (RFC 9728), a server requiring OAuth
+    answers an unauthenticated request with HTTP 401 plus a
+    `WWW-Authenticate` header pointing at its protected-resource metadata.
+    The MCP client surfaces that as an `httpx.HTTPStatusError`. Walks
+    `exceptions` (for `ExceptionGroup`), then `__cause__`/`__context__`,
+    tracking visited nodes to terminate on cyclic chains.
+
+    Args:
+        exc: Root exception to inspect.
+
+    Returns:
+        `True` when a 401 response carrying a `WWW-Authenticate` header is
+        found, `False` otherwise.
+    """
+    visited: set[int] = set()
+    stack: list[BaseException] = [exc]
+    while stack:
+        current = stack.pop()
+        if id(current) in visited:
+            continue
+        visited.add(id(current))
+        if isinstance(current, httpx.HTTPStatusError):
+            response = current.response
+            if (
+                response is not None
+                and response.status_code == 401  # noqa: PLR2004  # HTTP Unauthorized
+                and any(name.lower() == "www-authenticate" for name in response.headers)
+            ):
+                return True
+        if isinstance(current, BaseExceptionGroup):
+            stack.extend(current.exceptions)
+        cause = current.__cause__ or current.__context__
+        if cause is not None:
+            stack.append(cause)
+    return False
+
+
 async def _drive_handshake(connections: dict) -> None:
     """Open a one-shot MCP session for `connections` to trigger OAuth handshake."""
     from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -1621,7 +1661,7 @@ async def login(
             during the flow.
 
     Raises:
-        ValueError: If `server_config` isn't an OAuth http/sse server.
+        ValueError: If `server_config` isn't an http/sse server.
         RuntimeError: If header env-var interpolation fails, the device
             flow fails or times out, or the OAuth handshake aborts.
     """  # noqa: DOC502 - `RuntimeError` surfaces via `resolve_headers` / `_run_device_flow`
@@ -1630,15 +1670,12 @@ async def login(
         StreamableHttpConnection,
     )
 
-    if server_config.get("auth") != "oauth":
-        msg = (
-            f"Server '{server_name}' does not use OAuth "
-            '(set "auth": "oauth" in mcpServers).'
-        )
-        raise ValueError(msg)
-
     from deepagents_code.mcp_tools import _resolve_server_type
 
+    # OAuth login is discovery-based (RFC 9728), so it works for any remote
+    # http/sse server — whether the config opted in with `auth: oauth` or the
+    # server was auto-detected as needing auth via a 401 challenge. Only the
+    # transport needs gating; stdio servers can't speak OAuth.
     transport = _resolve_server_type(server_config)
     if transport not in {"http", "sse"}:
         msg = (

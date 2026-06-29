@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 from unittest.mock import patch
 
+import httpx
 import pytest
 from mcp.client.auth import TokenStorage
 from mcp.shared.auth import OAuthToken
@@ -18,10 +19,22 @@ from mcp.shared.auth import OAuthToken
 from deepagents_code.mcp_auth import (
     FileTokenStorage,
     MCPReauthRequiredError,
+    find_oauth_challenge,
     find_reauth_required,
     format_login_failure,
     resolve_headers,
 )
+
+
+def _http_status_error(
+    status_code: int,
+    *,
+    headers: dict[str, str] | None = None,
+) -> httpx.HTTPStatusError:
+    """Build an `httpx.HTTPStatusError` with a canned response."""
+    request = httpx.Request("GET", "https://mcp.example.com/")
+    response = httpx.Response(status_code, headers=headers or {}, request=request)
+    return httpx.HTTPStatusError("boom", request=request, response=response)
 
 
 @pytest.fixture
@@ -868,6 +881,61 @@ class TestFindReauthRequired:
         a.__context__ = b
         b.__context__ = a
         assert find_reauth_required(a) is None
+
+
+class TestFindOauthChallenge:
+    """Tests for detecting a 401 OAuth challenge in an exception tree."""
+
+    def test_direct_401_with_challenge(self) -> None:
+        """A bare 401 carrying `WWW-Authenticate` is detected."""
+        exc = _http_status_error(401, headers={"WWW-Authenticate": "Bearer"})
+        assert find_oauth_challenge(exc) is True
+
+    def test_401_header_match_is_case_insensitive(self) -> None:
+        """The header lookup ignores casing."""
+        exc = _http_status_error(401, headers={"www-authenticate": "Bearer"})
+        assert find_oauth_challenge(exc) is True
+
+    def test_401_without_challenge_header_ignored(self) -> None:
+        """A 401 lacking `WWW-Authenticate` is not an OAuth challenge."""
+        exc = _http_status_error(401)
+        assert find_oauth_challenge(exc) is False
+
+    def test_non_401_status_ignored(self) -> None:
+        """Other status codes never count as a challenge."""
+        exc = _http_status_error(403, headers={"WWW-Authenticate": "Bearer"})
+        assert find_oauth_challenge(exc) is False
+
+    def test_found_inside_exception_group(self) -> None:
+        """Nested exception groups are searched recursively."""
+        exc = ExceptionGroup(
+            "outer",
+            [
+                RuntimeError("x"),
+                _http_status_error(401, headers={"WWW-Authenticate": "Bearer"}),
+            ],
+        )
+        assert find_oauth_challenge(exc) is True
+
+    def test_found_via_cause_chain(self) -> None:
+        """`raise X from HTTPStatusError(...)` is unwrapped."""
+        challenge = _http_status_error(401, headers={"WWW-Authenticate": "Bearer"})
+        wrapped = RuntimeError("wrapped")
+        wrapped.__cause__ = challenge
+        assert find_oauth_challenge(wrapped) is True
+
+    def test_returns_false_when_absent(self) -> None:
+        """Trees without a 401 challenge yield `False`."""
+        exc = ExceptionGroup("outer", [RuntimeError("x"), ValueError("y")])
+        assert find_oauth_challenge(exc) is False
+
+    def test_handles_cyclic_chain(self) -> None:
+        """Self-referencing `__context__` cycles terminate without recursion."""
+        a = RuntimeError("a")
+        b = RuntimeError("b")
+        a.__context__ = b
+        b.__context__ = a
+        assert find_oauth_challenge(a) is False
 
 
 class TestFormatLoginFailure:
@@ -2092,17 +2160,33 @@ class TestLogin:
         assert tokens is not None
         assert tokens.access_token == "new"
 
-    async def test_login_rejects_non_oauth_server(self) -> None:
-        """Only `auth: oauth` servers support the login command."""
+    async def test_login_allows_http_server_without_explicit_oauth(self) -> None:
+        """Auto-detected servers (no `auth: oauth`) can still run OAuth login."""
         from deepagents_code.mcp_auth import login
         from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
 
-        with pytest.raises(ValueError, match="does not use OAuth"):
+        async def _fake_handshake(connections: dict) -> None:
+            server_name, connection = next(iter(connections.items()))
+            storage = FileTokenStorage(server_name, server_url=connection["url"])
+            await storage.set_tokens(
+                OAuthToken(access_token="new", token_type="Bearer")
+            )
+            await storage.set_client_info(_make_client_info())
+
+        with patch("deepagents_code.mcp_auth._drive_handshake", _fake_handshake):
             await login(
-                server_name="srv",
-                server_config={"transport": "http", "url": "https://example.com"},
+                server_name="notion",
+                server_config={
+                    "transport": "http",
+                    "url": "https://mcp.notion.com/mcp",
+                },
                 ui=CliOAuthInteraction(),
             )
+
+        storage = FileTokenStorage("notion", server_url="https://mcp.notion.com/mcp")
+        tokens = await storage.get_tokens()
+        assert tokens is not None
+        assert tokens.access_token == "new"
 
     async def test_login_rejects_stdio_server(self) -> None:
         """OAuth login is limited to HTTP/SSE transports."""

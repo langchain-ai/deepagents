@@ -1477,26 +1477,33 @@ async def _load_tools_from_config(
                         server_name=server_name,
                     )
 
-                if server_config.get("auth") == "oauth":
-                    from deepagents_code.mcp_auth import (
-                        FileTokenStorage,
-                        build_oauth_provider,
-                    )
+                from deepagents_code.mcp_auth import (
+                    FileTokenStorage,
+                    build_oauth_provider,
+                )
 
-                    storage = FileTokenStorage(
+                explicit_oauth = server_config.get("auth") == "oauth"
+                storage = FileTokenStorage(
+                    server_name,
+                    server_url=server_config["url"],
+                )
+                stored_tokens = await storage.get_tokens()
+
+                if explicit_oauth and stored_tokens is None:
+                    # Config opted into OAuth but no tokens are stored yet —
+                    # require an upfront login before connecting.
+                    auth_msg = f"MCP server {server_name!r} needs re-authentication."
+                    logger.warning(
+                        "MCP server '%s' skipped: not authenticated.",
                         server_name,
-                        server_url=server_config["url"],
                     )
-                    if await storage.get_tokens() is None:
-                        auth_msg = (
-                            f"MCP server {server_name!r} needs re-authentication."
-                        )
-                        logger.warning(
-                            "MCP server '%s' skipped: not authenticated.",
-                            server_name,
-                        )
-                        skipped[server_name] = ("unauthenticated", auth_msg)
-                        continue
+                    skipped[server_name] = ("unauthenticated", auth_msg)
+                    continue
+
+                if explicit_oauth or stored_tokens is not None:
+                    # Attach the provider when the user opted in, or when a
+                    # prior login (possibly triggered by 401 auto-detection)
+                    # already stored tokens for this server.
                     conn["auth"] = build_oauth_provider(
                         server_name=server_name,
                         server_url=server_config["url"],
@@ -1550,7 +1557,10 @@ async def _load_tools_from_config(
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
             raise
         except Exception as exc:
-            from deepagents_code.mcp_auth import find_reauth_required
+            from deepagents_code.mcp_auth import (
+                find_oauth_challenge,
+                find_reauth_required,
+            )
 
             reauth = find_reauth_required(exc)
             status: MCPServerStatus
@@ -1564,6 +1574,26 @@ async def _load_tools_from_config(
                 error = (
                     f"{reauth} "
                     "(token refresh failed; the original error is in debug logs)"
+                )
+                logger.warning(
+                    "MCP server '%s' skipped: %s",
+                    server_name,
+                    error,
+                )
+                logger.debug(
+                    "MCP server '%s' skipped: tool discovery failed",
+                    server_name,
+                    exc_info=True,
+                )
+            elif transport in _SUPPORTED_REMOTE_TYPES and find_oauth_challenge(exc):
+                # Server answered with a 401 OAuth challenge (RFC 9728) but
+                # the config never opted into OAuth. Surface it as
+                # unauthenticated so the user can log in, rather than as an
+                # opaque connection error.
+                status = "unauthenticated"
+                error = (
+                    f"MCP server {server_name!r} requires authentication; "
+                    f"run `dcode mcp login {server_name}`."
                 )
                 logger.warning(
                     "MCP server '%s' skipped: %s",

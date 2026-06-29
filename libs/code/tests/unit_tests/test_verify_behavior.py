@@ -164,3 +164,28 @@ def test_async_path_pass() -> None:
     tool, _, _ = _make("python3 check.py", exec_output="VERIFY: PASS")
     result = asyncio.run(tool.coroutine(FakeRuntime()))
     assert "VERIFY: PASS" in result
+
+
+def test_runtime_injected_through_ainvoke() -> None:
+    """Regression: invoking via the real tool-call path must inject `runtime`.
+
+    The other tests call `tool.coroutine(...)` directly, bypassing the schema-driven
+    argument binding. A fieldless `args_schema` made langchain treat the tool as
+    taking no args, dropping the framework-injected `ToolRuntime` and crashing with a
+    missing-arg `TypeError`. Going through `ainvoke` exercises that binding.
+    """
+    from langchain.tools import ToolRuntime
+
+    tool, _, _ = _make("python3 check.py", exec_output="VERIFY: PASS")
+    runtime = ToolRuntime(
+        state={"messages": [HumanMessage(content=_TASK)]},
+        context=None,
+        tool_call_id="verify-1",
+        store=None,
+        stream_writer=lambda _: None,
+        config={},
+    )
+    result = asyncio.run(tool.ainvoke({"runtime": runtime}))
+    assert "VERIFY: PASS" in result
+    # The injected runtime must stay hidden from the model-facing schema.
+    assert "runtime" not in tool.args

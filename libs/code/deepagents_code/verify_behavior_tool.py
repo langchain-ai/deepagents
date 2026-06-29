@@ -16,7 +16,6 @@ from langchain.tools import ToolRuntime
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool, StructuredTool
-from pydantic import BaseModel
 
 # Real (non-stringized) annotations are required here: langgraph detects the
 # injectable `ToolRuntime` parameter by its annotation type, so this module must
@@ -303,10 +302,6 @@ def _result_report(verdict: str | None, output: str, max_bytes: int) -> str:
     )
 
 
-class VerifyBehaviorSchema(BaseModel):
-    """Arguments for the `verify_behavior` tool (none)."""
-
-
 def make_verify_behavior_tool(
     model: str | BaseChatModel,
     backend: BackendProtocol,
@@ -426,11 +421,15 @@ def make_verify_behavior_tool(
         except Exception as exc:  # noqa: BLE001  (a verifier must never crash the agent)
             return _incomplete_report(type(exc).__name__)
 
+    # Let the schema be inferred from the signature: the inferred schema keeps the
+    # injected `runtime` as a field, so it isn't a fieldless model. A fieldless
+    # args_schema would trip langchain's "StructuredTool with no args" fast path,
+    # which drops all kwargs (including the injected ToolRuntime) before calling the
+    # function. The model still sees no callable args, since the tool-call schema
+    # excludes injected arguments.
     return StructuredTool.from_function(
         name="verify_behavior",
         description=VERIFY_BEHAVIOR_DESCRIPTION,
         func=_verify,
         coroutine=_averify,
-        args_schema=VerifyBehaviorSchema,
-        infer_schema=False,
     )

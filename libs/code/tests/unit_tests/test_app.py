@@ -4778,6 +4778,63 @@ class TestGoalCommand:
             assert app._pending_goal_review_widget is current
             assert current in app.query(GoalReviewMenu)
 
+    async def test_goal_replacement_cancels_stale_review_before_drafting(self) -> None:
+        """Replacing `/goal` should remove the old review before drafting finishes."""
+        app = DeepAgentsApp(agent=MagicMock())
+        started = threading.Event()
+        release = threading.Event()
+
+        def generate(
+            objective: str,
+            *,
+            feedback: str | None = None,  # noqa: ARG001
+            previous_criteria: str | None = None,  # noqa: ARG001
+        ) -> str:
+            assert objective == "add audit logs"
+            started.set()
+            release.wait(timeout=5)
+            return "- replacement criteria"
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_goal_objective = "add refresh tokens"
+            app._pending_goal_rubric = "- old criteria"
+            await app._start_pending_goal_rubric_review()
+            await pilot.pause()
+            stale = app.query_one(GoalReviewMenu)
+            handle = AsyncMock()
+
+            with (
+                patch.object(app, "_generate_goal_rubric", side_effect=generate),
+                patch.object(app, "_handle_user_message", handle),
+            ):
+                await app._handle_command("/goal add audit logs")
+                for _ in range(10):
+                    await pilot.pause()
+                    if started.is_set():
+                        break
+
+                assert started.is_set()
+                assert app._pending_goal_objective is None
+                assert app._pending_goal_rubric is None
+                assert app._pending_goal_review_widget is None
+                assert stale not in app.query(GoalReviewMenu)
+
+                stale.action_accept()
+                await pilot.pause()
+                handle.assert_not_awaited()
+
+                release.set()
+                for _ in range(10):
+                    await pilot.pause()
+                    if app._pending_goal_review_widget is not None:
+                        break
+
+                assert app._pending_goal_objective == "add audit logs"
+                assert app._pending_goal_rubric == "- replacement criteria"
+                assert app._pending_goal_review_widget is not None
+                handle.assert_not_awaited()
+
     async def test_goal_command_clears_spinner_when_drafting_fails(self) -> None:
         """Drafting failures should dismiss the goal spinner."""
         app = DeepAgentsApp(agent=MagicMock())

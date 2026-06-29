@@ -5987,6 +5987,15 @@ class DeepAgentsApp(App):
         if worker is not None:
             worker.cancel()
 
+    async def _cancel_pending_goal_review(self, *, context: str) -> None:
+        """Cancel and remove any mounted pending goal review prompt."""
+        self._cancel_goal_review_task()
+        widget = self._pending_goal_review_widget
+        self._pending_goal_review_widget = None
+        if widget is not None:
+            widget.action_cancel()
+            await self._remove_goal_review_widget(widget, context=context)
+
     def _cancel_goal_proposal_generation(self) -> bool:
         """Cancel in-flight goal criteria generation.
 
@@ -7867,9 +7876,7 @@ class DeepAgentsApp(App):
         if subcommand == "clear":
             await self._mount_message(UserMessage(command))
             self._cancel_goal_proposal_worker()
-            self._cancel_goal_review_task()
-            if self._pending_goal_review_widget is not None:
-                self._pending_goal_review_widget.action_cancel()
+            await self._cancel_pending_goal_review(context="goal-clear cleanup")
             self._clear_all_goal_rubric_state()
             self._sync_status_rubric()
             persisted = await self._persist_goal_rubric_state()
@@ -7879,6 +7886,9 @@ class DeepAgentsApp(App):
         objective = remainder
         await self._mount_message(UserMessage(command))
         self._cancel_goal_proposal_worker()
+        await self._cancel_pending_goal_review(context="goal replacement cleanup")
+        self._clear_pending_goal_rubric()
+        await self._persist_goal_rubric_state()
         self._goal_proposal_worker = self.run_worker(
             self._propose_goal_rubric(objective),
             exclusive=False,

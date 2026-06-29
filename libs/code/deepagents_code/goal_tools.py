@@ -53,6 +53,15 @@ GOAL_TOOLS_SYSTEM_PROMPT = (
 ResponseT = TypeVar("ResponseT")
 
 
+def _runtime_blocked_goal_retry_context(ctx: object) -> str | None:
+    """Return blocked-goal retry context from LangGraph runtime context."""
+    if isinstance(ctx, dict):
+        value = ctx.get("blocked_goal_retry_context")
+    else:
+        value = getattr(ctx, "blocked_goal_retry_context", None)
+    return value if isinstance(value, str) and value else None
+
+
 class RubricSnapshot(TypedDict):
     """Read-only rubric view returned by the `get_rubric` tool to the model."""
 
@@ -347,6 +356,34 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
 
         self.tools = [get_rubric, get_goal, update_goal]
 
+    @staticmethod
+    def _request_with_goal_system_context(
+        request: ModelRequest[ContextT],
+    ) -> ModelRequest[ContextT]:
+        """Inject goal guidance and any one-turn retry context.
+
+        Returns:
+            Model request with goal context appended to the system prompt.
+        """
+        retry_context = _runtime_blocked_goal_retry_context(request.runtime.context)
+        prompt_parts = [GOAL_TOOLS_SYSTEM_PROMPT]
+        if retry_context is not None:
+            prompt_parts.append(retry_context)
+        prompt = "\n\n".join(prompt_parts)
+
+        if request.system_message is not None:
+            content = [
+                *request.system_message.content_blocks,
+                {"type": "text", "text": f"\n\n{prompt}"},
+            ]
+        else:
+            content = [{"type": "text", "text": prompt}]
+        return request.override(
+            system_message=SystemMessage(
+                content=cast("list[str | dict[str, str]]", content)
+            )
+        )
+
     @override
     def wrap_model_call(
         self,
@@ -358,20 +395,7 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         Returns:
             Model response from the wrapped handler.
         """
-        if request.system_message is not None:
-            content = [
-                *request.system_message.content_blocks,
-                {"type": "text", "text": f"\n\n{GOAL_TOOLS_SYSTEM_PROMPT}"},
-            ]
-        else:
-            content = [{"type": "text", "text": GOAL_TOOLS_SYSTEM_PROMPT}]
-        return handler(
-            request.override(
-                system_message=SystemMessage(
-                    content=cast("list[str | dict[str, str]]", content)
-                )
-            )
-        )
+        return handler(self._request_with_goal_system_context(request))
 
     @override
     async def awrap_model_call(
@@ -386,17 +410,4 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         Returns:
             Model response from the wrapped handler.
         """
-        if request.system_message is not None:
-            content = [
-                *request.system_message.content_blocks,
-                {"type": "text", "text": f"\n\n{GOAL_TOOLS_SYSTEM_PROMPT}"},
-            ]
-        else:
-            content = [{"type": "text", "text": GOAL_TOOLS_SYSTEM_PROMPT}]
-        return await handler(
-            request.override(
-                system_message=SystemMessage(
-                    content=cast("list[str | dict[str, str]]", content)
-                )
-            )
-        )
+        return await handler(self._request_with_goal_system_context(request))

@@ -36,6 +36,7 @@ from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import Checkbox, Input, Static
 
+from deepagents_code._session_stats import SessionStats
 from deepagents_code._version import CHANGELOG_URL, __version__
 from deepagents_code.app import (
     _DEEPAGENTS_IMPORT_LOCK,
@@ -5851,6 +5852,88 @@ class TestRubricCommand:
             assert mock_execute.await_args is not None
             assert mock_execute.await_args.kwargs["rubric"] == "tests pass"
             assert app._active_rubric == "tests pass"
+
+    async def test_blocked_goal_resets_to_active_before_user_turn(self) -> None:
+        """A user response should retry a blocked goal instead of stale state."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "add refresh tokens"
+            app._active_rubric = "tests pass"
+            app._goal_status = "blocked"
+            app._goal_status_note = "waiting on provider credentials"
+            app._sync_status_rubric()
+            assert app._status_bar is not None
+            assert app._status_bar.rubric_label == _rubric_status_label(
+                "warning", "Goal blocked"
+            )
+            started = asyncio.Event()
+
+            def execute_stub(*_args: object, **_kwargs: object) -> SessionStats:
+                started.set()
+                return SessionStats()
+
+            with patch(
+                "deepagents_code.textual_adapter.execute_task_textual",
+                new=AsyncMock(side_effect=execute_stub),
+            ) as mock_execute:
+                await app._handle_user_message("I added the provider credentials")
+                await asyncio.wait_for(started.wait(), timeout=1)
+
+            mock_execute.assert_awaited_once()
+            assert mock_execute.await_args is not None
+            user_input = mock_execute.await_args.kwargs["user_input"]
+            retry_context = mock_execute.await_args.kwargs["blocked_goal_retry_context"]
+            assert user_input == "I added the provider credentials"
+            assert "previously marked blocked" in retry_context
+            assert "waiting on provider credentials" in retry_context
+            assert "I added the provider credentials" not in retry_context
+            assert 'update_goal(status="blocked", note=...)' in retry_context
+            assert app._goal_status == "active"
+            assert app._goal_status_note is None
+            assert app._status_bar.rubric_label == _rubric_status_label(
+                "checkmark", "Rubric set"
+            )
+
+    async def test_blocked_goal_reset_is_persisted_before_user_turn(self) -> None:
+        """The automatic retry status change should survive thread resume."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            updater = SimpleNamespace(aupdate_state=AsyncMock())
+            app._agent = updater
+            app._lc_thread_id = "thread-1"
+            app._active_goal = "add refresh tokens"
+            app._active_rubric = "tests pass"
+            app._goal_status = "blocked"
+            app._goal_status_note = "waiting on provider credentials"
+            started = asyncio.Event()
+
+            def execute_stub(*_args: object, **_kwargs: object) -> SessionStats:
+                started.set()
+                return SessionStats()
+
+            with patch(
+                "deepagents_code.textual_adapter.execute_task_textual",
+                new=AsyncMock(side_effect=execute_stub),
+            ):
+                await app._handle_user_message("Credentials are configured now")
+                await asyncio.wait_for(started.wait(), timeout=1)
+
+            config = {"configurable": {"thread_id": "thread-1"}}
+            updater.aupdate_state.assert_awaited_once_with(
+                config,
+                {
+                    "rubric": "tests pass",
+                    "_sticky_rubric": "tests pass",
+                    "_goal_objective": "add refresh tokens",
+                    "_goal_status": "active",
+                    "_goal_rubric": "tests pass",
+                    "_goal_status_note": None,
+                    "_pending_goal_objective": None,
+                    "_pending_goal_rubric": None,
+                },
+            )
 
     async def test_rubric_next_passes_once_and_clears(self) -> None:
         """`/rubric next` should apply only to the next submitted turn."""

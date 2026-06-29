@@ -467,6 +467,7 @@ async def execute_task_textual(
     sandbox_type: str | None = None,
     message_kwargs: dict[str, Any] | None = None,
     rubric: str | None = None,
+    blocked_goal_retry_context: str | None = None,
     turn_stats: SessionStats | None = None,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
@@ -494,6 +495,9 @@ async def execute_task_textual(
             in the checkpoint).
         rubric: Acceptance criteria supplied to `RubricMiddleware` via graph
             input state.
+        blocked_goal_retry_context: One-turn model context for retrying a
+            previously blocked goal. This is carried via runtime context so it
+            is not parsed for file mentions or checkpointed as human input.
         turn_stats: Pre-created `SessionStats` to accumulate into.
 
             When the caller holds a reference to the same object, stats are
@@ -635,6 +639,10 @@ async def execute_task_textual(
             if context is None:
                 context = CLIContext()
             context["thread_id"] = thread_id
+            if blocked_goal_retry_context is not None:
+                context["blocked_goal_retry_context"] = blocked_goal_retry_context
+            else:
+                context.pop("blocked_goal_retry_context", None)
             auto_approve = bool(session_state.auto_approve)
             context["auto_approve"] = auto_approve
             try:

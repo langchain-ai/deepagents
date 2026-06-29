@@ -240,10 +240,15 @@ def _capturing_handler(
     return handler
 
 
-def _fake_request(system_message: SystemMessage | None) -> SimpleNamespace:
+def _fake_request(
+    system_message: SystemMessage | None,
+    *,
+    context: object | None = None,
+) -> SimpleNamespace:
     """Build a `ModelRequest`-shaped double with an `override` that mirrors it."""
     return SimpleNamespace(
         system_message=system_message,
+        runtime=SimpleNamespace(context=context or {}),
         override=lambda **kw: SimpleNamespace(**kw),
     )
 
@@ -278,6 +283,25 @@ def test_wrap_model_call_seeds_guidance_without_system_message() -> None:
 
     new_system = captured["request"].system_message
     assert new_system.content == [{"type": "text", "text": GOAL_TOOLS_SYSTEM_PROMPT}]
+
+
+def test_wrap_model_call_appends_blocked_goal_retry_context() -> None:
+    """Retry context should reach the model through runtime context."""
+    captured: dict[str, SimpleNamespace] = {}
+    request = _fake_request(
+        None,
+        context={"blocked_goal_retry_context": "<dcode_blocked_goal_retry_context />"},
+    )
+
+    GoalToolsMiddleware().wrap_model_call(
+        request,  # ty: ignore[invalid-argument-type]
+        _capturing_handler(captured),  # ty: ignore[invalid-argument-type]
+    )
+
+    new_system = captured["request"].system_message
+    text = new_system.content[0]["text"]
+    assert GOAL_TOOLS_SYSTEM_PROMPT in text
+    assert "<dcode_blocked_goal_retry_context />" in text
 
 
 async def test_awrap_model_call_appends_guidance_to_existing_prompt() -> None:

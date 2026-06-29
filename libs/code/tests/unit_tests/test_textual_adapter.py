@@ -1156,6 +1156,38 @@ class TestExecuteTaskTextualAutoApproveInput:
             "rubric": "tests pass",
         }
 
+    async def test_blocked_goal_retry_context_is_not_user_input(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Retry context should not be parsed for file mentions or checkpointed."""
+        secret = tmp_path / "secret.txt"
+        secret.write_text("do not attach me")
+        agent = _SequencedAgent([[]])
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="continue now",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+            blocked_goal_retry_context=f"blocked on @{secret}",
+        )
+
+        stream_input = agent.stream_inputs[0]
+        assert not isinstance(stream_input, Command)
+        assert stream_input == {
+            "messages": [{"role": "user", "content": "continue now"}]
+        }
+        assert (
+            agent.contexts[0]["blocked_goal_retry_context"] == f"blocked on @{secret}"
+        )
+
     async def test_live_approval_write_failure_fails_closed_context(self) -> None:
         """A failed live-mode write must not reuse a stale approval key."""
         agent = _FailingApprovalStoreAgent([[]])

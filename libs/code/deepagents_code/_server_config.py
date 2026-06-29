@@ -405,7 +405,7 @@ class ServerConfig:
             interpreter_ptc_acknowledge_unsafe=_read_env_bool(
                 "INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE"
             ),
-            rubric_model=_read_env_str("RUBRIC_MODEL"),
+            rubric_model=_read_env_str("RUBRIC_MODEL") or None,
             rubric_max_iterations=_read_env_int("RUBRIC_MAX_ITERATIONS", default=3),
             sandbox_type=_read_env_str("SANDBOX_TYPE"),
             sandbox_id=_read_env_str("SANDBOX_ID"),

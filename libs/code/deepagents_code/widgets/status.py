@@ -197,6 +197,13 @@ class StatusBar(Horizontal):
         color: $text-muted;
     }
 
+    StatusBar .status-rubric {
+        width: auto;
+        padding: 0 1;
+        color: $success;
+        text-style: bold;
+    }
+
     StatusBar ModelLabel {
         width: auto;
         padding: 0 2;
@@ -214,6 +221,7 @@ class StatusBar(Horizontal):
     cwd: reactive[str] = reactive("", init=False)
     branch: reactive[str] = reactive("", init=False)
     tokens: reactive[int] = reactive(0, init=False)
+    rubric_label: reactive[str] = reactive("", init=False)
 
     def __init__(self, cwd: str | Path | None = None, **kwargs: Any) -> None:
         """Initialize the status bar.
@@ -248,6 +256,7 @@ class StatusBar(Horizontal):
             yield Static("", classes="status-message", id="status-message")
             yield Static("", classes="status-cwd", id="cwd-display")
             yield Static("", classes="status-branch", id="branch-display")
+        yield Static("", classes="status-rubric", id="rubric-display")
         yield Static("", classes="status-tokens", id="tokens-display")
         yield ModelLabel(id="model-display")
 
@@ -295,6 +304,8 @@ class StatusBar(Horizontal):
         label = self.query_one("#model-display", ModelLabel)
         label.provider = settings.model_provider or ""
         label.model = settings.model_name or ""
+        with suppress(NoMatches):
+            self.query_one("#rubric-display", Static).display = False
         # Reactives are `init=False`, so the connection watcher never fires on
         # mount; render once to hide the empty indicator (and its padding).
         self._render_connection()
@@ -503,6 +514,15 @@ class StatusBar(Horizontal):
         """Update token display when count changes."""
         self._render_tokens(new_value, approximate=self._approximate)
 
+    def watch_rubric_label(self, new_value: str) -> None:
+        """Update rubric display when active rubric state changes."""
+        try:
+            display = self.query_one("#rubric-display", Static)
+        except NoMatches:
+            return
+        display.display = bool(new_value)
+        display.update(new_value)
+
     def _render_tokens(self, count: int, *, approximate: bool = False) -> None:
         """Render the token count into the display widget.
 
@@ -525,6 +545,14 @@ class StatusBar(Horizontal):
                 display.update(f"{count}{suffix} tokens")
         else:
             display.update("")
+
+    def set_rubric_label(self, label: str) -> None:
+        """Set the rubric status label.
+
+        Args:
+            label: Label to display, or empty string to hide the badge.
+        """
+        self.rubric_label = label
 
     def set_tokens(self, count: int, *, approximate: bool = False) -> None:
         """Set the token count.

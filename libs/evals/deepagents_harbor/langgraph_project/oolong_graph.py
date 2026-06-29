@@ -164,6 +164,11 @@ def make_oolong_code_interpreter_graph(config: dict[str, object] | None = None) 
     configurable = _configurable(config)
     root_model_id = _model_name(configurable)
     model = init_chat_model(root_model_id, **_model_kwargs(configurable))
+    # Instantiate the subagent model here, BEFORE the _scrub_shell_env() block, so
+    # it captures the provider key from os.environ. Passing a model *string* in the
+    # subagent spec would make create_deep_agent build the client inside the scrubbed
+    # context, leaving the subagent unable to resolve credentials at run time.
+    sub_model = init_chat_model(_sub_model_id(configurable, root_model_id))
     subagents: list[SubAgent] = [
         {
             "name": "general-purpose",
@@ -171,7 +176,7 @@ def make_oolong_code_interpreter_graph(config: dict[str, object] | None = None) 
                 "Reads a line range of /app/context.txt and extracts per-line facts as directed."
             ),
             "system_prompt": _OOLONG_SUBAGENT_SYSTEM_PROMPT,
-            "model": _sub_model_id(configurable, root_model_id),
+            "model": sub_model,
         }
     ]
     with _scrub_shell_env():

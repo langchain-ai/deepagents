@@ -30,6 +30,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
 
@@ -963,6 +964,57 @@ async def test_acp_agent_hitl_requests_permission_only_once() -> None:
         "This indicates the double approval bug has regressed."
     )
     assert permission_requests[0]["tool_call"].title == "Write `/tmp/test.txt`"
+
+
+async def test_acp_agent_hitl_waits_for_persistent_interrupt_checkpoint(tmp_path) -> None:
+    """Test that permission state is read after the interrupt stream closes."""
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_file",
+                            "args": {"file_path": "/tmp/test.txt", "content": "hello"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="File written successfully"),
+            ]
+        ),
+        stream_delimiter=None,
+    )
+    async with AsyncSqliteSaver.from_conn_string(
+        str(tmp_path / "checkpoints.sqlite")
+    ) as checkpointer:
+        await checkpointer.setup()
+        graph = create_deep_agent(
+            model=model,
+            interrupt_on={"write_file": True},
+            checkpointer=checkpointer,
+        )
+        agent = AgentServerACP(agent=graph)
+        client = FakeACPClient(permission_outcomes=["approve"])
+        agent.on_connect(client)  # type: ignore[arg-type]
+
+        session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+        response = await agent.prompt(
+            [TextContentBlock(type="text", text="Write a test file")],
+            session_id=session.session_id,
+        )
+
+    assert response.stop_reason == "end_turn"
+    permission_requests = [e for e in client.events if e["type"] == "request_permission"]
+    assert len(permission_requests) == 1
+    assert permission_requests[0]["tool_call"].title == "Write `/tmp/test.txt`"
+    assert any(
+        e["update"] == update_agent_message(text_block("File written successfully"))
+        for e in client.events
+        if e["type"] == "session_update"
+    )
 
 
 def _make_server(*, with_modes: bool = True, with_models: bool = True) -> AgentServerACP:

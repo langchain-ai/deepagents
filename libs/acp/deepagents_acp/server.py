@@ -68,11 +68,12 @@ from deepagents_acp.utils import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from acp.interfaces import Client
     from deepagents.graph import Checkpointer
     from langchain_core.runnables import RunnableConfig
+    from langgraph.types import Interrupt
 
 # agent-client-protocol v0.9.0+ removed the SessionConfigOption wrapper; config
 # options are now bare SessionConfigOptionSelect instances. Resolve dynamically
@@ -691,6 +692,7 @@ class AgentServerACP(ACPAgent):
                 self._cancelled = False  # Reset for next prompt
                 return PromptResponse(stop_reason="cancelled")
 
+            pending_interrupts: Sequence[Interrupt] = ()
             async for stream_chunk in agent.astream(
                 Command(resume={"decisions": user_decisions})
                 if user_decisions
@@ -735,12 +737,12 @@ class AgentServerACP(ACPAgent):
                                         {"interrupt_value": interrupt_value},
                                     )
 
-                            current_state = await agent.aget_state(config)
-                            user_decisions = await self._handle_interrupts(
-                                current_state=current_state,
-                                session_id=session_id,
-                            )
-                            break
+                            # The checkpoint backing this update may not be visible until
+                            # the stream iterator has closed. Defer reading state until
+                            # after leaving the async iterator so persistent checkpointers
+                            # do not return a stale, pre-interrupt snapshot.
+                            pending_interrupts = interrupt_objs
+                            continue
 
                     for node_name, update in updates.items():
                         if node_name == "tools" and isinstance(update, dict) and "todos" in update:
@@ -817,8 +819,16 @@ class AgentServerACP(ACPAgent):
             # The loop continues while there are interrupts (line 467)
             # We get the current state to check the loop condition
             current_state = await agent.aget_state(config)
-            # Note: Interrupts are handled during streaming via __interrupt__ updates
-            # This state check is only for the while loop condition
+            if pending_interrupts:
+                user_decisions = await self._handle_interrupts(
+                    current_state=current_state,
+                    session_id=session_id,
+                    pending_interrupts=pending_interrupts,
+                )
+                if user_decisions:
+                    # A stale snapshot has no interrupts and would otherwise end
+                    # the loop before the selected decisions can resume the graph.
+                    current_state = None
 
         return PromptResponse(stop_reason="end_turn")
 
@@ -827,12 +837,14 @@ class AgentServerACP(ACPAgent):
         *,
         current_state: StateSnapshot,
         session_id: str,
+        pending_interrupts: Sequence[Interrupt] | None = None,
     ) -> list[dict[str, Any]]:
         """Handle agent interrupts by requesting permission from the client."""
         user_decisions: list[dict[str, Any]] = []
-        if current_state.next and current_state.interrupts:
+        interrupts = pending_interrupts or current_state.interrupts
+        if (pending_interrupts or current_state.next) and interrupts:
             # Agent is interrupted, request permission from user
-            for interrupt in current_state.interrupts:
+            for interrupt in interrupts:
                 # Get the tool call info from the interrupt
                 tool_call_id = interrupt.id
                 interrupt_value = interrupt.value

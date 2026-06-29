@@ -249,6 +249,78 @@ ToolCallMessage.-ascii:hover {
     background: $surface;
 }
 
+/* Goal review widget */
+.goal-review-menu {
+    height: auto;
+    margin: 1 0;
+    padding: 0 1;
+    background: $surface;
+    border: solid $success;
+}
+
+.goal-review-menu .goal-review-title {
+    text-style: bold;
+    color: $success;
+    margin-bottom: 0;
+}
+
+.goal-review-menu .goal-review-content {
+    height: auto;
+    max-height: 12;
+    padding: 0 1;
+}
+
+.goal-review-menu .goal-review-body {
+    height: auto;
+}
+
+.goal-review-menu .goal-review-markdown {
+    margin: 0 0 1 0;
+    padding: 0;
+}
+
+.goal-review-menu .goal-review-options-container {
+    height: auto;
+    background: $surface-darken-1;
+    padding: 0 1;
+    margin-top: 0;
+}
+
+.goal-review-menu .goal-review-option {
+    height: 1;
+    padding: 0 1;
+}
+
+.goal-review-menu .goal-review-option-selected {
+    background: $primary;
+    text-style: bold;
+}
+
+.goal-review-menu .goal-review-edit-input {
+    margin: 1 1 0 1;
+    height: auto;
+    min-height: 4;
+    max-height: 12;
+    background: transparent;
+}
+
+.goal-review-menu .goal-review-help {
+    color: $text-muted;
+    text-style: italic;
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+.goal-review-menu AskUserTextArea {
+    & .text-area--cursor-line {
+        background: transparent;
+    }
+
+    & .text-area--cursor-gutter {
+        background: transparent;
+    }
+}
+
 /* Ask user widget */
 .ask-user-menu {
     height: auto;

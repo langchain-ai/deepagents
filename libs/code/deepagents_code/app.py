@@ -251,6 +251,7 @@ if TYPE_CHECKING:
     from deepagents_code.textual_adapter import TextualUIAdapter
     from deepagents_code.widgets.approval import ApprovalMenu
     from deepagents_code.widgets.ask_user import AskUserMenu
+    from deepagents_code.widgets.goal_review import GoalReviewMenu, GoalReviewResult
     from deepagents_code.widgets.model_selector import ModelSelectorScreen
     from deepagents_code.widgets.notification_center import (
         NotificationSuppressRequested,
@@ -2023,6 +2024,9 @@ class DeepAgentsApp(App):
 
         self._pending_ask_user_widget: AskUserMenu | None = None
         """Currently-mounted `ask_user` prompt awaiting an answer."""
+
+        self._pending_goal_review_widget: GoalReviewMenu | None = None
+        """Currently-mounted goal criteria review prompt awaiting a decision."""
 
         # Agent & shell run state
         self._agent_worker: Worker[None] | None = None
@@ -5874,6 +5878,88 @@ class DeepAgentsApp(App):
         if self._chat_input:
             self.call_after_refresh(self._chat_input.focus_input)
 
+    async def _remove_goal_review_widget(  # noqa: PLR6301
+        self,
+        widget: GoalReviewMenu,
+        *,
+        context: str,
+    ) -> None:
+        """Remove a goal review widget without surfacing cleanup races."""
+        try:
+            await widget.remove()
+        except Exception:
+            logger.debug(
+                "Failed to remove goal review widget during %s",
+                context,
+                exc_info=True,
+            )
+
+    async def _request_goal_review(
+        self,
+        objective: str,
+        criteria: str,
+    ) -> asyncio.Future[GoalReviewResult]:
+        """Display the goal review widget and return a Future with the decision.
+
+        Returns:
+            Future resolving to the user's goal review decision.
+        """
+        loop = asyncio.get_running_loop()
+        result_future: asyncio.Future[GoalReviewResult] = loop.create_future()
+
+        if self._pending_goal_review_widget is not None:
+            self._pending_goal_review_widget.action_cancel()
+            widget = self._pending_goal_review_widget
+            self._pending_goal_review_widget = None
+            await self._remove_goal_review_widget(
+                widget,
+                context="goal-review replacement cleanup",
+            )
+
+        from deepagents_code.widgets.goal_review import GoalReviewMenu
+
+        unique_id = f"goal-review-menu-{uuid.uuid4().hex[:8]}"
+        menu = GoalReviewMenu(objective, criteria, id=unique_id)
+        menu.set_future(result_future)
+        self._pending_goal_review_widget = menu
+
+        try:
+            messages = self.query_one("#messages", Container)
+            await self._mount_before_queued(messages, menu)
+            self.call_after_refresh(lambda: self._scroll_goal_review_into_view(menu))
+            self.call_after_refresh(menu.focus_active)
+        except Exception as e:
+            logger.exception(
+                "Failed to mount goal review menu (id=%s)",
+                unique_id,
+            )
+            self._pending_goal_review_widget = None
+            if not result_future.done():
+                result_future.set_exception(e)
+
+        return result_future
+
+    def _scroll_goal_review_into_view(self, menu: GoalReviewMenu) -> None:
+        """Scroll mounted goal review prompts into view."""
+        chat = self.query_one("#chat", VerticalScroll)
+        if menu.outer_size.height > chat.size.height:
+            menu.scroll_visible(animate=False, top=True)
+            return
+        menu.scroll_visible()
+
+    async def on_goal_review_menu_decided(
+        self,
+        event: Any,  # noqa: ARG002, ANN401
+    ) -> None:
+        """Handle a goal review decision by removing the widget."""
+        if self._pending_goal_review_widget:
+            widget = self._pending_goal_review_widget
+            self._pending_goal_review_widget = None
+            await self._remove_goal_review_widget(widget, context="goal-review decided")
+
+        if self._chat_input:
+            self.call_after_refresh(self._chat_input.focus_input)
+
     async def _process_message(self, value: str, mode: InputMode) -> None:
         """Route a message to the appropriate handler based on mode.
 
@@ -7444,6 +7530,10 @@ class DeepAgentsApp(App):
         self._active_goal = None
         self._goal_status = None
         self._goal_status_note = None
+        self._clear_pending_goal_rubric()
+
+    def _clear_pending_goal_rubric(self) -> None:
+        """Clear a draft goal proposal without touching the active goal."""
         self._pending_goal_objective = None
         self._pending_goal_rubric = None
 
@@ -7523,26 +7613,21 @@ class DeepAgentsApp(App):
     async def _handle_goal_command(self, command: str) -> None:
         """Handle `/goal` as a user-approved rubric proposal workflow."""
         remainder = command.strip()[len("/goal") :].strip()
-        subcommand, _, arg = remainder.partition(" ")
-        subcommand = subcommand.lower()
-        arg = arg.strip()
+        subcommand = remainder.partition(" ")[0].lower()
 
         if not remainder or subcommand in {"show", "status"}:
             await self._mount_message(UserMessage(command))
             await self._show_goal_state()
             return
 
-        if subcommand == "accept":
+        if subcommand in {"accept", "edit"}:
             await self._mount_message(UserMessage(command))
-            await self._accept_pending_goal_rubric()
-            return
-
-        if subcommand == "edit":
-            await self._mount_message(UserMessage(command))
-            if not arg:
-                await self._mount_message(AppMessage("Usage: /goal edit <criteria>"))
-                return
-            await self._accept_goal_rubric(arg)
+            await self._mount_message(
+                AppMessage(
+                    "Goal proposals are reviewed in the review prompt. "
+                    "Use `/goal <objective>` to draft criteria."
+                )
+            )
             return
 
         if subcommand == "clear":
@@ -7565,12 +7650,11 @@ class DeepAgentsApp(App):
         return (
             "Usage:\n"
             "  /goal <objective>\n"
-            "  /goal accept\n"
-            "  /goal edit <criteria>\n"
             "  /goal show\n"
             "  /goal clear\n\n"
             "Use /goal when you want dcode to propose acceptance criteria from "
-            "an objective. Use /rubric when you already know the criteria."
+            "an objective. Review the proposal in the review prompt. Use "
+            "/rubric when you already know the criteria."
         )
 
     async def _show_goal_state(self) -> None:
@@ -7589,17 +7673,13 @@ class DeepAgentsApp(App):
                     f"Pending goal:\n{self._pending_goal_objective}",
                     f"Proposed criteria:\n{self._pending_goal_rubric}",
                     (
-                        "Accept with `/goal accept` or revise with "
-                        "`/goal edit <criteria>`."
+                        "Review the proposal in the review prompt, or run "
+                        "`/goal clear` to cancel it."
                     ),
                 ],
             )
         if lines:
-            lines.append(
-                "Commands: /goal accept, /goal edit <criteria>, /goal clear"
-                if self._pending_goal_objective
-                else "Commands: /goal clear, /goal show"
-            )
+            lines.append("Commands: /goal clear, /goal show")
             await self._mount_message(AppMessage("\n\n".join(lines)))
             return
         await self._mount_message(
@@ -7629,10 +7709,11 @@ class DeepAgentsApp(App):
         persisted = await self._persist_goal_rubric_state()
         await self._mount_goal_rubric_result(
             f"Proposed acceptance criteria for goal:\n{rubric}\n\n"
-            "Accept with `/goal accept`, revise with `/goal edit <criteria>`, "
-            "or cancel with `/goal clear`.",
+            "Review the proposal below. Choose Accept to use it, choose Other "
+            "to revise it, or press Esc to cancel.",
             persisted=persisted,
         )
+        await self._review_pending_goal_rubric()
 
     def _generate_goal_rubric(self, objective: str) -> str:
         """Generate acceptance criteria for `objective` with the current chat model.
@@ -7649,12 +7730,27 @@ class DeepAgentsApp(App):
             profile_override=self._profile_override,
         )
 
-    async def _accept_pending_goal_rubric(self) -> None:
-        """Accept the pending model-proposed goal criteria."""
-        if not self._pending_goal_objective or not self._pending_goal_rubric:
-            await self._mount_message(AppMessage("No pending goal rubric to accept."))
+    async def _review_pending_goal_rubric(self) -> None:
+        """Review a pending goal proposal with the ask-user interrupt widget."""
+        objective = self._pending_goal_objective
+        rubric = self._pending_goal_rubric
+        if not objective or not rubric:
             return
-        await self._accept_goal_rubric(self._pending_goal_rubric)
+
+        result_future = await self._request_goal_review(objective, rubric)
+        result = await result_future
+        if result["type"] == "accepted":
+            await self._accept_goal_rubric(rubric)
+            return
+        if result["type"] == "edited":
+            await self._accept_goal_rubric(result["criteria"])
+            return
+
+        self._clear_pending_goal_rubric()
+        persisted = await self._persist_goal_rubric_state()
+        await self._mount_goal_rubric_result(
+            "Goal proposal cancelled.", persisted=persisted
+        )
 
     async def _accept_goal_rubric(self, rubric: str) -> None:
         """Set the active goal and sticky rubric from accepted criteria."""

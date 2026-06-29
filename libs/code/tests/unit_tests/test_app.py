@@ -4635,24 +4635,42 @@ class TestRunAgentTaskMediaTracker:
 class TestGoalCommand:
     """Tests for goal-backed rubric proposal workflow."""
 
+    @staticmethod
+    def _goal_review_future(result: dict[str, Any]) -> asyncio.Future[dict[str, Any]]:
+        """Return a completed goal-review widget Future."""
+        future: asyncio.Future[dict[str, Any]] = (
+            asyncio.get_running_loop().create_future()
+        )
+        future.set_result(result)
+        return future
+
     async def test_goal_command_proposes_pending_rubric(self) -> None:
-        """`/goal <objective>` should draft criteria for user acceptance."""
+        """`/goal <objective>` should draft criteria for widget review."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
-            with patch.object(
-                app,
-                "_generate_goal_rubric",
-                return_value="- tests pass\n- no unrelated files",
+            request = AsyncMock(
+                return_value=self._goal_review_future({"type": "cancelled"})
+            )
+            with (
+                patch.object(
+                    app,
+                    "_generate_goal_rubric",
+                    return_value="- tests pass\n- no unrelated files",
+                ),
+                patch.object(app, "_request_goal_review", request),
             ):
                 await app._handle_command("/goal add refresh tokens")
                 await pilot.pause()
 
-            assert app._pending_goal_objective == "add refresh tokens"
-            assert app._pending_goal_rubric == "- tests pass\n- no unrelated files"
+            request.assert_awaited_once_with(
+                "add refresh tokens", "- tests pass\n- no unrelated files"
+            )
+            assert app._pending_goal_objective is None
+            assert app._pending_goal_rubric is None
             assert app._active_rubric is None
             assert any(
-                "Accept with `/goal accept`" in str(w._content)
+                "Review the proposal below" in str(w._content)
                 for w in app.query(AppMessage)
             )
 
@@ -4663,8 +4681,12 @@ class TestGoalCommand:
             await pilot.pause()
             app._pending_goal_objective = "add refresh tokens"
             app._pending_goal_rubric = "- tests pass"
+            request = AsyncMock(
+                return_value=self._goal_review_future({"type": "accepted"})
+            )
 
-            await app._handle_command("/goal accept")
+            with patch.object(app, "_request_goal_review", request):
+                await app._review_pending_goal_rubric()
             await pilot.pause()
 
             assert app._active_goal == "add refresh tokens"
@@ -4685,8 +4707,12 @@ class TestGoalCommand:
             app._lc_thread_id = "thread-1"
             app._pending_goal_objective = "add refresh tokens"
             app._pending_goal_rubric = "- tests pass"
+            request = AsyncMock(
+                return_value=self._goal_review_future({"type": "accepted"})
+            )
 
-            await app._handle_command("/goal accept")
+            with patch.object(app, "_request_goal_review", request):
+                await app._review_pending_goal_rubric()
 
             updater.aupdate_state.assert_awaited_once_with(
                 {"configurable": {"thread_id": "thread-1"}},
@@ -4701,15 +4727,21 @@ class TestGoalCommand:
                 },
             )
 
-    async def test_goal_edit_accepts_revised_criteria(self) -> None:
-        """`/goal edit` should accept user-edited criteria."""
+    async def test_goal_review_accepts_revised_criteria(self) -> None:
+        """The review widget's free-text answer should accept revised criteria."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
             app._pending_goal_objective = "add refresh tokens"
             app._pending_goal_rubric = "- model draft"
+            request = AsyncMock(
+                return_value=self._goal_review_future(
+                    {"type": "edited", "criteria": "tests pass; docs updated"}
+                )
+            )
 
-            await app._handle_command("/goal edit tests pass; docs updated")
+            with patch.object(app, "_request_goal_review", request):
+                await app._review_pending_goal_rubric()
             await pilot.pause()
 
             assert app._active_goal == "add refresh tokens"
@@ -4803,8 +4835,12 @@ class TestGoalCommand:
             app._lc_thread_id = "thread-1"
             app._pending_goal_objective = "add refresh tokens"
             app._pending_goal_rubric = "- tests pass"
+            request = AsyncMock(
+                return_value=self._goal_review_future({"type": "accepted"})
+            )
 
-            await app._handle_command("/goal accept")
+            with patch.object(app, "_request_goal_review", request):
+                await app._review_pending_goal_rubric()
             await pilot.pause()
 
             # State still applies in-session, but the user is told it was not

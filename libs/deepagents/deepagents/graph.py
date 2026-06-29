@@ -720,6 +720,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 matched_classes=_subagent_matched_classes,
                 matched_names=_subagent_matched_names,
             )
+            # Inherit only the main-agent middleware entries that replace an
+            # existing default in this subagent's stack. Subagent-spec entries
+            # are applied second so the spec always wins over the main agent.
+            _subagent_names = {m.name for m in subagent_middleware}
+            _inheritable_from_main = [m for m in (middleware or []) if m.name in _subagent_names]
+            subagent_middleware = _apply_custom_middleware(subagent_middleware, _inheritable_from_main, _subagent_original_name_to_index)
             subagent_middleware = _apply_custom_middleware(subagent_middleware, spec.get("middleware", []), _subagent_original_name_to_index)
             subagent_middleware = _apply_excluded_middleware(
                 subagent_middleware,
@@ -787,12 +793,20 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
         _append_prompt_caching_middleware(gp_middleware)
 
+        _gp_original_name_to_index = {m.name: i for i, m in enumerate(gp_middleware)}
         gp_middleware = _apply_excluded_middleware(
             gp_middleware,
             _profile,
             matched_classes=_main_matched_classes,
             matched_names=_main_matched_names,
         )
+        # Inherit only the main-agent middleware entries that replace an existing
+        # default (i.e. whose name is already in the GP stack). This propagates
+        # overrides (e.g. a custom FilesystemMiddleware) without leaking caller-
+        # specific additions that don't belong in the GP subagent.
+        _gp_names = {m.name for m in gp_middleware}
+        _gp_inheritable = [m for m in (middleware or []) if m.name in _gp_names]
+        gp_middleware = _apply_custom_middleware(gp_middleware, _gp_inheritable, _gp_original_name_to_index)
         # Tool exclusion runs last so excluded tool names are stripped after all
         # tool-injecting middleware has run.
         if _profile.excluded_tools:

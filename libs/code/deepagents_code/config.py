@@ -365,6 +365,12 @@ _TRACING_API_KEY_ENV_VARS = ("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY")
 _TRACING_ENDPOINT_ENV_VARS = ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT")
 """Env vars that point tracing at a non-default (self-hosted/proxied) endpoint."""
 
+_TRACING_RUNS_ENDPOINTS_ENV_VARS = (
+    "LANGSMITH_RUNS_ENDPOINTS",
+    "LANGCHAIN_RUNS_ENDPOINTS",
+)
+"""Env vars the LangSmith SDK parses into replica trace ingestion targets."""
+
 
 class _LangSmithProfileConfig(Protocol):
     """Subset of LangSmith profile client config fields used at bootstrap."""
@@ -522,21 +528,26 @@ def _disable_orphaned_tracing() -> None:
     resolvable, unset the flags so tracing never starts.
 
     A custom endpoint (`LANGSMITH_ENDPOINT`/`LANGCHAIN_ENDPOINT`, or a profile
-    `api_url`) signals a self-hosted or proxied LangSmith that may ingest without
-    an API key, so an explicitly configured endpoint is trusted and left alone
-    rather than risk disabling a working keyless setup. The SDK loggers are
-    quieted separately by `_quiet_sdk_tracing_logging`, so any residual ingest
-    errors stay off the TUI.
+    `api_url`) or replica endpoints (`LANGSMITH_RUNS_ENDPOINTS`/
+    `LANGCHAIN_RUNS_ENDPOINTS`) signal tracing can upload without a top-level
+    API key, so those explicitly configured targets are trusted and left alone.
+    The SDK loggers are quieted separately by `_quiet_sdk_tracing_logging`, so
+    any residual ingest errors stay off the TUI.
     """
     global _orphaned_tracing_disabled_notice  # noqa: PLW0603
 
     if not _tracing_enabled():
         return
 
+    env = dict(os.environ)
     has_custom_endpoint = any(
-        (os.environ.get(var) or "").strip() for var in _TRACING_ENDPOINT_ENV_VARS
+        (env.get(var) or "").strip() for var in _TRACING_ENDPOINT_ENV_VARS
     )
-    if has_custom_endpoint or _has_langsmith_profile_custom_endpoint():
+    if (
+        has_custom_endpoint
+        or _has_langsmith_profile_custom_endpoint()
+        or _has_langsmith_runs_endpoints_from(env)
+    ):
         return
 
     has_key = any(
@@ -2892,16 +2903,60 @@ def _tracing_has_credentials_from(env: dict[str, str]) -> bool:
     return has_key or _has_langsmith_profile_credentials(env)
 
 
-def _tracing_can_upload_from(env: dict[str, str]) -> bool:
-    """Return whether tracing has credentials or a custom ingestion endpoint.
+def _has_langsmith_runs_endpoints_from(env: dict[str, str]) -> bool:
+    """Return whether replica trace ingestion targets are configured.
 
-    Custom endpoints are supported as keyless ingestion targets, so redaction
-    must be configured whenever tracing could still upload without an API key.
+    Mirrors the LangSmith SDK's accepted `LANGSMITH_RUNS_ENDPOINTS` shapes: a
+    JSON list of `{"api_url": "...", "api_key": "..."}` objects, or a JSON
+    object mapping URL to API key. Invalid entries are ignored because the SDK
+    ignores them too.
 
     Args:
         env: Environment mapping to read.
     """
-    return _tracing_has_credentials_from(env) or _tracing_endpoint_from(env) is not None
+    raw = next(
+        (
+            env[var]
+            for var in _TRACING_RUNS_ENDPOINTS_ENV_VARS
+            if (env.get(var) or "").strip()
+        ),
+        None,
+    )
+    if raw is None:
+        return False
+
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return False
+
+    if isinstance(parsed, list):
+        return any(
+            isinstance(item, dict)
+            and isinstance(item.get("api_url"), str)
+            and isinstance(item.get("api_key"), str)
+            for item in parsed
+        )
+    if isinstance(parsed, dict):
+        return any(isinstance(value, str) for value in parsed.values())
+    return False
+
+
+def _tracing_can_upload_from(env: dict[str, str]) -> bool:
+    """Return whether tracing has credentials or an ingestion endpoint.
+
+    Custom and replica endpoints are supported as keyless ingestion targets, so
+    redaction must be configured whenever tracing could still upload without an
+    API key.
+
+    Args:
+        env: Environment mapping to read.
+    """
+    return (
+        _tracing_has_credentials_from(env)
+        or _tracing_endpoint_from(env) is not None
+        or _has_langsmith_runs_endpoints_from(env)
+    )
 
 
 def _tracing_endpoint_from(env: dict[str, str]) -> str | None:

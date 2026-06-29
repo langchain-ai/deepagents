@@ -2093,6 +2093,62 @@ class TestLangsmithSecretRedaction:
         assert kwargs["api_url"] == "http://localhost:1984"
         assert "anonymizer" in kwargs
 
+    def test_configures_client_for_runs_endpoints(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Replica trace endpoints still get the secret anonymizer installed."""
+        client = object()
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+        monkeypatch.setenv(
+            "LANGSMITH_RUNS_ENDPOINTS",
+            '[{"api_url":"https://replica.example.com","api_key":"lsv2_replica"}]',
+        )
+
+        with (
+            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
+            patch(
+                "deepagents_code.config._has_langsmith_profile_credentials",
+                return_value=False,
+            ),
+            patch("langsmith.Client", return_value=client) as client_cls,
+            patch("langsmith.configure") as configure,
+        ):
+            assert configure_langsmith_secret_redaction() is True
+
+        configure.assert_called_once_with(client=client)
+        _, kwargs = client_cls.call_args
+        assert "api_key" not in kwargs
+        assert "api_url" not in kwargs
+        assert "anonymizer" in kwargs
+
+    @pytest.mark.parametrize(
+        "value",
+        ["[]", '[{"api_url":"https://replica.example.com"}]', "not json"],
+    )
+    def test_skips_invalid_runs_endpoints(
+        self,
+        value: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Only valid replica endpoint configs count as upload targets."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+        monkeypatch.setenv("LANGSMITH_RUNS_ENDPOINTS", value)
+
+        with (
+            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
+            patch(
+                "deepagents_code.config._has_langsmith_profile_credentials",
+                return_value=False,
+            ),
+            patch("langsmith.Client") as client_cls,
+            patch("langsmith.configure") as configure,
+        ):
+            assert configure_langsmith_secret_redaction() is False
+
+        client_cls.assert_not_called()
+        configure.assert_not_called()
+
     def test_fails_closed_by_disabling_tracing_on_setup_error(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -2214,6 +2270,8 @@ class TestDisableOrphanedTracing:
         "LANGCHAIN_API_KEY",
         "LANGSMITH_ENDPOINT",
         "LANGCHAIN_ENDPOINT",
+        "LANGSMITH_RUNS_ENDPOINTS",
+        "LANGCHAIN_RUNS_ENDPOINTS",
         "LANGSMITH_CONFIG_FILE",
         "LANGSMITH_PROFILE",
     )
@@ -2281,6 +2339,20 @@ class TestDisableOrphanedTracing:
 
             assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
             # Nothing was disabled, so no startup notice should be staged.
+            assert consume_orphaned_tracing_disabled_notice() is None
+
+    def test_preserves_tracing_when_runs_endpoints_set(self) -> None:
+        """Replica endpoints are trusted upload targets even without a top-level key."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_RUNS_ENDPOINTS"] = (
+            '[{"api_url":"https://replica.example.com","api_key":"lsv2_replica"}]'
+        )
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
             assert consume_orphaned_tracing_disabled_notice() is None
 
     def test_preserves_tracing_when_profile_custom_endpoint_set(

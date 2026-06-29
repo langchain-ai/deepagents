@@ -186,11 +186,8 @@ def show_help() -> None:
         "  --max-turns N              Max agentic turns before stopping (needs -n)"
     )
     console.print(
-        "  --rubric TEXT              Acceptance criteria to grade against; "
+        "  --rubric TEXT|@PATH        Acceptance criteria to grade against; "
         "'@path' reads a file (needs -n)"
-    )
-    console.print(
-        "  --rubric-file PATH         Read acceptance criteria from a file (needs -n)"
     )
     console.print(
         "  --rubric-model MODEL       Model the rubric grader uses "

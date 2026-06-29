@@ -625,41 +625,28 @@ def _warn_if_interpreter_disabled_by_sandbox(args: argparse.Namespace) -> None:
     )
 
 
-def _resolve_rubric_text(
-    rubric: str | None,
-    rubric_file: str | None,
-) -> str | None:
-    """Resolve the rubric from `--rubric` / `--rubric-file` into one string.
+def _resolve_rubric_text(rubric: str | None) -> str | None:
+    """Resolve the rubric from `--rubric` into one string.
 
-    `--rubric` accepts literal text, or `@path` to read a file. `--rubric-file`
-    always reads a file. The two flags are mutually exclusive.
+    `--rubric` accepts literal text, or `@path` to read a file.
 
     Args:
         rubric: Value of `--rubric` (literal text or `@path`), or `None`.
-        rubric_file: Value of `--rubric-file` (a path), or `None`.
 
     Returns:
-        The resolved rubric text, or `None` when neither flag was supplied.
+        The resolved rubric text, or `None` when the flag was not supplied.
 
     Raises:
-        ValueError: If both flags are set, or a referenced file is missing,
+        ValueError: If the rubric is empty, or a referenced file is missing,
             unreadable, or empty.
     """
-    if rubric and rubric_file:
-        msg = "--rubric and --rubric-file are mutually exclusive."
-        raise ValueError(msg)
+    if rubric is None:
+        return None
 
-    path: str | None = None
-    literal: str | None = None
-    if rubric_file:
-        path = rubric_file
-    elif rubric is not None:
-        if rubric.startswith("@"):
-            path = rubric[1:]
-        else:
-            literal = rubric
-
-    if path is not None:
+    # An `@`-prefixed value is always read as a file path; there is no way to
+    # pass a literal rubric that begins with `@` (put such text in a file).
+    if rubric.startswith("@"):
+        path = rubric[1:]
         try:
             text = Path(path).expanduser().read_text(encoding="utf-8")
         except OSError as exc:
@@ -670,13 +657,10 @@ def _resolve_rubric_text(
             raise ValueError(msg)
         return text.strip()
 
-    if literal is not None:
-        if not literal.strip():
-            msg = "--rubric must not be empty."
-            raise ValueError(msg)
-        return literal.strip()
-
-    return None
+    if not rubric.strip():
+        msg = "--rubric must not be empty."
+        raise ValueError(msg)
+    return rubric.strip()
 
 
 def _warn_if_interpreter_tools_without_interpreter(
@@ -1567,17 +1551,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--rubric",
         dest="rubric",
-        metavar="TEXT",
+        metavar="TEXT|@PATH",
         help="Acceptance criteria the agent self-evaluates against, looping "
         "until satisfied. Accepts literal text or '@path' to read a file. "
-        "Mutually exclusive with --rubric-file. Requires -n or piped stdin.",
-    )
-    parser.add_argument(
-        "--rubric-file",
-        dest="rubric_file",
-        metavar="PATH",
-        help="Read acceptance criteria from a file. Mutually exclusive with "
-        "--rubric. Requires -n or piped stdin.",
+        "Requires -n or piped stdin.",
     )
     parser.add_argument(
         "--rubric-model",
@@ -2715,7 +2692,6 @@ def cli_main() -> None:
             getattr(args, attr, None) is not None
             for attr in (
                 "rubric",
-                "rubric_file",
                 "rubric_model",
                 "rubric_max_iterations",
             )
@@ -2724,8 +2700,8 @@ def cli_main() -> None:
             from rich.console import Console as _Console
 
             _Console(stderr=True).print(
-                "[bold red]Error:[/bold red] --rubric/--rubric-file/"
-                "--rubric-model/--rubric-max-iterations require "
+                "[bold red]Error:[/bold red] --rubric/--rubric-model/"
+                "--rubric-max-iterations require "
                 "--non-interactive (-n) or piped stdin\n"
                 "  dcode -n 'implement X' --rubric 'tests pass; minimal diff'"
             )
@@ -3395,10 +3371,7 @@ def cli_main() -> None:
             _warn_if_interpreter_disabled_by_sandbox(args)
 
             try:
-                rubric_text = _resolve_rubric_text(
-                    getattr(args, "rubric", None),
-                    getattr(args, "rubric_file", None),
-                )
+                rubric_text = _resolve_rubric_text(getattr(args, "rubric", None))
             except ValueError as exc:
                 from rich.console import Console as _Console
 

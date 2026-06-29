@@ -80,6 +80,25 @@ def _read_env_str(suffix: str) -> str | None:
     return os.environ.get(f"{SERVER_ENV_PREFIX}{suffix}")
 
 
+def _read_env_int(suffix: str, *, default: int) -> int:
+    """Read a `DEEPAGENTS_CODE_SERVER_*` integer from the environment.
+
+    Args:
+        suffix: Variable name suffix after the `DEEPAGENTS_CODE_SERVER_` prefix.
+        default: Value when the variable is absent or malformed.
+
+    Returns:
+        Parsed integer, or the default when parsing fails.
+    """
+    raw = os.environ.get(f"{SERVER_ENV_PREFIX}{suffix}")
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 def _read_env_optional_bool(suffix: str) -> bool | None:
     """Read a tri-state `DEEPAGENTS_CODE_SERVER_*` boolean (`True` / `False` / `None`).
 
@@ -397,7 +416,7 @@ class ServerConfig:
             ),
             enable_rubric=_read_env_bool("ENABLE_RUBRIC"),
             rubric_model=_read_env_str("RUBRIC_MODEL"),
-            rubric_max_iterations=int(_read_env_str("RUBRIC_MAX_ITERATIONS") or "3"),
+            rubric_max_iterations=_read_env_int("RUBRIC_MAX_ITERATIONS", default=3),
             sandbox_type=_read_env_str("SANDBOX_TYPE"),
             sandbox_id=_read_env_str("SANDBOX_ID"),
             sandbox_snapshot_name=_read_env_str("SANDBOX_SNAPSHOT_NAME") or None,

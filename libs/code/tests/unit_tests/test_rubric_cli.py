@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import io
 import os
+import subprocess
+import sys
+import textwrap
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -27,45 +30,96 @@ class TestResolveRubricText:
     """`_resolve_rubric_text` literal/file/@path resolution."""
 
     def test_none_when_unset(self) -> None:
-        assert _resolve_rubric_text(None, None) is None
+        assert _resolve_rubric_text(None) is None
 
     def test_literal(self) -> None:
-        assert (
-            _resolve_rubric_text("tests pass; minimal", None) == "tests pass; minimal"
-        )
+        assert _resolve_rubric_text("tests pass; minimal") == "tests pass; minimal"
 
     def test_literal_is_stripped(self) -> None:
-        assert _resolve_rubric_text("  do X  ", None) == "do X"
+        assert _resolve_rubric_text("  do X  ") == "do X"
 
     def test_empty_literal_rejected(self) -> None:
         with pytest.raises(ValueError, match="must not be empty"):
-            _resolve_rubric_text("   ", None)
-
-    def test_rubric_file(self, tmp_path: Path) -> None:
-        f = tmp_path / "rubric.md"
-        f.write_text("criteria here\n", encoding="utf-8")
-        assert _resolve_rubric_text(None, str(f)) == "criteria here"
+            _resolve_rubric_text("   ")
 
     def test_at_path_in_rubric(self, tmp_path: Path) -> None:
         f = tmp_path / "rubric.md"
         f.write_text("from at-path", encoding="utf-8")
-        assert _resolve_rubric_text(f"@{f}", None) == "from at-path"
+        assert _resolve_rubric_text(f"@{f}") == "from at-path"
 
-    def test_mutually_exclusive(self, tmp_path: Path) -> None:
-        f = tmp_path / "rubric.md"
-        f.write_text("x", encoding="utf-8")
-        with pytest.raises(ValueError, match="mutually exclusive"):
-            _resolve_rubric_text("literal", str(f))
+    def test_at_prefix_always_treated_as_path(self) -> None:
+        # Documents the one-way ambiguity: any `@`-prefixed value is read as a
+        # file path, so a literal rubric beginning with `@` is unreachable and
+        # surfaces a read error rather than being used verbatim.
+        with pytest.raises(ValueError, match="Could not read rubric file"):
+            _resolve_rubric_text("@tests pass; minimal diff")
+
+    def test_bare_at_sign_rejected(self) -> None:
+        # `@` with no path (e.g. an empty shell glob) must still error rather
+        # than silently resolving to the current directory.
+        with pytest.raises(ValueError, match="Could not read rubric file"):
+            _resolve_rubric_text("@")
+
+    def test_at_path_expands_tilde(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Exercises the `.expanduser()` call, otherwise uncovered.
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / "rubric.md").write_text("tilde criteria", encoding="utf-8")
+        assert _resolve_rubric_text("@~/rubric.md") == "tilde criteria"
 
     def test_missing_file(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="Could not read rubric file"):
-            _resolve_rubric_text(None, str(tmp_path / "nope.md"))
+            _resolve_rubric_text(f"@{tmp_path / 'nope.md'}")
 
     def test_empty_file(self, tmp_path: Path) -> None:
         f = tmp_path / "rubric.md"
         f.write_text("   \n", encoding="utf-8")
         with pytest.raises(ValueError, match="is empty"):
-            _resolve_rubric_text(None, str(f))
+            _resolve_rubric_text(f"@{f}")
+
+
+def _run_cli_main_devnull_stdin(argv: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run `cli_main` in a subprocess with empty (non-piped) stdin.
+
+    `stdin=DEVNULL` makes `apply_stdin_pipe` read an empty string and return
+    early, so `non_interactive_message` stays unset — the deterministic way to
+    reach the interactive-only argument guards without a TTY. `parse_args`
+    handles `--non-interactive`/`-m`, and `check_cli_dependencies` is patched
+    purely for environment portability (it only calls `importlib.util.find_spec`).
+    """
+    code = """
+        import sys
+        from unittest.mock import patch
+
+        from deepagents_code.main import cli_main
+
+        with (
+            patch.object(sys, "argv", sys.argv[1:]),
+            patch("deepagents_code.main.check_cli_dependencies"),
+        ):
+            cli_main()
+    """
+    return subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(code), "deepagents", *argv],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        timeout=30,
+        check=False,
+    )
+
+
+class TestRubricGating:
+    """Rubric flags require `-n`/piped stdin; the guard lives in `cli_main`."""
+
+    def test_rubric_without_non_interactive_errors(self) -> None:
+        result = _run_cli_main_devnull_stdin(["--rubric", "tests pass"])
+        assert result.returncode == 2, result.stderr
+        assert "--non-interactive" in result.stderr
+        assert "--rubric" in result.stderr
+        # The removed flag must not resurface in the guidance.
+        assert "--rubric-file" not in result.stderr
 
 
 class TestServerConfigRubric:

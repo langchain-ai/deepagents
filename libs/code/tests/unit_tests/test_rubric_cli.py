@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
-from deepagents_code._server_config import ServerConfig, _read_env_int
+from deepagents_code._server_config import ServerConfig
 from deepagents_code.main import _resolve_rubric_text
 from deepagents_code.non_interactive import (
     StreamState,
@@ -118,19 +118,6 @@ class TestServerConfigRubric:
         assert config.enable_rubric is True
         assert config.rubric_model == "openai:gpt-5.1"
         assert config.rubric_max_iterations == 7
-
-
-class TestReadEnvInt:
-    def test_missing_uses_default(self) -> None:
-        assert _read_env_int("RUBRIC_MAX_ITERATIONS_X", default=3) == 3
-
-    def test_parses_int(self) -> None:
-        with patch.dict(os.environ, {f"{SERVER_ENV_PREFIX}FOO_INT": "9"}):
-            assert _read_env_int("FOO_INT", default=3) == 9
-
-    def test_invalid_falls_back(self) -> None:
-        with patch.dict(os.environ, {f"{SERVER_ENV_PREFIX}FOO_INT": "nope"}):
-            assert _read_env_int("FOO_INT", default=3) == 3
 
 
 class TestHeaderIndicator:

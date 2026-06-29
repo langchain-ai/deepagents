@@ -1333,10 +1333,13 @@ def create_cli_agent(
 
             The middleware is a no-op until a `rubric` is supplied on
             invocation state, so it is safe to enable unconditionally.
-        rubric_model: Grader model for `RubricMiddleware`. A `'provider:model'`
-            string or `BaseChatModel`. When `None`, the main `model` is reused.
+        rubric_model: Grader model for `RubricMiddleware`.
+
+            A `'provider:model'` string or `BaseChatModel`.
+
+            When `None`, the main `model` is reused.
         rubric_max_iterations: Grader iterations per rubric attempt before the
-            agent terminates with `'max_iterations_reached'` (default 3).
+            agent terminates with `'max_iterations_reached'`.
         checkpointer: Optional checkpointer for session persistence.
             When `None`, the graph is compiled without a checkpointer.
         mcp_server_info: MCP server metadata to surface in the system prompt.

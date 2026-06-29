@@ -782,7 +782,9 @@ async def _run_agent_loop(
 
             When `None`, falls back to `_MAX_HITL_ITERATIONS`.
         rubric: Acceptance criteria supplied to `RubricMiddleware` via the
-            graph's `rubric` state field. `None` leaves it unset (no grading).
+            graph's `rubric` state field.
+
+            `None` leaves it unset (no grading).
 
     Raises:
         HITLIterationLimitError: If the effective turn limit is exceeded.
@@ -1076,8 +1078,9 @@ async def run_non_interactive(
         max_turns: Optional cap on total agentic turns. When `None`, the
             internal safety default applies.
         rubric: Acceptance criteria for `RubricMiddleware`. When provided, the
-            agent self-evaluates against it and loops until satisfied. `None`
-            disables rubric grading.
+            agent self-evaluates against it and loops until satisfied.
+
+            `None` disables rubric grading.
         rubric_model: Grader model spec; `None` reuses the main model.
         rubric_max_iterations: Grader iterations per rubric attempt; `None`
             uses the middleware default.

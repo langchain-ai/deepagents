@@ -12,7 +12,6 @@ with `from_env()`.
 from __future__ import annotations
 
 import json
-import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,8 +22,6 @@ from deepagents_code._env_vars import SERVER_ENV_PREFIX
 
 if TYPE_CHECKING:
     from deepagents_code.project_utils import ProjectContext
-
-logger = logging.getLogger(__name__)
 
 
 def _read_env_bool(suffix: str, *, default: bool = False) -> bool:
@@ -69,32 +66,6 @@ def _read_env_json(suffix: str) -> Any:  # noqa: ANN401
             f"Value was: {raw[:200]!r}"
         )
         raise ValueError(msg) from exc
-
-
-def _read_env_int(suffix: str, *, default: int) -> int:
-    """Read an integer `DEEPAGENTS_CODE_SERVER_*` variable.
-
-    Args:
-        suffix: Variable name suffix after the `DEEPAGENTS_CODE_SERVER_` prefix.
-        default: Value when the variable is absent or unparseable.
-
-    Returns:
-        Parsed integer, or *default* when missing/invalid.
-    """
-    raw = os.environ.get(f"{SERVER_ENV_PREFIX}{suffix}")
-    if raw is None:
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        logger.warning(
-            "Could not parse %s%s=%r as int; using default %d",
-            SERVER_ENV_PREFIX,
-            suffix,
-            raw,
-            default,
-        )
-        return default
 
 
 def _read_env_str(suffix: str) -> str | None:
@@ -270,12 +241,17 @@ class ServerConfig:
 
     enable_rubric: bool = False
     """Install `RubricMiddleware` so the agent self-evaluates against a
-    caller-supplied rubric. A no-op until a `rubric` is supplied on
-    invocation state, so it is safe to enable unconditionally."""
+    caller-supplied rubric.
+
+    A no-op until a `rubric` is supplied on invocation state, so it is safe
+    to enable unconditionally.
+    """
 
     rubric_model: str | None = None
     """Grader model spec for `RubricMiddleware` (e.g. `'anthropic:...'`).
-    `None` reuses the main agent model."""
+
+    `None` reuses the main agent model.
+    """
 
     rubric_max_iterations: int = 3
     """Grader iterations per rubric attempt before the agent stops with
@@ -421,7 +397,7 @@ class ServerConfig:
             ),
             enable_rubric=_read_env_bool("ENABLE_RUBRIC"),
             rubric_model=_read_env_str("RUBRIC_MODEL"),
-            rubric_max_iterations=_read_env_int("RUBRIC_MAX_ITERATIONS", default=3),
+            rubric_max_iterations=int(_read_env_str("RUBRIC_MAX_ITERATIONS") or "3"),
             sandbox_type=_read_env_str("SANDBOX_TYPE"),
             sandbox_id=_read_env_str("SANDBOX_ID"),
             sandbox_snapshot_name=_read_env_str("SANDBOX_SNAPSHOT_NAME") or None,

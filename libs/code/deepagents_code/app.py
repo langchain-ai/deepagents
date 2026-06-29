@@ -1371,8 +1371,8 @@ class TextualSessionState:
         """1-based user-turn count for the thread (coding-agent-v1 turn_number)."""
         self.turn_id: str | None = None
         """Stable id for the current user turn (coding-agent-v1 turn_id)."""
-        # Set the backing field directly: the setter resets turn markers, which
-        # don't exist yet.
+        # Assign the backing field directly: the setter reads `self._thread_id`
+        # to detect a thread change, and it isn't set yet.
         self._thread_id = thread_id or _new_thread_id()
 
     @property

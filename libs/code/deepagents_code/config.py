@@ -790,6 +790,8 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
     from rich.console import Console
 
+    from deepagents_code._git import RepositoryMetadata
+
     # Static type stubs for lazy module attributes resolved by __getattr__.
     # At runtime these are created on first access by _get_settings() /
     # _get_console() and cached in globals().
@@ -1238,8 +1240,8 @@ def _get_git_branch() -> str | None:
     return branch
 
 
-_repo_metadata_cache: dict[str, tuple[str, str, str] | None] = {}
-"""Per-cwd cache of resolved `(repository_url, provider, name)` tuples."""
+_repo_metadata_cache: dict[str, RepositoryMetadata | None] = {}
+"""Per-cwd cache of resolved repository metadata."""
 
 
 def _get_git_commit_sha() -> str | None:
@@ -1264,8 +1266,8 @@ def _get_git_commit_sha() -> str | None:
         return None
 
 
-def _get_repository_metadata() -> tuple[str, str, str] | None:
-    """Return `(repository_url, provider, name)` for `origin`, or `None`."""
+def _get_repository_metadata() -> RepositoryMetadata | None:
+    """Return parsed `origin` repository metadata, or `None`."""
     from deepagents_code._git import parse_repository_metadata, resolve_git_remote_url
 
     try:
@@ -1276,7 +1278,7 @@ def _get_repository_metadata() -> tuple[str, str, str] | None:
     if cwd in _repo_metadata_cache:
         return _repo_metadata_cache[cwd]
 
-    repo: tuple[str, str, str] | None = None
+    repo: RepositoryMetadata | None = None
     try:
         remote_url = resolve_git_remote_url(cwd)
         if remote_url:
@@ -1316,8 +1318,9 @@ def build_coding_agent_metadata(
 
     Implements the `coding-agent-v1` contract (LSEN-277) for Deep Agents Code:
     one helper that stamps the identity block, plugin/runtime versions, turn
-    markers, and repo/git/cwd attribution. Keys whose value is unknown are
-    omitted (per the contract), so callers can pass `None` freely.
+    markers, and repo/git/cwd attribution. The seven identity/version keys and
+    `thread_id` are always present; the optional keys whose value is unknown are
+    omitted (per the contract), so callers can pass `None` for any of them.
 
     Because Deep Agents Code is itself the runtime — there is no separate CLI
     package — `ls_integration_version` and `ls_agent_runtime_version` both come
@@ -2830,18 +2833,25 @@ def configure_langsmith_secret_redaction() -> bool:
 
     env = dict(os.environ)
     # Cheap env-var checks first so the common (tracing-off) startup path skips
-    # the TOML read in `is_langsmith_redaction_enabled`.
+    # the TOML read in `is_langsmith_redaction_enabled`. These are plain env
+    # reads with no failure mode of their own, so they stay outside the
+    # fail-closed boundary: if there is no upload target, there is nothing to
+    # protect.
     if not (_tracing_enabled_from(env) and _tracing_can_upload_from(env)):
         return False
-    if not is_langsmith_redaction_enabled():
-        logger.warning(
-            "LangSmith tracing is active but secret redaction is disabled via "
-            "%s; secrets may be uploaded to traces unredacted.",
-            LANGSMITH_REDACT,
-        )
-        return False
 
+    # Everything from here on runs inside the fail-closed boundary: any
+    # unexpected exception (including from the redaction-toggle lookup) disables
+    # tracing rather than escaping and leaving tracing live but unredacted.
     try:
+        if not is_langsmith_redaction_enabled():
+            logger.warning(
+                "LangSmith tracing is active but secret redaction is disabled "
+                "via %s; secrets may be uploaded to traces unredacted.",
+                LANGSMITH_REDACT,
+            )
+            return False
+
         from langsmith import Client, configure
         from langsmith.anonymizer import create_secret_anonymizer
 
@@ -2875,11 +2885,16 @@ def configure_langsmith_secret_redaction() -> bool:
 def _fail_closed_disable_tracing() -> None:
     """Best-effort disable LangSmith tracing after a redaction setup failure.
 
-    Tries the SDK's global tracing switch first. If even that call fails, the
-    canonical tracing-enable env vars (and their `DEEPAGENTS_CODE_`-prefixed
-    forms) are cleared as a last-resort barrier: the LangChain tracer consults
-    the global switch first but falls back to these env vars, so removing them
-    prevents an unredacted upload when the global switch could not be set.
+    The SDK's global tracing switch (`configure(enabled=False)`) is the primary,
+    load-bearing control and is tried first. Clearing the canonical
+    tracing-enable env vars (and their `DEEPAGENTS_CODE_`-prefixed forms) is only
+    a last-resort fallback for the case where even that call fails (e.g. the
+    `langsmith` import is broken): the LangChain tracer checks the global switch
+    first but falls back to these env vars, so removing them helps prevent a
+    newly created tracer from starting an unredacted upload. (It only helps —
+    the SDK's env-var lookup is `lru_cache`d, so a value already read this
+    process may still be served from cache; the global switch is the reliable
+    stop.)
     """
     try:
         from langsmith import configure

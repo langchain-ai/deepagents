@@ -58,6 +58,16 @@ def _validate(
 ) -> tuple[list[str], list[str]]:
     """Mirror validate-thread.mjs's per-run rules for one metadata dict.
 
+    This re-implements the external `validate-thread.mjs` (`deepagents-code`
+    profile) rules in Python because that validator lives in another toolchain
+    and can't be imported here; keep this in lock-step with it when the contract
+    changes. It is intentionally a slight over-approximation: it treats each of
+    `turn_id` / `turn_number` as independently `requiredWhereKnown` rather than
+    enforcing the contract's "at least one of" OR-semantics. Deep Agents Code
+    always emits both, so the simplification is sound today; revisit if a run
+    type ever emits only one. End-to-end acceptance is the live `.mjs` run, not
+    this hermetic approximation.
+
     Returns:
         `(errors, missing_where_known)` for `metadata` classified as `run_type`.
     """
@@ -98,7 +108,9 @@ def _validate(
 @pytest.fixture
 def known_env() -> Iterator[None]:
     """Patch git/user lookups so every where-known contract key is resolvable."""
-    repo = (
+    from deepagents_code._git import RepositoryMetadata
+
+    repo = RepositoryMetadata(
         "https://github.com/langchain-ai/deepagents",
         "github",
         "langchain-ai/deepagents",

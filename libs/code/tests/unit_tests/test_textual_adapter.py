@@ -663,6 +663,20 @@ class TestBuildStreamConfig:
         config_module._git_branch_cache.clear()
         config_module._repo_metadata_cache.clear()
 
+    @pytest.fixture(autouse=True)
+    def _hermetic_git(self) -> Generator[None, None, None]:
+        """Stub git/repo lookups so tests don't read the host repo's real `.git`.
+
+        These tests assert on the identity/turn keys, not on git attribution, so
+        pinning the repo/commit lookups keeps them deterministic in exported
+        checkouts (e.g. a CI tarball with no `.git`).
+        """
+        with (
+            patch.object(config_module, "_get_repository_metadata", return_value=None),
+            patch.object(config_module, "_get_git_commit_sha", return_value=None),
+        ):
+            yield
+
     def test_coding_agent_identity_block_present(self) -> None:
         """The coding-agent-v1 identity block is stamped on every config."""
         from deepagents_code._version import __version__
@@ -970,6 +984,7 @@ class _SequencedAgent:
         self._streams_by_call = streams_by_call
         self.stream_inputs: list[dict | Command] = []
         self.contexts: list[Any] = []
+        self.configs: list[Any] = []
         self.store_items: list[tuple[tuple[str, ...], str, dict[str, Any]]] = []
 
     async def aput_store_item(
@@ -986,6 +1001,7 @@ class _SequencedAgent:
         stream_input: dict | Command,
         *_: Any,
         context: object = None,
+        config: object = None,
         **__: Any,
     ) -> AsyncIterator[tuple[Any, ...]]:
         """Yield chunks for this invocation and record stream inputs/context.
@@ -997,6 +1013,7 @@ class _SequencedAgent:
         """
         self.stream_inputs.append(stream_input)
         self.contexts.append(dict(context) if isinstance(context, dict) else context)
+        self.configs.append(config)
         chunks = self._streams_by_call.pop(0) if self._streams_by_call else []
         for chunk in chunks:
             yield chunk
@@ -1015,6 +1032,58 @@ class _FailingApprovalStoreAgent(_SequencedAgent):
         _ = (namespace, key, value)
         msg = "approval-mode store unavailable"
         raise RuntimeError(msg)
+
+
+class TestExecuteTaskTextualTurnMarkers:
+    """End-to-end: turn markers advance and reach the stream config metadata."""
+
+    async def test_turn_markers_flow_into_stream_config_and_advance(self) -> None:
+        """A real session state advances turn markers into each turn's config.
+
+        Guards the full wiring (`advance_turn` -> `build_stream_config` ->
+        `astream` config) that the per-piece unit tests don't exercise together:
+        a dropped `advance_turn()` call or mis-passed turn tuple would still pass
+        those, but not this.
+        """
+        from deepagents_code.app import TextualSessionState
+
+        session_state = TextualSessionState(thread_id="thread-1", auto_approve=True)
+        agent = _SequencedAgent([[], []])
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        # Stub git lookups so the captured metadata is deterministic.
+        with (
+            patch.object(config_module, "_get_repository_metadata", return_value=None),
+            patch.object(config_module, "_get_git_commit_sha", return_value=None),
+        ):
+            await execute_task_textual(
+                user_input="first",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=session_state,
+                adapter=adapter,
+            )
+            await execute_task_textual(
+                user_input="second",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=session_state,
+                adapter=adapter,
+            )
+
+        first_meta = agent.configs[0]["metadata"]
+        second_meta = agent.configs[1]["metadata"]
+        assert first_meta["turn_number"] == 1
+        assert second_meta["turn_number"] == 2
+        assert first_meta["turn_id"]
+        assert second_meta["turn_id"]
+        assert first_meta["turn_id"] != second_meta["turn_id"]
+        # The session state itself reflects the latest turn.
+        assert session_state.turn_number == 2
 
 
 class TestExecuteTaskTextualAutoApproveInput:

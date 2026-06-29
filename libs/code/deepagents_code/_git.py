@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
+from typing import NamedTuple
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -253,8 +254,9 @@ def read_git_commit_sha_from_filesystem(path: str | Path) -> str | None:
         path: Directory or file path inside a repository.
 
     Returns:
-        The full commit SHA, an empty string when `path` is not inside a git
-        repository, or `None` when metadata exists but cannot be resolved.
+        The full commit SHA (40-char SHA-1 or 64-char SHA-256), an empty string
+            when `path` is not inside a git repository, or `None` when metadata
+            exists but cannot be resolved.
     """
     git_dir = find_git_dir(path)
     if git_dir is None:
@@ -459,8 +461,25 @@ _REPO_PROVIDERS: dict[str, str] = {
 """Maps a known git host to its `repository_provider` slug."""
 
 
-def parse_repository_metadata(remote_url: str) -> tuple[str, str, str] | None:
-    """Derive `(repository_url, repository_provider, repository_name)` from a remote.
+class RepositoryMetadata(NamedTuple):
+    """Parsed `origin` remote attribution for coding-agent-v1 traces.
+
+    A `NamedTuple` so callers can still unpack positionally or index, while the
+    field names keep the slot order from being load-bearing at every call site.
+    """
+
+    url: str
+    """Normalized `https://<host>/<org>/<repo>` URL (credentials stripped)."""
+
+    provider: str
+    """Provider slug: `github`, `gitlab`, `bitbucket`, or `other`."""
+
+    name: str
+    """`org/repo` name (may be nested, e.g. `group/subgroup/project`)."""
+
+
+def parse_repository_metadata(remote_url: str) -> RepositoryMetadata | None:
+    """Derive repository attribution from an `origin` remote URL.
 
     Handles both HTTPS (`https://github.com/org/repo.git`) and scp-style SSH
     (`git@github.com:org/repo.git`) remotes, normalizing the URL to its
@@ -471,9 +490,9 @@ def parse_repository_metadata(remote_url: str) -> tuple[str, str, str] | None:
         remote_url: The raw `origin` remote URL.
 
     Returns:
-        A tuple of the normalized URL, provider slug (`github`/`gitlab`/
-        `bitbucket`/`other`), and `org/repo` name, or `None` when the URL
-        cannot be parsed.
+        A `RepositoryMetadata` of the normalized URL, provider slug
+            (`github`/`gitlab`/`bitbucket`/`other`), and `org/repo` name,
+            or `None` when the URL cannot be parsed.
     """
     url = (remote_url or "").strip()
     if not url:
@@ -499,4 +518,4 @@ def parse_repository_metadata(remote_url: str) -> tuple[str, str, str] | None:
 
     provider = _REPO_PROVIDERS.get(host, "other")
     normalized_url = f"https://{host}/{repo_path}"
-    return normalized_url, provider, repo_path
+    return RepositoryMetadata(normalized_url, provider, repo_path)

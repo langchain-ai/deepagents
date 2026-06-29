@@ -158,10 +158,15 @@ async def _make_graph() -> Any:  # noqa: ANN401
     project_context = get_server_project_context()
 
     from deepagents_code.agent import create_cli_agent, load_async_subagents
-    from deepagents_code.config import create_model, settings
+    from deepagents_code.config import (
+        configure_langsmith_secret_redaction,
+        create_model,
+        settings,
+    )
 
     if project_context is not None:
         settings.reload_from_environment(start_path=project_context.user_cwd)
+    configure_langsmith_secret_redaction()
 
     # Offload to a worker thread: `create_model` does blocking disk IO for some
     # providers (e.g. the `openai_codex` token store currently acquires a file

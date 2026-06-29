@@ -982,6 +982,7 @@ class TestExecuteTaskTextualAutoApproveInput:
         assert not isinstance(stream_input, Command)
         assert stream_input == {"messages": [{"role": "user", "content": "hi"}]}
         assert agent.contexts[0]["auto_approve"] is True
+        assert agent.contexts[0]["thread_id"] == "thread-1"
         key = approval_mode_key("thread-1")
         assert agent.contexts[0]["approval_mode_key"] == key
         assert agent.store_items == [
@@ -1113,6 +1114,8 @@ class TestExecuteTaskTextualAutoApproveInput:
         assert len(agent.contexts) == 2
         assert agent.contexts[0]["auto_approve"] is False
         assert agent.contexts[1]["auto_approve"] is True
+        assert agent.contexts[0]["thread_id"] == "thread-1"
+        assert agent.contexts[1]["thread_id"] == "thread-1"
         key = approval_mode_key("thread-1")
         assert agent.contexts[0]["approval_mode_key"] == key
         assert agent.contexts[1]["approval_mode_key"] == key

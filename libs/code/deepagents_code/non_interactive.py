@@ -13,8 +13,9 @@ Shell commands are gated by an optional allow-list (`--shell-allow-list`):
     against the list; non-shell tools approved unconditionally.
 - `all` → shell enabled, any command allowed, all tools auto-approved.
 
-An optional quiet mode (`--quiet` / `-q`) redirects all console output to
-stderr, leaving stdout exclusively for the agent's response text.
+An optional quiet mode (`--quiet` / `-q`) suppresses stream-time diagnostics
+(the tool-call and file-operation notifications) so stdout carries only the
+agent's response text.
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ from rich.spinner import Spinner as RichSpinner
 from rich.style import Style
 from rich.text import Text
 
+from deepagents_code._cli_context import CLIContext
 from deepagents_code._version import __version__
 from deepagents_code.agent import DEFAULT_AGENT_NAME
 from deepagents_code.config import (
@@ -233,9 +235,9 @@ class StreamState:
     """Mutable state accumulated while iterating over the agent stream."""
 
     quiet: bool = False
-    """When `True`, diagnostic formatting that would otherwise go to stdout
-    (e.g. separator newlines before tool notifications) is suppressed so that
-    stdout contains only agent response text."""
+    """When `True`, stream-time diagnostics (the tool-call and file-operation
+    notifications, plus the stdout separator newline preceding a tool call) are
+    suppressed, so stdout carries only agent response text."""
 
     stream: bool = True
     """When `True` (default), text chunks are written to stdout as they arrive.
@@ -421,7 +423,9 @@ def _process_ai_message(
                 state.tool_call_buffers[buffer_key]["name"] = chunk_name
                 if state.spinner:
                     state.spinner.stop()
-                if state.full_response and not state.quiet:
+                if state.quiet:
+                    continue
+                if state.full_response:
                     _write_newline()
                 console.print(
                     f"[dim]🔧 Calling tool: {escape_markup(chunk_name)}[/dim]",
@@ -468,10 +472,11 @@ def _process_message_chunk(
         if record and record.diff:
             if state.spinner:
                 state.spinner.stop()
-            console.print(
-                f"[dim]📝 {escape_markup(record.display_path)}[/dim]",
-                highlight=False,
-            )
+            if not state.quiet:
+                console.print(
+                    f"[dim]📝 {escape_markup(record.display_path)}[/dim]",
+                    highlight=False,
+                )
         if state.spinner:
             state.spinner.start()
 
@@ -652,6 +657,7 @@ async def _stream_agent(
     state: StreamState,
     console: Console,
     file_op_tracker: FileOpTracker,
+    context: CLIContext,
 ) -> None:
     """Consume the full agent stream and update *state* with results.
 
@@ -663,6 +669,7 @@ async def _stream_agent(
         state: Shared stream state.
         console: Rich console for formatted output.
         file_op_tracker: Tracker for file-operation diffs.
+        context: Runtime context for model-call middleware.
     """
     if state.spinner:
         state.spinner.start()
@@ -672,6 +679,7 @@ async def _stream_agent(
             stream_mode=["messages", "updates"],
             subgraphs=True,
             config=config,
+            context=context,
             durability="exit",
         ):
             _process_stream_chunk(chunk, state, console, file_op_tracker)
@@ -730,12 +738,18 @@ async def _run_agent_loop(
     stream_input: dict[str, Any] | Command = {"messages": [user_msg]}
 
     thread_id = config.get("configurable", {}).get("thread_id", "")
+    # An empty or missing thread ID carries no session identity, so leave it
+    # unset in context rather than passing a blank string to model middleware.
+    context_thread_id = thread_id if isinstance(thread_id, str) and thread_id else None
+    context = CLIContext(thread_id=context_thread_id)
     await dispatch_hook("session.start", {"thread_id": thread_id})
 
     start_time = time.monotonic()
 
     # Initial stream
-    await _stream_agent(agent, stream_input, config, state, console, file_op_tracker)
+    await _stream_agent(
+        agent, stream_input, config, state, console, file_op_tracker, context
+    )
 
     # The internal default applies when --max-turns is omitted, guarding
     # against unbounded runaway loops in scripts that forgot to set one.
@@ -764,7 +778,7 @@ async def _run_agent_loop(
         _process_hitl_interrupts(state, console)
         stream_input = Command(resume=state.hitl_response)
         await _stream_agent(
-            agent, stream_input, config, state, console, file_op_tracker
+            agent, stream_input, config, state, console, file_op_tracker, context
         )
 
     wall_time = time.monotonic() - start_time

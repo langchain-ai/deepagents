@@ -1,6 +1,7 @@
 """Tests for ConfigurableModelMiddleware."""
 
 import asyncio
+import logging
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any, cast
@@ -17,6 +18,7 @@ from deepagents_code.configurable_model import (
     ConfigurableModelMiddleware,
     _get_context,
     _is_anthropic_model,
+    _is_fireworks_model,
 )
 
 
@@ -102,6 +104,7 @@ class TestNoOverride:
             context={
                 "auto_approve": True,
                 "approval_mode_key": "approval-key",
+                "thread_id": "thread-123",
             },
         )
 
@@ -110,6 +113,7 @@ class TestNoOverride:
         assert ctx is not None
         assert ctx.auto_approve is True
         assert ctx.approval_mode_key == "approval-key"
+        assert ctx.thread_id == "thread-123"
 
     @pytest.mark.parametrize("key", [None, 1, object()])
     def test_dict_context_coerces_non_string_approval_key(self, key: object) -> None:
@@ -126,6 +130,18 @@ class TestNoOverride:
         assert ctx is not None
         assert ctx.auto_approve is True
         assert ctx.approval_mode_key is None
+
+    @pytest.mark.parametrize("thread_id", [None, 1, object()])
+    def test_dict_context_coerces_non_string_thread_id(self, thread_id: object) -> None:
+        request = _make_request(
+            _make_model("claude-sonnet-4-6"),
+            context={"thread_id": thread_id},
+        )
+
+        ctx = _get_context(request)
+
+        assert ctx is not None
+        assert ctx.thread_id is None
 
     def test_same_model_spec(self) -> None:
         request = _make_request(
@@ -443,6 +459,229 @@ class TestAnthropicSettingsStripped:
             )
 
         assert captured[0].model_settings == {}
+
+
+class TestFireworksSessionSettings:
+    """Fireworks model calls receive session settings from the thread ID."""
+
+    def _fireworks_model(self) -> MagicMock:
+        model = _make_model("accounts/fireworks/models/kimi-k2p7-code")
+        model._get_ls_params.return_value = {"ls_provider": "fireworks"}
+        return model
+
+    def test_fireworks_model_gets_session_settings(self) -> None:
+        request = _make_request(
+            self._fireworks_model(),
+            context=CLIContext(thread_id="thread-123"),
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].model is request.model
+        assert captured[0].model_settings == {
+            "prompt_cache_key": "thread-123",
+            "extra_headers": {"x-multi-turn-session-id": "thread-123"},
+        }
+
+    def test_existing_headers_preserved_and_session_affinity_not_overwritten(
+        self,
+    ) -> None:
+        request = _make_request(
+            self._fireworks_model(),
+            context=CLIContext(thread_id="thread-123"),
+            model_settings={
+                "extra_headers": {
+                    "Authorization": "Bearer custom",
+                    "X-Session-Affinity": "custom-session",
+                }
+            },
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].model_settings == {
+            "extra_headers": {
+                "Authorization": "Bearer custom",
+                "X-Session-Affinity": "custom-session",
+                "x-multi-turn-session-id": "thread-123",
+            }
+        }
+
+    def test_non_fireworks_model_unchanged_with_thread_id(self) -> None:
+        request = _make_request(
+            _make_model("gpt-5.5"),
+            context=CLIContext(thread_id="thread-123"),
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0] is request
+
+    def test_fireworks_swap_gets_session_settings(self) -> None:
+        override = self._fireworks_model()
+        request = _make_request(
+            _make_model("gpt-5.5"),
+            context=CLIContext(
+                model="fireworks:accounts/fireworks/models/kimi-k2p7-code",
+                thread_id="thread-123",
+            ),
+        )
+        captured: list[ModelRequest] = []
+
+        with patch(_PATCH_CREATE, return_value=_make_model_result(override)):
+            _mw.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+
+        assert captured[0].model is override
+        assert captured[0].model_settings == {
+            "prompt_cache_key": "thread-123",
+            "extra_headers": {"x-multi-turn-session-id": "thread-123"},
+        }
+
+    async def test_async_fireworks_model_gets_session_settings(self) -> None:
+        request = _make_request(
+            self._fireworks_model(),
+            context=CLIContext(thread_id="thread-123"),
+        )
+        captured: list[ModelRequest] = []
+
+        async def handler(r: ModelRequest) -> ModelResponse[Any]:  # noqa: RUF029
+            captured.append(r)
+            return _make_response()
+
+        await _mw.awrap_model_call(request, handler)
+
+        assert captured[0].model_settings == {
+            "prompt_cache_key": "thread-123",
+            "extra_headers": {"x-multi-turn-session-id": "thread-123"},
+        }
+
+    def test_empty_thread_id_skips_session_settings(self) -> None:
+        """A blank thread ID must not inject empty session settings."""
+        request = _make_request(
+            self._fireworks_model(),
+            context=CLIContext(thread_id=""),
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0] is request
+
+    def test_non_mapping_extra_headers_skips_injection(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Malformed `extra_headers` leaves the request untouched and warns."""
+        request = _make_request(
+            self._fireworks_model(),
+            context=CLIContext(thread_id="thread-123"),
+            model_settings={"extra_headers": ["not", "a", "mapping"]},
+        )
+        captured: list[ModelRequest] = []
+
+        with caplog.at_level(
+            logging.WARNING, logger="deepagents_code.configurable_model"
+        ):
+            _mw.wrap_model_call(
+                request, lambda r: (captured.append(r), _make_response())[1]
+            )
+
+        assert captured[0] is request
+        assert captured[0].model_settings == {"extra_headers": ["not", "a", "mapping"]}
+        assert "extra_headers" in caplog.text
+
+    def test_existing_prompt_cache_key_not_overwritten(self) -> None:
+        request = _make_request(
+            self._fireworks_model(),
+            context=CLIContext(thread_id="thread-123"),
+            model_settings={"prompt_cache_key": "custom-cache"},
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].model_settings == {
+            "prompt_cache_key": "custom-cache",
+            "extra_headers": {"x-multi-turn-session-id": "thread-123"},
+        }
+
+    def test_existing_multi_turn_header_case_insensitive(self) -> None:
+        """A differently-cased multi-turn header is not duplicated."""
+        request = _make_request(
+            self._fireworks_model(),
+            context=CLIContext(thread_id="thread-123"),
+            model_settings={
+                "extra_headers": {"X-Multi-Turn-Session-ID": "custom-multi"}
+            },
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert captured[0].model_settings == {
+            "prompt_cache_key": "thread-123",
+            "extra_headers": {"X-Multi-Turn-Session-ID": "custom-multi"},
+        }
+
+    def test_caller_model_settings_not_mutated(self) -> None:
+        """Injection copies the caller's dicts instead of mutating in place."""
+        original_headers = {"Authorization": "Bearer token"}
+        model_settings = {"extra_headers": original_headers}
+        request = _make_request(
+            self._fireworks_model(),
+            context=CLIContext(thread_id="thread-123"),
+            model_settings=model_settings,
+        )
+        captured: list[ModelRequest] = []
+
+        _mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
+
+        assert original_headers == {"Authorization": "Bearer token"}
+        assert model_settings == {"extra_headers": {"Authorization": "Bearer token"}}
+        assert captured[0].model_settings["extra_headers"] is not original_headers
+
+
+class TestIsFireworksModel:
+    """Direct tests for the `_is_fireworks_model` helper."""
+
+    def test_returns_true_for_fireworks(self) -> None:
+        model = _make_model("accounts/fireworks/models/kimi-k2p7-code")
+        model._get_ls_params.return_value = {"ls_provider": "fireworks"}
+        assert _is_fireworks_model(model) is True
+
+    def test_returns_false_for_non_fireworks(self) -> None:
+        assert _is_fireworks_model(_make_model("gpt-5.5")) is False
+
+    def test_returns_false_for_plain_object(self) -> None:
+        assert _is_fireworks_model(object()) is False
+
+    def test_returns_false_when_ls_params_returns_none(self) -> None:
+        model = MagicMock(spec=BaseChatModel)
+        model._get_ls_params.return_value = None
+        assert _is_fireworks_model(model) is False
+
+    def test_returns_false_when_ls_provider_not_str(self) -> None:
+        model = MagicMock(spec=BaseChatModel)
+        model._get_ls_params.return_value = {"ls_provider": 123}
+        assert _is_fireworks_model(model) is False
 
 
 class TestIsAnthropicModel:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 from deepagents._models import model_matches_spec  # noqa: PLC2701
@@ -29,6 +30,26 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _get_ls_provider(model: object) -> str | None:
+    """Return the LangSmith provider name reported by a chat model.
+
+    Returns:
+        The `ls_provider` string when the model reports one, otherwise `None`
+            (including when `_get_ls_params` is missing, raises, or yields a
+            non-string provider).
+    """
+    try:
+        ls_params = model._get_ls_params()  # ty: ignore[unresolved-attribute]
+    except (AttributeError, TypeError, RuntimeError):
+        logger.debug("_get_ls_params raised for %s", type(model).__name__)
+        return None
+    if isinstance(ls_params, dict):
+        provider = ls_params.get("ls_provider")
+        if isinstance(provider, str):
+            return provider
+    return None
+
+
 def _is_anthropic_model(model: object) -> bool:
     """Check whether a resolved model reports `'anthropic'` as its provider.
 
@@ -44,21 +65,80 @@ def _is_anthropic_model(model: object) -> bool:
     Returns:
         `True` if the model's `ls_provider` is `'anthropic'`.
     """
-    try:
-        ls_params = model._get_ls_params()  # ty: ignore[unresolved-attribute]
-    except (AttributeError, TypeError, RuntimeError):
-        logger.debug(
-            "_get_ls_params raised for %s; assuming non-Anthropic",
-            type(model).__name__,
-        )
-        return False
-    return isinstance(ls_params, dict) and ls_params.get("ls_provider") == "anthropic"
+    return _get_ls_provider(model) == "anthropic"
+
+
+def _is_fireworks_model(model: object) -> bool:
+    """Check whether a resolved model reports `'fireworks'` as its provider.
+
+    Returns:
+        `True` if the model's `ls_provider` is `'fireworks'`.
+    """
+    return _get_ls_provider(model) == "fireworks"
 
 
 _ANTHROPIC_ONLY_SETTINGS: set[str] = {"cache_control"}
 """Keys injected by Anthropic-specific middleware (e.g.
 `AnthropicPromptCachingMiddleware`) that are not accepted by other providers and
 must be stripped on cross-provider swap."""
+
+_FIREWORKS_MULTI_TURN_SESSION_HEADER = "x-multi-turn-session-id"
+"""Fireworks header populated from the active Deep Agents Code thread ID."""
+
+_FIREWORKS_SESSION_AFFINITY_HEADER = "x-session-affinity"
+"""Legacy Fireworks prompt-cache affinity header."""
+
+
+def _has_header(headers: Mapping[object, object], target: str) -> bool:
+    """Return whether a headers mapping already includes `target`.
+
+    Comparison is case-insensitive; `target` must be supplied in lowercase.
+
+    Returns:
+        `True` if a string key case-insensitively equal to `target` is present.
+    """
+    return any(isinstance(key, str) and key.lower() == target for key in headers)
+
+
+def _with_fireworks_session_settings(
+    model_settings: dict[str, Any], thread_id: str
+) -> dict[str, Any] | None:
+    """Return model settings with Fireworks session settings added if needed.
+
+    Existing settings are preserved and never overwritten. `prompt_cache_key` is
+    the preferred typed form for prompt-cache affinity; the raw
+    `x-session-affinity` header is also treated as caller-provided affinity.
+
+    Returns:
+        A new `model_settings` dict with the missing session settings added, or
+            `None` when nothing needed adding or `extra_headers` is present but
+            not a mapping (leaving the request untouched).
+    """
+    raw_headers = model_settings.get("extra_headers")
+    if raw_headers is None:
+        headers: dict[object, object] = {}
+    elif isinstance(raw_headers, Mapping):
+        headers = dict(raw_headers)
+    else:
+        logger.warning(
+            "Cannot inject Fireworks session settings because extra_headers is %s",
+            type(raw_headers).__name__,
+        )
+        return None
+
+    updated: dict[str, Any] = {}
+    if "prompt_cache_key" not in model_settings and not _has_header(
+        headers, _FIREWORKS_SESSION_AFFINITY_HEADER
+    ):
+        updated["prompt_cache_key"] = thread_id
+
+    if not _has_header(headers, _FIREWORKS_MULTI_TURN_SESSION_HEADER):
+        headers[_FIREWORKS_MULTI_TURN_SESSION_HEADER] = thread_id
+        updated["extra_headers"] = headers
+
+    if not updated:
+        return None
+    return {**model_settings, **updated}
 
 
 def _get_context(request: ModelRequest) -> CLIContextSchema | None:
@@ -72,12 +152,14 @@ def _get_context(request: ModelRequest) -> CLIContextSchema | None:
         return ctx
     if isinstance(ctx, dict):
         raw_key = ctx.get("approval_mode_key")
+        raw_thread_id = ctx.get("thread_id")
         return CLIContextSchema(
             model=ctx.get("model"),
             model_params=ctx.get("model_params") or {},
             effective_model=ctx.get("effective_model"),
             auto_approve=bool(ctx.get("auto_approve", False)),
             approval_mode_key=raw_key if isinstance(raw_key, str) else None,
+            thread_id=raw_thread_id if isinstance(raw_thread_id, str) else None,
         )
     return None
 
@@ -114,6 +196,18 @@ def _build_overrides(
     model_params = ctx.model_params
     if model_params:
         overrides["model_settings"] = {**request.model_settings, **model_params}
+
+    effective_model = new_model if new_model is not None else request.model
+    if ctx.thread_id and _is_fireworks_model(effective_model):
+        settings = overrides.get("model_settings", request.model_settings)
+        settings_with_session = _with_fireworks_session_settings(
+            settings, ctx.thread_id
+        )
+        if settings_with_session is not None:
+            overrides["model_settings"] = settings_with_session
+            # No thread ID in the message: it is treated as a sensitive session
+            # identifier. The line's presence alone confirms injection ran.
+            logger.debug("Injected Fireworks session settings")
 
     if not overrides:
         return request

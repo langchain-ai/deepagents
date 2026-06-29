@@ -6050,10 +6050,13 @@ class DeepAgentsApp(App):
 
     async def on_goal_review_menu_decided(
         self,
-        event: GoalReviewMenu.Decided,  # noqa: ARG002  # decision read from widget state
+        event: GoalReviewMenu.Decided,
     ) -> None:
         """Handle a goal review decision by removing the widget."""
-        if self._pending_goal_review_widget:
+        if (
+            self._pending_goal_review_widget
+            and event.widget is self._pending_goal_review_widget
+        ):
             widget = self._pending_goal_review_widget
             self._pending_goal_review_widget = None
             await self._remove_goal_review_widget(widget, context="goal-review decided")
@@ -8331,6 +8334,15 @@ class DeepAgentsApp(App):
                 ),
             )
             self.notify("Rubric grader model will switch after current work finishes.")
+            return
+
+        if self._server_kwargs is None and self._server_proc is None:
+            await self._mount_message(
+                ErrorMessage(
+                    "Rubric grader model switching is unavailable in this session "
+                    "because it does not own a restartable server."
+                )
+            )
             return
 
         display: str | None = None

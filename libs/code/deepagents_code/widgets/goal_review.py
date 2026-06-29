@@ -112,11 +112,18 @@ class GoalReviewMenu(Container):
     class Decided(Message):
         """Message sent when the user accepts, edits, or cancels."""
 
-        def __init__(self, result: GoalReviewResult) -> None:
+        def __init__(
+            self,
+            result: GoalReviewResult,
+            widget: GoalReviewMenu | None = None,
+        ) -> None:
             """Initialize a decision message."""
             super().__init__()
             self.result = result
             """Decision payload emitted by the review widget."""
+
+            self.widget = widget
+            """Review widget that emitted the decision."""
 
     def __init__(
         self,
@@ -323,7 +330,7 @@ class GoalReviewMenu(Container):
         self.display = False
         if self._future is not None and not self._future.done():
             self._future.set_result(result)
-        self.post_message(self.Decided(result))
+        self.post_message(self.Decided(result, self))
 
     def _update_options(self) -> None:
         """Render option labels and help text."""

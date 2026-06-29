@@ -4760,6 +4760,24 @@ class TestGoalCommand:
             assert edit.display is True
             assert app.focused is edit
 
+    async def test_stale_goal_review_decision_keeps_current_review(self) -> None:
+        """A stale widget decision must not clear a replacement review."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            messages = app.query_one("#messages", Container)
+            stale = GoalReviewMenu("old goal", "- old criteria")
+            current = GoalReviewMenu("new goal", "- new criteria")
+            await messages.mount(current)
+            app._pending_goal_review_widget = current
+
+            event = GoalReviewMenu.Decided({"type": "cancelled"}, stale)
+            await app.on_goal_review_menu_decided(event)
+            await pilot.pause()
+
+            assert app._pending_goal_review_widget is current
+            assert current in app.query(GoalReviewMenu)
+
     async def test_goal_command_clears_spinner_when_drafting_fails(self) -> None:
         """Drafting failures should dismiss the goal spinner."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -5724,6 +5742,7 @@ class TestRubricCommand:
 
         async with app.run_test() as pilot:
             await pilot.pause()
+            app._server_kwargs = {}
             with patch(
                 "deepagents_code.model_config.get_provider_auth_status",
                 return_value=_BlockingAuth(),
@@ -5762,12 +5781,13 @@ class TestRubricCommand:
             assert app._rubric_model == "anthropic:claude-sonnet-4-6"
             assert app._server_kwargs["rubric_model"] == "anthropic:claude-sonnet-4-6"
 
-    async def test_set_rubric_model_sets_without_server(self) -> None:
-        """With no server process, the grader model is set and confirmed."""
+    async def test_set_rubric_model_sets_before_owned_server_starts(self) -> None:
+        """With owned server config, the grader model is staged and confirmed."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
             app._server_proc = None
+            app._server_kwargs = {}
 
             with (
                 patch("deepagents_code.app._create_model_with_deepagents_import_lock"),
@@ -5780,8 +5800,30 @@ class TestRubricCommand:
             await pilot.pause()
 
             assert app._rubric_model == "anthropic:claude-sonnet-4-6"
+            assert app._server_kwargs["rubric_model"] == "anthropic:claude-sonnet-4-6"
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "Rubric grader model set to" in rendered
+
+    async def test_set_rubric_model_rejects_without_owned_server(self) -> None:
+        """External graph sessions cannot switch the fixed rubric middleware model."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._rubric_model = "anthropic:claude-sonnet-4-6"
+            app._server_proc = None
+            app._server_kwargs = None
+
+            with patch(
+                "deepagents_code.app._create_model_with_deepagents_import_lock"
+            ) as create_model:
+                await app._set_rubric_model("openai:gpt-5.1")
+            await pilot.pause()
+
+            create_model.assert_not_called()
+            assert app._rubric_model == "anthropic:claude-sonnet-4-6"
+            assert app._server_kwargs is None
+            rendered = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "does not own a restartable server" in rendered
 
     async def test_rubric_set_clears_stale_goal_tracking(self) -> None:
         """`/rubric set` must drop a stale status note and one-shot rubric."""

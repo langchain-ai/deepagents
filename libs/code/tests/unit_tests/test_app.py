@@ -4686,6 +4686,10 @@ class TestGoalCommand:
                 for w in app.query(AppMessage)
             )
             assert any(
+                str(w._content) == "Proposed acceptance criteria are ready."
+                for w in app.query(AppMessage)
+            )
+            assert not any(
                 "Review the proposal below" in str(w._content)
                 for w in app.query(AppMessage)
             )

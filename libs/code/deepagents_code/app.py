@@ -7834,9 +7834,7 @@ class DeepAgentsApp(App):
         self._pending_goal_rubric = rubric
         persisted = await self._persist_goal_rubric_state()
         await self._mount_goal_rubric_result(
-            "Proposed acceptance criteria are ready.\n\n"
-            "Review the proposal below. Choose Accept to use it, Edit to revise "
-            "it, Reject with message to regenerate it, or press Esc to cancel.",
+            "Proposed acceptance criteria are ready.",
             persisted=persisted,
         )
         await self._start_pending_goal_rubric_review()

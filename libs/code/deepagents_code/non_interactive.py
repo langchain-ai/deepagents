@@ -534,9 +534,19 @@ def _process_rubric_event(
             "[yellow]⚠ Rubric not satisfied (max iterations reached)[/yellow]",
             highlight=False,
         )
-    elif result == "failed":
+    elif result in {"failed", "grader_error"}:
+        label = "grader failed" if result == "failed" else "grader error"
         suffix = f": {escape_markup(explanation)}" if explanation else ""
-        console.print(f"[red]⚠ Rubric grader failed{suffix}[/red]", highlight=False)
+        console.print(f"[red]⚠ Rubric {label}{suffix}[/red]", highlight=False)
+    elif result is not None:
+        # A `rubric_evaluation_end` with an unrecognized result is still a
+        # terminal grading event; surface it rather than letting the run go
+        # quiet mid-task (e.g. if the SDK adds a new verdict). Mirrors the
+        # interactive fallback in `textual_adapter._format_rubric_event`.
+        suffix = f": {escape_markup(explanation)}" if explanation else ""
+        console.print(
+            f"[yellow]⚠ Rubric grading ended{suffix}[/yellow]", highlight=False
+        )
 
     if state.spinner:
         state.spinner.start()

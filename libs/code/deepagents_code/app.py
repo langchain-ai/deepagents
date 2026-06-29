@@ -17,7 +17,7 @@ from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeVar, assert_never, cast
 
 from textual import on
 from textual.app import App, ScreenStackError
@@ -156,6 +156,36 @@ def _read_text_file_expanding_user(path_arg: str) -> tuple[Path, str]:
     """
     path = Path(path_arg).expanduser()
     return path, path.read_text(encoding="utf-8")
+
+
+def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> None:
+    """Log persisted goal/rubric channels that are present but not strings.
+
+    The TUI defensively coerces malformed channel values to `None` on resume
+    and post-turn sync. Without this breadcrumb a corrupted checkpoint would
+    drop goal state with no trace, which contradicts the "surface, don't drop"
+    stance the rest of the resume path takes.
+
+    Args:
+        state_values: Raw checkpoint state values.
+    """
+    for channel in (
+        "rubric",
+        "_sticky_rubric",
+        "_goal_objective",
+        "_goal_status",
+        "_goal_rubric",
+        "_goal_status_note",
+        "_pending_goal_objective",
+        "_pending_goal_rubric",
+    ):
+        value = state_values.get(channel)
+        if value is not None and not isinstance(value, str):
+            logger.debug(
+                "Discarding non-str persisted channel %s (%s)",
+                channel,
+                type(value).__name__,
+            )
 
 
 def _create_model_with_deepagents_import_lock(
@@ -6020,7 +6050,7 @@ class DeepAgentsApp(App):
 
     async def on_goal_review_menu_decided(
         self,
-        event: Any,  # noqa: ARG002, ANN401
+        event: GoalReviewMenu.Decided,  # noqa: ARG002  # decision read from widget state
     ) -> None:
         """Handle a goal review decision by removing the widget."""
         if self._pending_goal_review_widget:
@@ -7629,7 +7659,9 @@ class DeepAgentsApp(App):
         """Clear every goal and rubric field (sticky, one-shot, goal, pending).
 
         Single reset point so the clear paths cannot drift out of sync over the
-        nine correlated fields.
+        nine correlated fields. The grader model (`_rubric_model`) is
+        intentionally left untouched — it is configured separately via
+        `/rubric model` and survives `/rubric clear` and `/clear`.
         """
         self._active_rubric = None
         self._next_rubric = None
@@ -7653,6 +7685,34 @@ class DeepAgentsApp(App):
         self._next_rubric = None
         self._sync_status_rubric()
 
+    async def _announce_goal_status_transition(
+        self, previous_status: str | None
+    ) -> None:
+        """Surface an agent-driven goal completion or block in the transcript.
+
+        The agent's `update_goal` tool writes `_goal_status` from inside the
+        graph; the only other signal is an easy-to-miss tool row. Announce the
+        transition once, the first time it changes to `complete` or `blocked`,
+        so a later turn that leaves the status unchanged does not re-announce.
+
+        Args:
+            previous_status: Goal status before the latest checkpoint sync.
+        """
+        if not self._active_goal:
+            return
+        status = self._goal_status
+        if status not in {"complete", "blocked"} or status == previous_status:
+            return
+        text = (
+            "Goal marked complete by the agent."
+            if status == "complete"
+            else "Goal marked blocked by the agent."
+        )
+        note = self._goal_status_note
+        if note:
+            text = f"{text}\n\n{note}"
+        await self._mount_message(AppMessage(text))
+
     async def _sync_goal_rubric_state_from_thread(self) -> None:
         """Refresh TUI-owned goal/rubric metadata from the active checkpoint."""
         if not self._lc_thread_id:
@@ -7666,6 +7726,7 @@ class DeepAgentsApp(App):
             self._last_consumed_next_rubric = None
             self._last_consumed_next_previous_rubric = None
             return
+        _warn_discarded_goal_channels(state_values)
         rubric = state_values.get("rubric")
         sticky_rubric_recorded = "_sticky_rubric" in state_values
         sticky_rubric = state_values.get("_sticky_rubric")
@@ -7733,7 +7794,9 @@ class DeepAgentsApp(App):
                 pending_goal_objective=payload.pending_goal_objective,
                 pending_goal_rubric=payload.pending_goal_rubric,
             )
+        previous_status = self._goal_status
         self._restore_goal_rubric_state(payload)
+        await self._announce_goal_status_transition(previous_status)
         if one_shot_rubric_consumed:
             await self._persist_goal_rubric_state()
         await self._remount_pending_goal_rubric_review()
@@ -7958,10 +8021,14 @@ class DeepAgentsApp(App):
             if result["type"] == "rejected":
                 self._regenerate_goal_rubric_from_feedback(result["message"])
                 return
-
-            self._clear_pending_goal_rubric()
-            await self._persist_goal_rubric_state()
-            await self._mount_message(AppMessage("Goal proposal cancelled."))
+            if result["type"] == "cancelled":
+                self._clear_pending_goal_rubric()
+                await self._persist_goal_rubric_state()
+                await self._mount_message(AppMessage("Goal proposal cancelled."))
+                return
+            # Static exhaustiveness guard: a new `GoalReviewResult` variant trips
+            # the type checker here instead of silently taking the cancel path.
+            assert_never(result)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -7974,7 +8041,12 @@ class DeepAgentsApp(App):
                 self._goal_review_task = None
 
     async def _review_pending_goal_rubric(self) -> None:
-        """Review a pending goal proposal with the ask-user interrupt widget."""
+        """Mount the goal-review widget for the pending proposal (test entry point).
+
+        Thin wrapper over `_start_pending_goal_rubric_review` used by tests to
+        drive the `GoalReviewMenu` flow; production code calls that method
+        directly.
+        """
         await self._start_pending_goal_rubric_review()
 
     def _regenerate_goal_rubric_from_feedback(self, feedback: str) -> None:
@@ -8002,7 +8074,7 @@ class DeepAgentsApp(App):
             return
         rubric = rubric.strip()
         if not rubric:
-            await self._mount_message(AppMessage("Usage: /goal edit <criteria>"))
+            await self._mount_message(AppMessage("Cannot accept empty goal criteria."))
             return
         self._active_goal = objective
         self._goal_status = "active"
@@ -8026,10 +8098,14 @@ class DeepAgentsApp(App):
         await self._handle_user_message(objective)
 
     def _sync_status_rubric(self) -> None:
-        """Reflect active rubric state in the status bar."""
+        """Reflect active rubric and goal state in the status bar."""
         if self._status_bar is None:
             return
-        if self._next_rubric:
+        if self._active_goal and self._goal_status == "complete":
+            self._status_bar.set_rubric_label("✓ Goal complete")
+        elif self._active_goal and self._goal_status == "blocked":
+            self._status_bar.set_rubric_label("⚠ Goal blocked")
+        elif self._next_rubric:
             self._status_bar.set_rubric_label("✓ Rubric: next turn")
         elif self._active_rubric:
             self._status_bar.set_rubric_label("✓ Rubric set")
@@ -9502,6 +9578,7 @@ class DeepAgentsApp(App):
         )
         raw_spec = state_values.get("_model_spec")
         model_spec = raw_spec if isinstance(raw_spec, str) else ""
+        _warn_discarded_goal_channels(state_values)
         raw_rubric = state_values.get("rubric")
         raw_sticky_rubric = state_values.get("_sticky_rubric")
         raw_goal_objective = state_values.get("_goal_objective")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from textual import events
 from textual.app import App, ComposeResult
 from textual.widgets import Markdown
 
@@ -164,3 +165,60 @@ class TestGoalReviewMenu:
             menu.action_cancel()
 
             assert await future == {"type": "cancelled"}
+
+    async def test_empty_edit_does_not_submit(self) -> None:
+        """Submitting blank edited criteria should keep the editor open."""
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#goal-review", GoalReviewMenu)
+            future: asyncio.Future[GoalReviewResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            menu.action_edit()
+            text_input = menu.query_one(".goal-review-edit-input", AskUserTextArea)
+            text_input.text = "   "
+            menu._submit_edit()
+
+            assert future.done() is False
+            assert text_input.display is True
+
+    async def test_empty_rejection_does_not_submit(self) -> None:
+        """Submitting blank rejection feedback should keep the editor open."""
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#goal-review", GoalReviewMenu)
+            future: asyncio.Future[GoalReviewResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            menu.action_reject_with_message()
+            text_input = menu.query_one(".goal-review-edit-input", AskUserTextArea)
+            text_input.text = "  \n  "
+            menu._submit_rejection()
+
+            assert future.done() is False
+            assert text_input.display is True
+
+    async def test_blur_does_not_dismiss_proposal(self) -> None:
+        """Losing focus must not resolve the proposal future."""
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#goal-review", GoalReviewMenu)
+            future: asyncio.Future[GoalReviewResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            menu.on_blur(events.Blur())
+
+            assert future.done() is False
+            assert menu.display is True

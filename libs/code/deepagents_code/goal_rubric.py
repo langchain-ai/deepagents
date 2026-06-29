@@ -15,27 +15,6 @@ GOAL_RUBRIC_SYSTEM_PROMPT = (
 )
 
 
-def message_content_to_text(content: object) -> str:
-    """Convert chat-model message content to plain text.
-
-    Returns:
-        Plain-text representation of message content.
-    """
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for block in content:
-            if isinstance(block, str):
-                parts.append(block)
-            elif isinstance(block, dict):
-                text = block.get("text")
-                if isinstance(text, str):
-                    parts.append(text)
-        return "\n".join(parts)
-    return str(content)
-
-
 def _goal_rubric_human_prompt(
     objective: str,
     *,
@@ -129,4 +108,4 @@ def generate_goal_rubric(
             ),
         ],
     )
-    return message_content_to_text(response.content)
+    return response.text

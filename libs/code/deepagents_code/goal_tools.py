@@ -8,6 +8,7 @@ from typing import (
     Any,
     Literal,
     NotRequired,
+    TypedDict,
     TypeVar,
     cast,
 )
@@ -26,6 +27,12 @@ from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
 from typing_extensions import override
 
+# Runtime (not TYPE_CHECKING) import: LangChain resolves the state-schema
+# annotations via `get_type_hints(include_extras=True)` to find the
+# `PrivateStateAttr` markers, so `GoalStatus` must be importable at runtime or
+# schema construction raises `NameError`.
+from deepagents_code.resume_state import GoalStatus  # noqa: TC001
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -40,6 +47,34 @@ GOAL_TOOLS_SYSTEM_PROMPT = (
 ResponseT = TypeVar("ResponseT")
 
 
+class GoalSnapshot(TypedDict):
+    """Read-only goal view returned by the `get_goal` tool to the model.
+
+    A fixed-shape projection of goal state. Both construction branches in
+    `_goal_snapshot` must populate every key, so the type checker catches a
+    drift between them.
+    """
+
+    active: bool
+    """Whether the goal is unfinished (derived as `status != "complete"`)."""
+
+    objective: str | None
+    """Active goal objective, or `None` when no goal is set."""
+
+    status: str | None
+    """Lifecycle status, or `None` when no goal is set.
+
+    Typed `str` rather than `GoalStatus` because the snapshot tolerates any
+    persisted value, defaulting to `"active"` for a set-but-unlabeled goal.
+    """
+
+    criteria: str | None
+    """Accepted criteria (goal rubric, falling back to the public rubric)."""
+
+    note: str | None
+    """Latest evidence or blocker note recorded by `update_goal`."""
+
+
 class GoalToolState(AgentState):
     """State fields used by goal tools.
 
@@ -51,13 +86,13 @@ class GoalToolState(AgentState):
     """
 
     _goal_objective: Annotated[NotRequired[str | None], PrivateStateAttr]
-    _goal_status: Annotated[NotRequired[str | None], PrivateStateAttr]
+    _goal_status: Annotated[NotRequired[GoalStatus | None], PrivateStateAttr]
     _goal_rubric: Annotated[NotRequired[str | None], PrivateStateAttr]
     _goal_status_note: Annotated[NotRequired[str | None], PrivateStateAttr]
     rubric: NotRequired[str | None]
 
 
-def _goal_snapshot(state: dict[str, Any]) -> dict[str, Any]:
+def _goal_snapshot(state: dict[str, Any]) -> GoalSnapshot:
     """Build the `get_goal` response from graph state.
 
     Args:
@@ -166,7 +201,7 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         @tool
         def get_goal(
             state: Annotated[dict[str, Any], InjectedState],
-        ) -> dict[str, Any]:
+        ) -> GoalSnapshot:
             """Read the current persistent goal and accepted criteria.
 
             Call this before deciding whether work is done to see the objective,

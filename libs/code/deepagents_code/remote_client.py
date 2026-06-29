@@ -365,7 +365,11 @@ class RemoteAgent:
         try:
             await graph.aupdate_state(prepared, values, as_node=as_node)
         except ConflictError:
-            pass
+            logger.debug(
+                "update_state conflict for thread %s; cancelling active runs "
+                "and retrying",
+                thread_id,
+            )
         except Exception:
             logger.debug(
                 "Failed to update state for thread %s", thread_id, exc_info=True

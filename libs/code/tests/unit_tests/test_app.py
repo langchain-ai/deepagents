@@ -5067,7 +5067,8 @@ class TestGoalCommand:
             assert app._pending_goal_objective == "draft goal"
             assert app._pending_goal_rubric == "- draft criteria"
             assert app._status_bar is not None
-            assert app._status_bar.rubric_label == "✓ Rubric set"
+            # A blocked goal reads distinctly from an active one in the badge.
+            assert app._status_bar.rubric_label == "⚠ Goal blocked"
 
     async def test_load_thread_history_remounts_pending_goal_review(self) -> None:
         """Resumed pending goal proposals should be actionable in the prompt."""
@@ -5184,6 +5185,87 @@ class TestGoalCommand:
             assert "Commands:\n/goal clear\n/goal show" in rendered
             assert "Goal status:" not in rendered
             assert "Accepted criteria:" not in rendered
+
+    async def test_goal_show_renders_blocked_note_and_pending(self) -> None:
+        """`/goal show` should surface a blocked note and a pending proposal."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "add OAuth refresh"
+            app._goal_status = "blocked"
+            app._goal_status_note = "need provider credentials"
+            app._active_rubric = "- tests pass"
+            app._pending_goal_objective = "next objective"
+            app._pending_goal_rubric = "- draft criteria"
+
+            await app._show_goal_state()
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Status:\nblocked" in rendered
+            assert "Status note:\nneed provider credentials" in rendered
+            assert "Status:\npending review" in rendered
+            assert "Review the proposal" in rendered
+
+    async def test_announce_goal_status_transition_complete(self) -> None:
+        """An active->complete transition should be announced with its note."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship the feature"
+            app._goal_status = "complete"
+            app._goal_status_note = "all acceptance tests green"
+
+            await app._announce_goal_status_transition("active")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Goal marked complete by the agent." in rendered
+            assert "all acceptance tests green" in rendered
+
+    async def test_announce_goal_status_transition_blocked(self) -> None:
+        """An active->blocked transition should be announced with its note."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship the feature"
+            app._goal_status = "blocked"
+            app._goal_status_note = "missing staging credentials"
+
+            await app._announce_goal_status_transition("active")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Goal marked blocked by the agent." in rendered
+            assert "missing staging credentials" in rendered
+
+    async def test_announce_goal_status_no_message_when_unchanged(self) -> None:
+        """A status equal to the previous one must not re-announce."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship the feature"
+            app._goal_status = "complete"
+
+            await app._announce_goal_status_transition("complete")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Goal marked" not in rendered
+
+    async def test_announce_goal_status_no_message_for_active(self) -> None:
+        """A non-terminal `active` status is not an announceable transition."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship the feature"
+            app._goal_status = "active"
+
+            await app._announce_goal_status_transition(None)
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Goal marked" not in rendered
 
     async def test_goal_clear_clears_goal_and_rubric(self) -> None:
         """`/goal clear` should clear goal-backed rubric state."""
@@ -5611,6 +5693,95 @@ class TestRubricCommand:
             assert any(
                 "/rubric model" in str(w._content) for w in app.query(UserMessage)
             )
+
+    async def test_set_rubric_model_defers_while_agent_running(self) -> None:
+        """A model switch during a run is deferred, not applied immediately."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._rubric_model = "anthropic:claude-sonnet-4-6"
+
+            with patch.object(app, "_defer_action") as defer:
+                await app._set_rubric_model("openai:gpt-5.1")
+
+            defer.assert_called_once()
+            deferred = defer.call_args.args[0]
+            assert deferred.kind == "rubric_model_switch"
+            # The model is untouched until the deferred action runs.
+            assert app._rubric_model == "anthropic:claude-sonnet-4-6"
+
+    async def test_set_rubric_model_auth_block_keeps_previous(self) -> None:
+        """A provider missing credentials must not change the grader model."""
+        app = DeepAgentsApp(agent=MagicMock())
+
+        class _BlockingAuth:
+            blocks_start = True
+            provider = "anthropic"
+
+            def missing_detail(self) -> str:
+                return "ANTHROPIC_API_KEY"
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_code.model_config.get_provider_auth_status",
+                return_value=_BlockingAuth(),
+            ):
+                await app._set_rubric_model("anthropic:claude-sonnet-4-6")
+            await pilot.pause()
+
+            assert app._rubric_model is None
+            rendered = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "Missing credentials" in rendered
+
+    async def test_set_rubric_model_rolls_back_on_failed_respawn(self) -> None:
+        """A failed server respawn rolls the grader model back to the previous one."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._rubric_model = "anthropic:claude-sonnet-4-6"
+            app._server_kwargs = {"rubric_model": "anthropic:claude-sonnet-4-6"}
+            app._server_proc = MagicMock()
+
+            with (
+                patch("deepagents_code.app._create_model_with_deepagents_import_lock"),
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=None,
+                ),
+                patch.object(
+                    app,
+                    "_respawn_server",
+                    new_callable=AsyncMock,
+                    return_value=False,
+                ),
+            ):
+                await app._set_rubric_model("openai:gpt-5.1")
+
+            assert app._rubric_model == "anthropic:claude-sonnet-4-6"
+            assert app._server_kwargs["rubric_model"] == "anthropic:claude-sonnet-4-6"
+
+    async def test_set_rubric_model_sets_without_server(self) -> None:
+        """With no server process, the grader model is set and confirmed."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = None
+
+            with (
+                patch("deepagents_code.app._create_model_with_deepagents_import_lock"),
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=None,
+                ),
+            ):
+                await app._set_rubric_model("anthropic:claude-sonnet-4-6")
+            await pilot.pause()
+
+            assert app._rubric_model == "anthropic:claude-sonnet-4-6"
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Rubric grader model set to" in rendered
 
     async def test_rubric_set_clears_stale_goal_tracking(self) -> None:
         """`/rubric set` must drop a stale status note and one-shot rubric."""

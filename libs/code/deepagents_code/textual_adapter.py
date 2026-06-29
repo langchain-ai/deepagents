@@ -837,6 +837,12 @@ async def execute_task_textual(
                                 assistant_message_by_namespace,
                             )
                             pending_text_by_namespace[ns_key] = ""
+                            # Drop the cached assistant bubble too, not just the
+                            # pending text: a mid-turn HumanMessage (e.g. the
+                            # rubric revision loop re-prompting the agent) means
+                            # the next assistant text is a fresh response and
+                            # must start a new bubble rather than appending to
+                            # the pre-revision one.
                             assistant_message_by_namespace.pop(ns_key, None)
                         continue
 

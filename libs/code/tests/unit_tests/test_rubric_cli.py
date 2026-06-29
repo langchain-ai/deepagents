@@ -144,6 +144,11 @@ class TestRubricGating:
         assert result.returncode == 2, result.stderr
         assert "mutually exclusive" in result.stderr
 
+    def test_empty_goal_errors(self) -> None:
+        result = _run_cli_main_devnull_stdin(["--goal", "   "])
+        assert result.returncode == 2, result.stderr
+        assert "must not be empty" in result.stderr
+
 
 class TestServerConfigRubric:
     """Rubric grader settings round-trip through env serialization."""
@@ -265,3 +270,33 @@ class TestProcessRubricEvent:
         )
         assert "grader failed" in out
         assert "bad rubric" in out
+
+    def test_grader_error(self) -> None:
+        # `grader_error` is a terminal SDK verdict that must surface in
+        # non-interactive runs, not be silently dropped.
+        out = _render_event(
+            {
+                "type": "rubric_evaluation_end",
+                "result": "grader_error",
+                "explanation": "provider 500",
+            }
+        )
+        assert "grader error" in out
+        assert "provider 500" in out
+
+    def test_unrecognized_terminal_result_surfaced(self) -> None:
+        # A future/unknown verdict still ends grading; surface it rather than
+        # letting the run go quiet mid-task.
+        out = _render_event(
+            {
+                "type": "rubric_evaluation_end",
+                "result": "some_future_verdict",
+                "explanation": "details",
+            }
+        )
+        assert "Rubric grading ended" in out
+        assert "details" in out
+
+    def test_missing_result_prints_nothing(self) -> None:
+        # An end event with no result must not trigger the fallback line.
+        assert _render_event({"type": "rubric_evaluation_end"}) == ""

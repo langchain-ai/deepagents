@@ -3648,3 +3648,76 @@ class TestReadMentionedFile:
 
         assert "too large to embed" in snippet
         assert "```" not in snippet
+
+
+class TestExecuteTaskTextualRubricEvents:
+    """Rubric custom-stream events surface only for the main agent."""
+
+    async def test_main_agent_rubric_event_mounts_message(self) -> None:
+        """A main-agent rubric verdict is rendered in the transcript."""
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        # (namespace, stream_mode, data); empty namespace == main agent.
+        chunks = [
+            ((), "custom", {"type": "rubric_evaluation_end", "result": "satisfied"}),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        rubric_msgs = [
+            m
+            for m in mounted
+            if isinstance(m, AppMessage) and "Rubric satisfied" in str(m._content)
+        ]
+        assert len(rubric_msgs) == 1
+
+    async def test_subagent_rubric_event_is_not_mounted(self) -> None:
+        """A rubric event from a subagent namespace must not reach the transcript."""
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        # Non-empty namespace == subagent; the is_main_agent gate suppresses it.
+        chunks = [
+            (
+                ("subagent",),
+                "custom",
+                {"type": "rubric_evaluation_end", "result": "satisfied"},
+            ),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert not [
+            m
+            for m in mounted
+            if isinstance(m, AppMessage) and "Rubric" in str(m._content)
+        ]

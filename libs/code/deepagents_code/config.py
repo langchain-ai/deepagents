@@ -877,6 +877,8 @@ class Glyphs:
     newline: str  # ⏎ vs \\n
     warning: str  # ⚠ vs [!]
     question: str  # ? vs [?]
+    hourglass: str  # ⏳ vs [~]
+    retry: str  # ↻ vs [R]
     arrow_up: str  # up arrow vs ^
     arrow_down: str  # down arrow vs v
     bullet: str  # bullet vs -
@@ -909,6 +911,8 @@ UNICODE_GLYPHS = Glyphs(
     newline="⏎",
     warning="⚠",
     question="?",
+    hourglass="⏳",
+    retry="↻",
     arrow_up="↑",
     arrow_down="↓",
     bullet="•",
@@ -937,6 +941,8 @@ ASCII_GLYPHS = Glyphs(
     newline="\\n",
     warning="[!]",
     question="[?]",
+    hourglass="[~]",
+    retry="[R]",
     arrow_up="^",
     arrow_down="v",
     bullet="-",

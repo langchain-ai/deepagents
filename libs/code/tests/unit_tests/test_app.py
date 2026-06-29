@@ -78,6 +78,14 @@ async def _wait_for_branch(app: DeepAgentsApp, branch: str) -> None:
     raise AssertionError(msg)
 
 
+def _rubric_status_label(glyph_name: str, text: str) -> str:
+    """Return the expected rubric status label for the active charset."""
+    from deepagents_code.config import get_glyphs
+
+    glyph = getattr(get_glyphs(), glyph_name)
+    return f"{glyph} {text}"
+
+
 def _closing_run_worker_mock(
     work: object, *args: object, **kwargs: object
 ) -> MagicMock:
@@ -4859,6 +4867,25 @@ class TestGoalCommand:
             )
             assert any("model down" in str(w._content) for w in app.query(ErrorMessage))
 
+    async def test_goal_command_reports_empty_rubric(self) -> None:
+        """An all-whitespace draft must error, not mount an empty review."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(app, "_generate_goal_rubric", return_value="   "):
+                await app._handle_command("/goal add refresh tokens")
+                await pilot.pause()
+                await pilot.pause()
+
+            assert any(
+                "returned an empty rubric" in str(w._content)
+                for w in app.query(ErrorMessage)
+            )
+            # No review widget is mounted and no pending proposal is recorded.
+            assert not any(app.query(GoalReviewMenu))
+            assert app._pending_goal_objective is None
+            assert app._pending_goal_rubric is None
+
     async def test_escape_cancels_goal_criteria_generation(self) -> None:
         """Esc while `/goal` is drafting criteria should cancel the proposal."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -4969,7 +4996,9 @@ class TestGoalCommand:
             assert app._pending_goal_objective is None
             assert app._pending_goal_rubric is None
             assert app._status_bar is not None
-            assert app._status_bar.rubric_label == "✓ Rubric set"
+            assert app._status_bar.rubric_label == _rubric_status_label(
+                "checkmark", "Rubric set"
+            )
             handle.assert_awaited_once_with("add refresh tokens")
 
     async def test_goal_accept_persists_thread_metadata(self) -> None:
@@ -5143,7 +5172,9 @@ class TestGoalCommand:
             assert app._pending_goal_rubric == "- draft criteria"
             assert app._status_bar is not None
             # A blocked goal reads distinctly from an active one in the badge.
-            assert app._status_bar.rubric_label == "⚠ Goal blocked"
+            assert app._status_bar.rubric_label == _rubric_status_label(
+                "warning", "Goal blocked"
+            )
 
     async def test_load_thread_history_remounts_pending_goal_review(self) -> None:
         """Resumed pending goal proposals should be actionable in the prompt."""
@@ -5199,7 +5230,9 @@ class TestGoalCommand:
 
             assert app._active_rubric == "- sticky"
             assert app._status_bar is not None
-            assert app._status_bar.rubric_label == "✓ Rubric set"
+            assert app._status_bar.rubric_label == _rubric_status_label(
+                "checkmark", "Rubric set"
+            )
 
     async def test_restore_legacy_rubric_without_sticky_marker(self) -> None:
         """Old checkpoints should still restore `rubric` as sticky state."""
@@ -5212,7 +5245,9 @@ class TestGoalCommand:
 
             assert app._active_rubric == "- legacy"
             assert app._status_bar is not None
-            assert app._status_bar.rubric_label == "✓ Rubric set"
+            assert app._status_bar.rubric_label == _rubric_status_label(
+                "checkmark", "Rubric set"
+            )
 
     async def test_sync_goal_rubric_state_refreshes_agent_tool_updates(self) -> None:
         """Agent-side `update_goal` changes should update live TUI state."""
@@ -5628,7 +5663,9 @@ class TestRubricCommand:
 
             assert app._active_rubric == "tests pass"
             assert app._status_bar is not None
-            assert app._status_bar.rubric_label == "✓ Rubric set"
+            assert app._status_bar.rubric_label == _rubric_status_label(
+                "checkmark", "Rubric set"
+            )
 
             with patch(
                 "deepagents_code.textual_adapter.execute_task_textual",
@@ -5651,7 +5688,9 @@ class TestRubricCommand:
 
             assert app._next_rubric == "update docs"
             assert app._status_bar is not None
-            assert app._status_bar.rubric_label == "✓ Rubric: next turn"
+            assert app._status_bar.rubric_label == _rubric_status_label(
+                "checkmark", "Rubric: next turn"
+            )
 
             with patch(
                 "deepagents_code.textual_adapter.execute_task_textual",
@@ -5742,7 +5781,9 @@ class TestRubricCommand:
             assert app._last_consumed_next_rubric is None
             assert app._last_consumed_next_previous_rubric is None
             assert app._status_bar is not None
-            assert app._status_bar.rubric_label == "✓ Rubric set"
+            assert app._status_bar.rubric_label == _rubric_status_label(
+                "checkmark", "Rubric set"
+            )
 
     async def test_rubric_next_persists_sticky_marker_before_turn(self) -> None:
         """The pre-turn write distinguishes one-shot graph input from sticky state."""
@@ -5802,7 +5843,9 @@ class TestRubricCommand:
             await pilot.pause()
 
             assert app._status_bar is not None
-            assert app._status_bar.rubric_label == "✓ Rubric: next turn"
+            assert app._status_bar.rubric_label == _rubric_status_label(
+                "checkmark", "Rubric: next turn"
+            )
 
             with patch(
                 "deepagents_code.textual_adapter.execute_task_textual",
@@ -5812,7 +5855,9 @@ class TestRubricCommand:
 
             assert app._next_rubric is None
             assert app._active_rubric == "sticky"
-            assert app._status_bar.rubric_label == "✓ Rubric set"
+            assert app._status_bar.rubric_label == _rubric_status_label(
+                "checkmark", "Rubric set"
+            )
 
     async def test_rubric_file_sets_sticky_rubric(self, tmp_path: Path) -> None:
         """`/rubric file` should read criteria from disk."""
@@ -5827,7 +5872,9 @@ class TestRubricCommand:
 
             assert app._active_rubric == "tests pass\nno unrelated files"
             assert app._status_bar is not None
-            assert app._status_bar.rubric_label == "✓ Rubric set"
+            assert app._status_bar.rubric_label == _rubric_status_label(
+                "checkmark", "Rubric set"
+            )
 
     async def test_rubric_file_reports_unparsable_path(self) -> None:
         """An unbalanced quote in the path should report a parse error."""
@@ -6067,7 +6114,9 @@ class TestRubricCommand:
 
             assert app._active_rubric == "no unrelated files"
             assert app._status_bar is not None
-            assert app._status_bar.rubric_label == "✓ Rubric set"
+            assert app._status_bar.rubric_label == _rubric_status_label(
+                "checkmark", "Rubric set"
+            )
 
     async def test_rubric_clear_resets_status(self) -> None:
         """`/rubric clear` should clear sticky and one-shot rubric state."""

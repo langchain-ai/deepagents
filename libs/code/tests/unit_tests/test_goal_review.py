@@ -7,7 +7,7 @@ from pathlib import Path
 
 from textual import events
 from textual.app import App, ComposeResult
-from textual.widgets import Markdown
+from textual.widgets import Markdown, Static
 
 from deepagents_code.widgets.ask_user import AskUserTextArea
 from deepagents_code.widgets.goal_review import GoalReviewMenu, GoalReviewResult
@@ -185,6 +185,8 @@ class TestGoalReviewMenu:
 
             assert future.done() is False
             assert text_input.display is True
+            help_widget = menu.query_one(".goal-review-help", Static)
+            assert "Enter some criteria" in str(help_widget.content)
 
     async def test_empty_rejection_does_not_submit(self) -> None:
         """Submitting blank rejection feedback should keep the editor open."""
@@ -205,6 +207,8 @@ class TestGoalReviewMenu:
 
             assert future.done() is False
             assert text_input.display is True
+            help_widget = menu.query_one(".goal-review-help", Static)
+            assert "Enter some feedback" in str(help_widget.content)
 
     async def test_blur_does_not_dismiss_proposal(self) -> None:
         """Losing focus must not resolve the proposal future."""

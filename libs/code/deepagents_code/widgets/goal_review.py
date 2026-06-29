@@ -20,11 +20,14 @@ from deepagents_code import theme
 from deepagents_code.config import get_glyphs, is_ascii_mode
 from deepagents_code.widgets.ask_user import AskUserTextArea
 
-_ACCEPT_OPTION_INDEX = 0
-_EDIT_OPTION_INDEX = 1
-_REJECT_OPTION_INDEX = 2
-_CANCEL_OPTION_INDEX = 3
-_OPTION_COUNT = 4
+# Menu options in display order: (label, `action_*` suffix). The list index is
+# the cursor position, so labels and dispatch stay aligned from one source.
+_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("1. Accept proposed criteria (y)", "accept"),
+    ("2. Edit criteria (e)", "edit"),
+    ("3. Reject with message (r)", "reject_with_message"),
+    ("4. Cancel (n)", "cancel"),
+)
 
 
 class GoalReviewAccepted(TypedDict):
@@ -139,7 +142,7 @@ class GoalReviewMenu(Container):
         self._criteria = criteria
         """Generated acceptance criteria proposed for the goal."""
 
-        self._selected = _ACCEPT_OPTION_INDEX
+        self._selected = 0
         """Index of the currently highlighted action option."""
 
         self._option_widgets: list[Static] = []
@@ -184,7 +187,7 @@ class GoalReviewMenu(Container):
                 classes="goal-review-markdown",
             )
         with Container(classes="goal-review-options-container"):
-            for _ in range(_OPTION_COUNT):
+            for _ in _OPTIONS:
                 widget = Static("", classes="goal-review-option")
                 self._option_widgets.append(widget)
                 yield widget
@@ -214,28 +217,22 @@ class GoalReviewMenu(Container):
         """Move selection up."""
         if self._input_mode is not None:
             return
-        self._selected = (self._selected - 1) % _OPTION_COUNT
+        self._selected = (self._selected - 1) % len(_OPTIONS)
         self._update_options()
 
     def action_move_down(self) -> None:
         """Move selection down."""
         if self._input_mode is not None:
             return
-        self._selected = (self._selected + 1) % _OPTION_COUNT
+        self._selected = (self._selected + 1) % len(_OPTIONS)
         self._update_options()
 
     def action_select(self) -> None:
         """Select the highlighted option."""
         if self._input_mode is not None:
             return
-        if self._selected == _ACCEPT_OPTION_INDEX:
-            self.action_accept()
-        elif self._selected == _EDIT_OPTION_INDEX:
-            self.action_edit()
-        elif self._selected == _REJECT_OPTION_INDEX:
-            self.action_reject_with_message()
-        elif self._selected == _CANCEL_OPTION_INDEX:
-            self.action_cancel()
+        action_name = _OPTIONS[self._selected][1]
+        getattr(self, f"action_{action_name}")()
 
     def action_accept(self) -> None:
         """Accept the proposed criteria unchanged."""
@@ -310,6 +307,7 @@ class GoalReviewMenu(Container):
             return
         criteria = self._edit_input.text.strip()
         if not criteria:
+            self._hint_empty_submission("criteria")
             return
         self._submit({"type": "edited", "criteria": criteria})
 
@@ -319,8 +317,26 @@ class GoalReviewMenu(Container):
             return
         message = self._edit_input.text.strip()
         if not message:
+            self._hint_empty_submission("feedback")
             return
         self._submit({"type": "rejected", "message": message})
+
+    def _hint_empty_submission(self, what: str) -> None:
+        """Explain why an empty editor submission did nothing.
+
+        Without this the editor silently no-ops on an empty Enter, leaving the
+        user unsure whether the keypress registered.
+
+        Args:
+            what: Noun for the missing content (e.g. `criteria`, `feedback`).
+        """
+        if self._help_widget is None:
+            return
+        glyphs = get_glyphs()
+        self._help_widget.update(
+            f"Enter some {what}, or press Esc to go back {glyphs.bullet} "
+            "Shift+Enter newline"
+        )
 
     def _submit(self, result: GoalReviewResult) -> None:
         """Resolve the result future and post the decision message."""
@@ -334,14 +350,8 @@ class GoalReviewMenu(Container):
 
     def _update_options(self) -> None:
         """Render option labels and help text."""
-        options = [
-            "1. Accept proposed criteria (y)",
-            "2. Edit criteria (e)",
-            "3. Reject with message (r)",
-            "4. Cancel (n)",
-        ]
-        for i, (text, widget) in enumerate(
-            zip(options, self._option_widgets, strict=True)
+        for i, ((text, _), widget) in enumerate(
+            zip(_OPTIONS, self._option_widgets, strict=True)
         ):
             cursor = f"{get_glyphs().cursor} " if i == self._selected else "  "
             widget.update(f"{cursor}{text}")

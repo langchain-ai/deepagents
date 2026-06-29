@@ -7627,11 +7627,9 @@ class DeepAgentsApp(App):
         """Persist TUI-owned goal/rubric metadata to the current thread.
 
         Returns:
-            `True` if the state was written (or there is no thread to write
-                to yet)
-            `False` if the write was attempted and failed.
-                Callers use this to avoid telling the user a change was saved
-                when it was not.
+            `True` when the state was written or there is no thread to write to
+            yet; `False` when a write was attempted and failed. Callers use this
+            to avoid telling the user a change was saved when it was not.
         """
         if not self._agent or not self._lc_thread_id:
             return True
@@ -7642,6 +7640,9 @@ class DeepAgentsApp(App):
         try:
             if remote := self._remote_agent():
                 await remote.aensure_thread(remote_config)
+                # The remote API requires an explicit node to attribute the
+                # write to; locally LangGraph defaults to the last executed
+                # node, which is the correct attribution here.
                 await remote.aupdate_state(
                     config, self._goal_state_update(), as_node="model"
                 )
@@ -8306,7 +8307,10 @@ class DeepAgentsApp(App):
             path, text = await asyncio.to_thread(
                 _read_text_file_expanding_user, parts[0]
             )
-        except OSError as exc:
+        except (OSError, UnicodeError) as exc:
+            # `UnicodeError` (e.g. `UnicodeDecodeError`) subclasses `ValueError`,
+            # not `OSError`, so a binary/non-UTF-8 file would otherwise escape
+            # this handler and crash the input dispatch.
             await self._mount_message(
                 ErrorMessage(f"Could not read rubric file: {exc}")
             )

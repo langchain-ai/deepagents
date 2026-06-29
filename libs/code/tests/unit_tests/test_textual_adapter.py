@@ -21,7 +21,7 @@ from rich.console import Console
 from deepagents_code import config as config_module
 from deepagents_code._ask_user_types import AskUserWidgetResult, Question
 from deepagents_code.approval_mode import APPROVAL_MODE_NAMESPACE, approval_mode_key
-from deepagents_code.config import build_stream_config
+from deepagents_code.config import ASCII_GLYPHS, UNICODE_GLYPHS, build_stream_config
 from deepagents_code.textual_adapter import (
     ModelStats,
     SessionStats,
@@ -891,6 +891,20 @@ class TestIsSummarizationChunk:
 class TestFormatRubricEvent:
     """Tests for rubric custom-stream event formatting."""
 
+    @pytest.fixture(autouse=True)
+    def _pin_unicode_glyphs(self) -> Generator[None, None, None]:
+        """Pin Unicode glyphs so literal assertions hold on any terminal.
+
+        `_format_rubric_event` resolves glyphs via `get_glyphs()`, which depends
+        on charset detection. Pinning keeps these assertions deterministic in
+        CI; `test_ascii_mode_degrades_to_ascii_glyphs` covers the ASCII path.
+        """
+        with patch(
+            "deepagents_code.textual_adapter.get_glyphs",
+            return_value=UNICODE_GLYPHS,
+        ):
+            yield
+
     def test_start_event_mentions_iteration(self) -> None:
         """Start events should surface visible grading state."""
         assert (
@@ -975,6 +989,40 @@ class TestFormatRubricEvent:
     def test_unrelated_event_returns_none(self) -> None:
         """Only rubric events should render rubric messages."""
         assert _format_rubric_event({"type": "subagent_start"}) is None
+
+    def test_ascii_mode_degrades_to_ascii_glyphs(self) -> None:
+        """In ASCII mode the transcript glyphs must degrade, not stay Unicode."""
+        with patch(
+            "deepagents_code.textual_adapter.get_glyphs",
+            return_value=ASCII_GLYPHS,
+        ):
+            start = _format_rubric_event(
+                {"type": "rubric_evaluation_start", "iteration": 0},
+            )
+            revision = _format_rubric_event(
+                {
+                    "type": "rubric_evaluation_end",
+                    "result": "needs_revision",
+                    "criteria": [
+                        {"name": "tests pass", "passed": False, "gap": "not run"},
+                    ],
+                },
+            )
+            satisfied = _format_rubric_event(
+                {"type": "rubric_evaluation_end", "result": "satisfied"},
+            )
+            failed = _format_rubric_event(
+                {"type": "rubric_evaluation_end", "result": "failed"},
+            )
+        assert (
+            start == f"{ASCII_GLYPHS.hourglass} Grading against rubric (iteration 1)..."
+        )
+        assert revision == (
+            f"{ASCII_GLYPHS.retry} Rubric needs revision\n"
+            f"  {ASCII_GLYPHS.error} tests pass — not run"
+        )
+        assert satisfied == f"{ASCII_GLYPHS.checkmark} Rubric satisfied"
+        assert failed == f"{ASCII_GLYPHS.warning} Rubric grader failed"
 
 
 class _FakeAgent:
@@ -2309,9 +2357,15 @@ class TestExecuteTaskTextualRubricRevisionStreaming:
             request_approval=_mock_approval,
         )
 
-        with patch(
-            "deepagents_code.textual_adapter.AssistantMessage",
-            side_effect=FakeAssistantMessage,
+        with (
+            patch(
+                "deepagents_code.textual_adapter.AssistantMessage",
+                side_effect=FakeAssistantMessage,
+            ),
+            patch(
+                "deepagents_code.textual_adapter.get_glyphs",
+                return_value=UNICODE_GLYPHS,
+            ),
         ):
             await execute_task_textual(
                 user_input="hello",
@@ -2332,8 +2386,11 @@ class TestExecuteTaskTextualRubricRevisionStreaming:
         app_messages = [widget for widget in mounted if isinstance(widget, AppMessage)]
         app_text = [str(widget._content) for widget in app_messages]
         assert app_text == [
-            "⏳ Grading against rubric (iteration 1)…",
-            "↻ Rubric needs revision: say yellow",
+            (
+                f"{UNICODE_GLYPHS.hourglass} Grading against rubric (iteration 1)"
+                f"{UNICODE_GLYPHS.ellipsis}"
+            ),
+            f"{UNICODE_GLYPHS.retry} Rubric needs revision: say yellow",
         ]
 
 

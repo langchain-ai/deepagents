@@ -56,7 +56,7 @@ from deepagents_code._session_stats import (
     SpinnerStatus as SpinnerStatus,
     format_token_count as format_token_count,
 )
-from deepagents_code.config import build_stream_config
+from deepagents_code.config import build_stream_config, get_glyphs
 from deepagents_code.file_ops import FileOpTracker
 from deepagents_code.formatting import format_duration
 from deepagents_code.hooks import dispatch_hook
@@ -219,41 +219,52 @@ def _format_rubric_event(data: dict[str, Any]) -> str | None:
     """Format a rubric custom-stream event for the chat transcript.
 
     Returns:
-        A user-visible message for rubric events, or `None` for custom stream
-            events that are not rubric events.
+        A user-visible message for rubric events, or `None` for custom-stream
+        events that are not rubric events.
     """
+    glyphs = get_glyphs()
     event_type = data.get("type")
     if event_type == "rubric_evaluation_start":
         iteration = data.get("iteration", 0)
         if isinstance(iteration, int):
-            return f"⏳ Grading against rubric (iteration {iteration + 1})…"
-        return "⏳ Grading against rubric…"
+            return (
+                f"{glyphs.hourglass} Grading against rubric "
+                f"(iteration {iteration + 1}){glyphs.ellipsis}"
+            )
+        return f"{glyphs.hourglass} Grading against rubric{glyphs.ellipsis}"
     if event_type != "rubric_evaluation_end":
         return None
 
     result = data.get("result")
     explanation = str(data.get("explanation") or "").strip()
     if result == "satisfied":
-        return "✓ Rubric satisfied"
+        return f"{glyphs.checkmark} Rubric satisfied"
     if result == "needs_revision":
         lines = [
-            "↻ Rubric needs revision" + (f": {explanation}" if explanation else ""),
+            f"{glyphs.retry} Rubric needs revision"
+            + (f": {explanation}" if explanation else ""),
         ]
         for criterion in data.get("criteria", []):
             if isinstance(criterion, dict) and criterion.get("passed") is False:
                 name = str(criterion.get("name", "criterion"))
                 gap = str(criterion.get("gap", "")).strip()
-                lines.append(f"  ✗ {name}" + (f" — {gap}" if gap else ""))
+                lines.append(f"  {glyphs.error} {name}" + (f" — {gap}" if gap else ""))
         return "\n".join(lines)
     if result == "max_iterations_reached":
-        return "⚠ Rubric not satisfied (max iterations reached)"
+        return f"{glyphs.warning} Rubric not satisfied (max iterations reached)"
     if result in {"failed", "grader_error"}:
         label = "grader failed" if result == "failed" else "grader error"
-        return "⚠ Rubric " + label + (f": {explanation}" if explanation else "")
+        return (
+            f"{glyphs.warning} Rubric "
+            + label
+            + (f": {explanation}" if explanation else "")
+        )
     # A `rubric_evaluation_end` with an unrecognized result is still a terminal
     # grading event; surface it rather than silently dropping it (e.g. if the
     # SDK adds a new verdict the chat would otherwise go quiet mid-turn).
-    return "⚠ Rubric grading ended" + (f": {explanation}" if explanation else "")
+    return f"{glyphs.warning} Rubric grading ended" + (
+        f": {explanation}" if explanation else ""
+    )
 
 
 class TextualUIAdapter:

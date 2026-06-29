@@ -1491,6 +1491,8 @@ def create_cli_agent(
     # and writes them from `after_model` (token count from the latest
     # `AIMessage.usage_metadata`, model spec from `context["effective_model"]`).
     # The CLI reads them back from `state_values` on thread resume.
+    # Goal tools: exposes the read-only `get_goal`/`get_rubric` tools and the
+    # constrained `update_goal` tool, and injects goal guidance into the prompt.
     from deepagents_code.goal_tools import GoalToolsMiddleware
     from deepagents_code.resume_state import ResumeStateMiddleware
 

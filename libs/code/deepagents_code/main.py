@@ -653,7 +653,11 @@ def _resolve_rubric_text(rubric: str | None) -> str | None:
         path = rubric[1:]
         try:
             text = Path(path).expanduser().read_text(encoding="utf-8")
-        except OSError as exc:
+        except (OSError, UnicodeError) as exc:
+            # `UnicodeError` (e.g. `UnicodeDecodeError`) subclasses `ValueError`,
+            # not `OSError`. Catch it here so a binary/non-UTF-8 file yields the
+            # framed "Could not read rubric file" message instead of a raw codec
+            # error.
             msg = f"Could not read rubric file {path!r}: {exc}."
             raise ValueError(msg) from exc
         if not text.strip():

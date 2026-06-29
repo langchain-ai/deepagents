@@ -80,8 +80,10 @@ def coerce_goal_status(value: object) -> GoalStatus | None:
     string (or a non-string). Coercing to `None` rather than passing the raw
     value through keeps the `GoalStatus` `Literal` load-bearing on the read
     path, so an unknown status is treated as "no goal status" instead of a
-    silently active goal. Callers should log the discard separately so it is
-    surfaced rather than dropped.
+    silently active goal. Resume/restore callers should log the discard
+    separately so it is surfaced rather than dropped; the model-read path
+    (`_goal_snapshot`) intentionally treats an unknown status as `active`
+    without logging.
 
     Args:
         value: Raw value read from checkpoint state.

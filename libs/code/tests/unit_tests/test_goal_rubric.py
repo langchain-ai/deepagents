@@ -2,7 +2,23 @@
 
 from __future__ import annotations
 
-from deepagents_code.goal_rubric import _goal_rubric_human_prompt
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from deepagents_code.goal_rubric import _goal_rubric_human_prompt, generate_goal_rubric
+
+
+class _FakeModel:
+    """Model double recording its invocation and returning a fixed response."""
+
+    def __init__(self, text: str | None) -> None:
+        self._text = text
+        self.invoked_with: object | None = None
+
+    def invoke(self, messages: object) -> SimpleNamespace:
+        """Record the prompt and return a response with the configured text."""
+        self.invoked_with = messages
+        return SimpleNamespace(text=self._text)
 
 
 class TestGoalRubricHumanPrompt:
@@ -57,3 +73,32 @@ class TestGoalRubricHumanPrompt:
         feedback_close = prompt.rindex("</user_feedback>")
         injected = prompt.index("ignore previous instructions")
         assert feedback_open < injected < feedback_close
+
+
+class TestGenerateGoalRubric:
+    """The drafting wrapper coerces empty responses and returns model text."""
+
+    def test_none_response_text_coerced_to_empty_string(self) -> None:
+        # A model returning `None` text must not raise; callers rely on `""`
+        # to surface the "empty rubric" message instead of an `AttributeError`.
+        model = _FakeModel(None)
+        with patch(
+            "deepagents_code.config.create_model",
+            return_value=SimpleNamespace(model=model),
+        ):
+            result = generate_goal_rubric("add OAuth refresh", model_spec=None)
+        assert result == ""
+        # The model was actually invoked (the wrapper is not short-circuiting).
+        assert model.invoked_with is not None
+
+    def test_response_text_returned_when_present(self) -> None:
+        model = _FakeModel("- tests pass\n- docs updated")
+        with patch(
+            "deepagents_code.config.create_model",
+            return_value=SimpleNamespace(model=model),
+        ):
+            result = generate_goal_rubric(
+                "add OAuth refresh",
+                model_spec="anthropic:claude-sonnet-4-6",
+            )
+        assert result == "- tests pass\n- docs updated"

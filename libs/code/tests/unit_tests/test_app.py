@@ -5083,6 +5083,7 @@ class TestGoalCommand:
                     "_goal_status": "active",
                     "_goal_rubric": "- tests pass",
                     "_goal_status_note": None,
+                    "_pending_goal_completion_note": None,
                     "_pending_goal_objective": None,
                     "_pending_goal_rubric": None,
                 },
@@ -5375,6 +5376,118 @@ class TestGoalCommand:
             assert app._goal_status == "complete"
             assert app._goal_status_note == "tests pass"
             assert app._active_rubric == "- tests pass"
+
+    async def test_sync_goal_completion_auto_commits_after_rubric_satisfied(
+        self,
+    ) -> None:
+        """Auto mode should commit a staged completion after rubric approval."""
+        updater = SimpleNamespace(aupdate_state=AsyncMock())
+        app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = updater
+            app._lc_thread_id = "thread-1"
+            app._active_goal = "add refresh tokens"
+            app._goal_status = "active"
+            app._active_rubric = "- tests pass"
+            assert app._session_state is not None
+            app._session_state.auto_approve = True
+
+            fetch = AsyncMock(
+                return_value={
+                    "_goal_objective": "add refresh tokens",
+                    "_goal_status": "active",
+                    "_goal_rubric": "- tests pass",
+                    "_pending_goal_completion_note": "tests pass",
+                    "_rubric_status": "satisfied",
+                }
+            )
+            with patch.object(app, "_get_thread_state_values", fetch):
+                await app._sync_goal_rubric_state_from_thread()
+
+            assert app._goal_status == "complete"
+            assert app._goal_status_note == "tests pass"
+            assert app._pending_goal_completion_note is None
+            assert updater.aupdate_state.await_args is not None
+            state_update = updater.aupdate_state.await_args.args[1]
+            assert state_update["_goal_status"] == "complete"
+            assert state_update["_pending_goal_completion_note"] is None
+
+    async def test_sync_goal_completion_rejects_when_rubric_not_satisfied(
+        self,
+    ) -> None:
+        """A failed final rubric result should clear a staged completion request."""
+        updater = SimpleNamespace(aupdate_state=AsyncMock())
+        app = DeepAgentsApp(agent=MagicMock(), auto_approve=True)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = updater
+            app._lc_thread_id = "thread-1"
+            app._active_goal = "add refresh tokens"
+            app._goal_status = "active"
+            app._active_rubric = "- tests pass"
+            assert app._session_state is not None
+            app._session_state.auto_approve = True
+
+            fetch = AsyncMock(
+                return_value={
+                    "_goal_objective": "add refresh tokens",
+                    "_goal_status": "active",
+                    "_goal_rubric": "- tests pass",
+                    "_pending_goal_completion_note": "tests pass",
+                    "_rubric_status": "needs_revision",
+                }
+            )
+            with patch.object(app, "_get_thread_state_values", fetch):
+                await app._sync_goal_rubric_state_from_thread()
+                await pilot.pause()
+
+            assert app._goal_status == "active"
+            assert app._pending_goal_completion_note is None
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "rubric was not satisfied" in rendered
+
+    async def test_sync_goal_completion_requests_manual_approval(
+        self,
+    ) -> None:
+        """Manual mode should ask before committing a rubric-approved completion."""
+        updater = SimpleNamespace(aupdate_state=AsyncMock())
+        app = DeepAgentsApp(agent=MagicMock(), auto_approve=False)
+        approval = asyncio.get_running_loop().create_future()
+        approval.set_result({"type": "approve"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = updater
+            app._lc_thread_id = "thread-1"
+            app._active_goal = "add refresh tokens"
+            app._goal_status = "active"
+            app._active_rubric = "- tests pass"
+            assert app._session_state is not None
+            app._session_state.auto_approve = False
+
+            fetch = AsyncMock(
+                return_value={
+                    "_goal_objective": "add refresh tokens",
+                    "_goal_status": "active",
+                    "_goal_rubric": "- tests pass",
+                    "_pending_goal_completion_note": "tests pass",
+                    "_rubric_status": "satisfied",
+                }
+            )
+            request_approval = AsyncMock(return_value=approval)
+            with (
+                patch.object(app, "_get_thread_state_values", fetch),
+                patch.object(app, "_request_approval", request_approval),
+            ):
+                await app._sync_goal_rubric_state_from_thread()
+
+            request_approval.assert_awaited_once()
+            assert request_approval.await_args is not None
+            action_requests = request_approval.await_args.args[0]
+            assert action_requests[0]["name"] == "update_goal"
+            assert action_requests[0]["args"]["status"] == "complete"
+            assert app._goal_status == "complete"
+            assert app._pending_goal_completion_note is None
 
     async def test_sync_goal_rubric_state_drops_unknown_status(self) -> None:
         """An unrecognized persisted goal status normalizes to None."""
@@ -6001,6 +6114,7 @@ class TestRubricCommand:
                     "_goal_status": "active",
                     "_goal_rubric": "tests pass",
                     "_goal_status_note": None,
+                    "_pending_goal_completion_note": None,
                     "_pending_goal_objective": None,
                     "_pending_goal_rubric": None,
                 },
@@ -6185,6 +6299,7 @@ class TestRubricCommand:
                 "_goal_status": None,
                 "_goal_rubric": None,
                 "_goal_status_note": None,
+                "_pending_goal_completion_note": None,
                 "_pending_goal_objective": None,
                 "_pending_goal_rubric": None,
             }
@@ -6253,6 +6368,7 @@ class TestRubricCommand:
                 "_goal_status": None,
                 "_goal_rubric": None,
                 "_goal_status_note": None,
+                "_pending_goal_completion_note": None,
                 "_pending_goal_objective": None,
                 "_pending_goal_rubric": None,
             }

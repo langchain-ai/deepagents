@@ -20,6 +20,8 @@ have no model-node write site; the two exceptions are called out below:
     the accepted goal and its lifecycle status. `_goal_objective`/`_goal_rubric`
     are client-only, but `_goal_status`/`_goal_status_note` are *also* written
     from inside the graph by the agent's `update_goal` tool.
+- `_pending_goal_completion_note` — an agent-requested completion awaiting the
+    post-turn rubric result and, when needed, user approval.
 - `_sticky_rubric` — the TUI-owned persistent rubric. This is separate from
     the public `rubric` graph input so one-shot rubric turns can be checkpointed
     without being restored as sticky state.
@@ -121,6 +123,9 @@ class GoalRubricChannels(AgentState):
 
     _goal_status_note: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Evidence or blocker note recorded by `update_goal`."""
+
+    _pending_goal_completion_note: Annotated[NotRequired[str | None], PrivateStateAttr]
+    """Completion evidence awaiting rubric and user approval."""
 
     _sticky_rubric: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Persistent rubric owned by the TUI, distinct from graph input `rubric`."""

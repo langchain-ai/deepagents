@@ -41,15 +41,15 @@ if TYPE_CHECKING:
 RubricSource = Literal["goal", "sticky", "invocation"]
 """Where the active rubric criteria came from, as reported to the model."""
 
-GOAL_TOOLS_SYSTEM_PROMPT = (
-    "The user may set a persistent goal with `/goal` and acceptance criteria "
-    "with `/rubric` or `/criteria`. Use `get_rubric` to inspect the current "
-    "criteria. When a goal is active, use `get_goal` to inspect the objective, "
-    "accepted criteria, and status. Use `update_goal` only when you have "
-    "evidence that the goal is complete or blocked. Do not pause, resume, clear, "
-    "replace, or create goals yourself; those are user-controlled lifecycle "
-    "actions."
-)
+GOAL_TOOLS_SYSTEM_PROMPT = """## Goal and Rubric Tools
+
+The user may set a persistent goal with `/goal` and acceptance criteria with `/rubric` or `/criteria`.
+Use `get_rubric` to inspect the current criteria.
+When a goal is active, use `get_goal` to inspect the objective, accepted criteria, and status.
+Use `update_goal` only when you have evidence that the goal is complete or blocked.
+Completion is only recorded after the accepted rubric is satisfied.
+Do not pause, resume, clear, replace, or create goals yourself; those are user-controlled lifecycle actions."""  # noqa: E501
+"""Model-visible guidance injected before each request by `GoalToolsMiddleware`."""
 
 ResponseT = TypeVar("ResponseT")
 
@@ -238,15 +238,18 @@ def _update_goal_command(
         state: Current graph state injected by LangGraph.
 
     Returns:
-        Command updating goal metadata and returning a tool response. When no
-        goal is set or `note` is empty, no status is committed and the
-        `ToolMessage` explains what the model must do instead.
+        Command updating goal metadata and returning a tool response.
+            A `complete` request stages `_pending_goal_completion_note` for
+            the TUI to resolve once the rubric verdict lands, rather than
+            committing the status directly; `blocked` commits immediately.
+
+            When no goal is set or `note` is empty, nothing is committed
+            and the `ToolMessage` explains what the model must do instead.
     """
-    # Enforced preconditions are only: an active goal exists and `note` is
-    # non-empty. Criteria satisfaction is intentionally NOT verified here — the
-    # rubric grader (`RubricMiddleware`) owns that. The tool docstring's "use
-    # complete only when the criteria are satisfied" is model guidance, not an
-    # enforced contract; do not add a criteria check here.
+    # Enforced preconditions here are only: an active goal exists and `note` is
+    # non-empty. Completion is staged because `RubricMiddleware` records its
+    # final verdict after the model stops making tool calls; the TUI resolves
+    # the staged request during post-turn checkpoint sync.
     objective = state.get("_goal_objective")
     if not isinstance(objective, str) or not objective:
         return Command(
@@ -276,10 +279,26 @@ def _update_goal_command(
                 ]
             }
         )
+    if status == "complete":
+        return Command(
+            update={
+                "_pending_goal_completion_note": clean_note,
+                "messages": [
+                    ToolMessage(
+                        content=(
+                            "Goal completion requested. It will be recorded if "
+                            "the accepted rubric is satisfied."
+                        ),
+                        tool_call_id=tool_call_id,
+                    )
+                ],
+            }
+        )
     return Command(
         update={
             "_goal_status": status,
             "_goal_status_note": clean_note,
+            "_pending_goal_completion_note": None,
             "messages": [
                 ToolMessage(
                     content=f"Goal marked {status}. {clean_note}",
@@ -341,7 +360,8 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             """Mark the current goal complete or blocked with evidence.
 
             Use `complete` only when the accepted criteria are satisfied; use
-            `blocked` when you cannot proceed without user input. Do not create,
+            `blocked` when you cannot proceed without user input. Completion is
+            rejected unless the latest rubric result is satisfied. Do not create,
             pause, resume, clear, or replace goals — those are user-controlled.
 
             Args:

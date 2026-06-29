@@ -203,6 +203,7 @@ def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> list[str]:
         "_goal_status",
         "_goal_rubric",
         "_goal_status_note",
+        "_pending_goal_completion_note",
         "_pending_goal_objective",
         "_pending_goal_rubric",
     ):
@@ -1205,6 +1206,12 @@ class _ThreadHistoryPayload:
     goal_status_note: str | None = None
     """Persisted evidence or blocker note, if any."""
 
+    pending_goal_completion_note: str | None = None
+    """Persisted completion evidence awaiting rubric/user approval."""
+
+    rubric_status: str | None = None
+    """Latest rubric grading status from `RubricMiddleware`, if any."""
+
     pending_goal_objective: str | None = None
     """Persisted pending goal objective, if any."""
 
@@ -2085,6 +2092,9 @@ class DeepAgentsApp(App):
 
         self._goal_status_note: str | None = None
         """Evidence or blocker note recorded by the model's goal tool."""
+
+        self._pending_goal_completion_note: str | None = None
+        """Agent-requested completion awaiting rubric and user approval."""
 
         self._pending_goal_objective: str | None = None
         """Goal objective awaiting user acceptance of proposed criteria."""
@@ -7642,6 +7652,9 @@ class DeepAgentsApp(App):
             "_goal_status": self._goal_status if self._active_goal else None,
             "_goal_rubric": self._active_rubric if self._active_goal else None,
             "_goal_status_note": self._goal_status_note if self._active_goal else None,
+            "_pending_goal_completion_note": (
+                self._pending_goal_completion_note if self._active_goal else None
+            ),
             "_pending_goal_objective": self._pending_goal_objective,
             "_pending_goal_rubric": self._pending_goal_rubric,
         }
@@ -7708,6 +7721,7 @@ class DeepAgentsApp(App):
         self._active_goal = None
         self._goal_status = None
         self._goal_status_note = None
+        self._pending_goal_completion_note = None
         self._clear_pending_goal_rubric()
 
     def _clear_pending_goal_rubric(self) -> None:
@@ -7768,6 +7782,10 @@ class DeepAgentsApp(App):
             goal_status=coerce_goal_status(state_values.get("_goal_status")),
             goal_rubric=_as_str(state_values.get("_goal_rubric")),
             goal_status_note=_as_str(state_values.get("_goal_status_note")),
+            pending_goal_completion_note=_as_str(
+                state_values.get("_pending_goal_completion_note")
+            ),
+            rubric_status=_as_str(state_values.get("_rubric_status")),
             pending_goal_objective=_as_str(state_values.get("_pending_goal_objective")),
             pending_goal_rubric=_as_str(state_values.get("_pending_goal_rubric")),
         )
@@ -7777,6 +7795,7 @@ class DeepAgentsApp(App):
         self._active_goal = payload.goal_objective
         self._goal_status = payload.goal_status
         self._goal_status_note = payload.goal_status_note
+        self._pending_goal_completion_note = payload.pending_goal_completion_note
         if payload.goal_rubric:
             self._active_rubric = payload.goal_rubric
         elif payload.sticky_rubric_recorded:
@@ -7816,6 +7835,106 @@ class DeepAgentsApp(App):
             text = f"{text}\n\n{note}"
         await self._mount_message(AppMessage(text))
 
+    async def _commit_pending_goal_completion(
+        self,
+        note: str,
+        *,
+        previous_status: str | None,
+    ) -> None:
+        """Mark a rubric-approved completion request complete."""
+        self._goal_status = "complete"
+        self._goal_status_note = note
+        self._pending_goal_completion_note = None
+        self._sync_status_rubric()
+        persisted = await self._persist_goal_rubric_state()
+        await self._announce_goal_status_transition(previous_status)
+        if not persisted:
+            await self._mount_message(
+                ErrorMessage(
+                    "Goal marked complete for this session, but it could not "
+                    "be saved to the thread."
+                )
+            )
+
+    async def _clear_pending_goal_completion(self, message: str) -> None:
+        """Clear a completion request that did not become complete."""
+        self._pending_goal_completion_note = None
+        persisted = await self._persist_goal_rubric_state()
+        await self._mount_goal_rubric_result(message, persisted=persisted)
+
+    async def _resolve_pending_goal_completion(
+        self,
+        *,
+        rubric_status: str | None,
+        previous_status: str | None,
+    ) -> bool:
+        """Resolve a staged completion request after rubric grading.
+
+        Returns:
+            `True` when the request committed the goal as complete.
+        """
+        note = self._pending_goal_completion_note
+        if not self._active_goal or not note or self._goal_status == "complete":
+            return False
+
+        if rubric_status != "satisfied":
+            await self._clear_pending_goal_completion(
+                "Goal completion was not recorded because the rubric was not satisfied."
+            )
+            return False
+
+        if self._session_state is not None and self._session_state.auto_approve:
+            await self._commit_pending_goal_completion(
+                note,
+                previous_status=previous_status,
+            )
+            return True
+
+        action_requests = [
+            {
+                "name": "update_goal",
+                "args": {"status": "complete", "note": note},
+                "description": (
+                    "The agent believes the current goal is complete. "
+                    "Approve to mark it complete."
+                ),
+            }
+        ]
+        try:
+            future = await self._request_approval(action_requests, self._assistant_id)
+            decision = await future
+        except Exception:
+            logger.warning("Failed to request goal completion approval", exc_info=True)
+            self.notify(
+                "Could not request approval to mark the goal complete.",
+                severity="warning",
+                markup=False,
+            )
+            return False
+
+        decision_type = decision.get("type") if isinstance(decision, dict) else None
+        if decision_type == "auto_approve_all":
+            await self._on_auto_approve_enabled()
+            await self._commit_pending_goal_completion(
+                note,
+                previous_status=previous_status,
+            )
+            return True
+        if decision_type == "approve":
+            await self._commit_pending_goal_completion(
+                note,
+                previous_status=previous_status,
+            )
+            return True
+
+        reject_message = decision.get("message") if isinstance(decision, dict) else None
+        if isinstance(reject_message, str) and reject_message.strip():
+            message = f"Goal completion rejected: {reject_message.strip()}"
+        else:
+            message = "Goal completion rejected."
+        await self._clear_pending_goal_completion(message)
+        return False
+
     async def _sync_goal_rubric_state_from_thread(self) -> None:
         """Refresh TUI-owned goal/rubric metadata from the active checkpoint."""
         if not self._lc_thread_id:
@@ -7834,6 +7953,7 @@ class DeepAgentsApp(App):
             or self._active_rubric
             or self._next_rubric
             or self._goal_status_note
+            or self._pending_goal_completion_note
             or self._pending_goal_objective
             or self._pending_goal_rubric
             or self._last_consumed_next_rubric is not None
@@ -7878,6 +7998,7 @@ class DeepAgentsApp(App):
                 payload.goal_status,
                 payload.goal_rubric,
                 payload.goal_status_note,
+                payload.pending_goal_completion_note,
                 payload.pending_goal_objective,
                 payload.pending_goal_rubric,
             )
@@ -7896,7 +8017,12 @@ class DeepAgentsApp(App):
             payload = replace(payload, rubric=self._last_consumed_next_previous_rubric)
         previous_status = self._goal_status
         self._restore_goal_rubric_state(payload)
-        await self._announce_goal_status_transition(previous_status)
+        completion_committed = await self._resolve_pending_goal_completion(
+            rubric_status=payload.rubric_status,
+            previous_status=previous_status,
+        )
+        if not completion_committed:
+            await self._announce_goal_status_transition(previous_status)
         if one_shot_rubric_consumed:
             await self._persist_goal_rubric_state()
         await self._remount_pending_goal_rubric_review()

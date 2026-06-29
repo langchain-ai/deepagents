@@ -4,6 +4,7 @@ from collections.abc import Callable
 from types import SimpleNamespace
 from typing import get_type_hints
 
+import pytest
 from langchain.agents.middleware.types import PrivateStateAttr
 from langchain_core.messages import SystemMessage
 from langgraph.types import Command
@@ -138,8 +139,8 @@ def test_update_goal_without_active_goal_returns_tool_message_only() -> None:
     assert message.tool_call_id == "call-1"
 
 
-def test_update_goal_marks_complete_with_note() -> None:
-    """`update_goal` should only update status/note plus tool response."""
+def test_update_goal_requests_complete_with_note() -> None:
+    """Completion is staged until the post-turn rubric result is available."""
     command = _update_goal_command(
         status="complete",
         note="tests pass",
@@ -149,11 +150,35 @@ def test_update_goal_marks_complete_with_note() -> None:
 
     assert isinstance(command, Command)
     assert command.update is not None
-    assert command.update["_goal_status"] == "complete"
-    assert command.update["_goal_status_note"] == "tests pass"
+    assert command.update["_pending_goal_completion_note"] == "tests pass"
+    assert "_goal_status" not in command.update
+    assert "_goal_status_note" not in command.update
     message = command.update["messages"][0]
-    assert message.content == "Goal marked complete. tests pass"
+    assert message.content == (
+        "Goal completion requested. It will be recorded if the accepted rubric "
+        "is satisfied."
+    )
     assert message.tool_call_id == "call-1"
+
+
+@pytest.mark.parametrize("rubric_status", [None, "needs_revision", "satisfied"])
+def test_update_goal_completion_request_ignores_current_rubric_status(
+    rubric_status: str | None,
+) -> None:
+    """The final rubric result is checked after the agent turn, not in-tool."""
+    state = {"_goal_objective": "add refresh tokens"}
+    if rubric_status is not None:
+        state["_rubric_status"] = rubric_status
+    command = _update_goal_command(
+        status="complete",
+        note="tests pass",
+        tool_call_id="call-1",
+        state=state,
+    )
+
+    assert isinstance(command, Command)
+    assert command.update is not None
+    assert command.update["_pending_goal_completion_note"] == "tests pass"
 
 
 def test_update_goal_marks_blocked_with_note() -> None:
@@ -169,6 +194,7 @@ def test_update_goal_marks_blocked_with_note() -> None:
     assert command.update is not None
     assert command.update["_goal_status"] == "blocked"
     assert command.update["_goal_status_note"] == "waiting on API docs"
+    assert command.update["_pending_goal_completion_note"] is None
     assert (
         command.update["messages"][0].content
         == "Goal marked blocked. waiting on API docs"
@@ -226,7 +252,7 @@ def test_update_goal_tool_invokes_command_builder() -> None:
     )
     assert isinstance(command, Command)
     assert command.update is not None
-    assert command.update["_goal_status"] == "complete"
+    assert command.update["_pending_goal_completion_note"] == "all green"
     assert command.update["messages"][0].tool_call_id == "call-9"
 
 
@@ -341,6 +367,7 @@ def test_goal_tool_state_marks_goal_fields_private() -> None:
         "_goal_status",
         "_goal_rubric",
         "_goal_status_note",
+        "_pending_goal_completion_note",
         "_sticky_rubric",
     ):
         assert PrivateStateAttr in getattr(hints[field], "__metadata__", ())

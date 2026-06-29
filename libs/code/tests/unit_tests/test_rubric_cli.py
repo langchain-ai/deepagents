@@ -15,7 +15,6 @@ if TYPE_CHECKING:
 
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig, _read_env_int
-from deepagents_code.agent import _build_rubric_middleware
 from deepagents_code.main import _resolve_rubric_text
 from deepagents_code.non_interactive import (
     StreamState,
@@ -200,20 +199,3 @@ class TestProcessRubricEvent:
         )
         assert "grader failed" in out
         assert "bad rubric" in out
-
-
-class TestBuildRubricMiddleware:
-    def test_returns_none_when_sdk_lacks_middleware(self) -> None:
-        """The pinned SDK predates `RubricMiddleware`, so this degrades to None.
-
-        When a future SDK ships `RubricMiddleware`, this test should be updated
-        to assert a middleware instance is returned instead.
-        """
-        import importlib.util
-
-        if importlib.util.find_spec("deepagents.middleware.outcomes") is not None:
-            pytest.skip("Installed SDK provides RubricMiddleware")
-        assert (
-            _build_rubric_middleware(grader_model="anthropic:x", max_iterations=3)
-            is None
-        )

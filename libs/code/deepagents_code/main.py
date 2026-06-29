@@ -3405,19 +3405,6 @@ def cli_main() -> None:
                 _Console(stderr=True).print(f"[bold red]Error:[/bold red] {exc}")
                 sys.exit(2)
 
-            if rubric_text is not None:
-                import importlib.util
-
-                if importlib.util.find_spec("deepagents.middleware.outcomes") is None:
-                    from rich.console import Console as _Console
-
-                    _Console(stderr=True).print(
-                        "[bold red]Error:[/bold red] rubric grading requires a "
-                        "newer deepagents SDK (RubricMiddleware is unavailable in "
-                        "the installed version). Upgrade deepagents to use --rubric."
-                    )
-                    sys.exit(2)
-
             timeout = getattr(args, "timeout", None)
             try:
                 exit_code = asyncio.run(

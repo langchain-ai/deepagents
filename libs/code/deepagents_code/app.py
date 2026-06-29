@@ -7564,7 +7564,12 @@ class DeepAgentsApp(App):
         if not self._agent or not self._lc_thread_id:
             return True
         config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
+        remote_config: dict[str, Any] = {
+            "configurable": {"thread_id": self._lc_thread_id}
+        }
         try:
+            if remote := self._remote_agent():
+                await remote.aensure_thread(remote_config)
             await self._agent.aupdate_state(config, self._goal_state_update())
         except Exception:
             logger.warning("Failed to persist goal/rubric state", exc_info=True)
@@ -7993,6 +7998,9 @@ class DeepAgentsApp(App):
                     "to the thread."
                 )
             )
+        if self._initial_goal is not None and objective == self._initial_goal:
+            self._initial_goal = None
+            await self._handle_user_message(objective)
 
     def _sync_status_rubric(self) -> None:
         """Reflect active rubric state in the status bar."""

@@ -4888,6 +4888,50 @@ class TestGoalCommand:
                 },
             )
 
+    async def test_goal_accept_ensures_remote_thread_before_persisting(
+        self,
+    ) -> None:
+        """Fresh remote sessions should register the thread before state writes."""
+        from deepagents_code.remote_client import RemoteAgent
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            remote = MagicMock(spec=RemoteAgent)
+            remote.aensure_thread = AsyncMock()
+            remote.aupdate_state = AsyncMock()
+            app._agent = remote
+            app._lc_thread_id = "thread-1"
+            app._pending_goal_objective = "add refresh tokens"
+            app._pending_goal_rubric = "- tests pass"
+            request = AsyncMock(
+                return_value=self._goal_review_future({"type": "accepted"})
+            )
+
+            with patch.object(app, "_request_goal_review", request):
+                await app._review_pending_goal_rubric()
+            await pilot.pause()
+
+            remote.aensure_thread.assert_awaited_once_with(
+                {"configurable": {"thread_id": "thread-1"}}
+            )
+            remote.aupdate_state.assert_awaited_once()
+
+    async def test_initial_goal_acceptance_submits_objective(self) -> None:
+        """Accepted startup goals should immediately start the rubric-backed task."""
+        app = DeepAgentsApp(agent=MagicMock(), initial_goal="add refresh tokens")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_goal_objective = "add refresh tokens"
+            app._pending_goal_rubric = "- tests pass"
+            handle = AsyncMock()
+
+            with patch.object(app, "_handle_user_message", handle):
+                await app._accept_goal_rubric("- tests pass")
+
+            handle.assert_awaited_once_with("add refresh tokens")
+            assert app._initial_goal is None
+
     async def test_goal_review_accepts_revised_criteria(self) -> None:
         """The review widget's free-text answer should accept revised criteria."""
         app = DeepAgentsApp(agent=MagicMock())

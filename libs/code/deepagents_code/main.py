@@ -1556,9 +1556,9 @@ def parse_args() -> argparse.Namespace:
         "--goal",
         dest="goal",
         metavar="TEXT",
-        help="Goal objective to turn into acceptance criteria. In interactive "
-        "mode, opens a review prompt on launch; with -n or piped stdin, uses "
-        "the generated criteria immediately as the active rubric.",
+        help="Goal objective to turn into acceptance criteria. Opens a review "
+        "prompt on interactive launch, then runs the accepted goal as the first "
+        "task.",
     )
     parser.add_argument(
         "--rubric",
@@ -2726,21 +2726,25 @@ def cli_main() -> None:
                 "[bold red]Error:[/bold red] --goal must not be empty."
             )
             sys.exit(2)
-        if (
-            goal_text is not None
-            and not args.non_interactive_message
-            and (
-                getattr(args, "initial_prompt", None)
-                or getattr(args, "initial_skill", None)
+        if goal_text is not None and args.non_interactive_message:
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --goal is only supported in "
+                "interactive mode for now.\n"
+                "  dcode --goal 'add OAuth refresh handling'"
             )
+            sys.exit(2)
+        if goal_text is not None and (
+            getattr(args, "initial_prompt", None) is not None
+            or getattr(args, "initial_skill", None)
         ):
             from rich.console import Console as _Console
 
             _Console(stderr=True).print(
                 "[bold red]Error:[/bold red] --goal cannot be combined with "
-                "-m/--message or --skill in interactive mode.\n"
-                "  dcode --goal 'add OAuth refresh handling'\n"
-                "  dcode -n 'implement X' --goal 'add OAuth refresh handling'"
+                "-m/--message or --skill.\n"
+                "  dcode --goal 'add OAuth refresh handling'"
             )
             sys.exit(2)
 
@@ -3458,7 +3462,6 @@ def cli_main() -> None:
                             enable_interpreter=enable_interpreter,
                             interpreter_ptc=interpreter_ptc,
                             max_turns=getattr(args, "max_turns", None),
-                            goal=getattr(args, "goal", None),
                             rubric=rubric_text,
                             rubric_model=getattr(args, "rubric_model", None),
                             rubric_max_iterations=getattr(

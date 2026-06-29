@@ -764,7 +764,6 @@ async def _run_agent_loop(
     thread_url_lookup: ThreadUrlLookupState | None = None,
     max_turns: int | None = None,
     rubric: str | None = None,
-    goal: str | None = None,
 ) -> None:
     """Run the agent and handle HITL interrupts until the task completes.
 
@@ -795,7 +794,6 @@ async def _run_agent_loop(
             graph's `rubric` state field.
 
             `None` leaves it unset (no grading).
-        goal: Goal objective associated with the rubric, if one generated it.
 
     Raises:
         HITLIterationLimitError: If the effective turn limit is exceeded.
@@ -808,11 +806,6 @@ async def _run_agent_loop(
     stream_input: dict[str, Any] | Command = {"messages": [user_msg]}
     if rubric is not None:
         stream_input["rubric"] = rubric
-    if goal is not None:
-        stream_input["_goal_objective"] = goal
-        stream_input["_goal_status"] = "active"
-        stream_input["_goal_rubric"] = rubric
-        stream_input["_goal_status_note"] = None
 
     thread_id = config.get("configurable", {}).get("thread_id", "")
     # An empty or missing thread ID carries no session identity, so leave it
@@ -891,7 +884,6 @@ def _build_non_interactive_header(
     *,
     include_thread_link: bool = False,
     rubric_active: bool = False,
-    goal_active: bool = False,
 ) -> Text:
     """Build the non-interactive mode header with model, agent, and thread info.
 
@@ -905,7 +897,6 @@ def _build_non_interactive_header(
             the thread ID.
         rubric_active: Whether a rubric is active for this run; when `True`,
             appends a `Rubric: active` marker so the behavior change is visible.
-        goal_active: Whether a goal objective generated the rubric.
 
     Returns:
         Rich Text object with the formatted header line.
@@ -935,8 +926,6 @@ def _build_non_interactive_header(
 
     if rubric_active:
         parts.extend([(" | ", "dim"), ("Rubric: active", "dim")])
-    if goal_active:
-        parts.extend([(" | ", "dim"), ("Goal: active", "dim")])
 
     return Text.assemble(*parts)
 
@@ -1037,7 +1026,6 @@ async def run_non_interactive(
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
     max_turns: int | None = None,
-    goal: str | None = None,
     rubric: str | None = None,
     rubric_model: str | None = None,
     rubric_max_iterations: int | None = None,
@@ -1104,7 +1092,6 @@ async def run_non_interactive(
             `interpreter_ptc="all"` outside of `auto_approve`.
         max_turns: Optional cap on total agentic turns. When `None`, the
             internal safety default applies.
-        goal: Goal objective to convert into rubric criteria before the run.
         rubric: Acceptance criteria for `RubricMiddleware`. When provided, the
             agent self-evaluates against it and loops until satisfied.
 
@@ -1215,36 +1202,6 @@ async def run_non_interactive(
 
     result.apply_to_settings()
 
-    goal_text = goal.strip() if goal else None
-    if goal_text and rubric is None:
-        from deepagents_code.goal_rubric import generate_goal_rubric
-
-        if not quiet:
-            console.print(Text("Drafting acceptance criteria for goal...", style="dim"))
-        try:
-            rubric = await asyncio.to_thread(
-                generate_goal_rubric,
-                goal_text,
-                model_spec=f"{result.provider}:{result.model_name}",
-                model_params=model_params,
-                profile_override=profile_override,
-            )
-        except Exception as e:  # noqa: BLE001
-            console.print(
-                "[bold red]Error:[/bold red] "
-                f"Could not draft goal criteria: {escape_markup(str(e))}"
-            )
-            return 1
-        rubric = rubric.strip()
-        if not rubric:
-            console.print("[bold red]Error:[/bold red] Goal criteria were empty.")
-            return 1
-        if not quiet:
-            console.print("[green]✓ Drafted acceptance criteria[/green]")
-            console.print("[bold]Goal:[/bold] " + escape_markup(goal_text))
-            console.print("[bold]Generated criteria:[/bold]")
-            console.print(rubric)
-
     thread_id = generate_thread_id()
 
     from deepagents_code.config import build_stream_config
@@ -1261,7 +1218,6 @@ async def run_non_interactive(
             assistant_id,
             thread_id,
             rubric_active=rubric is not None,
-            goal_active=goal_text is not None,
         )
         console.print(header)
 
@@ -1360,7 +1316,6 @@ async def run_non_interactive(
                 thread_url_lookup=thread_url_lookup,
                 max_turns=max_turns,
                 rubric=rubric,
-                goal=goal_text,
             )
 
     except KeyboardInterrupt:

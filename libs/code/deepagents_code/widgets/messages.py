@@ -2729,9 +2729,7 @@ class ToolGroupSummary(Static):
             self._stop_timer()
         # A bare spinner advance keeps the line height; only relayout when
         # membership changed (eviction) or the line flips to past tense.
-        self._render_line(
-            in_progress=in_progress, layout=evicted or not in_progress
-        )
+        self._render_line(in_progress=in_progress, layout=evicted or not in_progress)
 
     def _apply_visibility(self) -> None:
         """Show or hide every folded widget per the collapsed state."""

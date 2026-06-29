@@ -42,7 +42,7 @@ from deepagents_code._session_stats import SessionStats
 from deepagents_code._version import CHANGELOG_URL, __version__
 from deepagents_code.app import (
     _DEEPAGENTS_IMPORT_LOCK,
-    _SPINNER_SHOW_DELAY_SECONDS,
+    _SPINNER_HIDE_DELAY_SECONDS,
     _TYPING_IDLE_THRESHOLD_SECONDS,
     DeepAgentsApp,
     DeferredAction,
@@ -3716,8 +3716,7 @@ class TestLoadingSpinnerLifecycle:
         async with app.run_test() as pilot:
             await pilot.pause()
             await app._set_spinner("Thinking")
-            # The spinner mount is debounced; wait out the window so it appears.
-            await pilot.pause(_SPINNER_SHOW_DELAY_SECONDS + 0.05)
+            await pilot.pause()
 
             widget = app._loading_widget
             assert widget is not None
@@ -3730,7 +3729,9 @@ class TestLoadingSpinnerLifecycle:
             assert widget._animation_timer is not None
 
             with patch.object(Widget, "remove", new=delayed_remove):
-                hide_task = asyncio.create_task(app._set_spinner(None))
+                # Force-hide bypasses the debounce window so the removal path
+                # (and its timer stop) runs immediately.
+                hide_task = asyncio.create_task(app._force_hide_spinner())
                 # Sleep while delayed_remove is blocking (0.3s).  Check the
                 # timer flag rather than a frozen position counter: the
                 # Textual timer may fire one final tick before cancellation
@@ -3754,8 +3755,7 @@ class TestLoadingSpinnerLifecycle:
         async with app.run_test() as pilot:
             await pilot.pause()
             await app._set_spinner("Thinking")
-            # The spinner mount is debounced; wait out the window so it appears.
-            await pilot.pause(_SPINNER_SHOW_DELAY_SECONDS + 0.05)
+            await pilot.pause()
 
             widget = app._loading_widget
             assert widget is not None
@@ -3799,8 +3799,7 @@ class TestLoadingSpinnerLifecycle:
         async with app.run_test() as pilot:
             await pilot.pause()
             await app._set_spinner("Thinking")
-            # The spinner mount is debounced; wait out the window so it appears.
-            await pilot.pause(_SPINNER_SHOW_DELAY_SECONDS + 0.05)
+            await pilot.pause()
 
             widget = app._loading_widget
             assert widget is not None
@@ -3823,29 +3822,54 @@ class TestLoadingSpinnerLifecycle:
             children = list(messages.children)
             assert children[-1] is widget
 
-    async def test_brief_thinking_flash_is_debounced(self) -> None:
-        """A show cancelled within the debounce window never mounts the spinner.
+    async def test_spinner_persists_across_brief_tool_gap(self) -> None:
+        """A hide cancelled within the window keeps the same spinner mounted.
 
-        This is the per-step flicker case: each tool toggles None then
-        "Thinking", and back-to-back fast tools must not flash the spinner.
+        This is the per-step flicker case: each tool toggles `None` then
+        `"Thinking"`. The hide is debounced, so a status update arriving inside
+        the window cancels it and the spinner never disappears between
+        back-to-back tools.
         """
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            await app._set_spinner("Thinking")  # schedules a debounced show
-            await app._set_spinner(None)  # cancels it within the window
-            await pilot.pause(_SPINNER_SHOW_DELAY_SECONDS + 0.05)
-            assert app._loading_widget is None  # never appeared
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+            widget = app._loading_widget
+            assert widget is not None
 
-    async def test_sustained_thinking_shows_after_debounce(self) -> None:
-        """A show that is not cancelled mounts the spinner once the window passes."""
+            # Tool starts (hide scheduled) then completes (re-show) inside the
+            # window — the spinner must stay up, same instance, never removed.
+            await app._set_spinner(None)
+            await app._set_spinner("Thinking")
+            await pilot.pause(_SPINNER_HIDE_DELAY_SECONDS + 0.05)
+            assert app._loading_widget is widget
+
+    async def test_spinner_hides_after_sustained_none(self) -> None:
+        """A `None` with no follow-up status removes the spinner after the window."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
             await app._set_spinner("Thinking")
-            assert app._loading_widget is None  # not yet — still debouncing
-            await pilot.pause(_SPINNER_SHOW_DELAY_SECONDS + 0.05)
+            await pilot.pause()
             assert app._loading_widget is not None
+
+            await app._set_spinner(None)
+            assert app._loading_widget is not None  # still up — debouncing
+            await pilot.pause(_SPINNER_HIDE_DELAY_SECONDS + 0.05)
+            assert app._loading_widget is None
+
+    async def test_force_hide_spinner_is_immediate(self) -> None:
+        """Turn-end teardown removes the spinner without waiting for the window."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+            assert app._loading_widget is not None
+
+            await app._force_hide_spinner()
+            assert app._loading_widget is None
 
 
 class TestTraceCommand:
@@ -16019,7 +16043,7 @@ class TestSetSpinnerTerminalProgress:
             await app._set_spinner("Thinking")
             await pilot.pause()
             calls.clear()
-            await app._set_spinner(None)
+            await app._force_hide_spinner()
             await pilot.pause()
 
         assert "clear" in calls
@@ -16086,7 +16110,7 @@ class TestSetSpinnerTerminalProgress:
             calls.clear()
             await app._set_spinner("Thinking")
             await pilot.pause()
-            await app._set_spinner(None)
+            await app._force_hide_spinner()
             await pilot.pause()
 
         assert "set" in calls
@@ -16119,6 +16143,7 @@ class TestSetSpinnerTerminalProgress:
             await app._set_spinner("Thinking")
             await app._set_spinner(None)
             await app._set_spinner("Thinking")
+            await app._force_hide_spinner()
             await pilot.pause()
 
         assert calls.count("set") >= 3
@@ -16147,7 +16172,7 @@ class TestSetSpinnerTerminalProgress:
             # Must not raise even though both calls explode.
             await app._set_spinner("Thinking")
             await pilot.pause()
-            await app._set_spinner(None)
+            await app._force_hide_spinner()
             await pilot.pause()
 
 

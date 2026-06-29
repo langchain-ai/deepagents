@@ -1108,10 +1108,12 @@ _DEFERRED_APPROVAL_TIMEOUT_SECONDS: float = 30.0
 """Maximum seconds the deferred-approval worker will wait for the user to stop
 typing before showing the approval widget regardless."""
 
-_SPINNER_SHOW_DELAY_SECONDS: float = 0.25
-"""Debounce window before the loading spinner is mounted. Brief thinking gaps
-between fast back-to-back tools resolve within this window, so the spinner
-only appears for genuine pauses instead of flashing in and out each step."""
+_SPINNER_HIDE_DELAY_SECONDS: float = 0.6
+"""Debounce window before the loading spinner is actually removed. The agent
+toggles the spinner off then back on around every tool call; deferring the hide
+keeps it visible across those brief gaps so it no longer flickers in and out
+between back-to-back tools. A status update arriving inside the window cancels
+the pending hide. Turn-end teardown bypasses this and removes immediately."""
 
 _RAPID_QUIT_CTRL_C_PRESSES: int = 2
 """Consecutive rapid `Ctrl+C` presses that force the quit sequence.
@@ -2161,15 +2163,12 @@ class DeepAgentsApp(App):
         """Active spinner widget; populated by `_set_spinner(status)` and
         cleared when status resolves to `None`."""
 
-        self._spinner_show_timer: Timer | None = None
-        """Pending debounced spinner-show timer (see `_set_spinner`).
+        self._spinner_hide_timer: Timer | None = None
+        """Pending debounced spinner-hide timer (see `_set_spinner`).
 
-        The spinner is only mounted after a short delay so the rapid
-        hide/show churn between fast back-to-back tools (each step toggles
-        `None` then `"Thinking"`) never flashes it in and out."""
-
-        self._pending_spinner_status: SpinnerStatus = None
-        """Status to display when `_spinner_show_timer` fires."""
+        The agent toggles the spinner off then on around every tool call, so the
+        hide is deferred; if a status update arrives inside the window the timer
+        is cancelled and the spinner stays put instead of flickering."""
 
         self._ui_adapter: TextualUIAdapter | None = None
         """Bridge that renders agent events into widgets; set in `on_mount`."""
@@ -5602,24 +5601,24 @@ class DeepAgentsApp(App):
         """
         from deepagents_code.terminal_escape import (
             TerminalProgressState,
-            clear_terminal_progress,
             set_terminal_progress,
         )
 
         if status is None:
-            # Hide. Cancel any debounced show first so a pending "Thinking"
-            # doesn't pop in just after the agent moved on to a tool.
-            self._cancel_pending_spinner()
-            if self._loading_widget:
-                await self._loading_widget.remove()
-                self._loading_widget = None
-            if self._terminal_progress_enabled:
-                try:
-                    clear_terminal_progress()
-                except Exception:
-                    # Cosmetic only — must never break spinner lifecycle.
-                    logger.exception("clear_terminal_progress raised unexpectedly")
+            # Debounced hide: the agent flips the spinner off right before every
+            # tool and back on right after, so removing it immediately makes it
+            # flicker between back-to-back tools. Defer the removal; a status
+            # update arriving inside the window cancels it (see
+            # `_set_spinner` show path) so the spinner stays put. Turn-end
+            # teardown calls `_force_hide_spinner` for an immediate removal.
+            if self._loading_widget is not None and self._spinner_hide_timer is None:
+                self._spinner_hide_timer = self.set_timer(
+                    _SPINNER_HIDE_DELAY_SECONDS, self._hide_spinner_now
+                )
             return
+
+        # A real status: cancel any pending hide so the spinner survives the gap.
+        self._cancel_spinner_hide()
 
         if self._terminal_progress_enabled:
             try:
@@ -5628,14 +5627,17 @@ class DeepAgentsApp(App):
                 # Cosmetic only — must never break spinner lifecycle.
                 logger.exception("set_terminal_progress raised unexpectedly")
 
-        if self._loading_widget is not None:
-            # Already visible: update in place immediately (no churn). Cancel
-            # any pending show since we're handling it now.
-            self._cancel_pending_spinner()
-            try:
-                messages = self.query_one("#messages", Container)
-            except NoMatches:
-                return
+        try:
+            messages = self.query_one("#messages", Container)
+        except NoMatches:
+            # Container was torn down (e.g. shutdown mid-stream). Skip
+            # silently so the streaming loop doesn't crash.
+            return
+
+        if self._loading_widget is None:
+            self._loading_widget = LoadingWidget(status)
+            await self._mount_before_queued(messages, self._loading_widget)
+        else:
             # A fresh status update means the agent is active again, so
             # un-pause as a backstop in case an approval future was ever
             # abandoned without completing the resume callback. `resume()` is a
@@ -5646,42 +5648,38 @@ class DeepAgentsApp(App):
             # carry through; remove + re-mount would reset both.
             if not self._is_spinner_at_correct_position(messages):
                 self._reposition_spinner(messages)
-            return
-
-        # Not currently visible: debounce the mount so the brief gaps between
-        # fast back-to-back tools (each step toggles None -> "Thinking") don't
-        # flash the spinner in and out. A `_set_spinner(None)` arriving inside
-        # the window cancels the pending show.
-        self._pending_spinner_status = status
-        if self._spinner_show_timer is None:
-            self._spinner_show_timer = self.set_timer(
-                _SPINNER_SHOW_DELAY_SECONDS, self._show_pending_spinner
-            )
         # NOTE: Don't call anchor() here - it would re-anchor and drag user back
         # to bottom if they've scrolled away during streaming
 
-    def _cancel_pending_spinner(self) -> None:
-        """Cancel a debounced spinner show, if one is scheduled."""
-        if self._spinner_show_timer is not None:
-            self._spinner_show_timer.stop()
-            self._spinner_show_timer = None
-        self._pending_spinner_status = None
+    def _cancel_spinner_hide(self) -> None:
+        """Cancel a pending debounced spinner hide, if one is scheduled."""
+        if self._spinner_hide_timer is not None:
+            self._spinner_hide_timer.stop()
+            self._spinner_hide_timer = None
 
-    async def _show_pending_spinner(self) -> None:
-        """Mount the spinner after the debounce window elapses."""
-        self._spinner_show_timer = None
-        status = self._pending_spinner_status
-        self._pending_spinner_status = None
-        if status is None or self._loading_widget is not None:
-            return
-        try:
-            messages = self.query_one("#messages", Container)
-        except NoMatches:
-            return
-        if not messages.is_attached:
-            return
-        self._loading_widget = LoadingWidget(status)
-        await self._mount_before_queued(messages, self._loading_widget)
+    async def _hide_spinner_now(self) -> None:
+        """Remove the spinner widget and clear the terminal progress indicator."""
+        from deepagents_code.terminal_escape import clear_terminal_progress
+
+        self._spinner_hide_timer = None
+        if self._loading_widget is not None:
+            await self._loading_widget.remove()
+            self._loading_widget = None
+        if self._terminal_progress_enabled:
+            try:
+                clear_terminal_progress()
+            except Exception:
+                # Cosmetic only — must never break spinner lifecycle.
+                logger.exception("clear_terminal_progress raised unexpectedly")
+
+    async def _force_hide_spinner(self) -> None:
+        """Hide the spinner immediately, bypassing the debounce window.
+
+        Used at turn-end teardown so the spinner doesn't linger after the agent
+        has finished.
+        """
+        self._cancel_spinner_hide()
+        await self._hide_spinner_now()
 
     def _reposition_spinner(self, container: Container) -> None:
         """Move the spinner to its correct position without resetting state.
@@ -9797,8 +9795,9 @@ class DeepAgentsApp(App):
         self._agent_worker = None
         self._active_user_message = None
 
-        # Remove spinner if present
-        await self._set_spinner(None)
+        # Remove spinner immediately at turn end — bypass the hide debounce so
+        # it doesn't linger for the debounce window after the response is done.
+        await self._force_hide_spinner()
 
         if self._chat_input:
             self._chat_input.set_cursor_active(active=True)
@@ -10568,9 +10567,9 @@ class DeepAgentsApp(App):
         self._message_store.clear()
         # Drop the open tool group; its widget is about to leave the DOM.
         self._active_tool_group = None
-        # Cancel any debounced spinner show and drop the stale ref, since
+        # Cancel any debounced spinner hide and drop the stale ref, since
         # remove_children() below detaches the current spinner widget.
-        self._cancel_pending_spinner()
+        self._cancel_spinner_hide()
         self._loading_widget = None
         # Drop the tracked in-flight prompt: its widget is about to leave the
         # DOM, so the pointer must not outlive it. Keeps the "cleared screen ⇒

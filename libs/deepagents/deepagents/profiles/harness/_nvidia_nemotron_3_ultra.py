@@ -35,8 +35,13 @@ import uuid
 from typing import TYPE_CHECKING
 
 from langchain.agents.middleware import ToolRetryMiddleware
-from langchain.agents.middleware.types import AgentMiddleware, ExtendedModelResponse, ModelResponse
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    AgentState,
+    ExtendedModelResponse,
+    ModelResponse,
+)
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from deepagents.profiles.harness._fireworks_glm_5p2_middleware import (
     FinalizeMiddleware,
@@ -53,6 +58,7 @@ if TYPE_CHECKING:
 
     from langchain.agents.middleware.types import ModelCallResult, ModelRequest, ToolCallRequest
     from langchain_core.messages.tool import ToolCall
+    from langgraph.runtime import Runtime
     from langgraph.types import Command
 
 _NEMOTRON_ULTRA_MODEL_SPECS: tuple[str, ...] = (
@@ -292,6 +298,87 @@ class NemotronTextToolCallParser(AgentMiddleware):
         return self._repair(await handler(request))
 
 
+_STALL_THRESHOLD = 3
+"""Consecutive identical failing tool results that count as a stall."""
+
+_STALL_FAILURE_MARKERS: tuple[str, ...] = (
+    "error",
+    "traceback",
+    "command failed",
+    "no such",
+    "not found",
+    "exit code 1",
+    "failed",
+)
+
+_STALL_NUDGE_TEXT = (
+    "You have hit the same failure several times in a row and keep retrying essentially "
+    "the same fix. Stop repeating it — the identical approach will not start working. "
+    "Step back and either rewrite the failing component from scratch or take a "
+    "fundamentally different approach, and re-examine your assumptions about the cause."
+)
+
+
+class StallBreakerMiddleware(AgentMiddleware):
+    """Break no-progress loops where the model re-tries the same failing action.
+
+    When the last `_STALL_THRESHOLD` tool results are all failures with the same
+    signature (the model keeps applying the same fix to the same error), inject a
+    one-time nudge before the next model turn telling it to change approach. General
+    and model-agnostic: keys only on repeated identical failing tool output, not on
+    any task. A no-op when results vary, succeed, or progress.
+    """
+
+    name = "StallBreakerMiddleware"
+
+    @staticmethod
+    def _text(content: str | list[Any] | None) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return " ".join(p.get("text", "") for p in content if isinstance(p, dict))
+        return ""
+
+    @staticmethod
+    def _is_failure(text: str) -> bool:
+        low = text.lower()
+        return any(marker in low for marker in _STALL_FAILURE_MARKERS)
+
+    @staticmethod
+    def _signature(text: str) -> str:
+        return " ".join(text.split())[:200]
+
+    def _nudge(self, state: AgentState) -> dict[str, Any] | None:
+        messages = state.get("messages") or []
+        tool_texts = [self._text(m.content) for m in messages if isinstance(m, ToolMessage)]
+        recent = tool_texts[-_STALL_THRESHOLD:]
+        if len(recent) < _STALL_THRESHOLD:
+            return None
+        if not all(self._is_failure(t) for t in recent):
+            return None
+        if len({self._signature(t) for t in recent}) != 1:
+            return None
+        # Don't re-nudge within the same streak: skip if our nudge is already nearby.
+        window = messages[-(2 * _STALL_THRESHOLD + 2) :]
+        if any(isinstance(m, HumanMessage) and self._text(m.content) == _STALL_NUDGE_TEXT for m in window):
+            return None
+        return {"messages": [HumanMessage(_STALL_NUDGE_TEXT)]}
+
+    def before_model(
+        self,
+        state: AgentState,
+        runtime: Runtime[Any],  # noqa: ARG002  (part of the hook signature)
+    ) -> dict[str, Any] | None:
+        return self._nudge(state)
+
+    async def abefore_model(
+        self,
+        state: AgentState,
+        runtime: Runtime[Any],  # noqa: ARG002  (part of the hook signature)
+    ) -> dict[str, Any] | None:
+        return self._nudge(state)
+
+
 _SYSTEM_PROMPT_SUFFIX: str = """<approach>
 Plan briefly before acting. When several reads or lookups are independent, issue them as parallel tool calls rather than one at a time.
 </approach>
@@ -317,7 +404,10 @@ Before treating a task as done:
   end-to-end against adversarial and boundary inputs — the specific scenarios,
   parameter names, and edge cases the task describes — not a happy-path case you
   picked yourself. A check that only runs inputs you chose can pass while the
-  behavior is still wrong.
+  behavior is still wrong. Exercise every configuration the task specifies — each
+  size, mode, count, or degree of parallelism or concurrency — never just a single
+  trivial or degenerate case (a one-element, one-process, or empty run) where the
+  logic collapses to a no-op and the real behavior is never tested.
 
 - Make it reproducible from a clean state. Your work has to function for someone
   starting fresh, not only in the shell you built it in. A service must keep
@@ -407,6 +497,7 @@ def _build_extra_middleware() -> list[AgentMiddleware]:
         NemotronTextToolCallParser(),
         FinalizeMiddleware(),
         RambleMiddleware(),
+        StallBreakerMiddleware(),
     ]
 
 

@@ -1236,6 +1236,7 @@ class TestNemotronUltraProfile:
             "NemotronTextToolCallParser",
             "FinalizeMiddleware",
             "RambleMiddleware",
+            "StallBreakerMiddleware",
         ]
 
     def test_nemotron_ultra_does_not_apply_to_other_nvidia_models(self) -> None:
@@ -1258,6 +1259,8 @@ class TestNemotronUltraProfile:
         assert "fresh" in suffix
         # torch / write-compressor fix: don't trust a happy-path check you picked
         assert "not a proxy" in suffix
+        # torch fix: exercise every regime, not the trivial/degenerate (ws=1) case
+        assert "degenerate" in suffix
         # reconciled: the conflicting premature-completion phrasing is removed
         assert "second-guess" not in suffix
         # kept: the anti-loop tool line still present
@@ -1411,6 +1414,66 @@ class TestNemotronTextToolCallRepair:
         ai = repaired.result[-1]
         assert ai.tool_calls == []
         assert ai.content == "Done. The package is built."
+
+
+class TestStallBreaker:
+    """Tests for the general stall/no-progress guard (breaks identical-failure loops)."""
+
+    @staticmethod
+    def _tm(content: str):  # noqa: ANN205  (returns a ToolMessage; imported locally)
+        from langchain_core.messages import ToolMessage  # noqa: PLC0415
+
+        return ToolMessage(content=content, tool_call_id="t")
+
+    def _mw(self):
+        from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
+            StallBreakerMiddleware,
+        )
+
+        return StallBreakerMiddleware()
+
+    def test_nudges_on_repeated_identical_failure(self) -> None:
+        from langchain_core.messages import AIMessage, HumanMessage  # noqa: PLC0415
+
+        mw = self._mw()
+        fail = "Error: Missing closing parenthesis"
+        msgs = [HumanMessage("go")]
+        for _ in range(3):
+            msgs += [AIMessage(""), self._tm(fail)]
+        out = mw.before_model({"messages": msgs}, None)
+        assert out is not None
+        nudge = out["messages"][0]
+        assert isinstance(nudge, HumanMessage)
+        assert "same" in nudge.content.lower() or "different approach" in nudge.content.lower()
+
+    def test_no_nudge_on_varied_results(self) -> None:
+        mw = self._mw()
+        msgs = [self._tm("Error: A"), self._tm("Error: B"), self._tm("Error: C")]
+        assert mw.before_model({"messages": msgs}, None) is None
+
+    def test_no_nudge_on_repeated_success(self) -> None:
+        mw = self._mw()
+        ok = "Command succeeded with exit code 0"
+        msgs = [self._tm(ok), self._tm(ok), self._tm(ok)]
+        assert mw.before_model({"messages": msgs}, None) is None
+
+    def test_no_nudge_below_threshold(self) -> None:
+        mw = self._mw()
+        fail = "Error: boom"
+        assert mw.before_model({"messages": [self._tm(fail), self._tm(fail)]}, None) is None
+
+    def test_does_not_double_nudge_in_window(self) -> None:
+        from langchain_core.messages import HumanMessage  # noqa: PLC0415
+
+        from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
+            _STALL_NUDGE_TEXT,
+        )
+
+        mw = self._mw()
+        fail = "Error: Missing closing parenthesis"
+        # nudge already present right before the latest failing streak → no re-nudge
+        msgs = [HumanMessage(_STALL_NUDGE_TEXT), self._tm(fail), self._tm(fail), self._tm(fail)]
+        assert mw.before_model({"messages": msgs}, None) is None
 
 
 class TestProfilePluginLoader:

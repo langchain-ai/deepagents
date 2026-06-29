@@ -1188,6 +1188,36 @@ class TestExecuteTaskTextualAutoApproveInput:
             agent.contexts[0]["blocked_goal_retry_context"] == f"blocked on @{secret}"
         )
 
+    async def test_stale_blocked_goal_retry_context_is_cleared(self) -> None:
+        """A reused context must not leak a prior turn's retry context.
+
+        `CLIContext` is reused across turns, so a turn with no blocked goal
+        (`blocked_goal_retry_context=None`) must actively pop any stale value
+        left by an earlier turn rather than silently carrying it forward.
+        """
+        agent = _SequencedAgent([[]])
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        # Simulate a context carried over from an earlier blocked-goal turn.
+        stale_context: dict[str, Any] = {
+            "blocked_goal_retry_context": "stale blocker from a prior turn"
+        }
+
+        await execute_task_textual(
+            user_input="continue now",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+            context=cast("Any", stale_context),
+            blocked_goal_retry_context=None,
+        )
+
+        assert "blocked_goal_retry_context" not in agent.contexts[0]
+
     async def test_live_approval_write_failure_fails_closed_context(self) -> None:
         """A failed live-mode write must not reuse a stale approval key."""
         agent = _FailingApprovalStoreAgent([[]])

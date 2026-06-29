@@ -2709,15 +2709,22 @@ def cli_main() -> None:
             )
             sys.exit(2)
 
-        if (
-            getattr(args, "goal", None) is not None
-            and getattr(args, "rubric", None) is not None
+        # `--goal` conflicts with every rubric flag, not just `--rubric`.
+        # `--rubric-model`/`--rubric-max-iterations` also require `-n` (see the
+        # non-interactive guard below), so without this check `--goal
+        # --rubric-model X` would slip past here and hit a contradictory "add
+        # -n" error — and adding `-n` then trips the interactive-only `--goal`
+        # guard. Reject the combination up front instead.
+        if getattr(args, "goal", None) is not None and any(
+            getattr(args, attr, None) is not None
+            for attr in ("rubric", "rubric_model", "rubric_max_iterations")
         ):
             from rich.console import Console as _Console
 
             _Console(stderr=True).print(
-                "[bold red]Error:[/bold red] --goal and --rubric are mutually "
-                "exclusive. Use --goal to generate criteria or --rubric to "
+                "[bold red]Error:[/bold red] --goal is mutually exclusive with "
+                "--rubric/--rubric-model/--rubric-max-iterations. Use --goal to "
+                "generate criteria interactively, or --rubric (with -n) to "
                 "provide them directly."
             )
             sys.exit(2)

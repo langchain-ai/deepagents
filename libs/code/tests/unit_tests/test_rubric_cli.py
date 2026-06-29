@@ -166,6 +166,26 @@ class TestRubricGating:
         assert result.returncode == 2, result.stderr
         assert "mutually exclusive" in result.stderr
 
+    def test_goal_and_rubric_model_are_mutually_exclusive(self) -> None:
+        # `--rubric-model` is interactive-incompatible with `--goal` too;
+        # without this guard the user hits a contradictory "add -n" loop.
+        result = _run_cli_main_devnull_stdin(
+            ["--goal", "do X", "--rubric-model", "anthropic:claude-sonnet-4-6"]
+        )
+        assert result.returncode == 2, result.stderr
+        assert "mutually exclusive" in result.stderr
+        assert "--goal" in result.stderr
+        assert "--rubric-model" in result.stderr
+
+    def test_goal_and_rubric_max_iterations_are_mutually_exclusive(self) -> None:
+        result = _run_cli_main_devnull_stdin(
+            ["--goal", "do X", "--rubric-max-iterations", "5"]
+        )
+        assert result.returncode == 2, result.stderr
+        assert "mutually exclusive" in result.stderr
+        assert "--goal" in result.stderr
+        assert "--rubric-max-iterations" in result.stderr
+
     def test_empty_goal_errors(self) -> None:
         result = _run_cli_main_devnull_stdin(["--goal", "   "])
         assert result.returncode == 2, result.stderr

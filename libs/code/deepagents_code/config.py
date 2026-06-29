@@ -2919,6 +2919,9 @@ def _has_langsmith_runs_endpoints_from(env: dict[str, str]) -> bool:
 
     Args:
         env: Environment mapping to read.
+
+    Returns:
+        `True` when a valid runs-endpoints configuration is present.
     """
     raw = next(
         (
@@ -2957,6 +2960,9 @@ def _tracing_can_upload_from(env: dict[str, str]) -> bool:
 
     Args:
         env: Environment mapping to read.
+
+    Returns:
+        `True` when tracing has credentials or any ingestion endpoint set.
     """
     return (
         _tracing_has_credentials_from(env)

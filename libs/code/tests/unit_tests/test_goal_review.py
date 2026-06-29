@@ -101,6 +101,92 @@ class TestGoalReviewMenu:
                 "message": "include docs and migration notes",
             }
 
+    async def test_keypress_accept_resolves_accepted(self) -> None:
+        """The accept quick-key resolves through the real binding dispatch."""
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#goal-review", GoalReviewMenu)
+            future: asyncio.Future[GoalReviewResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.press("y")
+
+            assert await future == {"type": "accepted"}
+
+    async def test_keypress_reject_enters_reject_mode(self) -> None:
+        """The reject quick-key opens the feedback editor without resolving."""
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#goal-review", GoalReviewMenu)
+            future: asyncio.Future[GoalReviewResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.press("r")
+
+            text_input = menu.query_one(".goal-review-edit-input", AskUserTextArea)
+            assert text_input.display is True
+            assert text_input.text == ""
+            assert future.done() is False
+
+    async def test_keypress_cancel_resolves_cancelled(self) -> None:
+        """The cancel quick-key resolves through the real binding dispatch."""
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#goal-review", GoalReviewMenu)
+            future: asyncio.Future[GoalReviewResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.press("n")
+
+            assert await future == {"type": "cancelled"}
+
+    async def test_keypress_escape_resolves_cancelled(self) -> None:
+        """Escape from the menu (not edit mode) cancels the proposal."""
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#goal-review", GoalReviewMenu)
+            future: asyncio.Future[GoalReviewResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.press("escape")
+
+            assert await future == {"type": "cancelled"}
+
+    async def test_arrow_navigation_then_enter_selects_highlighted(self) -> None:
+        """Down+Enter dispatches `action_select` to the highlighted option (edit)."""
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#goal-review", GoalReviewMenu)
+            future: asyncio.Future[GoalReviewResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.press("down", "enter")
+
+            text_input = menu.query_one(".goal-review-edit-input", AskUserTextArea)
+            assert menu._selected == 1
+            assert text_input.display is True
+            assert future.done() is False
+
     async def test_edit_mode_keeps_quick_keys_in_text_input(self) -> None:
         """Quick-key characters should type text instead of triggering menu actions."""
         app = _GoalReviewTestApp()

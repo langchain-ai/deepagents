@@ -161,6 +161,9 @@ def _rubric_snapshot(state: dict[str, Any]) -> RubricSnapshot:
             source = "sticky"
         else:
             source = "invocation"
+    # Fallback branches below run only when there is no public `rubric` input,
+    # so `invocation` is unreachable here by construction — the criteria can
+    # only be attributed to a `goal` or a `sticky` rubric.
     elif objective is not None and goal_rubric is not None:
         criteria = goal_rubric
         source = "goal"

@@ -5224,6 +5224,26 @@ class TestGoalCommand:
             assert app._pending_goal_rubric == "- model draft"
             assert any("model down" in str(w._content) for w in app.query(ErrorMessage))
 
+    async def test_propose_goal_rubric_rejects_empty_objective(self) -> None:
+        """A whitespace-only objective shows usage and never calls the model.
+
+        The `/goal` handler routes empty input elsewhere, so this guards the
+        helper's standalone contract for any other caller (e.g. regeneration).
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with patch.object(app, "_generate_goal_rubric") as generate:
+                await app._propose_goal_rubric("   ")
+                await pilot.pause()
+
+            generate.assert_not_called()
+            assert any(
+                "Usage: /goal <objective>" in str(w._content)
+                for w in app.query(AppMessage)
+            )
+
     async def test_restore_goal_rubric_state_updates_status(self) -> None:
         """Resumed thread metadata should restore TUI goal/rubric state."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -5398,6 +5418,41 @@ class TestGoalCommand:
                 await app._sync_goal_rubric_state_from_thread()
 
             assert app._goal_status is None
+
+    async def test_sync_goal_rubric_state_notifies_on_corruption(self) -> None:
+        """A discarded malformed channel surfaces a user-facing corruption notice.
+
+        Guards the wiring between `_warn_discarded_goal_channels` and the
+        `self.notify` call — a regression that dropped the notify would silently
+        revert the "surface, don't drop" stance with no other failing test.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._lc_thread_id = "thread-1"
+            app._active_goal = "add refresh tokens"
+            app._goal_status = "active"
+
+            notifications: list[str] = []
+            fetch = AsyncMock(
+                return_value={
+                    "_goal_objective": "add refresh tokens",
+                    # Unknown status => discarded by _warn_discarded_goal_channels.
+                    "_goal_status": "deleted",
+                    "_goal_rubric": "- tests pass",
+                }
+            )
+            with (
+                patch.object(app, "_get_thread_state_values", fetch),
+                patch.object(
+                    app,
+                    "notify",
+                    lambda message, *a, **k: notifications.append(message),  # noqa: ARG005
+                ),
+            ):
+                await app._sync_goal_rubric_state_from_thread()
+
+            assert any("corrupted" in message for message in notifications)
 
     async def test_sync_goal_rubric_state_warns_once_on_read_failure(self) -> None:
         """A failed checkpoint read warns the user once and keeps bookkeeping."""
@@ -5784,6 +5839,22 @@ class TestRubricCommand:
                 "Usage:\n  /rubric set <criteria>" in str(w._content)
                 for w in app.query(AppMessage)
             )
+
+    async def test_bare_rubric_appends_current_state_when_set(self) -> None:
+        """Bare `/rubric` should append active state when a rubric/model is set."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_rubric = "tests pass"
+            app._rubric_model = "anthropic:claude-sonnet-4-6"
+
+            await app._handle_command("/rubric")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Current state:" in rendered
+            assert "Sticky rubric is set." in rendered
+            assert "Rubric grader model: anthropic:claude-sonnet-4-6" in rendered
 
     async def test_unknown_rubric_subcommand_shows_usage(self) -> None:
         """An unrecognized `/rubric` subcommand should fall through to usage."""

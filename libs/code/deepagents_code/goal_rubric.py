@@ -108,6 +108,7 @@ def generate_goal_rubric(
             ),
         ],
     )
-    # Coerce a `None` text to `""` so callers surface the clean "empty rubric"
-    # message instead of an `AttributeError` from a later `.strip()`.
+    # `.text` is always a `str` (possibly empty), never `None`. Normalize a
+    # whitespace-only/empty response to `""` so the caller's empty-rubric branch
+    # fires instead of activating a blank rubric.
     return response.text or ""

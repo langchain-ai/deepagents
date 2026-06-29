@@ -87,15 +87,6 @@ _FILESYSTEM_TOOLS: tuple[str, ...] = ("ls", "read_file", "write_file", "edit_fil
 
 _EMPTY_TOOL_PLACEHOLDER = "(empty tool result)"
 
-# Nemotron 3 Ultra is reasoning-heavy and uses model turns less efficiently than
-# the GLM-5.2 the FinalizeMiddleware budget (soft 54 / hard 72) was tuned for: on
-# long-horizon tasks it hit the inherited hard cap with agent-execution wall-clock
-# budget to spare (the run ended on the turn budget, not the execution timeout).
-# Raise the ceiling so a still-progressing run has room to finish. Model-general
-# (applies to every task), and well under the recursion limit (2000).
-_FINALIZE_SOFT_TURNS = 80
-_FINALIZE_HARD_TURNS = 100
-
 
 def _tool_content_is_empty(content: str | list[Any] | None) -> bool:
     """True if `content` would serialize to empty/None (mirrors ChatNVIDIA content normalization)."""
@@ -504,7 +495,7 @@ def _build_extra_middleware() -> list[AgentMiddleware]:
         ),
         NemotronToolMessageShim(),
         NemotronTextToolCallParser(),
-        FinalizeMiddleware(soft_turns=_FINALIZE_SOFT_TURNS, hard_turns=_FINALIZE_HARD_TURNS),
+        FinalizeMiddleware(),
         RambleMiddleware(),
         StallBreakerMiddleware(),
     ]

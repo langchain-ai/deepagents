@@ -628,7 +628,9 @@ def _warn_if_interpreter_disabled_by_sandbox(args: argparse.Namespace) -> None:
 def _resolve_rubric_text(rubric: str | None) -> str | None:
     """Resolve the rubric from `--rubric` into one string.
 
-    `--rubric` accepts literal text, or `@path` to read a file.
+    `--rubric` accepts literal text, or `@path` to read a file. File paths
+    may be absolute, relative to the `dcode` process working directory, or
+    `~`-expanded home paths.
 
     Args:
         rubric: Value of `--rubric` (literal text or `@path`), or `None`.
@@ -643,8 +645,10 @@ def _resolve_rubric_text(rubric: str | None) -> str | None:
     if rubric is None:
         return None
 
-    # An `@`-prefixed value is always read as a file path; there is no way to
-    # pass a literal rubric that begins with `@` (put such text in a file).
+    # An `@`-prefixed value is always read as a file path. The path may be
+    # absolute, relative to the `dcode` process working directory, or `~`-based.
+    # There is no way to pass a literal rubric that begins with `@` (put such
+    # text in a file).
     if rubric.startswith("@"):
         path = rubric[1:]
         try:
@@ -1553,7 +1557,8 @@ def parse_args() -> argparse.Namespace:
         dest="rubric",
         metavar="TEXT|@PATH",
         help="Acceptance criteria the agent self-evaluates against, looping "
-        "until satisfied. Accepts literal text or '@path' to read a file. "
+        "until satisfied. Accepts literal text or '@path' to read a file "
+        "(relative to the current working directory; '~' supported). "
         "Requires -n or piped stdin.",
     )
     parser.add_argument(

@@ -800,9 +800,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             matched_classes=_main_matched_classes,
             matched_names=_main_matched_names,
         )
-    # Inherit only middleware that overrides an existing default in the GP stack.
-    # This propagates overrides (e.g. a custom FilesystemMiddleware) without
-    # carrying over middleware that's specific to the main agent.
+        # Inherit only middleware that overrides an existing default in the GP stack.
+        # This propagates overrides (e.g. a custom FilesystemMiddleware) without
+        # carrying over middleware that's specific to the main agent.
         _gp_names = {m.name for m in gp_middleware}
         _gp_inheritable = [m for m in (middleware or []) if m.name in _gp_names]
         gp_middleware = _apply_custom_middleware(gp_middleware, _gp_inheritable, _gp_original_name_to_index)

@@ -202,6 +202,8 @@ class TestServerGraph:
             enable_skills=True,
             enable_shell=True,
             enable_interpreter=False,
+            rubric_model=None,
+            rubric_max_iterations=3,
             mcp_server_info=mcp_server_info,
             cwd=None,
             project_context=None,

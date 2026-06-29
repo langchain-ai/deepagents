@@ -481,6 +481,66 @@ def _process_message_chunk(
             state.spinner.start()
 
 
+def _process_rubric_event(
+    data: dict[str, Any],
+    state: StreamState,
+    console: Console,
+) -> None:
+    """Render a `RubricMiddleware` lifecycle event from the custom stream.
+
+    `RubricMiddleware` emits `rubric_evaluation_start` / `rubric_evaluation_end`
+    dicts via `runtime.stream_writer`. Non-rubric custom payloads are ignored.
+
+    Args:
+        data: The custom-stream payload dict.
+        state: Shared stream state (used to pause the spinner).
+        console: Rich console for status output (stderr in `--quiet` mode).
+    """
+    event_type = data.get("type")
+    if event_type not in {"rubric_evaluation_start", "rubric_evaluation_end"}:
+        return
+
+    if state.spinner:
+        state.spinner.stop()
+
+    if event_type == "rubric_evaluation_start":
+        iteration = data.get("iteration", 0)
+        console.print(
+            f"[dim]⏳ Grading against rubric (iteration {iteration + 1})…[/dim]",
+            highlight=False,
+        )
+        if state.spinner:
+            state.spinner.start()
+        return
+
+    result = data.get("result")
+    explanation = (data.get("explanation") or "").strip()
+    if result == "satisfied":
+        console.print("[green]✓ Rubric satisfied[/green]", highlight=False)
+    elif result == "needs_revision":
+        suffix = f": {escape_markup(explanation)}" if explanation else ""
+        console.print(
+            f"[yellow]↻ Rubric needs revision{suffix}[/yellow]", highlight=False
+        )
+        for criterion in data.get("criteria", []):
+            if isinstance(criterion, dict) and not criterion.get("passed", True):
+                name = escape_markup(str(criterion.get("name", "criterion")))
+                gap = escape_markup(str(criterion.get("gap", "")).strip())
+                detail = f" — {gap}" if gap else ""
+                console.print(f"[yellow]  ✗ {name}{detail}[/yellow]", highlight=False)
+    elif result == "max_iterations_reached":
+        console.print(
+            "[yellow]⚠ Rubric not satisfied (max iterations reached)[/yellow]",
+            highlight=False,
+        )
+    elif result == "failed":
+        suffix = f": {escape_markup(explanation)}" if explanation else ""
+        console.print(f"[red]⚠ Rubric grader failed{suffix}[/red]", highlight=False)
+
+    if state.spinner:
+        state.spinner.start()
+
+
 def _process_stream_chunk(
     chunk: object,
     state: StreamState,
@@ -515,6 +575,8 @@ def _process_stream_chunk(
 
     if stream_mode == "updates" and isinstance(data, dict) and "__interrupt__" in data:
         _process_interrupts(cast("dict[str, list[Interrupt]]", data), state, console)
+    elif stream_mode == "custom" and isinstance(data, dict):
+        _process_rubric_event(cast("dict[str, Any]", data), state, console)
     elif stream_mode == "messages":
         _process_message_chunk(
             cast("tuple[AIMessage | ToolMessage, dict[str, str]]", data),
@@ -676,7 +738,7 @@ async def _stream_agent(
     try:
         async for chunk in agent.astream(
             stream_input,
-            stream_mode=["messages", "updates"],
+            stream_mode=["messages", "updates", "custom"],
             subgraphs=True,
             config=config,
             context=context,
@@ -700,6 +762,7 @@ async def _run_agent_loop(
     message_kwargs: dict[str, Any] | None = None,
     thread_url_lookup: ThreadUrlLookupState | None = None,
     max_turns: int | None = None,
+    rubric: str | None = None,
 ) -> None:
     """Run the agent and handle HITL interrupts until the task completes.
 
@@ -726,6 +789,10 @@ async def _run_agent_loop(
             HITL resumes).
 
             When `None`, falls back to `_MAX_HITL_ITERATIONS`.
+        rubric: Acceptance criteria supplied to `RubricMiddleware` via the
+            graph's `rubric` state field.
+
+            `None` leaves it unset (no grading).
 
     Raises:
         HITLIterationLimitError: If the effective turn limit is exceeded.
@@ -736,6 +803,8 @@ async def _run_agent_loop(
     if message_kwargs:
         user_msg.update(message_kwargs)
     stream_input: dict[str, Any] | Command = {"messages": [user_msg]}
+    if rubric is not None:
+        stream_input["rubric"] = rubric
 
     thread_id = config.get("configurable", {}).get("thread_id", "")
     # An empty or missing thread ID carries no session identity, so leave it
@@ -813,6 +882,7 @@ def _build_non_interactive_header(
     thread_id: str,
     *,
     include_thread_link: bool = False,
+    rubric_active: bool = False,
 ) -> Text:
     """Build the non-interactive mode header with model, agent, and thread info.
 
@@ -824,6 +894,8 @@ def _build_non_interactive_header(
         thread_id: Thread identifier.
         include_thread_link: Whether to resolve and render a LangSmith link for
             the thread ID.
+        rubric_active: Whether a rubric is active for this run; when `True`,
+            appends a `Rubric: active` marker so the behavior change is visible.
 
     Returns:
         Rich Text object with the formatted header line.
@@ -850,6 +922,9 @@ def _build_non_interactive_header(
         )
     else:
         parts.append((f"Thread: {thread_id}", "dim"))
+
+    if rubric_active:
+        parts.extend([(" | ", "dim"), ("Rubric: active", "dim")])
 
     return Text.assemble(*parts)
 
@@ -950,6 +1025,9 @@ async def run_non_interactive(
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
     max_turns: int | None = None,
+    rubric: str | None = None,
+    rubric_model: str | None = None,
+    rubric_max_iterations: int | None = None,
 ) -> int:
     """Run a single task non-interactively and exit.
 
@@ -1013,6 +1091,13 @@ async def run_non_interactive(
             `interpreter_ptc="all"` outside of `auto_approve`.
         max_turns: Optional cap on total agentic turns. When `None`, the
             internal safety default applies.
+        rubric: Acceptance criteria for `RubricMiddleware`. When provided, the
+            agent self-evaluates against it and loops until satisfied.
+
+            `None` disables rubric grading.
+        rubric_model: Grader model spec; `None` reuses the main model.
+        rubric_max_iterations: Grader iterations per rubric attempt; `None`
+            uses the middleware default.
 
     Returns:
         Exit code: 0 for success, 1 for error, 124 when the `--max-turns`
@@ -1127,7 +1212,9 @@ async def run_non_interactive(
     if not quiet:
         thread_url_lookup = _start_langsmith_thread_url_lookup(thread_id)
         console.print(Text("Running task non-interactively...", style="dim"))
-        header = _build_non_interactive_header(assistant_id, thread_id)
+        header = _build_non_interactive_header(
+            assistant_id, thread_id, rubric_active=rubric is not None
+        )
         console.print(header)
 
     import asyncio
@@ -1187,6 +1274,10 @@ async def run_non_interactive(
             enable_interpreter=enable_interpreter,
             interpreter_ptc=interpreter_ptc,
             interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
+            rubric_model=rubric_model,
+            rubric_max_iterations=(
+                rubric_max_iterations if rubric_max_iterations is not None else 3
+            ),
             mcp_config_path=mcp_config_path,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
@@ -1222,6 +1313,7 @@ async def run_non_interactive(
                 message_kwargs=message_kwargs,
                 thread_url_lookup=thread_url_lookup,
                 max_turns=max_turns,
+                rubric=rubric,
             )
 
     except KeyboardInterrupt:

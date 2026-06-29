@@ -255,6 +255,8 @@ async def _make_graph() -> Any:  # noqa: ANN401
             enable_skills=config.enable_skills,
             enable_shell=config.enable_shell,
             enable_interpreter=config.enable_interpreter,
+            rubric_model=config.rubric_model,
+            rubric_max_iterations=config.rubric_max_iterations,
             mcp_server_info=mcp_server_info,
             cwd=project_context.user_cwd if project_context is not None else config.cwd,
             project_context=project_context,

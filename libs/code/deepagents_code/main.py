@@ -625,6 +625,48 @@ def _warn_if_interpreter_disabled_by_sandbox(args: argparse.Namespace) -> None:
     )
 
 
+def _resolve_rubric_text(rubric: str | None) -> str | None:
+    """Resolve the rubric from `--rubric` into one string.
+
+    `--rubric` accepts literal text, or `@path` to read a file. File paths
+    may be absolute, relative to the `dcode` process working directory, or
+    `~`-expanded home paths.
+
+    Args:
+        rubric: Value of `--rubric` (literal text or `@path`), or `None`.
+
+    Returns:
+        The resolved rubric text, or `None` when the flag was not supplied.
+
+    Raises:
+        ValueError: If the rubric is empty, or a referenced file is missing,
+            unreadable, or empty.
+    """
+    if rubric is None:
+        return None
+
+    # An `@`-prefixed value is always read as a file path. The path may be
+    # absolute, relative to the `dcode` process working directory, or `~`-based.
+    # There is no way to pass a literal rubric that begins with `@` (put such
+    # text in a file).
+    if rubric.startswith("@"):
+        path = rubric[1:]
+        try:
+            text = Path(path).expanduser().read_text(encoding="utf-8")
+        except OSError as exc:
+            msg = f"Could not read rubric file {path!r}: {exc}."
+            raise ValueError(msg) from exc
+        if not text.strip():
+            msg = f"Rubric file {path!r} is empty."
+            raise ValueError(msg)
+        return text.strip()
+
+    if not rubric.strip():
+        msg = "--rubric must not be empty."
+        raise ValueError(msg)
+    return rubric.strip()
+
+
 def _warn_if_interpreter_tools_without_interpreter(
     args: argparse.Namespace, *, enable_interpreter: bool
 ) -> None:
@@ -1508,6 +1550,31 @@ def parse_args() -> argparse.Namespace:
         "the process exits with code 124 if the timeout is reached. "
         "Complements --max-turns (turn count) with a time-based limit; both "
         "use exit code 124 on expiry. Requires -n or piped stdin.",
+    )
+
+    parser.add_argument(
+        "--rubric",
+        dest="rubric",
+        metavar="TEXT|@PATH",
+        help="Acceptance criteria the agent self-evaluates against, looping "
+        "until satisfied. Accepts literal text or '@path' to read a file "
+        "(relative to the current working directory; '~' supported). "
+        "Requires -n or piped stdin.",
+    )
+    parser.add_argument(
+        "--rubric-model",
+        dest="rubric_model",
+        metavar="MODEL",
+        help="Model the rubric grader uses (e.g. anthropic:claude-sonnet-4-6). "
+        "Defaults to the main agent model.",
+    )
+    parser.add_argument(
+        "--rubric-max-iterations",
+        dest="rubric_max_iterations",
+        type=positive_int,
+        metavar="N",
+        help="Grader iterations per rubric attempt before stopping (must be "
+        ">= 1, default 3).",
     )
 
     parser.add_argument(
@@ -2626,6 +2693,25 @@ def cli_main() -> None:
             )
             sys.exit(2)
 
+        rubric_set = any(
+            getattr(args, attr, None) is not None
+            for attr in (
+                "rubric",
+                "rubric_model",
+                "rubric_max_iterations",
+            )
+        )
+        if rubric_set and not args.non_interactive_message:
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --rubric/--rubric-model/"
+                "--rubric-max-iterations require "
+                "--non-interactive (-n) or piped stdin\n"
+                "  dcode -n 'implement X' --rubric 'tests pass; minimal diff'"
+            )
+            sys.exit(2)
+
         if (args.quiet or args.no_stream) and not args.non_interactive_message:
             # Print to stderr (not the module-level stdout console) and exit
             # with code 2 to match the POSIX convention for usage errors, as
@@ -3289,6 +3375,14 @@ def cli_main() -> None:
             )
             _warn_if_interpreter_disabled_by_sandbox(args)
 
+            try:
+                rubric_text = _resolve_rubric_text(getattr(args, "rubric", None))
+            except ValueError as exc:
+                from rich.console import Console as _Console
+
+                _Console(stderr=True).print(f"[bold red]Error:[/bold red] {exc}")
+                sys.exit(2)
+
             timeout = getattr(args, "timeout", None)
             try:
                 exit_code = asyncio.run(
@@ -3313,6 +3407,11 @@ def cli_main() -> None:
                             enable_interpreter=enable_interpreter,
                             interpreter_ptc=interpreter_ptc,
                             max_turns=getattr(args, "max_turns", None),
+                            rubric=rubric_text,
+                            rubric_model=getattr(args, "rubric_model", None),
+                            rubric_max_iterations=getattr(
+                                args, "rubric_max_iterations", None
+                            ),
                         ),
                         timeout=timeout,
                     )

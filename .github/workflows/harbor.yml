@@ -146,7 +146,6 @@ on:
           - dcode
           - bare
           - tau3
-          - oolong-plain
           - oolong-rlm
       n_tasks:
         description: "Maximum number of tasks to run (0 = all)."
@@ -435,10 +434,6 @@ jobs:
               # exits early with no MCP servers.
               HARBOR_AGENT_GRAPH=tau3_deepagent
               HARBOR_AGENT_LABEL="tau3 conversational deepagent"
-              ;;
-            oolong-plain)
-              HARBOR_AGENT_GRAPH=oolong_plain
-              HARBOR_AGENT_LABEL="oolong plain (subagents)"
               ;;
             oolong-rlm)
               HARBOR_AGENT_GRAPH=oolong_code_interpreter

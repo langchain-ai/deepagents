@@ -1,23 +1,19 @@
-"""LangGraph entrypoints for the OOLONG arms under Harbor.
+"""LangGraph entrypoint for the OOLONG code-interpreter (RLM) agent under Harbor.
 
-Hosts the two OOLONG-synth arms from PR #4213, both registered in the shared
-``langgraph.json``:
+Registers ``oolong_code_interpreter`` in the shared ``langgraph.json``: a Deep
+Agent (PR #4213's RLM arm) that reads ``/app/context.txt``, fans out contiguous
+line-range reads/classification to ``general-purpose`` ``task`` subagents from
+inside a QuickJS ``eval`` program (``CodeInterpreterMiddleware``), aggregates in
+JavaScript, and writes the final answer to ``/app/answer.txt`` (the file the
+Harbor verifier grades), via a ``LocalShellBackend`` shared with its subagents.
 
-- ``oolong_plain`` — a Deep Agent that fans out contiguous line-range
-  reads/classification to ``general-purpose`` ``task`` subagents and aggregates.
-- ``oolong_code_interpreter`` (RLM) — same, but the agent orchestrates the
-  fan-out and aggregation from inside a QuickJS ``eval`` program
-  (``CodeInterpreterMiddleware``).
-
-Both read ``/app/context.txt`` and write the final answer to ``/app/answer.txt``
-(the file the Harbor verifier grades), via a ``LocalShellBackend`` shared with
-their subagents.
+The plain (no-code-interpreter) baseline is just the existing ``bare_deepagent``
+graph run against the OOLONG dataset — no separate graph needed.
 
 Kept separate from ``langgraph_agent.py`` on purpose: that module imports
-``deepagents_code`` and ``langchain_mcp_adapters`` at import time, which the
-OOLONG arms don't need. The plain arm imports only the ``deepagents`` SDK; the
-code-interpreter arm imports ``langchain_quickjs`` lazily, so loading this module
-never requires QuickJS unless that arm is actually run.
+``deepagents_code`` and ``langchain_mcp_adapters`` at import time, which this
+graph doesn't need. ``langchain_quickjs`` is imported lazily in the factory, so
+loading this module never requires QuickJS until the graph is built.
 """
 
 from __future__ import annotations
@@ -52,20 +48,6 @@ _SHELL_ENV_DENYLIST = frozenset(
         "OPENAI_API_KEY",
     }
 )
-
-_OOLONG_PLAIN_SYSTEM_PROMPT = """You are a precise data analyst running in a Harbor \
-benchmark sandbox. The document to analyze is at `/app/context.txt`. Answer the \
-question in the exact format it requests.
-
-Strategy: split the document into contiguous line-range chunks and fan them out to
-`general-purpose` subagents in parallel — emit multiple `task` calls in one turn,
-each given a line range to read and classify — then aggregate their per-line
-results to compute the answer.
-
-When you have the final answer, use `write_file` to write ONLY the answer to
-`/app/answer.txt` in the exact format the question requests (for example
-`Label: <answer>`). That file is the sole thing graded; finish only after writing it.
-"""
 
 _OOLONG_CODE_INTERPRETER_SYSTEM_PROMPT = """You are a precise data analyst running \
 in a Harbor benchmark sandbox. The document to analyze is at `/app/context.txt`. \
@@ -148,27 +130,24 @@ def _sub_model_id(configurable: dict[str, object], default: str) -> str:
     return default
 
 
-def _build_oolong_graph(
-    config: dict[str, object] | None,
-    *,
-    system_prompt: str,
-    middleware: list[Any] | None = None,
-) -> object:
-    """Build an OOLONG Deep Agent for one arm.
+def make_oolong_code_interpreter_graph(config: dict[str, object] | None = None) -> object:
+    """OOLONG code-interpreter (RLM) agent: fan-out + aggregation inside a QuickJS ``eval``.
 
-    The orchestrator and its ``general-purpose`` subagents share a
-    ``LocalShellBackend`` rooted at the sandbox workdir, so the subagents read the
-    same on-disk ``/app/context.txt`` the orchestrator sees, and the answer is
-    written to ``/app/answer.txt`` on the real container filesystem. The only
-    difference between arms is ``system_prompt`` and ``middleware``.
+    The agent dispatches ``general-purpose`` subagents via ``task(...)`` from inside
+    an ``eval`` program (``CodeInterpreterMiddleware``) and aggregates in JavaScript.
+    The orchestrator and subagents share one ``LocalShellBackend`` rooted at the
+    sandbox workdir, so the subagents read the same on-disk ``/app/context.txt`` and
+    the answer is written to ``/app/answer.txt``. ``langchain_quickjs`` is imported
+    here, not at module load, so loading this module never requires QuickJS. The caps
+    mirror PR #4213: a per-``eval`` timeout long enough for a ``Promise.all`` of
+    subagent dispatches, and a ceiling on ``eval`` calls so a retry-spiral can't run
+    away.
 
     Args:
         config: LangGraph runtime config. Harbor passes the root model in
             ``configurable.model`` (or ``HARBOR_MODEL``); the subagent model comes
             from ``configurable.sub_model`` / ``OOLONG_SUB_MODEL``, defaulting to
             the root model.
-        system_prompt: The arm's orchestrator prompt.
-        middleware: Extra middleware for the arm (e.g. the code interpreter).
 
     Returns:
         A compiled LangGraph graph invokable by Harbor's LangGraph runner.
@@ -177,6 +156,11 @@ def _build_oolong_graph(
         TypeError: If configurable values have unexpected types.
         ValueError: If no model name is provided.
     """
+    from langchain_quickjs import CodeInterpreterMiddleware  # noqa: PLC0415
+
+    # list[Any] so the (lazily imported) middleware type satisfies create_deep_agent's
+    # Sequence[AgentMiddleware] parameter without a hard dependency on its type.
+    middleware: list[Any] = [CodeInterpreterMiddleware(timeout=300.0, max_ptc_calls=12)]
     configurable = _configurable(config)
     root_model_id = _model_name(configurable)
     model = init_chat_model(root_model_id, **_model_kwargs(configurable))
@@ -198,31 +182,7 @@ def _build_oolong_graph(
             backend=LocalShellBackend(
                 root_dir=_workdir(configurable), inherit_env=False, virtual_mode=False
             ),
-            system_prompt=system_prompt,
+            system_prompt=_OOLONG_CODE_INTERPRETER_SYSTEM_PROMPT,
             subagents=subagents,
-            middleware=middleware or [],
+            middleware=middleware,
         )
-
-
-def make_oolong_plain_graph(config: dict[str, object] | None = None) -> object:
-    """OOLONG "plain" arm: the agent fans out to ``general-purpose`` subagents."""
-    return _build_oolong_graph(config, system_prompt=_OOLONG_PLAIN_SYSTEM_PROMPT)
-
-
-def make_oolong_code_interpreter_graph(config: dict[str, object] | None = None) -> object:
-    """OOLONG "code interpreter" (RLM) arm: fan-out + aggregation inside a QuickJS ``eval``.
-
-    Adds ``CodeInterpreterMiddleware`` (the ``eval`` tool); the agent dispatches
-    ``general-purpose`` subagents via ``task(...)`` from JavaScript and aggregates
-    in JS. ``langchain_quickjs`` is imported here, not at module load, so the plain
-    arm never requires QuickJS. The caps mirror PR #4213: a per-``eval`` timeout
-    long enough for a ``Promise.all`` of subagent dispatches, and a ceiling on
-    ``eval`` calls so a retry-spiral can't run away.
-    """
-    from langchain_quickjs import CodeInterpreterMiddleware  # noqa: PLC0415
-
-    return _build_oolong_graph(
-        config,
-        system_prompt=_OOLONG_CODE_INTERPRETER_SYSTEM_PROMPT,
-        middleware=[CodeInterpreterMiddleware(timeout=300.0, max_ptc_calls=12)],
-    )

@@ -50,15 +50,15 @@ python3 deepagents_harbor/oolong/generate_oolong_tasks.py \
 `.cache/` (gitignored), so re-runs are offline. Stdlib-only — no agent stack
 needed to generate.
 
-## The arm-agnostic design
+## The agent-agnostic design
 
-The two OOLONG arms (plain subagents vs. code-interpreter/RLM) are **agent
-configurations, not task content** — exactly as in PR #4213, where the arm is
-runtime metadata, never an input. So the generated task only says "read
-`/context.txt`, write your answer to `/app/answer.txt`." Which arm runs is a
-`harbor run --agent ... --model ...` choice. Comparing arms = two experiments
-over this one dataset, lined up by Harbor's job/metric machinery (the analogue
-of the PR's "both arms share one LangSmith example").
+The agent is an **agent configuration, not task content** — as in PR #4213,
+where the arm is runtime metadata, never an input. The generated task only says
+"read `/app/context.txt`, write your answer to `/app/answer.txt`," so any Harbor
+agent can run it via `harbor run --agent ... --model ...`. We ship the
+code-interpreter (RLM) agent (`oolong_code_interpreter`); the plain
+no-code-interpreter baseline is just the existing `bare_deepagent` graph run
+against the same dataset, so there's no separate plain graph.
 
 ## Scoring
 
@@ -79,17 +79,13 @@ harbor run -p deepagents_harbor/oolong/dataset/oolong-synth-trec_coarse-1024-100
 The oracle (`solve.sh`) writes the gold answer; the full build → agent →
 verifier → reward loop scores `1.0`. A wrong/empty answer scores `0.0`.
 
-## Running the two arms
+## Running the code-interpreter (RLM) agent
 
-Both arms from PR #4213 are graphs in the shared
-`deepagents_harbor/langgraph_project/langgraph.json`, with factories in the
-standalone `oolong_graph.py` (imports only `deepagents`; the RLM arm
-lazy-imports `langchain_quickjs`):
-
-| Arm | `--ak graph=` | Substrate |
-| --- | --- | --- |
-| Plain | `oolong_plain` | fan-out to `general-purpose` `task` subagents |
-| RLM | `oolong_code_interpreter` | fan-out + aggregation inside a QuickJS `eval` (`CodeInterpreterMiddleware`) |
+`oolong_code_interpreter` is a graph in the shared
+`deepagents_harbor/langgraph_project/langgraph.json`, with its factory in the
+standalone `oolong_graph.py` (imports only `deepagents`; lazy-imports
+`langchain_quickjs`). It fans out `general-purpose` `task` subagents from inside
+a QuickJS `eval` program (`CodeInterpreterMiddleware`) and aggregates in JS.
 
 ```bash
 # from libs/evals/, after: make stage-harbor-local-deps
@@ -98,7 +94,7 @@ harbor run \
   --agent langgraph \
   --ak project_path=deepagents_harbor/langgraph_project \
   --ak config=langgraph.json \
-  --ak graph=oolong_plain \            # or: oolong_code_interpreter
+  --ak graph=oolong_code_interpreter \
   --model anthropic:claude-sonnet-4-6 \
   --ae 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}' \
   --ae 'UV_PRERELEASE=allow' \
@@ -106,9 +102,9 @@ harbor run \
 # → Mean: 1.000   (agent reads /app/context.txt, writes /app/answer.txt; verifier grades it)
 ```
 
-Both arms are verified end-to-end in Docker (each scores 1.0 on the POC task;
-the RLM arm invokes the `eval` tool). Run them as two experiments over the same
-dataset for the side-by-side comparison that is the point of the original eval.
+Verified end-to-end in Docker: the agent invokes the `eval` tool and scores 1.0
+on the POC task. For a non-code-interpreter baseline, run `--ak graph=bare_deepagent`
+against the same dataset.
 
 The subagent model defaults to the root model; override with
 `--ak sub_model=openai:gpt-5-mini` (the paper's asymmetric setup) or
@@ -138,8 +134,7 @@ network.
 
 ## Not yet done (next steps)
 
-- Generate the full bucket / multiple `(dataset, context_len)` buckets and run
-  both arms as two experiments for the side-by-side comparison.
+- Generate the full bucket / multiple `(dataset, context_len)` buckets.
 - Pre-bake agent deps so the hardened `--network no-network` allowlist works.
 - When PR #4213 merges, dedupe `loader.py` / `official_scorer.py` against the
   canonical copies there.

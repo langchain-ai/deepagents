@@ -7964,10 +7964,14 @@ class DeepAgentsApp(App):
         self._pending_goal_rubric = None
         self._sync_status_rubric()
         persisted = await self._persist_goal_rubric_state()
-        await self._mount_goal_rubric_result(
-            f"Goal accepted. Rubric set.\n\nGoal:\n{objective}\n\nCriteria:\n{rubric}",
-            persisted=persisted,
-        )
+        await self._mount_message(AppMessage("Goal accepted. Rubric set."))
+        if not persisted:
+            await self._mount_message(
+                ErrorMessage(
+                    "Goal accepted for this session, but it could not be saved "
+                    "to the thread."
+                )
+            )
 
     def _sync_status_rubric(self) -> None:
         """Reflect active rubric state in the status bar."""

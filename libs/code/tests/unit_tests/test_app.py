@@ -5032,7 +5032,7 @@ class TestGoalCommand:
             assert app._status_bar.rubric_label == ""
 
     async def test_goal_accept_warns_when_persist_fails(self) -> None:
-        """A failed thread write must not show an unqualified success banner."""
+        """A failed thread write should warn without dumping criteria as an error."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -5051,11 +5051,19 @@ class TestGoalCommand:
             await pilot.pause()
             await pilot.pause()
 
-            # State still applies in-session, but the user is told it was not
-            # saved rather than seeing a plain "Goal accepted." banner.
+            # State still applies in-session, but the warning stays concise and
+            # does not render the accepted criteria as an error body.
             assert app._active_goal == "add refresh tokens"
             assert any(
-                "will not survive" in str(w._content) for w in app.query(ErrorMessage)
+                str(w._content) == "Goal accepted. Rubric set."
+                for w in app.query(AppMessage)
+            )
+            assert any(
+                "could not be saved to the thread" in str(w._content)
+                for w in app.query(ErrorMessage)
+            )
+            assert not any(
+                "- tests pass" in str(w._content) for w in app.query(ErrorMessage)
             )
 
     async def test_goal_cancel_omits_unsaved_thread_warning(self) -> None:

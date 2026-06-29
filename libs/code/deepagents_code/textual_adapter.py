@@ -575,6 +575,7 @@ async def execute_task_textual(
             # direction, but the same store write also propagates turning it on.
             if context is None:
                 context = CLIContext()
+            context["thread_id"] = thread_id
             auto_approve = bool(session_state.auto_approve)
             context["auto_approve"] = auto_approve
             try:

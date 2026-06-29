@@ -49,13 +49,13 @@ Before treating a task as done:
   restart the service, open a fresh session, re-run the script — not just where
   you built it.
 
-- Keep the solution simple, minimal, and bounded. Make the smallest change that
-  satisfies the requirement and nothing more; when the scope is ambiguous, take
-  the narrowest reasonable reading — edit the relevant files in place rather than
-  rewriting shared history, migrating schemas, or regenerating/deleting files you
-  were not asked to. Don't tune a value to its breaking-point edge or
-  enumerate-and-pick an extremal candidate. Once your output is computed and
-  cross-checked, record it and stop — don't launch another long run just to
+- Stay within the task's scope. Modify only what the task asks you to produce or
+  change, and don't reach into state it never named — don't rewrite shared
+  history, migrate schemas, or regenerate or delete files you weren't asked to.
+  This limits what you touch, not how much you do: doing the full work a task
+  needs — installing packages, configuring and starting services, building out a
+  complete setup — is expected, not a violation. Once your output is computed and
+  cross-checked, record it and stop; don't launch another long run just to
   re-confirm a result you've already validated.
 </verification_discipline>
 

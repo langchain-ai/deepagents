@@ -1,6 +1,7 @@
 """Unit tests for message widgets markup safety."""
 
 import asyncio
+from time import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -10,6 +11,7 @@ from textual.app import App, ComposeResult
 from textual.content import Content
 
 from deepagents_code import theme
+from deepagents_code.formatting import format_duration
 from deepagents_code.input import INPUT_HIGHLIGHT_PATTERN
 from deepagents_code.tool_display import JS_EVAL_HEADER_MAX_LENGTH
 from deepagents_code.widgets.messages import (
@@ -2080,6 +2082,45 @@ class TestToolCallMessageRunningSpinner:
             assert msg._status == "running"
             assert msg._status_widget.display is True
             assert msg._animation_timer is not None
+
+    async def test_running_timer_hidden_before_threshold(self) -> None:
+        """The elapsed counter stays hidden until the threshold elapses."""
+        from textual.app import App, ComposeResult
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("grep", {"pattern": "foo"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            assert msg._status_widget is not None
+
+            msg.set_running()
+            await pilot.pause()
+
+            threshold = msg._RUNNING_TIMER_THRESHOLD_SECS
+
+            # Just under the threshold: status ends at "Running..." with no
+            # trailing elapsed counter (the leading spinner frame may itself
+            # contain parens on ASCII terminals, so assert on the suffix).
+            msg._start_time = time() - (threshold - 1)
+            msg._update_running_animation()
+            await pilot.pause()
+            assert str(msg._status_widget.render()).endswith("Running...")
+
+            # At/after the threshold: the elapsed counter appears.
+            msg._start_time = time() - threshold
+            msg._update_running_animation()
+            await pilot.pause()
+            assert str(msg._status_widget.render()).endswith(
+                f"Running... ({format_duration(threshold)})"
+            )
 
     async def test_pause_running_hides_status_and_stops_timer(self) -> None:
         """`pause_running` should revert a running tool to its pending look."""

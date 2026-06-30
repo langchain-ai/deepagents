@@ -1120,6 +1120,78 @@ class TestToolCallMessageExpandHint:
             assert "line 4" in preview.plain
 
 
+class TestToolCallMessageEmptyResult:
+    """Empty file-op results render nothing instead of an empty box."""
+
+    @pytest.mark.parametrize(
+        ("tool", "output"),
+        [
+            ("glob", "[]"),
+            ("grep", "[]"),
+            ("ls", "[]"),
+            ("glob", "   "),
+        ],
+    )
+    async def test_empty_serialized_result_hides_output(
+        self, tool: str, output: str
+    ) -> None:
+        """A non-empty literal that formats to nothing must not render a box.
+
+        Tools like glob/grep/ls serialize an empty successful result as the
+        literal "[]", which formats to no visible content. The raw output is
+        truthy, so the early empty guard doesn't fire — without the formatted
+        emptiness check the preview row renders as an empty box with a
+        misleading expand affordance. The whitespace-only case ("   ") exercises
+        the same check now that the collapsed branch's own empty guard is gone.
+        """
+        app = _tool_msg_app(tool)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._preview_row is not None
+            assert app.msg._full_row is not None
+            assert app.msg._hint_widget is not None
+            assert app.msg._preview_row.display is False
+            assert app.msg._full_row.display is False
+            assert app.msg._hint_widget.display is False
+            assert app.msg._has_expandable_output() is False
+
+    async def test_non_empty_serialized_result_still_renders(self) -> None:
+        """A populated result must still render — the guard can't false-positive."""
+        app = _tool_msg_app("glob")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("['a.py', 'b.py']")
+            await pilot.pause()
+
+            assert app.msg._preview_row is not None
+            assert app.msg._preview_row.display is True
+            assert app.msg._preview_widget is not None
+            preview = app.msg._preview_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert "a.py" in preview.plain
+
+    async def test_error_body_is_not_hidden(self) -> None:
+        """A real (non-empty) error body must stay visible.
+
+        The emptiness guard runs regardless of status, so this pins the
+        invariant that a human-readable error — which always formats non-empty —
+        is shown in full rather than collapsed away.
+        """
+        app = _tool_msg_app("grep", {"pattern": "x"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_error("grep: invalid pattern")
+            await pilot.pause()
+
+            assert app.msg._full_row is not None
+            assert app.msg._full_widget is not None
+            assert app.msg._full_row.display is True
+            full = app.msg._full_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert "invalid pattern" in full.plain
+
+
 class TestToolCallMessageExpandableArgs:
     """Tests for the `ask_user` expandable-arguments toggle."""
 

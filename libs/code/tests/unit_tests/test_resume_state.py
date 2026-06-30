@@ -1,8 +1,9 @@
 """Tests for resume-state persistence and token display callbacks."""
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, get_type_hints
 
+from langchain.agents.middleware.types import PrivateStateAttr
 from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents_code.app import DeepAgentsApp
@@ -11,6 +12,7 @@ from deepagents_code.resume_state import (
     ResumeStateMiddleware,
     _extract_context_tokens,
     _extract_model_spec,
+    coerce_goal_status,
 )
 
 
@@ -28,9 +30,38 @@ class TestResumeState:
         """ResumeState declares the `_model_spec` channel."""
         assert "_model_spec" in ResumeState.__annotations__
 
+    def test_sticky_rubric_field_is_private(self):
+        """Persistent TUI rubrics must not leak through the public schema."""
+        # `_sticky_rubric` is inherited from `GoalRubricChannels`, so resolve the
+        # full (inherited) hints the way LangGraph does rather than reading
+        # own-keys-only `__annotations__`. `get_type_hints` resolves the marker to
+        # its real object (`PrivateStateAttr`), so assert membership of that
+        # sentinel rather than matching the source text.
+        hints = get_type_hints(ResumeState, include_extras=True)
+        metadata = getattr(hints["_sticky_rubric"], "__metadata__", ())
+        assert PrivateStateAttr in metadata
+
     def test_middleware_exposes_state_schema(self):
         """ResumeStateMiddleware registers the correct state schema."""
         assert ResumeStateMiddleware.state_schema is ResumeState
+
+
+class TestCoerceGoalStatus:
+    """Tests for `coerce_goal_status`."""
+
+    def test_returns_known_statuses(self) -> None:
+        assert coerce_goal_status("active") == "active"
+        assert coerce_goal_status("blocked") == "blocked"
+        assert coerce_goal_status("complete") == "complete"
+
+    def test_unknown_string_coerces_to_none(self) -> None:
+        assert coerce_goal_status("deleted") is None
+        assert coerce_goal_status("") is None
+
+    def test_non_string_coerces_to_none(self) -> None:
+        assert coerce_goal_status(None) is None
+        assert coerce_goal_status(123) is None
+        assert coerce_goal_status(["active"]) is None
 
 
 class TestExtractContextTokens:

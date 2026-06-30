@@ -22,6 +22,7 @@ from deepagents.graph import (
     _REQUIRED_MIDDLEWARE_NAMES,
     BASE_AGENT_PROMPT,
     DeepAgentState,
+    _apply_custom_middleware,
     _create_bedrock_prompt_caching_middleware,
     _apply_custom_middleware,
     create_deep_agent,
@@ -2290,27 +2291,6 @@ class TestApplyUserMiddleware:
         assert result[1] is b
         assert result[2] is new
 
-    def test_excluded_slot_inserted_at_original_position(self) -> None:
-        """Excluded-slot replacement is inserted at its original position, not appended."""
-        a, b, c = _named_mw("A"), _named_mw("B"), _named_mw("C")
-        original = {m.name: i for i, m in enumerate([a, b, c])}
-        filtered = [a, c]  # b was excluded
-        r_b = _named_mw("B")
-        result = _apply_custom_middleware(filtered, [r_b], original)
-        assert len(result) == 3
-        assert result[0] is a
-        assert result[1] is r_b
-        assert result[2] is c
-
-    def test_multiple_excluded_slots_preserve_relative_order(self) -> None:
-        """Multiple excluded-slot insertions are placed in their original relative order."""
-        a, b, c, d = _named_mw("A"), _named_mw("B"), _named_mw("C"), _named_mw("D")
-        original = {m.name: i for i, m in enumerate([a, b, c, d])}
-        filtered = [a, d]  # b and c were excluded
-        r_b, r_c = _named_mw("B"), _named_mw("C")
-        result = _apply_custom_middleware(filtered, [r_b, r_c], original)
-        assert result == [a, r_b, r_c, d]
-
 
 class TestUserMiddlewareOverride:
     """Integration tests: user-supplied middleware replaces same-named defaults in create_deep_agent."""
@@ -2325,6 +2305,24 @@ class TestUserMiddlewareOverride:
         ):
             create_deep_agent(model="anthropic:claude-sonnet-4-6", middleware=user_mw)
         return mock_create.call_args.kwargs["middleware"]
+
+    def test_custom_middleware_precedes_prompt_caching(self) -> None:
+        """User middleware must wrap outside AnthropicPromptCachingMiddleware.
+
+        The relative order fixes the Anthropic prompt-cache prefix: user
+        middleware that mutates the request/system prompt has to run before the
+        cache breakpoint, else it can invalidate the cached prefix.
+        """
+        custom = _named_mw("CustomMW")
+        stack = self._run([custom])
+
+        custom_idx = next(i for i, m in enumerate(stack) if m is custom)
+        pc_idx = next(
+            (i for i, m in enumerate(stack) if m.name == "AnthropicPromptCachingMiddleware"),
+            None,
+        )
+        assert pc_idx is not None, f"expected prompt caching middleware in stack; got {[m.name for m in stack]}"
+        assert custom_idx < pc_idx, f"user middleware must precede prompt caching; got order {[m.name for m in stack]}"
 
     def test_summarization_middleware_replaces_default(self) -> None:
         """Passing SummarizationMiddleware in middleware= replaces the built-in instance."""
@@ -2458,3 +2456,144 @@ class TestUserMiddlewareOverride:
 
         stack = mock_create.call_args.kwargs["middleware"]
         assert any(m is custom for m in stack)
+
+
+class TestSubagentMiddlewareIsolation:
+    """GP inherits main-agent overrides; declarative subagents build stacks independently."""
+
+    _GP_NAME = "general-purpose"
+
+    def _setup(
+        self,
+        user_mw: list[Any],
+        subagents: list[SubAgent] | None = None,
+        *,
+        enable_gp: bool = True,
+        excluded_middleware: frozenset[type[Any]] | None = None,
+    ) -> tuple[list[Any], SubAgentMiddleware]:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "mwinhrt",
+                HarnessProfile(
+                    general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=enable_gp),
+                    excluded_middleware=excluded_middleware or frozenset(),
+                ),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            fake_agent = MagicMock()
+            fake_agent.with_config.return_value = "compiled-agent"
+            with (
+                patch("deepagents.graph.resolve_model", return_value=fake_model),
+                patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+            ):
+                create_deep_agent(
+                    model="mwinhrt:some-model",
+                    subagents=subagents or [],
+                    middleware=user_mw,
+                )
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+        main_stack = mock_create.call_args.kwargs["middleware"]
+        sub_mw = next(m for m in main_stack if isinstance(m, SubAgentMiddleware))
+        return main_stack, sub_mw
+
+    # ── GP inherits main-agent overrides ──────────────────────────────────────
+
+    def test_gp_inherits_main_middleware_override(self) -> None:
+        """GP subagent receives the main agent's SummarizationMiddleware override."""
+        custom = SummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+            trigger=("tokens", 50_000),
+        )
+        _, sub_mw = self._setup([custom], enable_gp=True)
+        gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
+        summ_entries = [m for m in gp_spec["middleware"] if isinstance(m, _DeepAgentsSummarizationMiddleware)]
+        assert len(summ_entries) == 1
+        assert summ_entries[0] is custom
+
+    def test_gp_does_not_inherit_non_default_main_middleware(self) -> None:
+        """Main-agent middleware whose name isn't a GP default is not inherited by GP."""
+
+        class _ParentOnlyMW(SummarizationMiddleware):
+            @property
+            def name(self) -> str:
+                return "ParentOnlyMW"
+
+        custom = _ParentOnlyMW(model=GenericFakeChatModel(messages=iter([])), backend=StateBackend())
+        _, sub_mw = self._setup([custom], enable_gp=True)
+        gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
+        assert not any(m is custom for m in gp_spec["middleware"])
+
+    def test_gp_profile_exclusion_wins_over_inherited_override(self) -> None:
+        """Profile exclusion on a GP default slot wins even when the main agent supplies a replacement."""
+        custom = SummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+            trigger=("tokens", 50_000),
+        )
+        _, sub_mw = self._setup(
+            [custom],
+            enable_gp=True,
+            excluded_middleware=frozenset({_DeepAgentsSummarizationMiddleware}),
+        )
+        gp_spec = next(s for s in sub_mw._subagents if s.get("name") == self._GP_NAME)
+        assert not any(isinstance(m, _DeepAgentsSummarizationMiddleware) for m in gp_spec["middleware"])
+
+    # ── Declarative subagents are isolated from main-agent overrides ──────────
+
+    def test_declarative_subagent_does_not_inherit_main_middleware_override(self) -> None:
+        """Declarative subagent with no spec middleware is not affected by main-agent overrides."""
+        custom = SummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+            trigger=("tokens", 50_000),
+        )
+        subagent: SubAgent = {
+            "name": "helper",
+            "description": "A helper subagent",
+            "system_prompt": "You are a helper.",
+        }
+        _, sub_mw = self._setup([custom], subagents=[subagent], enable_gp=False)
+        helper_spec = next(s for s in sub_mw._subagents if s.get("name") == "helper")
+        assert not any(m is custom for m in helper_spec["middleware"])
+        assert any(isinstance(m, _DeepAgentsSummarizationMiddleware) for m in helper_spec["middleware"])
+
+    def test_declarative_subagent_spec_middleware_replaces_default(self) -> None:
+        """Spec-supplied middleware replaces the matching default in that subagent's stack."""
+        spec_custom = SummarizationMiddleware(
+            model=GenericFakeChatModel(messages=iter([])),
+            backend=StateBackend(),
+            trigger=("tokens", 30_000),
+        )
+        subagent: SubAgent = {
+            "name": "helper",
+            "description": "A helper subagent",
+            "system_prompt": "You are a helper.",
+            "middleware": [spec_custom],
+        }
+        _, sub_mw = self._setup([], subagents=[subagent], enable_gp=False)
+        helper_spec = next(s for s in sub_mw._subagents if s.get("name") == "helper")
+        summ_entries = [m for m in helper_spec["middleware"] if isinstance(m, _DeepAgentsSummarizationMiddleware)]
+        assert len(summ_entries) == 1
+        assert summ_entries[0] is spec_custom
+
+    def test_declarative_subagent_profile_exclusion_removes_default(self) -> None:
+        """Profile-excluded middleware is removed from a declarative subagent's stack."""
+        subagent: SubAgent = {
+            "name": "helper",
+            "description": "A helper subagent",
+            "system_prompt": "You are a helper.",
+            "model": "mwinhrt:some-model",
+        }
+        _, sub_mw = self._setup(
+            [],
+            subagents=[subagent],
+            enable_gp=False,
+            excluded_middleware=frozenset({_DeepAgentsSummarizationMiddleware}),
+        )
+        helper_spec = next(s for s in sub_mw._subagents if s.get("name") == "helper")
+        assert not any(isinstance(m, _DeepAgentsSummarizationMiddleware) for m in helper_spec["middleware"])

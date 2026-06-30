@@ -15,6 +15,7 @@ from deepagents_code.model_config import (
     IMPLICIT_AUTH_PROVIDERS,
     NO_AUTH_REQUIRED_PROVIDERS,
     PROVIDER_API_KEY_ENV,
+    PROVIDER_BASE_URL_ENV,
     RETRY_PARAM_BY_PROVIDER,
     THREAD_COLUMN_DEFAULTS,
     ModelConfig,
@@ -318,6 +319,27 @@ class TestStoredCredentials:
         assert os.environ["OPENAI_BASE_URL"] == "https://mine.example/v1"
         # The alternate name the SDK also reads must not retain a stale value.
         assert "OPENAI_API_BASE" not in os.environ
+
+    def test_apply_stored_credentials_sets_baseten_base_url(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored Baseten endpoint writes `BASETEN_BASE_URL` and clears legacy."""
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import apply_stored_credentials
+
+        monkeypatch.delenv("BASETEN_API_KEY", raising=False)
+        monkeypatch.setenv("BASETEN_API_BASE", "https://stale.example/v1")
+        auth_store.set_stored_key(
+            "baseten", "from-store", base_url="https://mine.example/v1"
+        )
+
+        assert apply_stored_credentials("baseten") is True
+        assert os.environ["BASETEN_BASE_URL"] == "https://mine.example/v1"
+        assert "BASETEN_API_BASE" not in os.environ
 
     def test_apply_stored_credentials_blank_base_url_clears_gateway(
         self,
@@ -1284,6 +1306,17 @@ class TestProviderApiKeyEnv:
         assert PROVIDER_API_KEY_ENV["xai"] == "XAI_API_KEY"
 
 
+class TestProviderBaseUrlEnv:
+    """Tests for PROVIDER_BASE_URL_ENV constant."""
+
+    def test_baseten_matches_langchain_baseten_precedence(self) -> None:
+        """Baseten reads the new env var before the legacy fallback."""
+        assert PROVIDER_BASE_URL_ENV["baseten"] == (
+            "BASETEN_BASE_URL",
+            "BASETEN_API_BASE",
+        )
+
+
 class TestModelConfigLoad:
     """Tests for ModelConfig.load() method."""
 
@@ -1587,6 +1620,21 @@ models = ["llama3"]
 
         assert config.get_base_url("openai") == "https://gw.example/openai/v1"
 
+    def test_baseten_base_url_precedes_legacy_api_base(self, monkeypatch):
+        """Baseten follows `langchain-baseten` endpoint env precedence."""
+        monkeypatch.setenv("BASETEN_BASE_URL", "https://new.example/v1")
+        monkeypatch.setenv("BASETEN_API_BASE", "https://legacy.example/v1")
+        config = ModelConfig()
+
+        assert config.get_base_url("baseten") == "https://new.example/v1"
+
+    def test_baseten_falls_back_to_legacy_api_base(self, monkeypatch):
+        """Baseten still honors the legacy endpoint env var."""
+        monkeypatch.setenv("BASETEN_API_BASE", "https://legacy.example/v1")
+        config = ModelConfig()
+
+        assert config.get_base_url("baseten") == "https://legacy.example/v1"
+
     def test_env_prefix_overrides_plain(self, monkeypatch):
         """`DEEPAGENTS_CODE_*` beats the plain env var, like API keys."""
         monkeypatch.setenv("OPENAI_BASE_URL", "https://plain.example/v1")
@@ -1629,17 +1677,17 @@ models = ["m1"]
     ) -> None:
         """A `/auth` endpoint resolves for a provider with no base-URL env var.
 
-        Some OpenAI-compatible providers (e.g. Baseten) have an API-key env var
-        but no dedicated base-URL env var, so steps 1-2 find nothing. The
-        stored endpoint must still resolve here so it reaches the model as the
-        `base_url` kwarg — otherwise a value saved in `/auth` is silently lost.
+        Some providers have an API-key env var but no dedicated base-URL env var,
+        so steps 1-2 find nothing. The stored endpoint must still resolve here so
+        it reaches the model as the `base_url` kwarg — otherwise a value saved in
+        `/auth` is silently lost.
         """
         from deepagents_code import auth_store
 
-        auth_store.set_stored_key("baseten", "k", base_url="https://proxy.example/v1")
+        auth_store.set_stored_key("litellm", "k", base_url="https://proxy.example/v1")
         config = ModelConfig()
 
-        assert config.get_base_url("baseten") == "https://proxy.example/v1"
+        assert config.get_base_url("litellm") == "https://proxy.example/v1"
 
     def test_config_literal_wins_over_stored_base_url(
         self,
@@ -1702,6 +1750,31 @@ class TestGetDefaultBaseUrlEnv:
         assert (
             model_config.get_default_base_url_env("openai")
             == "DEEPAGENTS_CODE_OPENAI_BASE_URL"
+        )
+
+    def test_returns_prefixed_alternate_when_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A prefixed alternate is named when it supplies the blank fallback."""
+        monkeypatch.setenv(
+            "DEEPAGENTS_CODE_BASETEN_API_BASE", "https://legacy.example/v1"
+        )
+        assert (
+            model_config.get_default_base_url_env("baseten")
+            == "DEEPAGENTS_CODE_BASETEN_API_BASE"
+        )
+
+    def test_canonical_prefixed_name_precedes_alternate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The helper matches `get_base_url` provider env precedence."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_BASETEN_BASE_URL", "https://new.example/v1")
+        monkeypatch.setenv(
+            "DEEPAGENTS_CODE_BASETEN_API_BASE", "https://legacy.example/v1"
+        )
+        assert (
+            model_config.get_default_base_url_env("baseten")
+            == "DEEPAGENTS_CODE_BASETEN_BASE_URL"
         )
 
     def test_ignores_plain_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:

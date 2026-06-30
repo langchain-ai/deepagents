@@ -26,10 +26,10 @@ dependencies = [
     # `fleet-deepagents-export` 0.0.x imports private `deepagents` 0.6 symbols
     # from `deepagents.middleware.skills` and `deepagents.backends.utils`.
     # Keep Talon on the 0.6 line until the library moves to public APIs.
-    "deepagents>=0.6.8,<0.7.0",
-    "deepagents-code>=0.1.11,<1.0.0",
+    "deepagents>=0.6.12,<0.7.0",
+    "deepagents-code>=0.1.27,<1.0.0",
     "fleet-deepagents-export>=0.0.1,<1.0.0",
-    "langchain-mcp-adapters>=0.2.2,<1.0.0",
+    "langchain-mcp-adapters>=0.3.0,<1.0.0",
 ]
 
 [project.optional-dependencies]
@@ -37,9 +37,9 @@ speech = [
     "librosa>=0.11.0,<1.0.0",
     "numpy>=2.4.6,<3.0.0",
     "phonemizer>=3.3.0,<4.0.0",
-    "torch>=2.12.0,<2.13.0",
+    "torch>=2.12.1,<2.13.0",
     "torchaudio>=2.11.0,<2.12.0",
-    "transformers>=5.10.2,<6.0.0",
+    "transformers>=5.12.1,<6.0.0",
 ]
 
 [project.scripts]
@@ -53,14 +53,14 @@ Issues = "https://github.com/langchain-ai/deepagents/issues"
 
 [dependency-groups]
 test = [
-    "pytest>=9.0.3",
+    "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
     "pytest-socket>=0.8.0",
     "pytest-timeout>=2.4.0,<3.0.0",
     "pytest-watcher>=0.6.3,<1.0.0",
-    "ruff>=0.15.16,<0.16.0",
-    "ty>=0.0.46,<1.0.0",
+    "ruff>=0.15.20,<0.16.0",
+    "ty>=0.0.54,<1.0.0",
 ]
 
 [tool.uv]

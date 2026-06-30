@@ -39,11 +39,13 @@ from pydantic import BaseModel, Field
 
 from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
+from deepagents.backends.composite import _route_for_path
 from deepagents.backends.protocol import (
     BACKEND_TYPES as BACKEND_TYPES,  # Re-export type here for backwards compatibility
     BackendProtocol,
     DeleteResult,
     EditResult,
+    ExecuteOffloadResult,
     FileData as FileData,  # Re-export for backwards compatibility
     FileInfo,
     GlobResult,
@@ -56,6 +58,7 @@ from deepagents.backends.protocol import (
     _supports_delete,
     execute_accepts_timeout,
 )
+from deepagents.backends.sandbox import BaseSandbox
 from deepagents.backends.utils import (
     _get_file_type,
     _glob_anchor,
@@ -337,7 +340,7 @@ def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileDa
     if left is None:
         return {k: v for k, v in right.items() if v is not None}
 
-    result = {**left}
+    result: dict[str, FileData] = dict(left)
     for key, value in right.items():
         if value is None:
             result.pop(key, None)
@@ -1828,6 +1831,74 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             args_schema=GrepSchema,
         )
 
+    def _resolve_capture(self, resolved_backend: BackendProtocol, tool_call_id: str | None) -> tuple[BaseSandbox, str] | None:
+        """Resolve the executing sandbox and offload path for capture-at-source.
+
+        Capture-at-source writes output to a literal path via the sandbox shell
+        and later reads it back through the backend, which requires `execute()`
+        and `read_file` to resolve to the same filesystem at that path. Only
+        `BaseSandbox` provides that guarantee, so it is gated on it; the offload
+        path must also route to the executing backend rather than a different
+        composite route.
+
+        Whether capture is actually applied is left to the executor's
+        `execute_with_offload` (which honors `enable_capture_offload`); this only
+        decides whether the offload path is valid to attempt.
+
+        Returns:
+            `(executor, capture_path)` when capture-at-source can be attempted, or
+            `None` to skip it (eviction disabled, no tool-call id, the backend is
+            not a `BaseSandbox`, or the offload path routes elsewhere) — in which
+            case the caller uses plain execute plus generic eviction.
+        """
+        if not self._tool_token_limit_before_evict or not tool_call_id:
+            return None
+        capture_path = f"{self._large_tool_results_prefix}/{sanitize_tool_call_id(tool_call_id)}"
+        if isinstance(resolved_backend, CompositeBackend):
+            default = resolved_backend.default
+            if not isinstance(default, BaseSandbox):
+                return None
+            backend, _backend_path, route_prefix = _route_for_path(
+                default=default,
+                sorted_routes=resolved_backend.sorted_routes,
+                path=capture_path,
+            )
+            # Safe only when the path falls through to the default backend
+            # unchanged, since execute() also runs on the default.
+            if route_prefix is None and backend is default:
+                return default, capture_path
+            return None
+        if isinstance(resolved_backend, BaseSandbox):
+            return resolved_backend, capture_path
+        return None
+
+    @staticmethod
+    def _format_execute_output(output: str, exit_code: int | None, *, truncated: bool) -> str:
+        """Format raw command output with status and truncation notes for the model."""
+        parts = [output]
+        if exit_code is not None:
+            cmd_status = "succeeded" if exit_code == 0 else "failed"
+            parts.append(f"\n[Command {cmd_status} with exit code {exit_code}]")
+        if truncated:
+            parts.append("\n[Output was truncated due to size limits]")
+        return "".join(parts)
+
+    def _interpret_capture_output(self, offload: ExecuteOffloadResult, capture_path: str, tool_call_id: str) -> str:
+        """Build `ToolMessage` content from an `execute_with_offload` result."""
+        response = offload.response
+        if not offload.offloaded:
+            return self._format_execute_output(response.output, response.exit_code, truncated=response.truncated)
+        cmd_status = "succeeded" if response.exit_code == 0 else "failed"
+        status_line = f"[Command {cmd_status} with exit code {response.exit_code}]"
+        if response.truncated:
+            status_line += "\n[Output exceeded the capture size limit and was truncated; the saved file is incomplete]"
+        content_sample = f"{status_line}\n{response.output}"
+        return TOO_LARGE_TOOL_MSG.format(
+            tool_call_id=tool_call_id,
+            file_path=capture_path,
+            content_sample=content_sample,
+        )
+
     def _create_execute_tool(self) -> BaseTool:  # noqa: C901
         """Create the execute tool for sandbox command execution."""
         tool_description = self._custom_tool_descriptions.get("execute") or EXECUTE_TOOL_DESCRIPTION
@@ -1886,8 +1957,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
+            capture = self._resolve_capture(resolved_backend, runtime.tool_call_id)
             try:
-                result = executable.execute(command, timeout=timeout) if timeout is not None else executable.execute(command)
+                if capture is not None:
+                    executor, capture_path = capture
+                    offload = executor.execute_with_offload(
+                        command,
+                        capture_path,
+                        max_inline_bytes=NUM_CHARS_PER_TOKEN * cast("int", self._tool_token_limit_before_evict),
+                        timeout=timeout,
+                    )
+                    content = self._interpret_capture_output(offload, capture_path, cast("str", runtime.tool_call_id))
+                else:
+                    result = executable.execute(command, timeout=timeout) if timeout is not None else executable.execute(command)
+                    content = self._format_execute_output(result.output, result.exit_code, truncated=result.truncated)
             except NotImplementedError as e:
                 return ToolMessage(
                     content=f"Error: Execution not available. {e}",
@@ -1903,18 +1986,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            # Format output for LLM consumption
-            parts = [result.output]
-
-            if result.exit_code is not None:
-                cmd_status = "succeeded" if result.exit_code == 0 else "failed"
-                parts.append(f"\n[Command {cmd_status} with exit code {result.exit_code}]")
-
-            if result.truncated:
-                parts.append("\n[Output was truncated due to size limits]")
-
             return ToolMessage(
-                content="".join(parts),
+                content=content,
                 name="execute",
                 tool_call_id=runtime.tool_call_id,
                 status="success",
@@ -1975,8 +2048,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     tool_call_id=runtime.tool_call_id,
                     status="error",
                 )
+            capture = self._resolve_capture(resolved_backend, runtime.tool_call_id)
             try:
-                result = await executable.aexecute(command, timeout=timeout) if timeout is not None else await executable.aexecute(command)
+                if capture is not None:
+                    executor, capture_path = capture
+                    offload = await executor.aexecute_with_offload(
+                        command,
+                        capture_path,
+                        max_inline_bytes=NUM_CHARS_PER_TOKEN * cast("int", self._tool_token_limit_before_evict),
+                        timeout=timeout,
+                    )
+                    content = self._interpret_capture_output(offload, capture_path, cast("str", runtime.tool_call_id))
+                else:
+                    result = await executable.aexecute(command, timeout=timeout) if timeout is not None else await executable.aexecute(command)
+                    content = self._format_execute_output(result.output, result.exit_code, truncated=result.truncated)
             except NotImplementedError as e:
                 return ToolMessage(
                     content=f"Error: Execution not available. {e}",
@@ -1992,18 +2077,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            # Format output for LLM consumption
-            parts = [result.output]
-
-            if result.exit_code is not None:
-                cmd_status = "succeeded" if result.exit_code == 0 else "failed"
-                parts.append(f"\n[Command {cmd_status} with exit code {result.exit_code}]")
-
-            if result.truncated:
-                parts.append("\n[Output was truncated due to size limits]")
-
             return ToolMessage(
-                content="".join(parts),
+                content=content,
                 name="execute",
                 tool_call_id=runtime.tool_call_id,
                 status="success",

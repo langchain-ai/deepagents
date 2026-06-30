@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import TYPE_CHECKING, cast
 
 from deepagents_talon.config import TalonConfig
@@ -11,44 +12,13 @@ from deepagents_talon.interfaces import (
     AgentResult,
     ChannelMedia,
     ChannelMessage,
-    ChannelStatus,
+    ChannelReaction,
     ToolApprovalRequest,
 )
+from tests.conftest import RecordingChannel
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
     from pathlib import Path
-
-
-class RecordingChannel:
-    def __init__(self) -> None:
-        self.handler: Callable[[ChannelMessage], Awaitable[None]] | None = None
-        self.started = False
-        self.stopped = False
-        self.sent: list[tuple[str, str]] = []
-        self.media: list[tuple[str, ChannelMedia]] = []
-
-    async def start(self) -> None:
-        self.started = True
-
-    async def stop(self) -> None:
-        self.stopped = True
-
-    def set_message_handler(self, handler: Callable[[ChannelMessage], Awaitable[None]]) -> None:
-        self.handler = handler
-
-    async def send_message(self, conversation_id: str, text: str) -> None:
-        self.sent.append((conversation_id, text))
-
-    async def send_media(self, conversation_id: str, media: ChannelMedia) -> None:
-        self.media.append((conversation_id, media))
-        self.sent.append((conversation_id, f"{media.media_type}:{media.path}"))
-
-    async def edit_message(self, conversation_id: str, message_id: str, text: str) -> None:
-        self.sent.append((conversation_id, f"{message_id}:{text}"))
-
-    async def status(self) -> ChannelStatus:
-        return ChannelStatus(provider="test", connected=True)
 
 
 class RecordingScheduler:
@@ -81,6 +51,25 @@ class BlockingAgent:
         if request.text == "block":
             await self.released.wait()
         return AgentResult(text=f"reply:{request.text}")
+
+
+class HistoryAgent:
+    def __init__(self) -> None:
+        self.history: dict[str, list[str]] = {}
+        self.requests: list[AgentRequest] = []
+
+    async def start(self) -> None:
+        pass
+
+    async def stop(self) -> None:
+        pass
+
+    async def invoke(self, request: AgentRequest) -> AgentResult:
+        self.requests.append(request)
+        history = self.history.setdefault(request.conversation_id, [])
+        seen = len(history)
+        history.append(request.text)
+        return AgentResult(text=f"seen:{seen}")
 
 
 class VoiceTranscriber:
@@ -183,6 +172,69 @@ async def test_stop_cancels_in_flight_conversation(tmp_path: Path) -> None:
     assert channel.sent == [("chat", "Stopped current run.")]
 
 
+async def test_new_command_starts_fresh_conversation_thread(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = HistoryAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="first"))
+    await _wait_for_sent_count(channel, 1)
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="/new"))
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="second"))
+    await _wait_for_sent_count(channel, 3)
+    await host.stop()
+
+    assert [request.text for request in agent.requests] == ["first", "second"]
+    assert agent.requests[0].conversation_id == "chat"
+    assert agent.requests[1].conversation_id.startswith("chat:talon-reset:")
+    assert channel.sent == [
+        ("chat", "seen:0"),
+        ("chat", "Started a fresh conversation."),
+        ("chat", "seen:0"),
+    ]
+
+
+async def test_new_command_accepts_telegram_bot_command_suffix(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = HistoryAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="/new@TestBot"))
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="hello"))
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    assert [request.text for request in agent.requests] == ["hello"]
+    assert agent.requests[0].conversation_id.startswith("chat:talon-reset:")
+    assert channel.sent == [
+        ("chat", "Started a fresh conversation."),
+        ("chat", "seen:0"),
+    ]
+
+
+async def test_new_command_cancels_in_flight_conversation(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
+    await _wait_for_request(agent, "block")
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="/new"))
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="second"))
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    assert [request.text for request in agent.requests] == ["block", "second"]
+    assert agent.requests[1].conversation_id.startswith("chat:talon-reset:")
+    assert channel.sent == [
+        ("chat", "Started a fresh conversation."),
+        ("chat", "reply:second"),
+    ]
+
+
 async def test_host_sends_markdown_media_refs_as_channel_media(tmp_path: Path) -> None:
     channel = RecordingChannel()
     workspace = tmp_path / "workspace"
@@ -260,6 +312,35 @@ async def test_host_passes_inbound_photo_as_model_content(tmp_path: Path) -> Non
     assert content[1]["type"] == "image_url"
 
 
+async def test_host_passes_inbound_video_path_in_text(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    video = tmp_path / "inbound.mp4"
+    video.write_bytes(b"video-bytes")
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(
+            conversation_id="chat",
+            text="watch this",
+            metadata={
+                "media_type": "video",
+                "media_paths": [str(video)],
+                "media_mime_types": ["video/mp4"],
+            },
+        ),
+    )
+    await _wait_for_request(agent, f"watch this\n\n_(Received video attachment: {video}.)_")
+    await host.stop()
+
+    request = agent.requests[0]
+    assert "unsupported" not in request.text
+    assert request.metadata["media_type"] == "video"
+    assert request.metadata["media_paths"] == [str(video)]
+
+
 async def test_host_routes_tool_approval_reply_to_pending_run(tmp_path: Path) -> None:
     channel = RecordingChannel()
     agent = ApprovalAgent()
@@ -284,6 +365,49 @@ async def test_host_routes_tool_approval_reply_to_pending_run(tmp_path: Path) ->
     assert "`dangerous_tool`" in channel.sent[0][1]
     assert '{"path": "/secret"}' in channel.sent[0][1]
     assert channel.sent[1] == ("chat", "decision:approve")
+
+
+async def test_host_routes_tool_approval_emoji_reply_to_pending_run(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = ApprovalAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="run", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="👍🏽", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    assert "Reply `👍` / `approve`" in channel.sent[0][1]
+    assert channel.sent[1] == ("chat", "decision:approve")
+
+
+async def test_host_routes_tool_approval_emoji_reply_denial(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = ApprovalAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="run", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="👎️", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    assert channel.sent[1] == ("chat", "decision:reject")
 
 
 async def test_host_keeps_tool_approval_scoped_to_original_sender(tmp_path: Path) -> None:
@@ -324,6 +448,332 @@ async def test_host_keeps_tool_approval_scoped_to_original_sender(tmp_path: Path
         "Reply `approve` to run the tool call or `deny` to skip it.",
     )
     assert channel.sent[3] == ("chat", "decision:reject")
+
+
+async def test_host_routes_tool_approval_reaction_to_prompt_message(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    channel.next_message_id = "approval-prompt"
+    agent = ApprovalAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="run", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    await channel.receive_reaction(
+        "👍🏽",
+        message_id="approval-prompt",
+        sender_id="operator",
+    )
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    assert len(agent.requests) == 1
+    assert channel.reaction_handler is not None
+    assert channel.sent[1] == ("chat", "decision:approve")
+
+
+async def test_host_routes_tool_approval_reaction_denial(
+    tmp_path: Path,
+    caplog,
+) -> None:
+    channel = RecordingChannel()
+    channel.next_message_id = "approval-prompt"
+    agent = ApprovalAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    caplog.set_level("INFO", logger="deepagents_talon.host")
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="run", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    await channel.receive_reaction(
+        "👎️",
+        message_id="approval-prompt",
+        sender_id="operator",
+    )
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    event = _talon_events(caplog, "tool_approval.reaction")[0]
+    assert event["decision"] == "reject"
+    assert event["match_status"] == "matched"
+    assert event["resolution"] == "operator_reaction"
+    assert channel.sent[1] == ("chat", "decision:reject")
+
+
+async def test_host_logs_tool_approval_reaction_without_sensitive_values(
+    tmp_path: Path,
+    caplog,
+) -> None:
+    channel = RecordingChannel()
+    channel.next_message_id = "approval-prompt-private"
+    agent = ApprovalAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    caplog.set_level("INFO", logger="deepagents_talon.host")
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(
+            conversation_id="chat-private",
+            text="run private user text",
+            sender_id="sender-private",
+        ),
+    )
+    await _wait_for_sent_count(channel, 1)
+    await host.receive_reaction(
+        channel,
+        ChannelReaction(
+            conversation_id="chat-private",
+            message_id="approval-prompt-private",
+            emoji="👍",
+            sender_id="sender-private",
+            metadata={"raw": "RAW_PROVIDER_METADATA"},
+        ),
+    )
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    event = _talon_events(caplog, "tool_approval.reaction")[0]
+    assert event["provider"] == "test"
+    assert event["emoji"] == "👍"
+    assert event["decision"] == "approve"
+    assert event["match_status"] == "matched"
+    assert event["resolution"] == "operator_reaction"
+    assert event["channel_conversation_ref"] != "chat-private"
+    assert event["prompt_message_ref"] != "approval-prompt-private"
+    assert event["reacting_sender_ref"] != "sender-private"
+    assert "raw_channel_conversation_id" not in event
+    assert "raw_prompt_message_id" not in event
+    assert "raw_reacting_sender_id" not in event
+    assert "/secret" not in caplog.text
+    assert "Tool approval required." not in caplog.text
+    assert "run private user text" not in caplog.text
+    assert "RAW_PROVIDER_METADATA" not in caplog.text
+    assert "chat-private" not in caplog.text
+    assert "approval-prompt-private" not in caplog.text
+    assert "sender-private" not in caplog.text
+
+
+async def test_host_logs_raw_reaction_ids_only_when_enabled(
+    tmp_path: Path,
+    caplog,
+) -> None:
+    channel = RecordingChannel()
+    channel.next_message_id = "approval-prompt-private"
+    agent = ApprovalAgent()
+    host = TalonHost(
+        config=_config(tmp_path, {"DEEPAGENTS_TALON_APPROVAL_LOG_RAW_IDS": "true"}),
+        agent=agent,
+        channels=[channel],
+    )
+    caplog.set_level("INFO", logger="deepagents_talon.host")
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(
+            conversation_id="chat-private",
+            text="run",
+            sender_id="sender-private",
+        ),
+    )
+    await _wait_for_sent_count(channel, 1)
+    await channel.receive_reaction(
+        "👍",
+        message_id="approval-prompt-private",
+        sender_id="sender-private",
+        conversation_id="chat-private",
+    )
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    event = _talon_events(caplog, "tool_approval.reaction")[0]
+    assert event["raw_channel_conversation_id"] == "chat-private"
+    assert event["raw_prompt_message_id"] == "approval-prompt-private"
+    assert event["raw_reacting_sender_id"] == "sender-private"
+
+
+async def test_host_ignores_tool_approval_reaction_on_unrelated_message(
+    tmp_path: Path,
+) -> None:
+    channel = RecordingChannel()
+    channel.next_message_id = "approval-prompt"
+    agent = ApprovalAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="run", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    await channel.receive_reaction(
+        "👍",
+        message_id="unrelated",
+        sender_id="operator",
+    )
+    await asyncio.sleep(0)
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="deny", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    assert channel.sent[1] == ("chat", "decision:reject")
+
+
+async def test_host_logs_ignored_tool_approval_reaction_attempt(
+    tmp_path: Path,
+    caplog,
+) -> None:
+    channel = RecordingChannel()
+    channel.next_message_id = "approval-prompt"
+    agent = ApprovalAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    caplog.set_level("INFO", logger="deepagents_talon.host")
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="run", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    await channel.receive_reaction(
+        "👍",
+        message_id="other-message",
+        sender_id="operator",
+    )
+    await asyncio.sleep(0)
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="deny", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    event = _talon_events(caplog, "tool_approval.reaction")[0]
+    assert event["decision"] == "approve"
+    assert event["match_status"] == "ignored"
+    assert event["resolution"] == "message_mismatch"
+    assert channel.sent[1] == ("chat", "decision:reject")
+
+
+async def test_host_ignores_tool_approval_reaction_from_different_sender(
+    tmp_path: Path,
+) -> None:
+    channel = RecordingChannel()
+    channel.next_message_id = "approval-prompt"
+    agent = ApprovalAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="run", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    await channel.receive_reaction(
+        "👍",
+        message_id="approval-prompt",
+        sender_id="other",
+    )
+    await asyncio.sleep(0)
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="deny", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    assert channel.sent[1] == ("chat", "decision:reject")
+
+
+async def test_host_ignores_senderless_tool_approval_reaction_when_sender_known(
+    tmp_path: Path,
+) -> None:
+    channel = RecordingChannel()
+    channel.next_message_id = "approval-prompt"
+    agent = ApprovalAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="run", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    await channel.receive_reaction("👍", message_id="approval-prompt")
+    await asyncio.sleep(0)
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="deny", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    assert channel.sent[1] == ("chat", "decision:reject")
+
+
+async def test_host_ignores_tool_approval_reaction_without_prompt_message_id(
+    tmp_path: Path,
+) -> None:
+    channel = RecordingChannel()
+    agent = ApprovalAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="run", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    await channel.receive_reaction(
+        "👍",
+        message_id="approval-prompt",
+        sender_id="operator",
+    )
+    await asyncio.sleep(0)
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="approve", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    assert channel.sent[1] == ("chat", "decision:approve")
+
+
+async def test_host_logs_reaction_without_pending_approval(tmp_path: Path, caplog) -> None:
+    channel = RecordingChannel()
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    caplog.set_level("INFO", logger="deepagents_talon.host")
+    await host.start()
+
+    await host.receive_reaction(
+        channel,
+        ChannelReaction(
+            conversation_id="chat-private",
+            message_id="approval-prompt-private",
+            emoji="🙂",
+            sender_id="sender-private",
+            metadata={"raw": "RAW_PROVIDER_METADATA"},
+        ),
+    )
+    await host.stop()
+
+    event = _talon_events(caplog, "tool_approval.reaction")[0]
+    assert event["decision"] is None
+    assert event["match_status"] == "ignored"
+    assert event["resolution"] == "no_pending_approval"
+    assert "RAW_PROVIDER_METADATA" not in caplog.text
 
 
 async def test_host_runs_scheduled_job_and_delivers_result(tmp_path: Path) -> None:
@@ -389,3 +839,13 @@ async def _wait_for_sent_count(channel: RecordingChannel, count: int) -> None:
         await asyncio.sleep(0)
     msg = f"channel sent {len(channel.sent)} message(s), expected {count}"
     raise AssertionError(msg)
+
+
+def _talon_events(caplog, event: str) -> list[dict[str, object]]:
+    return [
+        payload
+        for message in caplog.messages
+        if message.startswith("talon_event ")
+        for payload in [json.loads(message.removeprefix("talon_event "))]
+        if payload.get("event") == event
+    ]

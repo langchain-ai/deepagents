@@ -12,7 +12,6 @@ with `from_env()`.
 from __future__ import annotations
 
 import json
-import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,8 +22,6 @@ from deepagents_code._env_vars import SERVER_ENV_PREFIX
 
 if TYPE_CHECKING:
     from deepagents_code.project_utils import ProjectContext
-
-logger = logging.getLogger(__name__)
 
 
 def _read_env_bool(suffix: str, *, default: bool = False) -> bool:
@@ -81,6 +78,25 @@ def _read_env_str(suffix: str) -> str | None:
         The string value, or `None` if absent.
     """
     return os.environ.get(f"{SERVER_ENV_PREFIX}{suffix}")
+
+
+def _read_env_int(suffix: str, *, default: int) -> int:
+    """Read a `DEEPAGENTS_CODE_SERVER_*` integer from the environment.
+
+    Args:
+        suffix: Variable name suffix after the `DEEPAGENTS_CODE_SERVER_` prefix.
+        default: Value when the variable is absent or malformed.
+
+    Returns:
+        Parsed integer, or the default when parsing fails.
+    """
+    raw = os.environ.get(f"{SERVER_ENV_PREFIX}{suffix}")
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
 
 
 def _read_env_optional_bool(suffix: str) -> bool | None:
@@ -242,6 +258,16 @@ class ServerConfig:
     `interpreter_ptc="all"` is paired with non-`auto_approve` mode.
     """
 
+    rubric_model: str | None = None
+    """Grader model spec for `RubricMiddleware` (e.g. `'anthropic:...'`).
+
+    `None` reuses the main agent model.
+    """
+
+    rubric_max_iterations: int = 3
+    """Grader iterations per rubric attempt before the agent stops with
+    `'max_iterations_reached'`."""
+
     sandbox_type: str | None = None
     """Sandbox backend identifier (e.g. `'daytona'`); `None` runs tools on the
     host. `'none'` is normalized to `None` in `__post_init__`."""
@@ -329,6 +355,8 @@ class ServerConfig:
             "INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE": str(
                 self.interpreter_ptc_acknowledge_unsafe
             ).lower(),
+            "RUBRIC_MODEL": self.rubric_model,
+            "RUBRIC_MAX_ITERATIONS": str(self.rubric_max_iterations),
             "SANDBOX_TYPE": self.sandbox_type,
             "SANDBOX_ID": self.sandbox_id,
             "SANDBOX_SNAPSHOT_NAME": self.sandbox_snapshot_name,
@@ -377,6 +405,8 @@ class ServerConfig:
             interpreter_ptc_acknowledge_unsafe=_read_env_bool(
                 "INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE"
             ),
+            rubric_model=_read_env_str("RUBRIC_MODEL") or None,
+            rubric_max_iterations=_read_env_int("RUBRIC_MAX_ITERATIONS", default=3),
             sandbox_type=_read_env_str("SANDBOX_TYPE"),
             sandbox_id=_read_env_str("SANDBOX_ID"),
             sandbox_snapshot_name=_read_env_str("SANDBOX_SNAPSHOT_NAME") or None,
@@ -412,6 +442,8 @@ class ServerConfig:
         enable_interpreter: bool | None = None,
         interpreter_ptc: str | list[str] | None = None,
         interpreter_ptc_acknowledge_unsafe: bool = False,
+        rubric_model: str | None = None,
+        rubric_max_iterations: int = 3,
         mcp_config_path: str | None,
         no_mcp: bool,
         trust_project_mcp: bool | None,
@@ -445,6 +477,8 @@ class ServerConfig:
             interpreter_ptc: Override for `settings.interpreter_ptc`.
             interpreter_ptc_acknowledge_unsafe: Mirror of
                 `settings.interpreter_ptc_acknowledge_unsafe`.
+            rubric_model: Grader model spec; `None` reuses the main model.
+            rubric_max_iterations: Grader iterations per rubric attempt.
             mcp_config_path: Path to MCP config.
             no_mcp: Disable MCP.
             trust_project_mcp: Trust project MCP servers.
@@ -472,6 +506,8 @@ class ServerConfig:
             enable_interpreter=resolved_enable_interpreter,
             interpreter_ptc=interpreter_ptc,
             interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
+            rubric_model=rubric_model,
+            rubric_max_iterations=rubric_max_iterations,
             sandbox_type=sandbox_type,
             sandbox_id=sandbox_id,
             sandbox_snapshot_name=sandbox_snapshot_name,

@@ -210,7 +210,12 @@ SHOW_SCROLLBAR = "DEEPAGENTS_CODE_SHOW_SCROLLBAR"
 """Show the vertical scrollbar in the chat area when enabled.
 
 Off by default; use the `/scrollbar` slash command or `[ui].show_scrollbar` in
-config.toml to toggle. Parsed by `is_env_truthy`.
+config.toml to toggle. Parsed by `classify_env_bool` (an unrecognized or empty
+value falls through to the config value rather than forcing the default).
+
+When set, this env var takes precedence over the persisted `[ui].show_scrollbar`
+config value on launch, so a `/scrollbar` toggle will not appear to "stick"
+across restarts while the env var remains set.
 """
 
 THEME = "DEEPAGENTS_CODE_THEME"

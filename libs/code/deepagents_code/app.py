@@ -610,11 +610,13 @@ def _load_show_scrollbar() -> bool:
     Returns:
         The resolved preference.
     """
-    from deepagents_code._env_vars import SHOW_SCROLLBAR, is_env_truthy
+    from deepagents_code._env_vars import SHOW_SCROLLBAR, classify_env_bool
 
     raw = os.environ.get(SHOW_SCROLLBAR)
-    if raw is not None:
-        return is_env_truthy(SHOW_SCROLLBAR, default=False)
+    if raw is not None and raw.strip():
+        env = classify_env_bool(raw)
+        if env is not None:
+            return env
 
     import tomllib
 
@@ -10365,6 +10367,12 @@ class DeepAgentsApp(App):
                 "Failed to persist message timestamp preference",
                 exc_info=True,
             )
+            self.notify(
+                "Timestamps toggled for this session but could not be saved.",
+                severity="error",
+                timeout=6,
+                markup=False,
+            )
 
     def _apply_scrollbar_visibility(self, chat: VerticalScroll | None = None) -> None:
         """Apply the current scrollbar visibility to the chat container.
@@ -10405,6 +10413,12 @@ class DeepAgentsApp(App):
             logger.warning(
                 "Failed to persist scrollbar preference",
                 exc_info=True,
+            )
+            self.notify(
+                "Scrollbar toggled for this session but could not be saved.",
+                severity="error",
+                timeout=6,
+                markup=False,
             )
 
     async def _mount_message(

@@ -1,0 +1,75 @@
+libs/code/deepagents_code/app.py
+  s_32942f4dbbd5f1::t_b46b71fff2a722 8310-8313
+  s_32942f4dbbd5f1::t_29a945220c7141 7643-7645
+  s_32942f4dbbd5f1::t_929c6268426586 7630-7632
+libs/code/deepagents_code/main.py
+  s_32942f4dbbd5f1::t_192bd908441373 656-660
+libs/code/tests/unit_tests/test_goal_review.py
+  s_32942f4dbbd5f1::t_834ff33e33f164 189,211
+  s_32942f4dbbd5f1::t_9b9008cf4d6a9b 188
+  s_32942f4dbbd5f1::t_15a97df87d3669 210
+  s_32942f4dbbd5f1::t_772c9c1ce37d59 10
+libs/code/deepagents_code/agent.py
+  s_32942f4dbbd5f1::t_febd6290da5923 1494-1495
+libs/code/deepagents_code/textual_adapter.py
+  s_32942f4dbbd5f1::t_51a9767c557b90 251,258-259
+  s_32942f4dbbd5f1::t_9f135adff0b303 222-223,225,230-234,241,244-245,254,257,260-261,265-267
+  s_32942f4dbbd5f1::t_ba3e5a6314a2c5 59
+libs/code/tests/unit_tests/test_goal_rubric.py
+  s_32942f4dbbd5f1::t_ed304369d31a41 5-21
+  s_32942f4dbbd5f1::t_ef15503ee1a1d3 76-104
+libs/code/deepagents_code/config.py
+  s_32942f4dbbd5f1::t_92d0d97d19eec4 914-915
+  s_32942f4dbbd5f1::t_dfb3515f3c3e02 880-881
+  s_32942f4dbbd5f1::t_ad940e5c382b44 944-945
+libs/code/deepagents_code/resume_state.py
+  s_32942f4dbbd5f1::t_75f1a27d23aad7 83-86
+libs/code/tests/unit_tests/test_textual_adapter.py
+  s_32942f4dbbd5f1::t_74e6e45559eb02 993-1016,1020-1026
+  s_32942f4dbbd5f1::t_551261cdc15ec8 2360-2368,2393
+  s_32942f4dbbd5f1::t_43f3231df6ac94 894-907
+  s_32942f4dbbd5f1::t_39b5e72c24264f 24
+  s_32942f4dbbd5f1::t_51a9767c557b90 1017-1019
+  s_32942f4dbbd5f1::t_5dceb2c767b9e3 2389-2392
+libs/code/tests/unit_tests/test_app.py
+  s_32942f4dbbd5f1::t_e6ac1e0a606376 4870-4888,5001,5177,5235,5250,5668,5693,5786,5848,5860,5877,6119
+  s_32942f4dbbd5f1::t_9889dd3dc37417 4999-5000
+  s_32942f4dbbd5f1::t_a01b2fc192c6b6 5175-5176
+  s_32942f4dbbd5f1::t_2cd374ece97e57 5233-5234
+  s_32942f4dbbd5f1::t_12aa860385f0b7 5248-5249
+  s_32942f4dbbd5f1::t_60c6f28a4d64a1 5666-5667
+  s_32942f4dbbd5f1::t_df7832e8db1a96 5691-5692
+  s_32942f4dbbd5f1::t_d926f535729b18 5784-5785
+  s_32942f4dbbd5f1::t_cf3d22dd49a24d 5846-5847
+  s_32942f4dbbd5f1::t_8a20c6e88119ad 5858-5859
+  s_32942f4dbbd5f1::t_7e44e4fa196140 5875-5876
+  s_32942f4dbbd5f1::t_3458bcdfc87678 6117-6118
+  s_32942f4dbbd5f1::t_c85600f132a397 81-88
+libs/code/deepagents_code/widgets/goal_review.py
+  s_32942f4dbbd5f1::t_b6040388156f97 310,320,324-339
+  s_32942f4dbbd5f1::t_77c203173a3581 353-354
+  s_32942f4dbbd5f1::t_b29cca2cc10a38 23-24
+  s_32942f4dbbd5f1::t_98c35393c42889 227
+  s_32942f4dbbd5f1::t_1289e14aea784b 234-235
+  s_32942f4dbbd5f1::t_ccfec1b009b156 145
+  s_32942f4dbbd5f1::t_6093ed583c06ba 190
+  s_32942f4dbbd5f1::t_441a69bf07c5d8 25-30
+  s_32942f4dbbd5f1::t_c8619c226d7b7e 220
+  s_32942f4dbbd5f1::t_611ca207e56dca 340
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "8282f24c9a961e21734713d33ca12083525aa863",
+  "prompts": {},
+  "sessions": {
+    "s_32942f4dbbd5f1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "714dceee-5c93-4113-9a8e-85bcc5677dd7",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

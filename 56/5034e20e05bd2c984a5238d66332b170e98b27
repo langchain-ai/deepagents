@@ -1,0 +1,22 @@
+libs/code/deepagents_code/verify_behavior_tool.py
+  s_15e7846dc2c767::t_4f6bf448cb75f3 398,403-404
+  s_15e7846dc2c767::t_fcf49361e574c8 368,373-374
+  s_15e7846dc2c767::t_84ace354aefa23 307-323
+  s_15e7846dc2c767::t_b3d693c4609345 19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "565034e20e05bd2c984a5238d66332b170e98b27",
+  "prompts": {},
+  "sessions": {
+    "s_15e7846dc2c767": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fd18de2c-5b2b-4125-8ef6-c29809e66c05",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

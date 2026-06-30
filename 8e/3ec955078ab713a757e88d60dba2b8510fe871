@@ -1,0 +1,19 @@
+libs/evals/deepagents_harbor/langgraph_project/oolong_graph.py
+  s_5504ef8276333c::t_ce2ebd994fb172 167-171,179
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "8e3ec955078ab713a757e88d60dba2b8510fe871",
+  "prompts": {},
+  "sessions": {
+    "s_5504ef8276333c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3da33537-a26f-40fe-8463-52091416dc5b",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

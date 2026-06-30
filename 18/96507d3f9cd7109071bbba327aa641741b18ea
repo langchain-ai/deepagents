@@ -1,0 +1,32 @@
+libs/code/deepagents_code/verify_behavior_tool.py
+  s_15e7846dc2c767::t_c6fd57a5b508c3 131-380
+  s_15e7846dc2c767::t_ba3aa589286183 128-130
+  s_15e7846dc2c767::t_83d1b34c9eb28e 381-383
+  s_15e7846dc2c767::t_edf2ab3c3458ca 1-127,384-436
+.github/workflows/harbor.yml
+  s_15e7846dc2c767::t_78c32d50331595 176-188,307-308,452-460,548-553
+libs/code/deepagents_code/agent.py
+  s_15e7846dc2c767::t_b34103a7adc84c 1195-1196,1274-1278,1661-1673
+libs/code/pyproject.toml
+  s_15e7846dc2c767::t_cb3128ee0fa219 261-268
+libs/code/tests/unit_tests/test_verify_behavior.py
+  s_15e7846dc2c767::t_36206d7b7240f0 1-166
+libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py
+  s_15e7846dc2c767::t_441eb00e7f7af8 96-111,156-184,219-220,227,236-239
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "1896507d3f9cd7109071bbba327aa641741b18ea",
+  "prompts": {},
+  "sessions": {
+    "s_15e7846dc2c767": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fd18de2c-5b2b-4125-8ef6-c29809e66c05",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

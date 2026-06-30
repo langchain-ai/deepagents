@@ -1,0 +1,25 @@
+libs/deepagents/tests/unit_tests/test_models.py
+  s_b525ff6365a718::t_0f0bf5f0ecdf45 1239
+  s_b525ff6365a718::t_1d4a0fcfe8d58d 2443-2498
+libs/deepagents/deepagents/profiles/harness/_nvidia_nemotron_3_ultra.py
+  s_b525ff6365a718::t_5c95c4d9a20c3a 430
+  s_b525ff6365a718::t_5fb4340ed216bf 583
+  s_b525ff6365a718::t_fbd2f635c8317c 35,43-44
+  s_b525ff6365a718::t_8629c44581a0a4 384-429,431-464
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "44ee3cdec96700369818bf895444c6b69389f324",
+  "prompts": {},
+  "sessions": {
+    "s_b525ff6365a718": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d6e8e752-8729-40f4-a330-b209f0da9174",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

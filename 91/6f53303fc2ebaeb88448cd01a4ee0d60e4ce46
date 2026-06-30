@@ -1,0 +1,63 @@
+libs/code/deepagents_code/app.py
+  s_9992bef2fb2403::t_661647772db8ce 161-190
+  s_9992bef2fb2403::t_569d90c224de5b 8077
+  s_9992bef2fb2403::t_bbe426b9df4ca4 6053
+  s_9992bef2fb2403::t_fa754d9d1e7328 7797,7799
+  s_9992bef2fb2403::t_5b920f9946b95f 8044-8049
+  s_9992bef2fb2403::t_d0d21d087fa725 8024-8031
+  s_9992bef2fb2403::t_997eee50c06497 8101,8104-8108
+  s_9992bef2fb2403::t_b7952301087e03 7688-7715,7729
+  s_9992bef2fb2403::t_0a1a1222e9e584 9581
+  s_9992bef2fb2403::t_fe45e9a9bbf4fd 7662-7664
+  s_9992bef2fb2403::t_405ac261dfdf1a 20
+libs/code/tests/unit_tests/test_textual_adapter.py
+  s_9992bef2fb2403::t_20bacce0029104 3664
+  s_9992bef2fb2403::t_ce5c79c0ba637e 3651-3660,3662-3663,3665-3693,3695-3696,3698-3723
+  s_9992bef2fb2403::t_59a0d31eb26bea 3697
+  s_9992bef2fb2403::t_950fd2c87c30b7 3661,3694
+libs/code/tests/unit_tests/test_app.py
+  s_9992bef2fb2403::t_af503d68d0f3c8 5697-5785
+  s_9992bef2fb2403::t_bfc566c21cb218 5070-5071
+  s_9992bef2fb2403::t_8a161870ecb741 5189-5269
+libs/code/tests/unit_tests/test_rubric_cli.py
+  s_9992bef2fb2403::t_9ef205fc1639e2 273-302
+  s_9992bef2fb2403::t_c4733b56fd28f4 147-151
+libs/code/deepagents_code/non_interactive.py
+  s_9992bef2fb2403::t_93af4e49b58434 537-538,540-549
+libs/code/tests/unit_tests/test_goal_rubric.py
+  s_9992bef2fb2403::t_ac0732ec2be2e9 5
+  s_9992bef2fb2403::t_2e56219f375a5b 1-4,6-59
+libs/code/tests/unit_tests/test_goal_review.py
+  s_9992bef2fb2403::t_3336a848b0eefb 8
+  s_9992bef2fb2403::t_40a22d37c52a4d 168-224
+libs/code/deepagents_code/textual_adapter.py
+  s_9992bef2fb2403::t_03819f86ac7e7f 840-845
+libs/code/deepagents_code/remote_client.py
+  s_9992bef2fb2403::t_da25d7e8217519 368-372
+libs/code/deepagents_code/goal_rubric.py
+  s_9992bef2fb2403::t_f18ec0090b111f 111
+libs/code/deepagents_code/goal_tools.py
+  s_9992bef2fb2403::t_a9b39a7029381d 89
+  s_9992bef2fb2403::t_ca4f22067aeb1a 204
+  s_9992bef2fb2403::t_d25ad9d42b2952 11
+  s_9992bef2fb2403::t_4fa92a4d189fdc 50-77
+  s_9992bef2fb2403::t_18c182a3a9e37a 95
+  s_9992bef2fb2403::t_d588a5ede87fb7 30-34
+  s_9992bef2fb2403::t_106ab9fdbefe30 35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "916f53303fc2ebaeb88448cd01a4ee0d60e4ce46",
+  "prompts": {},
+  "sessions": {
+    "s_9992bef2fb2403": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "865cc8f0-b9fe-4ee9-956b-6f5fca0cbd6d",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

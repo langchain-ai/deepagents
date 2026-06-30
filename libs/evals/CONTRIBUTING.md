@@ -417,6 +417,7 @@ uv run harbor run \
   --agent-kwarg config=langgraph.json \
   --agent-kwarg graph=deepagent \
   --agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}' \
+  --agent-env UV_PRERELEASE=allow \
   --dataset terminal-bench/terminal-bench-2 \
   --model "$MODEL" \
   -n 1 \
@@ -432,6 +433,7 @@ uv run harbor run \
   --agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}' \
   --agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}' \
   --agent-env 'LANGSMITH_TRACING=true' \
+  --agent-env UV_PRERELEASE=allow \
   --dataset terminal-bench/terminal-bench-2 \
   --model "$MODEL" \
   -n 1 \
@@ -441,6 +443,11 @@ uv run harbor run \
   --plugin-kwarg dataset_name=terminal-bench/terminal-bench-2 \
   --plugin-kwarg experiment_name=deepagents-baseline-v1
 ```
+
+`UV_PRERELEASE=allow` is required so the in-sandbox dependency install can resolve
+provider packages that pin pre-release dependencies (e.g. `langchain-fireworks`,
+which requires a pre-release of `fireworks-ai`). The `make run-terminal-bench-*`
+shortcuts pass this automatically.
 
 ### Available environments
 
@@ -484,6 +491,7 @@ uv run harbor run \
   --agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}' \
   --agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}' \
   --agent-env 'LANGSMITH_TRACING=true' \
+  --agent-env UV_PRERELEASE=allow \
   --dataset terminal-bench/terminal-bench-2 \
   --model "$MODEL" \
   -n 10 \

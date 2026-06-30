@@ -994,7 +994,7 @@ def load_mcp_config_with_error(
         return None, str(exc)
 
 
-def _check_stdio_server(server_name: str, server_config: dict[str, Any]) -> None:
+async def _check_stdio_server(server_name: str, server_config: dict[str, Any]) -> None:
     """Verify that a stdio server's command exists on PATH.
 
     Args:
@@ -1008,7 +1008,11 @@ def _check_stdio_server(server_name: str, server_config: dict[str, Any]) -> None
     if command is None:
         msg = f"MCP server '{server_name}': missing 'command' in config."
         raise RuntimeError(msg)
-    if shutil.which(command) is None:
+    # Run the sync shutil.which() in a worker thread so it does not block the
+    # event loop under strict async-blocking guards (e.g. langgraph dev's
+    # blockbuster), which choke on shutil.which's internal os.access() call.
+    resolved = await asyncio.to_thread(shutil.which, command)
+    if resolved is None:
         msg = (
             f"MCP server '{server_name}': command '{command}' not found on PATH. "
             "Install it or check your MCP config."
@@ -1442,7 +1446,7 @@ async def _load_tools_from_config(
             if server_type in _SUPPORTED_REMOTE_TYPES:
                 await _check_remote_server(server_name, server_config)
             elif server_type == "stdio":
-                _check_stdio_server(server_name, server_config)
+                await _check_stdio_server(server_name, server_config)
         except RuntimeError as exc:
             logger.warning(
                 "MCP server '%s' skipped: pre-flight failed: %s",

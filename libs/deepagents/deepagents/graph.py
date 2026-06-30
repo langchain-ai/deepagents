@@ -227,10 +227,12 @@ def _merge_fs_interrupt_on(
     return merged
 
 
-def _apply_custom_middleware(
+def _apply_custom_middleware(  # noqa: C901  # name-keyed merge with replace/insert/append branches
     base: list[AgentMiddleware[Any, Any, Any]],
     custom: Sequence[AgentMiddleware[Any, Any, Any]],
     original_name_to_index: dict[str, int] | None = None,
+    *,
+    core_names: set[str] | None = None,
 ) -> list[AgentMiddleware[Any, Any, Any]]:
     """Merge custom middleware into the base stack by name.
 
@@ -240,7 +242,9 @@ def _apply_custom_middleware(
       preserving stack order.
     - If it matches a middleware that was excluded, insert it where that middleware
     originally appeared.
-    - Otherwise: append at the end in the order supplied.
+    - Otherwise: a brand-new entry lands after the last `core_names` member (so it
+      precedes the profile/prompt-caching/memory tail), or at the end when
+      `core_names` is unset.
 
     Custom middleware that doesn't match a default entry is always preserved.
     """
@@ -271,7 +275,12 @@ def _apply_custom_middleware(
             if existing_orig is not None and existing_orig < orig_idx:
                 insert_pos = i + 1
         result.insert(insert_pos, mw)
-    result.extend(to_append)
+    if to_append and core_names is not None:
+        # Land new middleware after the last core entry, ahead of the tail.
+        pos = max((i for i, m in enumerate(result) if m.name in core_names), default=len(result) - 1) + 1
+        result[pos:pos] = to_append
+    else:
+        result.extend(to_append)
     return result
 
 
@@ -701,6 +710,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             subagent_skills = spec.get("skills")
             if subagent_skills:
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
+            # Core names captured before the tail so new spec middleware splices in ahead of it.
+            _subagent_core_names = {m.name for m in subagent_middleware}
             # Harness-profile middleware for this subagent's model
             subagent_middleware.extend(_subagent_profile.materialize_extra_middleware())
 
@@ -720,7 +731,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 matched_classes=_subagent_matched_classes,
                 matched_names=_subagent_matched_names,
             )
-            subagent_middleware = _apply_custom_middleware(subagent_middleware, spec.get("middleware", []), _subagent_original_name_to_index)
+            subagent_middleware = _apply_custom_middleware(
+                subagent_middleware,
+                spec.get("middleware", []),
+                _subagent_original_name_to_index,
+                core_names=_subagent_core_names,
+            )
             subagent_middleware = _apply_excluded_middleware(
                 subagent_middleware,
                 _subagent_profile,
@@ -873,6 +889,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # Currently this supports agents deployed via LangSmith deployments.
         deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
 
+    # Names of the core stack, captured before the tail is appended so new user
+    # middleware can splice in ahead of the profile/prompt-caching/memory tail.
+    _main_core_names = {m.name for m in deepagent_middleware}
     # Harness-profile middleware goes between core middleware and memory so
     # that memory updates (which change the system prompt) don't invalidate the
     # Anthropic prompt cache prefix.
@@ -901,7 +920,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         matched_classes=_main_matched_classes,
         matched_names=_main_matched_names,
     )
-    deepagent_middleware = _apply_custom_middleware(deepagent_middleware, middleware or [], _main_original_name_to_index)
+    deepagent_middleware = _apply_custom_middleware(deepagent_middleware, middleware or [], _main_original_name_to_index, core_names=_main_core_names)
     deepagent_middleware = _apply_excluded_middleware(
         deepagent_middleware,
         _profile,

@@ -39,10 +39,13 @@ Screen {
     display: block;
 }
 
-/* Chat area - main scrollable messages area */
+/* Chat area - main scrollable messages area.
+   No horizontal padding so message blocks span the same full width as the
+   input box below (whose border is flush to both edges). The scrollbar is
+   toggled at runtime via the /scrollbar command (off by default). */
 #chat {
     height: 1fr;
-    padding: 1 2 0 2;
+    padding: 1 0 0 0;
     background: $background;
 }
 

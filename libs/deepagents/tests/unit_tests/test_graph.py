@@ -24,7 +24,6 @@ from deepagents.graph import (
     DeepAgentState,
     _apply_custom_middleware,
     _create_bedrock_prompt_caching_middleware,
-    _apply_custom_middleware,
     create_deep_agent,
     get_default_model,
 )

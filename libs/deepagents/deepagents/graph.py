@@ -585,6 +585,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         cache: The cache to use for the agent.
 
             Passed through to [`create_agent`][langchain.agents.create_agent].
+
     Returns:
         A configured deep agent.
 
@@ -651,7 +652,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     backend = backend if backend is not None else StateBackend()
 
     # Extract a caller-supplied FilesystemMiddleware from `middleware`, if any.
-    # Its disable_tools is forwarded to the main agent and GP subagent so both
+    # Its enabled_tools is forwarded to the main agent and GP subagent so both
     # share the same tool restrictions without requiring a separate parameter.
     _caller_fs_mw: FilesystemMiddleware | None = None
     _caller_middleware: list[AgentMiddleware[Any, Any, Any]] = list(middleware)
@@ -659,7 +660,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         if isinstance(_mw, FilesystemMiddleware):
             _caller_fs_mw = cast("FilesystemMiddleware", _caller_middleware.pop(_i))
             break
-    _main_disable_tools: frozenset[str] = _caller_fs_mw._disable_tools if _caller_fs_mw is not None else frozenset()
+    _main_enabled_tools: frozenset[str] | None = _caller_fs_mw._enabled_tools if _caller_fs_mw is not None else None
 
     # Process caller-supplied subagents first so the decision of whether to
     # auto-add the default general-purpose subagent can factor in an explicit
@@ -687,7 +688,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             subagent_permissions = spec.get("permissions", permissions)
 
             # Extract FilesystemMiddleware from spec's middleware (if provided).
-            # Its disable_tools replaces the default; the remainder is appended normally.
+            # Its enabled_tools replaces the default; the remainder is appended normally.
             _spec_mw: list[AgentMiddleware[Any, Any, Any]] = list(spec.get("middleware", []))
             _spec_fs_mw: FilesystemMiddleware | None = None
             for _si, _smw in enumerate(_spec_mw):
@@ -701,7 +702,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 FilesystemMiddleware(
                     backend=backend,
                     custom_tool_descriptions=_subagent_profile.tool_description_overrides,
-                    disable_tools=_spec_fs_mw._disable_tools if _spec_fs_mw is not None else frozenset(),
+                    enabled_tools=_spec_fs_mw._enabled_tools if _spec_fs_mw is not None else None,
                     _permissions=subagent_permissions,
                 ),
                 create_summarization_middleware(subagent_model, backend),
@@ -789,7 +790,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             FilesystemMiddleware(
                 backend=backend,
                 custom_tool_descriptions=_profile.tool_description_overrides,
-                disable_tools=_main_disable_tools,
+                enabled_tools=_main_enabled_tools,
                 _permissions=permissions,
             ),
             create_summarization_middleware(model, backend),
@@ -860,7 +861,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         FilesystemMiddleware(
             backend=backend,
             custom_tool_descriptions=_profile.tool_description_overrides,
-            disable_tools=_main_disable_tools,
+            enabled_tools=_main_enabled_tools,
             _permissions=permissions,
         )
     )

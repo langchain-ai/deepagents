@@ -67,7 +67,7 @@ gh run watch <run-id> -R langchain-ai/deepagents
 | `agent_impl` | `dcode` | `dcode`, `bare`, or `tau3`. |
 | `n_tasks` | `0` | Max tasks to run (`0` = all). Caps the selected set. |
 | `include_tasks` | _(empty)_ | Space-separated task-name globs (e.g. `terminal-bench/kv-store-grpc`). Empty = all. |
-| `rollouts_per_task` | `1` | Attempts per task. Use **≥5** for a stable/submittable number. |
+| `rollouts_per_task` | `1` | Attempts per task. Use **5** for a scored run. |
 | `concurrency` | `1` | Parallel sandbox slots per job. |
 | `agent_timeout_multiplier` | `1.0` | Scales the agent **execution** timeout only (setup/env-build budgets unaffected). Use `<1` to cap per-rollout wall-clock cheaply; keep at **`1.0`** for scored runs. |
 | `disable_verification` | `false` | Skip the task verifier (tests). For setup/concurrency stress tests where pass/fail isn't the goal. |
@@ -167,9 +167,8 @@ uv run harbor run \
 
 ## 7. Cost & correctness tips
 
-- **`rollouts_per_task` ≥ 5** for any number you'll report — single rollouts are noisy.
-- **`agent_timeout_multiplier=1.0`** and **`n_shards=1`** for scored runs; the multiplier
-  and sharding are stress/diagnostics levers.
+- **`rollouts_per_task=5`**, **`agent_timeout_multiplier=1.0`**, and **`n_shards=1`** for
+  scored runs; the timeout multiplier and sharding are stress/diagnostics levers.
 - Size **`concurrency`** to the deployment's limits — over-subscribing a model
   endpoint inflates per-call latency (queueing) and can push borderline tasks over
   their wall-clock budget.

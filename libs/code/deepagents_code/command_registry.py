@@ -197,6 +197,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="dark light color appearance",
     ),
     SlashCommand(
+        name="/scrollbar",
+        description="Show or hide the chat scrollbar",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="scroll scroller bar vertical",
+    ),
+    SlashCommand(
         name="/timestamps",
         description="Show or hide message timestamps",
         bypass_tier=BypassTier.SIDE_EFFECT_FREE,

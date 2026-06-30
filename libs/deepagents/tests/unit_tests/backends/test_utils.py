@@ -194,6 +194,29 @@ class TestGlobSearchFiles:
         assert "/foo/c.md" in result
         assert "/foo/b.txt" not in result
 
+    def test_missing_modified_at_does_not_raise(self) -> None:
+        """`modified_at` is NotRequired on FileData, so glob must not assume it.
+
+        Seeded state can carry files without timestamps; matching should still
+        return them instead of raising KeyError.
+        """
+        files = {
+            "/a.py": {"content": "x", "encoding": "utf-8"},
+            "/b.py": {"content": "y", "encoding": "utf-8"},
+        }
+        result = _glob_search_files(files, "*.py", "/")
+        assert "/a.py" in result
+        assert "/b.py" in result
+
+    def test_undated_files_sort_after_dated(self) -> None:
+        """Dated files rank ahead of files missing `modified_at`."""
+        files = {
+            "/dated.py": {"content": "x", "encoding": "utf-8", "modified_at": "2024-01-01T10:00:00"},
+            "/undated.py": {"content": "y", "encoding": "utf-8"},
+        }
+        result = _glob_search_files(files, "*.py", "/")
+        assert result.split("\n") == ["/dated.py", "/undated.py"]
+
 
 _content_block_adapter = TypeAdapter(ContentBlock)
 

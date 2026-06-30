@@ -1425,7 +1425,7 @@ def create_cli_agent(
     def _subagent_cli_middleware(*, has_explicit_model: bool) -> list[AgentMiddleware]:
         middleware: list[AgentMiddleware] = []
         if not has_explicit_model:
-            middleware.append(ConfigurableModelMiddleware())
+            middleware.append(ConfigurableModelMiddleware(persist_model_state=False))
         if restrictive_shell_allow_list is not None:
             middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
         # Subagents share the on-disk filesystem backend and can edit the user
@@ -1487,10 +1487,10 @@ def create_cli_agent(
         ConfigurableModelMiddleware(),
     ]
 
-    # Resume state: declares the `_context_tokens` and `_model_spec` channels
-    # and writes them from `after_model` (token count from the latest
-    # `AIMessage.usage_metadata`, model spec from `context["effective_model"]`).
-    # The CLI reads them back from `state_values` on thread resume.
+    # Resume state: declares private checkpoint channels used on resume.
+    # `ResumeStateMiddleware.after_model` writes `_context_tokens`; model metadata
+    # is written by `ConfigurableModelMiddleware` from the actual completed model
+    # request. The CLI reads them back from `state_values` on thread resume.
     # Goal tools: exposes the read-only `get_goal`/`get_rubric` tools and the
     # constrained `update_goal` tool, and injects goal guidance into the prompt.
     from deepagents_code.goal_tools import GoalToolsMiddleware

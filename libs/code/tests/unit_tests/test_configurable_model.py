@@ -8,7 +8,11 @@ from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
-from langchain.agents.middleware.types import ModelRequest, ModelResponse
+from langchain.agents.middleware.types import (
+    ExtendedModelResponse,
+    ModelRequest,
+    ModelResponse,
+)
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
@@ -56,6 +60,16 @@ def _make_response() -> ModelResponse[Any]:
     return ModelResponse(result=[AIMessage(content="response")])
 
 
+def _checkpoint_update(
+    result: ModelResponse[Any] | ExtendedModelResponse[Any],
+) -> dict[str, Any]:
+    """Return the checkpoint update emitted by the middleware."""
+    assert isinstance(result, ExtendedModelResponse)
+    assert result.command is not None
+    assert isinstance(result.command.update, dict)
+    return result.command.update
+
+
 def _make_model_result(
     model: MagicMock,
     *,
@@ -77,6 +91,18 @@ def _make_model_result(
 _PATCH_CREATE = "deepagents_code.config.create_model"
 
 _mw = ConfigurableModelMiddleware()
+
+
+class TestCheckpointPersistence:
+    """Tests for private resume-state checkpoint updates."""
+
+    def test_can_disable_model_state_persistence(self) -> None:
+        middleware = ConfigurableModelMiddleware(persist_model_state=False)
+        request = _make_request(_make_model("gpt-5.5"))
+
+        result = middleware.wrap_model_call(request, lambda _request: _make_response())
+
+        assert isinstance(result, ModelResponse)
 
 
 class TestNoOverride:
@@ -294,17 +320,42 @@ class TestModelSwap:
         from deepagents_code.model_config import ModelConfigError
 
         original = _make_model("claude-sonnet-4-6")
+        original._get_ls_params.return_value = {"ls_provider": "anthropic"}
         request = _make_request(
             original,
-            context=CLIContext(model="unknown:bad-model"),
+            context=CLIContext(
+                model="unknown:bad-model",
+                model_params={"temperature": 0.7},
+            ),
         )
         captured: list[ModelRequest] = []
         with patch(_PATCH_CREATE, side_effect=ModelConfigError("no such provider")):
-            _mw.wrap_model_call(
+            result = _mw.wrap_model_call(
                 request, lambda r: (captured.append(r), _make_response())[1]
             )
 
         assert captured[0].model is original
+        assert captured[0].model_settings == {}
+        assert _checkpoint_update(result) == {
+            "_model_spec": "anthropic:claude-sonnet-4-6"
+        }
+
+    def test_successful_swap_records_resolved_model_spec(self) -> None:
+        original = _make_model("claude-sonnet-4-6")
+        override = _make_model("gpt-5.5")
+        request = _make_request(original, context=CLIContext(model="openai:gpt-5.5"))
+
+        with patch(
+            _PATCH_CREATE,
+            return_value=_make_model_result(
+                override,
+                model_name="gpt-5.5",
+                provider="openai",
+            ),
+        ):
+            result = _mw.wrap_model_call(request, lambda _request: _make_response())
+
+        assert _checkpoint_update(result) == {"_model_spec": "openai:gpt-5.5"}
 
 
 class TestAnthropicSettingsStripped:
@@ -715,12 +766,16 @@ class TestModelParams:
             context=CLIContext(model_params={"temperature": 0.7}),
         )
         captured: list[ModelRequest] = []
-        _mw.wrap_model_call(
+        result = _mw.wrap_model_call(
             request, lambda r: (captured.append(r), _make_response())[1]
         )
 
         assert captured[0].model is request.model
         assert captured[0].model_settings == {"temperature": 0.7}
+        assert _checkpoint_update(result) == {
+            "_model_spec": "openai:claude-sonnet-4-6",
+            "_model_params": {"temperature": 0.7},
+        }
 
     def test_params_merge_preserves_existing(self) -> None:
         request = _make_request(

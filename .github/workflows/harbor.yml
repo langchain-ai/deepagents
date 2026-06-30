@@ -448,11 +448,7 @@ jobs:
             openrouter)   agent_env_args+=(--agent-env 'OPENROUTER_API_KEY=${OPENROUTER_API_KEY}') ;;
             baseten)      agent_env_args+=(--agent-env 'BASETEN_API_KEY=${BASETEN_API_KEY}') ;;
             fireworks)
-              agent_env_args+=(
-                --agent-env 'FIREWORKS_API_KEY=${FIREWORKS_API_KEY}'
-                --agent-env UV_PRERELEASE=allow
-              )
-              ;;
+              agent_env_args+=(--agent-env 'FIREWORKS_API_KEY=${FIREWORKS_API_KEY}') ;;
             ollama)       agent_env_args+=(--agent-env 'OLLAMA_API_KEY=${OLLAMA_API_KEY}' --agent-env 'OLLAMA_HOST=${OLLAMA_HOST}') ;;
             groq)         agent_env_args+=(--agent-env 'GROQ_API_KEY=${GROQ_API_KEY}') ;;
             xai)          agent_env_args+=(--agent-env 'XAI_API_KEY=${XAI_API_KEY}') ;;

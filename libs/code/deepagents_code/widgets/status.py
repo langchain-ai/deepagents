@@ -111,7 +111,7 @@ class StatusBar(Horizontal):
     StatusBar {
         height: 1;
         dock: bottom;
-        background: $surface;
+        background: $background;
     }
 
     StatusBar .status-mode {

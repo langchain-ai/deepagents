@@ -176,7 +176,7 @@ on:
         default: false
         type: boolean
       n_shards:
-        description: "Split the dataset's tasks across N parallel shard jobs per model (each on its own runner at the per-job concurrency). 1 = single job over all tasks (default). Use >1 to spread orchestration load and avoid runner saturation."
+        description: "Split the dataset's tasks across N parallel shard jobs per model (each on its own runner at the per-job concurrency). 1 = single job over all tasks (default). Use >1 to spread orchestration load and avoid runner saturation. Composes with include_tasks/n_tasks: those select the task set first, then it's partitioned across shards (total tasks run is unchanged). Capped so models x shards <= 256 (GitHub's matrix limit)."
         required: false
         default: "1"
         type: string
@@ -252,25 +252,13 @@ jobs:
 
       - name: "🔀 Expand matrix by shard"
         id: shard-matrix
+        # Cross-products the model matrix with the shard axis and guards the
+        # result against GitHub's 256-job matrix cap. See shard_matrix.py
+        # (unit-tested in .github/scripts/test_shard_matrix.py).
         env:
           MODEL_MATRIX: ${{ steps.set-matrix.outputs.matrix }}
           N_SHARDS: ${{ inputs.n_shards || '1' }}
-        run: |
-          python - <<'PY' >> "$GITHUB_OUTPUT"
-          import json, os, sys
-
-          raw = os.environ.get("N_SHARDS", "1")
-          if not raw.isdigit() or not (1 <= int(raw) <= 64):
-              print(f"::error::Invalid n_shards (must be 1..64): {raw!r}", file=sys.stderr)
-              sys.exit(1)
-          n = int(raw)
-          mm = json.loads(os.environ["MODEL_MATRIX"])
-          include = mm.get("include", [])
-          # Cross-product each model entry with the shard axis. n=1 -> shard 0 only
-          # (one job per model over the whole dataset; identical to pre-sharding).
-          expanded = [{**entry, "shard": s} for entry in include for s in range(n)]
-          print("matrix=" + json.dumps({"include": expanded}, separators=(",", ":")))
-          PY
+        run: python .github/scripts/shard_matrix.py
 
   harbor:
     name: "📊 Evals - Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_impl }})"
@@ -443,20 +431,32 @@ jobs:
 
           include_args=()
           if [[ "$HARBOR_N_SHARDS" =~ ^[1-9][0-9]*$ ]] && [ "$HARBOR_N_SHARDS" -gt 1 ]; then
-            # Sharding: run only this shard's disjoint slice of the dataset.
-            # Resolve the live task list from Harbor's own manifest (no drift) and
-            # pick indices where i % n_shards == shard_index. Overrides include_tasks.
+            # Sharding: run this shard's disjoint slice of the dataset. Resolve the
+            # live task list from Harbor's own manifest (no drift), compose it with
+            # include_tasks/n_tasks exactly as an unsharded run would, then partition
+            # by i % n_shards. select_shard_tasks mirrors Harbor's _filter_task_ids
+            # (see .github/scripts/shard_matrix.py + its tests).
             if ! [[ "$HARBOR_SHARD_INDEX" =~ ^[0-9]+$ ]] || [ "$HARBOR_SHARD_INDEX" -ge "$HARBOR_N_SHARDS" ]; then
               echo "::error::Invalid shard index '$HARBOR_SHARD_INDEX' for $HARBOR_N_SHARDS shards"; exit 1
             fi
             uv run python - <<'PY' > shard_tasks.txt
           import asyncio
           import os
+          import sys
           from harbor.registry.client.package import PackageDatasetClient
+
+          # shard_matrix.py is pure stdlib; import it from the checkout (repo root).
+          sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], ".github", "scripts"))
+          from shard_matrix import select_shard_tasks
 
           ds = os.environ["HARBOR_DATASET"]
           n = int(os.environ["HARBOR_N_SHARDS"])
           i = int(os.environ["HARBOR_SHARD_INDEX"])
+          include_globs = os.environ.get("HARBOR_INCLUDE_TASKS", "").split()
+          raw_n_tasks = os.environ.get("HARBOR_N_TASKS", "0").strip() or "0"
+          if not raw_n_tasks.isdigit():
+              sys.exit(f"::error::Invalid n_tasks (must be an integer): {raw_n_tasks!r}")
+          n_tasks = int(raw_n_tasks)
           md = asyncio.run(PackageDatasetClient().get_dataset_metadata(f"{ds}@latest"))
 
           def task_name(t):
@@ -467,12 +467,16 @@ jobs:
                   name = name or t.get("name")
               return f"{org}/{name}" if org else name
 
-          names = sorted(x for x in (task_name(t) for t in md.task_ids) if x)
-          print("\n".join(nm for j, nm in enumerate(names) if j % n == i))
+          # Native manifest order (do NOT sort): the n_tasks cap must pick the same
+          # first-N that Harbor's --n-tasks would (filtered_ids[:n_tasks], native order).
+          names = [x for x in (task_name(t) for t in md.task_ids) if x]
+          tasks = select_shard_tasks(names, include_globs, n_tasks, n, i)
+          if tasks:
+              print("\n".join(tasks))
           PY
             mapfile -t shard_tasks < shard_tasks.txt
             if [ "${#shard_tasks[@]}" -eq 0 ]; then
-              echo "::error::Shard $HARBOR_SHARD_INDEX/$HARBOR_N_SHARDS resolved 0 tasks"; exit 1
+              echo "::error::Shard $HARBOR_SHARD_INDEX/$HARBOR_N_SHARDS resolved 0 tasks (n_tasks may be smaller than n_shards)"; exit 1
             fi
             for t in "${shard_tasks[@]}"; do
               if ! [[ "$t" =~ ^[A-Za-z0-9._/?*-]+$ ]]; then
@@ -480,6 +484,10 @@ jobs:
               fi
               include_args+=(--include-task-name "$t")
             done
+            # The n_tasks cap is already applied during selection above; clear the
+            # flag so Harbor doesn't re-cap each shard to n_tasks (which would run up
+            # to n_tasks * n_shards instead of n_tasks total).
+            n_tasks_flag=""
             echo "Shard $HARBOR_SHARD_INDEX of $HARBOR_N_SHARDS -> ${#shard_tasks[@]} tasks: ${shard_tasks[*]}"
           elif [ -n "$HARBOR_INCLUDE_TASKS" ]; then
             read -r -a include_tasks <<< "$HARBOR_INCLUDE_TASKS"

@@ -583,6 +583,7 @@ Note: This tool is only available if the backend supports execution (SandboxBack
 If execution is not supported, the tool will return an error message."""
 
 _FS_TOOL_ORDER: tuple[str, ...] = ("ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep")
+_ALL_FS_TOOL_NAMES: frozenset[str] = frozenset(_FS_TOOL_ORDER) | {"execute"}
 _FS_TOOL_DESCRIPTION_LINES: dict[str, str] = {
     "ls": "ls: list files in a directory (requires absolute path)",
     "read_file": "read_file: read a file from the filesystem",
@@ -2143,8 +2144,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         has_delete_tool = "delete" in tool_names
 
         # Tools excluded by the enabled_tools allowlist (empty when no allowlist is set).
+        # Only filesystem tools are subject to the allowlist — user-provided tools always pass through.
         # `execute` and `delete` are also filtered when the backend can't serve them.
-        unsupported: set[str | None] = {name for name in tool_names if name not in self._enabled_tools} if self._enabled_tools is not None else set()
+        unsupported: set[str | None] = {name for name in tool_names if name in _ALL_FS_TOOL_NAMES and name not in self._enabled_tools} if self._enabled_tools is not None else set()
         execution_active = False  # tracks whether execute should get system-prompt instructions
         backend = None
         if has_delete_tool or has_execute_tool:

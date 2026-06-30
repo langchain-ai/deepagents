@@ -1848,6 +1848,30 @@ class TestFilesystemMiddleware:
         assert "ls" in filtered_names
         assert "grep" in filtered_names
 
+    def test_enabled_tools_does_not_filter_user_provided_tools(self):
+        """User-provided (non-filesystem) tools are never removed by the allowlist."""
+        middleware = FilesystemMiddleware(
+            backend=StateBackend(),
+            system_prompt="",
+            enabled_tools=frozenset({"read_file", "ls"}),
+        )
+        ls_tool = MagicMock()
+        ls_tool.name = "ls"
+        write_tool = MagicMock()
+        write_tool.name = "write_file"
+        custom_tool = MagicMock()
+        custom_tool.name = "search"
+        request = MagicMock()
+        request.tools = [ls_tool, write_tool, custom_tool]
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
+        assert "ls" in filtered_names
+        assert "search" in filtered_names  # user tool untouched
+        assert "write_file" not in filtered_names  # FS tool not in allowlist
+
     def test_enabled_tools_passes_listed_tools_through(self):
         """Tools in enabled_tools survive; an unlisted tool is dropped."""
         middleware = FilesystemMiddleware(

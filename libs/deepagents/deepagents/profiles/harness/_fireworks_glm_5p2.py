@@ -71,8 +71,20 @@ inspecting an unknown file, binary, or data structure, extract the specific
 values you need in one pass rather than querying them one at a time. If one step
 is unavoidably long (a large training, sampling, or build run), start it in the
 background with a timeout and poll for completion, rather than blocking on a
-single multi-minute command.
-</work_in_batches>"""
+single multi-minute command. Keep any single command short: bound long work with
+an explicit, modest timeout and try a small or quick configuration first; never let
+one command run so long that you cannot save a result. Test on a small sample before
+running the full or expensive version.
+</work_in_batches>
+
+<ship_then_refine>
+Produce a working solution before optimizing one. The moment your output meets the
+task's stated requirements, save it to the exact required path — then refine only if
+useful, keeping a working version saved at every step. A good-enough result already on
+disk beats a better one that never gets written. Do not run exhaustive sweeps, grid
+searches, or many-candidate optimizers when a single sensible configuration already
+meets the stated bar.
+</ship_then_refine>"""
 """Text appended to the assembled base system prompt."""
 
 

@@ -105,6 +105,13 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="reset interrupt",
     ),
     SlashCommand(
+        name="/goal",
+        description="Set a persistent objective by drafting acceptance criteria",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="objective criteria acceptance rubric",
+        argument_hint="[<objective>|show|clear]",
+    ),
+    SlashCommand(
         name="/editor",
         description="Open prompt in an external editor ($EDITOR)",
         bypass_tier=BypassTier.QUEUED,
@@ -168,6 +175,14 @@ COMMANDS: tuple[SlashCommand, ...] = (
         description="Reload environment and config",
         bypass_tier=BypassTier.QUEUED,
         hidden_keywords="refresh",
+    ),
+    SlashCommand(
+        name="/rubric",
+        description="Set explicit acceptance criteria for rubric grading",
+        bypass_tier=BypassTier.IMMEDIATE_UI,
+        hidden_keywords="criteria acceptance grader grading evaluation",
+        argument_hint="[set|next|file|show|clear|model]",
+        aliases=("/criteria",),
     ),
     SlashCommand(
         name="/restart",

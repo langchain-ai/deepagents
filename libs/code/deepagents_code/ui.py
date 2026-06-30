@@ -186,6 +186,21 @@ def show_help() -> None:
         "  --max-turns N              Max agentic turns before stopping (needs -n)"
     )
     console.print(
+        "  --goal TEXT                Draft goal criteria; review, then run "
+        "accepted goal"
+    )
+    console.print(
+        "  --rubric TEXT|@PATH        Acceptance criteria to grade against; "
+        "'@path' reads a file relative to cwd, '~' ok (needs -n)"
+    )
+    console.print(
+        "  --rubric-model MODEL       Model the rubric grader uses "
+        "(defaults to main model)"
+    )
+    console.print(
+        "  --rubric-max-iterations N  Grader iterations per rubric attempt (default 3)"
+    )
+    console.print(
         "  --timeout SECONDS          Hard wall-clock limit; exits 124 on expiry"
         " (needs -n/stdin)"
     )

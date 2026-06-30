@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import operator
 import os
 import re
@@ -240,7 +241,8 @@ def get_cached_update_available() -> tuple[bool, str | None]:
         if not isinstance(data, dict):
             return False, None
         checked_at = data.get("checked_at")
-        if not isinstance(checked_at, (int, float)):
+        checked_at = _coerce_checked_at(checked_at)
+        if checked_at is None:
             return False, None
         if time.time() - checked_at >= CACHE_TTL:
             return False, None
@@ -251,6 +253,42 @@ def get_cached_update_available() -> tuple[bool, str | None]:
     except (OSError, json.JSONDecodeError, TypeError, InvalidVersion):
         logger.debug("Failed to read cache-only update answer", exc_info=True)
         return False, None
+
+
+def _coerce_checked_at(value: object) -> float | None:
+    """Return a valid epoch timestamp from cached state, or `None`."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    checked_at = float(value)
+    if not math.isfinite(checked_at):
+        return None
+    try:
+        datetime.fromtimestamp(checked_at, tz=UTC)
+    except (OverflowError, OSError, ValueError):
+        return None
+    return checked_at
+
+
+def get_last_update_check_time() -> float | None:
+    """Return the epoch time of the last PyPI update check, or `None`.
+
+    Reads the `checked_at` stamp recorded in `CACHE_FILE` when the update cache
+    is written (primarily by `get_latest_version`; also seeded by
+    `_write_release_requires_prereleases`). Missing, corrupt, or non-numeric
+    data fail-soft to `None` so callers can render an "unknown" state without
+    contacting the network.
+    """
+    try:
+        if not CACHE_FILE.exists():
+            return None
+        data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        checked_at = data.get("checked_at")
+    except (OSError, json.JSONDecodeError, TypeError):
+        logger.debug("Failed to read last update check time", exc_info=True)
+        return None
+    return _coerce_checked_at(checked_at)
 
 
 def _requires_prerelease_dependency(requirements: Sequence[object] | None) -> bool:

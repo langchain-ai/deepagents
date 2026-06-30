@@ -48,11 +48,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_RECURSION_LIMIT = 150
+DEFAULT_RECURSION_LIMIT = 500
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_MAX_CONTINUATIONS = 3
 DEFAULT_MAX_APPROVAL_ROUNDS = 50
 CONTEXT_SIZE_ENV_KEY = "DEEPAGENTS_TALON_CONTEXT_SIZE"
+INTERRUPT_ON_TOOLS_ENV_KEY = "DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS"
+RECURSION_LIMIT_ENV_KEY = "DEEPAGENTS_TALON_RECURSION_LIMIT"
 _WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
 _SAFE_BACKEND_PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 ModelContent = str | list[dict[str, object]]
@@ -301,7 +303,9 @@ class DeepAgentRuntime:
         reload_agent_components: Callable[[], Awaitable[RuntimeAgentComponents]] | None = None,
     ) -> None:
         """Initialize without constructing the graph."""
-        if recursion_limit <= 0:
+        values = os.environ if env is None else env
+        resolved_recursion_limit = _recursion_limit_from_env(values, recursion_limit)
+        if resolved_recursion_limit <= 0:
             msg = "recursion_limit must be positive"
             raise ValueError(msg)
         if max_retries < 1:
@@ -317,17 +321,17 @@ class DeepAgentRuntime:
         self.subagents = tuple(subagents) if subagents is not None else None
         self.assistant_dir = assistant_dir
         self.cron_store = cron_store
-        self.backend = backend if backend is not None else _default_backend(env)
+        self.env = dict(os.environ if env is None else env)
+        self.backend = backend if backend is not None else _default_backend(self.env)
         self.skills = tuple(skills) if skills is not None else None
         self.middleware = tuple(middleware)
-        self.interrupt_on = dict(interrupt_on) if interrupt_on is not None else None
+        self.interrupt_on = interrupt_on_with_env_overlay(interrupt_on, self.env)
         self.memory = tuple(memory) if memory is not None else None
         self.checkpointer = checkpointer if checkpointer is not None else InMemorySaver()
         self.include_web_tools = include_web_tools
-        self.recursion_limit = recursion_limit
+        self.recursion_limit = resolved_recursion_limit
         self.max_retries = max_retries
         self.max_continuations = max_continuations
-        self.env = dict(os.environ if env is None else env)
         self.reload_agent_components = reload_agent_components
         self._reload_lock = asyncio.Lock()
         self._graph: object | None = None
@@ -365,9 +369,7 @@ class DeepAgentRuntime:
         self.subagents = tuple(components.subagents) if components.subagents is not None else None
         self.skills = tuple(components.skills) if components.skills is not None else None
         self.middleware = tuple(components.middleware)
-        self.interrupt_on = (
-            dict(components.interrupt_on) if components.interrupt_on is not None else None
-        )
+        self.interrupt_on = interrupt_on_with_env_overlay(components.interrupt_on, self.env)
         await self.start()
 
     async def stop(self) -> None:
@@ -777,6 +779,38 @@ def _decision_payload(
     return [{"type": "reject"} for _ in range(count)]
 
 
+def interrupt_on_with_env_overlay(
+    interrupt_on: Mapping[str, bool | InterruptOnConfig] | None,
+    env: Mapping[str, str],
+) -> dict[str, bool | InterruptOnConfig] | None:
+    """Merge Talon's local tool approval env overlay into an `interrupt_on` mapping.
+
+    Args:
+        interrupt_on: Base human-in-the-loop tool approval configuration.
+        env: Environment values to inspect for Talon approval overrides.
+
+    Returns:
+        Merged approval configuration, or `None` when neither source configures
+        approval.
+    """
+    overlay = _interrupt_on_tools_from_env(env)
+    if interrupt_on is None and not overlay:
+        return None
+
+    merged: dict[str, bool | InterruptOnConfig] = {}
+    if interrupt_on is not None:
+        merged.update(interrupt_on)
+    merged.update(overlay)
+    return merged
+
+
+def _interrupt_on_tools_from_env(env: Mapping[str, str]) -> dict[str, bool]:
+    raw = env.get(INTERRUPT_ON_TOOLS_ENV_KEY)
+    if raw is None or not raw.strip():
+        return {}
+    return {name: True for name in (part.strip() for part in raw.split(",")) if name}
+
+
 def _default_backend(env: Mapping[str, str] | None) -> LocalShellBackend:
     values = os.environ if env is None else env
     root = values.get(_WORKSPACE_ENV) or None
@@ -831,16 +865,31 @@ def _resolve_model_from_env(
 
 
 def _context_size_from_env(env: Mapping[str, str]) -> int | None:
-    raw = env.get(CONTEXT_SIZE_ENV_KEY)
+    return _positive_int_from_env(env, CONTEXT_SIZE_ENV_KEY)
+
+
+def _recursion_limit_from_env(env: Mapping[str, str], fallback: int) -> int:
+    """Resolve the recursion limit from the environment with a code fallback.
+
+    The `DEEPAGENTS_TALON_RECURSION_LIMIT` env var, when set, overrides the
+    caller-supplied value so operators can tune the graph recursion limit
+    without changing code. Falls back to the caller value when unset.
+    """
+    resolved = _positive_int_from_env(env, RECURSION_LIMIT_ENV_KEY)
+    return resolved if resolved is not None else fallback
+
+
+def _positive_int_from_env(env: Mapping[str, str], key: str) -> int | None:
+    raw = env.get(key)
     if raw is None or not raw.strip():
         return None
     try:
         value = int(raw)
     except ValueError as exc:
-        msg = f"{CONTEXT_SIZE_ENV_KEY} must be a positive integer"
+        msg = f"{key} must be a positive integer"
         raise ValueError(msg) from exc
     if value <= 0:
-        msg = f"{CONTEXT_SIZE_ENV_KEY} must be a positive integer"
+        msg = f"{key} must be a positive integer"
         raise ValueError(msg)
     return value
 

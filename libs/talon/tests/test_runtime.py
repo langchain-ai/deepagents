@@ -16,9 +16,11 @@ from deepagents_talon.interfaces import (
 )
 from deepagents_talon.runtime import (
     _SAFE_BACKEND_PATH,
+    INTERRUPT_ON_TOOLS_ENV_KEY,
     DeepAgentRuntime,
     RuntimeAgentComponents,
     _is_retryable,
+    interrupt_on_with_env_overlay,
 )
 
 if TYPE_CHECKING:
@@ -255,6 +257,58 @@ async def test_runtime_passes_interrupt_on_to_create_deep_agent(
     await runtime.start()
 
     assert captured["interrupt_on"] == interrupt_on
+
+
+def test_interrupt_on_with_env_overlay_preserves_empty_behavior() -> None:
+    interrupt_on = {"fleet_tool": True}
+
+    assert interrupt_on_with_env_overlay(None, {}) is None
+    assert interrupt_on_with_env_overlay(None, {INTERRUPT_ON_TOOLS_ENV_KEY: " , "}) is None
+    assert interrupt_on_with_env_overlay(interrupt_on, {}) == interrupt_on
+
+
+def test_interrupt_on_with_env_overlay_parses_comma_whitespace() -> None:
+    interrupt_on = interrupt_on_with_env_overlay(
+        {"fleet_tool": True},
+        {INTERRUPT_ON_TOOLS_ENV_KEY: " bash,execute, , github_create_pr ,custom/mcp "},
+    )
+
+    assert interrupt_on == {
+        "fleet_tool": True,
+        "bash": True,
+        "execute": True,
+        "github_create_pr": True,
+        "custom/mcp": True,
+    }
+
+
+async def test_runtime_adds_env_interrupt_on_overlay_to_create_deep_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
+        captured.update(kwargs)
+        return RecordingGraph()
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        interrupt_on={"fleet_tool": True},
+        env={INTERRUPT_ON_TOOLS_ENV_KEY: "bash, execute"},
+    )
+
+    await runtime.start()
+
+    assert captured["interrupt_on"] == {
+        "fleet_tool": True,
+        "bash": True,
+        "execute": True,
+    }
 
 
 async def test_runtime_uses_configured_workspace_for_default_backend(
@@ -527,6 +581,70 @@ async def test_runtime_rejects_invalid_context_size() -> None:
 
     with pytest.raises(ValueError, match="DEEPAGENTS_TALON_CONTEXT_SIZE"):
         await runtime.start()
+
+
+async def test_runtime_recursion_limit_defaults_when_env_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = RecordingGraph()
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", lambda **_kwargs: graph)
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+    await runtime.start()
+
+    result = await runtime.invoke(AgentRequest(conversation_id="chat", text="hi"))
+    assert graph.calls[0][1]["recursion_limit"] == 500
+    assert result.text == "seen:1"
+
+
+async def test_runtime_recursion_limit_reads_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+    graph = RecordingGraph()
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", lambda **_kwargs: graph)
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        env={"DEEPAGENTS_TALON_RECURSION_LIMIT": "1000"},
+    )
+    await runtime.start()
+
+    await runtime.invoke(AgentRequest(conversation_id="chat", text="hi"))
+    assert graph.calls[0][1]["recursion_limit"] == 1000
+
+
+async def test_runtime_recursion_limit_env_overrides_explicit_arg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = RecordingGraph()
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", lambda **_kwargs: graph)
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        recursion_limit=200,
+        env={"DEEPAGENTS_TALON_RECURSION_LIMIT": "750"},
+    )
+    await runtime.start()
+
+    await runtime.invoke(AgentRequest(conversation_id="chat", text="hi"))
+    assert graph.calls[0][1]["recursion_limit"] == 750
+
+
+async def test_runtime_rejects_invalid_recursion_limit_env() -> None:
+    with pytest.raises(ValueError, match="DEEPAGENTS_TALON_RECURSION_LIMIT"):
+        DeepAgentRuntime(
+            model="test:model",
+            include_web_tools=False,
+            skills=(),
+            memory=(),
+            env={"DEEPAGENTS_TALON_RECURSION_LIMIT": "0"},
+        )
 
 
 async def test_runtime_preserves_conversation_thread_across_turns(

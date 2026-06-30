@@ -531,6 +531,64 @@ class TestTextualSessionState:
         state.reset_thread()
         assert state.approval_mode_key is None
 
+    def test_advance_turn_increments_and_generates_id(self):
+        """advance_turn bumps a 1-based turn_number and yields a fresh turn_id."""
+        state = TextualSessionState(thread_id="t")
+        assert state.turn_number == 0
+        assert state.turn_id is None
+
+        turn_id_1, turn_number_1 = state.advance_turn()
+        assert turn_number_1 == 1
+        assert state.turn_number == 1
+        assert state.turn_id == turn_id_1
+        assert uuid.UUID(turn_id_1)  # valid uuid
+
+        turn_id_2, turn_number_2 = state.advance_turn()
+        assert turn_number_2 == 2
+        assert turn_id_2 != turn_id_1
+
+    def test_reset_thread_resets_turn_markers(self):
+        """reset_thread restarts the per-thread turn sequence."""
+        state = TextualSessionState(thread_id="t")
+        state.advance_turn()
+        state.advance_turn()
+        assert state.turn_number == 2
+
+        state.reset_thread()
+        assert state.turn_number == 0
+        assert state.turn_id is None
+
+    def test_thread_switch_resets_turn_markers(self):
+        """Assigning a different thread_id must not carry the prior turn count.
+
+        `/threads` switches and resume injection set `thread_id` directly
+        (not via `reset_thread`); the per-thread turn sequence has to restart so
+        the switched-to thread's traces aren't ordered under the previous
+        thread's turn_number/turn_id.
+        """
+        state = TextualSessionState(thread_id="thread-a")
+        state.advance_turn()
+        state.advance_turn()
+        assert state.turn_number == 2
+
+        state.thread_id = "thread-b"
+        assert state.turn_number == 0
+        assert state.turn_id is None
+
+        turn_id, turn_number = state.advance_turn()
+        assert turn_number == 1
+        assert state.turn_id == turn_id
+
+    def test_thread_id_reassigned_same_value_keeps_turn_markers(self):
+        """Re-assigning the identical thread_id is a no-op for the turn markers."""
+        state = TextualSessionState(thread_id="thread-a")
+        state.advance_turn()
+        turn_id = state.turn_id
+
+        state.thread_id = "thread-a"
+        assert state.turn_number == 1
+        assert state.turn_id == turn_id
+
 
 class TestFindSimilarThreads:
     """Tests for find_similar_threads function."""

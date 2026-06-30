@@ -77,11 +77,16 @@ class TestServerGraph:
         mcp_server_info = [SimpleNamespace(name="docs")]
         loop_thread_id = threading.get_ident()
         create_cli_agent_thread_ids: list[int] = []
+        create_model_thread_ids: list[int] = []
         warm_import_thread_ids: list[int] = []
 
         def create_cli_agent_side_effect(**_: object) -> tuple[object, object]:
             create_cli_agent_thread_ids.append(threading.get_ident())
             return graph_obj, object()
+
+        def create_model_side_effect(*_: object, **__: object) -> object:
+            create_model_thread_ids.append(threading.get_ident())
+            return model_result
 
         def warm_import_side_effect() -> None:
             warm_import_thread_ids.append(threading.get_ident())
@@ -98,9 +103,11 @@ class TestServerGraph:
             model=model_obj,
             apply_to_settings=MagicMock(),
         )
+        configure_redaction = MagicMock()
         config_module = _module_with_attrs(
             "deepagents_code.config",
-            create_model=MagicMock(return_value=model_result),
+            configure_langsmith_secret_redaction=configure_redaction,
+            create_model=MagicMock(side_effect=create_model_side_effect),
             settings=SimpleNamespace(
                 has_tavily=False,
                 reload_from_environment=MagicMock(),
@@ -164,11 +171,17 @@ class TestServerGraph:
             ):
                 assert await module.make_graph() is graph_obj
 
+        configure_redaction.assert_called_once_with()
         resolve_mcp_tools.assert_awaited_once()
         assert warm_import_thread_ids
         assert warm_import_thread_ids[0] != loop_thread_id
         assert create_cli_agent_thread_ids
         assert create_cli_agent_thread_ids[0] != loop_thread_id
+        # `create_model` must run off the loop thread: it does blocking disk IO
+        # for some providers (e.g. the `openai_codex` token store calls
+        # `os.mkdir`), which `blockbuster` rejects on the server event loop.
+        assert create_model_thread_ids
+        assert create_model_thread_ids[0] != loop_thread_id
         kwargs = resolve_mcp_tools.await_args_list[0].kwargs
         assert kwargs["explicit_config_path"] is None
         assert kwargs["no_mcp"] is False
@@ -192,6 +205,8 @@ class TestServerGraph:
             enable_skills=True,
             enable_shell=True,
             enable_interpreter=False,
+            rubric_model=None,
+            rubric_max_iterations=3,
             mcp_server_info=mcp_server_info,
             cwd=None,
             project_context=None,
@@ -261,6 +276,7 @@ class TestServerGraph:
         )
         config_module = _module_with_attrs(
             "deepagents_code.config",
+            configure_langsmith_secret_redaction=MagicMock(),
             create_model=MagicMock(
                 return_value=SimpleNamespace(
                     model=model_obj,

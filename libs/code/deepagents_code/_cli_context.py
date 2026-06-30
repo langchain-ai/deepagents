@@ -41,6 +41,10 @@ class CLIContextSchema:
 
     approval_mode_key: str | None = None
 
+    thread_id: str | None = None
+
+    blocked_goal_retry_context: str | None = None
+
 
 class CLIContext(TypedDict, total=False):
     """Client-facing builder for the per-run graph context payload.
@@ -86,4 +90,20 @@ class CLIContext(TypedDict, total=False):
     The server-side interrupt predicate reads it from the LangGraph Store on
     each gated tool call so auto-to-manual changes can take effect before the
     current stream returns.
+    """
+
+    thread_id: str | None
+    """LangGraph thread ID for the active conversation.
+
+    Mirrors `config.configurable.thread_id` into runtime context for model-call
+    middleware that needs per-request session identity, including Fireworks
+    session-affinity headers.
+    """
+
+    blocked_goal_retry_context: str | None
+    """One-turn model context for retrying a previously blocked goal.
+
+    This is intentionally carried in runtime context instead of the user
+    message so it is not parsed as a file mention or checkpointed as human
+    input.
     """

@@ -2290,27 +2290,6 @@ class TestApplyUserMiddleware:
         assert result[1] is b
         assert result[2] is new
 
-    def test_excluded_slot_inserted_at_original_position(self) -> None:
-        """Excluded-slot replacement is inserted at its original position, not appended."""
-        a, b, c = _named_mw("A"), _named_mw("B"), _named_mw("C")
-        original = {m.name: i for i, m in enumerate([a, b, c])}
-        filtered = [a, c]  # b was excluded
-        r_b = _named_mw("B")
-        result = _apply_custom_middleware(filtered, [r_b], original)
-        assert len(result) == 3
-        assert result[0] is a
-        assert result[1] is r_b
-        assert result[2] is c
-
-    def test_multiple_excluded_slots_preserve_relative_order(self) -> None:
-        """Multiple excluded-slot insertions are placed in their original relative order."""
-        a, b, c, d = _named_mw("A"), _named_mw("B"), _named_mw("C"), _named_mw("D")
-        original = {m.name: i for i, m in enumerate([a, b, c, d])}
-        filtered = [a, d]  # b and c were excluded
-        r_b, r_c = _named_mw("B"), _named_mw("C")
-        result = _apply_custom_middleware(filtered, [r_b, r_c], original)
-        assert result == [a, r_b, r_c, d]
-
 
 class TestUserMiddlewareOverride:
     """Integration tests: user-supplied middleware replaces same-named defaults in create_deep_agent."""

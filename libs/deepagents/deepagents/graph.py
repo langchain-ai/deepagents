@@ -227,54 +227,34 @@ def _merge_fs_interrupt_on(
     return merged
 
 
-def _apply_custom_middleware(  # noqa: C901  # name-keyed merge with replace/insert/append branches
+def _apply_custom_middleware(
     base: list[AgentMiddleware[Any, Any, Any]],
     custom: Sequence[AgentMiddleware[Any, Any, Any]],
-    original_name_to_index: dict[str, int] | None = None,
     *,
     core_names: set[str] | None = None,
 ) -> list[AgentMiddleware[Any, Any, Any]]:
     """Merge custom middleware into the base stack by name.
 
-    For each custom entry:
-
     - If its `.name` matches a name still present in `base`: replace in-place,
       preserving stack order.
-    - If it matches a middleware that was excluded, insert it where that middleware
-    originally appeared.
     - Otherwise: a brand-new entry lands after the last `core_names` member (so it
       precedes the profile/prompt-caching/memory tail), or at the end when
       `core_names` is unset.
-
-    Custom middleware that doesn't match a default entry is always preserved.
     """
     if not custom:
         return list(base)
     current_names = {m.name for m in base}
     replacements: dict[str, AgentMiddleware[Any, Any, Any]] = {}
-    to_insert: list[tuple[int, AgentMiddleware[Any, Any, Any]]] = []
     to_append: list[AgentMiddleware[Any, Any, Any]] = []
     for m in custom:
         if m.name in current_names:
             replacements[m.name] = m
-        elif original_name_to_index is not None and m.name in original_name_to_index:
-            to_insert.append((original_name_to_index[m.name], m))
         else:
             to_append.append(m)
     result = list(base)
     for i, m in enumerate(result):
         if m.name in replacements:
             result[i] = replacements[m.name]
-    # Insert excluded-slot entries at their original positions in ascending order so
-    # relative ordering is preserved when multiple slots are filled at once.
-    to_insert.sort(key=lambda x: x[0])
-    for orig_idx, mw in to_insert:
-        insert_pos = 0
-        for i, existing in enumerate(result):
-            existing_orig = original_name_to_index.get(existing.name) if original_name_to_index is not None else None
-            if existing_orig is not None and existing_orig < orig_idx:
-                insert_pos = i + 1
-        result.insert(insert_pos, mw)
     if to_append and core_names is not None:
         # Land new middleware after the last core entry, ahead of the tail.
         pos = max((i for i, m in enumerate(result) if m.name in core_names), default=len(result) - 1) + 1
@@ -717,7 +697,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             _append_prompt_caching_middleware(subagent_middleware)
 
-            _subagent_original_name_to_index = {m.name: i for i, m in enumerate(subagent_middleware)}
             _subagent_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
             _subagent_matched_names: set[str] = set()
             _validate_excluded_middleware_config(
@@ -734,7 +713,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             subagent_middleware = _apply_custom_middleware(
                 subagent_middleware,
                 spec.get("middleware", []),
-                _subagent_original_name_to_index,
                 core_names=_subagent_core_names,
             )
             subagent_middleware = _apply_excluded_middleware(
@@ -812,7 +790,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # Inherit only middleware that overrides a default GP slot (including excluded
         # ones) without carrying over middleware that's specific to the main agent.
         _gp_inheritable = [m for m in (middleware or []) if m.name in _gp_original_name_to_index]
-        gp_middleware = _apply_custom_middleware(gp_middleware, _gp_inheritable, _gp_original_name_to_index)
+        gp_middleware = _apply_custom_middleware(gp_middleware, _gp_inheritable)
         gp_middleware = _apply_excluded_middleware(
             gp_middleware,
             _profile,
@@ -913,14 +891,13 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     )
     if main_interrupt_on is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=main_interrupt_on))
-    _main_original_name_to_index = {m.name: i for i, m in enumerate(deepagent_middleware)}
     deepagent_middleware = _apply_excluded_middleware(
         deepagent_middleware,
         _profile,
         matched_classes=_main_matched_classes,
         matched_names=_main_matched_names,
     )
-    deepagent_middleware = _apply_custom_middleware(deepagent_middleware, middleware or [], _main_original_name_to_index, core_names=_main_core_names)
+    deepagent_middleware = _apply_custom_middleware(deepagent_middleware, middleware or [], core_names=_main_core_names)
     deepagent_middleware = _apply_excluded_middleware(
         deepagent_middleware,
         _profile,

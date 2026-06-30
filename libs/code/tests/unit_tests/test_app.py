@@ -7606,6 +7606,13 @@ class TestScrollbarToggle:
         """The `/scrollbar` toggle flips the flag and updates the chat widget."""
         from textual.containers import VerticalScroll
 
+        from deepagents_code.config import reset_glyphs_cache
+
+        # Force Unicode charset so the scrollbar can actually be shown —
+        # in ASCII mode _apply_scrollbar_visibility keeps it at 0.
+        monkeypatch.setenv("UI_CHARSET_MODE", "unicode")
+        reset_glyphs_cache()
+
         monkeypatch.setattr(
             "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
             tmp_path / "config.toml",

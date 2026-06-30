@@ -436,13 +436,19 @@ jobs:
             *) echo "::error::Invalid disable_verification (true|false): $HARBOR_DISABLE_VERIFICATION"; exit 1 ;;
           esac
 
+          if ! [[ "$HARBOR_DATASET" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+            echo "::error::Invalid Harbor dataset ref: $HARBOR_DATASET"
+            exit 1
+          fi
+
           include_args=()
           if [[ "$HARBOR_N_SHARDS" =~ ^[1-9][0-9]*$ ]] && [ "$HARBOR_N_SHARDS" -gt 1 ]; then
             # Sharding: run this shard's disjoint slice of the dataset. Resolve the
             # live task list from Harbor's own manifest (no drift), compose it with
             # include_tasks/n_tasks exactly as an unsharded run would, then partition
-            # by i % n_shards. select_shard_tasks mirrors Harbor's _filter_task_ids
-            # (see .github/scripts/shard_matrix.py + its tests).
+            # by i % n_shards. select_shard_tasks reproduces the include-glob +
+            # n_tasks subset of Harbor's _filter_task_ids; task_display_name mirrors
+            # each task id's get_name() (see .github/scripts/shard_matrix.py + tests).
             if ! [[ "$HARBOR_SHARD_INDEX" =~ ^[0-9]+$ ]] || [ "$HARBOR_SHARD_INDEX" -ge "$HARBOR_N_SHARDS" ]; then
               echo "::error::Invalid shard index '$HARBOR_SHARD_INDEX' for $HARBOR_N_SHARDS shards"; exit 1
             fi
@@ -450,11 +456,12 @@ jobs:
           import asyncio
           import os
           import sys
+          from fnmatch import fnmatch
           from harbor.registry.client.package import PackageDatasetClient
 
           # shard_matrix.py is pure stdlib; import it from the checkout (repo root).
           sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], ".github", "scripts"))
-          from shard_matrix import select_shard_tasks
+          from shard_matrix import select_shard_tasks, task_display_name
 
           ds = os.environ["HARBOR_DATASET"]
           n = int(os.environ["HARBOR_N_SHARDS"])
@@ -466,18 +473,31 @@ jobs:
           n_tasks = int(raw_n_tasks)
           md = asyncio.run(PackageDatasetClient().get_dataset_metadata(f"{ds}@latest"))
 
-          def task_name(t):
-              org = getattr(t, "org", None)
-              name = getattr(t, "name", None)
-              if isinstance(t, dict):
-                  org = org or t.get("org")
-                  name = name or t.get("name")
-              return f"{org}/{name}" if org else name
-
           # Native manifest order (do NOT sort): the n_tasks cap must pick the same
           # first-N that Harbor's --n-tasks would (filtered_ids[:n_tasks], native order).
-          names = [x for x in (task_name(t) for t in md.task_ids) if x]
-          tasks = select_shard_tasks(names, include_globs, n_tasks, n, i)
+          names = [x for x in (task_display_name(t) for t in md.task_ids) if x]
+          if not names:
+              # Resolved zero usable names from a non-empty manifest -> the id shape
+              # changed and get_name() stopped yielding a name. Fail loudly instead
+              # of letting every shard collapse into the legitimate-empty no-op
+              # below, which would run the whole sharded job on nothing and report
+              # green. (A genuinely empty selection is handled per-shard, not here.)
+              sys.exit(
+                  f"::error::Resolved 0 usable task names from {ds}@latest "
+                  f"({len(md.task_ids)} task ids in manifest); unexpected task-id "
+                  "shape (get_name() returned nothing)."
+              )
+          selected = names
+          if include_globs:
+              selected = [
+                  name for name in selected if any(fnmatch(name, glob) for glob in include_globs)
+              ]
+              if not selected:
+                  sys.exit(
+                      "::error::No Harbor tasks matched include_tasks filters: "
+                      + " ".join(include_globs)
+                  )
+          tasks = select_shard_tasks(selected, [], n_tasks, n, i)
           if tasks:
               print("\n".join(tasks))
           PY
@@ -510,10 +530,6 @@ jobs:
               fi
               include_args+=(--include-task-name "$t")
             done
-          fi
-          if ! [[ "$HARBOR_DATASET" =~ ^[A-Za-z0-9._/-]+$ ]]; then
-            echo "::error::Invalid Harbor dataset ref: $HARBOR_DATASET"
-            exit 1
           fi
 
           env_flag="--env $HARBOR_SANDBOX_ENV"

@@ -1201,6 +1201,7 @@ class TestNemotronUltraProfile:
             "fireworks:accounts/fireworks/models/nemotron-3-ultra-bf16",
             "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
             "openrouter:nvidia/nemotron-3-ultra-550b-a55b",
+            "nebius:nvidia/Nemotron-3-Ultra-550b-a55b",
         ],
     )
     def test_nemotron_ultra_has_harness_profile(self, model_key: str) -> None:

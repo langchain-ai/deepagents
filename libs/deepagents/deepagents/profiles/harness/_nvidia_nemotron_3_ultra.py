@@ -58,6 +58,7 @@ _NEMOTRON_ULTRA_MODEL_SPECS: tuple[str, ...] = (
     "fireworks:accounts/fireworks/models/nemotron-3-ultra-bf16",
     "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
     "openrouter:nvidia/nemotron-3-ultra-550b-a55b",
+    "nebius:nvidia/Nemotron-3-Ultra-550b-a55b",
 )
 """Model specs that receive the Nemotron 3 Ultra harness profile.
 
@@ -66,7 +67,7 @@ unchanged. Each key is `<ls_provider>:<model id>`, and the provider segment must
 match what the chat-model client reports as its LangSmith provider, so casing
 matters: `ChatNVIDIA` reports `NVIDIA`, while an `init_chat_model("nvidia:...")`
 spec is lowercase `nvidia` (both are registered). Covers NVIDIA's own API plus
-Nemotron 3 Ultra as served by Fireworks, Baseten, and OpenRouter.
+Nemotron 3 Ultra as served by Fireworks, Baseten, OpenRouter, and Nebius.
 """
 
 _FILESYSTEM_TOOLS: tuple[str, ...] = ("ls", "read_file", "write_file", "edit_file", "glob", "grep")

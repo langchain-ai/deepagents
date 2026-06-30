@@ -476,7 +476,12 @@ jobs:
           PY
             mapfile -t shard_tasks < shard_tasks.txt
             if [ "${#shard_tasks[@]}" -eq 0 ]; then
-              echo "::error::Shard $HARBOR_SHARD_INDEX/$HARBOR_N_SHARDS resolved 0 tasks (n_tasks may be smaller than n_shards)"; exit 1
+              # Fewer selected tasks than shards (e.g. n_tasks < n_shards): this
+              # shard's slice is legitimately empty. No-op successfully — the other
+              # shards cover the full selection — instead of failing the workflow.
+              echo "Shard $HARBOR_SHARD_INDEX/$HARBOR_N_SHARDS has no tasks (selection smaller than shard count); skipping."
+              echo "SHARD_EMPTY=true" >> "$GITHUB_ENV"
+              exit 0
             fi
             for t in "${shard_tasks[@]}"; do
               if ! [[ "$t" =~ ^[A-Za-z0-9._/?*-]+$ ]]; then
@@ -587,6 +592,8 @@ jobs:
 
       - name: "🔍 Find latest Harbor job"
         id: latest-job
+        # An empty shard skipped the Harbor run, so there is no job dir to find.
+        if: ${{ env.SHARD_EMPTY != 'true' }}
         run: |
           latest_job=$(python - <<'PY'
           from pathlib import Path
@@ -609,11 +616,15 @@ jobs:
           HARBOR_LANGSMITH_DATASET: ${{ env.HARBOR_LANGSMITH_DATASET }}
           HARBOR_LANGSMITH_EXPERIMENT: ${{ env.HARBOR_LANGSMITH_EXPERIMENT }}
           LATEST_JOB_OUTCOME: ${{ steps.latest-job.outcome }}
+          SHARD_EMPTY: ${{ env.SHARD_EMPTY }}
         run: |
           {
             echo "## Harbor run"
             echo
             echo "- Model: $HARBOR_MODEL"
+            if [ "$SHARD_EMPTY" = "true" ]; then
+              echo "- Shard: $HARBOR_SHARD_INDEX/$HARBOR_N_SHARDS — empty (no tasks assigned), skipped"
+            fi
             echo "- Dataset: ${HARBOR_DATASET}"
             echo "- Sandbox: ${HARBOR_SANDBOX_ENV}"
             echo "- Concurrency: ${HARBOR_CONCURRENCY}"

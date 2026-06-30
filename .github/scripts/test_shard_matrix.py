@@ -184,6 +184,25 @@ def test_n_shards_one_returns_full_selection(shard: ModuleType) -> None:
     assert shard.select_shard_tasks(names, [], 0, 1, 0) == names
 
 
+def test_fewer_tasks_than_shards_yields_empty_trailing_shards(shard: ModuleType) -> None:
+    """n_tasks < n_shards: early shards get the work, later shards are empty.
+
+    The workflow relies on this to no-op (not fail) empty shard jobs. e.g.
+    n_tasks=1 n_shards=4 -> shard 0 runs the task, shards 1-3 are empty.
+    """
+    names = [f"org/t{i}" for i in range(10)]
+    n_tasks, n_shards = 1, 4
+
+    slices = [
+        shard.select_shard_tasks(names, [], n_tasks, n_shards, i) for i in range(n_shards)
+    ]
+
+    assert slices[0] == ["org/t0"]
+    assert slices[1] == slices[2] == slices[3] == []
+    # Union is still exactly the selected task set (no task lost, none duplicated).
+    assert [name for s in slices for name in s] == ["org/t0"]
+
+
 def test_select_shard_tasks_rejects_bad_shard_index(shard: ModuleType) -> None:
     """shard_index must be in range(n_shards)."""
     with pytest.raises(shard.ShardConfigError, match="shard_index"):

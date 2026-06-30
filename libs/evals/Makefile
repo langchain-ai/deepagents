@@ -60,7 +60,7 @@ stage-harbor-local-deps: ## Stage checked-out packages for Harbor LangGraph sand
 
 run-hello-world: stage-harbor-local-deps ## Run hello-world job (override model with MODEL=<id>)
 	@mkdir -p $(HARBOR_HELLO_WORLD_JOBS_DIR)
-	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --model $(or $(MODEL),anthropic:claude-opus-4-8) --dataset hello-world --include-task-name hello-world -n 1 --jobs-dir $(HARBOR_HELLO_WORLD_JOBS_DIR) --env docker
+	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --model $(or $(MODEL),fireworks:accounts/fireworks/models/glm-5p2) --dataset hello-world --include-task-name hello-world -n 1 --jobs-dir $(HARBOR_HELLO_WORLD_JOBS_DIR) --env docker
 
 run-terminal-bench-modal: stage-harbor-local-deps ## Run terminal-bench on Modal (4 concurrent)
 	@mkdir -p $(HARBOR_TERMINAL_BENCH_JOBS_DIR)

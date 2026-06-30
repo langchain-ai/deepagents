@@ -909,7 +909,7 @@ jobs:
         # Install directly from the locally-built wheel (no index resolution needed)
         run: |
           uv venv
-          VIRTUAL_ENV=.venv uv pip install dist/*.whl
+          VIRTUAL_ENV=.venv uv pip install --prerelease allow dist/*.whl
 
           # Replace all dashes in the package name with underscores,
           # since that's how Python imports packages with dashes in the name.
@@ -934,7 +934,7 @@ jobs:
           PKG_NAME: ${{ needs.build.outputs.pkg-name }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
-          VIRTUAL_ENV=.venv uv pip install dist/*.whl
+          VIRTUAL_ENV=.venv uv pip install --prerelease allow dist/*.whl
 
       - name: Run unit tests
         run: make test COV_ARGS= PYTEST_EXTRA="--no-cov -v"

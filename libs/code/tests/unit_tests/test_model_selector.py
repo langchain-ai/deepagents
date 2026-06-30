@@ -381,7 +381,7 @@ class TestRecommendedToggle:
         screen = ModelSelectorScreen()
         screen._recent_specs = ["openai_codex:gpt-5.5"]
         all_models = [
-            ("anthropic:claude-sonnet-4-6", "anthropic"),
+            ("anthropic:claude-sonnet-5", "anthropic"),
             ("openai:gpt-5.5", "openai"),
             ("openai_codex:gpt-5.5", "openai_codex"),
             ("openrouter:openai/gpt-5.5", "openrouter"),
@@ -1374,6 +1374,29 @@ class TestFilteredModelsWidgetSync:
 
 class TestCuratedModelSelection:
     """Tests for onboarding curated model selection."""
+
+    def test_sonnet_5_is_recommended(self) -> None:
+        """Sonnet 5 should be part of the frontier picker subset."""
+        from deepagents_code.widgets import model_selector
+
+        all_models = [
+            ("anthropic:claude-sonnet-5", "anthropic"),
+            ("openrouter:anthropic/claude-sonnet-5", "openrouter"),
+            ("openai:gpt-4o", "openai"),
+        ]
+
+        curated = ModelSelectorScreen._curate_models(all_models)
+
+        assert "anthropic:claude-sonnet-5" in model_selector._RECOMMENDED_MODELS
+        assert (
+            "openrouter:anthropic/claude-sonnet-5" in model_selector._RECOMMENDED_MODELS
+        )
+        assert "anthropic:claude-sonnet-4-6" not in model_selector._RECOMMENDED_MODELS
+        assert (
+            "openrouter:anthropic/claude-sonnet-4.6"
+            not in model_selector._RECOMMENDED_MODELS
+        )
+        assert curated == all_models[:2]
 
     def test_curated_models_filter_frontier_in_default_order(self) -> None:
         """Onboarding curation should preserve the model switcher's order."""

@@ -165,6 +165,21 @@ on:
         required: true
         default: "1"
         type: string
+      agent_timeout_multiplier:
+        description: "Multiplier for the agent EXECUTION timeout (e.g. 0.1 caps each rollout's wall-clock to bound model cost). Setup + env-build timeouts are unaffected, so the agent-setup phase is still tested at full budget — useful for cheap concurrency stress tests."
+        required: false
+        default: "1.0"
+        type: string
+      disable_verification:
+        description: "Skip the task verifier (tests). For setup/concurrency stress tests where task pass/fail is not the goal."
+        required: false
+        default: false
+        type: boolean
+      n_shards:
+        description: "Split the dataset's tasks across N parallel shard jobs per model (each on its own runner at the per-job concurrency). 1 = single job over all tasks (default). Use >1 to spread orchestration load and avoid runner saturation."
+        required: false
+        default: "1"
+        type: string
       harbor_package_override:
         description: "Optional: install Harbor from an arbitrary package spec (e.g. 'harbor[langsmith] @ git+https://github.com/owner/harbor.git@branch') instead of the locked version, to test an unreleased Harbor build. Leave empty to use the pinned Harbor."
         required: false
@@ -183,7 +198,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: evals
     outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      matrix: ${{ steps.shard-matrix.outputs.matrix }}
     env:
       LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
     steps:
@@ -235,6 +250,28 @@ jobs:
         env:
           HARBOR_MODELS: ${{ inputs.models_override || inputs.models || 'all' }}
 
+      - name: "🔀 Expand matrix by shard"
+        id: shard-matrix
+        env:
+          MODEL_MATRIX: ${{ steps.set-matrix.outputs.matrix }}
+          N_SHARDS: ${{ inputs.n_shards || '1' }}
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os, sys
+
+          raw = os.environ.get("N_SHARDS", "1")
+          if not raw.isdigit() or not (1 <= int(raw) <= 64):
+              print(f"::error::Invalid n_shards (must be 1..64): {raw!r}", file=sys.stderr)
+              sys.exit(1)
+          n = int(raw)
+          mm = json.loads(os.environ["MODEL_MATRIX"])
+          include = mm.get("include", [])
+          # Cross-product each model entry with the shard axis. n=1 -> shard 0 only
+          # (one job per model over the whole dataset; identical to pre-sharding).
+          expanded = [{**entry, "shard": s} for entry in include for s in range(n)]
+          print("matrix=" + json.dumps({"include": expanded}, separators=(",", ":")))
+          PY
+
   harbor:
     name: "📊 Evals - Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_impl }})"
     needs: prep
@@ -253,6 +290,10 @@ jobs:
       HARBOR_N_TASKS: ${{ inputs.n_tasks }}
       HARBOR_INCLUDE_TASKS: ${{ inputs.include_tasks }}
       HARBOR_ROLLOUTS_PER_TASK: ${{ inputs.rollouts_per_task }}
+      HARBOR_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier || '1.0' }}
+      HARBOR_DISABLE_VERIFICATION: ${{ inputs.disable_verification || 'false' }}
+      HARBOR_SHARD_INDEX: ${{ matrix.shard }}
+      HARBOR_N_SHARDS: ${{ inputs.n_shards || '1' }}
       HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
       HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}
       HARBOR_MODEL: ${{ matrix.model }}
@@ -335,7 +376,9 @@ jobs:
         env:
           # Passed via env (not interpolated into the shell) to avoid injection.
           HARBOR_PACKAGE_OVERRIDE: ${{ inputs.harbor_package_override }}
-        run: uv pip install "$HARBOR_PACKAGE_OVERRIDE"
+        # --reinstall --refresh defeats any stale cached wheel for this git ref,
+        # so re-running with the same override picks up a freshly-built package.
+        run: uv pip install --reinstall --refresh "$HARBOR_PACKAGE_OVERRIDE"
 
       - name: "🔇 Suppress Harbor first-run tips"
         run: |
@@ -385,9 +428,60 @@ jobs:
             echo "::error::Invalid rollouts_per_task: $HARBOR_ROLLOUTS_PER_TASK"
             exit 1
           fi
+          # Positive decimal only; reject all-zero (0, 0.0, ...) which would mean a 0s timeout.
+          if ! [[ "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" =~ ^[0-9]+(\.[0-9]+)?$ ]] || [[ "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" =~ ^0+(\.0+)?$ ]]; then
+            echo "::error::Invalid agent_timeout_multiplier (must be a positive decimal): $HARBOR_AGENT_TIMEOUT_MULTIPLIER"
+            exit 1
+          fi
+          # Allowlist the boolean; only literal true/false accepted.
+          verification_flag=()
+          case "$HARBOR_DISABLE_VERIFICATION" in
+            true)  verification_flag=(--disable-verification) ;;
+            false) ;;
+            *) echo "::error::Invalid disable_verification (true|false): $HARBOR_DISABLE_VERIFICATION"; exit 1 ;;
+          esac
 
           include_args=()
-          if [ -n "$HARBOR_INCLUDE_TASKS" ]; then
+          if [[ "$HARBOR_N_SHARDS" =~ ^[1-9][0-9]*$ ]] && [ "$HARBOR_N_SHARDS" -gt 1 ]; then
+            # Sharding: run only this shard's disjoint slice of the dataset.
+            # Resolve the live task list from Harbor's own manifest (no drift) and
+            # pick indices where i % n_shards == shard_index. Overrides include_tasks.
+            if ! [[ "$HARBOR_SHARD_INDEX" =~ ^[0-9]+$ ]] || [ "$HARBOR_SHARD_INDEX" -ge "$HARBOR_N_SHARDS" ]; then
+              echo "::error::Invalid shard index '$HARBOR_SHARD_INDEX' for $HARBOR_N_SHARDS shards"; exit 1
+            fi
+            uv run python - <<'PY' > shard_tasks.txt
+          import asyncio
+          import os
+          from harbor.registry.client.package import PackageDatasetClient
+
+          ds = os.environ["HARBOR_DATASET"]
+          n = int(os.environ["HARBOR_N_SHARDS"])
+          i = int(os.environ["HARBOR_SHARD_INDEX"])
+          md = asyncio.run(PackageDatasetClient().get_dataset_metadata(f"{ds}@latest"))
+
+          def task_name(t):
+              org = getattr(t, "org", None)
+              name = getattr(t, "name", None)
+              if isinstance(t, dict):
+                  org = org or t.get("org")
+                  name = name or t.get("name")
+              return f"{org}/{name}" if org else name
+
+          names = sorted(x for x in (task_name(t) for t in md.task_ids) if x)
+          print("\n".join(nm for j, nm in enumerate(names) if j % n == i))
+          PY
+            mapfile -t shard_tasks < shard_tasks.txt
+            if [ "${#shard_tasks[@]}" -eq 0 ]; then
+              echo "::error::Shard $HARBOR_SHARD_INDEX/$HARBOR_N_SHARDS resolved 0 tasks"; exit 1
+            fi
+            for t in "${shard_tasks[@]}"; do
+              if ! [[ "$t" =~ ^[A-Za-z0-9._/?*-]+$ ]]; then
+                echo "::error::Invalid resolved shard task name: $t"; exit 1
+              fi
+              include_args+=(--include-task-name "$t")
+            done
+            echo "Shard $HARBOR_SHARD_INDEX of $HARBOR_N_SHARDS -> ${#shard_tasks[@]} tasks: ${shard_tasks[*]}"
+          elif [ -n "$HARBOR_INCLUDE_TASKS" ]; then
             read -r -a include_tasks <<< "$HARBOR_INCLUDE_TASKS"
             for t in "${include_tasks[@]}"; do
               if ! [[ "$t" =~ ^[A-Za-z0-9._/?*-]+$ ]]; then
@@ -471,6 +565,8 @@ jobs:
             --dataset "$HARBOR_DATASET" \
             -n "$HARBOR_CONCURRENCY" \
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \
+            --agent-timeout-multiplier "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" \
+            "${verification_flag[@]}" \
             $n_tasks_flag \
             "${include_args[@]}" \
             "${agent_env_args[@]}" \

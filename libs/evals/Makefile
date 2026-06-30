@@ -60,7 +60,7 @@ stage-harbor-local-deps: ## Stage checked-out packages for Harbor LangGraph sand
 
 run-hello-world: stage-harbor-local-deps ## Run hello-world job
 	@mkdir -p $(HARBOR_HELLO_WORLD_JOBS_DIR)
-	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --dataset hello-world --task-name hello-world -n 1 --jobs-dir $(HARBOR_HELLO_WORLD_JOBS_DIR) --env docker
+	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --dataset hello-world --task hello-world -n 1 --jobs-dir $(HARBOR_HELLO_WORLD_JOBS_DIR) --env docker
 
 run-terminal-bench-modal: stage-harbor-local-deps ## Run terminal-bench on Modal (4 concurrent)
 	@mkdir -p $(HARBOR_TERMINAL_BENCH_JOBS_DIR)

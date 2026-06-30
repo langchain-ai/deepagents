@@ -138,6 +138,40 @@ def _model_kwargs(configurable: dict[str, object]) -> dict[str, Any]:
     return {str(key): item for key, item in value.items()}
 
 
+# Per-model defaults merged UNDER the caller's `configurable.model_kwargs` when
+# building the chat model. Keyed on the exact `provider:model` spec so no other
+# model is affected. Baseten serves Nemotron 3 Ultra with reasoning OFF by
+# default; reasoning is enabled only via
+# `extra_body.chat_template_kwargs.enable_thinking` (the Nemotron `system:
+# "detailed thinking on"` convention and OpenAI `reasoning_effort` have no effect
+# on that deployment). Without this the agent runs the model non-reasoning, which
+# is a misconfiguration for an agentic benchmark.
+_SPEC_INIT_DEFAULTS: dict[str, dict[str, Any]] = {
+    "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B": {
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": True}},
+    },
+}
+
+
+def _resolve_init_kwargs(model_name: str, caller_kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Merge any per-spec default `init_chat_model` kwargs under the caller's.
+
+    The caller's `configurable.model_kwargs` always win on conflict. `extra_body`
+    is merged one level deep so a caller adding an unrelated `extra_body` key does
+    not drop the spec default (and an explicit caller `extra_body` entry still
+    overrides the default for that key). Does not mutate `caller_kwargs`.
+    """
+    defaults = _SPEC_INIT_DEFAULTS.get(model_name)
+    if not defaults:
+        return caller_kwargs
+    merged: dict[str, Any] = {**defaults, **caller_kwargs}
+    default_body = defaults.get("extra_body")
+    caller_body = caller_kwargs.get("extra_body")
+    if isinstance(default_body, dict) and isinstance(caller_body, dict):
+        merged["extra_body"] = {**default_body, **caller_body}
+    return merged
+
+
 def _model_name(configurable: dict[str, object]) -> str:
     value = configurable.get("model") or os.environ.get("HARBOR_MODEL")
     if not isinstance(value, str) or not value.strip():
@@ -176,7 +210,10 @@ def make_graph(config: dict[str, object] | None = None) -> object:
         ValueError: If no model name is provided.
     """
     configurable = _configurable(config)
-    model = init_chat_model(_model_name(configurable), **_model_kwargs(configurable))
+    model_name = _model_name(configurable)
+    model = init_chat_model(
+        model_name, **_resolve_init_kwargs(model_name, _model_kwargs(configurable))
+    )
     _raw_session = os.environ.get("HARBOR_SESSION_ID") or f"harbor-{uuid.uuid4()}"
     # Keep only characters dcode allows in an agent name.
     assistant_id = re.sub(r"[^A-Za-z0-9_\-\s]", "_", _raw_session)
@@ -220,7 +257,10 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
         ValueError: If no model name is provided.
     """
     configurable = _configurable(config)
-    model = init_chat_model(_model_name(configurable), **_model_kwargs(configurable))
+    model_name = _model_name(configurable)
+    model = init_chat_model(
+        model_name, **_resolve_init_kwargs(model_name, _model_kwargs(configurable))
+    )
     backend = LocalShellBackend(root_dir=_workdir(configurable), inherit_env=False)
     return create_deep_agent(
         model=model,

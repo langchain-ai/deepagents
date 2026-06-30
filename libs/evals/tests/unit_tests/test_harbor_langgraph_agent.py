@@ -210,3 +210,61 @@ def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
     assert captured_create[0]["backend"] is backend
     assert isinstance(captured_create[0]["system_prompt"], str)
     assert "autonomous coding agent" in captured_create[0]["system_prompt"]
+
+
+_BASETEN_NEMOTRON = "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B"
+_ENABLE_THINKING = {"extra_body": {"chat_template_kwargs": {"enable_thinking": True}}}
+
+
+def test_resolve_init_kwargs_enables_thinking_for_baseten_nemotron() -> None:
+    # Baseten serves Nemotron 3 Ultra reasoning-OFF by default; only
+    # extra_body.chat_template_kwargs.enable_thinking turns it on.
+    assert langgraph_agent._resolve_init_kwargs(_BASETEN_NEMOTRON, {}) == _ENABLE_THINKING
+
+
+def test_resolve_init_kwargs_leaves_other_models_untouched() -> None:
+    out = langgraph_agent._resolve_init_kwargs(
+        "openrouter:nvidia/nemotron-3-ultra-550b-a55b", {"temperature": 0}
+    )
+    assert out == {"temperature": 0}
+
+
+def test_resolve_init_kwargs_merges_caller_extra_body_caller_wins() -> None:
+    # An unrelated caller extra_body key is preserved alongside enable_thinking.
+    out = langgraph_agent._resolve_init_kwargs(
+        _BASETEN_NEMOTRON, {"extra_body": {"foo": 1}, "temperature": 0}
+    )
+    assert out == {
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": True}, "foo": 1},
+        "temperature": 0,
+    }
+    # An explicit caller chat_template_kwargs overrides the injected default.
+    out2 = langgraph_agent._resolve_init_kwargs(
+        _BASETEN_NEMOTRON, {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+    )
+    assert out2 == {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+
+
+def test_resolve_init_kwargs_does_not_mutate_caller_kwargs() -> None:
+    caller = {"extra_body": {"foo": 1}}
+    langgraph_agent._resolve_init_kwargs(_BASETEN_NEMOTRON, caller)
+    assert caller == {"extra_body": {"foo": 1}}
+
+
+def test_make_graph_enables_thinking_for_baseten_nemotron(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured_init: list[dict[str, object]] = []
+
+    def fake_init_chat_model(model: str, **kwargs: object) -> object:
+        captured_init.append({"model": model, "kwargs": kwargs})
+        return "chat-model"
+
+    monkeypatch.setattr(langgraph_agent, "init_chat_model", fake_init_chat_model)
+    monkeypatch.setattr(langgraph_agent, "create_cli_agent", lambda **_kwargs: (object(), object()))
+    monkeypatch.setenv("HARBOR_SESSION_ID", "trial-session")
+
+    langgraph_agent.make_graph({"configurable": {"model": _BASETEN_NEMOTRON, "cwd": str(tmp_path)}})
+
+    assert captured_init[0]["model"] == _BASETEN_NEMOTRON
+    assert captured_init[0]["kwargs"] == _ENABLE_THINKING

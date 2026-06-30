@@ -171,7 +171,7 @@ class FinalizeMiddleware(AgentMiddleware):
 
 # Output-token boundary above which a no-tool-call turn counts as rambling.
 # Edit here or override via the env var below.
-_DEFAULT_RAMBLE_OUTPUT_TOKENS = 8000
+_DEFAULT_RAMBLE_OUTPUT_TOKENS = 4000
 _RAMBLE_TOKENS_ENV = "DEEPAGENTS_RAMBLE_OUTPUT_TOKENS"
 
 # Finish reasons that mean the model was cut off mid-generation.

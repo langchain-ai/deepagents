@@ -174,7 +174,7 @@ on:
         default: "1"
         type: string
       ramble_output_tokens:
-        description: "Anti-ramble output-token boundary (DEEPAGENTS_RAMBLE_OUTPUT_TOKENS). Empty = profile default (8000). Lower fires the nudge sooner."
+        description: "Anti-ramble output-token boundary (DEEPAGENTS_RAMBLE_OUTPUT_TOKENS). Empty = profile default (4000). Lower fires the nudge sooner."
         required: false
         default: ""
         type: string

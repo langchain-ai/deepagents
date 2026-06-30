@@ -644,7 +644,9 @@ def _glob_search_files(
             relative = file_path[len(normalized_path) + 1 :]  # +1 for the slash
 
         if wcglob.globmatch(relative, effective_pattern, flags=wcglob.BRACE | wcglob.GLOBSTAR):
-            matches.append((file_path, file_data["modified_at"]))
+            # `modified_at` is optional on FileData; fall back to "" (sorts last,
+            # i.e. oldest) so files without a timestamp don't raise a KeyError.
+            matches.append((file_path, file_data.get("modified_at", "")))
 
     matches.sort(key=lambda x: x[1], reverse=True)
 

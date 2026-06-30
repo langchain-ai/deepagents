@@ -162,6 +162,18 @@ class TestGlobSearchFiles:
         assert "/src/utils/helper.py" in result
         assert "/src/main.py" not in result
 
+    def test_glob_handles_missing_modified_at(self) -> None:
+        """Files without the optional modified_at must not raise KeyError (gh-4377)."""
+        files = {
+            "/a.py": {"modified_at": "2024-01-01T10:00:00"},
+            "/b.py": {},  # modified_at omitted (it is NotRequired on FileData)
+        }
+        result = _glob_search_files(files, "*.py", "/")
+        assert "/a.py" in result
+        assert "/b.py" in result
+        # the timestamped file sorts ahead of the one without a timestamp
+        assert result.index("/a.py") < result.index("/b.py")
+
     def test_no_matches(self, sample_files: dict[str, Any]) -> None:
         """Test no matches returns message."""
         assert _glob_search_files(sample_files, "*.xyz", "/") == "No files found"

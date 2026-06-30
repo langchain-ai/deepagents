@@ -35,6 +35,7 @@ on:
           - "terminal-bench/terminal-bench-2"
           - "terminal-bench/terminal-bench-2-1"
           - "sierra-research/tau3-bench"
+          - "deepagents_harbor/oolong/dataset"
       dataset_override:
         description: "Override: arbitrary Harbor dataset ref (e.g. 'owner/dataset'). Takes priority over the dataset dropdown when non-empty."
         required: false
@@ -145,6 +146,7 @@ on:
           - dcode
           - bare
           - tau3
+          - oolong-rlm
       n_tasks:
         description: "Maximum number of tasks to run (0 = all)."
         required: true
@@ -376,6 +378,18 @@ jobs:
             --exclude 'dist' \
             --exclude '*.egg-info' \
             ../code/ "$local_deps_dir/deepagents-code/"
+          # deepagents-code depends on langchain-quickjs via a ../partners/quickjs
+          # path; stage it so the in-container editable install resolves.
+          mkdir -p "$local_deps_dir/partners"
+          rsync -a --delete \
+            --exclude '.venv' \
+            --exclude '__pycache__' \
+            --exclude '.pytest_cache' \
+            --exclude 'build' \
+            --exclude 'dist' \
+            --exclude 'target' \
+            --exclude '*.egg-info' \
+            ../partners/quickjs/ "$local_deps_dir/partners/quickjs/"
 
           n_tasks_flag=""
           if [ "$HARBOR_N_TASKS" != "0" ]; then
@@ -421,6 +435,10 @@ jobs:
               HARBOR_AGENT_GRAPH=tau3_deepagent
               HARBOR_AGENT_LABEL="tau3 conversational deepagent"
               ;;
+            oolong-rlm)
+              HARBOR_AGENT_GRAPH=oolong_code_interpreter
+              HARBOR_AGENT_LABEL="oolong RLM (code interpreter)"
+              ;;
             *)
               echo "::error::Unknown agent implementation: $HARBOR_AGENT_IMPL"
               exit 1
@@ -428,7 +446,13 @@ jobs:
           esac
           experiment_model=$(printf '%s' "$HARBOR_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
           experiment_agent=$(printf '%s' "$HARBOR_AGENT_IMPL" | tr -c '[:alnum:]._-' '-')
-          HARBOR_LANGSMITH_DATASET="$HARBOR_DATASET"
+          # Local-path datasets (e.g. OOLONG) aren't a registry ref; give the
+          # LangSmith plugin a clean name instead of the slash-laden path.
+          if [ -d "$HARBOR_DATASET" ]; then
+            HARBOR_LANGSMITH_DATASET=$(printf '%s' "$HARBOR_DATASET" | tr '/' '-' | tr -c '[:alnum:]._-' '-')
+          else
+            HARBOR_LANGSMITH_DATASET="$HARBOR_DATASET"
+          fi
           HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_agent}-${experiment_model}"
           echo "HARBOR_AGENT_GRAPH=$HARBOR_AGENT_GRAPH" >> "$GITHUB_ENV"
           echo "HARBOR_AGENT_LABEL=$HARBOR_AGENT_LABEL" >> "$GITHUB_ENV"
@@ -439,6 +463,9 @@ jobs:
             --agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}'
             --agent-env 'LANGSMITH_TRACING=true'
             --agent-env "LANGSMITH_PROJECT=${HARBOR_LANGSMITH_EXPERIMENT}"
+            # langchain-fireworks (always in langgraph.json) needs a pre-release
+            # fireworks-ai; let the in-container uv install pick it up.
+            --agent-env UV_PRERELEASE=allow
           )
           model_provider="${HARBOR_MODEL%%:*}"
           case "$model_provider" in
@@ -447,12 +474,7 @@ jobs:
             google_genai) agent_env_args+=(--agent-env 'GOOGLE_API_KEY=${GOOGLE_API_KEY}') ;;
             openrouter)   agent_env_args+=(--agent-env 'OPENROUTER_API_KEY=${OPENROUTER_API_KEY}') ;;
             baseten)      agent_env_args+=(--agent-env 'BASETEN_API_KEY=${BASETEN_API_KEY}') ;;
-            fireworks)
-              agent_env_args+=(
-                --agent-env 'FIREWORKS_API_KEY=${FIREWORKS_API_KEY}'
-                --agent-env UV_PRERELEASE=allow
-              )
-              ;;
+            fireworks)    agent_env_args+=(--agent-env 'FIREWORKS_API_KEY=${FIREWORKS_API_KEY}') ;;
             ollama)       agent_env_args+=(--agent-env 'OLLAMA_API_KEY=${OLLAMA_API_KEY}' --agent-env 'OLLAMA_HOST=${OLLAMA_HOST}') ;;
             groq)         agent_env_args+=(--agent-env 'GROQ_API_KEY=${GROQ_API_KEY}') ;;
             xai)          agent_env_args+=(--agent-env 'XAI_API_KEY=${XAI_API_KEY}') ;;
@@ -463,12 +485,20 @@ jobs:
           echo "Agent implementation: $HARBOR_AGENT_LABEL ($HARBOR_AGENT_GRAPH)"
           echo ""
 
+          # Local-path datasets (e.g. OOLONG, committed under the repo) run via
+          # --path; registry refs (terminal-bench, tau3) run via --dataset.
+          if [ -d "$HARBOR_DATASET" ]; then
+            dataset_args=(--path "$HARBOR_DATASET")
+          else
+            dataset_args=(--dataset "$HARBOR_DATASET")
+          fi
+
           uv run harbor run \
             --agent langgraph \
             --agent-kwarg project_path=deepagents_harbor/langgraph_project \
             --agent-kwarg config=langgraph.json \
             --agent-kwarg graph="$HARBOR_AGENT_GRAPH" \
-            --dataset "$HARBOR_DATASET" \
+            "${dataset_args[@]}" \
             -n "$HARBOR_CONCURRENCY" \
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \
             $n_tasks_flag \

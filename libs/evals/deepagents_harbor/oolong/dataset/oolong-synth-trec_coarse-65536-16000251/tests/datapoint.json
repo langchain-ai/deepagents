@@ -1,0 +1,8 @@
+{
+  "id": 16000251,
+  "context_window_id": 4,
+  "dataset": "trec_coarse",
+  "answer": "['same frequency as']",
+  "answer_type": "ANSWER_TYPE.COMPARISON",
+  "model": "oracle"
+}

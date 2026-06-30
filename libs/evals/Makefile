@@ -1,4 +1,4 @@
-.PHONY: lint format type typecheck test help test_integration test_watch stage-harbor-local-deps run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop run-terminal-bench-langsmith evals evals-trials format_unsafe radar radar-from-summary model-groups eval-catalog
+.PHONY: lint format type typecheck test help test_integration test_watch stage-harbor-local-deps run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop run-terminal-bench-langsmith evals evals-trials format_unsafe radar radar-from-summary model-groups eval-catalog oolong-tasks
 
 .DEFAULT_GOAL := help
 
@@ -46,7 +46,7 @@ HARBOR_AGENT_GRAPH = $(if $(filter bare,$(HARBOR_AGENT_IMPL)),bare_deepagent,dee
 HARBOR_LANGGRAPH_PROJECT = deepagents_harbor/langgraph_project
 HARBOR_LOCAL_DEPS_DIR = $(HARBOR_LANGGRAPH_PROJECT)/.local_deps
 HARBOR_AGENT_ARGS = --agent langgraph --agent-kwarg project_path=$(HARBOR_LANGGRAPH_PROJECT) --agent-kwarg config=langgraph.json --agent-kwarg graph=$(HARBOR_AGENT_GRAPH)
-HARBOR_AGENT_ENV_ARGS ?= --agent-env 'LANGSMITH_API_KEY=$${LANGSMITH_API_KEY}' --agent-env 'LANGSMITH_TRACING=true' --agent-env 'ANTHROPIC_API_KEY=$${ANTHROPIC_API_KEY}'
+HARBOR_AGENT_ENV_ARGS ?= --agent-env 'LANGSMITH_API_KEY=$${LANGSMITH_API_KEY}' --agent-env 'LANGSMITH_TRACING=true' --agent-env 'ANTHROPIC_API_KEY=$${ANTHROPIC_API_KEY}' --agent-env 'UV_PRERELEASE=allow'
 HARBOR_HELLO_WORLD_JOBS_DIR ?= harbor-jobs/hello-world
 HARBOR_TERMINAL_BENCH_JOBS_DIR ?= harbor-jobs/terminal-bench
 HARBOR_TERMINAL_BENCH_DATASET ?= terminal-bench/terminal-bench-2
@@ -56,6 +56,16 @@ stage-harbor-local-deps: ## Stage checked-out packages for Harbor LangGraph sand
 	@mkdir -p $(HARBOR_LOCAL_DEPS_DIR)
 	rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'build' --exclude 'dist' --exclude '*.egg-info' ../deepagents/ $(HARBOR_LOCAL_DEPS_DIR)/deepagents/
 	rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'build' --exclude 'dist' --exclude '*.egg-info' ../code/ $(HARBOR_LOCAL_DEPS_DIR)/deepagents-code/
+	@mkdir -p $(HARBOR_LOCAL_DEPS_DIR)/partners
+	rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'build' --exclude 'dist' --exclude 'target' --exclude '*.egg-info' ../partners/quickjs/ $(HARBOR_LOCAL_DEPS_DIR)/partners/quickjs/
+
+# OOLONG long-context dataset — generated from HuggingFace and committed; the run
+# matrix is just args (subset / context_len / n-examples). Re-run to refresh.
+HARBOR_OOLONG_DATASET ?= deepagents_harbor/oolong/dataset
+OOLONG_GEN_ARGS ?= --dataset trec_coarse --context-len 65536 --n-examples 0
+
+oolong-tasks: ## Regenerate the committed OOLONG Harbor dataset
+	uv run python deepagents_harbor/oolong/generate_oolong_tasks.py $(OOLONG_GEN_ARGS) --out $(HARBOR_OOLONG_DATASET)
 
 run-hello-world: stage-harbor-local-deps ## Run hello-world job
 	@mkdir -p $(HARBOR_HELLO_WORLD_JOBS_DIR)

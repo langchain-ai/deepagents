@@ -1,0 +1,6 @@
+[dataset]
+name = "langchain-ai/oolong-synth"
+description = "OOLONG-synth long-context aggregation, generated as a Harbor dataset."
+
+[[files]]
+path = "metric.py"

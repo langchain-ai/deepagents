@@ -57,12 +57,10 @@ from deepagents_code._session_stats import (
     format_token_count,
 )
 
-# Only is_ascii_mode is needed before first paint (on_mount scrollbar config).
-# All other config imports — settings, create_model, detect_provider, etc. — are
-# deferred to local imports at their call sites since they are only accessed
-# after user interaction begins.
+# All config imports — settings, create_model, detect_provider, is_ascii_mode,
+# etc. — are deferred to local imports at their call sites since they are only
+# accessed after user interaction begins.
 from deepagents_code._version import CHANGELOG_URL, DOCS_URL
-from deepagents_code.config import is_ascii_mode
 from deepagents_code.formatting import format_message_timestamp
 from deepagents_code.iterm_cursor_guide import restore_iterm_cursor_guide
 from deepagents_code.notifications import (
@@ -603,6 +601,53 @@ def _load_message_timestamps_visible() -> bool:
     return False
 
 
+def _load_show_scrollbar() -> bool:
+    """Load the chat scrollbar visibility preference.
+
+    Reads `DEEPAGENTS_CODE_SHOW_SCROLLBAR` env var, falling back to
+    `[ui].show_scrollbar` from `~/.deepagents/config.toml`, and finally `False`.
+
+    Returns:
+        The resolved preference.
+    """
+    from deepagents_code._env_vars import SHOW_SCROLLBAR, is_env_truthy
+
+    raw = os.environ.get(SHOW_SCROLLBAR)
+    if raw is not None:
+        return is_env_truthy(SHOW_SCROLLBAR, default=False)
+
+    import tomllib
+
+    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+    if not DEFAULT_CONFIG_PATH.exists():
+        return False
+    try:
+        with DEFAULT_CONFIG_PATH.open("rb") as f:
+            data = tomllib.load(f)
+    except (tomllib.TOMLDecodeError, PermissionError, OSError) as exc:
+        logger.warning("Could not read config for scrollbar preference: %s", exc)
+        return False
+
+    ui = data.get("ui", {})
+    if not isinstance(ui, dict):
+        logger.warning(
+            "[ui] should be a table; got %s while loading scrollbar preference",
+            type(ui).__name__,
+        )
+        return False
+
+    value = ui.get("show_scrollbar")
+    if isinstance(value, bool):
+        return value
+    if value is not None:
+        logger.warning(
+            "[ui].show_scrollbar should be a boolean; got %s",
+            type(value).__name__,
+        )
+    return False
+
+
 def _replace_malformed_ui(
     data: dict[str, object],
 ) -> tuple[dict[str, object], str | None]:
@@ -940,6 +985,65 @@ def _save_message_timestamps_visible_result(visible: bool) -> _ConfigWriteResult
         return _ConfigWriteResult(
             False,
             f"Timestamps toggled for this session but could not be saved "
+            f"({type(exc).__name__}).",
+            "error",
+        )
+    return _ConfigWriteResult(True, repair_message)
+
+
+def _save_show_scrollbar_result(visible: bool) -> _ConfigWriteResult:
+    """Persist the chat scrollbar visibility preference.
+
+    Writes `[ui].show_scrollbar` atomically (temp file +
+    `Path.replace`). Mirrors `_save_message_timestamps_visible_result`.
+
+    Returns:
+        Write status and a message suitable for a toast when the user needs to
+            know about a repair or failure.
+    """
+    import contextlib
+    import tempfile
+    import tomllib
+
+    try:
+        import tomli_w
+
+        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+        DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _CONFIG_WRITE_LOCK:
+            if DEFAULT_CONFIG_PATH.exists():
+                with DEFAULT_CONFIG_PATH.open("rb") as f:
+                    data = tomllib.load(f)
+            else:
+                data = {}
+
+            ui, repair_message = _replace_malformed_ui(data)
+            ui["show_scrollbar"] = visible
+
+            fd, tmp_path = tempfile.mkstemp(
+                dir=DEFAULT_CONFIG_PATH.parent,
+                suffix=".tmp",
+            )
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    tomli_w.dump(data, f)
+                Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    Path(tmp_path).unlink()
+                raise
+    except (
+        OSError,
+        tomllib.TOMLDecodeError,
+        ImportError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        logger.exception("Could not save scrollbar preference")
+        return _ConfigWriteResult(
+            False,
+            f"Scrollbar toggled for this session but could not be saved "
             f"({type(exc).__name__}).",
             "error",
         )
@@ -2143,6 +2247,13 @@ class DeepAgentsApp(App):
         Restored from `[ui].show_message_timestamps` and re-persisted on toggle.
         """
 
+        self._show_scrollbar = _load_show_scrollbar()
+        """Whether the vertical scrollbar is shown in the chat area.
+
+        Restored from `DEEPAGENTS_CODE_SHOW_SCROLLBAR` env var or
+        `[ui].show_scrollbar` and re-persisted on toggle. Off by default.
+        """
+
         # Widget refs (populated in compose/on_mount)
         self._status_bar: StatusBar | None = None
         """Status bar widget; populated in `on_mount`."""
@@ -2622,8 +2733,7 @@ class DeepAgentsApp(App):
 
         chat = self.query_one("#chat", VerticalScroll)
         chat.anchor()
-        if is_ascii_mode():
-            chat.styles.scrollbar_size_vertical = 0
+        self._apply_scrollbar_visibility(chat)
 
         self._status_bar = self.query_one("#status-bar", StatusBar)
         self._chat_input = self.query_one("#input-area", ChatInput)
@@ -8749,7 +8859,8 @@ class DeepAgentsApp(App):
                 "/mcp, /model [--model-params JSON] [--default], "
                 "/notifications, /reload, /restart, /rubric, "
                 "/skill:<name>, /remember, "
-                "/skill-creator, /theme, /timestamps, /tokens, /threads, /trace, "
+                "/skill-creator, /theme, /scrollbar, /timestamps, /tokens, "
+                "/threads, /trace, "
                 "/update, /auto-update, /install, /changelog, /docs, "
                 "/feedback, /help\n\n"
                 "Interactive Features:\n"
@@ -8876,6 +8987,15 @@ class DeepAgentsApp(App):
             await self._handle_auto_update_toggle()
         elif cmd == "/install" or cmd.startswith("/install "):
             await self._handle_install_command(command)
+        elif cmd == "/scrollbar":
+            await self._toggle_scrollbar()
+            label = "shown" if self._show_scrollbar else "hidden"
+            self.notify(
+                f"Chat scrollbar {label}.",
+                severity="information",
+                timeout=5,
+                markup=False,
+            )
         elif cmd == "/timestamps":
             await self._toggle_message_timestamp_footers()
             label = "shown" if self._message_timestamps_visible else "hidden"
@@ -10243,6 +10363,49 @@ class DeepAgentsApp(App):
         except Exception:
             logger.warning(
                 "Failed to persist message timestamp preference",
+                exc_info=True,
+            )
+
+    def _apply_scrollbar_visibility(
+        self, chat: VerticalScroll | None = None
+    ) -> None:
+        """Apply the current scrollbar visibility to the chat container.
+
+        Hides the scrollbar when the user preference is off or ASCII mode is
+        active (ASCII terminals can't render the scrollbar glyphs).
+        """
+        from deepagents_code.config import is_ascii_mode
+
+        if chat is None:
+            try:
+                chat = self.query_one("#chat", VerticalScroll)
+            except NoMatches:
+                return
+
+        if self._show_scrollbar and not is_ascii_mode():
+            chat.styles.scrollbar_size_vertical = 1
+        else:
+            chat.styles.scrollbar_size_vertical = 0
+
+    async def _toggle_scrollbar(self) -> None:
+        """Toggle chat scrollbar visibility and persist the preference."""
+        self._show_scrollbar = not self._show_scrollbar
+        self._apply_scrollbar_visibility()
+        try:
+            status = await asyncio.to_thread(
+                _save_show_scrollbar_result,
+                self._show_scrollbar,
+            )
+            if status.message is not None:
+                self.notify(
+                    status.message,
+                    severity=status.severity,
+                    timeout=6,
+                    markup=False,
+                )
+        except Exception:
+            logger.warning(
+                "Failed to persist scrollbar preference",
                 exc_info=True,
             )
 

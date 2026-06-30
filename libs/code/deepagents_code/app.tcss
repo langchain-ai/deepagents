@@ -42,12 +42,11 @@ Screen {
 /* Chat area - main scrollable messages area.
    No horizontal padding so message blocks span the same full width as the
    input box below (whose border is flush to both edges). The scrollbar is
-   hidden (size 0) — wheel/keyboard scrolling still works. */
+   toggled at runtime via the /scrollbar command (off by default). */
 #chat {
     height: 1fr;
     padding: 1 0 0 0;
     background: $background;
-    scrollbar-size-vertical: 0;
 }
 
 /* Welcome banner */

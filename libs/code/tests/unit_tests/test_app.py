@@ -7512,6 +7512,126 @@ class TestMessageTimestampsPersistence:
         assert data["ui"]["show_message_timestamps"] is True
 
 
+class TestScrollbarToggle:
+    """Tests for the toggleable chat scrollbar."""
+
+    def test_load_defaults_false_when_config_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A missing config yields the hidden default."""
+        from deepagents_code.app import _load_show_scrollbar
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "config.toml",
+        )
+        assert _load_show_scrollbar() is False
+
+    def test_load_reads_saved_true(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicit `true` preference is read back."""
+        from deepagents_code.app import _load_show_scrollbar
+
+        config = tmp_path / "config.toml"
+        config.write_text("[ui]\nshow_scrollbar = true\n")
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        assert _load_show_scrollbar() is True
+
+    def test_load_ignores_non_boolean(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A non-boolean preference is ignored with a warning."""
+        from deepagents_code.app import _load_show_scrollbar
+
+        config = tmp_path / "config.toml"
+        config.write_text('[ui]\nshow_scrollbar = "yes"\n')
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        with caplog.at_level("WARNING", logger="deepagents_code.app"):
+            assert _load_show_scrollbar() is False
+        assert any(
+            "show_scrollbar" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_env_var_overrides_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The env var takes priority over the config.toml value."""
+        from deepagents_code.app import _load_show_scrollbar
+
+        config = tmp_path / "config.toml"
+        config.write_text("[ui]\nshow_scrollbar = false\n")
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        monkeypatch.setenv("DEEPAGENTS_CODE_SHOW_SCROLLBAR", "1")
+        assert _load_show_scrollbar() is True
+
+    def test_save_round_trips(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Saving then loading returns the saved value, both directions."""
+        from deepagents_code.app import (
+            _load_show_scrollbar,
+            _save_show_scrollbar_result,
+        )
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "config.toml",
+        )
+        assert _save_show_scrollbar_result(True).ok is True
+        assert _load_show_scrollbar() is True
+        assert _save_show_scrollbar_result(False).ok is True
+        assert _load_show_scrollbar() is False
+
+    def test_save_preserves_other_ui_keys(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Persisting the toggle leaves unrelated `[ui]` keys intact."""
+        import tomllib
+
+        from deepagents_code.app import _save_show_scrollbar_result
+
+        config = tmp_path / "config.toml"
+        config.write_text('[ui]\ntheme = "langchain"\n')
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+        assert _save_show_scrollbar_result(True).ok is True
+        data = tomllib.loads(config.read_text())
+        assert data["ui"]["theme"] == "langchain"
+        assert data["ui"]["show_scrollbar"] is True
+
+    async def test_toggle_flips_preference_and_applies(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The `/scrollbar` toggle flips the flag and updates the chat widget."""
+        from textual.containers import VerticalScroll
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
+            tmp_path / "config.toml",
+        )
+        app = DeepAgentsApp()
+        assert app._show_scrollbar is False
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat = app.query_one("#chat", VerticalScroll)
+            assert chat.styles.scrollbar_size_vertical == 0
+
+            await app._toggle_scrollbar()
+            await pilot.pause()
+            assert app._show_scrollbar is True
+            assert chat.styles.scrollbar_size_vertical == 1
+
+            await app._toggle_scrollbar()
+            await pilot.pause()
+            assert app._show_scrollbar is False
+            assert chat.styles.scrollbar_size_vertical == 0
+
+
 class TestAppBlurPausesCursorBlink:
     """Test `on_app_blur` pauses cursor blink without changing widget focus."""
 

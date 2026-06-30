@@ -10366,9 +10366,7 @@ class DeepAgentsApp(App):
                 exc_info=True,
             )
 
-    def _apply_scrollbar_visibility(
-        self, chat: VerticalScroll | None = None
-    ) -> None:
+    def _apply_scrollbar_visibility(self, chat: VerticalScroll | None = None) -> None:
         """Apply the current scrollbar visibility to the chat container.
 
         Hides the scrollbar when the user preference is off or ASCII mode is

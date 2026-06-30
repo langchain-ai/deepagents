@@ -7552,10 +7552,7 @@ class TestScrollbarToggle:
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
         with caplog.at_level("WARNING", logger="deepagents_code.app"):
             assert _load_show_scrollbar() is False
-        assert any(
-            "show_scrollbar" in record.getMessage()
-            for record in caplog.records
-        )
+        assert any("show_scrollbar" in record.getMessage() for record in caplog.records)
 
     def test_env_var_overrides_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

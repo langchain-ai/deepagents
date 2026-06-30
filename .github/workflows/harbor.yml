@@ -199,6 +199,9 @@ jobs:
     environment: evals
     outputs:
       matrix: ${{ steps.shard-matrix.outputs.matrix }}
+      # Effective shard count after capping to the selectable work (<= n_shards).
+      # The harbor job reads this so its partition matches the emitted matrix.
+      n_shards: ${{ steps.shard-matrix.outputs.n_shards }}
     env:
       LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
     steps:
@@ -252,12 +255,14 @@ jobs:
 
       - name: "🔀 Expand matrix by shard"
         id: shard-matrix
-        # Cross-products the model matrix with the shard axis and guards the
-        # result against GitHub's 256-job matrix cap. See shard_matrix.py
-        # (unit-tested in .github/scripts/test_shard_matrix.py).
+        # Cross-products the model matrix with the shard axis, caps the shard
+        # count to the selectable work (min(n_shards, n_tasks)) so empty shard
+        # jobs aren't spawned, and guards against GitHub's 256-job matrix cap.
+        # See shard_matrix.py (unit-tested in test_shard_matrix.py).
         env:
           MODEL_MATRIX: ${{ steps.set-matrix.outputs.matrix }}
           N_SHARDS: ${{ inputs.n_shards || '1' }}
+          N_TASKS: ${{ inputs.n_tasks }}
         run: python .github/scripts/shard_matrix.py
 
   harbor:
@@ -281,7 +286,9 @@ jobs:
       HARBOR_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier || '1.0' }}
       HARBOR_DISABLE_VERIFICATION: ${{ inputs.disable_verification || 'false' }}
       HARBOR_SHARD_INDEX: ${{ matrix.shard }}
-      HARBOR_N_SHARDS: ${{ inputs.n_shards || '1' }}
+      # Effective shard count from prep (capped to selectable work), not the raw
+      # input — the partition must match the matrix or tasks would be dropped.
+      HARBOR_N_SHARDS: ${{ needs.prep.outputs.n_shards || '1' }}
       HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
       HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}
       HARBOR_MODEL: ${{ matrix.model }}

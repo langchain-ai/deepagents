@@ -94,6 +94,39 @@ def test_expand_matrix_rejects_out_of_range_shards(shard: ModuleType, bad: int) 
 
 
 # --------------------------------------------------------------------------- #
+# effective_shards — cap the shard axis so empty jobs aren't spawned
+# --------------------------------------------------------------------------- #
+
+
+def test_effective_shards_no_cap_when_running_all_tasks(shard: ModuleType) -> None:
+    """n_tasks=0 means all tasks: the shard count is used as-is."""
+    assert shard.effective_shards(4, 0) == 4
+
+
+def test_effective_shards_no_cap_when_tasks_exceed_shards(shard: ModuleType) -> None:
+    """n_tasks >= n_shards: every shard gets work, so no reduction."""
+    assert shard.effective_shards(4, 10) == 4
+    assert shard.effective_shards(4, 4) == 4
+
+
+def test_effective_shards_caps_to_task_count(shard: ModuleType) -> None:
+    """n_tasks < n_shards: cap to n_tasks so trailing shards aren't spawned.
+
+    The cited case (n_tasks=1 n_shards=4) collapses to a single shard job.
+    """
+    assert shard.effective_shards(4, 1) == 1
+    assert shard.effective_shards(4, 3) == 3
+
+
+def test_effective_shards_then_expand_emits_only_useful_jobs(shard: ModuleType) -> None:
+    """The capped count feeds expand_matrix: 2 models x 1 effective shard = 2 jobs."""
+    eff = shard.effective_shards(4, 1)
+    out = shard.expand_matrix(_models(2), eff)
+    assert len(out["include"]) == 2
+    assert all(entry["shard"] == 0 for entry in out["include"])
+
+
+# --------------------------------------------------------------------------- #
 # select_shard_tasks — filter + cap + partition (comment #2)
 # --------------------------------------------------------------------------- #
 

@@ -73,6 +73,24 @@ def expand_matrix(model_matrix: dict, n_shards: int) -> dict:
     return {"include": expanded}
 
 
+def effective_shards(n_shards: int, n_tasks: int) -> int:
+    """Cap the shard axis to the amount of selectable work.
+
+    Sharding more ways than there are tasks just spawns empty no-op jobs. When
+    ``n_tasks > 0`` the selection is at most ``n_tasks`` tasks, so the useful
+    shard count is ``min(n_shards, n_tasks)`` — this keeps prep from emitting
+    shard jobs that can only be empty (e.g. ``n_tasks=1 n_shards=4`` -> 1 shard).
+
+    ``n_tasks == 0`` means "all tasks", so no cap is applied. Smaller selections
+    produced by ``include_tasks`` globs can't be sized without the dataset
+    manifest (which prep doesn't resolve); those rarer residual empty shards are
+    handled as a successful no-op in the run job instead.
+    """
+    if n_tasks > 0:
+        return min(n_shards, n_tasks)
+    return n_shards
+
+
 def select_shard_tasks(
     names: list[str],
     include_globs: list[str],
@@ -121,29 +139,40 @@ def select_shard_tasks(
 def main() -> None:
     """Entry point for the prep job: expand the model matrix by shard.
 
-    Reads ``MODEL_MATRIX`` (JSON from ``models.py harbor``) and ``N_SHARDS``,
-    writes ``matrix=<json>`` to ``$GITHUB_OUTPUT`` (or stdout when unset).
-    Config errors become a GitHub ``::error::`` annotation + exit 1.
+    Reads ``MODEL_MATRIX`` (JSON from ``models.py harbor``), ``N_SHARDS`` and
+    ``N_TASKS``, caps the shard axis to the selectable work, and writes both
+    ``matrix=<json>`` and the effective ``n_shards=<int>`` to ``$GITHUB_OUTPUT``
+    (or stdout when unset). The harbor job reads back the effective ``n_shards``
+    so its per-shard partition matches the matrix. Config errors become a GitHub
+    ``::error::`` annotation + exit 1.
     """
     raw_shards = os.environ.get("N_SHARDS", "1").strip() or "1"
     if not raw_shards.isdigit():
         print(f"::error::Invalid n_shards (must be an integer): {raw_shards!r}", file=sys.stderr)  # noqa: T201
         sys.exit(1)
+    raw_tasks = os.environ.get("N_TASKS", "0").strip() or "0"
+    if not raw_tasks.isdigit():
+        print(f"::error::Invalid n_tasks (must be an integer): {raw_tasks!r}", file=sys.stderr)  # noqa: T201
+        sys.exit(1)
 
     try:
         model_matrix = json.loads(os.environ["MODEL_MATRIX"])
-        matrix = expand_matrix(model_matrix, int(raw_shards))
+        n_shards = effective_shards(int(raw_shards), int(raw_tasks))
+        matrix = expand_matrix(model_matrix, n_shards)
     except ShardConfigError as exc:
         print(f"::error::{exc}", file=sys.stderr)  # noqa: T201
         sys.exit(1)
 
-    payload = "matrix=" + json.dumps(matrix, separators=(",", ":"))
+    lines = [
+        "matrix=" + json.dumps(matrix, separators=(",", ":")),
+        f"n_shards={n_shards}",
+    ]
     github_output = os.environ.get("GITHUB_OUTPUT")
     if github_output:
         with open(github_output, "a") as f:  # noqa: PTH123
-            f.write(payload + "\n")
+            f.write("\n".join(lines) + "\n")
     else:
-        print(payload)  # noqa: T201
+        print("\n".join(lines))  # noqa: T201
 
 
 if __name__ == "__main__":

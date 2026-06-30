@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated, NotRequired
 
 from langchain.agents.middleware import ToolRetryMiddleware
 from langchain.agents.middleware.types import (
@@ -40,6 +40,8 @@ from langchain.agents.middleware.types import (
     AgentState,
     ExtendedModelResponse,
     ModelResponse,
+    PrivateStateAttr,
+    hook_config,
 )
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
@@ -379,6 +381,87 @@ class StallBreakerMiddleware(AgentMiddleware):
         return self._nudge(state)
 
 
+_VERIFY_NUDGE_TEXT = (
+    "Before you finish: you have not yet proven this works. Do not stop yet. Re-read the "
+    "task's exact wording — every required output file, path, name, format, and every "
+    "specified case, mode, size, or count — and PROVE each requirement holds by running a "
+    "concrete command in the shell and reading its output. Verify the real artifact the "
+    "way it will be checked, not a proxy and not your own prior reasoning; a claim like "
+    "'all tests pass' or 'the file is correct' is not evidence unless a command you just "
+    "ran shows it. If any check fails or a required artifact is missing or misnamed, fix "
+    "it and re-verify. Only once a command has demonstrated the deliverable meets the "
+    "spec may you finish."
+)
+
+
+class VerifyBeforeFinalizeState(AgentState):
+    """State schema for ``VerifyBeforeFinalizeMiddleware``."""
+
+    # `PrivateStateAttr` keeps the gate flag out of the input/output schema while it
+    # persists internally across turns (default last-value reducer).
+    verify_gate_fired: NotRequired[Annotated[bool, PrivateStateAttr]]
+
+
+class VerifyBeforeFinalizeMiddleware(AgentMiddleware):
+    """Force one verification pass before the agent is allowed to finish.
+
+    Targets the dominant observed failure mode: overconfident false completion, where
+    the model ends with a confident "done / verified / all checks pass" while the grader
+    disagrees (e.g. claiming "zero overfull hbox warnings" when its own compile output
+    showed one). When the latest turn is a finalization — an ``AIMessage`` with no tool
+    calls and non-empty content, i.e. the agent is about to end — this injects a
+    just-in-time demand to verify each requirement by running a real command, and jumps
+    back to the model. Fires at most once per run via a `PrivateStateAttr` flag, and is
+    backstopped by `FinalizeMiddleware`'s hard turn cap, so it cannot loop forever. This
+    is a control-flow gate at the finish line, not standing prompt advice.
+    """
+
+    name = "VerifyBeforeFinalizeMiddleware"
+    state_schema = VerifyBeforeFinalizeState  # type: ignore[assignment]
+
+    @staticmethod
+    def _is_finalizing(message: AIMessage) -> bool:
+        if message.tool_calls:
+            return False
+        content = message.content
+        if isinstance(content, str):
+            return bool(content.strip())
+        if isinstance(content, list):
+            return any(isinstance(p, dict) and str(p.get("text", "")).strip() for p in content)
+        return False
+
+    def _gate(self, state: VerifyBeforeFinalizeState) -> dict[str, Any] | None:
+        if state.get("verify_gate_fired"):
+            return None
+        messages = state.get("messages") or []
+        if not messages:
+            return None
+        last = messages[-1]
+        if not isinstance(last, AIMessage) or not self._is_finalizing(last):
+            return None
+        return {
+            "messages": [HumanMessage(content=_VERIFY_NUDGE_TEXT)],
+            "jump_to": "model",
+            "verify_gate_fired": True,
+        }
+
+    @hook_config(can_jump_to=["model"])
+    def after_model(
+        self,
+        state: VerifyBeforeFinalizeState,
+        runtime: Runtime[Any],  # noqa: ARG002  (part of the hook signature)
+    ) -> dict[str, Any] | None:
+        return self._gate(state)
+
+    @hook_config(can_jump_to=["model"])
+    async def aafter_model(
+        self,
+        state: VerifyBeforeFinalizeState,
+        runtime: Runtime[Any],  # noqa: ARG002  (part of the hook signature)
+    ) -> dict[str, Any] | None:
+        return self._gate(state)
+
+
 _SYSTEM_PROMPT_SUFFIX: str = """<approach>
 Plan briefly before acting. When several reads or lookups are independent, issue them as parallel tool calls rather than one at a time.
 </approach>
@@ -497,6 +580,7 @@ def _build_extra_middleware() -> list[AgentMiddleware]:
         NemotronTextToolCallParser(),
         FinalizeMiddleware(),
         RambleMiddleware(),
+        VerifyBeforeFinalizeMiddleware(),
         StallBreakerMiddleware(),
     ]
 

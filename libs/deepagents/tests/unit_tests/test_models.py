@@ -1236,6 +1236,7 @@ class TestNemotronUltraProfile:
             "NemotronTextToolCallParser",
             "FinalizeMiddleware",
             "RambleMiddleware",
+            "VerifyBeforeFinalizeMiddleware",
             "StallBreakerMiddleware",
         ]
 
@@ -2439,3 +2440,59 @@ class TestChainedPreInitAndFactoryErrorLogging:
         finally:
             _PROVIDER_PROFILES.clear()
             _PROVIDER_PROFILES.update(original)
+
+
+class TestVerifyBeforeFinalize:
+    """Tests for the verify-before-finalize gate (targets false-completion)."""
+
+    def _mw(self):
+        from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
+            VerifyBeforeFinalizeMiddleware,
+        )
+
+        return VerifyBeforeFinalizeMiddleware()
+
+    def test_fires_once_on_first_finalization(self) -> None:
+        from langchain_core.messages import AIMessage, HumanMessage  # noqa: PLC0415
+
+        from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
+            _VERIFY_NUDGE_TEXT,
+        )
+
+        mw = self._mw()
+        state = {"messages": [HumanMessage("task"), AIMessage("The task is complete.")]}
+        out = mw.after_model(state, None)
+        assert out is not None
+        assert out["jump_to"] == "model"
+        assert out["verify_gate_fired"] is True
+        injected = out["messages"][-1]
+        assert isinstance(injected, HumanMessage)
+        assert injected.content == _VERIFY_NUDGE_TEXT
+
+    def test_no_fire_when_already_fired(self) -> None:
+        from langchain_core.messages import AIMessage, HumanMessage  # noqa: PLC0415
+
+        mw = self._mw()
+        state = {
+            "messages": [HumanMessage("task"), AIMessage("Done.")],
+            "verify_gate_fired": True,
+        }
+        assert mw.after_model(state, None) is None
+
+    def test_no_fire_on_tool_call_turn(self) -> None:
+        from langchain_core.messages import AIMessage, HumanMessage  # noqa: PLC0415
+
+        mw = self._mw()
+        ai = AIMessage(
+            content="",
+            tool_calls=[{"name": "execute", "args": {"command": "ls"}, "id": "1", "type": "tool_call"}],
+        )
+        state = {"messages": [HumanMessage("task"), ai]}
+        assert mw.after_model(state, None) is None
+
+    def test_no_fire_on_empty_finalization(self) -> None:
+        from langchain_core.messages import AIMessage, HumanMessage  # noqa: PLC0415
+
+        mw = self._mw()
+        state = {"messages": [HumanMessage("task"), AIMessage("   ")]}
+        assert mw.after_model(state, None) is None

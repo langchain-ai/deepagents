@@ -359,7 +359,8 @@ jobs:
         run: |
           # Stage current checkout packages for LangGraph's sandbox install.
           local_deps_dir="deepagents_harbor/langgraph_project/.local_deps"
-          mkdir -p "$local_deps_dir"
+          # partners/ must pre-exist: rsync only creates the final path component.
+          mkdir -p "$local_deps_dir/partners"
           rsync -a --delete \
             --exclude '.venv' \
             --exclude '__pycache__' \
@@ -376,6 +377,16 @@ jobs:
             --exclude 'dist' \
             --exclude '*.egg-info' \
             ../code/ "$local_deps_dir/deepagents-code/"
+          # deepagents-code pins langchain-quickjs via a path source
+          # (../partners/quickjs); stage it so the editable install resolves.
+          rsync -a --delete \
+            --exclude '.venv' \
+            --exclude '__pycache__' \
+            --exclude '.pytest_cache' \
+            --exclude 'build' \
+            --exclude 'dist' \
+            --exclude '*.egg-info' \
+            ../partners/quickjs/ "$local_deps_dir/partners/quickjs/"
 
           n_tasks_flag=""
           if [ "$HARBOR_N_TASKS" != "0" ]; then

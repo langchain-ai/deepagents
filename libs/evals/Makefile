@@ -53,13 +53,14 @@ HARBOR_TERMINAL_BENCH_DATASET ?= terminal-bench/terminal-bench-2
 HARBOR_LANGSMITH_EXPERIMENT ?= deepagents-harbor-local
 
 stage-harbor-local-deps: ## Stage checked-out packages for Harbor LangGraph sandboxes
-	@mkdir -p $(HARBOR_LOCAL_DEPS_DIR)
+	@mkdir -p $(HARBOR_LOCAL_DEPS_DIR)/partners
 	rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'build' --exclude 'dist' --exclude '*.egg-info' ../deepagents/ $(HARBOR_LOCAL_DEPS_DIR)/deepagents/
 	rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'build' --exclude 'dist' --exclude '*.egg-info' ../code/ $(HARBOR_LOCAL_DEPS_DIR)/deepagents-code/
+	rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'build' --exclude 'dist' --exclude '*.egg-info' ../partners/quickjs/ $(HARBOR_LOCAL_DEPS_DIR)/partners/quickjs/
 
 run-hello-world: stage-harbor-local-deps ## Run hello-world job
 	@mkdir -p $(HARBOR_HELLO_WORLD_JOBS_DIR)
-	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --dataset hello-world --task-name hello-world -n 1 --jobs-dir $(HARBOR_HELLO_WORLD_JOBS_DIR) --env docker
+	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --dataset hello-world --task hello-world -n 1 --jobs-dir $(HARBOR_HELLO_WORLD_JOBS_DIR) --env docker
 
 run-terminal-bench-modal: stage-harbor-local-deps ## Run terminal-bench on Modal (4 concurrent)
 	@mkdir -p $(HARBOR_TERMINAL_BENCH_JOBS_DIR)

@@ -12,7 +12,7 @@ EVALS = ROOT / "libs" / "evals"
 def test_evals_uses_published_harbor_langsmith_dependency() -> None:
     pyproject = tomllib.loads((EVALS / "pyproject.toml").read_text())
 
-    assert "harbor[langsmith]>=0.13.2,<0.14.0" in pyproject["project"]["dependencies"]
+    assert "harbor[langsmith]>=0.16.1,<0.17.0" in pyproject["project"]["dependencies"]
     assert "harbor" not in pyproject["tool"]["uv"]["sources"]
 
 

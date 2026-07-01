@@ -8846,7 +8846,7 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             help_body = (
                 "Commands: /quit, /agents, /auth, /clear, /force-clear, "
-                "/copy, /goal, /offload, /editor, /effort [level|clear], "
+                "/copy, /goal, /offload, /editor, /effort, "
                 "/mcp, /model [--model-params JSON] [--default], "
                 "/notifications, /reload, /restart, /rubric, "
                 "/skill:<name>, /remember, "
@@ -9713,7 +9713,7 @@ class DeepAgentsApp(App):
 
         Returns:
             A `(spec, efforts)` tuple, or an error message when no model is
-            configured or the model does not support reasoning effort.
+                configured or the model does not support reasoning effort.
         """
         from deepagents_code.reasoning_effort import supported_efforts_for_model
 

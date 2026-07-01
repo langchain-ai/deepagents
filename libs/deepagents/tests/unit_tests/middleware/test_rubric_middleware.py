@@ -784,11 +784,16 @@ class TestMaxIterationsObservability:
     ) -> None:
         """The cap fires a `WARNING`-level log so it's visible under default config.
 
-        The terminal `max_iterations_reached` status lives in private state,
-        so this log is the only out-of-band signal a caller gets without
-        explicitly opting into `on_evaluation` or the stream event.
+        The terminal `max_iterations_reached` status is visible through state,
+        callbacks, stream events, and a warning log.
         """
-        mw = RubricMiddleware(model=_STUB_MODEL, max_iterations=1)
+        events: list[dict[str, Any]] = []
+        seen: list[RubricEvaluation] = []
+        mw = RubricMiddleware(
+            model=_STUB_MODEL,
+            max_iterations=1,
+            on_evaluation=seen.append,
+        )
         _stub_grader(
             mw,
             monkeypatch,
@@ -806,8 +811,12 @@ class TestMaxIterationsObservability:
             "_rubric_iterations": 0,
         }
         with caplog.at_level("WARNING", logger="deepagents.middleware.rubric"):
-            update = mw.after_agent(state, _runtime())
+            update = mw.after_agent(state, _runtime(events))
         assert update is not None
         assert update["_rubric_status"] == "max_iterations_reached"
+        assert update["_rubric_evaluations"][0]["result"] == "max_iterations_reached"
         assert "jump_to" not in update
+        assert events[-1]["type"] == "rubric_evaluation_end"
+        assert events[-1]["result"] == "max_iterations_reached"
+        assert seen[0]["result"] == "max_iterations_reached"
         assert any("exhausted max_iterations" in rec.message and "grading-cap" in rec.message for rec in caplog.records)

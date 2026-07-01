@@ -350,16 +350,15 @@ def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
     return True, ""
 
 
-def _parse_allowed_tools(raw_tools: object, skill_path: str) -> list[str]:
-    """Parse the `allowed-tools` frontmatter value into a list of tool names."""
+def _parse_allowed_tools(raw_tools: object) -> list[str]:
+    """Parse the `allowed-tools` frontmatter value into a list of tool names.
+
+    Accepts either a space/comma-separated string or a YAML list of strings.
+    """
     if isinstance(raw_tools, str):
         return [t.strip(",").strip() for t in raw_tools.split() if t.strip(",").strip()]
-    if raw_tools is not None:
-        logger.warning(
-            "Ignoring non-string 'allowed-tools' in %s (got %s)",
-            skill_path,
-            type(raw_tools).__name__,
-        )
+    if isinstance(raw_tools, list):
+        return [t.strip() for t in raw_tools if isinstance(t, str) and t.strip()]
     return []
 
 
@@ -432,7 +431,7 @@ def _parse_skill_metadata(
         )
         description_str = description_str[:MAX_SKILL_DESCRIPTION_LENGTH]
 
-    allowed_tools = _parse_allowed_tools(frontmatter_data.get("allowed-tools"), skill_path)
+    allowed_tools = _parse_allowed_tools(frontmatter_data.get("allowed-tools"))
 
     compatibility_str = str(frontmatter_data.get("compatibility", "")).strip() or None
     if compatibility_str and len(compatibility_str) > MAX_SKILL_COMPATIBILITY_LENGTH:

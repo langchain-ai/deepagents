@@ -177,12 +177,21 @@ _RAMBLE_TOKENS_ENV = "DEEPAGENTS_RAMBLE_OUTPUT_TOKENS"
 # Finish reasons that mean the model was cut off mid-generation.
 _TRUNCATED_FINISH_REASONS = frozenset({"length", "max_tokens"})
 
+# Previous nudge (reworded to more forcefully demand a tool call and forbid prose
+# in the next message):
+# _RAMBLE_NUDGE_TEXT = (
+#     "You produced a long response with no tool call. Writing prose or hand-authoring "
+#     "file contents in your reply burns your output budget before anything reaches "
+#     "disk. Stop and act: write a short script and run it in the shell to compute, "
+#     "generate, or verify the result, then read the output back. The graded deliverable "
+#     "must be a file on disk, not text in this message."
+# )
 _RAMBLE_NUDGE_TEXT = (
-    "You produced a long response with no tool call. Writing prose or hand-authoring "
-    "file contents in your reply burns your output budget before anything reaches "
-    "disk. Stop and act: write a short script and run it in the shell to compute, "
-    "generate, or verify the result, then read the output back. The graded deliverable "
-    "must be a file on disk, not text in this message."
+    "Stop — you produced a long response with no tool call, which burns through your "
+    "output token budget. Your next message must be a tool call, with no prose before "
+    "it: write a short script and run it in the shell to compute, generate, or verify "
+    "the result, then read the output back. The graded deliverable must be a file on "
+    "disk, not text in this message."
 )
 
 

@@ -108,8 +108,10 @@ COMMANDS: tuple[SlashCommand, ...] = (
         name="/goal",
         description="Set a persistent objective by drafting acceptance criteria",
         bypass_tier=BypassTier.QUEUED,
-        hidden_keywords="objective criteria acceptance rubric",
-        argument_hint="[<objective>|show|clear]",
+        hidden_keywords=(
+            "objective criteria acceptance rubric grader grading model iterations"
+        ),
+        argument_hint="[<objective>|show|clear|model|max-iterations]",
     ),
     SlashCommand(
         name="/editor",

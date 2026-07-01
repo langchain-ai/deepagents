@@ -4741,6 +4741,217 @@ class TestGoalCommand:
         assert "the goal stays active for this thread" in usage
         assert "when you want dcode to propose" not in usage
 
+    def test_goal_usage_text_mentions_grader_aliases(self) -> None:
+        """Goal help should surface the shared-grader aliases."""
+        usage = DeepAgentsApp._goal_usage_text()
+
+        assert "/goal model [provider:model|clear]" in usage
+        assert "/goal max-iterations <1-20|clear>" in usage
+        assert "aliases for /rubric model" in usage
+
+    async def test_goal_model_alias_dispatches_to_rubric_setter(self) -> None:
+        """`/goal model <spec>` should route to the shared grader-model setter."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(
+                app, "_set_rubric_model", new_callable=AsyncMock
+            ) as setter:
+                await app._handle_command("/goal model openai:gpt-5.1")
+                await pilot.pause()
+
+            setter.assert_awaited_once_with("openai:gpt-5.1")
+
+    async def test_goal_model_alias_bare_opens_selector(self) -> None:
+        """Bare `/goal model` should open the shared grader-model picker."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(
+                app, "_show_rubric_model_selector", new_callable=AsyncMock
+            ) as selector:
+                await app._handle_command("/goal model")
+                await pilot.pause()
+
+            selector.assert_awaited_once()
+
+    async def test_goal_model_alias_clears_grader_model(self) -> None:
+        """`/goal model clear` should clear the shared grader model."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(
+                app, "_set_rubric_model", new_callable=AsyncMock
+            ) as setter:
+                await app._handle_command("/goal model clear")
+                await pilot.pause()
+
+            setter.assert_awaited_once_with(None)
+
+    async def test_goal_max_iterations_alias_dispatches_to_setter(self) -> None:
+        """`/goal max-iterations <n>` should route to the shared cap setter."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(
+                app, "_set_rubric_max_iterations", new_callable=AsyncMock
+            ) as setter:
+                await app._handle_command("/goal max-iterations 10")
+                await pilot.pause()
+
+            setter.assert_awaited_once_with(10)
+
+    async def test_goal_max_iterations_alias_rejects_invalid(self) -> None:
+        """An invalid `/goal max-iterations` value should not call the setter."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(
+                app, "_set_rubric_max_iterations", new_callable=AsyncMock
+            ) as setter:
+                await app._handle_command("/goal max-iterations 21")
+                await pilot.pause()
+
+            setter.assert_not_awaited()
+            rendered = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "between 1 and 20" in rendered
+
+    async def test_goal_show_displays_grader_line(self) -> None:
+        """`/goal show` should surface the shared grader model and cap."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship the feature"
+            app._goal_status = "active"
+            app._rubric_model = "openai:gpt-5.1"
+            app._rubric_max_iterations = 12
+
+            await app._handle_command("/goal show")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Grader: openai:gpt-5.1 · max iterations: 12" in rendered
+
+    async def test_goal_show_grader_line_reports_defaults(self) -> None:
+        """The grader line should spell out defaults when the grader is unset."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship the feature"
+            app._goal_status = "active"
+
+            await app._handle_command("/goal show")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert (
+                "Grader: current chat model · max iterations: SDK default" in rendered
+            )
+
+    async def test_goal_show_footer_lists_grader_aliases(self) -> None:
+        """`/goal show` should advertise the grader-alias commands in its footer."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "ship the feature"
+            app._goal_status = "active"
+
+            await app._handle_command("/goal show")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "/goal model [provider:model|clear]" in rendered
+            assert "/goal max-iterations <1-20|clear>" in rendered
+
+    async def test_goal_max_iterations_alias_no_arg_shows_usage(self) -> None:
+        """Bare `/goal max-iterations` shows goal-branded usage without setting."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(
+                app, "_set_rubric_max_iterations", new_callable=AsyncMock
+            ) as setter:
+                await app._handle_command("/goal max-iterations")
+                await pilot.pause()
+
+            setter.assert_not_awaited()
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Usage: /goal max-iterations <1-20|clear>" in rendered
+
+    async def test_goal_max_iterations_alias_clears_cap(self) -> None:
+        """`/goal max-iterations clear` should route to the setter with `None`."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(
+                app, "_set_rubric_max_iterations", new_callable=AsyncMock
+            ) as setter:
+                await app._handle_command("/goal max-iterations clear")
+                await pilot.pause()
+
+            setter.assert_awaited_once_with(None)
+
+    async def test_goal_max_iterations_underscore_alias_dispatches(self) -> None:
+        """The `max_iterations` underscore spelling should also route through."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(
+                app, "_set_rubric_max_iterations", new_callable=AsyncMock
+            ) as setter:
+                await app._handle_command("/goal max_iterations 8")
+                await pilot.pause()
+
+            setter.assert_awaited_once_with(8)
+
+    async def test_goal_model_alias_ignores_multiword_objective(self) -> None:
+        """A multi-word objective starting with `model` stays an objective."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            request = AsyncMock(
+                return_value=self._goal_review_future({"type": "cancelled"})
+            )
+            with (
+                patch.object(
+                    app, "_set_rubric_model", new_callable=AsyncMock
+                ) as setter,
+                patch.object(app, "_generate_goal_rubric", return_value="- tests pass"),
+                patch.object(app, "_request_goal_review", request),
+                patch.object(app, "_set_spinner", new_callable=AsyncMock),
+            ):
+                await app._handle_command("/goal model the checkout flow")
+                await pilot.pause()
+                await pilot.pause()
+
+            setter.assert_not_awaited()
+            request.assert_awaited_once_with("model the checkout flow", "- tests pass")
+
+    async def test_goal_max_iterations_alias_ignores_multiword_objective(self) -> None:
+        """A multi-word objective starting with `max-iterations` stays an objective."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            request = AsyncMock(
+                return_value=self._goal_review_future({"type": "cancelled"})
+            )
+            with (
+                patch.object(
+                    app, "_set_rubric_max_iterations", new_callable=AsyncMock
+                ) as setter,
+                patch.object(app, "_generate_goal_rubric", return_value="- tests pass"),
+                patch.object(app, "_request_goal_review", request),
+                patch.object(app, "_set_spinner", new_callable=AsyncMock),
+            ):
+                await app._handle_command("/goal max-iterations for the parser")
+                await pilot.pause()
+                await pilot.pause()
+
+            setter.assert_not_awaited()
+            request.assert_awaited_once_with(
+                "max-iterations for the parser", "- tests pass"
+            )
+
     async def test_goal_command_proposes_pending_rubric(self) -> None:
         """`/goal <objective>` should draft criteria for widget review."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -6558,7 +6769,7 @@ class TestRubricCommand:
             ("default", None, None),
             ("0", None, "between 1 and 20"),
             ("21", None, "between 1 and 20"),
-            ("many", None, "Usage:"),
+            ("many", None, "whole number"),
         ],
     )
     def test_parse_rubric_max_iterations(

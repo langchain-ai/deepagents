@@ -117,7 +117,10 @@ _RUBRIC_MAX_ITERATIONS_MAX = 20
 
 
 def _parse_rubric_max_iterations(raw: str) -> tuple[int | None, str | None]:
-    """Parse `/rubric max-iterations` input.
+    """Parse a grader `max-iterations` argument shared by `/rubric` and `/goal`.
+
+    Error strings are command-agnostic so they read correctly regardless of the
+    slash command the user typed.
 
     Args:
         raw: The raw argument text following the subcommand.
@@ -127,6 +130,9 @@ def _parse_rubric_max_iterations(raw: str) -> tuple[int | None, str | None]:
             either `None` (clear / reset to the SDK default) or an int in the
             inclusive range `[1, 20]`. On invalid input `value` is `None` and
             `error` carries a user-facing message.
+
+            Parse errors and out-of-range errors use distinct wording so
+            they stay distinguishable to the user.
     """
     value = raw.strip().lower()
     if value in {"clear", "default"}:
@@ -134,14 +140,11 @@ def _parse_rubric_max_iterations(raw: str) -> tuple[int | None, str | None]:
     try:
         parsed = int(value)
     except ValueError:
-        return None, "Usage: /rubric max-iterations <1-20|clear>"
+        return None, "Max iterations must be a whole number, or 'clear' to reset."
     if parsed < 1 or parsed > _RUBRIC_MAX_ITERATIONS_MAX:
         return (
             None,
-            (
-                "Rubric max iterations must be between "
-                f"1 and {_RUBRIC_MAX_ITERATIONS_MAX}."
-            ),
+            f"Max iterations must be between 1 and {_RUBRIC_MAX_ITERATIONS_MAX}.",
         )
     return parsed, None
 
@@ -8215,10 +8218,97 @@ class DeepAgentsApp(App):
         self._last_consumed_next_rubric = None
         self._last_consumed_next_previous_rubric = None
 
+    @staticmethod
+    def _is_grader_alias_arg(arg: str) -> bool:
+        """Whether a `/goal` grader-alias argument is a grader value, not prose.
+
+        Grader arguments (`clear`, a model spec like `openai:gpt-5.1`, or an
+        iteration count) are always a single token, so a multi-word argument is
+        a plain-language objective that merely starts with `model` /
+        `max-iterations`. Such objectives must fall through to the objective
+        workflow instead of being hijacked as a grader command.
+
+        Returns:
+            `True` when the argument is empty or a single token (i.e. a grader
+            value); `False` for multi-word objective text.
+        """
+        return len(arg.split()) <= 1
+
+    async def _dispatch_grader_model(self, command: str, arg: str) -> None:
+        """Route a grader-model argument to the shared setter or picker.
+
+        Shared by `/rubric model` and the `/goal model` alias so both entry
+        points stay in lockstep.
+        """
+        await self._mount_message(UserMessage(command))
+        if not arg:
+            await self._show_rubric_model_selector()
+        elif arg.lower() == "clear":
+            await self._set_rubric_model(None)
+        else:
+            await self._set_rubric_model(arg)
+
+    async def _dispatch_grader_max_iterations(
+        self, command: str, arg: str, *, usage_prefix: str
+    ) -> None:
+        """Route a grader `max-iterations` argument to the shared setter.
+
+        Shared by `/rubric max-iterations` and the `/goal max-iterations` alias.
+        `usage_prefix` names the invoking command in the empty-argument usage
+        hint so each entry point advertises its own spelling.
+        """
+        await self._mount_message(UserMessage(command))
+        if not arg:
+            await self._mount_message(
+                AppMessage(f"Usage: {usage_prefix} max-iterations <1-20|clear>")
+            )
+            return
+        value, error = _parse_rubric_max_iterations(arg)
+        if error is not None:
+            await self._mount_message(ErrorMessage(error))
+            return
+        await self._set_rubric_max_iterations(value)
+
+    def _grader_display_values(self) -> tuple[str, str]:
+        """Return display strings for the shared grader model and iteration cap.
+
+        Both fall back to human-readable defaults when unset. Shared by
+        `/goal show` and `/rubric show` so the default wording stays in sync.
+        """
+        model = self._rubric_model or "current chat model"
+        iterations = (
+            str(self._rubric_max_iterations)
+            if self._rubric_max_iterations is not None
+            else "SDK default"
+        )
+        return model, iterations
+
     async def _handle_goal_command(self, command: str) -> None:
         """Handle `/goal` as a user-approved rubric proposal workflow."""
         remainder = command.strip()[len("/goal") :].strip()
         subcommand = remainder.lower()
+
+        # Grader settings are shared with `/rubric` — one `RubricMiddleware`
+        # grades both goals and ad-hoc rubrics. Expose them here as aliases that
+        # call the same setters (no separate state) so goal-first users can tune
+        # grading without discovering `/rubric`. These intercept ahead of every
+        # `/goal` subcommand below, but only when the argument is a single grader
+        # token (a model spec, an iteration count, or `clear`); a multi-word
+        # objective that merely starts with `model` / `max-iterations` still
+        # falls through to the objective workflow.
+        grader_sub, _, grader_arg = remainder.partition(" ")
+        grader_sub = grader_sub.lower()
+        grader_arg = grader_arg.strip()
+        if grader_sub == "model" and self._is_grader_alias_arg(grader_arg):
+            await self._dispatch_grader_model(command, grader_arg)
+            return
+        if grader_sub in {"max-iterations", "max_iterations"} and (
+            self._is_grader_alias_arg(grader_arg)
+        ):
+            await self._dispatch_grader_max_iterations(
+                command, grader_arg, usage_prefix="/goal"
+            )
+            return
 
         if not remainder or subcommand in {"show", "status"}:
             await self._mount_message(UserMessage(command))
@@ -8263,11 +8353,16 @@ class DeepAgentsApp(App):
             "Usage:\n"
             "  /goal <objective>\n"
             "  /goal show\n"
-            "  /goal clear\n\n"
+            "  /goal clear\n"
+            "  /goal model [provider:model|clear]\n"
+            "  /goal max-iterations <1-20|clear>\n\n"
             "Use /goal when you have a plain-language objective; dcode will "
             "draft a checklist and ask before applying it. Once accepted, the "
             "goal stays active for this thread until completed, blocked, or "
-            "cleared. Follow-up prompts continue working toward that goal."
+            "cleared. Follow-up prompts continue working toward that goal.\n\n"
+            "Goals are graded by the shared rubric grader — /goal model and "
+            "/goal max-iterations are aliases for /rubric model and "
+            "/rubric max-iterations."
         )
 
     async def _show_goal_state(self) -> None:
@@ -8293,13 +8388,21 @@ class DeepAgentsApp(App):
                 ],
             )
         if lines:
+            grader_model, grader_iterations = self._grader_display_values()
+            lines.append(
+                f"Grader: {grader_model} · max iterations: {grader_iterations}"
+            )
             if self._active_goal and self._goal_status == "active":
                 lines.append(
                     "Goal is active for this thread until completed, blocked, or "
                     "cleared.\nFollow-up prompts will continue working toward this "
                     "goal."
                 )
-            lines.append("Commands:\n/goal clear\n/goal show")
+            lines.append(
+                "Commands:\n/goal clear\n/goal show\n"
+                "/goal model [provider:model|clear]\n"
+                "/goal max-iterations <1-20|clear>"
+            )
             await self._mount_message(AppMessage("\n\n".join(lines)))
             return
         await self._mount_message(
@@ -8663,29 +8766,13 @@ class DeepAgentsApp(App):
             return
 
         if subcommand in {"max-iterations", "max_iterations"}:
-            await self._mount_message(UserMessage(command))
-            if not arg:
-                await self._mount_message(
-                    AppMessage("Usage: /rubric max-iterations <1-20|clear>")
-                )
-                return
-            value, error = _parse_rubric_max_iterations(arg)
-            if error is not None:
-                await self._mount_message(ErrorMessage(error))
-                return
-            await self._set_rubric_max_iterations(value)
+            await self._dispatch_grader_max_iterations(
+                command, arg, usage_prefix="/rubric"
+            )
             return
 
         if subcommand == "model":
-            if not arg:
-                await self._mount_message(UserMessage(command))
-                await self._show_rubric_model_selector()
-                return
-            await self._mount_message(UserMessage(command))
-            if arg.lower() == "clear":
-                await self._set_rubric_model(None)
-            else:
-                await self._set_rubric_model(arg)
+            await self._dispatch_grader_model(command, arg)
             return
 
         await self._mount_message(UserMessage(command))
@@ -8737,17 +8824,16 @@ class DeepAgentsApp(App):
             lines.append(f"Rubric:\n{self._active_rubric}")
         if self._next_rubric:
             lines.append(f"Next-turn rubric:\n{self._next_rubric}")
-        if self._rubric_model:
-            lines.append(f"Rubric grader model: {self._rubric_model}")
-        if self._rubric_max_iterations is not None:
-            lines.append(f"Rubric max iterations: {self._rubric_max_iterations}")
-        if not lines:
+        if not lines and not self._rubric_model and self._rubric_max_iterations is None:
             await self._mount_message(AppMessage("No rubric set."))
             return
-        if not self._rubric_model:
-            lines.append("Rubric grader model: current chat model")
-        if self._rubric_max_iterations is None:
-            lines.append("Rubric max iterations: SDK default")
+        grader_model, grader_iterations = self._grader_display_values()
+        lines.extend(
+            [
+                f"Rubric grader model: {grader_model}",
+                f"Rubric max iterations: {grader_iterations}",
+            ]
+        )
         await self._mount_message(AppMessage("\n\n".join(lines)))
 
     async def _set_rubric_from_file(self, path_arg: str) -> None:
@@ -8950,7 +9036,7 @@ class DeepAgentsApp(App):
                     ErrorMessage(
                         f"Missing credentials: {auth_status.missing_detail()}\n\n"
                         f"Run `/auth` for the '{auth_status.provider}' provider, "
-                        f"then re-issue `/rubric model {model_spec}`.",
+                        f"then set the grader model again.",
                     ),
                 )
                 return

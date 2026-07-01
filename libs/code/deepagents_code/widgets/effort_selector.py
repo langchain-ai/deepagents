@@ -158,7 +158,12 @@ class EffortSelectorScreen(ModalScreen[str | None]):
             event: The option selected event.
         """
         effort = event.option.id
-        self.dismiss(effort)
+        # Every option is built with a non-empty `id` (the effort label), so
+        # this is always truthy today. Guard anyway: a future id-less option
+        # (e.g. a separator) would otherwise dismiss with `None`, which reads
+        # as a cancel — a silent no-op rather than a clearly-impossible branch.
+        if effort is not None:
+            self.dismiss(effort)
 
     def action_cancel(self) -> None:
         """Cancel without changing effort."""

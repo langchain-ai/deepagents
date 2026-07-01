@@ -58,6 +58,14 @@ def _restore_settings() -> Iterator[None]:
             ("low", "medium", "high"),
         ),
         ("fireworks:accounts/fireworks/models/glm-5p2", ("none", "high", "max")),
+        # Recognized provider, wrong model family: the per-provider prefix
+        # guards in `_classify_reasoning_provider` (and the Fireworks family
+        # check) must reject these rather than fall through to an effort set.
+        ("openai:gpt-4o", ()),
+        ("openai_codex:gpt-4o", ()),
+        ("anthropic:claude-3-5-haiku-latest", ()),
+        ("google_genai:gemini-2.5-flash", ()),
+        ("fireworks:accounts/fireworks/models/llama-v3p1-70b-instruct", ()),
     ],
 )
 def test_supported_efforts_for_model(model_spec: str, efforts: tuple[str, ...]) -> None:
@@ -198,6 +206,27 @@ async def test_effort_command_updates_status_bar_effort() -> None:
         provider="openai",
         model="gpt-5.5",
         effort="xhigh",
+    )
+
+
+async def test_effort_command_clear_refreshes_status_bar_to_default() -> None:
+    """Clearing an override refreshes the status bar to the reverted effort."""
+    app = DeepAgentsApp()
+    app._mount_message = AsyncMock()  # ty: ignore
+    app._status_bar = Mock()  # ty: ignore
+    app._model_params_override = {"reasoning": {"effort": "high", "summary": "auto"}}
+    settings.model_provider = "openai"
+    settings.model_name = "gpt-5.5"
+
+    await app._handle_effort_command("/effort clear")
+
+    # gpt-5.5's documented default is `medium`; the bar reverts to it once the
+    # `high` override is gone. A dropped `_sync_status_model()` call in the
+    # clear branch would leave the stale `high` suffix and fail this.
+    app._status_bar.set_model.assert_called_once_with(  # ty: ignore[unresolved-attribute]
+        provider="openai",
+        model="gpt-5.5",
+        effort="medium",
     )
 
 

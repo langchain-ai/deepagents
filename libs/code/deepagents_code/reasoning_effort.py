@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeAlias
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeAlias, get_args
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -78,11 +78,12 @@ See https://platform.claude.com/docs/en/build-with-claude/effort.
 """
 
 GOOGLE_EFFORTS: tuple[EffortLabel, ...] = ("low", "medium", "high")
-"""Gemini 3 effort labels for `thinking_level`.
+"""Gemini `thinking_level` labels.
 
-Gemini 3.1 Pro and 3.5 Flash accept low/medium/high only; `minimal` is
-Flash-Lite / original-Pro territory, neither of which is offered here. See
-https://ai.google.dev/gemini-api/docs/thinking.
+Applied to every `gemini-3*` model (the gate in `_classify_reasoning_provider`),
+including Gemini 3 Pro/Flash, 3.1 Pro, and 3.5 Flash — all accept
+low/medium/high. `minimal` is Flash-Lite / original-Pro territory, neither of
+which is offered here. See https://ai.google.dev/gemini-api/docs/thinking.
 """
 
 FIREWORKS_REASONING_EFFORTS: tuple[EffortLabel, ...] = (
@@ -305,6 +306,14 @@ _PROVIDER_CONFIGS: dict[ReasoningProvider, ReasoningProviderConfig] = {
     ),
 }
 """Provider-specific reasoning effort behavior keyed by `ModelSpec` provider."""
+
+if set(_PROVIDER_CONFIGS) != set(get_args(ReasoningProvider)):  # pragma: no cover
+    # `_classify_reasoning_provider` only ever returns members of the
+    # `ReasoningProvider` vocabulary, and `_reasoning_config` indexes
+    # `_PROVIDER_CONFIGS` with the result — so the two must stay in lockstep or
+    # that lookup raises `KeyError` at runtime. Fail loudly at import instead.
+    msg = "_PROVIDER_CONFIGS keys must match the ReasoningProvider vocabulary"
+    raise RuntimeError(msg)
 
 
 def _classify_reasoning_provider(provider: str, model: str) -> ReasoningProvider | None:

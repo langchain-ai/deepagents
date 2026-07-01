@@ -1320,6 +1320,20 @@ class _EffortContext:
 
 
 @dataclass(frozen=True, slots=True)
+class _EffortUnavailable:
+    """Why `/effort` cannot proceed, as a user-facing message.
+
+    The failure arm of `_resolve_effort_context`, paired with `_EffortContext`.
+    Making it a distinct type — rather than a bare `str` — keeps it nominally
+    separate from any other string a caller handles, so the two arms can never
+    be confused by an unrelated `str` value.
+    """
+
+    message: str
+    """User-facing explanation to surface via `AppMessage`."""
+
+
+@dataclass(frozen=True, slots=True)
 class _ThreadHistoryPayload:
     """Data returned by `_fetch_thread_history_data`."""
 
@@ -9999,23 +10013,28 @@ class DeepAgentsApp(App):
             )
         self._status_bar.set_model(provider=provider, model=model, effort=effort)
 
-    def _resolve_effort_context(self) -> _EffortContext | str:
+    def _resolve_effort_context(self) -> _EffortContext | _EffortUnavailable:
         """Resolve the active model spec and its supported reasoning efforts.
 
         Returns:
-            An `_EffortContext` on success, or an error message `str` when no
-                model is configured or the model does not support reasoning
-                effort. The two arms are class-tagged, so callers discriminate
-                with `isinstance(..., str)`.
+            An `_EffortContext` on success, or an `_EffortUnavailable` carrying
+                a user-facing message when no model is configured or the model
+                does not support reasoning effort. The two arms are distinct
+                types, so callers discriminate with
+                `isinstance(..., _EffortUnavailable)`.
         """
         from deepagents_code.reasoning_effort import supported_efforts_for_model
 
         spec = self._effective_model_spec()
         if not spec:
-            return "No model is configured yet. Run `/model` to choose one."
+            return _EffortUnavailable(
+                "No model is configured yet. Run `/model` to choose one."
+            )
         efforts = supported_efforts_for_model(spec)
         if not efforts:
-            return f"Reasoning effort is not configurable for {spec}."
+            return _EffortUnavailable(
+                f"Reasoning effort is not configurable for {spec}."
+            )
         return _EffortContext(spec=spec, efforts=efforts)
 
     async def _handle_effort_command(self, command: str) -> None:
@@ -10045,9 +10064,9 @@ class DeepAgentsApp(App):
         from deepagents_code.widgets.effort_selector import EffortSelectorScreen
 
         context = self._resolve_effort_context()
-        if isinstance(context, str):
+        if isinstance(context, _EffortUnavailable):
             await self._mount_message(UserMessage(command))
-            await self._mount_message(AppMessage(context))
+            await self._mount_message(AppMessage(context.message))
             return
         spec = context.spec
 
@@ -10069,7 +10088,7 @@ class DeepAgentsApp(App):
                 # no confirmation and no error for the user.
                 logger.exception("Failed to apply reasoning effort %r", effort)
                 await self._mount_message(
-                    ErrorMessage("Failed to apply the selected reasoning effort."),
+                    ErrorMessage(f"Failed to apply reasoning effort {effort!r}."),
                 )
 
         def handle_result(result: str | None) -> None:
@@ -10091,25 +10110,33 @@ class DeepAgentsApp(App):
             effort: Effort label or clear/reset token.
         """
         from deepagents_code.reasoning_effort import (
+            current_effort_from_model_params,
             merge_effort_model_params,
             model_params_for_effort,
             without_effort_model_params,
         )
 
         context = self._resolve_effort_context()
-        if isinstance(context, str):
-            await self._mount_message(AppMessage(context))
+        if isinstance(context, _EffortUnavailable):
+            await self._mount_message(AppMessage(context.message))
             return
         spec = context.spec
 
         if effort in {"clear", "--clear", "reset"}:
+            had_override = (
+                current_effort_from_model_params(spec, self._model_params_override)
+                is not None
+            )
             self._model_params_override = without_effort_model_params(
                 self._model_params_override
             )
             self._sync_status_model()
-            await self._mount_message(
-                AppMessage(f"Reasoning effort override cleared for {spec}."),
+            message = (
+                f"Reasoning effort override cleared for {spec}."
+                if had_override
+                else f"No reasoning effort override was set for {spec}."
             )
+            await self._mount_message(AppMessage(message))
             return
 
         params = model_params_for_effort(spec, effort)

@@ -1585,8 +1585,8 @@ def parse_args() -> argparse.Namespace:
         dest="rubric_max_iterations",
         type=positive_int,
         metavar="N",
-        help="Grader iterations per rubric attempt before stopping (must be "
-        ">= 1, default 3).",
+        help="Override grader iterations per rubric attempt before stopping "
+        "(must be >= 1; defaults to the SDK setting).",
     )
 
     parser.add_argument(

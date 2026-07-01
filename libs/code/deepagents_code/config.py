@@ -14,7 +14,7 @@ import sys
 import threading
 from dataclasses import dataclass, field as dataclass_field
 from enum import StrEnum
-from importlib.metadata import PackageNotFoundError, distribution, version
+from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import unquote, urlparse
@@ -980,20 +980,43 @@ Kept short so tracing metadata can never stall app flows.
 
 
 def _get_deepagents_version() -> str | None:
-    """Read the installed Deep Agents SDK version from package metadata.
+    """Resolve the installed Deep Agents SDK version for diagnostics.
 
-    This intentionally calls `importlib.metadata.version` directly instead of
-    `resolve_sdk_version`: `config` is on the startup hot path, while
-    `resolve_sdk_version` lives in `extras_info` and imports `packaging`.
+    Editable installs can leave package metadata behind the source checkout, so
+    this uses the shared resolver that prefers the editable source version and
+    falls back to metadata when needed.
 
     Returns:
-        The installed Deep Agents SDK version, or `None` when package metadata
-            is unavailable.
+        The resolved Deep Agents SDK version, or `None` when unavailable.
     """
+    # Imported lazily on purpose: `extras_info` pulls in `packaging`, which we
+    # keep off `config`'s module-import path (the startup hot path). Do not
+    # hoist this to the top of the module. The import is also guarded so a
+    # broken/absent `packaging` can never crash best-effort diagnostic metadata.
     try:
-        return version("deepagents")
-    except PackageNotFoundError:
+        from deepagents_code.extras_info import resolve_sdk_version
+
+        sdk_version, status = resolve_sdk_version()
+    except ImportError:
+        logger.warning(
+            "Could not import resolve_sdk_version for SDK version metadata",
+            exc_info=True,
+        )
         return None
+    return sdk_version if status == "resolved" else None
+
+
+def _format_lc_version(base_version: str, *, editable: bool) -> str:
+    """Format an `lc_versions` value with editable-install context.
+
+    Args:
+        base_version: The base version string.
+        editable: Whether the distribution is installed in editable mode.
+
+    Returns:
+        The version string, suffixed with ` (editable)` when `editable`.
+    """
+    return f"{base_version} (editable)" if editable else base_version
 
 
 def _resolve_editable_info() -> tuple[bool, str | None]:
@@ -1467,7 +1490,11 @@ def build_stream_config(
 
     # Legacy / diagnostic keys preserved for backward-compatibility during the
     # coding-agent-v1 rollout (not part of the contract).
-    metadata["lc_versions"] = {"deepagents-code": __version__}
+    metadata["lc_versions"] = {
+        "deepagents-code": _format_lc_version(
+            __version__, editable=_is_editable_install()
+        )
+    }
     deepagents_version = _get_deepagents_version()
     if deepagents_version is not None:
         metadata["dcode_client_deepagents_version"] = deepagents_version

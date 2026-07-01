@@ -140,6 +140,34 @@ def event_targets_link(event: MouseMove) -> bool:
     return _style_url(event.style) is not None
 
 
+async def open_checked_url_async(
+    url: str, *, app: App, notify_on_success: bool = False
+) -> bool:
+    """Open a URL after applying the shared URL safety check.
+
+    Args:
+        url: The URL to validate and open.
+        app: App used to post browser-open notifications.
+        notify_on_success: Whether to post an informational toast when the
+            browser accepts the URL.
+
+    Returns:
+        `True` when the URL passed safety checks and the browser accepted it;
+        `False` when the URL was blocked or the browser could not open it.
+    """
+    safety = check_url_safety(url)
+    if not safety.safe:
+        detail = safety.warnings[0] if safety.warnings else "Suspicious URL"
+        logger.warning("Blocked suspicious URL: %s (%s)", url, detail)
+        _notify(
+            app,
+            f"Blocked suspicious URL: {strip_dangerous_unicode(url)}\n{detail}",
+            severity="warning",
+        )
+        return False
+    return await open_url_async(url, app=app, notify_on_success=notify_on_success)
+
+
 async def open_url_async(
     url: str, *, app: App, notify_on_success: bool = False
 ) -> bool:

@@ -7282,7 +7282,7 @@ class DeepAgentsApp(App):
         # returns True on errors so transient state failures suppress this warning
         # rather than showing a false empty-thread note.
         parts: list[str | Content | tuple[str, str | TStyle]] = [
-            f"Opening tracing project {project_name!r}:\n",
+            f"Opening tracing project {project_name!r} in default browser:\n",
             (url, TStyle(dim=True, italic=True, link=url)),
         ]
         if not await self._has_conversation_messages():

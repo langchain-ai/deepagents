@@ -45,8 +45,8 @@ from deepagents_code.widgets._js_eval_display import (
 )
 from deepagents_code.widgets._links import (
     event_targets_link,
+    open_checked_url_async,
     open_style_link,
-    open_url_async,
 )
 from deepagents_code.widgets.diff import compose_diff_lines
 
@@ -750,7 +750,7 @@ class AssistantMessage(Vertical):
     async def on_markdown_link_clicked(self, event: Markdown.LinkClicked) -> None:
         """Open Markdown links with the same toast feedback as style links."""
         event.stop()
-        await open_url_async(event.href, app=self.app, notify_on_success=True)
+        await open_checked_url_async(event.href, app=self.app, notify_on_success=True)
 
     def _get_markdown(self) -> Markdown:
         """Get the markdown widget, querying if not cached.

@@ -364,14 +364,14 @@ class TestAssistantMessageLinkPointer:
 
             assert markdown._open_links is False
 
-    async def test_markdown_link_clicked_uses_toast_helper(self) -> None:
-        """Clicked Markdown links should use the shared browser/toast helper."""
+    async def test_markdown_link_clicked_uses_checked_toast_helper(self) -> None:
+        """Clicked Markdown links should use the checked browser/toast helper."""
         async with _AssistantMessageApp().run_test() as pilot:
             msg = pilot.app.query_one("#assistant", AssistantMessage)
             event = SimpleNamespace(href="https://example.com/docs", stop=MagicMock())
 
             with patch(
-                "deepagents_code.widgets.messages.open_url_async",
+                "deepagents_code.widgets.messages.open_checked_url_async",
                 new=AsyncMock(return_value=True),
             ) as mock_open:
                 await msg.on_markdown_link_clicked(event)  # ty: ignore
@@ -382,6 +382,30 @@ class TestAssistantMessageLinkPointer:
                 app=pilot.app,
                 notify_on_success=True,
             )
+
+    async def test_markdown_link_clicked_blocks_suspicious_url(self) -> None:
+        """Markdown links should apply the same URL safety check as style links."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+            event = SimpleNamespace(
+                href="https://example.com/\u200b[admin]",
+                stop=MagicMock(),
+            )
+
+            with (
+                patch.object(pilot.app, "notify") as notify,
+                patch("deepagents_code.widgets._links.webbrowser.open") as mock_open,
+            ):
+                await msg.on_markdown_link_clicked(event)  # ty: ignore
+
+            event.stop.assert_called_once()
+            mock_open.assert_not_called()
+            notify.assert_called_once()
+            args, kwargs = notify.call_args
+            assert "Blocked suspicious URL" in args[0]
+            assert "https://example.com/[admin]" in args[0]
+            assert kwargs["severity"] == "warning"
+            assert kwargs["markup"] is False
 
     def test_mouse_move_before_mount_is_noop(self) -> None:
         """Hovering before mount (no markdown widget yet) must not raise."""

@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 from deepagents_code._env_vars import SHOW_URL_OPEN_TOAST
 from deepagents_code.widgets._links import (
     event_targets_link,
+    open_checked_url_async,
     open_style_link,
     open_url_async,
 )
@@ -142,6 +143,28 @@ async def test_open_url_async_can_toast_on_success() -> None:
     args, kwargs = notify.call_args
     assert args[0] == "Opening URL in default browser: https://example.com"
     assert kwargs["severity"] == "information"
+    assert kwargs["markup"] is False
+
+
+async def test_open_checked_url_async_blocks_suspicious_url() -> None:
+    """Async checked opening should block suspicious URLs before the browser."""
+    notify = MagicMock()
+    app = cast("App[None]", SimpleNamespace(notify=notify))
+
+    with patch("deepagents_code.widgets._links.webbrowser.open") as mock_open:
+        opened = await open_checked_url_async(
+            "https://example.com/\u200b[admin]",
+            app=app,
+            notify_on_success=True,
+        )
+
+    assert opened is False
+    mock_open.assert_not_called()
+    notify.assert_called_once()
+    args, kwargs = notify.call_args
+    assert "Blocked suspicious URL" in args[0]
+    assert "https://example.com/[admin]" in args[0]
+    assert kwargs["severity"] == "warning"
     assert kwargs["markup"] is False
 
 

@@ -48,6 +48,7 @@ _TIPS: dict[str, int] = {
     "Use /mcp login <server> to authenticate MCP OAuth servers without leaving the TUI": 1,  # noqa: E501
     "Use /remember to save learnings from this conversation": 1,
     "Use /model to switch models mid-conversation": 2,
+    "Use /effort high to change the current model's reasoning effort": 1,
     "Press ctrl+x to compose prompts in your external editor": 1,
     "Press ctrl+u to delete to the start of the line in the chat input": 1,
     "Use /skill:<name> to invoke a skill directly": 1,

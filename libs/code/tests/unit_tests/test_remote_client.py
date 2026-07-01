@@ -557,6 +557,19 @@ class TestRemoteAgentUpdateState:
         await agent.aupdate_state(_config(), {"key": "val"})
         mock_graph.aupdate_state.assert_called_once()
 
+    async def test_forwards_as_node(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        mock_graph = MagicMock()
+        mock_graph.aupdate_state = AsyncMock()
+        agent._graph = mock_graph
+
+        await agent.aupdate_state(_config(), {"key": "val"}, as_node="model")
+
+        mock_graph.aupdate_state.assert_awaited_once()
+        update_args = mock_graph.aupdate_state.await_args
+        assert update_args is not None
+        assert update_args.kwargs["as_node"] == "model"
+
     async def test_raises_when_thread_id_missing(self) -> None:
         agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
         with pytest.raises(ValueError, match="thread_id"):

@@ -1,8 +1,9 @@
 """Tests for resume-state persistence and token display callbacks."""
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, get_type_hints
 
+from langchain.agents.middleware.types import PrivateStateAttr
 from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents_code.app import DeepAgentsApp
@@ -10,7 +11,7 @@ from deepagents_code.resume_state import (
     ResumeState,
     ResumeStateMiddleware,
     _extract_context_tokens,
-    _extract_model_spec,
+    coerce_goal_status,
 )
 
 
@@ -28,9 +29,42 @@ class TestResumeState:
         """ResumeState declares the `_model_spec` channel."""
         assert "_model_spec" in ResumeState.__annotations__
 
+    def test_state_has_model_params_field(self):
+        """ResumeState declares the `_model_params` channel."""
+        assert "_model_params" in ResumeState.__annotations__
+
+    def test_sticky_rubric_field_is_private(self):
+        """Persistent TUI rubrics must not leak through the public schema."""
+        # `_sticky_rubric` is inherited from `GoalRubricChannels`, so resolve the
+        # full (inherited) hints the way LangGraph does rather than reading
+        # own-keys-only `__annotations__`. `get_type_hints` resolves the marker to
+        # its real object (`PrivateStateAttr`), so assert membership of that
+        # sentinel rather than matching the source text.
+        hints = get_type_hints(ResumeState, include_extras=True)
+        metadata = getattr(hints["_sticky_rubric"], "__metadata__", ())
+        assert PrivateStateAttr in metadata
+
     def test_middleware_exposes_state_schema(self):
         """ResumeStateMiddleware registers the correct state schema."""
         assert ResumeStateMiddleware.state_schema is ResumeState
+
+
+class TestCoerceGoalStatus:
+    """Tests for `coerce_goal_status`."""
+
+    def test_returns_known_statuses(self) -> None:
+        assert coerce_goal_status("active") == "active"
+        assert coerce_goal_status("blocked") == "blocked"
+        assert coerce_goal_status("complete") == "complete"
+
+    def test_unknown_string_coerces_to_none(self) -> None:
+        assert coerce_goal_status("deleted") is None
+        assert coerce_goal_status("") is None
+
+    def test_non_string_coerces_to_none(self) -> None:
+        assert coerce_goal_status(None) is None
+        assert coerce_goal_status(123) is None
+        assert coerce_goal_status(["active"]) is None
 
 
 class TestExtractContextTokens:
@@ -74,27 +108,6 @@ class TestExtractContextTokens:
         assert _extract_context_tokens(msg) is None
 
 
-class TestExtractModelSpec:
-    """Tests for `_extract_model_spec`."""
-
-    def test_returns_effective_model_from_context(self) -> None:
-        runtime = _runtime({"effective_model": "anthropic:claude-sonnet-4-5"})
-        assert _extract_model_spec(runtime) == "anthropic:claude-sonnet-4-5"  # ty: ignore
-
-    def test_returns_none_when_context_missing(self) -> None:
-        assert _extract_model_spec(_runtime(None)) is None  # ty: ignore
-
-    def test_returns_none_when_field_absent(self) -> None:
-        assert _extract_model_spec(_runtime({"model": "x"})) is None  # ty: ignore
-
-    def test_returns_none_for_blank_or_nonstring(self) -> None:
-        assert _extract_model_spec(_runtime({"effective_model": ""})) is None  # ty: ignore
-        assert _extract_model_spec(_runtime({"effective_model": None})) is None  # ty: ignore
-
-    def test_returns_none_when_runtime_is_none(self) -> None:
-        assert _extract_model_spec(None) is None  # ty: ignore
-
-
 class TestAfterModelHook:
     """Tests for the `after_model` persistence hook."""
 
@@ -116,7 +129,8 @@ class TestAfterModelHook:
         result = middleware.after_model(state, _runtime(None))  # ty: ignore
         assert result == {"_context_tokens": 1700}
 
-    async def test_writes_model_spec_from_context(self) -> None:
+    async def test_does_not_write_model_spec_from_context(self) -> None:
+        """Model metadata is written by ConfigurableModelMiddleware."""
         middleware = ResumeStateMiddleware()
         state: dict[str, Any] = {
             "messages": [
@@ -131,25 +145,9 @@ class TestAfterModelHook:
                 ),
             ],
         }
-        runtime = _runtime({"effective_model": "openai:gpt-5.1"})
+        runtime = _runtime({"model": "openai:gpt-5.1"})
         result = middleware.after_model(state, runtime)  # ty: ignore
-        assert result == {
-            "_context_tokens": 1700,
-            "_model_spec": "openai:gpt-5.1",
-        }
-
-    async def test_writes_model_spec_without_token_usage(self) -> None:
-        """Model spec is recorded even when the AI message reports no usage."""
-        middleware = ResumeStateMiddleware()
-        state: dict[str, Any] = {
-            "messages": [
-                HumanMessage(content="hi"),
-                AIMessage(content="no usage info"),
-            ],
-        }
-        runtime = _runtime({"effective_model": "openai:gpt-5.1"})
-        result = middleware.after_model(state, runtime)  # ty: ignore
-        assert result == {"_model_spec": "openai:gpt-5.1"}
+        assert result == {"_context_tokens": 1700}
 
     async def test_returns_none_when_no_ai_message(self) -> None:
         middleware = ResumeStateMiddleware()

@@ -796,6 +796,15 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.KITTY_KEYBOARD,
     ),
     ConfigOption(
+        key="display.show_scrollbar",
+        group="Display",
+        summary="Show the vertical scrollbar in the chat area (off by default).",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.SHOW_SCROLLBAR,
+        toml_keys=("ui", "show_scrollbar"),
+    ),
+    ConfigOption(
         key="display.hide_cwd",
         group="Display",
         summary="Hide local path displays in the footer and startup splash.",
@@ -850,6 +859,15 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.BOOL,
         default=False,
         env_var=_env_vars.NO_TERMINAL_ESCAPE,
+    ),
+    ConfigOption(
+        key="display.show_url_open_toast",
+        group="Display",
+        summary="Show a confirmation toast after clicking a URL.",
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.SHOW_URL_OPEN_TOAST,
+        toml_keys=("ui", "show_url_open_toast"),
     ),
     ConfigOption(
         key="display.onboarding_integrations_screen",

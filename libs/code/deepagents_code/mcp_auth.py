@@ -766,7 +766,7 @@ class _LoopbackOAuthCallbackServer:
                     200,
                     _oauth_success_html(
                         "MCP authorization complete. "
-                        "This tab will close automatically.",
+                        "You can close this tab and return to your terminal.",
                     ),
                 )
             else:
@@ -810,7 +810,8 @@ class _LoopbackOAuthCallbackServer:
             handler,
             200,
             _oauth_success_html(
-                "MCP authorization complete. This tab will close automatically.",
+                "MCP authorization complete. "
+                "You can close this tab and return to your terminal.",
             ),
         )
 
@@ -860,12 +861,20 @@ def _oauth_result_html(
     escaped_heading = html.escape(heading)
     escaped = html.escape(message)
     # `window.close()` is only honored for tabs the script itself opened
-    # (browser policy), but for the common case where the auth flow was
-    # launched via `window.open` / `target=_blank` from another page, the
-    # tab closes cleanly. When the browser refuses, the user still sees the
-    # static success page and the message text remains accurate.
+    # (browser policy). The loopback flow launches the browser via
+    # `webbrowser.open`, so the callback tab was opened by the OS rather than
+    # by a script and the browser refuses to close it. Attempt the close for
+    # the rare script-opened case, then rewrite the message so it stays
+    # accurate when the tab stays open instead of promising it will vanish.
     auto_close = (
-        "<script>setTimeout(function(){window.close();},2000);</script>"
+        "<script>setTimeout(function(){"
+        "window.close();"
+        "setTimeout(function(){"
+        "var m=document.getElementById('oauth-message');"
+        "if(m){m.textContent="
+        "'You can close this tab and return to your terminal.';}"
+        "},500);"
+        "},1000);</script>"
         if status == "success"
         else ""
     )
@@ -887,7 +896,7 @@ def _oauth_result_html(
         "</style></head><body>"
         '<main class="panel">'
         f'<div class="mark" style="background:{background};color:{accent}">{mark}</div>'
-        f"<h1>{escaped_heading}</h1><p>{escaped}</p>"
+        f'<h1>{escaped_heading}</h1><p id="oauth-message">{escaped}</p>'
         "</main>"
         f"{auto_close}"
         "</body></html>"

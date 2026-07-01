@@ -80,7 +80,7 @@ def _read_env_str(suffix: str) -> str | None:
     return os.environ.get(f"{SERVER_ENV_PREFIX}{suffix}")
 
 
-def _read_env_int(suffix: str, *, default: int) -> int:
+def _read_env_int(suffix: str, *, default: int | None) -> int | None:
     """Read a `DEEPAGENTS_CODE_SERVER_*` integer from the environment.
 
     Args:
@@ -88,7 +88,7 @@ def _read_env_int(suffix: str, *, default: int) -> int:
         default: Value when the variable is absent or malformed.
 
     Returns:
-        Parsed integer, or the default when parsing fails.
+        Parsed integer, or the default when absent or parsing fails.
     """
     raw = os.environ.get(f"{SERVER_ENV_PREFIX}{suffix}")
     if raw is None:
@@ -264,9 +264,8 @@ class ServerConfig:
     `None` reuses the main agent model.
     """
 
-    rubric_max_iterations: int = 3
-    """Grader iterations per rubric attempt before the agent stops with
-    `'max_iterations_reached'`."""
+    rubric_max_iterations: int | None = None
+    """Explicit grader iterations per rubric attempt; `None` uses the SDK default."""
 
     sandbox_type: str | None = None
     """Sandbox backend identifier (e.g. `'daytona'`); `None` runs tools on the
@@ -304,12 +303,20 @@ class ServerConfig:
         """Normalize fields and validate invariants.
 
         Raises:
-            ValueError: If `shell_allow_list` is an empty list.
+            TypeError: If `rubric_max_iterations` is a boolean.
+            ValueError: If `shell_allow_list` is an empty list or
+                `rubric_max_iterations` is non-positive.
         """
         if self.sandbox_type == "none":
             object.__setattr__(self, "sandbox_type", None)
         if self.shell_allow_list is not None and len(self.shell_allow_list) == 0:
             msg = "shell_allow_list must be None or non-empty"
+            raise ValueError(msg)
+        if isinstance(self.rubric_max_iterations, bool):
+            msg = "rubric_max_iterations must be None or a positive integer"
+            raise TypeError(msg)
+        if self.rubric_max_iterations is not None and self.rubric_max_iterations <= 0:
+            msg = "rubric_max_iterations must be None or a positive integer"
             raise ValueError(msg)
 
     # ------------------------------------------------------------------
@@ -356,7 +363,11 @@ class ServerConfig:
                 self.interpreter_ptc_acknowledge_unsafe
             ).lower(),
             "RUBRIC_MODEL": self.rubric_model,
-            "RUBRIC_MAX_ITERATIONS": str(self.rubric_max_iterations),
+            "RUBRIC_MAX_ITERATIONS": (
+                str(self.rubric_max_iterations)
+                if self.rubric_max_iterations is not None
+                else None
+            ),
             "SANDBOX_TYPE": self.sandbox_type,
             "SANDBOX_ID": self.sandbox_id,
             "SANDBOX_SNAPSHOT_NAME": self.sandbox_snapshot_name,
@@ -405,8 +416,8 @@ class ServerConfig:
             interpreter_ptc_acknowledge_unsafe=_read_env_bool(
                 "INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE"
             ),
-            rubric_model=_read_env_str("RUBRIC_MODEL"),
-            rubric_max_iterations=_read_env_int("RUBRIC_MAX_ITERATIONS", default=3),
+            rubric_model=_read_env_str("RUBRIC_MODEL") or None,
+            rubric_max_iterations=_read_env_int("RUBRIC_MAX_ITERATIONS", default=None),
             sandbox_type=_read_env_str("SANDBOX_TYPE"),
             sandbox_id=_read_env_str("SANDBOX_ID"),
             sandbox_snapshot_name=_read_env_str("SANDBOX_SNAPSHOT_NAME") or None,
@@ -443,7 +454,7 @@ class ServerConfig:
         interpreter_ptc: str | list[str] | None = None,
         interpreter_ptc_acknowledge_unsafe: bool = False,
         rubric_model: str | None = None,
-        rubric_max_iterations: int = 3,
+        rubric_max_iterations: int | None = None,
         mcp_config_path: str | None,
         no_mcp: bool,
         trust_project_mcp: bool | None,
@@ -478,7 +489,8 @@ class ServerConfig:
             interpreter_ptc_acknowledge_unsafe: Mirror of
                 `settings.interpreter_ptc_acknowledge_unsafe`.
             rubric_model: Grader model spec; `None` reuses the main model.
-            rubric_max_iterations: Grader iterations per rubric attempt.
+            rubric_max_iterations: Explicit grader iterations per rubric attempt;
+                `None` uses the SDK default.
             mcp_config_path: Path to MCP config.
             no_mcp: Disable MCP.
             trust_project_mcp: Trust project MCP servers.

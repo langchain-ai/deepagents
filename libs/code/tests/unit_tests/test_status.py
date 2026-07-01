@@ -416,6 +416,62 @@ class TestModelLabelPrefixStripping:
             rendered = str(label.render())
             assert "openai:gpt-5.5" in rendered
 
+    async def test_effort_suffix_rendered(self) -> None:
+        """Active reasoning effort should be shown next to the model."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_model(provider="openai", model="gpt-5.5", effort="xhigh")
+            await pilot.pause()
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            assert str(label.render()) == "openai:gpt-5.5 xhigh"
+
+    async def test_effort_suffix_survives_provider_drop(self) -> None:
+        """When narrow, provider is dropped before the effort label."""
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5"
+            label.effort = "xhigh"
+            label.styles.width = 18
+            await pilot.pause()
+            assert str(label.render()) == "gpt-5.5 xhigh"
+
+    async def test_effort_suffix_left_truncates_model(self) -> None:
+        """Overflowing model text is left-truncated while the effort stays."""
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5-turbo-preview"
+            label.effort = "high"
+            label.styles.width = 15
+            await pilot.pause()
+            width = label.content_size.width
+            rendered = str(label.render())
+            # Starts with an ellipsis (left-truncated) yet retains the effort
+            # label — the branch that keeps effort while dropping model chars.
+            assert rendered.startswith("…")
+            assert rendered.endswith(" high")
+            assert "openai:" not in rendered
+            assert len(rendered) <= width
+
+    async def test_effort_suffix_dropped_when_only_bare_model_fits(self) -> None:
+        """In the narrow window where effort can't fit, the bare model wins.
+
+        When the width is too small for even the left-truncated `model effort`
+        form but still fits the bare model, the effort suffix is dropped rather
+        than the model — the last rung before ellipsis truncation.
+        """
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = ""
+            label.model = "o1"
+            label.effort = "medium"
+            # padding 0 2 -> content width = 6: too narrow for "o1 medium" (9)
+            # and below len("medium") + 2, but wide enough for bare "o1".
+            label.styles.width = 10
+            await pilot.pause()
+            assert str(label.render()) == "o1"
+
     async def test_no_provider_no_stripping(self) -> None:
         """Without a provider, the model name is passed through unchanged."""
         async with StatusBarApp().run_test() as pilot:
@@ -540,8 +596,9 @@ class TestConnectionIndicator:
             await pilot.pause()
             indicator = pilot.app.query_one("#connection-indicator", Static)
             rendered = str(indicator.render())
-            assert get_glyphs().spinner_frames[0] in rendered
-            assert "Reconnecting" in rendered
+            frame, _, label = rendered.partition(" ")
+            assert frame in get_glyphs().spinner_frames
+            assert label == "Reconnecting"
 
     async def test_unmount_stops_spinner(self) -> None:
         """Leaving the DOM must stop the timer so it can't tick detached."""

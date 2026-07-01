@@ -8,7 +8,7 @@ import contextvars
 import mimetypes
 import threading
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
@@ -582,6 +582,9 @@ Examples:
 Note: This tool is only available if the backend supports execution (SandboxBackendProtocol).
 If execution is not supported, the tool will return an error message."""
 
+FsToolName = Literal["ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"]
+"""Names of the built-in filesystem tools that can be passed to ``enabled_tools``."""
+
 _FS_TOOL_ORDER: tuple[str, ...] = ("ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep")
 _ALL_FS_TOOL_NAMES: frozenset[str] = frozenset(_FS_TOOL_ORDER) | {"execute"}
 _FS_TOOL_DESCRIPTION_LINES: dict[str, str] = {
@@ -907,7 +910,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_token_limit_before_evict: int | None = 20000,
         human_message_token_limit_before_evict: int | None = 50000,
         max_execute_timeout: int = 3600,
-        enabled_tools: frozenset[str] | set[str] | None = None,
+        enabled_tools: Collection[FsToolName] | None = None,
         _permissions: list[FilesystemPermission] | None = None,
     ) -> None:
         """Initialize the filesystem middleware.
@@ -925,14 +928,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
                 Defaults to 3600 seconds (1 hour). Any per-command timeout
                 exceeding this value will be rejected with an error message.
-            enabled_tools: Allowlist of tool names to expose to the model.
-                ``None`` (the default) enables all tools. When a set is
-                provided, only the listed tools are included in the model
-                request; all others are hidden. ``read_file`` must be included
-                in any non-``None`` allowlist, it is required by
-                ``FilesystemMiddleware``. Backend capability checks for
-                ``execute`` and ``delete`` still apply; listing them here when
-                the backend does not support them is a no-op.
+            enabled_tools: Allowlist of :data:`FsToolName` values to expose
+                to the model. `None` (the default) enables all tools. When a
+                collection is provided, only the listed tools are included in
+                the model request; all others are hidden. `read_file` must be
+                included in any non-`None` allowlist. Backend capability
+                checks for `execute` and `delete` still apply; listing them
+                here when the backend does not support them is a no-op.
             _permissions: Optional filesystem permission rules enforced directly
                 by this middleware's tool implementations.
 

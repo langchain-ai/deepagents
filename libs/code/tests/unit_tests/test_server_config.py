@@ -375,8 +375,8 @@ class TestServerConfigEdgeCases:
 
         assert restored.enable_interpreter is False
 
-    def test_malformed_rubric_max_iterations_env_uses_default(self) -> None:
-        """Bad optional rubric iteration config must not break graph startup."""
+    def test_malformed_rubric_max_iterations_env_uses_sdk_default(self) -> None:
+        """Bad optional rubric iteration config must fall back to SDK default."""
         with patch.dict(
             os.environ,
             {f"{SERVER_ENV_PREFIX}RUBRIC_MAX_ITERATIONS": "abc"},
@@ -384,7 +384,7 @@ class TestServerConfigEdgeCases:
         ):
             restored = ServerConfig.from_env()
 
-        assert restored.rubric_max_iterations == 3
+        assert restored.rubric_max_iterations is None
 
     def test_rubric_max_iterations_env_parses_int(self) -> None:
         """Valid rubric iteration config survives the server env boundary."""

@@ -212,6 +212,30 @@ class TestMCPCommand:
         assert "reconnect" in keywords
 
 
+class TestGoalCommand:
+    """Validate the `/goal` entry specifically.
+
+    `/goal` aliases the shared rubric grader controls (`model`,
+    `max-iterations`), so the entry must advertise them in the argument hint
+    and surface them via keyword search so goal-first users can discover
+    grader tuning without knowing about `/rubric`.
+    """
+
+    def test_goal_argument_hint_advertises_grader_aliases(self) -> None:
+        goal_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/goal")
+        assert "model" in goal_cmd.argument_hint
+        assert "max-iterations" in goal_cmd.argument_hint
+
+    def test_goal_hidden_keywords_cover_grader_search(self) -> None:
+        goal_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/goal")
+        keywords = goal_cmd.hidden_keywords.split()
+        assert {"grader", "grading", "model", "iterations"} <= set(keywords)
+
+    def test_goal_hidden_keywords_retain_acceptance(self) -> None:
+        goal_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/goal")
+        assert "acceptance" in goal_cmd.hidden_keywords.split()
+
+
 class TestCopyCommand:
     """Validate the `/copy` entry specifically."""
 

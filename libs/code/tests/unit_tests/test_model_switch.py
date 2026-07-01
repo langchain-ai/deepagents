@@ -329,6 +329,36 @@ class TestModelSwitchNoOp:
         # Stable, key-sorted JSON in the echoed suffix.
         assert 'with model params {"num_ctx": 16384, "temperature": 0.2}' in message
 
+    async def test_same_model_with_new_params_refreshes_status_effort(self) -> None:
+        """Same-model param updates should refresh the status bar effort."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # ty: ignore
+        app._status_bar = Mock()  # ty: ignore
+        app._agent = _make_remote_agent()
+
+        settings.model_name = "gpt-5.5"
+        settings.model_provider = "openai"
+
+        with patch(
+            "deepagents_code.model_config.get_provider_auth_status",
+            return_value=ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider="openai",
+                env_var="OPENAI_API_KEY",
+                source=ProviderAuthSource.ENV,
+            ),
+        ):
+            await app._switch_model(
+                "openai:gpt-5.5",
+                extra_kwargs={"reasoning": {"effort": "low", "summary": "auto"}},
+            )
+
+        app._status_bar.set_model.assert_called_once_with(  # ty: ignore[unresolved-attribute]
+            provider="openai",
+            model="gpt-5.5",
+            effort="low",
+        )
+
     async def test_same_model_without_params_clears_prior_override(self) -> None:
         """Re-selecting the same model with no params must clear stale params.
 

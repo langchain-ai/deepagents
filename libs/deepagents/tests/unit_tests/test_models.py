@@ -2551,8 +2551,19 @@ class TestNemotronToolCallShimPathArg:
         return NemotronToolCallShim()
 
     def test_remaps_path_to_file_path_for_fs_tools(self) -> None:
+        from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
+            _NEMOTRON_DEFAULT_READ_LIMIT,
+        )
+
         mw = self._mw()
-        for tool in ("read_file", "write_file", "edit_file"):
+        # read_file also gets a whole-file limit default injected (see the read-limit
+        # tests below); write_file/edit_file only get the path remap.
+        expected = {
+            "read_file": {"file_path": "/app/x.txt", "limit": _NEMOTRON_DEFAULT_READ_LIMIT},
+            "write_file": {"file_path": "/app/x.txt"},
+            "edit_file": {"file_path": "/app/x.txt"},
+        }
+        for tool, exp in expected.items():
             seen = {}
 
             def handler(req, _s=seen):
@@ -2560,7 +2571,7 @@ class TestNemotronToolCallShimPathArg:
                 return "ok"
 
             mw.wrap_tool_call(self._req(tool, {"path": "/app/x.txt"}), handler)
-            assert seen["args"] == {"file_path": "/app/x.txt"}, tool
+            assert seen["args"] == exp, tool
 
     def test_preserves_other_args_when_remapping(self) -> None:
         mw = self._mw()
@@ -2574,6 +2585,27 @@ class TestNemotronToolCallShimPathArg:
         assert seen["args"] == {"file_path": "/a", "content": "hi"}
 
     def test_no_op_when_file_path_present(self) -> None:
+        # Use write_file so the read-limit default (read_file only) doesn't apply here;
+        # this test isolates the path-remap no-op.
+        mw = self._mw()
+        seen = {}
+
+        def handler(req):
+            seen["args"] = dict(req.tool_call["args"])
+            return "ok"
+
+        mw.wrap_tool_call(self._req("write_file", {"file_path": "/a", "content": "x"}), handler)
+        assert seen["args"] == {"file_path": "/a", "content": "x"}
+
+    def test_read_file_gets_whole_file_limit_when_omitted(self) -> None:
+        # A read_file with no explicit limit gets the 100-line window by default, which
+        # forces paging of large files (and the continuation notice nags it to keep
+        # paging). Inject a whole-file-sized default so a normal source file reads in one
+        # call.
+        from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
+            _NEMOTRON_DEFAULT_READ_LIMIT,
+        )
+
         mw = self._mw()
         seen = {}
 
@@ -2582,7 +2614,47 @@ class TestNemotronToolCallShimPathArg:
             return "ok"
 
         mw.wrap_tool_call(self._req("read_file", {"file_path": "/a"}), handler)
-        assert seen["args"] == {"file_path": "/a"}
+        assert seen["args"] == {"file_path": "/a", "limit": _NEMOTRON_DEFAULT_READ_LIMIT}
+        # Big enough to read a normal source file whole, but bounded (kept under the
+        # ~20k-token tool-result eviction threshold) rather than unbounded.
+        assert _NEMOTRON_DEFAULT_READ_LIMIT >= 2000
+
+    def test_read_file_explicit_limit_is_preserved(self) -> None:
+        mw = self._mw()
+        seen = {}
+
+        def handler(req):
+            seen["args"] = dict(req.tool_call["args"])
+            return "ok"
+
+        mw.wrap_tool_call(self._req("read_file", {"file_path": "/a", "limit": 50}), handler)
+        assert seen["args"] == {"file_path": "/a", "limit": 50}
+
+    def test_read_file_limit_and_path_remap_apply_together(self) -> None:
+        from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
+            _NEMOTRON_DEFAULT_READ_LIMIT,
+        )
+
+        mw = self._mw()
+        seen = {}
+
+        def handler(req):
+            seen["args"] = dict(req.tool_call["args"])
+            return "ok"
+
+        mw.wrap_tool_call(self._req("read_file", {"path": "/a"}), handler)
+        assert seen["args"] == {"file_path": "/a", "limit": _NEMOTRON_DEFAULT_READ_LIMIT}
+
+    def test_write_file_does_not_get_read_limit(self) -> None:
+        mw = self._mw()
+        seen = {}
+
+        def handler(req):
+            seen["args"] = dict(req.tool_call["args"])
+            return "ok"
+
+        mw.wrap_tool_call(self._req("write_file", {"file_path": "/a", "content": "x"}), handler)
+        assert "limit" not in seen["args"]
 
     def test_no_op_for_other_tools(self) -> None:
         mw = self._mw()

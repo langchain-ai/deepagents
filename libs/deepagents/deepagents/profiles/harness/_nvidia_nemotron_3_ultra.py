@@ -113,6 +113,16 @@ def _tool_content_is_empty(content: str | list[Any] | None) -> bool:
 # these with the key `path` instead, so the shim below remaps it.
 _FILE_PATH_TOOLS: frozenset[str] = frozenset({"read_file", "write_file", "edit_file"})
 
+# Whole-file read window injected when `read_file` is called without an explicit
+# `limit`. The stock default is 100 lines (FilesystemMiddleware), which forces the
+# model to page multi-hundred-line files in 100-line windows — and the continuation
+# notice then nags it to keep paging, burning turns re-reading the same file to build
+# understanding. 2000 (the backend's own default) reads a normal source file in one
+# call. Deliberately NOT unbounded: a read whose output exceeds the ~20k-token
+# tool-result eviction threshold gets summarized out of context, which would
+# re-trigger the re-read we are trying to eliminate.
+_NEMOTRON_DEFAULT_READ_LIMIT = 2000
+
 
 class NemotronToolCallShim(AgentMiddleware):
     """Fix Nemotron's tool-call payload quirks at the `wrap_tool_call` layer.
@@ -120,14 +130,17 @@ class NemotronToolCallShim(AgentMiddleware):
     Two Nemotron-specific tool-call compatibility fixes, kept in one interceptor
     (same hook, same concern) rather than separate middleware:
 
-    - Request side (`_fix_args`): Nemotron frequently calls `read_file`/`write_file`/
-      `edit_file` with `{"path": ...}` instead of the schema-required
-      `{"file_path": ...}`, and does not self-correct — it re-issues the same wrong
-      key and burns turns on the `pydantic ValidationError: file_path Field
-      required`. This renames the key before the tool runs (scoped to those tools, so
-      `ls` etc. keep their legitimate `path`); the tool's own path validation still
-      runs on the value. Covers structured and text-parsed calls. No-op when
-      `file_path` is already present or `path` is absent.
+    - Request side (`_fix_args`): two request-arg fixes for filesystem tools.
+      (a) Nemotron frequently calls `read_file`/`write_file`/`edit_file` with
+      `{"path": ...}` instead of the schema-required `{"file_path": ...}`, and does
+      not self-correct — it re-issues the same wrong key and burns turns on the
+      `pydantic ValidationError: file_path Field required`. This renames the key
+      before the tool runs (scoped to those tools, so `ls` etc. keep their legitimate
+      `path`); the tool's own path validation still runs on the value. Covers
+      structured and text-parsed calls. No-op when `file_path` is already present or
+      `path` is absent. (b) When `read_file` omits `limit`, inject a whole-file window
+      (`_NEMOTRON_DEFAULT_READ_LIMIT`) so a normal source file is read in one call
+      instead of paged in 100-line windows; an explicit `limit` is left untouched.
     - Result side (`_normalize`): `ChatNVIDIA`'s payload builder rejects a
       `role="tool"` message whose content normalizes to null (an empty string
       collapses to null), crashing the run. This coerces empty/None tool content to
@@ -143,13 +156,22 @@ class NemotronToolCallShim(AgentMiddleware):
     @staticmethod
     def _fix_args(request: ToolCallRequest) -> ToolCallRequest:
         tool_call = request.tool_call
-        if tool_call.get("name") not in _FILE_PATH_TOOLS:
+        name = tool_call.get("name")
+        if name not in _FILE_PATH_TOOLS:
             return request
-        args = tool_call.get("args") or {}
-        if "path" not in args or "file_path" in args:
+        new_args = dict(tool_call.get("args") or {})
+        changed = False
+        # Remap Nemotron's `{"path": ...}` to the schema-required `{"file_path": ...}`.
+        if "path" in new_args and "file_path" not in new_args:
+            new_args["file_path"] = new_args.pop("path")
+            changed = True
+        # Read the whole file in one call when the model omits `limit` (see
+        # `_NEMOTRON_DEFAULT_READ_LIMIT`); an explicit `limit` is left untouched.
+        if name == "read_file" and "limit" not in new_args:
+            new_args["limit"] = _NEMOTRON_DEFAULT_READ_LIMIT
+            changed = True
+        if not changed:
             return request
-        new_args = {k: v for k, v in args.items() if k != "path"}
-        new_args["file_path"] = args["path"]
         return request.override(tool_call={**tool_call, "args": new_args})
 
     @staticmethod

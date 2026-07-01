@@ -1449,10 +1449,11 @@ class ToolCallMessage(Vertical):
         if not output:
             return False
 
-        # `read_file` collapses its content entirely by default (the header
-        # already names the file), so any output that formats to something is
-        # expandable regardless of size.
-        if self._tool_name == "read_file":
+        # Successful `read_file` collapses its content entirely by default (the
+        # header already names the file), so any output that formats to
+        # something is expandable regardless of size. Errors stay on the normal
+        # truncation path because `set_error` force-expands short diagnostics.
+        if self._tool_name == "read_file" and self._status != "error":
             return bool(
                 self._format_output(output, is_preview=False).content.plain.strip()
             )

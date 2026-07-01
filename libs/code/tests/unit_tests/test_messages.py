@@ -1209,6 +1209,35 @@ class TestToolCallMessageExpandHint:
             assert "line 0" in full.plain
             assert "line 2" in full.plain
 
+    async def test_short_read_file_error_force_expanded_has_no_collapse_hint(
+        self,
+    ) -> None:
+        """Short `read_file` errors stay visible and non-collapsible."""
+        error = "Permission denied"
+
+        app = _tool_msg_app("read_file", {"path": "/etc/passwd"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_error(error)
+            await pilot.pause()
+
+            assert app.msg._expanded is True
+            assert app.msg._hint_widget is not None
+            assert app.msg._hint_widget.display is False
+            assert app.msg._has_expandable_output() is False
+            assert app.msg._full_row is not None
+            assert app.msg._full_row.display is True
+            assert app.msg._full_widget is not None
+            full = app.msg._full_widget._Static__content  # ty: ignore
+            assert error in full.plain
+
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            assert app.msg._expanded is True
+            assert app.msg._hint_widget.display is False
+            assert app.msg._full_row.display is True
+
 
 class TestToolCallMessageEmptyResult:
     """Empty file-op results render nothing instead of an empty box."""

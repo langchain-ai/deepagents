@@ -1307,7 +1307,11 @@ class TestNemotronUltraProfile:
         out = mw.after_model(state, None)
         assert out["jump_to"] == "model"
         assert out["plan_adherence_nudged"] is True
-        assert "Re-read /tmp/plan.md" in out["messages"][0].content
+        content = out["messages"][0].content
+        # Task-anchored: reconcile against the TASK (not only the plan), so a plan that
+        # under-covers still gets caught.
+        assert "plan.md" in content
+        assert "TASK" in content
         # Fires once.
         assert mw.after_model({**state, "plan_adherence_nudged": True}, None) is None
 

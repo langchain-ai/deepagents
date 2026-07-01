@@ -784,10 +784,11 @@ _PLAN_FIRST_NUDGE = (
     "behaves, run it on concrete inputs and read the output instead of re-reading the "
     "source; build a small runnable check early that runs your artifact and the task's "
     "reference (or provided examples) on the same inputs and diffs them, and iterate "
-    "against what you observe until they match. Your check must exercise EVERY case, "
-    "mode, and parameter value the task names — including the false/empty/zero and "
-    "multi-item ones, not just the default — because a check that skips a required "
-    "case proves nothing about that case."
+    "against what you observe until they match. Cover EVERY case the task specifies — "
+    "every value of every parameter, both states of every boolean flag (test it ON and "
+    "OFF), and the non-trivial configs (more than one worker/shard/item), not just the "
+    "default or degenerate one. A check that skips a required case proves nothing about "
+    "that case."
 )
 
 
@@ -804,14 +805,16 @@ _PLAN_MISSING_NUDGE = (
     "verify by running — then carry it out. Do not finish without it."
 )
 _PLAN_ADHERENCE_NUDGE = (
-    "STOP — do not finish yet. Re-read /tmp/plan.md and check your work against it, line "
-    "by line. For EVERY verification step and every case, mode, or configuration you "
-    "planned to test, confirm you ACTUALLY ran it and saw it pass — not that you meant "
-    "to, that you did. If you planned to test something (a parameter value, a "
-    "multi-worker or otherwise non-trivial configuration, an edge case) and skipped it "
-    "or only ran the easy/degenerate version, that is unfinished work: run it now and "
-    "fix whatever it surfaces. You are done only when every check your own plan lists "
-    "has actually run and passed."
+    "STOP — do not finish yet. Re-read BOTH the TASK and /tmp/plan.md, and check your "
+    "work against them line by line. For every case, mode, parameter value, and flag "
+    "state the TASK specifies — not only the ones your plan happened to list — confirm "
+    "you ACTUALLY ran it and saw it pass, not that you meant to. In particular: every "
+    "value of every parameter, both states of every boolean flag (run it with the flag "
+    "ON and with it OFF), and the non-trivial configurations (more than one "
+    "worker/shard/item), not just the default or degenerate case. If the task calls for "
+    "a case you skipped — or only ran the easy/degenerate version of — that is "
+    "unfinished work: run it now and fix whatever it surfaces. You are done only when "
+    "every case the task requires has actually run and passed."
 )
 
 

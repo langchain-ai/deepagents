@@ -742,6 +742,9 @@ OPTIONAL_AUTH_ENV: dict[str, str] = {"ollama": "OLLAMA_API_KEY"}
 PROVIDER_HOST_ENV: dict[str, str] = {"ollama": "OLLAMA_HOST"}
 """Provider-specific env vars that can point a local provider at a remote host."""
 
+PROVIDER_CUSTOM_HEADERS_ENV: dict[str, str] = {"anthropic": "ANTHROPIC_CUSTOM_HEADERS"}
+"""Provider SDK env vars that inject custom request headers (e.g. gateway auth)."""
+
 OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
 """Default endpoint assumed when no `base_url` or `OLLAMA_HOST` is configured."""
 
@@ -2188,6 +2191,16 @@ def _apply_stored_base_url(provider: str, base_url: str | None) -> None:
             os.environ[name] = base_url
         else:
             os.environ.pop(name, None)
+
+    # A provider SDK's custom-header env var (e.g. `ANTHROPIC_CUSTOM_HEADERS`)
+    # injects headers into every request. A gateway-provisioned environment
+    # often sets it to `X-Api-Key: <gateway-key>`, which overrides the SDK's
+    # own `api_key`-derived header. When switching to a provider-native key
+    # (no stored `base_url`), that header must also be cleared — otherwise the
+    # gateway key is sent to the native endpoint and rejected.
+    custom_headers_env = PROVIDER_CUSTOM_HEADERS_ENV.get(provider)
+    if custom_headers_env and not base_url:
+        os.environ.pop(custom_headers_env, None)
 
 
 def warn_on_split_credential_source(provider: str) -> None:

@@ -701,6 +701,62 @@ class CompletionPressureMiddleware(AgentMiddleware):
         return self._pressure(state)
 
 
+# Filesystem tools that write identifiers to disk, where spec-fidelity mistakes land.
+_SPEC_FIDELITY_TOOLS: frozenset[str] = frozenset({"write_file", "edit_file"})
+
+# Appended to each successful write_file/edit_file result. Nemotron under-weights
+# standing system-prompt guidance (the "reproduce identifiers verbatim" rule is
+# ignored even when stated prominently) but attends to in-loop interventions, so the
+# discipline is delivered at the moment of highest risk — just after it commits
+# identifiers to disk — prompting the next turn to re-check against the task and edit
+# any mismatch. General wording (no task-specific example) so it does not overfit.
+_SPEC_FIDELITY_REMINDER = (
+    "Spec check: re-read the task and confirm that every name, field, path, and output "
+    "format in the file you just wrote matches the task's wording exactly — reproduce "
+    "each spelling verbatim, and edit any that differ. If the task spells two related "
+    "things differently, that difference is intentional; do not normalize or unify them."
+)
+
+
+class SpecFidelityMiddleware(AgentMiddleware):
+    """Append a spec-fidelity re-check reminder to successful write/edit results.
+
+    Nemotron under-weights standing system-prompt guidance — the "reproduce every
+    identifier verbatim" rule is ignored even when stated prominently — but it attends
+    to in-loop interventions (injected messages, tool results). Rather than state the
+    discipline once in the prompt, this delivers it at the moment of highest risk: just
+    after the model commits identifiers to disk with `write_file`/`edit_file`, it
+    appends a reminder so the next turn re-checks the file's names/paths/formats against
+    the task and can `edit_file` any mismatch. Stateless; a no-op for non-write tools,
+    failed writes, and non-`ToolMessage` results.
+
+    Implements BOTH sync and async `wrap_tool_call` hooks, since Deep Agents runs tools
+    asynchronously.
+    """
+
+    name = "SpecFidelityMiddleware"
+
+    @staticmethod
+    def _augment(result: ToolMessage | Command[Any]) -> ToolMessage | Command[Any]:
+        if isinstance(result, ToolMessage) and result.name in _SPEC_FIDELITY_TOOLS and result.status == "success" and isinstance(result.content, str):
+            return result.model_copy(update={"content": f"{result.content}\n\n{_SPEC_FIDELITY_REMINDER}"})
+        return result
+
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
+    ) -> ToolMessage | Command[Any]:
+        return self._augment(handler(request))
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+    ) -> ToolMessage | Command[Any]:
+        return self._augment(await handler(request))
+
+
 def _build_extra_middleware() -> list[AgentMiddleware]:
     """Build fresh middleware instances for each assembled stack.
 
@@ -721,6 +777,7 @@ def _build_extra_middleware() -> list[AgentMiddleware]:
             jitter=False,
         ),
         NemotronToolCallShim(),
+        SpecFidelityMiddleware(),
         NemotronTextToolCallParser(),
         CompletionPressureMiddleware(),
         RambleMiddleware(),

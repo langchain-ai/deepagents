@@ -1239,12 +1239,32 @@ class TestNemotronUltraProfile:
             "ReadFileContinuationNoticeMiddleware",
             "ToolRetryMiddleware",
             "NemotronToolCallShim",
+            "SpecFidelityMiddleware",
             "NemotronTextToolCallParser",
             "CompletionPressureMiddleware",
             "RambleMiddleware",
             "VerifyBeforeFinalizeMiddleware",
             "StallBreakerMiddleware",
         ]
+
+    def test_spec_fidelity_augments_successful_writes_only(self) -> None:
+        """Reminder appended to successful write/edit results; no-op otherwise."""
+        from langchain_core.messages import ToolMessage  # noqa: PLC0415
+
+        from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
+            SpecFidelityMiddleware,
+        )
+
+        aug = SpecFidelityMiddleware._augment
+        wrote = aug(ToolMessage(content="Updated file /app/x.proto", name="write_file", tool_call_id="t1", status="success"))
+        assert "Spec check" in wrote.content
+        edited = aug(ToolMessage(content="Successfully replaced 1 instance", name="edit_file", tool_call_id="t2", status="success"))
+        assert "Spec check" in edited.content
+        # No-op: failed write, non-write tool, ordinary success from another tool.
+        failed = aug(ToolMessage(content="err", name="write_file", tool_call_id="t3", status="error"))
+        assert failed.content == "err"
+        other = aug(ToolMessage(content="['/app']", name="ls", tool_call_id="t4", status="success"))
+        assert other.content == "['/app']"
 
     def test_nemotron_ultra_does_not_apply_to_other_nvidia_models(self) -> None:
         """Per-model keys keep other NVIDIA-catalog models unchanged."""

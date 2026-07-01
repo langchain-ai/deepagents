@@ -17,8 +17,12 @@ if TYPE_CHECKING:
     from deepagents_code.app import DeepAgentsApp
 
 
-CwdSwitchChoice = Literal["switch", "stay"]
-"""Outcome of the cwd switch prompt."""
+CwdSwitchChoice = Literal["switch", "stay", "abort"]
+"""Outcome of the cwd switch prompt.
+
+`"abort"` is only offered when the prompt is opened with `allow_abort=True`
+(launch-time `-r` resume) and means "don't resume; start a new session".
+"""
 
 
 class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
@@ -30,6 +34,7 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("enter", "switch", "Switch", show=False, priority=True),
         Binding("escape", "stay", "Stay", show=False, priority=True),
+        Binding("a", "abort", "Abort", show=False, priority=True),
         Binding(
             "ctrl+c",
             "quit_or_interrupt",
@@ -81,12 +86,14 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         current_cwd: str,
         thread_cwd: str,
         project_settings_change_detected: bool = False,
+        allow_abort: bool = False,
     ) -> None:
         """Initialize the prompt."""
         super().__init__()
         self._current_cwd = current_cwd
         self._thread_cwd = thread_cwd
         self._project_settings_change_detected = project_settings_change_detected
+        self._allow_abort = allow_abort
 
     def _body_text(self) -> str:
         """Return the prompt body text."""
@@ -98,6 +105,11 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
             if self._project_settings_change_detected
             else ""
         )
+        abort_note = (
+            "\n\nOr abort to start a new session instead of resuming."
+            if self._allow_abort
+            else ""
+        )
         return (
             "This thread was last used from:\n"
             f"  {target}\n\n"
@@ -106,7 +118,7 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
             "Switch if you want local context, project instructions, skills, "
             "MCP config, and env files to match the original directory. Stay "
             "here if you intentionally want to continue this thread against "
-            f"the current directory.{settings_note}"
+            f"the current directory.{settings_note}{abort_note}"
         )
 
     def compose(self) -> ComposeResult:
@@ -126,8 +138,13 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
                 classes="cwd-switch-body",
                 markup=False,
             )
+            help_text = (
+                "Enter: switch · Esc: stay here · A: don't resume"
+                if self._allow_abort
+                else "Enter: switch · Esc: stay here"
+            )
             yield Static(
-                "Enter: switch · Esc: stay here",
+                help_text,
                 classes="cwd-switch-help",
                 markup=False,
             )
@@ -143,6 +160,12 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
     def action_stay(self) -> None:
         """Dismiss with `stay`."""
         self.dismiss("stay")
+
+    def action_abort(self) -> None:
+        """Dismiss with `abort` to skip the resume, when the prompt allows it."""
+        if not self._allow_abort:
+            return
+        self.dismiss("abort")
 
     def action_cancel(self) -> None:
         """Treat cancellation as staying in the current cwd."""

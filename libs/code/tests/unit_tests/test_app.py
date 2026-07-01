@@ -13836,6 +13836,115 @@ class TestResolveResumeThread:
 
             assert app._should_adopt_resumed_model is True
 
+    async def test_abort_starts_new_thread(self) -> None:
+        """Choosing abort in the cwd prompt starts a fresh thread."""
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._resume_thread_intent = "some-thread"
+            app._offer_thread_cwd_switch = AsyncMock(  # ty: ignore[invalid-assignment]
+                return_value="abort"
+            )
+            with (
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value="coder"),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._lc_thread_id != "some-thread"
+            assert app._assistant_id == "agent"
+            assert app._should_adopt_resumed_model is False
+
+    async def test_abort_most_recent_starts_new_thread(self) -> None:
+        """Aborting a bare `-r` cwd prompt also starts a fresh thread."""
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._resume_thread_intent = "__MOST_RECENT__"
+            app._offer_thread_cwd_switch = AsyncMock(  # ty: ignore[invalid-assignment]
+                return_value="abort"
+            )
+            with (
+                patch(
+                    "deepagents_code.sessions.get_most_recent",
+                    AsyncMock(return_value="recent-thread"),
+                ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value="coder"),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._lc_thread_id != "recent-thread"
+            assert app._should_adopt_resumed_model is False
+
+    async def test_resume_offers_abort_option_at_launch(self) -> None:
+        """The launch-time cwd prompt is invoked with `allow_abort=True`."""
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._resume_thread_intent = "some-thread"
+            offer = AsyncMock(return_value="continue")
+            app._offer_thread_cwd_switch = offer  # ty: ignore[invalid-assignment]
+            with (
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value=None),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert offer.await_args is not None
+            assert offer.await_args.kwargs["allow_abort"] is True
+            assert app._lc_thread_id == "some-thread"
+
+    async def test_abort_syncs_session_state_to_fresh_thread(self) -> None:
+        """Aborting points session state at the fresh id, not the declined thread.
+
+        Guards the race where `_init_session_state` captures the candidate
+        thread into `session_state.thread_id` while the cwd prompt is open: the
+        finally-block sync must overwrite it with the fresh id on abort.
+        """
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            # Simulate session state having captured the candidate mid-prompt.
+            app._session_state.thread_id = "some-thread"
+            app._resume_thread_intent = "some-thread"
+            app._offer_thread_cwd_switch = AsyncMock(  # ty: ignore[invalid-assignment]
+                return_value="abort"
+            )
+            with (
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value="coder"),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._lc_thread_id != "some-thread"
+            assert app._session_state.thread_id == app._lc_thread_id
+
 
 def _missing_dep_entry(
     tool: str = "ripgrep",

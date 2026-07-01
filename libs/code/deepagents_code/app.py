@@ -3478,7 +3478,10 @@ class DeepAgentsApp(App):
         """Resolve a `-r` resume intent into a concrete thread ID.
 
         Consumes `self._resume_thread_intent` and resolves it into a concrete
-        thread ID. Mutates `self._lc_thread_id` and optionally
+        thread ID. When the intent resolves to an existing thread whose cwd
+        differs from the current one, the cwd-switch prompt is shown with an
+        extra "abort" option; choosing it starts a fresh thread instead of
+        resuming. Mutates `self._lc_thread_id` and optionally
         `self._assistant_id` / `self._server_kwargs`. Does NOT touch
         `self._default_assistant_id` — a one-off resume should not redefine
         the user's persisted default agent. Falls back to a fresh thread on
@@ -3492,7 +3495,6 @@ class DeepAgentsApp(App):
             thread_exists,
         )
 
-        resumed_thread_id: str | None = None
         try:
             resume = self._resume_thread_intent
             self._resume_thread_intent = None  # consumed
@@ -3502,37 +3504,24 @@ class DeepAgentsApp(App):
 
             default_agent = DEFAULT_ASSISTANT_ID
 
-            if resume == "__MOST_RECENT__":
+            # Resolve the candidate thread id before any agent/model mutation,
+            # so an abort only needs to reset the thread id (no rollback).
+            via_most_recent = resume == "__MOST_RECENT__"
+            if via_most_recent:
                 agent_filter = (
                     self._assistant_id if self._assistant_id != default_agent else None
                 )
-                thread_id = await get_most_recent(agent_filter)
-                if thread_id:
-                    agent_name = await get_thread_agent(thread_id)
-                    if agent_name:
-                        self._assistant_id = agent_name
-                        if self._server_kwargs:
-                            self._server_kwargs["assistant_id"] = agent_name
-                    self._lc_thread_id = thread_id
-                    resumed_thread_id = thread_id
-                    self._should_adopt_resumed_model = not self._model_explicitly_set
-                else:
+                candidate = await get_most_recent(agent_filter)
+                if not candidate:
                     self._lc_thread_id = generate_thread_id()
                     if agent_filter:
                         msg = f"No previous threads for '{agent_filter}', starting new."
                     else:
                         msg = "No previous threads, starting new."
                     self.notify(msg, severity="warning", markup=False)
+                    return
             elif await thread_exists(resume):
-                self._lc_thread_id = resume
-                resumed_thread_id = resume
-                self._should_adopt_resumed_model = not self._model_explicitly_set
-                if self._assistant_id == default_agent:
-                    agent_name = await get_thread_agent(resume)
-                    if agent_name:
-                        self._assistant_id = agent_name
-                        if self._server_kwargs:
-                            self._server_kwargs["assistant_id"] = agent_name
+                candidate = resume
             else:
                 # Thread not found — notify + fall back to new thread
                 self._lc_thread_id = generate_thread_id()
@@ -3541,27 +3530,60 @@ class DeepAgentsApp(App):
                 if similar:
                     hint += f" Did you mean: {', '.join(str(t) for t in similar)}?"
                 self.notify(hint, severity="warning", timeout=6, markup=False)
-            if resumed_thread_id is not None:
-                # The cwd-switch offer is a post-resolution convenience. Isolate
-                # its failures so they can't fall into the resume-resolution
-                # handler below, which would discard the already-resolved thread
-                # and misleadingly report "Could not look up thread history."
-                try:
-                    await self._offer_thread_cwd_switch(
-                        resumed_thread_id,
-                        restart_server=False,
-                    )
-                except Exception:
-                    logger.exception(
-                        "cwd switch offer failed for resumed thread %s",
-                        resumed_thread_id,
-                    )
-                    self.notify(
-                        "Resumed the thread, but could not check its working "
-                        "directory. Local context may be stale.",
-                        severity="warning",
-                        markup=False,
-                    )
+                return
+
+            # Commit the resolved thread before the cwd-switch offer so a
+            # failure in that offer leaves the thread resolved (see the
+            # isolation guard below) rather than falling through to the
+            # resume-resolution handler.
+            self._lc_thread_id = candidate
+
+            # The cwd-switch prompt doubles as the resume confirmation: at
+            # launch it carries an extra "abort" option that starts a fresh
+            # session instead of resuming. Isolate its failures so they can't
+            # fall into the resume-resolution handler below, which would
+            # discard the already-resolved thread and misleadingly report
+            # "Could not look up thread history."
+            try:
+                cwd_choice = await self._offer_thread_cwd_switch(
+                    candidate,
+                    restart_server=False,
+                    allow_abort=True,
+                )
+            except Exception:
+                logger.exception(
+                    "cwd switch offer failed for resumed thread %s",
+                    candidate,
+                )
+                self.notify(
+                    "Resumed the thread, but could not check its working "
+                    "directory. Local context may be stale.",
+                    severity="warning",
+                    markup=False,
+                )
+                cwd_choice = "continue"
+
+            if cwd_choice == "abort":
+                # User declined the resume: start a fresh session and skip the
+                # agent/model adoption below so it inherits the launch default.
+                self._lc_thread_id = generate_thread_id()
+                self.notify(
+                    "Starting a new session.",
+                    severity="information",
+                    markup=False,
+                )
+                return
+
+            # Confirmed: adopt the thread's agent for this session (always for
+            # `-r`, and for an explicit id only when the user hasn't pinned a
+            # non-default agent), plus its persisted model.
+            self._should_adopt_resumed_model = not self._model_explicitly_set
+            if via_most_recent or self._assistant_id == default_agent:
+                agent_name = await get_thread_agent(candidate)
+                if agent_name:
+                    self._assistant_id = agent_name
+                    if self._server_kwargs:
+                        self._server_kwargs["assistant_id"] = agent_name
         except Exception:
             logger.exception("Failed to resolve resume thread %r", resume)
             self._lc_thread_id = generate_thread_id()
@@ -3570,12 +3592,16 @@ class DeepAgentsApp(App):
                 severity="warning",
             )
         finally:
+            # Sync the resolved (or fresh) thread id into session state before
+            # signaling completion. This must run in `finally` so an early
+            # return — a fallback to a new thread, or the user aborting the
+            # resume — can't leave `session_state.thread_id` pointing at a
+            # thread that was never adopted. `_init_session_state` may run
+            # concurrently and capture a not-yet-final id mid-prompt; this is
+            # the authoritative final write.
+            if self._session_state:
+                self._session_state.thread_id = self._lc_thread_id
             self._resume_thread_resolved_event.set()
-
-        # Update session state if ready (may still be initializing in a
-        # concurrent worker)
-        if self._session_state:
-            self._session_state.thread_id = self._lc_thread_id
 
     async def _start_server_background(self) -> None:
         """Background worker: resolve resume-thread intent, start server + MCP preload.
@@ -15043,6 +15069,7 @@ class DeepAgentsApp(App):
         thread_id: str,
         *,
         restart_server: bool,
+        allow_abort: bool = False,
     ) -> Literal["continue", "abort"]:
         """Offer to switch to a resumed thread's cwd when it differs.
 
@@ -15052,11 +15079,13 @@ class DeepAgentsApp(App):
                 switch replaces the app-owned server so the backend runs in the
                 new cwd. When False (launch-time resume), the server has not
                 started yet, so only the process cwd is changed.
+            allow_abort: When True (launch-time `-r` resume), the prompt offers a
+                third "abort" option that declines the resume entirely.
 
         Returns:
-            `"continue"` when resume may proceed, or `"abort"` when a requested
-                switch was accepted but failed (the caller should stop
-                the resume).
+            `"continue"` when resume may proceed, or `"abort"` when the user
+                declined the resume or a requested switch was accepted but
+                failed (the caller should stop the resume).
         """
         target = await self._thread_cwd_mismatch(thread_id)
         if target is None:
@@ -15072,8 +15101,11 @@ class DeepAgentsApp(App):
                 current_cwd=self._cwd,
                 thread_cwd=str(target),
                 project_settings_change_detected=project_settings_change_detected,
+                allow_abort=allow_abort,
             )
         )
+        if choice == "abort":
+            return "abort"
         if choice == "switch":
             if restart_server:
                 return await self._replace_server_after_cwd_switch(target)

@@ -1007,17 +1007,28 @@ class TestToolCallMessageSearchOutput:
 class TestToolCallMessageEditFileOutput:
     """edit_file hides its success result line but still surfaces errors."""
 
-    def test_edit_file_success_renders_no_lines(self) -> None:
-        """A successful edit shows no output — the status glyph speaks for it."""
+    def test_edit_file_success_preview_renders_no_lines(self) -> None:
+        """A successful edit preview stays hidden; the status glyph speaks for it."""
         msg = ToolCallMessage("edit_file", {"file_path": "/tmp/f.py"})
         msg._status = "success"
 
         result = msg._format_edit_file_output(
             "Successfully replaced 1 instance(s) of the string in '/tmp/f.py'",
-            is_preview=False,
+            is_preview=True,
         )
 
         assert result.content.plain == ""
+        assert result.truncation is None
+
+    def test_edit_file_success_full_renders_original_output(self) -> None:
+        """A successful edit's full output remains recoverable."""
+        msg = ToolCallMessage("edit_file", {"file_path": "/tmp/f.py"})
+        msg._status = "success"
+        output = "Successfully replaced 1 instance(s) of the string in '/tmp/f.py'"
+
+        result = msg._format_edit_file_output(output, is_preview=False)
+
+        assert result.content.plain == output
         assert result.truncation is None
 
     def test_edit_file_error_still_renders(self) -> None:
@@ -1031,14 +1042,13 @@ class TestToolCallMessageEditFileOutput:
 
         assert "String not found in file" in result.content.plain
 
-    async def test_edit_file_success_hides_output_rows(self) -> None:
-        """End to end: a successful edit_file leaves no visible output rows."""
+    async def test_edit_file_success_expands_to_original_output(self) -> None:
+        """End to end: a successful edit_file hides preview but expands to output."""
+        output = "Successfully replaced 2 instance(s) of the string in '/tmp/f.py'"
         app = _tool_msg_app("edit_file", {"file_path": "/tmp/f.py"})
         async with app.run_test() as pilot:
             await pilot.pause()
-            app.msg.set_success(
-                "Successfully replaced 2 instance(s) of the string in '/tmp/f.py'"
-            )
+            app.msg.set_success(output)
             await pilot.pause()
 
             assert app.msg._preview_row is not None
@@ -1046,8 +1056,17 @@ class TestToolCallMessageEditFileOutput:
             assert app.msg._hint_widget is not None
             assert app.msg._preview_row.display is False
             assert app.msg._full_row.display is False
-            assert app.msg._hint_widget.display is False
-            assert app.msg._has_expandable_output() is False
+            assert app.msg._hint_widget.display is True
+            assert app.msg._has_expandable_output() is True
+
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            assert app.msg._expanded is True
+            assert app.msg._preview_row.display is False
+            assert app.msg._full_row.display is True
+            full = app.msg._full_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert full.plain == output
 
 
 class TestToolCallMessageSuccessStatus:

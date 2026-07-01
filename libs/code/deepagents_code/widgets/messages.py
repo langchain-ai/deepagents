@@ -1254,7 +1254,12 @@ class ToolCallMessage(Vertical):
         if self._status_widget is None:
             return
         self._status_widget.remove_class("pending")
-        if self._format_output(self._output, is_preview=False).content.plain.strip():
+        if (
+            self._tool_name != "edit_file"
+            and self._format_output(
+                self._output, is_preview=False
+            ).content.plain.strip()
+        ):
             self._status_widget.remove_class("success")
             self._status_widget.display = False
             return
@@ -1471,13 +1476,18 @@ class ToolCallMessage(Vertical):
         # header already names the file), so it is always expandable regardless
         # of size: `output` is non-empty here (guarded above) and the file
         # formatter only reshapes the line-number gutter, never dropping body
-        # text, so it can never format to nothing. This mirrors the empty-output
-        # guard in `_update_output_display`, which suppresses any body that would
-        # render blank before the collapse branch is reached — the two must move
-        # together if that assumption changes. Errors are excluded because
-        # `set_error` force-expands every error; treating a short error as
-        # always-expandable would offer a collapse that hides it entirely.
-        if self._tool_name == "read_file" and self._status != "error":
+        # text, so it can never format to nothing. Successful `edit_file` hides
+        # its redundant success line in the collapsed view, but keeps that raw
+        # tool output available in the expanded view. This mirrors the
+        # empty-output guard in `_update_output_display`, which suppresses any
+        # body that would render blank before the collapse branch is reached —
+        # the two must move together if that assumption changes. Errors are
+        # excluded because `set_error` force-expands every error; treating a
+        # short error as always-expandable would offer a collapse that hides it
+        # entirely.
+        if (self._tool_name == "read_file" and self._status != "error") or (
+            self._tool_name == "edit_file" and self._status == "success"
+        ):
             return True
 
         if self._tool_name == "write_todos":
@@ -1786,15 +1796,17 @@ class ToolCallMessage(Vertical):
     def _format_edit_file_output(
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
-        """Render edit_file output, hiding the redundant success line.
+        """Render edit_file output, hiding success only in the preview.
 
-        On success the status glyph and the diff already convey the outcome, so
-        the "Successfully replaced ..." line adds nothing; errors still render.
+        On success the collapsed status glyph and the diff already convey the
+        outcome, so the "Successfully replaced ..." line is hidden by default.
+        The full rendering still shows the raw tool output so clicking the row
+        can recover the original message. Errors still render in both modes.
 
         Returns:
-            Empty FormattedOutput on success, otherwise the file formatter.
+            Empty preview on success, otherwise the file formatter.
         """
-        if self._status == "success":
+        if self._status == "success" and is_preview:
             return FormattedOutput(content=Content(""))
         return self._format_file_output(output, is_preview=is_preview)
 
@@ -2347,10 +2359,12 @@ class ToolCallMessage(Vertical):
             # Show collapsed preview
             self._full_row.display = False
             # `read_file` output just echoes the file the agent asked to read,
-            # and the path is already in the header, so the content is noise by
-            # default. Collapse it entirely (no preview) while keeping it
-            # expandable for when the user does want to see what was read.
-            if self._tool_name == "read_file":
+            # and `edit_file` success output repeats the status/diff. Collapse
+            # both entirely (no preview) while keeping the original output
+            # expandable for when the user does want to see it.
+            if self._tool_name == "read_file" or (
+                self._tool_name == "edit_file" and self._status == "success"
+            ):
                 self._preview_row.display = False
                 ellipsis = get_glyphs().ellipsis
                 self._hint_widget.update(

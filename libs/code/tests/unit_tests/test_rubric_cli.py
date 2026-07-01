@@ -198,7 +198,7 @@ class TestServerConfigRubric:
     def test_defaults(self) -> None:
         config = ServerConfig()
         assert config.rubric_model is None
-        assert config.rubric_max_iterations == 3
+        assert config.rubric_max_iterations is None
 
     def test_round_trip(self) -> None:
         original = ServerConfig(

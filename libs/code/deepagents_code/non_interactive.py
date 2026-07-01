@@ -1313,9 +1313,7 @@ async def run_non_interactive(
             interpreter_ptc=interpreter_ptc,
             interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
             rubric_model=rubric_model,
-            rubric_max_iterations=(
-                rubric_max_iterations if rubric_max_iterations is not None else 3
-            ),
+            rubric_max_iterations=rubric_max_iterations,
             mcp_config_path=mcp_config_path,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,

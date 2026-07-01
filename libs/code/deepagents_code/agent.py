@@ -1321,7 +1321,7 @@ def create_cli_agent(
     enable_shell: bool = True,
     enable_interpreter: bool = False,
     rubric_model: str | BaseChatModel | None = None,
-    rubric_max_iterations: int = 3,
+    rubric_max_iterations: int | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
     cwd: str | Path | None = None,
@@ -1403,8 +1403,9 @@ def create_cli_agent(
             A `'provider:model'` string or `BaseChatModel`.
 
             When `None`, the main `model` is reused.
-        rubric_max_iterations: Grader iterations per rubric attempt before the
-            agent terminates with `'max_iterations_reached'`.
+        rubric_max_iterations: Explicit grader iterations per rubric attempt
+            before the agent terminates with `'max_iterations_reached'`; `None`
+            uses the SDK default.
         checkpointer: Optional checkpointer for session persistence.
             When `None`, the graph is compiled without a checkpointer.
         mcp_server_info: MCP server metadata to surface in the system prompt.
@@ -1798,14 +1799,14 @@ def create_cli_agent(
             message="The middleware `RubricMiddleware` is in beta",
             category=Warning,
         )
-        agent_middleware.append(
-            RubricMiddleware(
-                model=rubric_model if rubric_model is not None else model,
-                system_prompt=_RUBRIC_GRADER_SYSTEM_PROMPT,
-                tools=_create_rubric_grader_tools(composite_backend),
-                max_iterations=rubric_max_iterations,
-            )
-        )
+        rubric_kwargs: dict[str, Any] = {
+            "model": rubric_model if rubric_model is not None else model,
+            "system_prompt": _RUBRIC_GRADER_SYSTEM_PROMPT,
+            "tools": _create_rubric_grader_tools(composite_backend),
+        }
+        if rubric_max_iterations is not None:
+            rubric_kwargs["max_iterations"] = rubric_max_iterations
+        agent_middleware.append(RubricMiddleware(**rubric_kwargs))
 
     # Create the agent
     all_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = [

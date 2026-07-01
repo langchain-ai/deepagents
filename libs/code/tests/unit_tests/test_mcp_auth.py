@@ -25,11 +25,15 @@ from deepagents_code.mcp_auth import (
     resolve_headers,
 )
 
+_RESOURCE_METADATA_URL = "https://mcp.example.com/.well-known/oauth-protected-resource"
+_BEARER_CHALLENGE = f'Bearer resource_metadata="{_RESOURCE_METADATA_URL}"'
+"""A minimal RFC 9728 Bearer challenge pointing at the resource metadata."""
+
 
 def _http_status_error(
     status_code: int,
     *,
-    headers: dict[str, str] | None = None,
+    headers: dict[str, str] | list[tuple[str, str]] | None = None,
 ) -> httpx.HTTPStatusError:
     """Build an `httpx.HTTPStatusError` with a canned response."""
     request = httpx.Request("GET", "https://mcp.example.com/")
@@ -887,35 +891,65 @@ class TestFindOauthChallenge:
     """Tests for detecting a 401 OAuth challenge in an exception tree."""
 
     def test_direct_401_with_challenge(self) -> None:
-        """A 401 carrying an RFC 9728 Bearer challenge is detected."""
+        """A 401 carrying an RFC 9728 Bearer challenge yields its URL."""
         exc = _http_status_error(
             401,
-            headers={
-                "WWW-Authenticate": (
-                    'Bearer resource_metadata="https://mcp.example.com/.well-known/'
-                    'oauth-protected-resource"'
-                )
-            },
+            headers={"WWW-Authenticate": _BEARER_CHALLENGE},
         )
-        assert find_oauth_challenge(exc) is True
+        assert find_oauth_challenge(exc) == _RESOURCE_METADATA_URL
 
     def test_401_header_match_is_case_insensitive(self) -> None:
-        """The header lookup ignores casing."""
+        """The scheme and parameter matching ignore casing."""
         exc = _http_status_error(
             401,
             headers={
                 "www-authenticate": (
-                    'bearer resource_METADATA="https://mcp.example.com/.well-known/'
-                    'oauth-protected-resource"'
+                    f'bearer resource_METADATA="{_RESOURCE_METADATA_URL}"'
                 )
             },
         )
-        assert find_oauth_challenge(exc) is True
+        assert find_oauth_challenge(exc) == _RESOURCE_METADATA_URL
+
+    def test_401_multiparam_bearer_challenge(self) -> None:
+        """`resource_metadata` is found after other Bearer auth-params."""
+        exc = _http_status_error(
+            401,
+            headers={
+                "WWW-Authenticate": (
+                    'Bearer error="invalid_token", '
+                    'error_description="The access token expired", '
+                    f'resource_metadata="{_RESOURCE_METADATA_URL}"'
+                )
+            },
+        )
+        assert find_oauth_challenge(exc) == _RESOURCE_METADATA_URL
+
+    def test_401_bearer_not_first_in_multischeme_line(self) -> None:
+        """A Bearer challenge behind another scheme on one line is detected."""
+        exc = _http_status_error(
+            401,
+            headers={"WWW-Authenticate": f'Basic realm="mcp", {_BEARER_CHALLENGE}'},
+        )
+        assert find_oauth_challenge(exc) == _RESOURCE_METADATA_URL
+
+    def test_401_bearer_across_repeated_headers(self) -> None:
+        """A Bearer challenge on a second `WWW-Authenticate` line is detected."""
+        exc = _http_status_error(
+            401,
+            headers=[
+                ("WWW-Authenticate", 'Basic realm="mcp"'),
+                (
+                    "WWW-Authenticate",
+                    _BEARER_CHALLENGE,
+                ),
+            ],
+        )
+        assert find_oauth_challenge(exc) == _RESOURCE_METADATA_URL
 
     def test_401_without_challenge_header_ignored(self) -> None:
         """A 401 lacking `WWW-Authenticate` is not an OAuth challenge."""
         exc = _http_status_error(401)
-        assert find_oauth_challenge(exc) is False
+        assert find_oauth_challenge(exc) is None
 
     def test_401_basic_challenge_ignored(self) -> None:
         """A non-OAuth auth challenge is not treated as an MCP login prompt."""
@@ -923,25 +957,31 @@ class TestFindOauthChallenge:
             401,
             headers={"WWW-Authenticate": 'Basic realm="mcp"'},
         )
-        assert find_oauth_challenge(exc) is False
+        assert find_oauth_challenge(exc) is None
 
     def test_401_bearer_without_resource_metadata_ignored(self) -> None:
-        """A generic Bearer challenge is not enough for OAuth discovery."""
-        exc = _http_status_error(401, headers={"WWW-Authenticate": "Bearer"})
-        assert find_oauth_challenge(exc) is False
+        """A Bearer challenge with params but no `resource_metadata` is ignored."""
+        exc = _http_status_error(
+            401,
+            headers={"WWW-Authenticate": 'Bearer realm="mcp"'},
+        )
+        assert find_oauth_challenge(exc) is None
+
+    def test_401_resource_metadata_substring_not_matched(self) -> None:
+        """`resource_metadata` embedded in another token is not a match."""
+        exc = _http_status_error(
+            401,
+            headers={"WWW-Authenticate": 'Bearer error="x_resource_metadata_y"'},
+        )
+        assert find_oauth_challenge(exc) is None
 
     def test_non_401_status_ignored(self) -> None:
         """Other status codes never count as a challenge."""
         exc = _http_status_error(
             403,
-            headers={
-                "WWW-Authenticate": (
-                    'Bearer resource_metadata="https://mcp.example.com/.well-known/'
-                    'oauth-protected-resource"'
-                )
-            },
+            headers={"WWW-Authenticate": _BEARER_CHALLENGE},
         )
-        assert find_oauth_challenge(exc) is False
+        assert find_oauth_challenge(exc) is None
 
     def test_found_inside_exception_group(self) -> None:
         """Nested exception groups are searched recursively."""
@@ -951,36 +991,36 @@ class TestFindOauthChallenge:
                 RuntimeError("x"),
                 _http_status_error(
                     401,
-                    headers={
-                        "WWW-Authenticate": (
-                            'Bearer resource_metadata="https://mcp.example.com/.well-known/'
-                            'oauth-protected-resource"'
-                        )
-                    },
+                    headers={"WWW-Authenticate": (_BEARER_CHALLENGE)},
                 ),
             ],
         )
-        assert find_oauth_challenge(exc) is True
+        assert find_oauth_challenge(exc) == _RESOURCE_METADATA_URL
 
     def test_found_via_cause_chain(self) -> None:
         """`raise X from HTTPStatusError(...)` is unwrapped."""
         challenge = _http_status_error(
             401,
-            headers={
-                "WWW-Authenticate": (
-                    'Bearer resource_metadata="https://mcp.example.com/.well-known/'
-                    'oauth-protected-resource"'
-                )
-            },
+            headers={"WWW-Authenticate": _BEARER_CHALLENGE},
         )
         wrapped = RuntimeError("wrapped")
         wrapped.__cause__ = challenge
-        assert find_oauth_challenge(wrapped) is True
+        assert find_oauth_challenge(wrapped) == _RESOURCE_METADATA_URL
 
-    def test_returns_false_when_absent(self) -> None:
-        """Trees without a 401 challenge yield `False`."""
+    def test_found_via_context_chain(self) -> None:
+        """Implicit chaining (`__context__`) is unwrapped, not only `__cause__`."""
+        challenge = _http_status_error(
+            401,
+            headers={"WWW-Authenticate": _BEARER_CHALLENGE},
+        )
+        wrapped = RuntimeError("wrapped")
+        wrapped.__context__ = challenge
+        assert find_oauth_challenge(wrapped) == _RESOURCE_METADATA_URL
+
+    def test_returns_none_when_absent(self) -> None:
+        """Trees without a 401 challenge yield `None`."""
         exc = ExceptionGroup("outer", [RuntimeError("x"), ValueError("y")])
-        assert find_oauth_challenge(exc) is False
+        assert find_oauth_challenge(exc) is None
 
     def test_handles_cyclic_chain(self) -> None:
         """Self-referencing `__context__` cycles terminate without recursion."""
@@ -988,7 +1028,7 @@ class TestFindOauthChallenge:
         b = RuntimeError("b")
         a.__context__ = b
         b.__context__ = a
-        assert find_oauth_challenge(a) is False
+        assert find_oauth_challenge(a) is None
 
 
 class TestFormatLoginFailure:

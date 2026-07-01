@@ -1605,20 +1605,46 @@ def find_reauth_required(exc: BaseException) -> MCPReauthRequiredError | None:
     return None
 
 
-def _has_oauth_resource_challenge(headers: httpx.Headers) -> bool:
-    values = headers.get_list("www-authenticate")
-    if not values:
-        return False
-    return any(
-        value.lstrip().lower().startswith("bearer ")
-        and re.search(r"(?:^|[\s,])resource_metadata\s*=", value, re.IGNORECASE)
-        is not None
-        for value in values
-    )
+_BEARER_SCHEME_RE = re.compile(r"(?:^|,)\s*bearer\b", re.IGNORECASE)
+"""Match a `Bearer` auth scheme at the start of a challenge or after a comma.
+
+A `WWW-Authenticate` line may list several schemes (RFC 7235); anchoring to
+the start or a preceding comma finds `Bearer` even when it isn't listed first.
+"""
+
+_RESOURCE_METADATA_RE = re.compile(
+    r'(?:^|[\s,])resource_metadata\s*=\s*"?([^",\s]+)',
+    re.IGNORECASE,
+)
+"""Capture the RFC 9728 `resource_metadata` URL from a Bearer challenge."""
 
 
-def find_oauth_challenge(exc: BaseException) -> bool:
-    """Return whether `exc`'s tree holds a 401 OAuth challenge response.
+def _oauth_resource_challenge(headers: httpx.Headers) -> str | None:
+    """Return the RFC 9728 `resource_metadata` URL from a Bearer challenge.
+
+    A single `WWW-Authenticate` header line may carry several comma-separated
+    challenges (RFC 7235), and a response may repeat the header. Scan every
+    value for a `Bearer` scheme — anywhere in the line, not only first — that
+    advertises a `resource_metadata` parameter.
+
+    Args:
+        headers: Response headers to inspect.
+
+    Returns:
+        The `resource_metadata` URL when a Bearer challenge carries one,
+            else `None`.
+    """
+    for value in headers.get_list("www-authenticate"):
+        if _BEARER_SCHEME_RE.search(value) is None:
+            continue
+        match = _RESOURCE_METADATA_RE.search(value)
+        if match is not None:
+            return match.group(1)
+    return None
+
+
+def find_oauth_challenge(exc: BaseException) -> str | None:
+    """Return the `resource_metadata` URL of a 401 OAuth challenge in `exc`.
 
     Per the MCP authorization spec (RFC 9728), a server requiring OAuth
     answers an unauthenticated request with HTTP 401 plus a Bearer
@@ -1631,8 +1657,8 @@ def find_oauth_challenge(exc: BaseException) -> bool:
         exc: Root exception to inspect.
 
     Returns:
-        `True` when a 401 response carrying a Bearer `resource_metadata`
-            challenge is found, `False` otherwise.
+        The `resource_metadata` URL when a 401 response carrying a Bearer
+            challenge is found, else `None`.
     """
     visited: set[int] = set()
     stack: list[BaseException] = [exc]
@@ -1644,17 +1670,17 @@ def find_oauth_challenge(exc: BaseException) -> bool:
         if isinstance(current, httpx.HTTPStatusError):
             response = current.response
             if (
-                response is not None
-                and response.status_code == 401  # noqa: PLR2004  # HTTP Unauthorized
-                and _has_oauth_resource_challenge(response.headers)
+                response is not None and response.status_code == 401  # noqa: PLR2004  # HTTP Unauthorized
             ):
-                return True
+                challenge = _oauth_resource_challenge(response.headers)
+                if challenge is not None:
+                    return challenge
         if isinstance(current, BaseExceptionGroup):
             stack.extend(current.exceptions)
         cause = current.__cause__ or current.__context__
         if cause is not None:
             stack.append(cause)
-    return False
+    return None
 
 
 async def _drive_handshake(connections: dict) -> None:

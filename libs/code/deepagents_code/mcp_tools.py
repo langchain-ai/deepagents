@@ -1569,8 +1569,27 @@ async def _load_tools_from_config(
                 find_reauth_required,
             )
 
-            reauth = find_reauth_required(exc)
             status: MCPServerStatus
+            try:
+                reauth = find_reauth_required(exc)
+                challenge_url = (
+                    find_oauth_challenge(exc)
+                    if transport in _SUPPORTED_REMOTE_TYPES
+                    else None
+                )
+            except Exception:
+                # Classifying the failure is best-effort. If a classifier
+                # itself raises, degrade this one server to a plain error
+                # rather than letting the exception abort tool loading for
+                # every remaining server.
+                reauth = None
+                challenge_url = None
+                logger.debug(
+                    "MCP server '%s': failed to classify discovery error",
+                    server_name,
+                    exc_info=True,
+                )
+
             if reauth is not None:
                 # Tokens existed (we checked above) but the OAuth provider
                 # fell back to interactive reauth — the refresh attempt
@@ -1592,10 +1611,11 @@ async def _load_tools_from_config(
                     server_name,
                     exc_info=True,
                 )
-            elif transport in _SUPPORTED_REMOTE_TYPES and find_oauth_challenge(exc):
-                # Server answered with a 401 OAuth challenge (RFC 9728) but
-                # the config never opted into OAuth. Surface it as
-                # unauthenticated so the user can log in, rather than as an
+            elif challenge_url is not None:
+                # A remote server answered with a 401 OAuth challenge
+                # (RFC 9728) that wasn't already handled as a token refresh —
+                # typically a server not opted into OAuth in config. Surface it
+                # as unauthenticated so the user can log in, rather than as an
                 # opaque connection error.
                 status = "unauthenticated"
                 error = (
@@ -1608,8 +1628,9 @@ async def _load_tools_from_config(
                     error,
                 )
                 logger.debug(
-                    "MCP server '%s' skipped: tool discovery failed",
+                    "MCP server '%s' skipped: 401 OAuth challenge -> %s",
                     server_name,
+                    challenge_url,
                     exc_info=True,
                 )
             else:

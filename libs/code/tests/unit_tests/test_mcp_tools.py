@@ -1573,6 +1573,49 @@ class TestLoadToolsFromConfigOAuth:
         assert server_infos[0].status == "error"
         await manager.cleanup()
 
+    async def test_discovery_401_challenge_marks_unauthenticated_sse(self) -> None:
+        """The 401 challenge classification also applies to SSE transports."""
+        request = httpx.Request("GET", "https://mcp.notion.com/sse")
+        response = httpx.Response(
+            401,
+            headers={
+                "WWW-Authenticate": (
+                    'Bearer resource_metadata="https://mcp.notion.com/.well-known/'
+                    'oauth-protected-resource"'
+                )
+            },
+            request=request,
+        )
+        challenge = httpx.HTTPStatusError("boom", request=request, response=response)
+
+        @asynccontextmanager
+        async def _fake(
+            _connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[None]:
+            await asyncio.sleep(0)
+            raise challenge
+            yield
+
+        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+            config = {
+                "mcpServers": {
+                    "notion": {
+                        "transport": "sse",
+                        "url": "https://mcp.notion.com/sse",
+                    }
+                }
+            }
+            tools, manager, server_infos = await _load_tools_from_config(config)
+
+        assert tools == []
+        assert isinstance(manager, MCPSessionManager)
+        assert server_infos[0].transport == "sse"
+        assert server_infos[0].status == "unauthenticated"
+        assert "mcp login notion" in (server_infos[0].error or "")
+        await manager.cleanup()
+
 
 class TestResolveAndLoadMcpTools:
     """Test the unified resolve-and-load entrypoint."""

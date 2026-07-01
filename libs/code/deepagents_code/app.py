@@ -9684,24 +9684,10 @@ class DeepAgentsApp(App):
 
         return settings.model_provider or None
 
-    def _current_effort_label(self) -> str:
-        """Return the active reasoning effort label for the status bar."""
-        from deepagents_code.reasoning_effort import current_effort_from_model_params
-
-        spec = self._effective_model_spec()
-        if spec is None:
-            return ""
-        return (
-            current_effort_from_model_params(
-                spec,
-                self._model_params_override,
-            )
-            or ""
-        )
-
     def _sync_status_model(self) -> None:
         """Update the status bar with the active model and reasoning effort."""
         from deepagents_code.config import settings
+        from deepagents_code.reasoning_effort import current_effort_from_model_params
 
         if self._status_bar is None:
             return
@@ -9714,11 +9700,13 @@ class DeepAgentsApp(App):
                 provider,
                 model,
             )
-        self._status_bar.set_model(
-            provider=provider,
-            model=model,
-            effort=self._current_effort_label(),
-        )
+        spec = self._effective_model_spec()
+        effort = (
+            current_effort_from_model_params(spec, self._model_params_override)
+            if spec
+            else None
+        ) or ""
+        self._status_bar.set_model(provider=provider, model=model, effort=effort)
 
     def _resolve_effort_context(self) -> tuple[str, tuple[str, ...]] | str:
         """Resolve the active model spec and its supported reasoning efforts.

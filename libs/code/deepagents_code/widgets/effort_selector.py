@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
 
 from deepagents_code import theme
-from deepagents_code.config import Glyphs, get_glyphs, is_ascii_mode
+from deepagents_code.config import get_glyphs, is_ascii_mode
 
 
 class EffortSelectorScreen(ModalScreen[str | None]):
@@ -99,23 +99,25 @@ class EffortSelectorScreen(ModalScreen[str | None]):
             Widgets for the effort selector UI.
         """
         glyphs = get_glyphs()
+        options = [
+            Option(self._format_label(effort), id=effort) for effort in self._efforts
+        ]
+        try:
+            highlighted = self._efforts.index(self._current_effort)
+        except ValueError:
+            highlighted = 0
+        help_text = (
+            f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab switch"
+            f" {glyphs.bullet} Enter select"
+            f" {glyphs.bullet} Esc cancel"
+        )
         with Vertical():
             yield Static("Select Reasoning Effort", classes="effort-selector-title")
             yield Static(self._model_spec, classes="effort-selector-subtitle")
-            option_list = OptionList(*self._build_options(), id="effort-options")
-            option_list.highlighted = self._current_index()
+            option_list = OptionList(*options, id="effort-options")
+            option_list.highlighted = highlighted
             yield option_list
-            yield Static(self._help_text(glyphs), classes="effort-selector-help")
-
-    def _build_options(self) -> list[Option]:
-        """Build effort option entries.
-
-        Returns:
-            One `Option` per supported effort.
-        """
-        return [
-            Option(self._format_label(effort), id=effort) for effort in self._efforts
-        ]
+            yield Static(help_text, classes="effort-selector-help")
 
     def _format_label(self, effort: str) -> Content:
         """Render an effort label with a current marker.
@@ -129,31 +131,6 @@ class EffortSelectorScreen(ModalScreen[str | None]):
         if effort == self._current_effort:
             return Content.from_markup("$effort [dim](current)[/dim]", effort=effort)
         return Content.from_markup("$effort", effort=effort)
-
-    def _current_index(self) -> int:
-        """Return the highlighted effort index."""
-        if self._current_effort is None:
-            return 0
-        try:
-            return self._efforts.index(self._current_effort)
-        except ValueError:
-            return 0
-
-    @staticmethod
-    def _help_text(glyphs: Glyphs) -> str:
-        """Build the selector help text.
-
-        Args:
-            glyphs: Glyph set for the active terminal mode.
-
-        Returns:
-            Help text for navigation and dismissal.
-        """
-        return (
-            f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab switch"
-            f" {glyphs.bullet} Enter select"
-            f" {glyphs.bullet} Esc cancel"
-        )
 
     def on_mount(self) -> None:
         """Apply ASCII border if needed."""

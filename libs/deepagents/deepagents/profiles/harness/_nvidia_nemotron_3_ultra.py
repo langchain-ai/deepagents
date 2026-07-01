@@ -46,9 +46,9 @@ from langchain.agents.middleware.types import (
     hook_config,
 )
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langgraph.config import get_config
 
 from deepagents.profiles.harness._fireworks_glm_5p2_middleware import (
-    FinalizeMiddleware,
     RambleMiddleware,
 )
 from deepagents.profiles.harness.harness_profiles import (
@@ -444,8 +444,8 @@ class VerifyBeforeFinalizeMiddleware(AgentMiddleware):
     showed one). When the latest turn is a finalization — an ``AIMessage`` with no tool
     calls and non-empty content, i.e. the agent is about to end — this injects a
     just-in-time demand to verify each requirement by running a real command, and jumps
-    back to the model. Fires at most once per run via a `PrivateStateAttr` flag, and is
-    backstopped by `FinalizeMiddleware`'s hard turn cap, so it cannot loop forever. This
+    back to the model. Fires at most once per run via a `PrivateStateAttr` flag, so it
+    adds a single verify turn and cannot loop (no external backstop is required). This
     is a control-flow gate at the finish line, not standing prompt advice.
     """
 
@@ -598,13 +598,140 @@ When advising on an operational workflow, support process, automation, or routin
 """Text appended to the assembled base system prompt."""
 
 
+# Escalating completion nudges keyed on how close the run is to the LangGraph
+# ``recursion_limit`` (read live from the runnable config). Pure nudges: this never
+# terminates the run — it lets the run end on its own at the recursion limit or the
+# harness wall-clock timeout, and simply presses harder to secure a deliverable as
+# the step budget runs down. A fixed turn cap fired far too early (~29% of the agent
+# wall-clock budget on fast rollouts); measuring against the real step ceiling adapts
+# to each run's per-turn cost. Tone escalates (intrinsic discipline early, firm
+# consequence near the ceiling); lower tiers fire once when first crossed, the top
+# tier repeats every turn as the ceiling nears.
+_PRESSURE_TIERS: tuple[tuple[float, str], ...] = (
+    (
+        0.55,
+        "You are past the halfway point of your step budget. Make sure every remaining "
+        "action moves toward a concrete deliverable on disk — converge on the task's "
+        "required output rather than exploring further.",
+    ),
+    (
+        0.70,
+        "You have used about 70% of your step budget. Write a working solution to the "
+        "exact path the task requires now, then confirm it exists with `ls`/`cat` and "
+        "run the task's own check against it. Do not open new investigations.",
+    ),
+    (
+        0.82,
+        "Step budget is running low (~82% used). Ship the best solution you have to the "
+        "required path this turn — a submitted best-effort artifact can score, an "
+        "unfinished one cannot. Re-read your notes for the exact contract if unsure.",
+    ),
+    (
+        0.90,
+        "You are nearly out of step budget (~90% used). Write your final artifact to the "
+        "required path immediately and confirm it exists. Do not refactor, re-verify, or "
+        "explore — just secure the deliverable.",
+    ),
+    (
+        0.96,
+        "Final budget warning: your steps are almost gone. Output your best working "
+        "artifact to the required path right now. Anything not written to disk when the "
+        "run ends will not count — stop everything else and ship it.",
+    ),
+)
+
+# Fallback when the runnable config does not expose step/limit (keeps the middleware
+# functional off-graph or in stripped contexts): estimate the fraction from the
+# model-turn count. ~8 graph supersteps per model turn under the dcode stack, against
+# the dcode default ``recursion_limit`` of 1000.
+_PRESSURE_STEPS_PER_TURN = 8
+_PRESSURE_FALLBACK_LIMIT = 1000
+
+
+class CompletionPressureState(AgentState):
+    """State schema for ``CompletionPressureMiddleware``."""
+
+    # `PrivateStateAttr` keeps these channels out of the input/output schema while
+    # they persist internally across turns (default last-value reducer).
+    pressure_turns: NotRequired[Annotated[int, PrivateStateAttr]]
+    pressure_tier: NotRequired[Annotated[int, PrivateStateAttr]]
+
+
+class CompletionPressureMiddleware(AgentMiddleware):
+    """Escalating completion nudges as the run nears the LangGraph ``recursion_limit``.
+
+    Replaces a hard turn cap: it never terminates the run (no ``jump_to``). Instead it
+    measures the run's position in its ``recursion_limit`` step budget — read live from
+    ``get_config()`` (``recursion_limit`` and ``metadata.langgraph_step``) — and injects
+    increasingly urgent nudges to secure a deliverable. The run ends on its own at the
+    recursion limit or the harness wall-clock timeout. Lower tiers fire once when first
+    crossed; the top tier repeats every turn. If the config does not expose the step
+    budget, it falls back to estimating the fraction from a model-turn counter.
+    """
+
+    name = "CompletionPressureMiddleware"
+    state_schema = CompletionPressureState  # type: ignore[assignment]
+
+    @staticmethod
+    def _budget_fraction() -> float | None:
+        """Fraction of the recursion step budget consumed, or ``None`` if unreadable."""
+        try:
+            config = get_config()
+        except Exception:  # noqa: BLE001  (off-graph / no active config -> use fallback)
+            return None
+        limit = config.get("recursion_limit")
+        metadata = config.get("metadata") or {}
+        step = metadata.get("langgraph_step")
+        if isinstance(limit, int) and limit > 0 and isinstance(step, int) and step >= 0:
+            return step / limit
+        return None
+
+    def _pressure(self, state: CompletionPressureState) -> dict[str, Any]:
+        turns = state.get("pressure_turns", 0) + 1
+        fraction = self._budget_fraction()
+        if fraction is None:
+            fraction = min(turns * _PRESSURE_STEPS_PER_TURN / _PRESSURE_FALLBACK_LIMIT, 0.999)
+        tier = -1
+        for index, (threshold, _text) in enumerate(_PRESSURE_TIERS):
+            if fraction >= threshold:
+                tier = index
+        base: dict[str, Any] = {"pressure_turns": turns}
+        if tier < 0:
+            return base
+        last = state.get("pressure_tier", -1)
+        is_top = tier == len(_PRESSURE_TIERS) - 1
+        if is_top or tier > last:
+            return {
+                **base,
+                "pressure_tier": max(tier, last),
+                "messages": [HumanMessage(content=_PRESSURE_TIERS[tier][1])],
+            }
+        return {**base, "pressure_tier": last}
+
+    def before_model(
+        self,
+        state: CompletionPressureState,
+        runtime: Runtime[Any],  # noqa: ARG002  (part of the hook signature)
+    ) -> dict[str, Any]:
+        """Inject an escalating completion nudge based on recursion-budget usage."""
+        return self._pressure(state)
+
+    async def abefore_model(
+        self,
+        state: CompletionPressureState,
+        runtime: Runtime[Any],  # noqa: ARG002  (part of the hook signature)
+    ) -> dict[str, Any]:
+        """Async variant of ``before_model``."""
+        return self._pressure(state)
+
+
 def _build_extra_middleware() -> list[AgentMiddleware]:
     """Build fresh middleware instances for each assembled stack.
 
     Used as the profile's ``extra_middleware`` factory so each stack (main agent,
     general-purpose subagent, declarative subagents) gets its own instances rather
-    than sharing per-run state — `FinalizeMiddleware` and `RambleMiddleware` (pulled
-    from the GLM-5.2 profile) track per-run nudge state.
+    than sharing per-run state — `CompletionPressureMiddleware` and `RambleMiddleware`
+    (the latter pulled from the GLM-5.2 profile) track per-run nudge state.
     """
     return [
         ReadFileContinuationNoticeMiddleware(),
@@ -619,7 +746,7 @@ def _build_extra_middleware() -> list[AgentMiddleware]:
         ),
         NemotronToolCallShim(),
         NemotronTextToolCallParser(),
-        FinalizeMiddleware(),
+        CompletionPressureMiddleware(),
         RambleMiddleware(),
         VerifyBeforeFinalizeMiddleware(),
         StallBreakerMiddleware(),

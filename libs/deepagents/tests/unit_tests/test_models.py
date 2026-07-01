@@ -1234,7 +1234,7 @@ class TestNemotronUltraProfile:
             "ToolRetryMiddleware",
             "NemotronToolCallShim",
             "NemotronTextToolCallParser",
-            "FinalizeMiddleware",
+            "CompletionPressureMiddleware",
             "RambleMiddleware",
             "VerifyBeforeFinalizeMiddleware",
             "StallBreakerMiddleware",

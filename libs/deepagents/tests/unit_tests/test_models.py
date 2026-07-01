@@ -1262,15 +1262,14 @@ class TestNemotronUltraProfile:
         first = mw.before_model({}, None)  # type: ignore[arg-type]
         assert first["plan_injected"] is True
         content = first["messages"][0].content
-        # The message tells the model to plan first, and carries the implementation
-        # contract (spec-fidelity) as a subset of that plan.
-        assert "PLAN" in content
-        assert "IMPLEMENTATION CONTRACT" in content
-        assert "VERBATIM" in content
-        # The plan is persisted to a file (durable against context summarization) and
-        # verification is framed as run-don't-read.
+        # Next action is a write_file to a plan FILE (durable against summarization);
+        # explicitly plain-notes-not-JSON (avoids the lettered-schema JSON induction).
+        assert "write_file" in content
         assert "plan.md" in content
-        assert "VERIFICATION" in content
+        assert "JSON" in content
+        # Carries the implementation contract (spec-fidelity) and run-don't-read verify.
+        assert "implementation contract" in content
+        assert "VERBATIM" in content
         assert "RUNNING" in content
         again = mw.before_model({"plan_injected": True}, None)  # type: ignore[arg-type]
         assert "messages" not in again
@@ -1454,6 +1453,55 @@ class TestNemotronTextToolCallRepair:
         ai = repaired.result[-1]
         assert ai.tool_calls == []
         assert ai.content == "Done. The package is built."
+
+    # --- JSON tool-call dialect (e.g. {"tool": "bash", "cmd": "..."}) ---
+
+    def test_json_dialect_bash_cmd_maps_to_execute(self) -> None:
+        from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
+            _parse_json_tool_calls,
+        )
+
+        calls = _parse_json_tool_calls('{"tool": "bash", "cmd": "cd /tmp && ls -la"}')
+        assert len(calls) == 1
+        assert calls[0]["name"] == "execute"  # bash -> execute
+        assert calls[0]["args"] == {"command": "cd /tmp && ls -la"}
+        assert calls[0]["type"] == "tool_call"
+        assert isinstance(calls[0]["id"], str) and calls[0]["id"]
+
+    def test_json_dialect_args_dict_passthrough(self) -> None:
+        from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
+            _parse_json_tool_calls,
+        )
+
+        calls = _parse_json_tool_calls('{"tool": "write_file", "args": {"file_path": "/a", "content": "x"}}')
+        assert calls[0]["name"] == "write_file"
+        assert calls[0]["args"] == {"file_path": "/a", "content": "x"}
+
+    def test_json_dialect_ignores_object_without_tool_key(self) -> None:
+        # The plan-JSON the model sometimes emits ({"A": ...}) must NOT be treated as a
+        # tool call — only objects with a "tool" key are.
+        from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
+            _parse_json_tool_calls,
+        )
+
+        assert _parse_json_tool_calls('{"A": "STEPS:\\n1. do x", "B": "contract"}') == []
+        assert _parse_json_tool_calls("Done, the answer is 42.") == []
+
+    def test_repair_populates_tool_calls_from_json_dialect(self) -> None:
+        from langchain.agents.middleware.types import ModelResponse  # noqa: PLC0415
+        from langchain_core.messages import AIMessage  # noqa: PLC0415
+
+        from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
+            NemotronTextToolCallParser,
+        )
+
+        msg = AIMessage(content='{"tool": "bash", "cmd": "python3 run.py"}')
+        assert msg.tool_calls == []
+        repaired = NemotronTextToolCallParser._repair(ModelResponse(result=[msg]))
+        ai = repaired.result[-1]
+        assert len(ai.tool_calls) == 1
+        assert ai.tool_calls[0]["name"] == "execute"
+        assert ai.tool_calls[0]["args"] == {"command": "python3 run.py"}
 
 
 class TestStallBreaker:

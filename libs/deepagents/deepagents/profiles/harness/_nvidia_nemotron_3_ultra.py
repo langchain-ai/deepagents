@@ -32,6 +32,7 @@ Source: https://developer.nvidia.com/blog/nvidia-nemotron-3-ultra-powers-faster-
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from pathlib import Path
@@ -346,14 +347,69 @@ def _parse_text_tool_calls(content: str) -> tuple[list[ToolCall], str]:
     return calls, leftover
 
 
+# Shell aliases the model invents for the `execute` tool when it emits a JSON tool call.
+_JSON_TOOL_NAME_ALIASES = {"bash": "execute", "sh": "execute", "shell": "execute"}
+
+
+def _first_json_object(content: str) -> dict[str, Any] | None:
+    """Return the first ``{...}`` in `content` parsed as a dict, or None.
+
+    Uses `json.loads` (never `eval`) and swallows only `JSONDecodeError`/`ValueError`,
+    returning None rather than raising. Spans from the first ``{`` to the last ``}`` so
+    a stray code fence or leading prose is tolerated.
+    """
+    start, end = content.find("{"), content.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    try:
+        obj = json.loads(content[start : end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _parse_json_tool_calls(content: str) -> list[ToolCall]:
+    """Parse a tool call the model emitted as a JSON object in message content.
+
+    Nemotron intermittently emits a tool call as JSON — e.g.
+    ``{"tool": "bash", "cmd": "..."}`` or ``{"tool": "execute", "args": {...}}`` — as
+    message content instead of a structured tool call, so the agent never runs it. This
+    converts such an object into a LangChain ``ToolCall``. Only objects with a ``"tool"``
+    key are treated as calls, so a plan/answer JSON (e.g. ``{"A": "STEPS..."}``) is left
+    untouched. Shell aliases (`bash`/`sh`/`shell`) map to `execute`, and a bare
+    `cmd`/`command` string becomes ``{"command": ...}``.
+
+    Args:
+        content: The model message text.
+
+    Returns:
+        A one-element ``ToolCall`` list, or ``[]`` when no JSON tool object is present.
+    """
+    obj = _first_json_object(content)
+    if obj is None:
+        return []
+    name = obj.get("tool")
+    if not isinstance(name, str) or not name.strip():
+        return []
+    name = _JSON_TOOL_NAME_ALIASES.get(name.strip().lower(), name.strip())
+    raw_args = obj.get("args")
+    if isinstance(raw_args, dict):
+        args: dict[str, Any] = raw_args
+    else:
+        command = obj.get("cmd") or obj.get("command")
+        args = {"command": command} if isinstance(command, str) else {}
+    return [{"name": name, "args": args, "id": uuid.uuid4().hex, "type": "tool_call"}]
+
+
 class NemotronTextToolCallParser(AgentMiddleware):
     """Repair tool calls the model emits as text content instead of structured calls.
 
     When the model returns an ``AIMessage`` with no structured ``tool_calls`` but a
-    `<function=...>` block in its content, parse that block into structured
-    ``tool_calls`` so the agent executes it rather than stalling on unrun text.
-    Messages that already carry structured ``tool_calls`` (the common case) and
-    ordinary prose answers are returned untouched.
+    tool call emitted as text content, parse it into structured ``tool_calls`` so the
+    agent executes it rather than stalling on unrun text. Two dialects are handled:
+    the `<function=NAME>...</function>` template, and a JSON object such as
+    ``{"tool": "bash", "cmd": "..."}``. Messages that already carry structured
+    ``tool_calls`` (the common case) and ordinary prose answers are returned untouched.
     """
 
     name = "NemotronTextToolCallParser"
@@ -364,9 +420,12 @@ class NemotronTextToolCallParser(AgentMiddleware):
             return message
         content = message.content
         text = content if isinstance(content, str) else "".join(part.get("text", "") for part in content if isinstance(part, dict))
-        if "<function=" not in text:
-            return message
         calls, leftover = _parse_text_tool_calls(text)
+        if not calls:
+            # No `<function=...>` block — try the JSON dialect (whole content is the call).
+            json_calls = _parse_json_tool_calls(text)
+            if json_calls:
+                calls, leftover = json_calls, ""
         if not calls:
             return message
         return message.model_copy(update={"tool_calls": calls, "content": leftover})
@@ -693,46 +752,38 @@ class CompletionPressureMiddleware(AgentMiddleware):
         return self._pressure(state)
 
 
-# Injected as a HumanMessage on the first model turn: STOP and write a plan before
-# implementing — to a FILE, so it survives context compaction. The dcode stack's
-# SummarizationMiddleware compacts the oldest messages on long runs, and the turn-1
-# plan would be first to go, so the plan lives on disk (re-read/updated) rather than
-# only in this message. Spec fidelity is the strict subset of planning that must be
-# letter-perfect (the implementation contract). Verification is framed as
-# run-don't-read, mirroring the execute-and-diff loop that solves these tasks (vs.
-# Nemotron's habit of re-reading source to reason). Nemotron under-weights standing
-# system-prompt guidance, so this front-loads it as an in-conversation message and
-# lets us drop the separate to-do tool: the plan file is the to-do list. General
-# wording (no task-specific example) so it does not overfit.
+# Injected as a HumanMessage on the first model turn: the model's next action must be a
+# `write_file` that saves a short plan to a file. Two reasons for the file: (1) it
+# survives context compaction — the dcode stack's SummarizationMiddleware drops the
+# oldest messages on long runs, and the turn-1 plan would be first to go; (2) making the
+# next action a tool call (not a reply) stops Nemotron from emitting the plan AS its
+# response — an earlier lettered "A)/B)/C)" version made it mirror the structure into a
+# 32k-token `{"A": ...}` JSON blob with no action. Wording is plain prose ("not JSON")
+# for the same reason. The plan carries spec fidelity (the implementation contract, which
+# must be letter-perfect) and verification framed as run-don't-read (mirroring the
+# execute-and-diff loop that solves these tasks, vs. Nemotron's re-read-to-reason habit).
+# The plan file is also the to-do list, which is why the separate to-do tool is dropped.
 _PLAN_FIRST_NUDGE = (
-    "STOP — do not write any code, file, or command yet. First inspect the task and "
-    "write a short PLAN to a file (e.g. /tmp/plan.md); treat this as mandatory. Keep "
-    "that file updated as steps complete and re-read it whenever you lose the thread — "
-    "it is your durable source of truth, because earlier messages may be compacted "
-    "away on a long run.\n\n"
-    "Your plan has three parts:\n\n"
-    "A) STEPS — a brief ordered list of the concrete actions that will complete the "
-    "task, ending in how you will verify the result.\n\n"
-    "B) IMPLEMENTATION CONTRACT — the exact interface the task specifies: every "
-    "message / field / RPC / class / function / variable name, every file path and "
-    "filename, port, and output format, copied from the task. This is the part you "
-    "must get letter-perfect:\n"
-    "  1. Copy each identifier VERBATIM, character-for-character, then use exactly "
-    "those strings when you build — never retype one from memory or paraphrase it.\n"
-    "  2. One wrong character means you have built a different interface than the one "
-    "asked for: anything that relies on the task's names will fail to find yours, no "
-    "matter how well your code otherwise runs.\n"
-    "  3. NEVER normalize, unify, rename, abbreviate, pluralize, or re-case a name to "
-    '"tidy" an inconsistency — if the task spells two related things differently, that '
-    "is deliberate; reproduce each exactly as written.\n\n"
-    "C) VERIFICATION — how you will prove it works, by RUNNING, not reading. To learn "
-    "how existing code behaves, run it on concrete inputs and read the output instead "
-    "of re-reading the source to reason about it. Build a small runnable check early: "
-    "run your artifact and the task's reference implementation (or provided examples) "
-    "on the same inputs and diff the results, then iterate against what you observe "
-    "until they match. If you catch yourself re-reading a file you have already read, "
-    "run something instead.\n\n"
-    "Then build strictly from the plan, copying names from the contract."
+    "STOP — do not write any code yet. Your VERY NEXT action must be a single "
+    "write_file call that saves a short plan to /tmp/plan.md. Do NOT reply with prose "
+    "or a JSON object — call write_file. Write the plan as plain notes (markdown, not "
+    "JSON), then build from it, and update /tmp/plan.md as you learn more or finish "
+    "steps — it is your durable memory, because earlier messages may be compacted away "
+    "on a long run.\n\n"
+    "The plan should briefly cover:\n"
+    "- The ordered steps to finish the task, ending with how you will verify the result.\n"
+    "- The exact interface the task specifies — its implementation contract: every "
+    "message, field, RPC, class, function, and variable name, every file path, port, "
+    "and output format, copied VERBATIM from the task, character-for-character. Build "
+    "using exactly those strings; never retype one from memory, and never normalize, "
+    "rename, abbreviate, or re-case a name to tidy an inconsistency — if the task "
+    "spells two related things differently, that is deliberate. One wrong character "
+    "builds a different interface than the one asked for.\n"
+    "- How you will verify, by RUNNING, not reading: to learn how existing code "
+    "behaves, run it on concrete inputs and read the output instead of re-reading the "
+    "source; build a small runnable check early that runs your artifact and the task's "
+    "reference (or provided examples) on the same inputs and diffs them, and iterate "
+    "against what you observe until they match."
 )
 
 

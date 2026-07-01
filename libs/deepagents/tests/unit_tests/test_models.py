@@ -1232,8 +1232,7 @@ class TestNemotronUltraProfile:
         assert names == [
             "ReadFileContinuationNoticeMiddleware",
             "ToolRetryMiddleware",
-            "NemotronToolMessageShim",
-            "NemotronPathArgShim",
+            "NemotronToolCallShim",
             "NemotronTextToolCallParser",
             "FinalizeMiddleware",
             "RambleMiddleware",
@@ -1273,10 +1272,10 @@ class TestNemotronUltraProfile:
         from langchain_core.messages import ToolMessage  # noqa: PLC0415
 
         from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
-            NemotronToolMessageShim,
+            NemotronToolCallShim,
         )
 
-        shim = NemotronToolMessageShim()
+        shim = NemotronToolCallShim()
         empty = shim._normalize(ToolMessage(content="", tool_call_id="t1"))
         assert empty.content == "(empty tool result)"
         kept = shim._normalize(ToolMessage(content="ok", tool_call_id="t2"))
@@ -2499,8 +2498,8 @@ class TestVerifyBeforeFinalize:
         assert mw.after_model(state, None) is None
 
 
-class TestNemotronPathArgShim:
-    """Tests for the path->file_path tool-arg remap (Nemotron emits 'path')."""
+class TestNemotronToolCallShimPathArg:
+    """Tests for the path->file_path tool-arg remap in NemotronToolCallShim."""
 
     @staticmethod
     def _req(name, args):  # noqa: ANN205  (returns a ToolCallRequest; imported locally)
@@ -2511,10 +2510,10 @@ class TestNemotronPathArgShim:
 
     def _mw(self):
         from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
-            NemotronPathArgShim,
+            NemotronToolCallShim,
         )
 
-        return NemotronPathArgShim()
+        return NemotronToolCallShim()
 
     def test_remaps_path_to_file_path_for_fs_tools(self) -> None:
         mw = self._mw()

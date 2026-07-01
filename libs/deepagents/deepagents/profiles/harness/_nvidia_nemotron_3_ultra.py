@@ -4,10 +4,12 @@ Registers a `HarnessProfile` for NVIDIA Nemotron 3 Ultra
 (`nvidia/nemotron-3-ultra-550b-a55b`) that pairs a behavior-shaping
 `system_prompt_suffix` with three middleware:
 
-- `NemotronToolMessageShim`: `ChatNVIDIA`'s payload builder rejects a `role="tool"`
-  message whose content normalizes to null (an empty string collapses to null),
-  so an empty tool result crashes the run. The shim coerces empty/None tool
-  content to a non-empty placeholder. It is a no-op on non-empty results.
+- `NemotronToolCallShim`: fixes two Nemotron tool-call payload quirks at the
+  `wrap_tool_call` layer — (1) remaps a stray `path` arg to the schema-required
+  `file_path` for `read_file`/`write_file`/`edit_file` (Nemotron often uses the
+  wrong key and burns turns on the validation error), and (2) coerces empty/None
+  tool-result content to a non-empty placeholder (`ChatNVIDIA` rejects null
+  `role="tool"` content, crashing the run). No-op on well-formed calls/results.
 - `ReadFileContinuationNoticeMiddleware`: the `read_file` line-limit path returns
   exactly `limit` lines with no truncation signal (the truncation message only
   fires on the token-size path), so the model can assume it has seen the whole
@@ -107,17 +109,48 @@ def _tool_content_is_empty(content: str | list[Any] | None) -> bool:
     return False
 
 
-class NemotronToolMessageShim(AgentMiddleware):
-    """Coerce an empty/None ToolMessage content to a non-empty placeholder.
+# Filesystem tools whose schema requires `file_path`. Nemotron frequently calls
+# these with the key `path` instead, so the shim below remaps it.
+_FILE_PATH_TOOLS: frozenset[str] = frozenset({"read_file", "write_file", "edit_file"})
 
-    Cures the Nemotron content=None crash without touching generation settings or
-    any other message role. Idempotent; a no-op for non-empty tool results.
-    Implements BOTH sync and async hooks: Deep Agents executes tools
-    asynchronously, so a sync-only `wrap_tool_call` raises `NotImplementedError`
-    and breaks every async tool call. Both paths share `_normalize`.
+
+class NemotronToolCallShim(AgentMiddleware):
+    """Fix Nemotron's tool-call payload quirks at the `wrap_tool_call` layer.
+
+    Two Nemotron-specific tool-call compatibility fixes, kept in one interceptor
+    (same hook, same concern) rather than separate middleware:
+
+    - Request side (`_fix_args`): Nemotron frequently calls `read_file`/`write_file`/
+      `edit_file` with `{"path": ...}` instead of the schema-required
+      `{"file_path": ...}`, and does not self-correct — it re-issues the same wrong
+      key and burns turns on the `pydantic ValidationError: file_path Field
+      required`. This renames the key before the tool runs (scoped to those tools, so
+      `ls` etc. keep their legitimate `path`); the tool's own path validation still
+      runs on the value. Covers structured and text-parsed calls. No-op when
+      `file_path` is already present or `path` is absent.
+    - Result side (`_normalize`): `ChatNVIDIA`'s payload builder rejects a
+      `role="tool"` message whose content normalizes to null (an empty string
+      collapses to null), crashing the run. This coerces empty/None tool content to
+      a non-empty placeholder. Idempotent; a no-op for non-empty results.
+
+    Implements BOTH sync and async hooks: Deep Agents executes tools asynchronously,
+    so a sync-only `wrap_tool_call` raises `NotImplementedError` and breaks every
+    async tool call.
     """
 
-    name = "NemotronToolMessageShim"
+    name = "NemotronToolCallShim"
+
+    @staticmethod
+    def _fix_args(request: ToolCallRequest) -> ToolCallRequest:
+        tool_call = request.tool_call
+        if tool_call.get("name") not in _FILE_PATH_TOOLS:
+            return request
+        args = tool_call.get("args") or {}
+        if "path" not in args or "file_path" in args:
+            return request
+        new_args = {k: v for k, v in args.items() if k != "path"}
+        new_args["file_path"] = args["path"]
+        return request.override(tool_call={**tool_call, "args": new_args})
 
     @staticmethod
     def _normalize(result: ToolMessage | Command[Any]) -> ToolMessage | Command[Any]:
@@ -130,62 +163,14 @@ class NemotronToolMessageShim(AgentMiddleware):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
     ) -> ToolMessage | Command[Any]:
-        return self._normalize(handler(request))
+        return self._normalize(handler(self._fix_args(request)))
 
     async def awrap_tool_call(
         self,
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
     ) -> ToolMessage | Command[Any]:
-        return self._normalize(await handler(request))
-
-
-# Filesystem tools whose schema requires `file_path`. Nemotron frequently calls
-# these with the key `path` instead, so the tool-arg shim below remaps it.
-_FILE_PATH_TOOLS: frozenset[str] = frozenset({"read_file", "write_file", "edit_file"})
-
-
-class NemotronPathArgShim(AgentMiddleware):
-    """Rename a stray `path` tool-arg to the schema-required `file_path`.
-
-    Nemotron 3 Ultra frequently calls `read_file`/`write_file`/`edit_file` with
-    `{"path": ...}` instead of `{"file_path": ...}` (observed repeatedly, and it
-    does not self-correct — it re-issues the same wrong key and burns turns on the
-    `pydantic ValidationError: file_path Field required`). This rewrites the arg
-    key before the tool runs, so the call validates and executes. The tool's own
-    path validation still runs on the value (only the key is renamed). No-op when
-    `file_path` is already present, when there is no `path`, or for any other tool
-    (so tools that legitimately take `path`, e.g. `ls`, are untouched). Covers both
-    structured and text-parsed tool calls since it acts at the tool-call layer.
-    """
-
-    name = "NemotronPathArgShim"
-
-    @staticmethod
-    def _fix(request: ToolCallRequest) -> ToolCallRequest:
-        tool_call = request.tool_call
-        if tool_call.get("name") not in _FILE_PATH_TOOLS:
-            return request
-        args = tool_call.get("args") or {}
-        if "path" not in args or "file_path" in args:
-            return request
-        new_args = {k: v for k, v in args.items() if k != "path"}
-        new_args["file_path"] = args["path"]
-        return request.override(tool_call={**tool_call, "args": new_args})
-
-    def wrap_tool_call(
-        self,
-        request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
-    ) -> ToolMessage | Command[Any]:
-        return handler(self._fix(request))
-
-    async def awrap_tool_call(
-        self,
-        request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
-    ) -> ToolMessage | Command[Any]:
-        return await handler(self._fix(request))
+        return self._normalize(await handler(self._fix_args(request)))
 
 
 _READ_NOTICE_DEFAULT_LIMIT = 100  # Deep Agents default read limit (FilesystemMiddleware).
@@ -624,8 +609,7 @@ def _build_extra_middleware() -> list[AgentMiddleware]:
             max_delay=0.0,
             jitter=False,
         ),
-        NemotronToolMessageShim(),
-        NemotronPathArgShim(),
+        NemotronToolCallShim(),
         NemotronTextToolCallParser(),
         FinalizeMiddleware(),
         RambleMiddleware(),

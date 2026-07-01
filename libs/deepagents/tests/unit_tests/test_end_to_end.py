@@ -579,6 +579,22 @@ class TestDeepAgentEndToEnd:
         assert "You are a helpful research assistant." in content
         assert "You are a deep agent" in content
 
+    def test_deep_agent_system_prompt_config_overwrites_base(self) -> None:
+        """`system_prompt={"base": ...}` replaces the built-in base prompt."""
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        capturing_middleware = SystemMessageCapturingMiddleware()
+        agent = create_deep_agent(
+            model=model,
+            system_prompt={"base": "__foo__"},
+            middleware=[capturing_middleware],
+        )
+
+        agent.invoke({"messages": [HumanMessage(content="Hello")]})
+
+        content = str(capturing_middleware.captured_system_messages[0].content)
+        assert "__foo__" in content
+        assert "You are a deep agent" not in content
+
     def test_deep_agent_two_turns_no_initial_files(self) -> None:
         """Test deepagent with two conversation turns without specifying files on invoke.
 

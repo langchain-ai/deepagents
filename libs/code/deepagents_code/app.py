@@ -2775,6 +2775,7 @@ class DeepAgentsApp(App):
         self._chat_input = self.query_one("#input-area", ChatInput)
         self._sync_status_connection()
         self._sync_status_queued()
+        self._sync_status_model()
         self._chat_input.set_cursor_blink(blink=self._cursor_blink_enabled)
 
         # Apply any skill commands discovered before the widget was mounted

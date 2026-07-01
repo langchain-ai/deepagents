@@ -248,6 +248,41 @@ class TestInitialPromptOnMount:
 
         assert submitted == [("code-review", "review this diff", None)]
 
+    async def test_on_mount_infers_status_bar_default_effort(self) -> None:
+        """Initial status sync should show default effort before server ready."""
+        from deepagents_code.widgets.status import StatusBar
+
+        app = DeepAgentsApp(thread_id="thread-123")
+        chat = MagicMock()
+        chat.styles = SimpleNamespace(scrollbar_size_vertical=None)
+        status_bar = MagicMock(spec=StatusBar)
+        chat_input = MagicMock(spec=ChatInput)
+
+        def query_one(selector: object, *_args: object) -> object:
+            if selector == "#chat":
+                return chat
+            if selector == "#status-bar":
+                return status_bar
+            if selector == "#input-area":
+                return chat_input
+            raise NoMatches(str(selector))
+
+        app.query_one = MagicMock(side_effect=query_one)  # ty: ignore
+        app.call_after_refresh = MagicMock()  # ty: ignore
+        app.run_worker = MagicMock(side_effect=_closing_run_worker_mock)  # ty: ignore
+
+        with (
+            patch("deepagents_code.config.settings") as mock_settings,
+            patch("asyncio.create_task", side_effect=_closing_run_worker_mock),
+        ):
+            mock_settings.model_provider = "openai"
+            mock_settings.model_name = "gpt-5.5"
+            await app.on_mount()
+
+        status_bar.set_model.assert_called_once_with(
+            provider="openai", model="gpt-5.5", effort="medium"
+        )
+
     async def test_server_ready_refreshes_status_bar_model(self) -> None:
         """ServerReady should push current settings into the StatusBar model display.
 

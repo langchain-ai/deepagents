@@ -2190,6 +2190,7 @@ def _apply_stored_base_url(provider: str, base_url: str | None) -> None:
         names.add(canonical)
     if not names:
         return
+    configured_base_url_survives = _configured_base_url_survives_env_clear(provider)
     for name in names:
         if base_url and name == canonical:
             os.environ[name] = base_url
@@ -2206,6 +2207,7 @@ def _apply_stored_base_url(provider: str, base_url: str | None) -> None:
     if (
         custom_headers_env
         and not base_url
+        and not configured_base_url_survives
         and os.environ.pop(custom_headers_env, None) is not None
     ):
         # Log the env var name only — never its value, which carries auth
@@ -2216,6 +2218,18 @@ def _apply_stored_base_url(provider: str, base_url: str | None) -> None:
             custom_headers_env,
             provider,
         )
+
+
+def _configured_base_url_survives_env_clear(provider: str) -> bool:
+    """Return whether endpoint config still routes after plain env cleanup."""
+    config = ModelConfig.load()
+    provider_cfg = config.providers.get(provider)
+    if provider_cfg and provider_cfg.get("base_url"):
+        return True
+    for env_var in get_base_url_env_vars(provider):
+        if os.environ.get(f"{_ENV_PREFIX}{env_var}"):
+            return True
+    return False
 
 
 def warn_on_split_credential_source(provider: str) -> None:

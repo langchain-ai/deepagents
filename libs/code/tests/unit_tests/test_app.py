@@ -573,11 +573,13 @@ class TestStartupSequence:
         async def capture_switch(  # noqa: RUF029
             model_spec: str,
             *,
+            extra_kwargs: dict[str, Any] | None = None,
             announce_unchanged: bool = True,
             persist: bool = True,
             from_resume: bool = False,
         ) -> None:
             assert model_spec == "anthropic:claude-sonnet-4-5"
+            assert extra_kwargs is None
             assert announce_unchanged is False
             assert persist is False
             assert from_resume is True

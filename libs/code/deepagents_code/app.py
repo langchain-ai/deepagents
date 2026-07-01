@@ -1353,6 +1353,9 @@ class _ThreadHistoryPayload:
     """Persisted `_model_spec` from the checkpoint, or `""` for legacy threads
     saved before model persistence existed."""
 
+    model_params: dict[str, Any] | None = None
+    """Persisted `_model_params` from the checkpoint, if any."""
+
     rubric: str | None = None
     """Legacy persisted rubric or graph rubric input, if any."""
 
@@ -7959,6 +7962,7 @@ class DeepAgentsApp(App):
         messages: list[MessageData],
         context_tokens: int,
         model_spec: str,
+        model_params: dict[str, Any] | None = None,
     ) -> _ThreadHistoryPayload:
         """Build a thread payload from raw checkpoint channel values.
 
@@ -7971,6 +7975,7 @@ class DeepAgentsApp(App):
             messages: Converted message data (empty for metadata-only reads).
             context_tokens: Persisted context-token count.
             model_spec: Persisted model spec, or `""` for legacy threads.
+            model_params: Persisted model params, or `None` when absent.
 
         Returns:
             Payload with goal/rubric channels coerced to known types.
@@ -7984,6 +7989,7 @@ class DeepAgentsApp(App):
             messages,
             context_tokens,
             model_spec,
+            model_params,
             rubric=_as_str(state_values.get("rubric")),
             sticky_rubric=_as_str(state_values.get("_sticky_rubric")),
             sticky_rubric_recorded="_sticky_rubric" in state_values,
@@ -10232,7 +10238,6 @@ class DeepAgentsApp(App):
                 context=CLIContext(
                     model=self._model_override,
                     model_params=self._model_params_override or {},
-                    effective_model=self._effective_model_spec(),
                 ),
                 turn_stats=turn_stats,
             )
@@ -10523,6 +10528,8 @@ class DeepAgentsApp(App):
         )
         raw_spec = state_values.get("_model_spec")
         model_spec = raw_spec if isinstance(raw_spec, str) else ""
+        raw_params = state_values.get("_model_params")
+        model_params = dict(raw_params) if isinstance(raw_params, dict) else None
         if _warn_discarded_goal_channels(state_values):
             self.notify(
                 "Some saved goal/rubric state was corrupted and was not restored.",
@@ -10533,6 +10540,7 @@ class DeepAgentsApp(App):
             messages=[],
             context_tokens=context_tokens,
             model_spec=model_spec,
+            model_params=model_params,
         )
         messages = state_values.get("messages", [])
 
@@ -10554,27 +10562,33 @@ class DeepAgentsApp(App):
         self,
         *,
         model_spec: str | None = None,
+        model_params: dict[str, Any] | None = None,
         thread_id: str | None = None,
     ) -> None:
         """Adopt a resumed thread's persisted model for this session only.
 
         Args:
             model_spec: Already-fetched `_model_spec`, when available.
-            thread_id: Thread ID to fetch `_model_spec` from if needed.
+            model_params: Already-fetched `_model_params`, when available.
+            thread_id: Thread ID to fetch `_model_spec`/`_model_params` from if needed.
         """
         if not self._should_adopt_resumed_model:
             return
 
         self._should_adopt_resumed_model = False
         spec = model_spec
+        params = model_params
         if spec is None and thread_id:
             state_values = await self._get_thread_state_values(thread_id)
             raw_spec = state_values.get("_model_spec")
             spec = raw_spec if isinstance(raw_spec, str) else ""
+            raw_params = state_values.get("_model_params")
+            params = dict(raw_params) if isinstance(raw_params, dict) else None
 
         if spec:
             await self._switch_model(
                 spec,
+                extra_kwargs=params,
                 announce_unchanged=False,
                 persist=False,
                 from_resume=True,
@@ -10691,7 +10705,10 @@ class DeepAgentsApp(App):
             # consumed on this first load — otherwise a legacy thread (no
             # persisted spec) could leave it armed for a later in-session
             # `/threads` switch.
-            await self._adopt_resumed_model_if_needed(model_spec=payload.model_spec)
+            await self._adopt_resumed_model_if_needed(
+                model_spec=payload.model_spec,
+                model_params=payload.model_params,
+            )
             await self._remount_pending_goal_rubric_review()
 
             if not payload.messages:

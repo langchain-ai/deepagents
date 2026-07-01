@@ -701,73 +701,84 @@ class CompletionPressureMiddleware(AgentMiddleware):
         return self._pressure(state)
 
 
-# Injected as a HumanMessage on the first model turn. Nemotron under-weights standing
-# system-prompt guidance (the "reproduce identifiers verbatim" rule was ignored even in
-# a prominent base) and did not act on the same discipline appended to tool results
-# either — so this front-loads it as an in-conversation message before the first
-# action, forcing an explicit "extract the exact identifiers, then use them" step.
-# General wording (no task-specific example) so it does not overfit.
-_SPEC_FIDELITY_NUDGE = (
-    "STOP — before writing any code, file, or command, do this first and treat it as "
-    "mandatory, not optional:\n\n"
-    "1. Re-read the task and copy out, verbatim and character-for-character, EVERY "
-    "identifier it names: message / field / RPC / class / function / variable names, "
-    "file paths and filenames, ports, and output formats. Record them (e.g. in a notes "
-    "file) as the authoritative contract you will build against.\n"
-    "2. Build strictly by copying from that list. Every name you produce must match the "
-    "task's spelling EXACTLY — not close, exact. One wrong character means you have "
-    "built a different interface than the one asked for: anything that relies on the "
-    "task's names will fail to find yours, no matter how well your code otherwise runs.\n"
-    "3. NEVER normalize, unify, rename, abbreviate, pluralize, re-case, or otherwise "
-    '"tidy" the task\'s names — even when they look inconsistent, redundant, or wrong to '
-    "you. If the task spells two related things differently, that is deliberate; "
+# Injected as a HumanMessage on the first model turn: STOP and write a plan before
+# implementing. Spec fidelity is the strict subset of planning that must be letter-
+# perfect, so it lives here as the rules for the plan's "implementation contract".
+# Nemotron under-weights standing system-prompt guidance (the "reproduce identifiers
+# verbatim" rule was ignored even in a prominent base) and did not act on the same
+# discipline appended to tool results either — so this front-loads it as an in-
+# conversation message before the first action. It also lets us drop the separate
+# to-do tool: the plan is the to-do list. General wording (no task-specific example)
+# so it does not overfit.
+_PLAN_FIRST_NUDGE = (
+    "STOP — do not write any code, file, or command yet. First carefully inspect the "
+    "task and write a short PLAN; treat this as mandatory, and do not start "
+    "implementing until the plan exists.\n\n"
+    "Your plan has two parts:\n\n"
+    "A) STEPS — a brief ordered list of the concrete actions that will complete the "
+    "task (install X, generate Y, write file Z, run it and check the result).\n\n"
+    "B) IMPLEMENTATION CONTRACT — the exact interface the task specifies: every "
+    "message / field / RPC / class / function / variable name, every file path and "
+    "filename, port, and output format, copied from the task. Record it (e.g. in a "
+    "notes file) as the authority you build against. This is the part you must get "
+    "letter-perfect, so write it by these rules:\n"
+    "  1. Copy each identifier VERBATIM, character-for-character, then use exactly "
+    "those strings when you build — never retype one from memory or paraphrase it.\n"
+    "  2. One wrong character means you have built a different interface than the one "
+    "asked for: anything that relies on the task's names will fail to find yours, no "
+    "matter how well your code otherwise runs.\n"
+    "  3. NEVER normalize, unify, rename, abbreviate, pluralize, re-case, or otherwise "
+    '"tidy" the task\'s names — even when they look inconsistent, redundant, or wrong '
+    "to you. If the task spells two related things differently, that is deliberate; "
     "reproduce each exactly as written. The task's wording is the authority, not your "
-    "sense of what is consistent or correct. When unsure, copy the task's text — never "
-    "retype an identifier from memory or paraphrase it."
+    "sense of what is consistent or correct.\n\n"
+    "Then build strictly from the plan, copying names from the contract."
 )
 
 
-class SpecFidelityState(AgentState):
-    """State schema for ``SpecFidelityMiddleware``."""
+class PlanFirstState(AgentState):
+    """State schema for ``PlanFirstMiddleware``."""
 
     # `PrivateStateAttr` keeps the once-flag out of the input/output schema while it
     # persists internally across turns (default last-value reducer).
-    spec_fidelity_injected: NotRequired[Annotated[bool, PrivateStateAttr]]
+    plan_injected: NotRequired[Annotated[bool, PrivateStateAttr]]
 
 
-class SpecFidelityMiddleware(AgentMiddleware):
-    """Inject a one-time spec-fidelity reminder as a `HumanMessage` on the first turn.
+class PlanFirstMiddleware(AgentMiddleware):
+    """Inject a one-time plan-first reminder as a `HumanMessage` on the first turn.
 
-    Nemotron under-weights standing system-prompt guidance — the "reproduce every
-    identifier verbatim" rule was ignored even when stated prominently — and did not
-    act on the same discipline appended to `write_file`/`edit_file`/`execute` results.
-    This delivers it as an in-conversation `HumanMessage` before the first model action,
-    front-loading the "extract the exact identifiers, then use them verbatim" step.
-    Fires once per run via a `PrivateStateAttr`.
+    Front-loads "STOP and write a plan before implementing" as an in-conversation
+    `HumanMessage` before the first model action. The plan's implementation contract
+    carries the spec-fidelity discipline (reproduce every identifier verbatim) as a
+    strict subset of planning — Nemotron under-weights standing system-prompt guidance
+    (that rule was ignored even when stated prominently) and did not act on it when
+    appended to `write_file`/`edit_file`/`execute` results, so it is delivered here.
+    Because the plan doubles as the task list, the profile drops the separate to-do
+    tool. Fires once per run via a `PrivateStateAttr`.
     """
 
-    name = "SpecFidelityMiddleware"
-    state_schema = SpecFidelityState  # type: ignore[assignment]
+    name = "PlanFirstMiddleware"
+    state_schema = PlanFirstState  # type: ignore[assignment]
 
-    def _maybe_inject(self, state: SpecFidelityState) -> dict[str, Any]:
-        if state.get("spec_fidelity_injected"):
+    def _maybe_inject(self, state: PlanFirstState) -> dict[str, Any]:
+        if state.get("plan_injected"):
             return {}
         return {
-            "messages": [HumanMessage(content=_SPEC_FIDELITY_NUDGE)],
-            "spec_fidelity_injected": True,
+            "messages": [HumanMessage(content=_PLAN_FIRST_NUDGE)],
+            "plan_injected": True,
         }
 
     def before_model(
         self,
-        state: SpecFidelityState,
+        state: PlanFirstState,
         runtime: Runtime[Any],  # noqa: ARG002  (part of the hook signature)
     ) -> dict[str, Any]:
-        """Inject the spec-fidelity reminder on the first turn only."""
+        """Inject the plan-first reminder on the first turn only."""
         return self._maybe_inject(state)
 
     async def abefore_model(
         self,
-        state: SpecFidelityState,
+        state: PlanFirstState,
         runtime: Runtime[Any],  # noqa: ARG002  (part of the hook signature)
     ) -> dict[str, Any]:
         """Async variant of ``before_model``."""
@@ -794,7 +805,7 @@ def _build_extra_middleware() -> list[AgentMiddleware]:
             jitter=False,
         ),
         NemotronToolCallShim(),
-        SpecFidelityMiddleware(),
+        PlanFirstMiddleware(),
         NemotronTextToolCallParser(),
         CompletionPressureMiddleware(),
         RambleMiddleware(),
@@ -820,6 +831,10 @@ def register() -> None:
     profile = HarnessProfile(
         base_system_prompt=_BASE_SYSTEM_PROMPT,
         system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX,
+        # Drop the to-do tool: PlanFirstMiddleware makes the agent write a plan up front,
+        # which serves as the task list. Nemotron under-used write_todos anyway, so the
+        # extra tool was dilution rather than help.
+        excluded_middleware=frozenset({"TodoListMiddleware"}),
         extra_middleware=_build_extra_middleware,
     )
     for spec in _NEMOTRON_ULTRA_MODEL_SPECS:

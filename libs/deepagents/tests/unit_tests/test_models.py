@@ -1239,7 +1239,7 @@ class TestNemotronUltraProfile:
             "ReadFileContinuationNoticeMiddleware",
             "ToolRetryMiddleware",
             "NemotronToolCallShim",
-            "SpecFidelityMiddleware",
+            "PlanFirstMiddleware",
             "NemotronTextToolCallParser",
             "CompletionPressureMiddleware",
             "RambleMiddleware",
@@ -1247,17 +1247,28 @@ class TestNemotronUltraProfile:
             "StallBreakerMiddleware",
         ]
 
-    def test_spec_fidelity_injects_once_at_start(self) -> None:
-        """Injects the reminder on turn 1, then no-ops once the flag is set."""
+    def test_nemotron_ultra_excludes_todo_list_middleware(self) -> None:
+        """The to-do tool is dropped: PlanFirstMiddleware's plan is the task list."""
+        profile = _get_harness_profile("NVIDIA:nvidia/nemotron-3-ultra-550b-a55b")
+        assert profile is not None
+        assert "TodoListMiddleware" in profile.excluded_middleware
+
+    def test_plan_first_injects_once_at_start(self) -> None:
+        """Injects the plan-first reminder on turn 1, then no-ops once the flag is set."""
         from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
-            SpecFidelityMiddleware,
+            PlanFirstMiddleware,
         )
 
-        mw = SpecFidelityMiddleware()
+        mw = PlanFirstMiddleware()
         first = mw.before_model({}, None)  # type: ignore[arg-type]
-        assert first["spec_fidelity_injected"] is True
-        assert first["messages"][0].content  # a reminder was injected
-        again = mw.before_model({"spec_fidelity_injected": True}, None)  # type: ignore[arg-type]
+        assert first["plan_injected"] is True
+        content = first["messages"][0].content
+        # The message tells the model to plan first, and carries the implementation
+        # contract (spec-fidelity) as a subset of that plan.
+        assert "PLAN" in content
+        assert "IMPLEMENTATION CONTRACT" in content
+        assert "VERBATIM" in content
+        again = mw.before_model({"plan_injected": True}, None)  # type: ignore[arg-type]
         assert "messages" not in again
 
     def test_nemotron_ultra_does_not_apply_to_other_nvidia_models(self) -> None:

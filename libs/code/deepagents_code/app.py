@@ -1318,6 +1318,12 @@ class _EffortContext:
     efforts: tuple[str, ...]
     """Reasoning effort labels supported by `spec`."""
 
+    current: str | None
+    """Effort from the per-session override, or `None` when unset."""
+
+    default: str | None
+    """Provider default effort for `spec`, or `None` when unknown."""
+
 
 @dataclass(frozen=True, slots=True)
 class _EffortUnavailable:
@@ -10003,6 +10009,10 @@ class DeepAgentsApp(App):
                 provider,
                 model,
             )
+            # Identity is blank, so render a uniformly-empty row rather than a
+            # blank model paired with a populated effort suffix.
+            self._status_bar.set_model(provider=provider, model=model, effort="")
+            return
         spec = self._effective_model_spec()
         effort = ""
         if spec:
@@ -10023,7 +10033,11 @@ class DeepAgentsApp(App):
                 types, so callers discriminate with
                 `isinstance(..., _EffortUnavailable)`.
         """
-        from deepagents_code.reasoning_effort import supported_efforts_for_model
+        from deepagents_code.reasoning_effort import (
+            current_effort_from_model_params,
+            default_effort_for_model,
+            supported_efforts_for_model,
+        )
 
         spec = self._effective_model_spec()
         if not spec:
@@ -10035,7 +10049,12 @@ class DeepAgentsApp(App):
             return _EffortUnavailable(
                 f"Reasoning effort is not configurable for {spec}."
             )
-        return _EffortContext(spec=spec, efforts=efforts)
+        return _EffortContext(
+            spec=spec,
+            efforts=efforts,
+            current=current_effort_from_model_params(spec, self._model_params_override),
+            default=default_effort_for_model(spec),
+        )
 
     async def _handle_effort_command(self, command: str) -> None:
         """Set or select reasoning effort for the current model.
@@ -10057,10 +10076,6 @@ class DeepAgentsApp(App):
         Args:
             command: The raw `/effort` slash command.
         """
-        from deepagents_code.reasoning_effort import (
-            current_effort_from_model_params,
-            default_effort_for_model,
-        )
         from deepagents_code.widgets.effort_selector import EffortSelectorScreen
 
         context = self._resolve_effort_context()
@@ -10068,15 +10083,12 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage(context.message))
             return
-        spec = context.spec
 
-        current = current_effort_from_model_params(spec, self._model_params_override)
-        default = default_effort_for_model(spec)
         screen = EffortSelectorScreen(
-            model_spec=spec,
+            model_spec=context.spec,
             efforts=context.efforts,
-            current_effort=current,
-            default_effort=default,
+            current_effort=context.current,
+            default_effort=context.default,
         )
 
         async def apply_effort(effort: str) -> None:
@@ -10110,7 +10122,6 @@ class DeepAgentsApp(App):
             effort: Effort label or clear/reset token.
         """
         from deepagents_code.reasoning_effort import (
-            current_effort_from_model_params,
             merge_effort_model_params,
             model_params_for_effort,
             without_effort_model_params,
@@ -10123,10 +10134,7 @@ class DeepAgentsApp(App):
         spec = context.spec
 
         if effort in {"clear", "--clear", "reset"}:
-            had_override = (
-                current_effort_from_model_params(spec, self._model_params_override)
-                is not None
-            )
+            had_override = context.current is not None
             self._model_params_override = without_effort_model_params(
                 self._model_params_override
             )

@@ -454,6 +454,24 @@ class TestModelLabelPrefixStripping:
             assert "openai:" not in rendered
             assert len(rendered) <= width
 
+    async def test_effort_suffix_dropped_when_only_bare_model_fits(self) -> None:
+        """In the narrow window where effort can't fit, the bare model wins.
+
+        When the width is too small for even the left-truncated `model effort`
+        form but still fits the bare model, the effort suffix is dropped rather
+        than the model — the last rung before ellipsis truncation.
+        """
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = ""
+            label.model = "o1"
+            label.effort = "medium"
+            # padding 0 2 -> content width = 6: too narrow for "o1 medium" (9)
+            # and below len("medium") + 2, but wide enough for bare "o1".
+            label.styles.width = 10
+            await pilot.pause()
+            assert str(label.render()) == "o1"
+
     async def test_no_provider_no_stripping(self) -> None:
         """Without a provider, the model name is passed through unchanged."""
         async with StatusBarApp().run_test() as pilot:

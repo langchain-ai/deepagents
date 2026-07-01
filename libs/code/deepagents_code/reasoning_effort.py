@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeAlias, get_args
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-from deepagents_code.model_config import ModelSpec
+from deepagents_code.model_config import CODEX_PROVIDER, ModelSpec
 
 logger = logging.getLogger(__name__)
 
@@ -146,8 +147,34 @@ def _openai_current_effort(model_params: dict[str, Any]) -> str | None:
     reasoning = model_params.get("reasoning")
     if isinstance(reasoning, dict):
         value = reasoning.get("effort")
+        if value is not None and not isinstance(value, str):
+            # Present but mistyped (e.g. a hand-edited config or bad
+            # `--model-params` JSON). Discard it, but log the *type* — never the
+            # value — so the drop is greppable instead of silently read as "no
+            # effort set" while the malformed param still ships on the wire.
+            logger.warning(
+                "Ignoring non-str OpenAI reasoning.effort of type %s",
+                type(value).__name__,
+            )
         return value if isinstance(value, str) else None
+    if reasoning is not None:
+        logger.warning(
+            "Ignoring OpenAI reasoning params of unexpected type %s",
+            type(reasoning).__name__,
+        )
     return None
+
+
+def _has_version(model: str, token: str) -> bool:
+    """Return whether `model` carries version `token` not followed by a digit.
+
+    A plain substring test would match a longer version by accident — e.g.
+    `"opus-4-1" in "claude-opus-4-16"` is true. Anchoring on a non-digit
+    boundary keeps `opus-4-1` from matching a future `opus-4-16` while still
+    matching a dated suffix like `opus-4-1-20250805`. `token` is always a
+    hardcoded constant, but `re.escape` keeps the match literal regardless.
+    """
+    return re.search(rf"{re.escape(token)}(?!\d)", model) is not None
 
 
 def _anthropic_supported_efforts(model: str) -> tuple[EffortLabel, ...]:
@@ -161,22 +188,32 @@ def _anthropic_supported_efforts(model: str) -> tuple[EffortLabel, ...]:
         accept `effort` (e.g. Sonnet 4.5).
     """
     if model.startswith("claude-opus-"):
-        if "opus-4-0" in model or "opus-4-1" in model:
+        if _has_version(model, "opus-4-0") or _has_version(model, "opus-4-1"):
             # Opus 4.0/4.1 predate reasoning effort entirely.
             return ()
-        if "opus-4-5" in model:
+        if _has_version(model, "opus-4-5"):
             # Opus 4.5 predates both `max` (4.6+) and `xhigh` (4.7+).
             return ANTHROPIC_EFFORTS_NO_MAX
         # Opus 4.6 predates `xhigh`; 4.7+ (and newer, unrecognized versions)
         # get the full range.
-        return ANTHROPIC_EFFORTS_NO_XHIGH if "opus-4-6" in model else ANTHROPIC_EFFORTS
+        return (
+            ANTHROPIC_EFFORTS_NO_XHIGH
+            if _has_version(model, "opus-4-6")
+            else ANTHROPIC_EFFORTS
+        )
     if model.startswith("claude-sonnet-"):
-        if "sonnet-4-0" in model or "sonnet-4-1" in model or "sonnet-4-5" in model:
+        if (
+            _has_version(model, "sonnet-4-0")
+            or _has_version(model, "sonnet-4-1")
+            or _has_version(model, "sonnet-4-5")
+        ):
             # Sonnet 4.0/4.1 predate effort; Sonnet 4.5 rejects it.
             return ()
         # Sonnet 4.6 predates `xhigh`; Sonnet 5 (and newer) get the full range.
         return (
-            ANTHROPIC_EFFORTS_NO_XHIGH if "sonnet-4-6" in model else ANTHROPIC_EFFORTS
+            ANTHROPIC_EFFORTS_NO_XHIGH
+            if _has_version(model, "sonnet-4-6")
+            else ANTHROPIC_EFFORTS
         )
     return ()
 
@@ -201,6 +238,10 @@ def _anthropic_current_effort(model_params: dict[str, Any]) -> str | None:
         The configured effort label, or `None` when unset.
     """
     value = model_params.get("effort")
+    if value is not None and not isinstance(value, str):
+        logger.warning(
+            "Ignoring non-str Anthropic effort of type %s", type(value).__name__
+        )
     return value if isinstance(value, str) else None
 
 
@@ -230,6 +271,11 @@ def _google_current_effort(model_params: dict[str, Any]) -> str | None:
         The configured effort label, or `None` when unset.
     """
     value = model_params.get("thinking_level")
+    if value is not None and not isinstance(value, str):
+        logger.warning(
+            "Ignoring non-str Gemini thinking_level of type %s",
+            type(value).__name__,
+        )
     return value if isinstance(value, str) else None
 
 
@@ -267,7 +313,15 @@ def _fireworks_current_effort(model_params: dict[str, Any]) -> str | None:
     kwargs = model_params.get("model_kwargs")
     if isinstance(kwargs, dict):
         value = kwargs.get("reasoning_effort")
+        if value is not None and not isinstance(value, str):
+            logger.warning(
+                "Ignoring non-str Fireworks reasoning_effort of type %s",
+                type(value).__name__,
+            )
         return value if isinstance(value, str) else None
+    # A non-dict `model_kwargs` is a legitimate shape here (it may hold
+    # unrelated params, or be preserved verbatim by `without_effort_model_params`),
+    # so treat it as "no effort configured" without warning.
     return None
 
 
@@ -325,7 +379,7 @@ def _classify_reasoning_provider(provider: str, model: str) -> ReasoningProvider
     model_lower = model.lower()
     if provider == "openai" and model_lower.startswith("gpt-5"):
         return "openai"
-    if provider == "openai_codex" and model_lower.startswith("gpt-5"):
+    if provider == CODEX_PROVIDER and model_lower.startswith("gpt-5"):
         return "openai_codex"
     if provider == "anthropic" and model_lower.startswith(
         ("claude-opus-", "claude-sonnet-")

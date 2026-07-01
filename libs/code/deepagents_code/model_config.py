@@ -2204,20 +2204,29 @@ def _apply_stored_base_url(provider: str, base_url: str | None) -> None:
     # (no stored `base_url`), that header must also be cleared — otherwise the
     # gateway key is sent to the native endpoint and rejected.
     custom_headers_env = PROVIDER_CUSTOM_HEADERS_ENV.get(provider)
-    if (
-        custom_headers_env
-        and not base_url
-        and not configured_base_url_survives
-        and os.environ.pop(custom_headers_env, None) is not None
-    ):
-        # Log the env var name only — never its value, which carries auth
-        # headers. Surfaces the removal for the user who set a header
-        # deliberately for the native endpoint and later wonders where it went.
-        logger.info(
-            "Cleared %s while applying a provider-native %s key",
-            custom_headers_env,
-            provider,
-        )
+    if custom_headers_env and not base_url:
+        if not configured_base_url_survives:
+            if os.environ.pop(custom_headers_env, None) is not None:
+                # Log the env var name only — never its value, which carries
+                # auth headers. Surfaces the removal for the user who set a
+                # header deliberately for the native endpoint and later wonders
+                # where it went.
+                logger.info(
+                    "Cleared %s while applying a provider-native %s key",
+                    custom_headers_env,
+                    provider,
+                )
+        elif os.environ.get(custom_headers_env) is not None:
+            # A provider base URL still routes (config or a prefixed env var),
+            # so the custom-header env is deliberately kept. Log the name only —
+            # never the value — so the retention is observable when a user later
+            # wonders why a gateway header is still in effect after applying a
+            # native key.
+            logger.debug(
+                "Kept %s: a %s base URL is still configured",
+                custom_headers_env,
+                provider,
+            )
 
 
 def _configured_base_url_survives_env_clear(provider: str) -> bool:

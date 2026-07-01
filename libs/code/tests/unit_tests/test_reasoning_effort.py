@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Coroutine, Iterator
+from typing import get_args
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -9,8 +10,10 @@ from textual.app import App
 from textual.widgets import OptionList
 
 from deepagents_code.app import DeepAgentsApp
+from deepagents_code.command_registry import COMMANDS
 from deepagents_code.config import settings
 from deepagents_code.reasoning_effort import (
+    EffortLabel,
     current_effort_from_model_params,
     default_effort_for_model,
     merge_effort_model_params,
@@ -36,7 +39,12 @@ def _restore_settings() -> Iterator[None]:
     [
         ("openai:gpt-5.5", ("none", "low", "medium", "high", "xhigh")),
         ("openai_codex:gpt-5.5", ("none", "low", "medium", "high", "xhigh")),
+        # A generic (non-5.5) gpt-5 still gets the full OpenAI range.
+        ("openai:gpt-5.4", ("none", "low", "medium", "high", "xhigh")),
         ("anthropic:claude-opus-4-8", ("low", "medium", "high", "xhigh", "max")),
+        # Opus 4.7 is the first version documented for the full range; assert the
+        # named boundary directly rather than relying on 4.8 to exercise it.
+        ("anthropic:claude-opus-4-7", ("low", "medium", "high", "xhigh", "max")),
         ("anthropic:claude-opus-4-6", ("low", "medium", "high", "max")),
         ("anthropic:claude-opus-4-5", ("low", "medium", "high")),
         ("anthropic:claude-sonnet-5", ("low", "medium", "high", "xhigh", "max")),
@@ -47,6 +55,14 @@ def _restore_settings() -> Iterator[None]:
         ("anthropic:claude-opus-4-1", ()),
         ("anthropic:claude-opus-4-0", ()),
         ("anthropic:claude-sonnet-4-0", ()),
+        # A dated snapshot of a predating version still predates: the version
+        # anchor tolerates a trailing `-<date>` suffix.
+        ("anthropic:claude-opus-4-1-20250805", ()),
+        # Version matching is anchored on a non-digit boundary, so a
+        # hypothetical future double-digit minor is NOT misread as the
+        # single-digit version it prefixes (`opus-4-1` must not match
+        # `opus-4-16`); it falls through to the full range instead.
+        ("anthropic:claude-opus-4-16", ("low", "medium", "high", "xhigh", "max")),
         ("google_genai:gemini-3.5-flash", ("low", "medium", "high")),
         ("google_genai:gemini-3.1-pro-preview", ("low", "medium", "high")),
         (
@@ -77,7 +93,10 @@ def test_supported_efforts_for_model(model_spec: str, efforts: tuple[str, ...]) 
     [
         ("openai:gpt-5.5", "medium"),
         ("openai_codex:gpt-5.5", "medium"),
+        # Only gpt-5.5 has a documented default; other gpt-5 variants are None.
+        ("openai:gpt-5.4", None),
         ("anthropic:claude-opus-4-8", "high"),
+        ("anthropic:claude-opus-4-7", "high"),
         ("anthropic:claude-sonnet-4-6", "high"),
         ("anthropic:claude-sonnet-4-5", None),
         ("anthropic:claude-opus-4-1", None),
@@ -141,6 +160,65 @@ def test_merge_and_clear_effort_model_params_preserves_unrelated_params() -> Non
         "temperature": 0.2,
         "model_kwargs": {"top_p": 0.9},
     }
+
+
+@pytest.mark.parametrize(
+    ("model_spec", "model_params"),
+    [
+        # `reasoning` present but not a dict (e.g. a bare-string override).
+        ("openai:gpt-5.5", {"reasoning": "high"}),
+        # `reasoning.effort` present but not a str.
+        ("openai:gpt-5.5", {"reasoning": {"effort": 5}}),
+        ("anthropic:claude-opus-4-8", {"effort": 5}),
+        ("google_genai:gemini-3.5-flash", {"thinking_level": 5}),
+        (
+            "fireworks:accounts/fireworks/models/deepseek-v4-pro",
+            {"model_kwargs": {"reasoning_effort": 5}},
+        ),
+    ],
+)
+def test_current_effort_warns_on_malformed_params(
+    model_spec: str,
+    model_params: dict[str, object],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A present-but-mistyped effort is discarded *and* logged, not silent.
+
+    Reading it as plain `None` would let the status bar show the provider
+    default while the malformed param still ships on the wire — the two would
+    disagree with no trace. The reader must warn (type only, never the value).
+    """
+    with caplog.at_level(logging.WARNING):
+        assert current_effort_from_model_params(model_spec, model_params) is None
+    assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+
+def test_current_effort_non_dict_model_kwargs_is_silent() -> None:
+    """A non-dict `model_kwargs` is a legit shape and must not warn."""
+    # No caplog assertion for silence: the value simply reads as "no effort".
+    assert (
+        current_effort_from_model_params(
+            "fireworks:accounts/fireworks/models/deepseek-v4-pro",
+            {"model_kwargs": "raw"},
+        )
+        is None
+    )
+
+
+def test_effort_argument_hint_covers_effort_vocabulary() -> None:
+    """The `/effort` argument hint must list every `EffortLabel` plus a reset.
+
+    The label vocabulary is hand-duplicated into the command's `argument_hint`
+    (and `COMMANDS.md`), none of which is type-checked against `EffortLabel`.
+    This pins the hint so a new label can't silently drift out of the hint text.
+    """
+    effort_command = next(cmd for cmd in COMMANDS if cmd.name == "/effort")
+    hint = effort_command.argument_hint
+    assert hint is not None
+    tokens = set(hint.strip("[]").split("|"))
+    assert set(get_args(EffortLabel)) <= tokens
+    # At least one reset token (handled by `_set_effort_override`) is offered.
+    assert tokens & {"clear", "--clear", "reset"}
 
 
 async def test_effort_command_sets_current_model_params() -> None:
@@ -280,6 +358,25 @@ async def test_effort_command_reports_not_configurable_model() -> None:
     await app._handle_effort_command("/effort high")
 
     assert app._model_params_override is None
+    assert app._mount_message.await_count == 2  # ty: ignore[unresolved-attribute]
+
+
+async def test_effort_selector_not_configurable_model_skips_screen() -> None:
+    """Bare `/effort` on a non-configurable model reports instead of opening.
+
+    The typed-arg path is covered separately; this guards the *selector* arm so
+    a regression can't push the modal for a model that supports no efforts.
+    """
+    app = DeepAgentsApp()
+    app._mount_message = AsyncMock()  # ty: ignore
+    app.push_screen = Mock()  # ty: ignore
+    settings.model_provider = "anthropic"
+    settings.model_name = "claude-sonnet-4-5"
+
+    await app._handle_effort_command("/effort")
+
+    app.push_screen.assert_not_called()  # ty: ignore[unresolved-attribute]
+    # Echoed UserMessage + the "not configurable" AppMessage.
     assert app._mount_message.await_count == 2  # ty: ignore[unresolved-attribute]
 
 

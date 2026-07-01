@@ -48,6 +48,11 @@ class ModelLabel(Widget):
     When the full `provider:model` text doesn't fit, the provider is dropped
     first. If the bare model name still doesn't fit, it is left-truncated
     with a leading ellipsis so the most distinctive tail stays visible.
+
+    When a reasoning effort is set, its label is appended to the model and
+    participates in the same ladder: the effort suffix is preserved (with the
+    model left-truncated to make room) and is only dropped once even the
+    left-truncated model plus effort cannot fit.
     """
 
     provider: reactive[str] = reactive("", layout=True)
@@ -70,13 +75,15 @@ class ModelLabel(Widget):
         return name
 
     def _with_effort(self, text: str) -> str:
-        """Append the reasoning effort label when one is active.
+        """Append the reasoning effort label when one is set.
 
         Args:
             text: Base model display text.
 
         Returns:
-            Model display text with effort suffix if configured.
+            Model display text with the effort suffix (a per-session override or
+                the provider default) when one is present, else
+                `text` unchanged.
         """
         return f"{text} {self.effort}" if self.effort else text
 
@@ -610,7 +617,8 @@ class StatusBar(Horizontal):
         Args:
             provider: Model provider name (e.g., `'anthropic'`).
             model: Model name (e.g., `'claude-sonnet-4-5'`).
-            effort: Active reasoning effort label, if any.
+            effort: Reasoning effort label to display (per-session override or
+                provider default), or empty when none applies.
         """
         label = self.query_one("#model-display", ModelLabel)
         label.provider = provider

@@ -1,0 +1,26 @@
+libs/code/deepagents_code/app.py
+  s_36e7d3130825d2::t_b35036f8374bd0 15310
+libs/code/tests/unit_tests/test_model_switch.py
+  s_36e7d3130825d2::t_278143a9c67a51 332-361
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "e43bffd9df71042aafe16f0e9c242ca29d2f0d7c",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  },
+  "sessions": {
+    "s_36e7d3130825d2": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f1e67-e808-7a22-bfc0-bf6824ff9134",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

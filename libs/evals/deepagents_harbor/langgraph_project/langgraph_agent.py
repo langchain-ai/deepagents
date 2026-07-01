@@ -150,6 +150,18 @@ _SPEC_INIT_DEFAULTS: dict[str, dict[str, Any]] = {
     "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B": {
         "extra_body": {"chat_template_kwargs": {"enable_thinking": True}},
     },
+    # NVIDIA's Nemotron 3 Ultra agentic-coding cookbook recommends these sampling
+    # params. Without them the eval sends nothing and Fireworks runs at its server
+    # default (~temperature 1.0, unbounded output), which drives exploratory
+    # rambling / non-convergence on long agentic tasks. `temperature` and
+    # `max_tokens` are first-class ChatFireworks fields; `top_p` is not, so it must
+    # ride in `model_kwargs` (the integration would otherwise shunt it there with a
+    # warning). Merged UNDER caller model_kwargs, so an explicit override still wins.
+    "fireworks:accounts/fireworks/models/nemotron-3-ultra-nvfp4": {
+        "temperature": 0.6,
+        "max_tokens": 32000,
+        "model_kwargs": {"top_p": 0.95},
+    },
 }
 
 

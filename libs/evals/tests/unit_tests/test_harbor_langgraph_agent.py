@@ -217,6 +217,10 @@ def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
 
 _BASETEN_NEMOTRON = "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B"
 _ENABLE_THINKING = {"extra_body": {"chat_template_kwargs": {"enable_thinking": True}}}
+_FIREWORKS_NEMOTRON = "fireworks:accounts/fireworks/models/nemotron-3-ultra-nvfp4"
+# NVIDIA's Nemotron 3 Ultra agentic-coding cookbook sampling; top_p is not a
+# first-class ChatFireworks field so it rides in model_kwargs.
+_FW_SAMPLING = {"temperature": 0.6, "max_tokens": 32000, "model_kwargs": {"top_p": 0.95}}
 
 
 def test_resolve_init_kwargs_enables_thinking_for_baseten_nemotron() -> None:
@@ -252,6 +256,19 @@ def test_resolve_init_kwargs_does_not_mutate_caller_kwargs() -> None:
     caller = {"extra_body": {"foo": 1}}
     langgraph_agent._resolve_init_kwargs(_BASETEN_NEMOTRON, caller)
     assert caller == {"extra_body": {"foo": 1}}
+
+
+def test_resolve_init_kwargs_sets_fireworks_ultra_sampling() -> None:
+    # NVIDIA's Nemotron 3 Ultra cookbook recommends temp 0.6 / top_p 0.95 /
+    # max_tokens 32000; the eval otherwise sends nothing and Fireworks runs at
+    # its server default (~temp 1.0, unbounded output).
+    assert langgraph_agent._resolve_init_kwargs(_FIREWORKS_NEMOTRON, {}) == _FW_SAMPLING
+
+
+def test_resolve_init_kwargs_fireworks_caller_overrides_sampling() -> None:
+    # A caller-provided sampling value wins over the spec default; the rest hold.
+    out = langgraph_agent._resolve_init_kwargs(_FIREWORKS_NEMOTRON, {"temperature": 0.0})
+    assert out == {"temperature": 0.0, "max_tokens": 32000, "model_kwargs": {"top_p": 0.95}}
 
 
 def test_make_graph_enables_thinking_for_baseten_nemotron(

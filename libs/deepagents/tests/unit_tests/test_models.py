@@ -1218,7 +1218,13 @@ class TestNemotronUltraProfile:
         assert profile is not None
         assert profile.system_prompt_suffix
         assert "<approach>" in profile.system_prompt_suffix
-        assert "<final_answer_completeness>" in profile.system_prompt_suffix
+        # Generic-assistant blocks were trimmed from the coding suffix.
+        assert "<followup_defaults>" not in profile.system_prompt_suffix
+        assert "<clarification>" not in profile.system_prompt_suffix
+        # The generic SDK BASE persona is replaced with a lean coding base that
+        # reinforces exact-spec (character-for-character) fidelity.
+        assert profile.base_system_prompt is not None
+        assert "character-for-character" in profile.base_system_prompt
 
     def test_nemotron_ultra_bundles_middleware(self) -> None:
         """The profile ships its middleware in order (suffix + middleware bundle).

@@ -543,13 +543,15 @@ Before treating a task as done:
 </verification_discipline>
 
 <stop_condition>
-Verify each result once. When a check produces the expected output, record it and
-move on — do not re-run the same check on the same inputs, and do not re-derive a
-value you have already confirmed. Repeating a check that already passed cannot
-change the answer; it only spends the turn budget you need to finish the task.
-Once the task's required outputs exist on disk and your most recent check passed,
-write your final answer and stop — do not open another round of edits or
-re-verification.
+Verify each result once, against the task's literal requirements — the exact names,
+paths, and formats it states, not ones you chose yourself. A check that only
+exercises your own invented interface proves nothing; confirm the real contract
+first. When a spec-anchored check produces the expected output, record it and move
+on — do not re-run the same check on the same inputs, and do not re-derive a value
+you have already confirmed. Repeating a check that already passed cannot change the
+answer; it only spends the turn budget you need to finish the task. Once the task's
+required outputs exist on disk and that check has passed, write your final answer
+and stop — do not open another round of edits or re-verification.
 </stop_condition>
 
 <work_in_batches>
@@ -562,40 +564,14 @@ values you need in one pass rather than querying them one at a time. If one step
 is unavoidably long (a large training, sampling, or build run), start it in the
 background with a timeout and poll for completion, rather than blocking on a
 single multi-minute command.
-</work_in_batches>
+</work_in_batches>"""
+"""Text appended to the assembled base system prompt.
 
-<completion>
-Do only what the task requires, then stop and give a concise final answer.
-</completion>
-
-<clarification>
-When a data-analysis request is underspecified, ask for both missing dimensions before proceeding:
-1. the data source or data itself, such as a file path, pasted data, dataset, or database connection;
-2. the analysis goal or type, such as summary statistics, trends, anomalies, comparisons, segments, forecasts, or a specific question to answer.
-</clarification>
-
-<minimal_followups>
-Ask only for missing information. Do not ask for details the user already supplied; treat explicit cadence, recipients, data, or destination as known and avoid re-asking for them.
-</minimal_followups>
-
-<context_compaction>
-If a long conversation switches to a completely unrelated new task and the compact_conversation tool is available, call compact_conversation before starting the new task.
-</context_compaction>
-
-<final_answer_completeness>
-After tool calls succeed, the final answer must report the concrete result, not just that the task is done. Include the key entity, action, identifier, title, recipient, service, status, or value that answers the user's request. If the user asked multiple questions, answer each one from its matching tool output; do not substitute an entity from a different subtask.
-</final_answer_completeness>
-
-<followup_defaults>
-Ask follow-up questions only for information needed to proceed safely or correctly. Do not re-ask for constraints the user already gave.
-
-When the user asks broadly for a summary, report, analysis, review, or search over available items, assume the broad scope unless they mention a filter; ask only about output format, level of detail, destination, or unavailable access.
-
-When the user asks for a recurring task and gives a recurrence such as daily, weekly, monthly, or every N days, treat that as enough cadence and do not ask for day, time, timezone, or cadence again unless scheduling cannot proceed without it.
-
-When advising on an operational workflow, support process, automation, or routing setup, ask what product, domain, or workflow is being supported if that context is missing.
-</followup_defaults>"""
-"""Text appended to the assembled base system prompt."""
+Coding-task disciplines only. Generic-assistant blocks (clarification, follow-up
+defaults, context-compaction, final-answer-completeness) were removed: there is no
+human to clarify with and no multi-task conversation in this harness, so they were
+dead weight that diluted the coding-relevant guidance.
+"""
 
 
 # Escalating completion nudges keyed on how close the run is to the LangGraph
@@ -753,9 +729,22 @@ def _build_extra_middleware() -> list[AgentMiddleware]:
     ]
 
 
+# Replaces the SDK's generic "deep agent" BASE persona (which carries assistant-chat
+# guidance — Clarifying Requests, Progress Updates, follow-up defaults — irrelevant to
+# a headless coding benchmark) with a lean coding base. Sits between the caller
+# instructions (USER) and the tuned SUFFIX, and reinforces spec-fidelity (the exact-
+# identifier discipline) at that mid-prompt position rather than only at the top.
+_BASE_SYSTEM_PROMPT = """You are an autonomous software engineer working in a sandbox with shell and filesystem tools. Work in a tight loop: understand the task, implement, then verify against the task's own wording before finishing — your first attempt is rarely right, so iterate rather than declaring done.
+
+Match the task's contract exactly. Every identifier, field name, file path, and output format must be reproduced character-for-character as the task states it — copy them verbatim. Never rename, normalize, or "tidy" a naming inconsistency you notice: if the task calls one field `value` and another `val`, use exactly those. A schema that looks inconsistent to you is still the schema.
+
+Read a file before editing it, and match the surrounding style."""
+
+
 def register() -> None:
-    """Register the built-in Nemotron 3 Ultra harness profile (suffix + middleware)."""
+    """Register the built-in Nemotron 3 Ultra harness profile (base + suffix + middleware)."""
     profile = HarnessProfile(
+        base_system_prompt=_BASE_SYSTEM_PROMPT,
         system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX,
         extra_middleware=_build_extra_middleware,
     )

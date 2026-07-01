@@ -7,14 +7,32 @@ from typing import Any, Literal, TypeAlias
 from deepagents_code.model_config import ModelSpec
 
 OPENAI_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh")
-# `effort` maps to Anthropic's `output_config.effort`, whose accepted values
-# vary by model version: `xhigh` exists only on Opus 4.7+ and Sonnet 5, `max`
-# is unavailable before Opus 4.6 / Sonnet 4.6, and Sonnet 4.5 rejects `effort`.
+"""OpenAI GPT-5 effort labels for `reasoning.effort`.
+
+See https://platform.openai.com/docs/guides/reasoning.
+"""
+
 ANTHROPIC_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+"""Anthropic `output_config.effort` labels for Opus 4.7+ and Sonnet 5.
+
+See https://platform.claude.com/docs/en/build-with-claude/effort.
+"""
+
 ANTHROPIC_EFFORTS_NO_XHIGH: tuple[str, ...] = ("low", "medium", "high", "max")
-# Gemini 3.1 Pro and 3.5 Flash accept low/medium/high only (`minimal` is
-# Flash-Lite / original-Pro territory, neither of which is offered here).
+"""Anthropic effort labels for Opus 4.6 and Sonnet 4.6.
+
+These models predate `xhigh`; Sonnet 4.5 rejects `effort` entirely.
+See https://platform.claude.com/docs/en/build-with-claude/effort.
+"""
+
 GOOGLE_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
+"""Gemini 3 effort labels for `thinking_level`.
+
+Gemini 3.1 Pro and 3.5 Flash accept low/medium/high only; `minimal` is
+Flash-Lite / original-Pro territory, neither of which is offered here. See
+https://ai.google.dev/gemini-api/docs/thinking.
+"""
+
 FIREWORKS_REASONING_EFFORTS: tuple[str, ...] = (
     "none",
     "low",
@@ -23,16 +41,32 @@ FIREWORKS_REASONING_EFFORTS: tuple[str, ...] = (
     "xhigh",
     "max",
 )
+"""Fireworks `reasoning_effort` labels for DeepSeek V4 Pro.
+
+See https://docs.fireworks.ai/guides/reasoning.
+"""
+
 FIREWORKS_KIMI_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
+"""Fireworks `reasoning_effort` labels for Kimi K2 models.
+
+See https://docs.fireworks.ai/guides/reasoning.
+"""
+
 FIREWORKS_GLM_EFFORTS: tuple[str, ...] = ("none", "high", "max")
+"""Fireworks `reasoning_effort` labels for GLM 5 models.
+
+See https://docs.fireworks.ai/guides/reasoning.
+"""
 
 ReasoningProvider: TypeAlias = Literal[
     "anthropic", "fireworks", "google_genai", "openai", "openai_codex"
 ]
+"""Provider identifiers that support model-specific reasoning effort controls."""
 
 _REASONING_KEYS: frozenset[str] = frozenset(
     {"effort", "reasoning", "thinking", "thinking_level"}
 )
+"""Runtime config keys that may already carry provider reasoning settings."""
 
 
 def _anthropic_efforts(model: str) -> tuple[str, ...]:

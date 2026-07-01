@@ -326,7 +326,8 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
             `GraderResponse`.
 
             With none, the grader reasons from the transcript alone.
-        max_iterations: Positive hard cap on grader iterations per rubric attempt.
+        max_iterations: Maximum grader iterations per rubric attempt; must be a
+            positive integer.
 
             When the cap is reached without a `satisfied` verdict, the agent
             terminates with status `'max_iterations_reached'` (see the

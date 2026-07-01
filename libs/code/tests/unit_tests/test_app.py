@@ -4809,7 +4809,7 @@ class TestGoalCommand:
             with patch.object(
                 app, "_set_rubric_max_iterations", new_callable=AsyncMock
             ) as setter:
-                await app._handle_command("/goal max-iterations 0")
+                await app._handle_command("/goal max-iterations -5")
                 await pilot.pause()
 
             setter.assert_not_awaited()

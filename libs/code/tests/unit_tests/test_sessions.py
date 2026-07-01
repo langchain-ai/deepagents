@@ -2711,6 +2711,140 @@ class TestLoadMessageCountsFromWritesBatch:
         # The good write still counts; the corrupt one is skipped.
         assert results == {"t1": 1}
 
+    async def test_large_append_history_counts_quickly(self) -> None:
+        """A long append-only history folds in one pass without quadratic cost.
+
+        Regression for the `threads list` slowdown: the previous incremental
+        fold was O(n^2) and a thread with thousands of writes took seconds.
+        """
+        serde = JsonPlusSerializer()
+
+        import aiosqlite
+
+        n = 4000
+        async with aiosqlite.connect(":memory:") as conn:
+            await conn.execute(
+                "CREATE TABLE writes "
+                "(thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, "
+                "task_id TEXT, idx INTEGER, channel TEXT, type TEXT, value BLOB)"
+            )
+            rows = []
+            for i in range(n):
+                type_str, blob = serde.dumps_typed(
+                    [{"type": "human", "content": "x", "id": f"m{i}"}]
+                )
+                rows.append(("t1", f"cp_{i:06d}", "task1", type_str, blob))
+            await conn.executemany(
+                "INSERT INTO writes VALUES (?, '', ?, ?, 0, 'messages', ?, ?)",
+                rows,
+            )
+            await conn.commit()
+
+            results = await sessions._load_message_counts_from_writes_batch(  # pyright: ignore[reportPrivateUsage]
+                conn, ["t1"], serde
+            )
+
+        assert results == {"t1": n}
+
+
+class TestCountMessagesFromDeltas:
+    """Tests for the delta-folding message counter and its exact fallback."""
+
+    def test_fast_path_dedups_repeated_ids(self) -> None:
+        """Repeated IDs across deltas collapse to one message (fast path)."""
+        from langchain_core.messages import AIMessage
+
+        deltas = [
+            [AIMessage(content="draft", id="a1")],
+            [AIMessage(content="final", id="a1")],
+        ]
+        assert sessions._count_messages_from_deltas(deltas) == 1  # pyright: ignore[reportPrivateUsage]
+
+    def test_remove_all_then_append_resets(self) -> None:
+        """`REMOVE_ALL_MESSAGES` clears the buffer before later appends."""
+        from langchain_core.messages import HumanMessage, RemoveMessage
+        from langgraph.graph.message import REMOVE_ALL_MESSAGES
+
+        deltas = [
+            [HumanMessage(content="a", id="h1")],
+            [HumanMessage(content="b", id="h2")],
+            [
+                RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                HumanMessage(content="fresh", id="h9"),
+            ],
+        ]
+        assert sessions._count_messages_from_deltas(deltas) == 1  # pyright: ignore[reportPrivateUsage]
+
+    def test_overwrite_resets_buffer(self) -> None:
+        """An `Overwrite` delta replaces the accumulated buffer."""
+        from langchain_core.messages import HumanMessage
+        from langgraph.types import Overwrite
+
+        deltas = [
+            [HumanMessage(content="a", id="h1")],
+            [HumanMessage(content="b", id="h2")],
+            Overwrite(value=[HumanMessage(content="fresh", id="h9")]),
+        ]
+        assert sessions._count_messages_from_deltas(deltas) == 1  # pyright: ignore[reportPrivateUsage]
+
+    def test_specific_remove_matches_incremental_fold(self) -> None:
+        """A delete-by-ID routes through the exact fold and matches it."""
+        from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
+
+        deltas = [
+            [HumanMessage(content="a", id="h1"), AIMessage(content="b", id="a1")],
+            [RemoveMessage(id="a1")],
+        ]
+        assert sessions._count_messages_from_deltas(  # pyright: ignore[reportPrivateUsage]
+            deltas
+        ) == sessions._incremental_message_count(deltas)  # pyright: ignore[reportPrivateUsage]
+        assert sessions._count_messages_from_deltas(deltas) == 1  # pyright: ignore[reportPrivateUsage]
+
+    def test_fast_and_exact_agree_on_realistic_histories(self) -> None:
+        """Fast path and exact fold agree on append/clear/overwrite histories.
+
+        Covers the realistic shapes the counter sees (unique-ID appends,
+        streaming updates that reuse an ID, compaction clears, and snapshot
+        overwrites) without the pathological duplicate-ID-within-one-delta case
+        that batch `add_messages` handles differently.
+        """
+        import random
+
+        from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
+        from langgraph.graph.message import REMOVE_ALL_MESSAGES
+        from langgraph.types import Overwrite
+
+        rng = random.Random(20240117)
+        for _ in range(500):
+            deltas: list[object] = []
+            next_id = 0
+            for _ in range(rng.randint(0, 25)):
+                roll = rng.random()
+                if roll < 0.6:
+                    next_id += 1
+                    cls = rng.choice([HumanMessage, AIMessage])
+                    deltas.append([cls(content="x", id=f"m{next_id}")])
+                elif roll < 0.75 and next_id:
+                    # Streaming update: reuse a recent ID.
+                    deltas.append(
+                        [AIMessage(content="y", id=f"m{rng.randint(1, next_id)}")]
+                    )
+                elif roll < 0.85:
+                    deltas.append([RemoveMessage(id=REMOVE_ALL_MESSAGES)])
+                else:
+                    count = rng.randint(0, 3)
+                    deltas.append(
+                        Overwrite(
+                            value=[
+                                HumanMessage(content="o", id=f"ov{j}")
+                                for j in range(count)
+                            ]
+                        )
+                    )
+            fast = sessions._count_messages_from_deltas(deltas)  # pyright: ignore[reportPrivateUsage]
+            exact = sessions._incremental_message_count(deltas)  # pyright: ignore[reportPrivateUsage]
+            assert fast == exact, deltas
+
 
 class TestInitialPromptFromMessages:
     """Tests for the message-list parser used by the writes-table reader."""

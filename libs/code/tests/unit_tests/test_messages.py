@@ -1152,12 +1152,12 @@ class TestToolCallMessageExpandHint:
         a non-`write_todos` tool below the size threshold, so the full content
         is shown rather than a truncated preview.
         """
-        # Five lines: under `_PREVIEW_LINES` (6) but over the file formatter's
+        # Five lines: under `_PREVIEW_LINES` (6) but over the shell formatter's
         # own four-line preview cap, so a stray `is_preview=True` would truncate.
         output = "\n".join(f"line {index}" for index in range(5))
         assert output.count("\n") + 1 < ToolCallMessage._PREVIEW_LINES
 
-        app = _tool_msg_app("read_file", {"path": "/tmp/x"})
+        app = _tool_msg_app("execute", {"command": "echo hi"})
         async with app.run_test() as pilot:
             await pilot.pause()
             app.msg.set_success(output)
@@ -1172,6 +1172,153 @@ class TestToolCallMessageExpandHint:
             assert "line 0" in preview.plain
             assert "line 4" in preview.plain
 
+    async def test_read_file_collapses_preview_by_default(self) -> None:
+        """`read_file` hides its content preview by default but stays expandable.
+
+        The file path is already shown in the header, so echoing the contents
+        inline is noise. The collapsed view shows an expand hint instead of the
+        preview, and expanding reveals the full content.
+        """
+        # Short output that any other tool would render fully inline.
+        output = "\n".join(f"line {index}" for index in range(3))
+
+        app = _tool_msg_app("read_file", {"path": "/tmp/x"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._expanded is False
+            assert app.msg._preview_row is not None
+            assert app.msg._hint_widget is not None
+            # Preview is collapsed away; an expand affordance is shown instead.
+            assert app.msg._preview_row.display is False
+            assert app.msg._has_expandable_output() is True
+            assert app.msg._hint_widget.display is True
+            hint = app.msg._hint_widget._Static__content  # ty: ignore
+            assert "expand" in hint.plain
+
+            # Expanding reveals the full content.
+            app.msg.toggle_output()
+            await pilot.pause()
+            assert app.msg._expanded is True
+            assert app.msg._full_row is not None
+            assert app.msg._full_row.display is True
+            assert app.msg._full_widget is not None
+            full = app.msg._full_widget._Static__content  # ty: ignore
+            assert "line 0" in full.plain
+            assert "line 2" in full.plain
+
+    async def test_large_read_file_collapses_preview_regardless_of_size(
+        self,
+    ) -> None:
+        """Large `read_file` output collapses with a count-free hint and round-trips.
+
+        The short-output case can't prove the "collapse regardless of size"
+        invariant — short output wouldn't preview-truncate for any tool. This
+        uses output well over `_PREVIEW_LINES`, so a normal tool would render a
+        truncated preview with an "N more lines" hint. `read_file` instead hides
+        the preview entirely and shows a count-free expand affordance, then
+        toggles cleanly back to collapsed.
+        """
+        line_count = ToolCallMessage._PREVIEW_LINES * 5
+        output = "\n".join(f"line {index}" for index in range(line_count))
+
+        app = _tool_msg_app("read_file", {"path": "/tmp/big"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._expanded is False
+            assert app.msg._preview_row is not None
+            assert app.msg._full_row is not None
+            assert app.msg._hint_widget is not None
+            # Preview stays hidden even though the size would normally truncate.
+            assert app.msg._preview_row.display is False
+            assert app.msg._has_expandable_output() is True
+            assert app.msg._hint_widget.display is True
+            # The hint is count-free — no "N more lines" prefix other tools show.
+            hint = app.msg._hint_widget._Static__content  # ty: ignore
+            assert "expand" in hint.plain
+            assert "more" not in hint.plain
+
+            # Expanding reveals the full content — including the last line — and
+            # offers a collapse affordance.
+            app.msg.toggle_output()
+            await pilot.pause()
+            assert app.msg._expanded is True
+            assert app.msg._full_row.display is True
+            assert app.msg._full_widget is not None
+            full = app.msg._full_widget._Static__content  # ty: ignore
+            assert f"line {line_count - 1}" in full.plain
+            assert app.msg._hint_widget.display is True
+            collapse_hint = app.msg._hint_widget._Static__content  # ty: ignore
+            assert "collapse" in collapse_hint.plain
+
+            # Toggling again re-collapses back to the count-free expand hint.
+            app.msg.toggle_output()
+            await pilot.pause()
+            assert app.msg._expanded is False
+            assert app.msg._preview_row.display is False
+            assert app.msg._full_row.display is False
+            recollapsed = app.msg._hint_widget._Static__content  # ty: ignore
+            assert "expand" in recollapsed.plain
+            assert "more" not in recollapsed.plain
+
+    async def test_read_file_click_toggles_output(self) -> None:
+        """Clicking a collapsed `read_file` expands it via `has_expandable_output`.
+
+        The public `has_expandable_output` property drives the click / Ctrl+O
+        routing in `on_click`; `read_file` must report as expandable there so a
+        click reveals the content instead of falling through to the args block.
+        """
+        output = "\n".join(f"line {index}" for index in range(3))
+
+        app = _tool_msg_app("read_file", {"path": "/tmp/x"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg.has_expandable_output is True
+            assert app.msg._expanded is False
+
+            event = MagicMock()
+            app.msg.on_click(event)
+            await pilot.pause()
+            event.stop.assert_called_once()
+            assert app.msg._expanded is True
+
+    async def test_short_read_file_error_force_expanded_has_no_collapse_hint(
+        self,
+    ) -> None:
+        """Short `read_file` errors stay visible and non-collapsible."""
+        error = "Permission denied"
+
+        app = _tool_msg_app("read_file", {"path": "/etc/passwd"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_error(error)
+            await pilot.pause()
+
+            assert app.msg._expanded is True
+            assert app.msg._hint_widget is not None
+            assert app.msg._hint_widget.display is False
+            assert app.msg._has_expandable_output() is False
+            assert app.msg._full_row is not None
+            assert app.msg._full_row.display is True
+            assert app.msg._full_widget is not None
+            full = app.msg._full_widget._Static__content  # ty: ignore
+            assert error in full.plain
+
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            assert app.msg._expanded is True
+            assert app.msg._hint_widget.display is False
+            assert app.msg._full_row.display is True
+
 
 class TestToolCallMessageEmptyResult:
     """Empty file-op results render nothing instead of an empty box."""
@@ -1183,6 +1330,11 @@ class TestToolCallMessageEmptyResult:
             ("grep", "[]"),
             ("ls", "[]"),
             ("glob", "   "),
+            # `read_file` has its own collapse branch in `_update_output_display`
+            # that sits *below* the shared empty guard; a whitespace-only read
+            # must still be suppressed by the guard rather than reaching that
+            # branch and rendering an empty box with a bogus expand hint.
+            ("read_file", "   "),
         ],
     )
     async def test_empty_serialized_result_hides_output(

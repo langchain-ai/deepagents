@@ -111,18 +111,23 @@ class TestNoOverride:
     def test_no_context(self) -> None:
         request = _make_request(_make_model("claude-sonnet-4-6"), context=None)
         captured: list[ModelRequest] = []
-        _mw.wrap_model_call(
+        result = _mw.wrap_model_call(
             request, lambda r: (captured.append(r), _make_response())[1]
         )
         assert captured[0].model is request.model
+        assert _checkpoint_update(result) == {"_model_spec": "openai:claude-sonnet-4-6"}
 
     def test_empty_context(self) -> None:
         request = _make_request(_make_model("claude-sonnet-4-6"), context=CLIContext())
         captured: list[ModelRequest] = []
-        _mw.wrap_model_call(
+        result = _mw.wrap_model_call(
             request, lambda r: (captured.append(r), _make_response())[1]
         )
         assert captured[0] is request
+        assert _checkpoint_update(result) == {
+            "_model_spec": "openai:claude-sonnet-4-6",
+            "_model_params": None,
+        }
 
     def test_dict_context_reconstructs_approval_fields(self) -> None:
         request = _make_request(
@@ -243,10 +248,14 @@ class TestNoOverride:
             context=CLIContext(model_params={}),
         )
         captured: list[ModelRequest] = []
-        _mw.wrap_model_call(
+        result = _mw.wrap_model_call(
             request, lambda r: (captured.append(r), _make_response())[1]
         )
         assert captured[0] is request
+        assert _checkpoint_update(result) == {
+            "_model_spec": "openai:claude-sonnet-4-6",
+            "_model_params": None,
+        }
 
 
 class TestModelSwap:
@@ -337,7 +346,8 @@ class TestModelSwap:
         assert captured[0].model is original
         assert captured[0].model_settings == {}
         assert _checkpoint_update(result) == {
-            "_model_spec": "anthropic:claude-sonnet-4-6"
+            "_model_spec": "anthropic:claude-sonnet-4-6",
+            "_model_params": None,
         }
 
     def test_successful_swap_records_resolved_model_spec(self) -> None:
@@ -355,7 +365,10 @@ class TestModelSwap:
         ):
             result = _mw.wrap_model_call(request, lambda _request: _make_response())
 
-        assert _checkpoint_update(result) == {"_model_spec": "openai:gpt-5.5"}
+        assert _checkpoint_update(result) == {
+            "_model_spec": "openai:gpt-5.5",
+            "_model_params": None,
+        }
 
 
 class TestAnthropicSettingsStripped:

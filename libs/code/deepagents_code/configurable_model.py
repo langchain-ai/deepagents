@@ -43,8 +43,16 @@ class _ResolvedModelRequest:
     """Model request plus the checkpoint metadata it should persist."""
 
     request: ModelRequest
+    """Request to pass to the downstream model handler."""
+
     model_spec: str | None
+    """Resolved `provider:model` spec to persist for resume, when known."""
+
     model_params: dict[str, Any] | None = None
+    """Invocation params to persist, or `None` to clear checkpointed params."""
+
+    model_params_known: bool = False
+    """Whether `model_params` is known and should be written to the checkpoint."""
 
 
 def _get_ls_provider(model: object) -> str | None:
@@ -332,7 +340,11 @@ def _apply_overrides(request: ModelRequest) -> _ResolvedModelRequest:
                 "continuing with current model",
                 model,
             )
-            return _ResolvedModelRequest(request, _model_spec_from_model(request.model))
+            return _ResolvedModelRequest(
+                request,
+                _model_spec_from_model(request.model),
+                model_params_known=True,
+            )
 
     updated = _build_overrides(request, ctx, model_result)
     params = dict(ctx.model_params) if ctx.model_params else None
@@ -340,6 +352,7 @@ def _apply_overrides(request: ModelRequest) -> _ResolvedModelRequest:
         updated,
         _model_spec_from_result(model_result, updated.model),
         params,
+        model_params_known=True,
     )
 
 
@@ -369,7 +382,11 @@ async def _apply_overrides_async(request: ModelRequest) -> _ResolvedModelRequest
                 "continuing with current model",
                 model,
             )
-            return _ResolvedModelRequest(request, _model_spec_from_model(request.model))
+            return _ResolvedModelRequest(
+                request,
+                _model_spec_from_model(request.model),
+                model_params_known=True,
+            )
 
     updated = _build_overrides(request, ctx, model_result)
     params = dict(ctx.model_params) if ctx.model_params else None
@@ -377,6 +394,7 @@ async def _apply_overrides_async(request: ModelRequest) -> _ResolvedModelRequest
         updated,
         _model_spec_from_result(model_result, updated.model),
         params,
+        model_params_known=True,
     )
 
 
@@ -389,7 +407,7 @@ def _checkpoint_command(resolved: _ResolvedModelRequest) -> Command[Any] | None:
     update: dict[str, Any] = {}
     if resolved.model_spec:
         update["_model_spec"] = resolved.model_spec
-    if resolved.model_params is not None:
+    if resolved.model_params_known:
         update["_model_params"] = resolved.model_params
     if not update:
         return None

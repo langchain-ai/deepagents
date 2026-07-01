@@ -144,7 +144,7 @@ class ResumeState(GoalRubricChannels):
     _model_spec: Annotated[NotRequired[str], PrivateStateAttr]
     """`provider:model` spec effectively in use for the latest turn."""
 
-    _model_params: Annotated[NotRequired[dict[str, Any]], PrivateStateAttr]
+    _model_params: Annotated[NotRequired[dict[str, Any] | None], PrivateStateAttr]
     """Invocation params effectively in use for the latest turn."""
 
     _pending_goal_objective: Annotated[NotRequired[str | None], PrivateStateAttr]

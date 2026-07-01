@@ -8635,8 +8635,7 @@ class DeepAgentsApp(App):
             "  /rubric file <path>\n"
             "  /rubric show\n"
             "  /rubric clear\n"
-            "  /rubric model [provider:model|clear]\n\n"
-            "Alias: /criteria"
+            "  /rubric model [provider:model|clear]"
         )
 
     async def _show_rubric_usage(self) -> None:

@@ -278,6 +278,9 @@ class StreamState:
     spinner: _ConsoleSpinner | None = None
     """Optional animated spinner shown during agent work in verbose mode."""
 
+    show_rubric_iterations: bool = False
+    """Whether rubric lifecycle messages should include iteration numbers."""
+
 
 @dataclass
 class ThreadUrlLookupState:
@@ -505,13 +508,17 @@ def _process_rubric_event(
 
     if event_type == "rubric_evaluation_start":
         # `iteration` is untrusted streamed payload; only render the 1-based
-        # number when it is actually an int, mirroring the interactive twin in
-        # `textual_adapter._format_rubric_event`. A non-int previously raised
-        # `TypeError` here and aborted the whole non-interactive run.
+        # number when it is actually an int and the user explicitly requested an
+        # iteration cap. A non-int previously raised `TypeError` here and aborted
+        # the whole non-interactive run.
         iteration = data.get("iteration", 0)
-        label = f" (iteration {iteration + 1})" if isinstance(iteration, int) else ""
+        label = (
+            f" (iteration {iteration + 1})"
+            if state.show_rubric_iterations and isinstance(iteration, int)
+            else ""
+        )
         console.print(
-            f"[dim]⏳ Grading against rubric{label}…[/dim]",
+            f"[dim]⏳ Checking acceptance criteria{label}…[/dim]",
             highlight=False,
         )
         if state.spinner:
@@ -521,11 +528,11 @@ def _process_rubric_event(
     result = data.get("result")
     explanation = (data.get("explanation") or "").strip()
     if result == "satisfied":
-        console.print("[green]✓ Rubric satisfied[/green]", highlight=False)
+        console.print("[green]✓ Acceptance criteria satisfied[/green]", highlight=False)
     elif result == "needs_revision":
         suffix = f": {escape_markup(explanation)}" if explanation else ""
         console.print(
-            f"[yellow]↻ Rubric needs revision{suffix}[/yellow]", highlight=False
+            f"[yellow]↻ Changes need revision{suffix}[/yellow]", highlight=False
         )
         for criterion in data.get("criteria", []):
             if isinstance(criterion, dict) and not criterion.get("passed", True):
@@ -535,7 +542,8 @@ def _process_rubric_event(
                 console.print(f"[yellow]  ✗ {name}{detail}[/yellow]", highlight=False)
     elif result == "max_iterations_reached":
         console.print(
-            "[yellow]⚠ Rubric not satisfied (max iterations reached)[/yellow]",
+            "[yellow]⚠ Acceptance criteria not satisfied "
+            "(iteration limit reached)[/yellow]",
             highlight=False,
         )
     elif result in {"failed", "grader_error"}:
@@ -778,6 +786,7 @@ async def _run_agent_loop(
     thread_url_lookup: ThreadUrlLookupState | None = None,
     max_turns: int | None = None,
     rubric: str | None = None,
+    show_rubric_iterations: bool = False,
 ) -> None:
     """Run the agent and handle HITL interrupts until the task completes.
 
@@ -808,12 +817,19 @@ async def _run_agent_loop(
             graph's `rubric` state field.
 
             `None` leaves it unset (no grading).
+        show_rubric_iterations: Whether rubric lifecycle messages should include
+            iteration numbers.
 
     Raises:
         HITLIterationLimitError: If the effective turn limit is exceeded.
     """
     spinner = None if quiet else _ConsoleSpinner(console)
-    state = StreamState(quiet=quiet, stream=stream, spinner=spinner)
+    state = StreamState(
+        quiet=quiet,
+        stream=stream,
+        spinner=spinner,
+        show_rubric_iterations=show_rubric_iterations,
+    )
     user_msg: dict[str, Any] = {"role": "user", "content": message}
     if message_kwargs:
         user_msg.update(message_kwargs)
@@ -1336,6 +1352,7 @@ async def run_non_interactive(
                 thread_url_lookup=thread_url_lookup,
                 max_turns=max_turns,
                 rubric=rubric,
+                show_rubric_iterations=rubric_max_iterations is not None,
             )
 
     except KeyboardInterrupt:

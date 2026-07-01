@@ -256,8 +256,8 @@ class TestHeaderIndicator:
         assert "Goal" not in header.plain
 
 
-def _render_event(data: dict) -> str:
-    state = StreamState()
+def _render_event(data: dict, *, show_rubric_iterations: bool = False) -> str:
+    state = StreamState(show_rubric_iterations=show_rubric_iterations)
     buf = io.StringIO()
     console = Console(file=buf, width=200, highlight=False)
     _process_rubric_event(data, state, console)
@@ -270,14 +270,22 @@ class TestProcessRubricEvent:
 
     def test_start_event(self) -> None:
         out = _render_event({"type": "rubric_evaluation_start", "iteration": 0})
-        assert "Grading against rubric" in out
+        assert "Checking acceptance criteria" in out
+        assert "iteration 1" not in out
+
+    def test_start_event_mentions_explicit_iteration(self) -> None:
+        out = _render_event(
+            {"type": "rubric_evaluation_start", "iteration": 0},
+            show_rubric_iterations=True,
+        )
+        assert "Checking acceptance criteria" in out
         assert "iteration 1" in out
 
     def test_satisfied(self) -> None:
         out = _render_event(
             {"type": "rubric_evaluation_end", "result": "satisfied", "criteria": []}
         )
-        assert "Rubric satisfied" in out
+        assert "Acceptance criteria satisfied" in out
 
     def test_needs_revision_with_criteria(self) -> None:
         out = _render_event(
@@ -291,7 +299,7 @@ class TestProcessRubricEvent:
                 ],
             }
         )
-        assert "needs revision" in out
+        assert "Changes need revision" in out
         assert "tests missing" in out
         assert "no coverage" in out
         assert "style" not in out
@@ -300,7 +308,7 @@ class TestProcessRubricEvent:
         out = _render_event(
             {"type": "rubric_evaluation_end", "result": "max_iterations_reached"}
         )
-        assert "max iterations reached" in out
+        assert "iteration limit reached" in out
 
     def test_failed(self) -> None:
         out = _render_event(

@@ -1046,13 +1046,26 @@ class TestFormatRubricEvent:
         ):
             yield
 
-    def test_start_event_mentions_iteration(self) -> None:
-        """Start events should surface visible grading state."""
+    def test_start_event_omits_iteration_by_default(self) -> None:
+        """Start events should avoid noisy iteration numbers by default."""
         assert (
             _format_rubric_event(
                 {"type": "rubric_evaluation_start", "iteration": 1},
             )
-            == "⏳ Grading against rubric (iteration 2)…"
+            == "⏳ Checking acceptance criteria…"
+        )
+
+    def test_start_event_mentions_explicit_iteration(self) -> None:
+        """Explicit iteration display should surface the 1-based count."""
+        assert (
+            _format_rubric_event(
+                {
+                    "type": "rubric_evaluation_start",
+                    "iteration": 1,
+                    "show_iteration": True,
+                },
+            )
+            == "⏳ Checking acceptance criteria (iteration 2)…"
         )
 
     def test_needs_revision_includes_failed_criteria(self) -> None:
@@ -1069,7 +1082,7 @@ class TestFormatRubricEvent:
                     ],
                 },
             )
-            == "↻ Rubric needs revision: missing coverage\n  ✗ tests pass — not run"
+            == "↻ Changes need revision: missing coverage\n  ✗ tests pass — not run"
         )
 
     def test_satisfied_event(self) -> None:
@@ -1078,7 +1091,7 @@ class TestFormatRubricEvent:
             _format_rubric_event(
                 {"type": "rubric_evaluation_end", "result": "satisfied"},
             )
-            == "✓ Rubric satisfied"
+            == "✓ Acceptance criteria satisfied"
         )
 
     def test_start_event_without_int_iteration_omits_number(self) -> None:
@@ -1087,7 +1100,7 @@ class TestFormatRubricEvent:
             _format_rubric_event(
                 {"type": "rubric_evaluation_start", "iteration": None},
             )
-            == "⏳ Grading against rubric…"
+            == "⏳ Checking acceptance criteria…"
         )
 
     def test_max_iterations_reached_event(self) -> None:
@@ -1096,7 +1109,7 @@ class TestFormatRubricEvent:
             _format_rubric_event(
                 {"type": "rubric_evaluation_end", "result": "max_iterations_reached"},
             )
-            == "⚠ Rubric not satisfied (max iterations reached)"
+            == "⚠ Acceptance criteria not satisfied (iteration limit reached)"
         )
 
     def test_grader_failure_results_render_warning(self) -> None:
@@ -1159,14 +1172,12 @@ class TestFormatRubricEvent:
             failed = _format_rubric_event(
                 {"type": "rubric_evaluation_end", "result": "failed"},
             )
-        assert (
-            start == f"{ASCII_GLYPHS.hourglass} Grading against rubric (iteration 1)..."
-        )
+        assert start == f"{ASCII_GLYPHS.hourglass} Checking acceptance criteria..."
         assert revision == (
-            f"{ASCII_GLYPHS.retry} Rubric needs revision\n"
+            f"{ASCII_GLYPHS.retry} Changes need revision\n"
             f"  {ASCII_GLYPHS.error} tests pass — not run"
         )
-        assert satisfied == f"{ASCII_GLYPHS.checkmark} Rubric satisfied"
+        assert satisfied == f"{ASCII_GLYPHS.checkmark} Acceptance criteria satisfied"
         assert failed == f"{ASCII_GLYPHS.warning} Rubric grader failed"
 
 
@@ -2649,10 +2660,10 @@ class TestExecuteTaskTextualRubricRevisionStreaming:
         app_text = [str(widget._content) for widget in app_messages]
         assert app_text == [
             (
-                f"{UNICODE_GLYPHS.hourglass} Grading against rubric (iteration 1)"
+                f"{UNICODE_GLYPHS.hourglass} Checking acceptance criteria"
                 f"{UNICODE_GLYPHS.ellipsis}"
             ),
-            f"{UNICODE_GLYPHS.retry} Rubric needs revision: say yellow",
+            f"{UNICODE_GLYPHS.retry} Changes need revision: say yellow",
         ]
 
 
@@ -4001,7 +4012,8 @@ class TestExecuteTaskTextualRubricEvents:
         rubric_msgs = [
             m
             for m in mounted
-            if isinstance(m, AppMessage) and "Rubric satisfied" in str(m._content)
+            if isinstance(m, AppMessage)
+            and "Acceptance criteria satisfied" in str(m._content)
         ]
         assert len(rubric_msgs) == 1
 

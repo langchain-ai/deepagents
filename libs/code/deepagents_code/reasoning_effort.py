@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Literal, TypeAlias, assert_never
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeAlias
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 from deepagents_code.model_config import ModelSpec
 
@@ -92,7 +95,7 @@ _REASONING_KEYS: frozenset[str] = frozenset(
 """Runtime config keys that may already carry provider reasoning settings."""
 
 
-def _anthropic_efforts(model: str) -> tuple[str, ...]:
+def _anthropic_efforts(model: str) -> tuple[EffortLabel, ...]:
     """Return the effort levels an Anthropic model accepts.
 
     Args:
@@ -118,20 +121,185 @@ def _anthropic_efforts(model: str) -> tuple[str, ...]:
     return ()
 
 
-def _reasoning_provider(model_spec: str) -> ReasoningProvider | None:
-    """Classify `model_spec` into a reasoning-capable provider, or `None`.
+class ReasoningProviderConfig(NamedTuple):
+    """Provider-specific reasoning effort behavior."""
 
-    Args:
-        model_spec: `provider:model` spec for the active model.
+    supported_efforts: Callable[[str], tuple[EffortLabel, ...]]
+    """Return supported effort labels for a lowercased model name."""
+
+    default_effort: Callable[[str], EffortLabel | None]
+    """Return the provider default effort for a lowercased model name, if known."""
+
+    model_params: Callable[[str], dict[str, Any]]
+    """Translate an effort label into provider-specific model params."""
+
+    current_effort: Callable[[dict[str, Any]], str | None]
+    """Read the configured effort label from provider-specific model params."""
+
+
+def _openai_supported_efforts(_model: str) -> tuple[EffortLabel, ...]:
+    """Return OpenAI reasoning effort levels."""
+    return OPENAI_EFFORTS
+
+
+def _openai_default_effort(model: str) -> EffortLabel | None:
+    """Return the OpenAI default reasoning effort when known."""
+    return "medium" if model.startswith("gpt-5.5") else None
+
+
+def _openai_model_params(effort: str) -> dict[str, Any]:
+    """Return OpenAI reasoning params for an effort label."""
+    if effort == "none":
+        return {"reasoning": {"effort": "none"}}
+    return {"reasoning": {"effort": effort, "summary": "auto"}}
+
+
+def _openai_current_effort(model_params: dict[str, Any]) -> str | None:
+    """Read the OpenAI reasoning effort from model params.
 
     Returns:
-        The reasoning provider, or `None` when the model family does not support
-            reasoning effort (or the spec is unparseable).
+        The configured effort label, or `None` when unset.
     """
-    parsed = ModelSpec.try_parse(model_spec)
-    if parsed is None:
-        return None
-    provider, model = parsed.provider, parsed.model
+    reasoning = model_params.get("reasoning")
+    if isinstance(reasoning, dict):
+        value = reasoning.get("effort")
+        return value if isinstance(value, str) else None
+    return None
+
+
+def _anthropic_default_effort(model: str) -> EffortLabel | None:
+    """Return the Anthropic default reasoning effort when known."""
+    return "high" if _anthropic_efforts(model) else None
+
+
+def _anthropic_model_params(effort: str) -> dict[str, Any]:
+    """Return Anthropic reasoning params for an effort label."""
+    return {
+        "thinking": {"type": "adaptive", "display": "summarized"},
+        "effort": effort,
+    }
+
+
+def _anthropic_current_effort(model_params: dict[str, Any]) -> str | None:
+    """Read the Anthropic reasoning effort from model params.
+
+    Returns:
+        The configured effort label, or `None` when unset.
+    """
+    value = model_params.get("effort")
+    return value if isinstance(value, str) else None
+
+
+def _google_supported_efforts(_model: str) -> tuple[EffortLabel, ...]:
+    """Return Gemini thinking levels."""
+    return GOOGLE_EFFORTS
+
+
+def _google_default_effort(model: str) -> EffortLabel | None:
+    """Return the Gemini default thinking level when known."""
+    if model.startswith("gemini-3.5-flash"):
+        return "medium"
+    if model.startswith(("gemini-3.1-pro", "gemini-3-flash", "gemini-3-pro")):
+        return "high"
+    return None
+
+
+def _google_model_params(effort: str) -> dict[str, Any]:
+    """Return Gemini thinking params for an effort label."""
+    return {"thinking_level": effort}
+
+
+def _google_current_effort(model_params: dict[str, Any]) -> str | None:
+    """Read the Gemini thinking level from model params.
+
+    Returns:
+        The configured effort label, or `None` when unset.
+    """
+    value = model_params.get("thinking_level")
+    return value if isinstance(value, str) else None
+
+
+def _fireworks_supported_efforts(model: str) -> tuple[EffortLabel, ...]:
+    """Return Fireworks reasoning effort levels for a model."""
+    if "kimi-k2" in model:
+        return FIREWORKS_KIMI_EFFORTS
+    if "glm-5" in model:
+        return FIREWORKS_GLM_EFFORTS
+    if "deepseek-v4-pro" in model:
+        return FIREWORKS_REASONING_EFFORTS
+    return ()
+
+
+def _fireworks_default_effort(model: str) -> EffortLabel | None:
+    """Return the Fireworks default reasoning effort when known."""
+    if "deepseek-v4-pro" in model:
+        return "high"
+    if "glm-5p2" in model:
+        return "max"
+    return None
+
+
+def _fireworks_model_params(effort: str) -> dict[str, Any]:
+    """Return Fireworks reasoning params for an effort label."""
+    return {"model_kwargs": {"reasoning_effort": effort}}
+
+
+def _fireworks_current_effort(model_params: dict[str, Any]) -> str | None:
+    """Read the Fireworks reasoning effort from model params.
+
+    Returns:
+        The configured effort label, or `None` when unset.
+    """
+    kwargs = model_params.get("model_kwargs")
+    if isinstance(kwargs, dict):
+        value = kwargs.get("reasoning_effort")
+        return value if isinstance(value, str) else None
+    return None
+
+
+_OPENAI_CONFIG = ReasoningProviderConfig(
+    supported_efforts=_openai_supported_efforts,
+    default_effort=_openai_default_effort,
+    model_params=_openai_model_params,
+    current_effort=_openai_current_effort,
+)
+"""Shared config for OpenAI-compatible GPT-5 reasoning providers.
+
+`openai` and `openai_codex` use different provider names so model selection can
+route to the right client, but `/effort` maps both to the same reasoning params.
+"""
+
+_PROVIDER_CONFIGS: dict[ReasoningProvider, ReasoningProviderConfig] = {
+    "openai": _OPENAI_CONFIG,
+    "openai_codex": _OPENAI_CONFIG,
+    "anthropic": ReasoningProviderConfig(
+        supported_efforts=_anthropic_efforts,
+        default_effort=_anthropic_default_effort,
+        model_params=_anthropic_model_params,
+        current_effort=_anthropic_current_effort,
+    ),
+    "google_genai": ReasoningProviderConfig(
+        supported_efforts=_google_supported_efforts,
+        default_effort=_google_default_effort,
+        model_params=_google_model_params,
+        current_effort=_google_current_effort,
+    ),
+    "fireworks": ReasoningProviderConfig(
+        supported_efforts=_fireworks_supported_efforts,
+        default_effort=_fireworks_default_effort,
+        model_params=_fireworks_model_params,
+        current_effort=_fireworks_current_effort,
+    ),
+}
+"""Provider-specific reasoning effort behavior keyed by `ModelSpec` provider."""
+
+
+def _classify_reasoning_provider(provider: str, model: str) -> ReasoningProvider | None:
+    """Classify provider/model parts into a reasoning-capable provider.
+
+    Returns:
+        The registry key for supported reasoning models, or `None` otherwise.
+    """
     model_lower = model.lower()
     if provider == "openai" and model_lower.startswith("gpt-5"):
         return "openai"
@@ -148,6 +316,33 @@ def _reasoning_provider(model_spec: str) -> ReasoningProvider | None:
     return None
 
 
+def _reasoning_provider(model_spec: str) -> ReasoningProvider | None:
+    """Classify `model_spec` into a reasoning-capable provider, or `None`.
+
+    Args:
+        model_spec: `provider:model` spec for the active model.
+
+    Returns:
+        The reasoning provider, or `None` when the model family does not support
+            reasoning effort (or the spec is unparseable).
+    """
+    parsed = ModelSpec.try_parse(model_spec)
+    if parsed is None:
+        return None
+    return _classify_reasoning_provider(parsed.provider, parsed.model)
+
+
+def _reasoning_config(model_spec: str) -> tuple[ReasoningProviderConfig, str] | None:
+    """Return provider config and lowercased model when reasoning is supported."""
+    parsed = ModelSpec.try_parse(model_spec)
+    if parsed is None:
+        return None
+    provider = _classify_reasoning_provider(parsed.provider, parsed.model)
+    if provider is None:
+        return None
+    return _PROVIDER_CONFIGS[provider], parsed.model.lower()
+
+
 def supported_efforts_for_model(model_spec: str | None) -> tuple[str, ...]:
     """Return reasoning efforts supported by `model_spec`.
 
@@ -159,41 +354,17 @@ def supported_efforts_for_model(model_spec: str | None) -> tuple[str, ...]:
     """
     if not model_spec:
         return ()
-    provider = _reasoning_provider(model_spec)
-    if provider is None:
+    context = _reasoning_config(model_spec)
+    if context is None:
         return ()
-    efforts: tuple[str, ...]
-    match provider:
-        case "openai" | "openai_codex":
-            efforts = OPENAI_EFFORTS
-        case "anthropic":
-            parsed = ModelSpec.try_parse(model_spec)
-            efforts = _anthropic_efforts(parsed.model.lower()) if parsed else ()
-        case "google_genai":
-            efforts = GOOGLE_EFFORTS
-        case "fireworks":
-            parsed = ModelSpec.try_parse(model_spec)
-            model = parsed.model.lower() if parsed else ""
-            if "kimi-k2" in model:
-                efforts = FIREWORKS_KIMI_EFFORTS
-            elif "glm-5" in model:
-                efforts = FIREWORKS_GLM_EFFORTS
-            elif "deepseek-v4-pro" in model:
-                efforts = FIREWORKS_REASONING_EFFORTS
-            else:
-                efforts = ()
-        case _:
-            assert_never(provider)
+    config, model = context
+    efforts = config.supported_efforts(model)
     if not efforts:
         # A recognized reasoning provider that yields no configurable efforts
         # usually means the model-version heuristics need updating for a newer
         # release — surface it at debug level rather than silently reporting
         # "not configurable".
-        logger.debug(
-            "No configurable reasoning efforts for %s (provider=%s)",
-            model_spec,
-            provider,
-        )
+        logger.debug("No configurable reasoning efforts for %s", model_spec)
     return efforts
 
 
@@ -209,30 +380,11 @@ def default_effort_for_model(model_spec: str | None) -> EffortLabel | None:
     """
     if not model_spec:
         return None
-    provider = _reasoning_provider(model_spec)
-    if provider is None:
+    context = _reasoning_config(model_spec)
+    if context is None:
         return None
-    parsed = ModelSpec.try_parse(model_spec)
-    model = parsed.model.lower() if parsed else ""
-    match provider:
-        case "openai" | "openai_codex":
-            if model.startswith("gpt-5.5"):
-                return "medium"
-        case "anthropic":
-            return "high" if _anthropic_efforts(model) else None
-        case "google_genai":
-            if model.startswith("gemini-3.5-flash"):
-                return "medium"
-            if model.startswith(("gemini-3.1-pro", "gemini-3-flash", "gemini-3-pro")):
-                return "high"
-        case "fireworks":
-            if "deepseek-v4-pro" in model:
-                return "high"
-            if "glm-5p2" in model:
-                return "max"
-        case _:
-            assert_never(provider)
-    return None
+    config, model = context
+    return config.default_effort(model)
 
 
 def model_params_for_effort(model_spec: str, effort: str) -> dict[str, Any] | None:
@@ -246,27 +398,13 @@ def model_params_for_effort(model_spec: str, effort: str) -> dict[str, Any] | No
         Model params to merge into the per-session override, or `None` when the
         model/effort pair is unsupported.
     """
-    if effort not in supported_efforts_for_model(model_spec):
+    context = _reasoning_config(model_spec)
+    if context is None:
         return None
-    provider = _reasoning_provider(model_spec)
-    if provider is None:
+    config, model = context
+    if effort not in config.supported_efforts(model):
         return None
-    match provider:
-        case "openai" | "openai_codex":
-            if effort == "none":
-                return {"reasoning": {"effort": "none"}}
-            return {"reasoning": {"effort": effort, "summary": "auto"}}
-        case "anthropic":
-            return {
-                "thinking": {"type": "adaptive", "display": "summarized"},
-                "effort": effort,
-            }
-        case "google_genai":
-            return {"thinking_level": effort}
-        case "fireworks":
-            return {"model_kwargs": {"reasoning_effort": effort}}
-        case _:
-            assert_never(provider)
+    return config.model_params(effort)
 
 
 def current_effort_from_model_params(
@@ -283,26 +421,11 @@ def current_effort_from_model_params(
     """
     if not model_spec or not model_params:
         return None
-    provider = _reasoning_provider(model_spec)
-    if provider is None:
+    context = _reasoning_config(model_spec)
+    if context is None:
         return None
-    value: object = None
-    match provider:
-        case "openai" | "openai_codex":
-            reasoning = model_params.get("reasoning")
-            if isinstance(reasoning, dict):
-                value = reasoning.get("effort")
-        case "anthropic":
-            value = model_params.get("effort")
-        case "google_genai":
-            value = model_params.get("thinking_level")
-        case "fireworks":
-            kwargs = model_params.get("model_kwargs")
-            if isinstance(kwargs, dict):
-                value = kwargs.get("reasoning_effort")
-        case _:
-            assert_never(provider)
-    return value if isinstance(value, str) else None
+    config, _ = context
+    return config.current_effort(model_params)
 
 
 def merge_effort_model_params(

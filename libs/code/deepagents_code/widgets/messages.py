@@ -131,6 +131,17 @@ _TOOLS_WITH_HEADER_INFO: set[str] = {
 }
 
 
+# Tools whose key info (file path / search pattern) is already in the header, so
+# their output body is collapsed entirely by default — an expand affordance
+# replaces the inline preview. `read_file` echoes the file; grep/glob echo the
+# matches for a pattern the header already names.
+_COLLAPSE_OUTPUT_BY_DEFAULT: set[str] = {
+    "read_file",
+    "grep",
+    "glob",
+}
+
+
 _SUCCESS_EXIT_RE = re.compile(r"\n?\[Command succeeded with exit code 0\]\s*$")
 """Strip the SDK's `[Command succeeded with exit code 0]` trailer from tool output."""
 
@@ -1449,18 +1460,20 @@ class ToolCallMessage(Vertical):
         if not output:
             return False
 
-        # Successful `read_file` collapses its content entirely by default (the
-        # header already names the file), so it is always expandable regardless
-        # of size: `output` is non-empty here (guarded above) and the file
-        # formatter only reshapes the line-number gutter, never dropping body
-        # text, so it can never format to nothing. This mirrors the empty-output
-        # guard in `_update_output_display`, which suppresses any body that would
-        # render blank before the collapse branch is reached — the two must move
-        # together if that assumption changes. Errors are excluded because
-        # `set_error` force-expands every error; treating a short error as
-        # always-expandable would offer a collapse that hides it entirely.
-        if self._tool_name == "read_file" and self._status != "error":
-            return True
+        # Tools in `_COLLAPSE_OUTPUT_BY_DEFAULT` (read_file, grep, glob) collapse
+        # their body entirely by default (the header already carries the file
+        # path / search pattern), so any result with something to show is
+        # expandable regardless of size. `read_file`'s formatter never drops body
+        # text, but grep/glob serialize an empty match set as `[]`, which formats
+        # to nothing — so confirm the formatted output is non-empty rather than
+        # trusting the raw string. This mirrors the empty-output guard in
+        # `_update_output_display`, which suppresses any body that would render
+        # blank before the collapse branch is reached. Errors are excluded
+        # because `set_error` force-expands every error; treating a short error
+        # as always-expandable would offer a collapse that hides it entirely.
+        if self._tool_name in _COLLAPSE_OUTPUT_BY_DEFAULT and self._status != "error":
+            formatted = self._format_output(output, is_preview=False)
+            return bool(formatted.content.plain.strip())
 
         if self._tool_name == "write_todos":
             return self._format_output(output, is_preview=True).truncation is not None
@@ -2313,11 +2326,11 @@ class ToolCallMessage(Vertical):
         else:
             # Show collapsed preview
             self._full_row.display = False
-            # `read_file` output just echoes the file the agent asked to read,
-            # and the path is already in the header, so the content is noise by
-            # default. Collapse it entirely (no preview) while keeping it
-            # expandable for when the user does want to see what was read.
-            if self._tool_name == "read_file":
+            # `read_file` echoes the file the agent read, and grep/glob echo the
+            # matches for a pattern the header already names, so the body is noise
+            # by default. Collapse it entirely (no preview) while keeping it
+            # expandable for when the user does want to see the result.
+            if self._tool_name in _COLLAPSE_OUTPUT_BY_DEFAULT:
                 self._preview_row.display = False
                 ellipsis = get_glyphs().ellipsis
                 self._hint_widget.update(

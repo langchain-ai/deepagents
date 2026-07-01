@@ -910,6 +910,7 @@ jobs:
         run: |
           uv venv
           INSTALL_ARGS=(dist/*.whl)
+          # Talon transitively requires a prerelease deepagents pin via deepagents-code.
           if [ "$PKG_NAME" = "deepagents-talon" ]; then
             INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")
           fi
@@ -939,6 +940,7 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           INSTALL_ARGS=(dist/*.whl)
+          # Talon transitively requires a prerelease deepagents pin via deepagents-code.
           if [ "$PKG_NAME" = "deepagents-talon" ]; then
             INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")
           fi

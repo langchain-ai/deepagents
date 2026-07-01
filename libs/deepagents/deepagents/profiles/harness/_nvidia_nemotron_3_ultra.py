@@ -783,7 +783,10 @@ _PLAN_FIRST_NUDGE = (
     "behaves, run it on concrete inputs and read the output instead of re-reading the "
     "source; build a small runnable check early that runs your artifact and the task's "
     "reference (or provided examples) on the same inputs and diffs them, and iterate "
-    "against what you observe until they match."
+    "against what you observe until they match. Your check must exercise EVERY case, "
+    "mode, and parameter value the task names — including the false/empty/zero and "
+    "multi-item ones, not just the default — because a check that skips a required "
+    "case proves nothing about that case."
 )
 
 

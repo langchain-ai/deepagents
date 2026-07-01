@@ -1271,6 +1271,8 @@ class TestNemotronUltraProfile:
         assert "implementation contract" in content
         assert "VERBATIM" in content
         assert "RUNNING" in content
+        # Verification must cover every enumerated case, not just the default path.
+        assert "EVERY case" in content
         again = mw.before_model({"plan_injected": True}, None)  # type: ignore[arg-type]
         assert "messages" not in again
 

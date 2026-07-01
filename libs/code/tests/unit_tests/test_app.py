@@ -3887,7 +3887,10 @@ class TestTraceCommand:
             mock_open.assert_called_once_with(expected_url)
             app_msgs = app.query(AppMessage)
             rendered = "\n".join(str(w._content) for w in app_msgs)
-            assert f"Opening tracing project 'proj':\n{expected_url}" in rendered
+            assert (
+                f"Opening tracing project 'proj' in default browser:\n{expected_url}"
+                in rendered
+            )
 
     async def test_trace_warns_when_no_messages_sent(self) -> None:
         """Should append a note when the thread has no messages yet."""
@@ -4227,7 +4230,7 @@ class TestTraceCommand:
             app_msgs = app.query(AppMessage)
             rendered = "\n".join(str(w._content) for w in app_msgs)
             assert (
-                "Opening tracing project 'proj':\n"
+                "Opening tracing project 'proj' in default browser:\n"
                 "https://smith.langchain.com/t/test-thread-123"
             ) in rendered
 

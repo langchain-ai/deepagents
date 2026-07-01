@@ -218,6 +218,13 @@ config value on launch, so a `/scrollbar` toggle will not appear to "stick"
 across restarts while the env var remains set.
 """
 
+SHOW_URL_OPEN_TOAST = "DEEPAGENTS_CODE_SHOW_URL_OPEN_TOAST"
+"""Show a confirmation toast after clicking a URL that opens in a browser.
+
+Defaults to enabled; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
+to suppress the success toast while still opening URLs normally.
+"""
+
 THEME = "DEEPAGENTS_CODE_THEME"
 """Force the CLI to launch with this theme name when set."""
 

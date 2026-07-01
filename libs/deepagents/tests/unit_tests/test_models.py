@@ -1247,8 +1247,8 @@ class TestNemotronUltraProfile:
             "StallBreakerMiddleware",
         ]
 
-    def test_spec_fidelity_augments_successful_writes_only(self) -> None:
-        """Reminder appended to successful write/edit results; no-op otherwise."""
+    def test_spec_fidelity_augments_write_edit_execute(self) -> None:
+        """Reminder appended to successful write/edit/execute results; no-op otherwise."""
         from langchain_core.messages import ToolMessage  # noqa: PLC0415
 
         from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
@@ -1260,10 +1260,13 @@ class TestNemotronUltraProfile:
         assert "Spec check" in wrote.content
         edited = aug(ToolMessage(content="Successfully replaced 1 instance", name="edit_file", tool_call_id="t2", status="success"))
         assert "Spec check" in edited.content
-        # No-op: failed write, non-write tool, ordinary success from another tool.
-        failed = aug(ToolMessage(content="err", name="write_file", tool_call_id="t3", status="error"))
+        # execute is covered too (Nemotron writes files via shell), fired on every call.
+        ran = aug(ToolMessage(content="[Command succeeded with exit code 0]", name="execute", tool_call_id="t3", status="success"))
+        assert "Spec check" in ran.content
+        # No-op: failed calls and tools outside the set.
+        failed = aug(ToolMessage(content="err", name="execute", tool_call_id="t4", status="error"))
         assert failed.content == "err"
-        other = aug(ToolMessage(content="['/app']", name="ls", tool_call_id="t4", status="success"))
+        other = aug(ToolMessage(content="['/app']", name="ls", tool_call_id="t5", status="success"))
         assert other.content == "['/app']"
 
     def test_nemotron_ultra_does_not_apply_to_other_nvidia_models(self) -> None:

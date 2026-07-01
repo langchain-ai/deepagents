@@ -702,33 +702,39 @@ class CompletionPressureMiddleware(AgentMiddleware):
 
 
 # Filesystem tools that write identifiers to disk, where spec-fidelity mistakes land.
-_SPEC_FIDELITY_TOOLS: frozenset[str] = frozenset({"write_file", "edit_file"})
+_SPEC_FIDELITY_TOOLS: frozenset[str] = frozenset({"write_file", "edit_file", "execute"})
 
-# Appended to each successful write_file/edit_file result. Nemotron under-weights
-# standing system-prompt guidance (the "reproduce identifiers verbatim" rule is
-# ignored even when stated prominently) but attends to in-loop interventions, so the
-# discipline is delivered at the moment of highest risk — just after it commits
-# identifiers to disk — prompting the next turn to re-check against the task and edit
-# any mismatch. General wording (no task-specific example) so it does not overfit.
+# Appended to each successful write_file/edit_file/execute result. Nemotron
+# under-weights standing system-prompt guidance (the "reproduce identifiers verbatim"
+# rule is ignored even when stated prominently) but attends to in-loop interventions,
+# so the discipline is delivered at the moment of highest risk — just after a step that
+# may have written identifiers to disk. `execute` is covered because Nemotron
+# frequently creates/edits files via shell (heredoc/redirect) instead of the file
+# tools; the conditional wording makes the reminder a harmless no-op cue when the
+# command wrote nothing. General wording (no task-specific example) so it does not
+# overfit, and no shell parsing (it fires on every successful call, not by matching).
 _SPEC_FIDELITY_REMINDER = (
-    "Spec check: re-read the task and confirm that every name, field, path, and output "
-    "format in the file you just wrote matches the task's wording exactly — reproduce "
-    "each spelling verbatim, and edit any that differ. If the task spells two related "
-    "things differently, that difference is intentional; do not normalize or unify them."
+    "Spec check: if you just created or changed a file, re-read the task and confirm "
+    "that every name, field, path, and output format in it matches the task's wording "
+    "exactly — reproduce each spelling verbatim, and fix any that differ. If the task "
+    "spells two related things differently, that difference is intentional; do not "
+    "normalize or unify them."
 )
 
 
 class SpecFidelityMiddleware(AgentMiddleware):
-    """Append a spec-fidelity re-check reminder to successful write/edit results.
+    """Append a spec-fidelity re-check reminder after file-producing tool calls.
 
     Nemotron under-weights standing system-prompt guidance — the "reproduce every
     identifier verbatim" rule is ignored even when stated prominently — but it attends
     to in-loop interventions (injected messages, tool results). Rather than state the
     discipline once in the prompt, this delivers it at the moment of highest risk: just
-    after the model commits identifiers to disk with `write_file`/`edit_file`, it
-    appends a reminder so the next turn re-checks the file's names/paths/formats against
-    the task and can `edit_file` any mismatch. Stateless; a no-op for non-write tools,
-    failed writes, and non-`ToolMessage` results.
+    after a step that may have written identifiers to disk. It covers `write_file`,
+    `edit_file`, AND `execute` — the last because Nemotron frequently creates/edits
+    files via shell (heredoc/redirect) instead of the file tools; the reminder's
+    conditional wording ("if you just created or changed a file") makes it a harmless
+    no-op cue when the command wrote nothing. Stateless; skips other tools, failed
+    calls, and non-`ToolMessage` results.
 
     Implements BOTH sync and async `wrap_tool_call` hooks, since Deep Agents runs tools
     asynchronously.

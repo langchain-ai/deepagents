@@ -486,15 +486,43 @@ _STALL_NUDGE_TEXT = (
     "fundamentally different approach, and re-examine your assumptions about the cause."
 )
 
+# The execute tool aborts a command at DEFAULT_EXECUTE_TIMEOUT (120s) with this text.
+_TIMEOUT_MARKER = "command timed out after"
+
+# Fired the FIRST time a command times out — the recurring Ultra failure is running a
+# slow/non-terminating program, hitting the 120s cap, then re-running it unchanged
+# (burning 120s each time) instead of fixing the program. The generic stall nudge only
+# trips after 3 identical failures (360s); this catches the first one.
+_SLOW_COMMAND_NUDGE = (
+    "STOP — your last command hit the execution timeout. That is not a transient "
+    "failure to retry: it means the program you ran is too slow or does not terminate "
+    "(an infinite loop or a pathological blow-up). Re-running it unchanged burns the "
+    "same time again, and your wall-clock budget is limited — do NOT re-run it as-is. "
+    "Instead, FIX the program so it terminates quickly: find the loop that never exits "
+    "or the step that explodes, simplify the algorithm, and test the fix on a tiny "
+    "input before running it on the full data. The execute `timeout` parameter only "
+    "helps work that is genuinely long-running; a true hang never finishes no matter "
+    "the timeout."
+)
+
 
 class StallBreakerMiddleware(AgentMiddleware):
     """Break no-progress loops where the model re-tries the same failing action.
 
-    When the last `_STALL_THRESHOLD` tool results are all failures with the same
-    signature (the model keeps applying the same fix to the same error), inject a
-    one-time nudge before the next model turn telling it to change approach. General
-    and model-agnostic: keys only on repeated identical failing tool output, not on
-    any task. A no-op when results vary, succeed, or progress.
+    Two triggers, both before the next model turn:
+
+    - Command timeout (first occurrence): when the latest tool result is an execute
+      timeout (`command timed out after ...`), the program is too slow or hangs; the
+      model tends to re-run it unchanged, burning the full 120s cap each time. This
+      fires immediately (not after a streak) telling it to fix the program, not re-run
+      it. Once per occurrence — it only triggers while the timeout result is the last
+      message, so it does not re-fire after the model's next turn.
+    - Identical-failure stall: when the last `_STALL_THRESHOLD` tool results are all
+      failures with the same signature (the model keeps applying the same fix to the
+      same error), inject a one-time nudge to change approach.
+
+    General and model-agnostic: keys only on tool output, not on any task. A no-op when
+    results vary, succeed, or progress.
     """
 
     name = "StallBreakerMiddleware"
@@ -518,6 +546,12 @@ class StallBreakerMiddleware(AgentMiddleware):
 
     def _nudge(self, state: AgentState) -> dict[str, Any] | None:
         messages = state.get("messages") or []
+        # Command-timeout branch: fire on the first (and each) execute timeout. It only
+        # triggers while the timeout result is the last message, so it fires once per
+        # occurrence and self-guards against re-firing after the model's next turn.
+        last = messages[-1] if messages else None
+        if isinstance(last, ToolMessage) and _TIMEOUT_MARKER in self._text(last.content).lower():
+            return {"messages": [HumanMessage(_SLOW_COMMAND_NUDGE)]}
         tool_texts = [self._text(m.content) for m in messages if isinstance(m, ToolMessage)]
         recent = tool_texts[-_STALL_THRESHOLD:]
         if len(recent) < _STALL_THRESHOLD:

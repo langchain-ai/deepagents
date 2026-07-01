@@ -1618,6 +1618,37 @@ class TestStallBreaker:
         msgs = [HumanMessage(_STALL_NUDGE_TEXT), self._tm(fail), self._tm(fail), self._tm(fail)]
         assert mw.before_model({"messages": msgs}, None) is None
 
+    def test_nudges_on_first_command_timeout(self) -> None:
+        from langchain_core.messages import HumanMessage  # noqa: PLC0415
+
+        from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
+            _SLOW_COMMAND_NUDGE,
+        )
+
+        mw = self._mw()
+        # A single execute timeout (not a streak) fires the timeout-specific nudge.
+        timeout = "Error: Command timed out after 120 seconds.\n[Command failed with exit code 124]"
+        out = mw.before_model({"messages": [self._tm(timeout)]}, None)
+        assert out is not None
+        nudge = out["messages"][0]
+        assert isinstance(nudge, HumanMessage)
+        assert nudge.content == _SLOW_COMMAND_NUDGE
+        assert "re-run" in nudge.content.lower() and "terminate" in nudge.content.lower()
+
+    def test_no_timeout_nudge_once_model_has_responded(self) -> None:
+        # Self-guard: after the nudge is injected (now the last message), it does not
+        # re-fire for the same timeout on the next turn.
+        from langchain_core.messages import HumanMessage  # noqa: PLC0415
+
+        from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
+            _SLOW_COMMAND_NUDGE,
+        )
+
+        mw = self._mw()
+        timeout = "Error: Command timed out after 120 seconds."
+        msgs = [self._tm(timeout), HumanMessage(_SLOW_COMMAND_NUDGE)]
+        assert mw.before_model({"messages": msgs}, None) is None
+
 
 class TestProfilePluginLoader:
     """Tests for the `importlib.metadata` entry-point loader."""

@@ -2157,20 +2157,38 @@ class TestToolCallMessageRunningSpinner:
 
             threshold = msg._RUNNING_TIMER_THRESHOLD_SECS
 
+            # `_update_running_animation` recomputes `int(time() - _start_time)`,
+            # so each offset below lands on a whole second with >0.99s of slack
+            # (the truncated sub-second delta between the two `time()` reads
+            # would need a full-second stall to flip) — the assertions are
+            # deterministic, not timing-dependent.
+
             # Just under the threshold: status ends at "Running..." with no
-            # trailing elapsed counter (the leading spinner frame may itself
-            # contain parens on ASCII terminals, so assert on the suffix).
+            # trailing elapsed counter. We assert on the suffix rather than
+            # exact equality or an `"(" in ...` search because the leading
+            # spinner frame may itself contain parens on ASCII terminals.
             msg._start_time = time() - (threshold - 1)
             msg._update_running_animation()
             await pilot.pause()
             assert str(msg._status_widget.render()).endswith("Running...")
 
-            # At/after the threshold: the elapsed counter appears.
+            # Exactly at the threshold: the elapsed counter appears.
             msg._start_time = time() - threshold
             msg._update_running_animation()
             await pilot.pause()
             assert str(msg._status_widget.render()).endswith(
                 f"Running... ({format_duration(threshold)})"
+            )
+
+            # Well past the threshold: the counter keeps updating (guards
+            # against a `>=`-to-`==` regression that would show the timer only
+            # on the exact threshold second and then hide it again).
+            beyond = threshold + 5
+            msg._start_time = time() - beyond
+            msg._update_running_animation()
+            await pilot.pause()
+            assert str(msg._status_widget.render()).endswith(
+                f"Running... ({format_duration(beyond)})"
             )
 
     async def test_pause_running_hides_status_and_stops_timer(self) -> None:

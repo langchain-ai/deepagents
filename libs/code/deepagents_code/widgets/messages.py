@@ -1450,13 +1450,17 @@ class ToolCallMessage(Vertical):
             return False
 
         # Successful `read_file` collapses its content entirely by default (the
-        # header already names the file), so any output that formats to
-        # something is expandable regardless of size. Errors stay on the normal
-        # truncation path because `set_error` force-expands short diagnostics.
+        # header already names the file), so it is always expandable regardless
+        # of size: `output` is non-empty here (guarded above) and the file
+        # formatter only reshapes the line-number gutter, never dropping body
+        # text, so it can never format to nothing. This mirrors the empty-output
+        # guard in `_update_output_display`, which suppresses any body that would
+        # render blank before the collapse branch is reached — the two must move
+        # together if that assumption changes. Errors are excluded because
+        # `set_error` force-expands every error; treating a short error as
+        # always-expandable would offer a collapse that hides it entirely.
         if self._tool_name == "read_file" and self._status != "error":
-            return bool(
-                self._format_output(output, is_preview=False).content.plain.strip()
-            )
+            return True
 
         if self._tool_name == "write_todos":
             return self._format_output(output, is_preview=True).truncation is not None

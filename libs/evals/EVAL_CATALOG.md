@@ -10,7 +10,7 @@ Categories (for `--eval-category` filtering):
 file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test,langchain/middleware
 ```
 
-**126 evals** across **8 categories**
+**129 evals** across **8 categories**
 
 ## File Ops (`file_operations`) (21 evals)
 
@@ -45,10 +45,13 @@ file_operations,retrieval,tool_use,memory,conversation,summarization,unit_test,l
 - [`test_identify_quote_author_from_directory_parallel_reads`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L498) — `tests/evals/test_file_operations.py:498`
 - [`test_identify_quote_author_from_directory_unprompted_efficiency`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_file_operations.py#L573) — `tests/evals/test_file_operations.py:573`
 
-## Tool Use (`tool_use`) (53 evals)
+## Tool Use (`tool_use`) (56 evals)
 
 - [`test_nexus`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_external_benchmarks.py#L75) — `tests/evals/test_external_benchmarks.py:75`
 - [`test_bfcl_v3`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_external_benchmarks.py#L83) — `tests/evals/test_external_benchmarks.py:83`
+- [`test_no_goal_trivial_task_skips_goal_tools`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L100) — `tests/evals/test_goal_tools.py:100`
+- [`test_no_goal_multistep_task_skips_goal_tools`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L126) — `tests/evals/test_goal_tools.py:126`
+- [`test_active_rubric_may_be_consulted`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_goal_tools.py#L159) — `tests/evals/test_goal_tools.py:159`
 - [`test_write_todos_sequential_updates_returns_text`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_todos.py#L27) — `tests/evals/test_todos.py:27`
 - [`test_write_todos_three_steps_returns_text`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_todos.py#L53) — `tests/evals/test_todos.py:53`
 - [`test_direct_request_slack_dm`](https://github.com/langchain-ai/deepagents/blob/main/libs/evals/tests/evals/test_tool_selection.py#L117) — `tests/evals/test_tool_selection.py:117`

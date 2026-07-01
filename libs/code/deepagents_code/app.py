@@ -10030,10 +10030,22 @@ class DeepAgentsApp(App):
             current_effort=current,
         )
 
+        async def apply_effort(effort: str) -> None:
+            try:
+                await self._set_effort_override(effort)
+            except Exception:
+                # The interactive path applies the effort in a background
+                # worker, so a failure would otherwise die silently there with
+                # no confirmation and no error for the user.
+                logger.exception("Failed to apply reasoning effort %r", effort)
+                await self._mount_message(
+                    ErrorMessage("Failed to apply the selected reasoning effort."),
+                )
+
         def handle_result(result: str | None) -> None:
             if result is not None:
                 self.run_worker(
-                    self._set_effort_override(result),
+                    apply_effort(result),
                     exclusive=False,
                     group="effort-selection",
                 )

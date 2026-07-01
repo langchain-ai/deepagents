@@ -4,6 +4,8 @@ from collections.abc import Iterator
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from textual.app import App
+from textual.widgets import OptionList
 
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.config import settings
@@ -33,6 +35,7 @@ def _restore_settings() -> Iterator[None]:
         ("openai_codex:gpt-5.5", ("none", "low", "medium", "high", "xhigh")),
         ("anthropic:claude-opus-4-8", ("low", "medium", "high", "xhigh", "max")),
         ("anthropic:claude-opus-4-6", ("low", "medium", "high", "max")),
+        ("anthropic:claude-opus-4-5", ("low", "medium", "high")),
         ("anthropic:claude-sonnet-5", ("low", "medium", "high", "xhigh", "max")),
         ("anthropic:claude-sonnet-4-6", ("low", "medium", "high", "max")),
         ("anthropic:claude-sonnet-4-5", ()),
@@ -175,3 +178,150 @@ async def test_effort_command_rejects_unsupported_effort() -> None:
 
     assert app._model_params_override is None
     assert app._mount_message.await_count == 2  # ty: ignore[unresolved-attribute]
+
+
+@pytest.mark.parametrize("token", ["clear", "--clear", "reset"])
+async def test_effort_command_clear_aliases(token: str) -> None:
+    app = DeepAgentsApp()
+    app._mount_message = AsyncMock()  # ty: ignore
+    app._model_params_override = {
+        "temperature": 0.2,
+        "reasoning": {"effort": "high", "summary": "auto"},
+    }
+    settings.model_provider = "openai"
+    settings.model_name = "gpt-5.5"
+
+    await app._handle_effort_command(f"/effort {token}")
+
+    assert app._model_params_override == {"temperature": 0.2}
+
+
+async def test_effort_selector_reports_no_model_configured() -> None:
+    app = DeepAgentsApp()
+    app._mount_message = AsyncMock()  # ty: ignore
+    app.push_screen = Mock()  # ty: ignore
+    settings.model_provider = None
+    settings.model_name = None
+
+    await app._handle_effort_command("/effort")
+
+    app.push_screen.assert_not_called()  # ty: ignore[unresolved-attribute]
+    assert app._mount_message.await_count == 2  # ty: ignore[unresolved-attribute]
+
+
+async def test_effort_command_reports_not_configurable_model() -> None:
+    app = DeepAgentsApp()
+    app._mount_message = AsyncMock()  # ty: ignore
+    settings.model_provider = "anthropic"
+    settings.model_name = "claude-sonnet-4-5"
+
+    await app._handle_effort_command("/effort high")
+
+    assert app._model_params_override is None
+    assert app._mount_message.await_count == 2  # ty: ignore[unresolved-attribute]
+
+
+def test_without_effort_clears_anthropic_thinking_and_effort() -> None:
+    effort_params = model_params_for_effort("anthropic:claude-opus-4-8", "xhigh")
+    assert effort_params is not None
+    params = merge_effort_model_params({"temperature": 0.3}, effort_params)
+    assert params["effort"] == "xhigh"
+    assert "thinking" in params
+    assert without_effort_model_params(params) == {"temperature": 0.3}
+
+
+def test_without_effort_clears_google_thinking_level() -> None:
+    effort_params = model_params_for_effort("google_genai:gemini-3.5-flash", "low")
+    assert effort_params is not None
+    assert without_effort_model_params(effort_params) is None
+
+
+@pytest.mark.parametrize(
+    ("model_spec", "effort"),
+    [
+        ("openai:gpt-5.5", "none"),
+        ("openai:gpt-5.5", "high"),
+        ("anthropic:claude-opus-4-8", "xhigh"),
+        ("google_genai:gemini-3.5-flash", "low"),
+        ("fireworks:accounts/fireworks/models/deepseek-v4-pro", "max"),
+    ],
+)
+def test_effort_params_round_trip_clears_to_none(model_spec: str, effort: str) -> None:
+    """The clear-set must strip exactly what `model_params_for_effort` writes."""
+    effort_params = model_params_for_effort(model_spec, effort)
+    assert effort_params is not None
+    merged = merge_effort_model_params(None, effort_params)
+    assert without_effort_model_params(merged) is None
+
+
+class _EffortSelectorHost(App[None]):
+    """Minimal host app for mounting `EffortSelectorScreen` in tests."""
+
+
+@pytest.mark.parametrize(
+    ("current_effort", "expected_index"),
+    [("medium", 2), (None, 0), ("bogus", 0)],
+)
+async def test_effort_selector_highlights_current(
+    current_effort: str | None, expected_index: int
+) -> None:
+    app = _EffortSelectorHost()
+    async with app.run_test() as pilot:
+        await app.push_screen(
+            EffortSelectorScreen(
+                model_spec="openai:gpt-5.5",
+                efforts=("none", "low", "medium", "high", "xhigh"),
+                current_effort=current_effort,
+            )
+        )
+        await pilot.pause()
+        option_list = app.screen.query_one("#effort-options", OptionList)
+        assert option_list.highlighted == expected_index
+
+
+async def test_effort_selector_enter_selects_highlighted() -> None:
+    app = _EffortSelectorHost()
+    async with app.run_test() as pilot:
+        results: list[str | None] = []
+        await app.push_screen(
+            EffortSelectorScreen(
+                model_spec="openai:gpt-5.5",
+                efforts=("low", "medium", "high"),
+                current_effort="low",
+            ),
+            results.append,
+        )
+        await pilot.pause()
+        app.screen.query_one("#effort-options", OptionList).focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert results == ["low"]
+
+
+async def test_effort_selector_escape_cancels() -> None:
+    app = _EffortSelectorHost()
+    async with app.run_test() as pilot:
+        results: list[str | None] = []
+        await app.push_screen(
+            EffortSelectorScreen(
+                model_spec="openai:gpt-5.5",
+                efforts=("low", "high"),
+                current_effort=None,
+            ),
+            results.append,
+        )
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+        assert results == [None]
+
+
+def test_effort_selector_format_label_marks_current() -> None:
+    screen = EffortSelectorScreen(
+        model_spec="openai:gpt-5.5",
+        efforts=("low", "high"),
+        current_effort="high",
+    )
+    assert "(current)" in str(screen._format_label("high"))
+    assert "(current)" not in str(screen._format_label("low"))

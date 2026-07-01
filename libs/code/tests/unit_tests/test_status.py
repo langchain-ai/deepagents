@@ -436,6 +436,24 @@ class TestModelLabelPrefixStripping:
             await pilot.pause()
             assert str(label.render()) == "gpt-5.5 xhigh"
 
+    async def test_effort_suffix_left_truncates_model(self) -> None:
+        """Overflowing model text is left-truncated while the effort stays."""
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5-turbo-preview"
+            label.effort = "high"
+            label.styles.width = 15
+            await pilot.pause()
+            width = label.content_size.width
+            rendered = str(label.render())
+            # Starts with an ellipsis (left-truncated) yet retains the effort
+            # label — the branch that keeps effort while dropping model chars.
+            assert rendered.startswith("…")
+            assert rendered.endswith(" high")
+            assert "openai:" not in rendered
+            assert len(rendered) <= width
+
     async def test_no_provider_no_stripping(self) -> None:
         """Without a provider, the model name is passed through unchanged."""
         async with StatusBarApp().run_test() as pilot:

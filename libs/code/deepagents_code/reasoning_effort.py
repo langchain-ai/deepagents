@@ -2,30 +2,49 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypeAlias
+import logging
+from typing import Any, Literal, TypeAlias, assert_never
 
 from deepagents_code.model_config import ModelSpec
 
-OPENAI_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh")
+logger = logging.getLogger(__name__)
+
+EffortLabel: TypeAlias = Literal["none", "low", "medium", "high", "xhigh", "max"]
+"""Closed vocabulary of effort labels across all supported providers.
+
+Typing the per-provider tuples with this alias catches typos in the vocabulary
+at check time. It does not express the deeper invariant that a label must be
+supported by a *specific* model — that is enforced at runtime by
+`supported_efforts_for_model`.
+"""
+
+OPENAI_EFFORTS: tuple[EffortLabel, ...] = ("none", "low", "medium", "high", "xhigh")
 """OpenAI GPT-5 effort labels for `reasoning.effort`.
 
 See https://platform.openai.com/docs/guides/reasoning.
 """
 
-ANTHROPIC_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+ANTHROPIC_EFFORTS: tuple[EffortLabel, ...] = ("low", "medium", "high", "xhigh", "max")
 """Anthropic `output_config.effort` labels for Opus 4.7+ and Sonnet 5.
 
 See https://platform.claude.com/docs/en/build-with-claude/effort.
 """
 
-ANTHROPIC_EFFORTS_NO_XHIGH: tuple[str, ...] = ("low", "medium", "high", "max")
+ANTHROPIC_EFFORTS_NO_XHIGH: tuple[EffortLabel, ...] = ("low", "medium", "high", "max")
 """Anthropic effort labels for Opus 4.6 and Sonnet 4.6.
 
 These models predate `xhigh`; Sonnet 4.5 rejects `effort` entirely.
 See https://platform.claude.com/docs/en/build-with-claude/effort.
 """
 
-GOOGLE_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
+ANTHROPIC_EFFORTS_NO_MAX: tuple[EffortLabel, ...] = ("low", "medium", "high")
+"""Anthropic effort labels for Opus 4.5.
+
+Opus 4.5 predates both `max` (Opus 4.6+) and `xhigh` (Opus 4.7+).
+See https://platform.claude.com/docs/en/build-with-claude/effort.
+"""
+
+GOOGLE_EFFORTS: tuple[EffortLabel, ...] = ("low", "medium", "high")
 """Gemini 3 effort labels for `thinking_level`.
 
 Gemini 3.1 Pro and 3.5 Flash accept low/medium/high only; `minimal` is
@@ -33,7 +52,7 @@ Flash-Lite / original-Pro territory, neither of which is offered here. See
 https://ai.google.dev/gemini-api/docs/thinking.
 """
 
-FIREWORKS_REASONING_EFFORTS: tuple[str, ...] = (
+FIREWORKS_REASONING_EFFORTS: tuple[EffortLabel, ...] = (
     "none",
     "low",
     "medium",
@@ -46,13 +65,13 @@ FIREWORKS_REASONING_EFFORTS: tuple[str, ...] = (
 See https://docs.fireworks.ai/guides/reasoning.
 """
 
-FIREWORKS_KIMI_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
+FIREWORKS_KIMI_EFFORTS: tuple[EffortLabel, ...] = ("low", "medium", "high")
 """Fireworks `reasoning_effort` labels for Kimi K2 models.
 
 See https://docs.fireworks.ai/guides/reasoning.
 """
 
-FIREWORKS_GLM_EFFORTS: tuple[str, ...] = ("none", "high", "max")
+FIREWORKS_GLM_EFFORTS: tuple[EffortLabel, ...] = ("none", "high", "max")
 """Fireworks `reasoning_effort` labels for GLM 5 models.
 
 See https://docs.fireworks.ai/guides/reasoning.
@@ -61,7 +80,11 @@ See https://docs.fireworks.ai/guides/reasoning.
 ReasoningProvider: TypeAlias = Literal[
     "anthropic", "fireworks", "google_genai", "openai", "openai_codex"
 ]
-"""Provider identifiers that support model-specific reasoning effort controls."""
+"""Provider identifiers that support model-specific reasoning effort controls.
+
+Values must stay byte-identical to the provider strings from `ModelSpec.parse`
+used throughout `model_config.py` (e.g. `CODEX_PROVIDER`).
+"""
 
 _REASONING_KEYS: frozenset[str] = frozenset(
     {"effort", "reasoning", "thinking", "thinking_level"}
@@ -80,6 +103,9 @@ def _anthropic_efforts(model: str) -> tuple[str, ...]:
         accept `effort` (e.g. Sonnet 4.5).
     """
     if model.startswith("claude-opus-"):
+        if "opus-4-5" in model:
+            # Opus 4.5 predates both `max` (4.6+) and `xhigh` (4.7+).
+            return ANTHROPIC_EFFORTS_NO_MAX
         # Opus 4.6 predates `xhigh`; 4.7+ accept the full range.
         return ANTHROPIC_EFFORTS_NO_XHIGH if "opus-4-6" in model else ANTHROPIC_EFFORTS
     if model.startswith("claude-sonnet-"):
@@ -93,6 +119,15 @@ def _anthropic_efforts(model: str) -> tuple[str, ...]:
 
 
 def _reasoning_provider(model_spec: str) -> ReasoningProvider | None:
+    """Classify `model_spec` into a reasoning-capable provider, or `None`.
+
+    Args:
+        model_spec: `provider:model` spec for the active model.
+
+    Returns:
+        The reasoning provider, or `None` when the model family does not support
+            reasoning effort (or the spec is unparseable).
+    """
     parsed = ModelSpec.try_parse(model_spec)
     if parsed is None:
         return None
@@ -125,23 +160,41 @@ def supported_efforts_for_model(model_spec: str | None) -> tuple[str, ...]:
     if not model_spec:
         return ()
     provider = _reasoning_provider(model_spec)
-    if provider in {"openai", "openai_codex"}:
-        return OPENAI_EFFORTS
-    if provider == "anthropic":
-        parsed = ModelSpec.try_parse(model_spec)
-        return _anthropic_efforts(parsed.model.lower()) if parsed is not None else ()
-    if provider == "google_genai":
-        return GOOGLE_EFFORTS
-    if provider == "fireworks":
-        parsed = ModelSpec.try_parse(model_spec)
-        model = parsed.model.lower() if parsed is not None else ""
-        if "kimi-k2" in model:
-            return FIREWORKS_KIMI_EFFORTS
-        if "glm-5" in model:
-            return FIREWORKS_GLM_EFFORTS
-        if "deepseek-v4-pro" in model:
-            return FIREWORKS_REASONING_EFFORTS
-    return ()
+    if provider is None:
+        return ()
+    efforts: tuple[str, ...]
+    match provider:
+        case "openai" | "openai_codex":
+            efforts = OPENAI_EFFORTS
+        case "anthropic":
+            parsed = ModelSpec.try_parse(model_spec)
+            efforts = _anthropic_efforts(parsed.model.lower()) if parsed else ()
+        case "google_genai":
+            efforts = GOOGLE_EFFORTS
+        case "fireworks":
+            parsed = ModelSpec.try_parse(model_spec)
+            model = parsed.model.lower() if parsed else ""
+            if "kimi-k2" in model:
+                efforts = FIREWORKS_KIMI_EFFORTS
+            elif "glm-5" in model:
+                efforts = FIREWORKS_GLM_EFFORTS
+            elif "deepseek-v4-pro" in model:
+                efforts = FIREWORKS_REASONING_EFFORTS
+            else:
+                efforts = ()
+        case _:
+            assert_never(provider)
+    if not efforts:
+        # A recognized reasoning provider that yields no configurable efforts
+        # usually means the model-version heuristics need updating for a newer
+        # release — surface it at debug level rather than silently reporting
+        # "not configurable".
+        logger.debug(
+            "No configurable reasoning efforts for %s (provider=%s)",
+            model_spec,
+            provider,
+        )
+    return efforts
 
 
 def model_params_for_effort(model_spec: str, effort: str) -> dict[str, Any] | None:
@@ -158,20 +211,24 @@ def model_params_for_effort(model_spec: str, effort: str) -> dict[str, Any] | No
     if effort not in supported_efforts_for_model(model_spec):
         return None
     provider = _reasoning_provider(model_spec)
-    if provider in {"openai", "openai_codex"}:
-        if effort == "none":
-            return {"reasoning": {"effort": "none"}}
-        return {"reasoning": {"effort": effort, "summary": "auto"}}
-    if provider == "anthropic":
-        return {
-            "thinking": {"type": "adaptive", "display": "summarized"},
-            "effort": effort,
-        }
-    if provider == "google_genai":
-        return {"thinking_level": effort}
-    if provider == "fireworks":
-        return {"model_kwargs": {"reasoning_effort": effort}}
-    return None
+    if provider is None:
+        return None
+    match provider:
+        case "openai" | "openai_codex":
+            if effort == "none":
+                return {"reasoning": {"effort": "none"}}
+            return {"reasoning": {"effort": effort, "summary": "auto"}}
+        case "anthropic":
+            return {
+                "thinking": {"type": "adaptive", "display": "summarized"},
+                "effort": effort,
+            }
+        case "google_genai":
+            return {"thinking_level": effort}
+        case "fireworks":
+            return {"model_kwargs": {"reasoning_effort": effort}}
+        case _:
+            assert_never(provider)
 
 
 def current_effort_from_model_params(
@@ -189,19 +246,24 @@ def current_effort_from_model_params(
     if not model_spec or not model_params:
         return None
     provider = _reasoning_provider(model_spec)
+    if provider is None:
+        return None
     value: object = None
-    if provider in {"openai", "openai_codex"}:
-        reasoning = model_params.get("reasoning")
-        if isinstance(reasoning, dict):
-            value = reasoning.get("effort")
-    elif provider == "anthropic":
-        value = model_params.get("effort")
-    elif provider == "google_genai":
-        value = model_params.get("thinking_level")
-    elif provider == "fireworks":
-        kwargs = model_params.get("model_kwargs")
-        if isinstance(kwargs, dict):
-            value = kwargs.get("reasoning_effort")
+    match provider:
+        case "openai" | "openai_codex":
+            reasoning = model_params.get("reasoning")
+            if isinstance(reasoning, dict):
+                value = reasoning.get("effort")
+        case "anthropic":
+            value = model_params.get("effort")
+        case "google_genai":
+            value = model_params.get("thinking_level")
+        case "fireworks":
+            kwargs = model_params.get("model_kwargs")
+            if isinstance(kwargs, dict):
+                value = kwargs.get("reasoning_effort")
+        case _:
+            assert_never(provider)
     return value if isinstance(value, str) else None
 
 
@@ -242,15 +304,20 @@ def without_effort_model_params(
     """
     if not existing:
         return None
+    # Exclude `model_kwargs` from the comprehension and rebuild it below.
+    # Leaving it here would retain a stale `reasoning_effort` when the cleaned
+    # nested dict ends up empty — the empty-check would then skip the overwrite
+    # and the original (still-populated) copy would survive.
     cleaned = {
         key: (dict(value) if isinstance(value, dict) else value)
         for key, value in existing.items()
-        if key not in _REASONING_KEYS
+        if key not in _REASONING_KEYS and key != "model_kwargs"
     }
     kwargs = existing.get("model_kwargs")
     if isinstance(kwargs, dict):
-        model_kwargs = dict(kwargs)
-        model_kwargs.pop("reasoning_effort", None)
+        model_kwargs = {k: v for k, v in kwargs.items() if k != "reasoning_effort"}
         if model_kwargs:
             cleaned["model_kwargs"] = model_kwargs
+    elif kwargs is not None:
+        cleaned["model_kwargs"] = kwargs
     return cleaned or None

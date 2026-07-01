@@ -2173,6 +2173,10 @@ def _apply_stored_base_url(provider: str, base_url: str | None) -> None:
     clears every name when `base_url` is `None` (reset to the provider
     default). See `apply_stored_credentials` for the pairing rationale.
 
+    When switching to a provider-native key (no `base_url`), also clears the
+    provider's custom-headers env var (e.g. `ANTHROPIC_CUSTOM_HEADERS`) so a
+    gateway-provisioned auth header isn't sent to the native endpoint.
+
     Args:
         provider: Provider name.
         base_url: The stored endpoint, or `None` to reset to the default.
@@ -2199,8 +2203,19 @@ def _apply_stored_base_url(provider: str, base_url: str | None) -> None:
     # (no stored `base_url`), that header must also be cleared — otherwise the
     # gateway key is sent to the native endpoint and rejected.
     custom_headers_env = PROVIDER_CUSTOM_HEADERS_ENV.get(provider)
-    if custom_headers_env and not base_url:
-        os.environ.pop(custom_headers_env, None)
+    if (
+        custom_headers_env
+        and not base_url
+        and os.environ.pop(custom_headers_env, None) is not None
+    ):
+        # Log the env var name only — never its value, which carries auth
+        # headers. Surfaces the removal for the user who set a header
+        # deliberately for the native endpoint and later wonders where it went.
+        logger.info(
+            "Cleared %s while applying a provider-native %s key",
+            custom_headers_env,
+            provider,
+        )
 
 
 def warn_on_split_credential_source(provider: str) -> None:

@@ -61,7 +61,10 @@ class SubAgent(TypedDict):
 
             Use the format `'provider:model-name'` (e.g., `'openai:gpt-5.5'`).
         middleware: Additional middleware for custom behavior, logging,
-            or rate limiting.
+            or rate limiting. To restrict filesystem tools, include a
+            `FilesystemMiddleware(enabled_tools=...)` instance here — it
+            will be used as the subagent's filesystem middleware instead of
+            the default one.
         interrupt_on: Configure human-in-the-loop for specific tools.
 
             Requires a checkpointer.

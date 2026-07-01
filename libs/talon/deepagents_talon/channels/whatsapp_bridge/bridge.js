@@ -25,6 +25,7 @@ let botId = null;
 const queue = [];
 const sentMessageIds = new Set();
 const sentMessages = new Map();
+const sentMessageChatIds = new Map();
 const recentSentBodies = new Map();
 
 process.on("unhandledRejection", (reason) => {
@@ -93,6 +94,10 @@ client.on("message_create", (message) => {
   void enqueueMessage(message);
 });
 
+client.on("message_reaction", (reaction) => {
+  enqueueReaction(reaction);
+});
+
 async function enqueueMessage(message) {
   if (message.from === "status@broadcast") {
     return;
@@ -125,6 +130,8 @@ async function enqueueMessage(message) {
       : typeof chatId === "string" && chatId.endsWith("@g.us");
 
   const entry = {
+    event_type: "message",
+    eventType: "message",
     text: message.body || "",
     body: message.body || "",
     message_type: message.type || "chat",
@@ -175,6 +182,42 @@ async function enqueueMessage(message) {
   };
 
   console.log(`[bridge] Queued message ${messageId} for ${chatId}`);
+  queue.push(entry);
+}
+
+function enqueueReaction(reaction) {
+  const emoji = typeof reaction.reaction === "string" ? reaction.reaction : "";
+  if (!emoji) {
+    return;
+  }
+  const messageId = reactionMessageId(reaction);
+  const chatId = sentMessageChatIds.get(messageId) || reactionChatId(reaction);
+  const rawSenderId = normalizeId(reaction.senderId);
+  const fromSelf = isSelfReaction(reaction, rawSenderId);
+  const senderId = fromSelf && botId ? botId : rawSenderId;
+  if (!messageId || !chatId || !senderId) {
+    console.error("Skipping WhatsApp reaction without a message id, chat id, or sender id");
+    return;
+  }
+
+  const entry = {
+    event_type: "reaction",
+    eventType: "reaction",
+    chat_id: chatId,
+    chatId,
+    message_id: messageId,
+    messageId,
+    sender_id: senderId,
+    senderId,
+    from_self: fromSelf,
+    fromSelf,
+    emoji,
+    reaction: emoji,
+    raw_reaction: rawReaction(reaction),
+    rawReaction: rawReaction(reaction),
+  };
+
+  console.log(`[bridge] Queued reaction ${emoji} on ${messageId} for ${chatId}`);
   queue.push(entry);
 }
 
@@ -372,6 +415,60 @@ function serializedId(value) {
   return value && value._serialized ? value._serialized : null;
 }
 
+function normalizeId(value) {
+  if (typeof value === "string" && value) {
+    return value;
+  }
+  return serializedId(value);
+}
+
+function reactionMessageId(reaction) {
+  const msgId = reaction && reaction.msgId;
+  if (!msgId) {
+    return null;
+  }
+  return serializedId(msgId) || (typeof msgId.id === "string" ? msgId.id : null);
+}
+
+function reactionChatId(reaction) {
+  const msgId = reaction && reaction.msgId;
+  if (msgId && typeof msgId.remote === "string" && msgId.remote) {
+    return msgId.remote;
+  }
+  if (msgId && typeof msgId.remoteJid === "string" && msgId.remoteJid) {
+    return msgId.remoteJid;
+  }
+  const serialized = serializedId(msgId);
+  if (!serialized) {
+    return null;
+  }
+  const parts = serialized.split("_");
+  return parts.length >= 3 && parts[1] ? parts[1] : null;
+}
+
+function rawReaction(reaction) {
+  return {
+    msgId: reactionMessageId(reaction),
+    senderId: normalizeId(reaction && reaction.senderId),
+    reaction: typeof reaction.reaction === "string" ? reaction.reaction : null,
+    orphan: Boolean(reaction.orphan),
+    orphanReason: typeof reaction.orphanReason === "string" ? reaction.orphanReason : null,
+    timestamp: Number.isFinite(Number(reaction.timestamp)) ? Number(reaction.timestamp) : null,
+  };
+}
+
+function isSelfReaction(reaction, senderId) {
+  if (senderId && botId && senderId === botId) {
+    return true;
+  }
+  const id = reaction && reaction.id ? reaction.id : null;
+  if (id && id.fromMe === true) {
+    return true;
+  }
+  const serialized = serializedId(id);
+  return typeof serialized === "string" && serialized.startsWith("true_");
+}
+
 function normalizeIds(values) {
   return values.map((value) => (typeof value === "object" ? value._serialized : value)).filter(Boolean);
 }
@@ -384,17 +481,22 @@ function isSelfMessage(message) {
   return typeof id === "string" && id.startsWith("true_");
 }
 
-function rememberSentMessage(message, body) {
+function rememberSentMessage(message, body, chatId) {
   const id = serializedId(message && message.id);
   if (!id) {
     return;
   }
   sentMessageIds.add(id);
   sentMessages.set(id, message);
+  if (chatId) {
+    sentMessageChatIds.set(id, chatId);
+  }
   rememberSentBody(body);
   if (sentMessages.size > MAX_CACHED_SENT_MESSAGES) {
     const oldest = sentMessages.keys().next().value;
+    sentMessageIds.delete(oldest);
     sentMessages.delete(oldest);
+    sentMessageChatIds.delete(oldest);
   }
 }
 
@@ -499,7 +601,7 @@ async function handle(req, res) {
       const sent = await client.sendMessage(chatId, text, {
         quotedMessageId: body.replyTo || body.reply_to || undefined,
       });
-      rememberSentMessage(sent, text);
+      rememberSentMessage(sent, text, chatId);
       const messageId = serializedId(sent.id);
       sendJson(res, 200, {
         success: true,
@@ -534,7 +636,7 @@ async function handle(req, res) {
         caption,
         sendMediaAsDocument: body.mediaType === "document",
       });
-      rememberSentMessage(sent, caption || "");
+      rememberSentMessage(sent, caption || "", chatId);
       const messageId = serializedId(sent.id);
       sendJson(res, 200, {
         success: true,
@@ -572,7 +674,7 @@ async function handle(req, res) {
       }
       rememberSentBody(content);
       const edited = await message.edit(content);
-      rememberSentMessage(edited, content);
+      rememberSentMessage(edited, content, sentMessageChatIds.get(messageId));
       const editedId = serializedId(edited.id) || messageId;
       sendJson(res, 200, {
         success: true,

@@ -22,7 +22,7 @@ from deepagents_talon.channels.whatsapp import (
     _WhatsAppBridgeError,
 )
 from deepagents_talon.config import TalonConfig
-from deepagents_talon.interfaces import ChannelMedia, ChannelMessage
+from deepagents_talon.interfaces import ChannelMedia, ChannelMessage, ChannelReaction
 
 if TYPE_CHECKING:
     import urllib.request
@@ -263,6 +263,254 @@ async def test_channel_polls_and_dispatches_allowed_messages(tmp_path: Path) -> 
 
     assert [message.text for message in received] == ["allowed"]
     assert received[0].metadata["provider"] == "whatsapp"
+
+
+async def test_channel_polls_and_dispatches_reactions(tmp_path: Path) -> None:
+    transport = RecordingTransport(
+        messages=[
+            {
+                "event_type": "reaction",
+                "chat_id": "chat",
+                "message_id": "approval-message",
+                "sender_id": "operator",
+                "emoji": "👍",
+                "raw_reaction": {"orphan": False},
+            },
+            {
+                "event_type": "message",
+                "text": "",
+                "chat_id": "chat",
+                "user_id": "operator",
+                "message_id": "should-not-be-reaction",
+            },
+        ],
+    )
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(
+            session_dir=tmp_path,
+            exposure=ChannelExposure(operator_ids=frozenset({"operator"})),
+            poll_interval_seconds=60,
+            health_interval_seconds=60,
+        ),
+        transport=cast("_BridgeTransport", transport),
+    )
+    reactions: list[ChannelReaction] = []
+    messages: list[ChannelMessage] = []
+
+    async def record_reaction(reaction: ChannelReaction) -> None:
+        reactions.append(reaction)
+
+    async def record_message(message: ChannelMessage) -> None:
+        messages.append(message)
+
+    channel.set_reaction_handler(record_reaction)
+    channel.set_message_handler(record_message)
+
+    await channel.start()
+    await asyncio.sleep(0)
+    await channel.stop()
+
+    assert reactions == [
+        ChannelReaction(
+            conversation_id="chat",
+            message_id="approval-message",
+            emoji="👍",
+            sender_id="operator",
+            metadata={
+                "provider": "whatsapp",
+                "chat_type": None,
+                "chat_name": None,
+                "raw_reaction": {"orphan": False},
+                "from_self": False,
+            },
+        )
+    ]
+    assert [message.message_id for message in messages] == ["should-not-be-reaction"]
+
+
+async def test_channel_polls_self_reactions_without_operator_id(tmp_path: Path) -> None:
+    transport = RecordingTransport(
+        messages=[
+            {
+                "event_type": "reaction",
+                "chat_id": "chat",
+                "message_id": "approval-message",
+                "sender_id": "operator",
+                "emoji": "👍",
+                "fromSelf": True,
+            },
+            {
+                "event_type": "reaction",
+                "chat_id": "chat",
+                "message_id": "other-message",
+                "sender_id": "other",
+                "emoji": "👍",
+            },
+        ],
+    )
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(
+            session_dir=tmp_path,
+            poll_interval_seconds=60,
+            health_interval_seconds=60,
+        ),
+        transport=cast("_BridgeTransport", transport),
+    )
+    reactions: list[ChannelReaction] = []
+
+    async def record(reaction: ChannelReaction) -> None:
+        reactions.append(reaction)
+
+    channel.set_reaction_handler(record)
+
+    await channel.start()
+    await asyncio.sleep(0)
+    await channel.stop()
+
+    assert [reaction.message_id for reaction in reactions] == ["approval-message"]
+    assert reactions[0].metadata["from_self"] is True
+
+
+async def test_channel_keeps_legacy_message_entries_compatible(tmp_path: Path) -> None:
+    transport = RecordingTransport(
+        messages=[
+            {
+                "text": "legacy",
+                "chat_id": "chat",
+                "user_id": "operator",
+                "message_id": "message-1",
+            },
+        ],
+    )
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(
+            session_dir=tmp_path,
+            exposure=ChannelExposure(operator_ids=frozenset({"operator"})),
+            poll_interval_seconds=60,
+            health_interval_seconds=60,
+        ),
+        transport=cast("_BridgeTransport", transport),
+    )
+    received: list[ChannelMessage] = []
+
+    async def record(message: ChannelMessage) -> None:
+        received.append(message)
+
+    channel.set_message_handler(record)
+
+    await channel.start()
+    await asyncio.sleep(0)
+    await channel.stop()
+
+    assert [message.text for message in received] == ["legacy"]
+
+
+async def test_channel_drops_unknown_whatsapp_queue_event_type(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    transport = RecordingTransport(
+        messages=[
+            {
+                "event_type": "typing",
+                "chat_id": "chat",
+            },
+        ],
+    )
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(
+            session_dir=tmp_path,
+            exposure=ChannelExposure(mode=ExposureMode.OPEN),
+            poll_interval_seconds=60,
+            health_interval_seconds=60,
+        ),
+        transport=cast("_BridgeTransport", transport),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_talon.channels.whatsapp"):
+        await channel.start()
+        await asyncio.sleep(0)
+        await channel.stop()
+
+    assert "unknown event_type" in caplog.text
+
+
+async def test_channel_ignores_reaction_removal_events(tmp_path: Path) -> None:
+    transport = RecordingTransport(
+        messages=[
+            {
+                "event_type": "reaction",
+                "chat_id": "chat",
+                "message_id": "approval-message",
+                "sender_id": "operator",
+                "emoji": "👍",
+                "action": "remove",
+            },
+            {
+                "event_type": "reaction",
+                "chat_id": "chat",
+                "message_id": "approval-message",
+                "sender_id": "operator",
+                "reaction": "",
+            },
+        ],
+    )
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(
+            session_dir=tmp_path,
+            exposure=ChannelExposure(mode=ExposureMode.OPEN),
+            poll_interval_seconds=60,
+            health_interval_seconds=60,
+        ),
+        transport=cast("_BridgeTransport", transport),
+    )
+    reactions: list[ChannelReaction] = []
+
+    async def record(reaction: ChannelReaction) -> None:
+        reactions.append(reaction)
+
+    channel.set_reaction_handler(record)
+
+    await channel.start()
+    await asyncio.sleep(0)
+    await channel.stop()
+
+    assert reactions == []
+
+
+async def test_channel_applies_exposure_to_reactions(tmp_path: Path) -> None:
+    transport = RecordingTransport(
+        messages=[
+            {
+                "event_type": "reaction",
+                "chat_id": "chat",
+                "message_id": "approval-message",
+                "sender_id": "other",
+                "emoji": "👍",
+            },
+        ],
+    )
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(
+            session_dir=tmp_path,
+            exposure=ChannelExposure(operator_ids=frozenset({"operator"})),
+            poll_interval_seconds=60,
+            health_interval_seconds=60,
+        ),
+        transport=cast("_BridgeTransport", transport),
+    )
+    reactions: list[ChannelReaction] = []
+
+    async def record(reaction: ChannelReaction) -> None:
+        reactions.append(reaction)
+
+    channel.set_reaction_handler(record)
+
+    await channel.start()
+    await asyncio.sleep(0)
+    await channel.stop()
+
+    assert reactions == []
 
 
 async def test_channel_polls_self_messages_without_operator_id(tmp_path: Path) -> None:
@@ -621,3 +869,16 @@ async def test_channel_forwards_bridge_output_to_logs(
 def test_bridge_script_is_packaged() -> None:
     assert _bridge_script_path().name == "bridge.js"
     assert _bridge_script_path().is_file()
+
+
+def test_bridge_script_registers_reaction_queue_entries() -> None:
+    script = _bridge_script_path().read_text(encoding="utf-8")
+
+    assert 'client.on("message_reaction"' in script
+    assert 'event_type: "message"' in script
+    assert 'event_type: "reaction"' in script
+    assert "raw_reaction" in script
+    assert "from_self: fromSelf" in script
+    assert "const senderId = fromSelf && botId ? botId : rawSenderId;" in script
+    assert "const sentMessageChatIds = new Map();" in script
+    assert "sentMessageChatIds.get(messageId) || reactionChatId(reaction)" in script

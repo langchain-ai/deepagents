@@ -18,6 +18,9 @@ from langchain.chat_models import init_chat_model
 # modules in the project directory importable.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _text_only_media_middleware import TextOnlyMediaMiddleware  # noqa: E402
+from _repeat_tool_call_guard_middleware import (  # noqa: E402
+    RepeatToolCallGuardMiddleware,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -66,6 +69,12 @@ binary/image content to the model will fail. To work with such files, inspect th
 programmatically instead: write and run code (e.g. Python with PIL/OpenCV/numpy, ffmpeg,
 tesseract/OCR) or use shell tools (`file`, `xxd`, `identify`), and reason from the
 program, data, or rendered output that produced them.
+"""
+
+
+# Appended to the system prompt unless disabled via DEEPAGENTS_SELF_VERIFY=0 (used to
+# A/B test the self-verification lever locally and in CI). See IDEAS.md "Iter-SV".
+_SELF_VERIFY_BLOCK = """
 
 Your solution is graded by automated programmatic tests, so correctness is checked
 mechanically — never by your own assertion that you are done. Before finishing, VERIFY:
@@ -81,6 +90,15 @@ fails, fix it and re-verify — but if it still fails after two or three focused
 submit your best solution and stop; do not loop indefinitely re-verifying. Cover edge
 cases, not just the happy path.
 """
+
+
+def _system_prompt() -> str:
+    """System prompt. Self-verification block is OFF by default (a clean A/B showed it
+    nets ~0 and can trigger verify→fix recursion loops); opt back in with
+    DEEPAGENTS_SELF_VERIFY=1."""
+    if os.environ.get("DEEPAGENTS_SELF_VERIFY", "0").strip() == "1":
+        return _SYSTEM_PROMPT + _SELF_VERIFY_BLOCK
+    return _SYSTEM_PROMPT
 
 
 @contextmanager
@@ -120,6 +138,12 @@ def _model_kwargs(configurable: dict[str, object]) -> dict[str, Any]:
     # Retry transient/rate-limit errors (e.g. Baseten 429 throttle) with backoff so a
     # single 429 doesn't fatally crash the agent. Override via configurable.model_kwargs.
     kwargs.setdefault("max_retries", 8)
+    # NVIDIA's recommended sampling for Nemotron-3-Ultra. max_tokens=32000 in particular
+    # overrides Baseten's low server-default completion cap (~4096) that was truncating
+    # deliverables mid-write. All overridable via configurable.model_kwargs.
+    kwargs.setdefault("temperature", 0.6)
+    kwargs.setdefault("max_tokens", 32000)
+    kwargs.setdefault("top_p", 0.95)
     return kwargs
 
 
@@ -169,15 +193,22 @@ def make_graph(config: dict[str, object] | None = None) -> object:
             assistant_id=assistant_id,
             sandbox=None,
             sandbox_type="harbor",
-            system_prompt=_SYSTEM_PROMPT,
+            system_prompt=_system_prompt(),
             interactive=False,
             auto_approve=True,
             enable_memory=False,
             enable_skills=False,
             enable_shell=True,
-            extra_middleware=[TextOnlyMediaMiddleware()],
+            extra_middleware=[
+                TextOnlyMediaMiddleware(),
+                RepeatToolCallGuardMiddleware(),
+            ],
             cwd=_workdir(configurable),
         )
+    # Break runaway identical-tool-call loops earlier. deepagents-code sets
+    # recursion_limit=1000; the loop-guard middleware nudges a change of approach, and
+    # this lowers the hard backstop so worst-case token waste is bounded.
+    graph = graph.with_config({"recursion_limit": 300})
     return graph
 
 
@@ -206,5 +237,5 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
     return create_deep_agent(
         model=model,
         backend=backend,
-        system_prompt=_SYSTEM_PROMPT,
+        system_prompt=_system_prompt(),
     )

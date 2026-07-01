@@ -253,6 +253,13 @@ class TestFindDeleteDenyPatterns:
             pytest.param("/workshop/**", "/work", [], id="sibling-prefix-glob"),
             pytest.param("/work2", "/work", [], id="sibling-prefix-literal"),
             pytest.param("/work/secrets", "/work/logs", [], id="sibling-leaf"),
+            # Single-component file glob: non-matching siblings are allowed
+            pytest.param("/work/*.log", "/work/notes.txt", [], id="file-glob-does-not-block-non-matching-sibling"),
+            # Directory wildcard after anchor: target below anchor is blocked (fail closed)
+            pytest.param("/work/*/secrets", "/work/app", ["/work/*/secrets"], id="dir-wildcard-blocks-ancestor-target"),
+            pytest.param("/work/**/secrets", "/work/app", ["/work/**/secrets"], id="globstar-wildcard-blocks-ancestor-target"),
+            # Recursive glob with suffix: deleting /work/sub would remove /work/sub/a.log
+            pytest.param("/work/**/*.log", "/work/sub", ["/work/**/*.log"], id="recursive-glob-blocks-descendant-that-contains-match"),
             # --- overlap in either direction -> blocked ----------------------
             pytest.param("/work/a.txt", "/work/a.txt", ["/work/a.txt"], id="exact-file"),
             pytest.param("/work", "/work", ["/work"], id="exact-dir-literal"),

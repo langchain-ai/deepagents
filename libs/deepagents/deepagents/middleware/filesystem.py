@@ -928,7 +928,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
                 Defaults to 3600 seconds (1 hour). Any per-command timeout
                 exceeding this value will be rejected with an error message.
-            enabled_tools: Allowlist of :data:`FsToolName` values to expose
+            enabled_tools: Allowlist of `FsToolName` values to expose
                 to the model. `None` (the default) enables all tools. When a
                 collection is provided, only the listed tools are included in
                 the model request; all others are hidden. `read_file` must be

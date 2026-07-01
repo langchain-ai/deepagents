@@ -596,8 +596,9 @@ class TestConnectionIndicator:
             await pilot.pause()
             indicator = pilot.app.query_one("#connection-indicator", Static)
             rendered = str(indicator.render())
-            assert get_glyphs().spinner_frames[0] in rendered
-            assert "Reconnecting" in rendered
+            frame, _, label = rendered.partition(" ")
+            assert frame in get_glyphs().spinner_frames
+            assert label == "Reconnecting"
 
     async def test_unmount_stops_spinner(self) -> None:
         """Leaving the DOM must stop the timer so it can't tick detached."""

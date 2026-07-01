@@ -25,7 +25,7 @@ classifiers = [
 dependencies = [
     # Keep Talon aligned with deepagents-code's prerelease deepagents pin.
     "deepagents>=0.6.12,<0.9.0",
-    "deepagents-code>=0.1.27,<1.0.0",
+    "deepagents-code>=0.1.28,<1.0.0",
     "fleet-deepagents-export>=0.0.1,<1.0.0",
     "langchain-mcp-adapters>=0.3.0,<1.0.0",
 ]

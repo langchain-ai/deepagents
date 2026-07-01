@@ -13211,9 +13211,38 @@ class DeepAgentsApp(App):
             MCPReconnectForceConfirmScreen,
         )
 
-        confirmed = await self._push_screen_wait(MCPReconnectForceConfirmScreen())
-        if confirmed:
-            await self._restart_server_for_mcp_refresh("forced reconnect")
+        def handle_confirmation(confirmed: bool | None) -> None:
+            # False (explicit cancel/Esc) and None (programmatic dismiss) are
+            # intentionally collapsed: in both cases the safe default is to
+            # leave the server running and return focus to the chat input.
+            if not confirmed:
+                if self._chat_input:
+                    self._chat_input.focus_input()
+                return
+            # `push_screen` callbacks are synchronous and cannot await, so the
+            # async restart is scheduled as a detached task. `_log_task_exception`
+            # surfaces any unhandled failure (the restart also reports expected
+            # errors via `notify`/`ServerStartFailed` independently of this task).
+            task = asyncio.create_task(
+                self._restart_server_for_mcp_refresh("forced reconnect")
+            )
+            task.add_done_callback(_log_task_exception)
+
+        try:
+            self.push_screen(MCPReconnectForceConfirmScreen(), handle_confirmation)
+        except Exception:
+            # Modal could not be mounted (e.g. another modal hijacked the
+            # stack). Surface it rather than silently dropping the command,
+            # mirroring `_prompt_mcp_reconnect`.
+            logger.exception("Failed to mount MCP reconnect force-confirm modal")
+            self.notify(
+                "Couldn't open the reconnect confirmation. Try again, or "
+                "relaunch dcode to pick up the new MCP token.",
+                severity="warning",
+                markup=False,
+            )
+            if self._chat_input:
+                self._chat_input.focus_input()
 
     async def _show_mcp_viewer(self) -> None:
         """Show the MCP server/tool viewer as a modal screen.

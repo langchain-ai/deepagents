@@ -94,6 +94,9 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     ) in workflow
     assert "HARBOR_INCLUDE_TASKS: ${{ inputs.include_tasks }}" in workflow
     assert "HARBOR_ROLLOUTS_PER_TASK: ${{ inputs.rollouts_per_task }}" in workflow
+    assert "from fnmatch import fnmatch" in workflow
+    assert "No Harbor tasks matched include_tasks filters" in workflow
+    assert "select_shard_tasks(selected, [], n_tasks, n, i)" in workflow
     assert 'echo "| \\`dataset\\` | \\`${DATASET}\\` |"' in workflow
     assert "INCLUDE_TASKS: ${{ inputs.include_tasks }}" in workflow
     assert 'echo "| \\`include_tasks\\` | \\`${INCLUDE_TASKS}\\` |"' in workflow

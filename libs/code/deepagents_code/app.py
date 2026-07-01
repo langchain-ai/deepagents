@@ -1303,6 +1303,23 @@ class DeferredAction:
 
 
 @dataclass(frozen=True, slots=True)
+class _EffortContext:
+    """The current model and the effort levels `/effort` can offer for it.
+
+    When the user runs `/effort`, they either pick a reasoning level from a
+    menu or type one. This holds what that requires: the active model and the
+    levels it supports — so the menu lists the right choices and a typed level
+    that the model does not support is rejected instead of silently applied.
+    """
+
+    spec: str
+    """Active `provider:model` spec."""
+
+    efforts: tuple[str, ...]
+    """Reasoning effort labels supported by `spec`."""
+
+
+@dataclass(frozen=True, slots=True)
 class _ThreadHistoryPayload:
     """Data returned by `_fetch_thread_history_data`."""
 
@@ -9982,12 +9999,14 @@ class DeepAgentsApp(App):
             )
         self._status_bar.set_model(provider=provider, model=model, effort=effort)
 
-    def _resolve_effort_context(self) -> tuple[str, tuple[str, ...]] | str:
+    def _resolve_effort_context(self) -> _EffortContext | str:
         """Resolve the active model spec and its supported reasoning efforts.
 
         Returns:
-            A `(spec, efforts)` tuple, or an error message when no model is
-                configured or the model does not support reasoning effort.
+            An `_EffortContext` on success, or an error message `str` when no
+                model is configured or the model does not support reasoning
+                effort. The two arms are class-tagged, so callers discriminate
+                with `isinstance(..., str)`.
         """
         from deepagents_code.reasoning_effort import supported_efforts_for_model
 
@@ -9997,7 +10016,7 @@ class DeepAgentsApp(App):
         efforts = supported_efforts_for_model(spec)
         if not efforts:
             return f"Reasoning effort is not configurable for {spec}."
-        return spec, efforts
+        return _EffortContext(spec=spec, efforts=efforts)
 
     async def _handle_effort_command(self, command: str) -> None:
         """Set or select reasoning effort for the current model.
@@ -10030,13 +10049,13 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             await self._mount_message(AppMessage(context))
             return
-        spec, efforts = context
+        spec = context.spec
 
         current = current_effort_from_model_params(spec, self._model_params_override)
         default = default_effort_for_model(spec)
         screen = EffortSelectorScreen(
             model_spec=spec,
-            efforts=efforts,
+            efforts=context.efforts,
             current_effort=current,
             default_effort=default,
         )
@@ -10081,7 +10100,7 @@ class DeepAgentsApp(App):
         if isinstance(context, str):
             await self._mount_message(AppMessage(context))
             return
-        spec, efforts = context
+        spec = context.spec
 
         if effort in {"clear", "--clear", "reset"}:
             self._model_params_override = without_effort_model_params(
@@ -10095,7 +10114,7 @@ class DeepAgentsApp(App):
 
         params = model_params_for_effort(spec, effort)
         if params is None:
-            supported = ", ".join(efforts)
+            supported = ", ".join(context.efforts)
             await self._mount_message(
                 ErrorMessage(
                     f"Unsupported reasoning effort {effort!r} for {spec}. "

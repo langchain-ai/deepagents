@@ -19,6 +19,10 @@ Typing the per-provider tuples with this alias catches typos in the vocabulary
 at check time. It does not express the deeper invariant that a label must be
 supported by a *specific* model — that is enforced at runtime by
 `supported_efforts_for_model`.
+
+This vocabulary is also hand-duplicated as display text in the `/effort`
+`argument_hint` (`command_registry.py`) and in `COMMANDS.md`; those are not
+type-checked against this alias, so update them in lockstep when it changes.
 """
 
 ReasoningProvider: TypeAlias = Literal[
@@ -119,6 +123,9 @@ def _openai_supported_efforts(_model: str) -> tuple[EffortLabel, ...]:
 
 def _openai_default_effort(model: str) -> EffortLabel | None:
     """Return the OpenAI default reasoning effort when known."""
+    # Only gpt-5.5 documents `medium` as its default; other/newer gpt-5 variants
+    # fall through to `None` until their default is confirmed against
+    # https://platform.openai.com/docs/guides/reasoning.
     return "medium" if model.startswith("gpt-5.5") else None
 
 
@@ -153,15 +160,20 @@ def _anthropic_supported_efforts(model: str) -> tuple[EffortLabel, ...]:
         accept `effort` (e.g. Sonnet 4.5).
     """
     if model.startswith("claude-opus-"):
+        if "opus-4-0" in model or "opus-4-1" in model:
+            # Opus 4.0/4.1 predate reasoning effort entirely.
+            return ()
         if "opus-4-5" in model:
             # Opus 4.5 predates both `max` (4.6+) and `xhigh` (4.7+).
             return ANTHROPIC_EFFORTS_NO_MAX
-        # Opus 4.6 predates `xhigh`; 4.7+ accept the full range.
+        # Opus 4.6 predates `xhigh`; 4.7+ (and newer, unrecognized versions)
+        # get the full range.
         return ANTHROPIC_EFFORTS_NO_XHIGH if "opus-4-6" in model else ANTHROPIC_EFFORTS
     if model.startswith("claude-sonnet-"):
-        if "sonnet-4-5" in model:
+        if "sonnet-4-0" in model or "sonnet-4-1" in model or "sonnet-4-5" in model:
+            # Sonnet 4.0/4.1 predate effort; Sonnet 4.5 rejects it.
             return ()
-        # Sonnet 4.6 predates `xhigh`; Sonnet 5 accepts the full range.
+        # Sonnet 4.6 predates `xhigh`; Sonnet 5 (and newer) get the full range.
         return (
             ANTHROPIC_EFFORTS_NO_XHIGH if "sonnet-4-6" in model else ANTHROPIC_EFFORTS
         )
@@ -331,6 +343,10 @@ def _reasoning_config(model_spec: str) -> tuple[ReasoningProviderConfig, str] | 
 def supported_efforts_for_model(model_spec: str | None) -> tuple[str, ...]:
     """Return reasoning efforts supported by `model_spec`.
 
+    Returns plain `str` labels rather than `EffortLabel`: this is the public
+    boundary where the label vocabulary is intentionally dropped, since the
+    values flow straight to the UI.
+
     Args:
         model_spec: `provider:model` spec for the active model.
 
@@ -347,21 +363,25 @@ def supported_efforts_for_model(model_spec: str | None) -> tuple[str, ...]:
     if not efforts:
         # A recognized reasoning provider that yields no configurable efforts
         # usually means the model-version heuristics need updating for a newer
-        # release — surface it at debug level rather than silently reporting
-        # "not configurable".
-        logger.debug("No configurable reasoning efforts for %s", model_spec)
+        # release. Log at info so the maintenance gap is visible at default
+        # verbosity rather than silently reporting "not configurable".
+        logger.info("No configurable reasoning efforts for %s", model_spec)
     return efforts
 
 
-def default_effort_for_model(model_spec: str | None) -> EffortLabel | None:
+def default_effort_for_model(model_spec: str | None) -> str | None:
     """Return the documented default reasoning effort when known.
+
+    Returns a plain `str` rather than `EffortLabel`: like
+    `supported_efforts_for_model`, this is the public boundary where the label
+    vocabulary is intentionally dropped, since every caller treats the value as
+    display text.
 
     Args:
         model_spec: `provider:model` spec for the active model.
 
     Returns:
-        The provider default effort label, or `None` when the default is unknown
-            or cannot be represented by the supported effort labels.
+        The provider default effort label, or `None` when the default is unknown.
     """
     if not model_spec:
         return None

@@ -1,6 +1,7 @@
 """Tests for `/effort` reasoning effort handling."""
 
-from collections.abc import Iterator
+import logging
+from collections.abc import Coroutine, Iterator
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -18,6 +19,7 @@ from deepagents_code.reasoning_effort import (
     without_effort_model_params,
 )
 from deepagents_code.widgets.effort_selector import EffortSelectorScreen
+from deepagents_code.widgets.messages import ErrorMessage
 
 
 @pytest.fixture(autouse=True)
@@ -40,6 +42,11 @@ def _restore_settings() -> Iterator[None]:
         ("anthropic:claude-sonnet-5", ("low", "medium", "high", "xhigh", "max")),
         ("anthropic:claude-sonnet-4-6", ("low", "medium", "high", "max")),
         ("anthropic:claude-sonnet-4-5", ()),
+        # Models that predate reasoning effort must report no configurable
+        # efforts rather than falling through to the full range.
+        ("anthropic:claude-opus-4-1", ()),
+        ("anthropic:claude-opus-4-0", ()),
+        ("anthropic:claude-sonnet-4-0", ()),
         ("google_genai:gemini-3.5-flash", ("low", "medium", "high")),
         ("google_genai:gemini-3.1-pro-preview", ("low", "medium", "high")),
         (
@@ -65,8 +72,11 @@ def test_supported_efforts_for_model(model_spec: str, efforts: tuple[str, ...]) 
         ("anthropic:claude-opus-4-8", "high"),
         ("anthropic:claude-sonnet-4-6", "high"),
         ("anthropic:claude-sonnet-4-5", None),
+        ("anthropic:claude-opus-4-1", None),
         ("google_genai:gemini-3.5-flash", "medium"),
         ("google_genai:gemini-3.1-pro-preview", "high"),
+        ("google_genai:gemini-3-pro", "high"),
+        ("google_genai:gemini-3-flash", "high"),
         ("fireworks:accounts/fireworks/models/deepseek-v4-pro", "high"),
         ("fireworks:accounts/fireworks/models/glm-5p2", "max"),
         ("fireworks:accounts/fireworks/models/kimi-k2p7-code", None),
@@ -243,6 +253,111 @@ async def test_effort_command_reports_not_configurable_model() -> None:
     assert app._mount_message.await_count == 2  # ty: ignore[unresolved-attribute]
 
 
+async def test_set_effort_override_guards_non_configurable_model() -> None:
+    """`_set_effort_override` re-checks configurability before applying.
+
+    The selector path applies effort in a worker scheduled after the model was
+    resolved, so the sink re-resolves the context to guard against the model
+    becoming non-configurable in between.
+    """
+    app = DeepAgentsApp()
+    app._mount_message = AsyncMock()  # ty: ignore
+    settings.model_provider = "anthropic"
+    settings.model_name = "claude-sonnet-4-5"
+
+    await app._set_effort_override("high")
+
+    assert app._model_params_override is None
+    # Single AppMessage — the direct sink does not echo a UserMessage.
+    app._mount_message.assert_awaited_once()  # ty: ignore[unresolved-attribute]
+
+
+async def test_effort_selector_result_applies_and_refocuses() -> None:
+    """Choosing an effort schedules the apply worker and restores input focus."""
+    app = DeepAgentsApp()
+    app._mount_message = AsyncMock()  # ty: ignore
+    app.push_screen = Mock()  # ty: ignore
+    app._set_effort_override = AsyncMock()  # ty: ignore
+    app._chat_input = Mock()  # ty: ignore
+    scheduled: list[tuple[Coroutine[object, object, None], dict[str, object]]] = []
+    app.run_worker = Mock(  # ty: ignore
+        side_effect=lambda coro, **kwargs: scheduled.append((coro, kwargs))
+    )
+    settings.model_provider = "openai"
+    settings.model_name = "gpt-5.5"
+
+    await app._handle_effort_command("/effort")
+    handle_result = app.push_screen.call_args.args[1]  # ty: ignore[unresolved-attribute]
+
+    handle_result("high")
+
+    assert scheduled[0][1]["group"] == "effort-selection"
+    app._chat_input.focus_input.assert_called_once()  # ty: ignore[unresolved-attribute]
+
+    # Running the scheduled worker coroutine applies the chosen effort.
+    await scheduled[0][0]
+    app._set_effort_override.assert_awaited_once_with(  # ty: ignore[unresolved-attribute]
+        "high"
+    )
+
+
+async def test_effort_selector_cancel_refocuses_without_applying() -> None:
+    """Dismissing the selector refocuses input and schedules no work."""
+    app = DeepAgentsApp()
+    app._mount_message = AsyncMock()  # ty: ignore
+    app.push_screen = Mock()  # ty: ignore
+    app._chat_input = Mock()  # ty: ignore
+    app.run_worker = Mock()  # ty: ignore
+    settings.model_provider = "openai"
+    settings.model_name = "gpt-5.5"
+
+    await app._handle_effort_command("/effort")
+    handle_result = app.push_screen.call_args.args[1]  # ty: ignore[unresolved-attribute]
+
+    handle_result(None)
+
+    app.run_worker.assert_not_called()  # ty: ignore[unresolved-attribute]
+    app._chat_input.focus_input.assert_called_once()  # ty: ignore[unresolved-attribute]
+
+
+async def test_effort_selector_apply_failure_reports_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A failure applying the selected effort logs and surfaces an error.
+
+    The worker running `apply_effort` is not covered by the app's worker-state
+    error net, so the callback catches, logs, and mounts an `ErrorMessage`
+    itself — otherwise the failure would die silently in the background.
+    """
+    app = DeepAgentsApp()
+    app._mount_message = AsyncMock()  # ty: ignore
+    app.push_screen = Mock()  # ty: ignore
+    app._set_effort_override = AsyncMock(  # ty: ignore
+        side_effect=RuntimeError("boom")
+    )
+    app._chat_input = Mock()  # ty: ignore
+    scheduled: list[Coroutine[object, object, None]] = []
+    app.run_worker = Mock(  # ty: ignore
+        side_effect=lambda coro, **_kwargs: scheduled.append(coro)
+    )
+    settings.model_provider = "openai"
+    settings.model_name = "gpt-5.5"
+
+    await app._handle_effort_command("/effort")
+    handle_result = app.push_screen.call_args.args[1]  # ty: ignore[unresolved-attribute]
+    handle_result("high")
+
+    with caplog.at_level(logging.ERROR):
+        await scheduled[0]
+
+    assert any(
+        "Failed to apply reasoning effort" in record.message
+        for record in caplog.records
+    )
+    mounted = app._mount_message.await_args.args[0]  # ty: ignore[unresolved-attribute]
+    assert isinstance(mounted, ErrorMessage)
+
+
 def test_without_effort_clears_anthropic_thinking_and_effort() -> None:
     effort_params = model_params_for_effort("anthropic:claude-opus-4-8", "xhigh")
     assert effort_params is not None
@@ -256,6 +371,14 @@ def test_without_effort_clears_google_thinking_level() -> None:
     effort_params = model_params_for_effort("google_genai:gemini-3.5-flash", "low")
     assert effort_params is not None
     assert without_effort_model_params(effort_params) is None
+
+
+def test_without_effort_preserves_non_dict_model_kwargs() -> None:
+    """A non-dict `model_kwargs` is preserved verbatim while effort keys drop."""
+    cleaned = without_effort_model_params(
+        {"model_kwargs": "raw", "temperature": 0.1, "effort": "high"}
+    )
+    assert cleaned == {"model_kwargs": "raw", "temperature": 0.1}
 
 
 @pytest.mark.parametrize(

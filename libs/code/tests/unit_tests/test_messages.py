@@ -622,6 +622,58 @@ class TestToolCallMessageMarkupSafety:
         assert msg.has_expandable_args is True
 
 
+class TestToolCallMessageDuration:
+    """Tests for the post-run duration shown on `execute` tool calls."""
+
+    async def test_execute_shows_took_after_success(self) -> None:
+        """`execute` keeps its status row and reports how long it ran."""
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("execute", {"command": "sleep 1"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_running()
+            app.msg._start_time -= 5  # ty: ignore
+            app.msg.set_success("done")
+            await pilot.pause()
+
+            status = app.msg._status_widget
+            assert status is not None
+            assert status.display is True
+            content = status._Static__content  # ty: ignore
+            assert isinstance(content, Content)
+            assert content.plain == "Took 5s"
+
+    async def test_non_execute_hides_status_on_success(self) -> None:
+        """Non-`execute` tools still hide the status row on success."""
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("read_file", {"file_path": "a.py"})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_running()
+            app.msg.set_success("contents")
+            await pilot.pause()
+
+            status = app.msg._status_widget
+            assert status is not None
+            assert status.display is False
+
+
 class TestToolCallMessageTodos:
     """Tests for `write_todos` output formatting."""
 

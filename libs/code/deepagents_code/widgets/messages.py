@@ -1218,14 +1218,23 @@ class ToolCallMessage(Vertical):
         Args:
             result: Tool output/result to display
         """
+        elapsed = time() - self._start_time if self._start_time is not None else None
         self._stop_animation()
         self._status = "success"
         # Strip redundant success trailer — the UI already conveys success
         self._output = _strip_success_exit_line(result)
         if self._status_widget:
             self._status_widget.remove_class("pending")
-            # Hide status on success - output speaks for itself
-            self._status_widget.display = False
+            # `execute` calls can run for a while, so keep the row and report how
+            # long the command took once the spinner stops. Other tools hide the
+            # status on success since their output speaks for itself.
+            if self._tool_name == "execute" and elapsed is not None:
+                self._status_widget.update(
+                    Content.styled(f"Took {format_duration(elapsed)}", "dim")
+                )
+                self._status_widget.display = True
+            else:
+                self._status_widget.display = False
         self._update_output_display()
 
     def set_error(self, error: str) -> None:

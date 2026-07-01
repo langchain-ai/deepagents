@@ -140,6 +140,54 @@ class NemotronToolMessageShim(AgentMiddleware):
         return self._normalize(await handler(request))
 
 
+# Filesystem tools whose schema requires `file_path`. Nemotron frequently calls
+# these with the key `path` instead, so the tool-arg shim below remaps it.
+_FILE_PATH_TOOLS: frozenset[str] = frozenset({"read_file", "write_file", "edit_file"})
+
+
+class NemotronPathArgShim(AgentMiddleware):
+    """Rename a stray `path` tool-arg to the schema-required `file_path`.
+
+    Nemotron 3 Ultra frequently calls `read_file`/`write_file`/`edit_file` with
+    `{"path": ...}` instead of `{"file_path": ...}` (observed repeatedly, and it
+    does not self-correct — it re-issues the same wrong key and burns turns on the
+    `pydantic ValidationError: file_path Field required`). This rewrites the arg
+    key before the tool runs, so the call validates and executes. The tool's own
+    path validation still runs on the value (only the key is renamed). No-op when
+    `file_path` is already present, when there is no `path`, or for any other tool
+    (so tools that legitimately take `path`, e.g. `ls`, are untouched). Covers both
+    structured and text-parsed tool calls since it acts at the tool-call layer.
+    """
+
+    name = "NemotronPathArgShim"
+
+    @staticmethod
+    def _fix(request: ToolCallRequest) -> ToolCallRequest:
+        tool_call = request.tool_call
+        if tool_call.get("name") not in _FILE_PATH_TOOLS:
+            return request
+        args = tool_call.get("args") or {}
+        if "path" not in args or "file_path" in args:
+            return request
+        new_args = {k: v for k, v in args.items() if k != "path"}
+        new_args["file_path"] = args["path"]
+        return request.override(tool_call={**tool_call, "args": new_args})
+
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
+    ) -> ToolMessage | Command[Any]:
+        return handler(self._fix(request))
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+    ) -> ToolMessage | Command[Any]:
+        return await handler(self._fix(request))
+
+
 _READ_NOTICE_DEFAULT_LIMIT = 100  # Deep Agents default read limit (FilesystemMiddleware).
 
 
@@ -577,6 +625,7 @@ def _build_extra_middleware() -> list[AgentMiddleware]:
             jitter=False,
         ),
         NemotronToolMessageShim(),
+        NemotronPathArgShim(),
         NemotronTextToolCallParser(),
         FinalizeMiddleware(),
         RambleMiddleware(),

@@ -1233,6 +1233,7 @@ class TestNemotronUltraProfile:
             "ReadFileContinuationNoticeMiddleware",
             "ToolRetryMiddleware",
             "NemotronToolMessageShim",
+            "NemotronPathArgShim",
             "NemotronTextToolCallParser",
             "FinalizeMiddleware",
             "RambleMiddleware",
@@ -2496,3 +2497,72 @@ class TestVerifyBeforeFinalize:
         mw = self._mw()
         state = {"messages": [HumanMessage("task"), AIMessage("   ")]}
         assert mw.after_model(state, None) is None
+
+
+class TestNemotronPathArgShim:
+    """Tests for the path->file_path tool-arg remap (Nemotron emits 'path')."""
+
+    @staticmethod
+    def _req(name, args):  # noqa: ANN205  (returns a ToolCallRequest; imported locally)
+        from langchain.agents.middleware.types import ToolCallRequest  # noqa: PLC0415
+
+        tc = {"name": name, "args": args, "id": "t1", "type": "tool_call"}
+        return ToolCallRequest(tool_call=tc, tool=None, state={}, runtime=None)
+
+    def _mw(self):
+        from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
+            NemotronPathArgShim,
+        )
+
+        return NemotronPathArgShim()
+
+    def test_remaps_path_to_file_path_for_fs_tools(self) -> None:
+        mw = self._mw()
+        for tool in ("read_file", "write_file", "edit_file"):
+            seen = {}
+
+            def handler(req, _s=seen):
+                _s["args"] = dict(req.tool_call["args"])
+                return "ok"
+
+            mw.wrap_tool_call(self._req(tool, {"path": "/app/x.txt"}), handler)
+            assert seen["args"] == {"file_path": "/app/x.txt"}, tool
+
+    def test_preserves_other_args_when_remapping(self) -> None:
+        mw = self._mw()
+        seen = {}
+
+        def handler(req):
+            seen["args"] = dict(req.tool_call["args"])
+            return "ok"
+
+        mw.wrap_tool_call(self._req("write_file", {"path": "/a", "content": "hi"}), handler)
+        assert seen["args"] == {"file_path": "/a", "content": "hi"}
+
+    def test_no_op_when_file_path_present(self) -> None:
+        mw = self._mw()
+        seen = {}
+
+        def handler(req):
+            seen["args"] = dict(req.tool_call["args"])
+            return "ok"
+
+        mw.wrap_tool_call(self._req("read_file", {"file_path": "/a"}), handler)
+        assert seen["args"] == {"file_path": "/a"}
+
+    def test_no_op_for_other_tools(self) -> None:
+        mw = self._mw()
+        seen = {}
+
+        def handler(req):
+            seen["args"] = dict(req.tool_call["args"])
+            return "ok"
+
+        mw.wrap_tool_call(self._req("ls", {"path": "/app"}), handler)
+        assert seen["args"] == {"path": "/app"}
+
+    def test_does_not_mutate_caller_args(self) -> None:
+        mw = self._mw()
+        orig = {"path": "/app/x"}
+        mw.wrap_tool_call(self._req("read_file", orig), lambda _r: "ok")
+        assert orig == {"path": "/app/x"}

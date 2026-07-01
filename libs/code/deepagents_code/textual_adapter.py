@@ -81,6 +81,19 @@ _ASK_USER_UNSUPPORTED_ERROR = "ask_user not supported by this UI"
 _TOOL_CALLS_KEEP_THINKING_SPINNER = frozenset({"edit_file"})
 """Tool calls whose argument/approval phase can be long enough to need feedback."""
 
+_REASONING_BLOCK_TYPES = frozenset({"reasoning", "thinking"})
+
+
+def _is_reasoning_block(block: dict[str, Any]) -> bool:
+    """Return True if a content block represents model-internal reasoning."""
+    if block.get("type") in _REASONING_BLOCK_TYPES:
+        return True
+    # Some providers (e.g. GPT-5 responses API in thinking mode) emit reasoning
+    # turns as type="text" but carry the reasoning payload on a `reasoning`
+    # field or an `is_reasoning` flag. Skip those so they aren't rendered as
+    # assistant output.
+    return bool(block.get("is_reasoning") or block.get("reasoning"))
+
 
 def _get_hitl_request_adapter(hitl_request_type: type) -> TypeAdapter:
     """Return a cached `TypeAdapter(HITLRequest)`.
@@ -1016,6 +1029,9 @@ async def execute_task_textual(
                         )
                     for block in blocks:
                         block_type = block.get("type")
+
+                        if _is_reasoning_block(block):
+                            continue
 
                         if block_type == "text":
                             text = block.get("text", "")

@@ -21,6 +21,7 @@ from _text_only_media_middleware import TextOnlyMediaMiddleware  # noqa: E402
 from _repeat_tool_call_guard_middleware import (  # noqa: E402
     RepeatToolCallGuardMiddleware,
 )
+from _completion_gate_middleware import CompletionGateMiddleware  # noqa: E402
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -202,6 +203,7 @@ def make_graph(config: dict[str, object] | None = None) -> object:
             extra_middleware=[
                 TextOnlyMediaMiddleware(),
                 RepeatToolCallGuardMiddleware(),
+                CompletionGateMiddleware(),
             ],
             cwd=_workdir(configurable),
         )

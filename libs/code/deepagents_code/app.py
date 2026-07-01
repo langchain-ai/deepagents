@@ -6760,7 +6760,7 @@ class DeepAgentsApp(App):
                 return
 
             model_spec, provider = result
-            await self._prompt_launch_tavily()
+            await self._prompt_launch_tavily(provider=provider)
             if self._connecting:
                 # Bound the wait so a stuck server never traps onboarding.
                 # Server startup typically completes in seconds; a minute is
@@ -6845,20 +6845,22 @@ class DeepAgentsApp(App):
                 return
         await self._switch_model(model_spec, announce_unchanged=False)
 
-    async def _prompt_launch_tavily(self) -> None:
+    async def _prompt_launch_tavily(self, *, provider: str | None = None) -> None:
         """Optionally collect and store a Tavily web-search key during onboarding.
 
-        Skipped when a Tavily key is already configured (env or stored). A
-        blank submission or Escape stores nothing; a non-empty key is persisted
-        via the same `auth_store` path `/auth` uses. The key is also exported to
-        the process environment (`apply_stored_service_credentials`) so a server
-        respawn this session picks it up; the already-running server keeps its
-        spawn-time tools, so web search takes full effect on the next launch (or
-        after a restart).
+        Skipped when a Tavily key is already configured (env or stored), or when
+        the selected model provider has hosted web search. A blank submission or
+        Escape stores nothing; a non-empty key is persisted via the same
+        `auth_store` path `/auth` uses. The key is also exported to the process
+        environment (`apply_stored_service_credentials`) so a server respawn this
+        session picks it up; the already-running server keeps its spawn-time
+        tools, so web search takes full effect on the next launch (or after a
+        restart).
         """
         from deepagents_code.config import settings
+        from deepagents_code.tools import supports_provider_web_search
 
-        if settings.has_tavily:
+        if settings.has_tavily or supports_provider_web_search(provider):
             return
 
         from deepagents_code.widgets.auth import AuthPromptScreen, AuthResult

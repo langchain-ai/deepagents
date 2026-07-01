@@ -81,6 +81,8 @@ def _get_mcp_session_manager() -> Any:  # noqa: ANN401
 async def _build_tools(
     config: ServerConfig,
     project_context: ProjectContext | None,
+    *,
+    provider: str | None,
 ) -> tuple[list[Any], list[Any] | None]:
     """Assemble the tool list based on server config.
 
@@ -98,6 +100,7 @@ async def _build_tools(
     Args:
         config: Deserialized server configuration.
         project_context: Resolved project context for MCP discovery.
+        provider: Resolved model provider.
 
     Returns:
         Tuple of `(tools, mcp_server_info)`.
@@ -107,11 +110,9 @@ async def _build_tools(
         RuntimeError: If MCP tool loading fails.
     """
     from deepagents_code.config import settings
-    from deepagents_code.tools import fetch_url, get_current_thread_id, web_search
+    from deepagents_code.tools import build_builtin_tools
 
-    tools: list[Any] = [fetch_url, get_current_thread_id]
-    if settings.has_tavily:
-        tools.append(web_search)
+    tools = build_builtin_tools(provider=provider, has_tavily=settings.has_tavily)
 
     mcp_server_info: list[Any] | None = None
     if not config.no_mcp:
@@ -177,7 +178,11 @@ async def _make_graph() -> Any:  # noqa: ANN401
     )
     result.apply_to_settings()
 
-    tools, mcp_server_info = await _build_tools(config, project_context)
+    tools, mcp_server_info = await _build_tools(
+        config,
+        project_context,
+        provider=result.provider,
+    )
 
     # Create sandbox backend if a sandbox provider is configured.
     # The context manager is created here in the factory, but its reference is

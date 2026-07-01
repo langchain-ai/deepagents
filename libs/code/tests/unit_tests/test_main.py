@@ -1535,10 +1535,36 @@ class TestCheckOptionalTools:
             patch("deepagents_code.main.shutil.which", return_value="/usr/bin/rg"),
             patch(
                 "deepagents_code.config.settings",
-                SimpleNamespace(has_tavily=False),
+                SimpleNamespace(has_tavily=False, model_provider=""),
             ),
         ):
-            missing = check_optional_tools()
+            missing = check_optional_tools(model_spec="anthropic:claude-opus-4-7")
+
+        assert missing == ["tavily"]
+
+    def test_omits_tavily_for_hosted_web_search_provider(self) -> None:
+        """Hosted-search providers should not show the Tavily warning."""
+        with (
+            patch("deepagents_code.main.shutil.which", return_value="/usr/bin/rg"),
+            patch(
+                "deepagents_code.config.settings",
+                SimpleNamespace(has_tavily=False, model_provider=""),
+            ),
+        ):
+            missing = check_optional_tools(model_spec="openai:gpt-5.5")
+
+        assert missing == []
+
+    def test_returns_tavily_for_non_hosted_web_search_provider(self) -> None:
+        """Providers without hosted search still need Tavily for web search."""
+        with (
+            patch("deepagents_code.main.shutil.which", return_value="/usr/bin/rg"),
+            patch(
+                "deepagents_code.config.settings",
+                SimpleNamespace(has_tavily=False, model_provider=""),
+            ),
+        ):
+            missing = check_optional_tools(model_spec="anthropic:claude-opus-4-7")
 
         assert missing == ["tavily"]
 

@@ -1391,6 +1391,22 @@ class TestStartupSequence:
         push_screen_wait.assert_not_awaited()
         set_stored_key.assert_not_called()
 
+    async def test_prompt_launch_tavily_skips_for_hosted_web_search_provider(
+        self,
+    ) -> None:
+        """Onboarding should not prompt when the selected provider has search."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        push_screen_wait = AsyncMock(return_value="tvly-key")
+        app._push_screen_wait = push_screen_wait  # ty: ignore
+
+        with patch(
+            "deepagents_code.config.settings",
+            SimpleNamespace(has_tavily=False),
+        ):
+            await app._prompt_launch_tavily(provider="openai")
+
+        push_screen_wait.assert_not_awaited()
+
     async def test_prompt_launch_tavily_clean_save_activates_key(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

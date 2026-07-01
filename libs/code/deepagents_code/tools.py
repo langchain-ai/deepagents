@@ -35,6 +35,31 @@ _MAX_FETCH_REDIRECTS = 5
 # `_pinned_dns`. The patch is process-global, so serializing fetches keeps
 # concurrent calls from clobbering each other's pinned IP set.
 _dns_pin_lock = threading.Lock()
+_PROVIDER_WEB_SEARCH_PROVIDERS = frozenset({"openai", "openai_codex"})
+"""Providers that can use provider-hosted web search."""
+
+
+def supports_provider_web_search(provider: str | None) -> bool:
+    """Return whether `provider` supports provider-hosted web search."""
+    return provider in _PROVIDER_WEB_SEARCH_PROVIDERS
+
+
+def build_builtin_tools(*, provider: str | None, has_tavily: bool) -> list[Any]:
+    """Build the default web/thread tool list for the coding agent.
+
+    Args:
+        provider: Resolved model provider.
+        has_tavily: Whether Tavily credentials are configured.
+
+    Returns:
+        The built-in tool declarations for the selected provider.
+    """
+    tools: list[Any] = [fetch_url, get_current_thread_id]
+    if supports_provider_web_search(provider):
+        tools.append({"type": "web_search"})
+    elif has_tavily:
+        tools.append(web_search)
+    return tools
 
 
 class _UrlValidationError(ValueError):

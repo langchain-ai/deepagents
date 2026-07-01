@@ -8,6 +8,7 @@ import pytest
 from rich.style import Style
 from textual.app import App, ComposeResult
 from textual.content import Content
+from textual.widgets import Markdown
 
 from deepagents_code import theme
 from deepagents_code.input import INPUT_HIGHLIGHT_PATTERN
@@ -355,6 +356,32 @@ class TestAssistantMessageLinkPointer:
 
             assert msg._markdown is not None
             assert msg._markdown.styles.pointer == "text"
+
+    async def test_markdown_open_links_is_disabled(self) -> None:
+        """The app handles Markdown links so it can show URL-opened toasts."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            markdown = pilot.app.query_one("#assistant-content", Markdown)
+
+            assert markdown._open_links is False
+
+    async def test_markdown_link_clicked_uses_toast_helper(self) -> None:
+        """Clicked Markdown links should use the shared browser/toast helper."""
+        async with _AssistantMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#assistant", AssistantMessage)
+            event = SimpleNamespace(href="https://example.com/docs", stop=MagicMock())
+
+            with patch(
+                "deepagents_code.widgets.messages.open_url_async",
+                new=AsyncMock(return_value=True),
+            ) as mock_open:
+                await msg.on_markdown_link_clicked(event)  # ty: ignore
+
+            event.stop.assert_called_once()
+            mock_open.assert_awaited_once_with(
+                "https://example.com/docs",
+                app=pilot.app,
+                notify_on_success=True,
+            )
 
     def test_mouse_move_before_mount_is_noop(self) -> None:
         """Hovering before mount (no markdown widget yet) must not raise."""

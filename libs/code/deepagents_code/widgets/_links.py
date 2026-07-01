@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import logging
 import webbrowser
@@ -13,7 +14,58 @@ if TYPE_CHECKING:
     from textual.app import App
     from textual.events import Click, MouseMove
 
+
+def _event_app(event: object, app: App | None = None) -> App | None:
+    """Return the app for a click event, including real Textual widgets."""
+    if app is not None:
+        return app
+    widget = getattr(event, "widget", None)
+    widget_app = getattr(widget, "app", None)
+    if widget_app is not None:
+        return widget_app
+    event_app = getattr(event, "app", None)
+    return event_app if event_app is not None else None
+
+
 logger = logging.getLogger(__name__)
+
+
+def _link_action_url(click: object) -> str | None:
+    """Extract a URL from Textual's Markdown `link(...)` click action.
+
+    Args:
+        click: The `@click` style metadata value to inspect.
+
+    Returns:
+        The parsed URL when the metadata is a quoted `link(...)` action.
+    """
+    if not isinstance(click, str):
+        return None
+    if not click.startswith("link(") or not click.endswith(")"):
+        return None
+    try:
+        url = ast.literal_eval(click[len("link(") : -1].strip())
+    except (SyntaxError, ValueError):
+        return None
+    return url if isinstance(url, str) and url else None
+
+
+def _style_url(style: object) -> str | None:
+    """Return a URL from either Rich link style or Textual click metadata.
+
+    Args:
+        style: The Textual event style to inspect.
+
+    Returns:
+        The URL embedded in the style, if one is present.
+    """
+    url = getattr(style, "link", None)
+    if isinstance(url, str) and url:
+        return url
+    meta = getattr(style, "meta", None)
+    if not isinstance(meta, dict):
+        return None
+    return _link_action_url(meta.get("@click"))
 
 
 def event_targets_link(event: MouseMove) -> bool:
@@ -29,14 +81,12 @@ def event_targets_link(event: MouseMove) -> bool:
     Returns:
         `True` when the hovered character belongs to a link span.
     """
-    style = event.style
-    if style.link:
-        return True
-    click = style.meta.get("@click")
-    return isinstance(click, str) and click.startswith("link(")
+    return _style_url(event.style) is not None
 
 
-async def open_url_async(url: str, *, app: App) -> bool:
+async def open_url_async(
+    url: str, *, app: App, notify_on_success: bool = False
+) -> bool:
     """Open url in a browser and toast on failure.
 
     Runs `webbrowser.open` in a thread, catches the platform errors
@@ -46,7 +96,9 @@ async def open_url_async(url: str, *, app: App) -> bool:
 
     Args:
         url: The URL to open.
-        app: App used to post the failure toast.
+        app: App used to post browser-open notifications.
+        notify_on_success: Whether to post an informational toast when the
+            browser accepts the URL.
 
     Returns:
         `True` when the browser accepted the URL; `False` otherwise
@@ -64,10 +116,17 @@ async def open_url_async(url: str, *, app: App) -> bool:
             timeout=8,
             markup=False,
         )
+    elif notify_on_success:
+        app.notify(
+            f"Opening URL in default browser: {strip_dangerous_unicode(url)}",
+            severity="information",
+            timeout=4,
+            markup=False,
+        )
     return opened
 
 
-def open_style_link(event: Click) -> None:
+def open_style_link(event: Click, *, app: App | None = None) -> None:
     """Open the URL from a Rich link style on click, if present.
 
     Rich `Style(link=...)` embeds OSC 8 terminal hyperlinks, but Textual's
@@ -86,8 +145,10 @@ def open_style_link(event: Click) -> None:
 
     Args:
         event: The Textual click event to inspect.
+        app: App used to post browser-open notifications.
     """
-    url = event.style.link
+    notify_app = _event_app(event, app)
+    url = _style_url(event.style)
     if not url:
         return
 
@@ -96,8 +157,7 @@ def open_style_link(event: Click) -> None:
         detail = safety.warnings[0] if safety.warnings else "Suspicious URL"
         logger.warning("Blocked suspicious URL: %s (%s)", url, detail)
         try:
-            app = getattr(event, "app", None)
-            notify = getattr(app, "notify", None)
+            notify = getattr(notify_app, "notify", None)
             if callable(notify):
                 safe_url = strip_dangerous_unicode(url)
                 notify(
@@ -118,11 +178,10 @@ def open_style_link(event: Click) -> None:
         logger.debug("Browser backend did not open URL: %s", url)
         return
     try:
-        app = getattr(event, "app", None)
-        notify = getattr(app, "notify", None)
+        notify = getattr(notify_app, "notify", None)
         if callable(notify):
             notify(
-                f"Opening {strip_dangerous_unicode(url)}",
+                f"Opening URL in default browser: {strip_dangerous_unicode(url)}",
                 severity="information",
                 timeout=4,
                 markup=False,

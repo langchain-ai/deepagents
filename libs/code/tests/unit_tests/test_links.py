@@ -1,9 +1,17 @@
 """Unit tests for style-link click handling."""
 
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock, patch
 
-from deepagents_code.widgets._links import event_targets_link, open_style_link
+from deepagents_code.widgets._links import (
+    event_targets_link,
+    open_style_link,
+    open_url_async,
+)
+
+if TYPE_CHECKING:
+    from textual.app import App
 
 
 def _move_event(
@@ -43,6 +51,15 @@ def _event_with_link(url: str) -> SimpleNamespace:
     )
 
 
+def _event_with_meta(meta: dict[str, str]) -> SimpleNamespace:
+    """Build a minimal click event whose URL comes from style metadata."""
+    return SimpleNamespace(
+        style=SimpleNamespace(link=None, meta=meta),
+        app=SimpleNamespace(notify=MagicMock()),
+        stop=MagicMock(),
+    )
+
+
 def test_open_style_link_opens_browser_and_stops_event() -> None:
     """Safe links should open, toast confirmation, and stop event propagation."""
     event = _event_with_link("https://example.com")
@@ -55,9 +72,62 @@ def test_open_style_link_opens_browser_and_stops_event() -> None:
     event.stop.assert_called_once()
     event.app.notify.assert_called_once()
     args, kwargs = event.app.notify.call_args
-    assert "https://example.com" in args[0]
+    assert args[0] == "Opening URL in default browser: https://example.com"
     assert kwargs["severity"] == "information"
     assert kwargs["markup"] is False
+
+
+def test_open_style_link_notifies_from_event_widget_app() -> None:
+    """Real Textual click events expose the app through `event.widget.app`."""
+    notify = MagicMock()
+    event = SimpleNamespace(
+        style=SimpleNamespace(link="https://example.com", meta={}),
+        widget=SimpleNamespace(app=SimpleNamespace(notify=notify)),
+        stop=MagicMock(),
+    )
+
+    with patch("deepagents_code.widgets._links.webbrowser.open", return_value=True):
+        open_style_link(event)  # ty: ignore
+
+    notify.assert_called_once()
+    args, kwargs = notify.call_args
+    assert args[0] == "Opening URL in default browser: https://example.com"
+    assert kwargs["severity"] == "information"
+    assert kwargs["markup"] is False
+    event.stop.assert_called_once()
+
+
+async def test_open_url_async_can_toast_on_success() -> None:
+    """Async link opening can opt into the same success toast."""
+    notify = MagicMock()
+    app = cast("App[None]", SimpleNamespace(notify=notify))
+
+    with patch("deepagents_code.widgets._links.webbrowser.open", return_value=True):
+        opened = await open_url_async(
+            "https://example.com",
+            app=app,
+            notify_on_success=True,
+        )
+
+    assert opened is True
+    notify.assert_called_once()
+    args, kwargs = notify.call_args
+    assert args[0] == "Opening URL in default browser: https://example.com"
+    assert kwargs["severity"] == "information"
+    assert kwargs["markup"] is False
+
+
+def test_open_style_link_opens_markdown_link_action() -> None:
+    """Markdown `@click=link(...)` metadata should open like Rich link styles."""
+    event = _event_with_meta({"@click": "link('https://example.com/docs')"})
+
+    with patch("deepagents_code.widgets._links.webbrowser.open") as mock_open:
+        mock_open.return_value = True
+        open_style_link(event)  # ty: ignore
+
+    mock_open.assert_called_once_with("https://example.com/docs")
+    event.stop.assert_called_once()
+    event.app.notify.assert_called_once()
 
 
 def test_open_style_link_no_toast_when_browser_does_not_open() -> None:
@@ -69,6 +139,18 @@ def test_open_style_link_no_toast_when_browser_does_not_open() -> None:
         open_style_link(event)  # ty: ignore
 
     mock_open.assert_called_once_with("https://example.com")
+    event.stop.assert_not_called()
+    event.app.notify.assert_not_called()
+
+
+def test_open_style_link_ignores_malformed_markdown_link_action() -> None:
+    """Malformed Markdown link metadata should not reach the browser opener."""
+    event = _event_with_meta({"@click": "link(https://example.com)"})
+
+    with patch("deepagents_code.widgets._links.webbrowser.open") as mock_open:
+        open_style_link(event)  # ty: ignore
+
+    mock_open.assert_not_called()
     event.stop.assert_not_called()
     event.app.notify.assert_not_called()
 

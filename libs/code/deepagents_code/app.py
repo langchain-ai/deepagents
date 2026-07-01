@@ -1303,6 +1303,43 @@ class DeferredAction:
 
 
 @dataclass(frozen=True, slots=True)
+class _EffortContext:
+    """The current model and the effort levels `/effort` can offer for it.
+
+    When the user runs `/effort`, they either pick a reasoning level from a
+    menu or type one. This holds what that requires: the active model and the
+    levels it supports — so the menu lists the right choices and a typed level
+    that the model does not support is rejected instead of silently applied.
+    """
+
+    spec: str
+    """Active `provider:model` spec."""
+
+    efforts: tuple[str, ...]
+    """Reasoning effort labels supported by `spec`."""
+
+    current: str | None
+    """Effort from the per-session override, or `None` when unset."""
+
+    default: str | None
+    """Provider default effort for `spec`, or `None` when unknown."""
+
+
+@dataclass(frozen=True, slots=True)
+class _EffortUnavailable:
+    """Why `/effort` cannot proceed, as a user-facing message.
+
+    The failure arm of `_resolve_effort_context`, paired with `_EffortContext`.
+    Making it a distinct type — rather than a bare `str` — keeps it nominally
+    separate from any other string a caller handles, so the two arms can never
+    be confused by an unrelated `str` value.
+    """
+
+    message: str
+    """User-facing explanation to surface via `AppMessage`."""
+
+
+@dataclass(frozen=True, slots=True)
 class _ThreadHistoryPayload:
     """Data returned by `_fetch_thread_history_data`."""
 
@@ -2775,6 +2812,7 @@ class DeepAgentsApp(App):
         self._chat_input = self.query_one("#input-area", ChatInput)
         self._sync_status_connection()
         self._sync_status_queued()
+        self._sync_status_model()
         self._chat_input.set_cursor_blink(blink=self._cursor_blink_enabled)
 
         # Apply any skill commands discovered before the widget was mounted
@@ -3772,18 +3810,7 @@ class DeepAgentsApp(App):
         if self._status_bar is None:
             logger.warning("Status bar not found during server ready transition")
         else:
-            from deepagents_code.config import settings
-
-            provider = settings.model_provider or ""
-            model = settings.model_name or ""
-            if not provider or not model:
-                logger.warning(
-                    "Settings missing model identity at server ready "
-                    "(provider=%r, model=%r); status bar will render blank",
-                    provider,
-                    model,
-                )
-            self._status_bar.set_model(provider=provider, model=model)
+            self._sync_status_model()
 
         if self._active_mcp_viewer is not None:
             viewer = self._active_mcp_viewer
@@ -9100,7 +9127,7 @@ class DeepAgentsApp(App):
             await self._mount_message(UserMessage(command))
             help_body = (
                 "Commands: /quit, /agents, /auth, /clear, /force-clear, "
-                "/copy, /goal, /offload, /editor, "
+                "/copy, /goal, /offload, /editor, /effort, "
                 "/mcp, /model [--model-params JSON] [--default], "
                 "/notifications, /reload, /restart, /rubric, "
                 "/skill:<name>, /remember, "
@@ -9330,6 +9357,8 @@ class DeepAgentsApp(App):
             await self._show_theme_selector()
         elif cmd == "/notifications":
             await self._show_notification_settings()
+        elif cmd == "/effort" or cmd.startswith("/effort "):
+            await self._handle_effort_command(command)
         elif cmd == "/model" or cmd.startswith("/model "):
             model_arg = None
             set_default = False
@@ -9960,6 +9989,182 @@ class DeepAgentsApp(App):
         from deepagents_code.config import settings
 
         return settings.model_provider or None
+
+    def _sync_status_model(self) -> None:
+        """Update the status bar with the active model and reasoning effort."""
+        from deepagents_code.config import settings
+        from deepagents_code.reasoning_effort import (
+            current_effort_from_model_params,
+            default_effort_for_model,
+        )
+
+        if self._status_bar is None:
+            return
+        provider = settings.model_provider or ""
+        model = settings.model_name or ""
+        if not provider or not model:
+            logger.warning(
+                "Settings missing model identity at status sync "
+                "(provider=%r, model=%r); status bar will render blank",
+                provider,
+                model,
+            )
+            # Identity is blank, so render a uniformly-empty row rather than a
+            # blank model paired with a populated effort suffix.
+            self._status_bar.set_model(provider=provider, model=model, effort="")
+            return
+        spec = self._effective_model_spec()
+        effort = ""
+        if spec:
+            effort = (
+                current_effort_from_model_params(spec, self._model_params_override)
+                or default_effort_for_model(spec)
+                or ""
+            )
+        self._status_bar.set_model(provider=provider, model=model, effort=effort)
+
+    def _resolve_effort_context(self) -> _EffortContext | _EffortUnavailable:
+        """Resolve the active model spec and its supported reasoning efforts.
+
+        Returns:
+            An `_EffortContext` on success, or an `_EffortUnavailable` carrying
+                a user-facing message when no model is configured or the model
+                does not support reasoning effort. The two arms are distinct
+                types, so callers discriminate with
+                `isinstance(..., _EffortUnavailable)`.
+        """
+        from deepagents_code.reasoning_effort import (
+            current_effort_from_model_params,
+            default_effort_for_model,
+            supported_efforts_for_model,
+        )
+
+        spec = self._effective_model_spec()
+        if not spec:
+            return _EffortUnavailable(
+                "No model is configured yet. Run `/model` to choose one."
+            )
+        efforts = supported_efforts_for_model(spec)
+        if not efforts:
+            return _EffortUnavailable(
+                f"Reasoning effort is not configurable for {spec}."
+            )
+        return _EffortContext(
+            spec=spec,
+            efforts=efforts,
+            current=current_effort_from_model_params(spec, self._model_params_override),
+            default=default_effort_for_model(spec),
+        )
+
+    async def _handle_effort_command(self, command: str) -> None:
+        """Set or select reasoning effort for the current model.
+
+        Args:
+            command: The raw `/effort` slash command.
+        """
+        raw = command.strip()[len("/effort") :].strip().lower()
+        if not raw:
+            await self._show_effort_selector(command)
+            return
+
+        await self._mount_message(UserMessage(command))
+        await self._set_effort_override(raw)
+
+    async def _show_effort_selector(self, command: str) -> None:
+        """Open the reasoning effort selector for the current model.
+
+        Args:
+            command: The raw `/effort` slash command.
+        """
+        from deepagents_code.widgets.effort_selector import EffortSelectorScreen
+
+        context = self._resolve_effort_context()
+        if isinstance(context, _EffortUnavailable):
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(AppMessage(context.message))
+            return
+
+        screen = EffortSelectorScreen(
+            model_spec=context.spec,
+            efforts=context.efforts,
+            current_effort=context.current,
+            default_effort=context.default,
+        )
+
+        async def apply_effort(effort: str) -> None:
+            try:
+                await self._set_effort_override(effort)
+            except Exception:
+                # The interactive path applies the effort in a background
+                # worker, so a failure would otherwise die silently there with
+                # no confirmation and no error for the user.
+                logger.exception("Failed to apply reasoning effort %r", effort)
+                await self._mount_message(
+                    ErrorMessage(f"Failed to apply reasoning effort {effort!r}."),
+                )
+
+        def handle_result(result: str | None) -> None:
+            if result is not None:
+                self.run_worker(
+                    apply_effort(result),
+                    exclusive=False,
+                    group="effort-selection",
+                )
+            if self._chat_input:
+                self._chat_input.focus_input()
+
+        self.push_screen(screen, handle_result)
+
+    async def _set_effort_override(self, effort: str) -> None:
+        """Apply a reasoning effort override to the current model params.
+
+        Args:
+            effort: Effort label or clear/reset token.
+        """
+        from deepagents_code.reasoning_effort import (
+            merge_effort_model_params,
+            model_params_for_effort,
+            without_effort_model_params,
+        )
+
+        context = self._resolve_effort_context()
+        if isinstance(context, _EffortUnavailable):
+            await self._mount_message(AppMessage(context.message))
+            return
+        spec = context.spec
+
+        if effort in {"clear", "--clear", "reset"}:
+            had_override = context.current is not None
+            self._model_params_override = without_effort_model_params(
+                self._model_params_override
+            )
+            self._sync_status_model()
+            message = (
+                f"Reasoning effort override cleared for {spec}."
+                if had_override
+                else f"No reasoning effort override was set for {spec}."
+            )
+            await self._mount_message(AppMessage(message))
+            return
+
+        params = model_params_for_effort(spec, effort)
+        if params is None:
+            supported = ", ".join(context.efforts)
+            await self._mount_message(
+                ErrorMessage(
+                    f"Unsupported reasoning effort {effort!r} for {spec}. "
+                    f"Supported efforts: {supported}",
+                ),
+            )
+            return
+
+        self._model_params_override = merge_effort_model_params(
+            self._model_params_override, params
+        )
+        self._sync_status_model()
+        await self._mount_message(
+            AppMessage(f"Reasoning effort for {spec} set to {effort}."),
+        )
 
     async def _run_agent_task(
         self,
@@ -15454,6 +15659,7 @@ class DeepAgentsApp(App):
                 # prior per-session override.
                 self._model_override = current
                 self._model_params_override = extra_kwargs
+                self._sync_status_model()
                 params_suffix = _format_model_params(extra_kwargs)
                 if announce_unchanged:
                     message = f"Already using {current}{params_suffix}"
@@ -15498,11 +15704,7 @@ class DeepAgentsApp(App):
             self._model_override = display
             self._model_params_override = extra_kwargs
 
-            if self._status_bar:
-                self._status_bar.set_model(
-                    provider=settings.model_provider or "",
-                    model=settings.model_name or "",
-                )
+            self._sync_status_model()
 
             self._last_model_unchanged_message = None
             params_suffix = _format_model_params(extra_kwargs)

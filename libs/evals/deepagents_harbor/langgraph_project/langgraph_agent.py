@@ -145,9 +145,19 @@ def _model_kwargs(configurable: dict[str, object]) -> dict[str, Any]:
 # `extra_body.chat_template_kwargs.enable_thinking` (the Nemotron `system:
 # "detailed thinking on"` convention and OpenAI `reasoning_effort` have no effect
 # on that deployment). Without this the agent runs the model non-reasoning, which
-# is a misconfiguration for an agentic benchmark.
+# is a misconfiguration for an agentic benchmark. It also needs the same NVIDIA
+# cookbook sampling as Fireworks (temperature 0.6 / top_p 0.95) plus an explicit
+# `max_tokens`: Baseten's server default output cap is 4096, and with thinking ON the
+# reasoning trace alone consumes it, so hard turns come back empty (reasoning-starved)
+# and even truncate mid-thought. 32000 gives reasoning room and still leaves budget
+# for the tool call / answer. `top_p` is a first-class field on the OpenAI-compatible
+# Baseten client, so it is passed top-level (unlike Fireworks, where it rides in
+# `model_kwargs`).
 _SPEC_INIT_DEFAULTS: dict[str, dict[str, Any]] = {
     "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B": {
+        "temperature": 0.6,
+        "max_tokens": 32000,
+        "top_p": 0.95,
         "extra_body": {"chat_template_kwargs": {"enable_thinking": True}},
     },
     # NVIDIA's Nemotron 3 Ultra agentic-coding cookbook recommends these sampling

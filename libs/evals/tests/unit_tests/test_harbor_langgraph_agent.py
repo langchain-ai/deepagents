@@ -218,17 +218,25 @@ def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
 
 
 _BASETEN_NEMOTRON = "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B"
-_ENABLE_THINKING = {"extra_body": {"chat_template_kwargs": {"enable_thinking": True}}}
 _FIREWORKS_NEMOTRON = "fireworks:accounts/fireworks/models/nemotron-3-ultra-nvfp4"
 # NVIDIA's Nemotron 3 Ultra agentic-coding cookbook sampling; top_p is not a
 # first-class ChatFireworks field so it rides in model_kwargs.
 _FW_SAMPLING = {"temperature": 0.6, "max_tokens": 32000, "model_kwargs": {"top_p": 0.95}}
+# Baseten: same cookbook sampling + reasoning ON. top_p is first-class on the
+# OpenAI-compatible client so it is top-level; max_tokens is explicit because the
+# server default (4096) starves the reasoning trace.
+_BASETEN_DEFAULTS = {
+    "temperature": 0.6,
+    "max_tokens": 32000,
+    "top_p": 0.95,
+    "extra_body": {"chat_template_kwargs": {"enable_thinking": True}},
+}
 
 
 def test_resolve_init_kwargs_enables_thinking_for_baseten_nemotron() -> None:
-    # Baseten serves Nemotron 3 Ultra reasoning-OFF by default; only
-    # extra_body.chat_template_kwargs.enable_thinking turns it on.
-    assert langgraph_agent._resolve_init_kwargs(_BASETEN_NEMOTRON, {}) == _ENABLE_THINKING
+    # Baseten serves Nemotron 3 Ultra reasoning-OFF by default; enable_thinking turns
+    # it on, alongside the cookbook sampling + explicit max_tokens.
+    assert langgraph_agent._resolve_init_kwargs(_BASETEN_NEMOTRON, {}) == _BASETEN_DEFAULTS
 
 
 def test_resolve_init_kwargs_leaves_other_models_untouched() -> None:
@@ -244,14 +252,22 @@ def test_resolve_init_kwargs_merges_caller_extra_body_caller_wins() -> None:
         _BASETEN_NEMOTRON, {"extra_body": {"foo": 1}, "temperature": 0}
     )
     assert out == {
+        "temperature": 0,  # caller wins over the 0.6 default
+        "max_tokens": 32000,
+        "top_p": 0.95,
         "extra_body": {"chat_template_kwargs": {"enable_thinking": True}, "foo": 1},
-        "temperature": 0,
     }
-    # An explicit caller chat_template_kwargs overrides the injected default.
+    # An explicit caller chat_template_kwargs overrides the injected default; the rest
+    # of the Baseten defaults still apply.
     out2 = langgraph_agent._resolve_init_kwargs(
         _BASETEN_NEMOTRON, {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
     )
-    assert out2 == {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
+    assert out2 == {
+        "temperature": 0.6,
+        "max_tokens": 32000,
+        "top_p": 0.95,
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
+    }
 
 
 def test_resolve_init_kwargs_does_not_mutate_caller_kwargs() -> None:
@@ -289,4 +305,4 @@ def test_make_graph_enables_thinking_for_baseten_nemotron(
     langgraph_agent.make_graph({"configurable": {"model": _BASETEN_NEMOTRON, "cwd": str(tmp_path)}})
 
     assert captured_init[0]["model"] == _BASETEN_NEMOTRON
-    assert captured_init[0]["kwargs"] == _ENABLE_THINKING
+    assert captured_init[0]["kwargs"] == _BASETEN_DEFAULTS

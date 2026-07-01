@@ -8226,8 +8226,9 @@ class DeepAgentsApp(App):
             "  /goal show\n"
             "  /goal clear\n\n"
             "Use /goal when you have a plain-language objective; dcode will "
-            "draft a checklist and ask before applying it. Use /rubric to set "
-            "the checklist text directly."
+            "draft a checklist and ask before applying it. Once accepted, the "
+            "goal stays active for this thread until completed, blocked, or "
+            "cleared. Follow-up prompts continue working toward that goal."
         )
 
     async def _show_goal_state(self) -> None:
@@ -8253,6 +8254,12 @@ class DeepAgentsApp(App):
                 ],
             )
         if lines:
+            if self._active_goal and self._goal_status == "active":
+                lines.append(
+                    "Goal is active for this thread until completed, blocked, or "
+                    "cleared.\nFollow-up prompts will continue working toward this "
+                    "goal."
+                )
             lines.append("Commands:\n/goal clear\n/goal show")
             await self._mount_message(AppMessage("\n\n".join(lines)))
             return
@@ -8461,7 +8468,13 @@ class DeepAgentsApp(App):
         self._pending_goal_rubric = None
         self._sync_status_rubric()
         persisted = await self._persist_goal_rubric_state()
-        await self._mount_message(AppMessage("Goal accepted. Rubric set."))
+        await self._mount_message(
+            AppMessage(
+                "Goal accepted. It will stay active for this thread until completed, "
+                "blocked, or cleared.\nUse /goal show to inspect it or /goal clear "
+                "to remove it."
+            )
+        )
         if not persisted:
             await self._mount_message(
                 ErrorMessage(
@@ -8635,7 +8648,9 @@ class DeepAgentsApp(App):
             "  /rubric file <path>\n"
             "  /rubric show\n"
             "  /rubric clear\n"
-            "  /rubric model [provider:model|clear]"
+            "  /rubric model [provider:model|clear]\n\n"
+            "Use /rubric next for a one-turn quality gate. Use /rubric set "
+            "when you want explicit acceptance criteria to persist across turns."
         )
 
     async def _show_rubric_usage(self) -> None:
@@ -9624,11 +9639,36 @@ class DeepAgentsApp(App):
             # Any send (typed reply or skill invocation) counts as the user
             # acting on a blocked goal, so reset it and attach one-turn context.
             blocker_note = await self._reset_blocked_goal_for_user_turn()
+            resuming_blocked = blocker_note is not None
             blocked_goal_retry_context = (
                 self._blocked_goal_retry_context(blocker_note)
-                if blocker_note is not None
+                if resuming_blocked
                 else None
             )
+
+            # `_reset_blocked_goal_for_user_turn` flips a blocked goal to active
+            # just above, so the status alone can't distinguish an already-active
+            # goal from one resumed this turn. Branch the wording on the reset
+            # signal instead. The status guard still holds: a failed reset rolls
+            # the status back to blocked, so no notice fires in that case.
+            #
+            # The `message != _active_goal` check suppresses the notice on the
+            # goal-setting turn, and works only because acceptance sends the
+            # objective verbatim as the message. If a future change wraps or
+            # annotates the objective before sending (as the skill path already
+            # does with its envelope prompt), the equality would no longer match
+            # and the notice would wrongly fire on the initial turn.
+            if (
+                self._active_goal
+                and self._goal_status == "active"
+                and message.strip() != self._active_goal.strip()
+            ):
+                notice = (
+                    f"Resuming previously blocked goal: {self._active_goal}"
+                    if resuming_blocked
+                    else f"Continuing active goal: {self._active_goal}"
+                )
+                await self._mount_message(AppMessage(notice))
 
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=False)

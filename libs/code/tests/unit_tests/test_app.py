@@ -4732,12 +4732,12 @@ class TestGoalCommand:
         return future
 
     def test_goal_usage_text_explains_goal_vs_rubric(self) -> None:
-        """Goal help should clearly distinguish drafting from explicit criteria."""
+        """Goal help should explain drafting and that a goal persists once set."""
         usage = DeepAgentsApp._goal_usage_text()
 
         assert "Use /goal when you have a plain-language objective" in usage
         assert "draft a checklist and ask before applying it" in usage
-        assert "Use /rubric to set the checklist text directly." in usage
+        assert "the goal stays active for this thread" in usage
         assert "when you want dcode to propose" not in usage
 
     async def test_goal_command_proposes_pending_rubric(self) -> None:
@@ -5631,6 +5631,10 @@ class TestGoalCommand:
             assert "Goal:\nmake the app start faster" in rendered
             assert "Status:\nactive" in rendered
             assert "Criteria:\n- measure baseline\n- improve startup" in rendered
+            assert "Goal is active for this thread until completed" in rendered
+            assert (
+                "Follow-up prompts will continue working toward this goal." in rendered
+            )
             assert "Commands:\n/goal clear\n/goal show" in rendered
             assert "Goal status:" not in rendered
             assert "Accepted criteria:" not in rendered
@@ -5796,7 +5800,7 @@ class TestGoalCommand:
             # does not render the accepted criteria as an error body.
             assert app._active_goal == "add refresh tokens"
             assert any(
-                str(w._content) == "Goal accepted. Rubric set."
+                "Goal accepted. It will stay active for this thread" in str(w._content)
                 for w in app.query(AppMessage)
             )
             assert any(
@@ -6145,7 +6149,77 @@ class TestRubricCommand:
             assert mock_execute.await_args is not None
             assert mock_execute.await_args.kwargs["user_input"] == "keep going"
             assert mock_execute.await_args.kwargs["blocked_goal_retry_context"] is None
+            assert any(
+                str(w._content) == "Continuing active goal: add refresh tokens"
+                for w in app.query(AppMessage)
+            )
             assert app._goal_status == "active"
+
+    async def test_resume_notice_wording_when_goal_was_blocked(self) -> None:
+        """Resuming a blocked goal announces a resume, not a plain continue.
+
+        `_reset_blocked_goal_for_user_turn` flips the status to active before the
+        notice check, so the wording must key off the reset signal rather than
+        the (already-mutated) status.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_goal = "add refresh tokens"
+            app._active_rubric = "tests pass"
+            app._goal_status = "blocked"
+            app._goal_status_note = "waiting on provider credentials"
+            started = asyncio.Event()
+
+            def execute_stub(*_args: object, **_kwargs: object) -> SessionStats:
+                started.set()
+                return SessionStats()
+
+            with patch(
+                "deepagents_code.textual_adapter.execute_task_textual",
+                new=AsyncMock(side_effect=execute_stub),
+            ):
+                await app._handle_user_message("Credentials are configured now")
+                await asyncio.wait_for(started.wait(), timeout=1)
+
+            assert app._goal_status == "active"
+            contents = [str(w._content) for w in app.query(AppMessage)]
+            assert "Resuming previously blocked goal: add refresh tokens" in contents
+            assert not any(c.startswith("Continuing active goal") for c in contents)
+
+    async def test_no_resume_notice_when_reset_persist_fails(self) -> None:
+        """A rolled-back reset leaves the goal blocked, so no notice is shown."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = SimpleNamespace(
+                aupdate_state=AsyncMock(side_effect=RuntimeError("boom"))
+            )
+            app._lc_thread_id = "thread-1"
+            app._active_goal = "add refresh tokens"
+            app._active_rubric = "tests pass"
+            app._goal_status = "blocked"
+            app._goal_status_note = "waiting on provider credentials"
+            started = asyncio.Event()
+
+            def execute_stub(*_args: object, **_kwargs: object) -> SessionStats:
+                started.set()
+                return SessionStats()
+
+            with patch(
+                "deepagents_code.textual_adapter.execute_task_textual",
+                new=AsyncMock(side_effect=execute_stub),
+            ):
+                await app._handle_user_message("Credentials are configured now")
+                await asyncio.wait_for(started.wait(), timeout=1)
+
+            assert app._goal_status == "blocked"
+            assert not any(
+                str(w._content).startswith(
+                    ("Resuming previously blocked goal", "Continuing active goal")
+                )
+                for w in app.query(AppMessage)
+            )
 
     async def test_skill_invocation_resets_blocked_goal(self) -> None:
         """A skill send is the user acting on a blocked goal, so it resets it.

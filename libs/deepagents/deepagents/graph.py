@@ -676,8 +676,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             # Resolve permissions: subagent's own rules take priority, else inherit parent's
             subagent_permissions = spec.get("permissions", permissions)
 
-            _spec_mw: list[AgentMiddleware[Any, Any, Any]] = list(spec.get("middleware", []))
-
             # Build middleware: base stack + skills (if specified) + user's middleware
             subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
                 TodoListMiddleware(),
@@ -699,7 +697,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             _append_prompt_caching_middleware(subagent_middleware)
 
-            _subagent_original_name_to_index = {m.name: i for i, m in enumerate(subagent_middleware)}
             _subagent_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
             _subagent_matched_names: set[str] = set()
             _validate_excluded_middleware_config(

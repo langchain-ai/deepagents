@@ -914,9 +914,11 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 return i
         return first_match or 0
 
-    # Lower ranks render first. Providers the user can use right now lead;
-    # providers needing a missing API key sit above ones that aren't even
-    # installed, since fixing the former is just an auth prompt away.
+    # Lower ranks render first: providers the user can use right now lead,
+    # then providers whose readiness is unknown, then providers needing a
+    # missing credential, then ones that aren't even installed. A missing
+    # credential sits above not-installed since fixing it is just an auth
+    # prompt away.
     _PROVIDER_AVAILABLE_RANK = 0
     _PROVIDER_UNKNOWN_RANK = 1
     _PROVIDER_MISSING_RANK = 2
@@ -1026,8 +1028,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         # In the default (unfiltered) view, float providers the user can
         # actually use to the top so a usable model is reachable without
         # scrolling or searching. Providers needing missing credentials or a
-        # package install sink to the bottom. A search reorders by fuzzy score
-        # instead, so leave that ordering untouched.
+        # package install sink to the bottom. A search already orders by match
+        # score (installed providers first), so leave that ordering untouched.
         if not has_filter:
             ordered_providers = sorted(
                 by_provider,

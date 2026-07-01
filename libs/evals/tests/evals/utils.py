@@ -554,6 +554,66 @@ class FileAbsent(SuccessAssertion):
         )
 
 
+@dataclass(frozen=True)
+class ToolNotCalled(SuccessAssertion):
+    """Assert that a specific tool was NOT called in the trajectory.
+
+    The hard-fail counterpart to the efficiency `ToolCall` presence check.
+    Use this when calling a tool at all is the failure mode — e.g. an agent
+    that reflexively calls `get_rubric` / `get_goal` when no goal or rubric was
+    ever set. Matching mirrors `ToolCall`: when `step` is `None`, all steps are
+    searched; `args_contains` / `args_equals` narrow the match to specific args.
+
+    Attributes:
+        name: Tool name that must be absent.
+        step: Optional 1-indexed step to restrict the search to.
+        args_contains: If set, only calls whose args contain these key-value
+            pairs count as a (forbidden) match.
+        args_equals: If set, only calls whose args equal this dict exactly count
+            as a (forbidden) match.
+    """
+
+    name: str
+    step: int | None = None
+    args_contains: dict[str, object] | None = None
+    args_equals: dict[str, object] | None = None
+
+    def _as_tool_call(self) -> ToolCall:
+        """Build the matching `ToolCall` whose matches must be empty."""
+        return ToolCall(
+            name=self.name,
+            step=self.step,
+            args_contains=self.args_contains,
+            args_equals=self.args_equals,
+        )
+
+    def check(self, trajectory: AgentTrajectory) -> bool:
+        """Check that no matching tool call exists in the trajectory.
+
+        Args:
+            trajectory: The agent trajectory to check.
+
+        Returns:
+            Whether the forbidden tool call is absent.
+        """
+        return not self._as_tool_call()._find_matches(trajectory)
+
+    def describe_failure(self, trajectory: AgentTrajectory) -> str:
+        """Describe why the tool-not-called check failed.
+
+        Args:
+            trajectory: The agent trajectory that failed the check.
+
+        Returns:
+            A human-readable failure description.
+        """
+        step_desc = f" in step {self.step}" if self.step is not None else ""
+        matches = self._as_tool_call()._find_matches(trajectory)
+        return (
+            f"Expected no {self.name!r} tool call{step_desc}, but found {len(matches)}: {matches!r}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Concrete efficiency assertions
 # ---------------------------------------------------------------------------
@@ -923,6 +983,34 @@ def tool_call(
         A `ToolCall` assertion instance.
     """
     return ToolCall(
+        name=name,
+        step=step,
+        args_contains=args_contains,
+        args_equals=args_equals,
+    )
+
+
+def tool_not_called(
+    name: str,
+    *,
+    step: int | None = None,
+    args_contains: dict[str, object] | None = None,
+    args_equals: dict[str, object] | None = None,
+) -> ToolNotCalled:
+    """Create a `ToolNotCalled` success assertion (hard-fail).
+
+    Args:
+        name: Tool name that must be absent from the trajectory.
+        step: Optional 1-indexed step to restrict the search to.
+        args_contains: If set, only calls whose args contain these key-value
+            pairs count as a forbidden match.
+        args_equals: If set, only calls whose args equal this dict exactly count
+            as a forbidden match.
+
+    Returns:
+        A `ToolNotCalled` assertion instance.
+    """
+    return ToolNotCalled(
         name=name,
         step=step,
         args_contains=args_contains,

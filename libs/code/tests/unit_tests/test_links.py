@@ -1,9 +1,11 @@
 """Unit tests for style-link click handling."""
 
+import os
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock, patch
 
+from deepagents_code._env_vars import SHOW_URL_OPEN_TOAST
 from deepagents_code.widgets._links import (
     event_targets_link,
     open_style_link,
@@ -64,7 +66,10 @@ def test_open_style_link_opens_browser_and_stops_event() -> None:
     """Safe links should open, toast confirmation, and stop event propagation."""
     event = _event_with_link("https://example.com")
 
-    with patch("deepagents_code.widgets._links.webbrowser.open") as mock_open:
+    with (
+        patch.dict(os.environ, {SHOW_URL_OPEN_TOAST: "1"}),
+        patch("deepagents_code.widgets._links.webbrowser.open") as mock_open,
+    ):
         mock_open.return_value = True
         open_style_link(event)  # ty: ignore
 
@@ -86,7 +91,10 @@ def test_open_style_link_notifies_from_event_widget_app() -> None:
         stop=MagicMock(),
     )
 
-    with patch("deepagents_code.widgets._links.webbrowser.open", return_value=True):
+    with (
+        patch.dict(os.environ, {SHOW_URL_OPEN_TOAST: "1"}),
+        patch("deepagents_code.widgets._links.webbrowser.open", return_value=True),
+    ):
         open_style_link(event)  # ty: ignore
 
     notify.assert_called_once()
@@ -102,7 +110,10 @@ async def test_open_url_async_can_toast_on_success() -> None:
     notify = MagicMock()
     app = cast("App[None]", SimpleNamespace(notify=notify))
 
-    with patch("deepagents_code.widgets._links.webbrowser.open", return_value=True):
+    with (
+        patch.dict(os.environ, {SHOW_URL_OPEN_TOAST: "1"}),
+        patch("deepagents_code.widgets._links.webbrowser.open", return_value=True),
+    ):
         opened = await open_url_async(
             "https://example.com",
             app=app,
@@ -121,13 +132,52 @@ def test_open_style_link_opens_markdown_link_action() -> None:
     """Markdown `@click=link(...)` metadata should open like Rich link styles."""
     event = _event_with_meta({"@click": "link('https://example.com/docs')"})
 
-    with patch("deepagents_code.widgets._links.webbrowser.open") as mock_open:
+    with (
+        patch.dict(os.environ, {SHOW_URL_OPEN_TOAST: "1"}),
+        patch("deepagents_code.widgets._links.webbrowser.open") as mock_open,
+    ):
         mock_open.return_value = True
         open_style_link(event)  # ty: ignore
 
     mock_open.assert_called_once_with("https://example.com/docs")
     event.stop.assert_called_once()
     event.app.notify.assert_called_once()
+
+
+def test_open_style_link_env_can_suppress_success_toast() -> None:
+    """The env var can disable success toasts while still opening URLs."""
+    event = _event_with_link("https://example.com")
+
+    with (
+        patch.dict(os.environ, {SHOW_URL_OPEN_TOAST: "0"}),
+        patch(
+            "deepagents_code.config_manifest.load_config_toml",
+            return_value={"ui": {"show_url_open_toast": True}},
+        ),
+        patch("deepagents_code.widgets._links.webbrowser.open", return_value=True),
+    ):
+        open_style_link(event)  # ty: ignore
+
+    event.stop.assert_called_once()
+    event.app.notify.assert_not_called()
+
+
+def test_open_style_link_config_can_suppress_success_toast() -> None:
+    """The config file can disable success toasts when env is unset."""
+    event = _event_with_link("https://example.com")
+
+    with (
+        patch.dict(os.environ, {SHOW_URL_OPEN_TOAST: ""}),
+        patch(
+            "deepagents_code.config_manifest.load_config_toml",
+            return_value={"ui": {"show_url_open_toast": False}},
+        ),
+        patch("deepagents_code.widgets._links.webbrowser.open", return_value=True),
+    ):
+        open_style_link(event)  # ty: ignore
+
+    event.stop.assert_called_once()
+    event.app.notify.assert_not_called()
 
 
 def test_open_style_link_no_toast_when_browser_does_not_open() -> None:

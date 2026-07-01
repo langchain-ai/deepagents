@@ -30,6 +30,35 @@ def _event_app(event: object, app: App | None = None) -> App | None:
 logger = logging.getLogger(__name__)
 
 
+def _url_open_toasts_enabled() -> bool:
+    """Return whether successful URL-open clicks should show a toast."""
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("display.show_url_open_toast")
+    if option is None:
+        return True
+    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    return bool(value)
+
+
+def _notify_url_opened(app: App | None, url: str) -> None:
+    """Show the URL-opened toast when the user has not opted out."""
+    if app is None or not _url_open_toasts_enabled():
+        return
+    notify = getattr(app, "notify", None)
+    if callable(notify):
+        notify(
+            f"Opening URL in default browser: {strip_dangerous_unicode(url)}",
+            severity="information",
+            timeout=4,
+            markup=False,
+        )
+
+
 def _link_action_url(click: object) -> str | None:
     """Extract a URL from Textual's Markdown `link(...)` click action.
 
@@ -117,12 +146,7 @@ async def open_url_async(
             markup=False,
         )
     elif notify_on_success:
-        app.notify(
-            f"Opening URL in default browser: {strip_dangerous_unicode(url)}",
-            severity="information",
-            timeout=4,
-            markup=False,
-        )
+        _notify_url_opened(app, url)
     return opened
 
 
@@ -178,14 +202,7 @@ def open_style_link(event: Click, *, app: App | None = None) -> None:
         logger.debug("Browser backend did not open URL: %s", url)
         return
     try:
-        notify = getattr(notify_app, "notify", None)
-        if callable(notify):
-            notify(
-                f"Opening URL in default browser: {strip_dangerous_unicode(url)}",
-                severity="information",
-                timeout=4,
-                markup=False,
-            )
+        _notify_url_opened(notify_app, url)
     except (AttributeError, TypeError):
         logger.debug("Could not send URL-opened notification", exc_info=True)
     event.stop()

@@ -852,6 +852,15 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.NO_TERMINAL_ESCAPE,
     ),
     ConfigOption(
+        key="display.show_url_open_toast",
+        group="Display",
+        summary="Show a confirmation toast after clicking a URL.",
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.SHOW_URL_OPEN_TOAST,
+        toml_keys=("ui", "show_url_open_toast"),
+    ),
+    ConfigOption(
         key="display.onboarding_integrations_screen",
         group="Display",
         summary="Show the integrations summary screen during first-run onboarding.",

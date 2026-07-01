@@ -24,6 +24,7 @@ from deepagents_code.agent import (
     DEFAULT_AGENT_NAME,
     _add_interrupt_on,
     _apply_inherited_pythonpath,
+    _create_rubric_grader_tools,
     _format_delete_description,
     _format_edit_file_description,
     _format_execute_description,
@@ -3217,6 +3218,76 @@ class TestCreateCliAgentInterpreterWiring:
         assert len(rubrics) == 1
         assert rubrics[0]._model == "custom-grader-model"
         assert rubrics[0].max_iterations == 5
+        assert "use the `read_file` tool" in rubrics[0]._system_prompt
+        assert [tool.name for tool in rubrics[0]._tools] == ["read_file"]
+
+    def test_omits_default_rubric_max_iterations(self, tmp_path: Path) -> None:
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch("deepagents_code.agent.RubricMiddleware") as mock_rubric,
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+            )
+
+        _, kwargs = mock_rubric.call_args
+        assert "max_iterations" not in kwargs
+
+    def test_rubric_grader_read_tool_only_reads_large_results(
+        self, tmp_path: Path
+    ) -> None:
+        from deepagents.backends import CompositeBackend
+        from deepagents.backends.filesystem import FilesystemBackend
+
+        large_results = FilesystemBackend(
+            root_dir=tmp_path / "large",
+            virtual_mode=True,
+        )
+        project = FilesystemBackend(
+            root_dir=tmp_path / "project",
+            virtual_mode=False,
+        )
+        backend = CompositeBackend(
+            default=project,
+            routes={"/large_tool_results/": large_results},
+        )
+        backend.upload_files(
+            [("/large_tool_results/tool-call-id", b"first\nsecond\nthird")]
+        )
+        read_tool = cast("Any", _create_rubric_grader_tools(backend)[0])
+
+        runtime = SimpleNamespace(tool_call_id="grader-read")
+        allowed = read_tool.func(
+            file_path="/large_tool_results/tool-call-id",
+            runtime=runtime,
+            limit=2,
+        )
+        denied = read_tool.func(
+            file_path="/Users/mason/.ssh/id_rsa",
+            runtime=runtime,
+        )
+
+        assert "1\tfirst" in allowed.content
+        assert "2\tsecond" in allowed.content
+        assert "can only read" in denied
 
     def test_appends_interpreter_middleware_when_enabled(self, tmp_path: Path) -> None:
         from langchain_quickjs import CodeInterpreterMiddleware

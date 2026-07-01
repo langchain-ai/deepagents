@@ -1628,9 +1628,8 @@ async def _load_tools_from_config(
                     error,
                 )
                 logger.debug(
-                    "MCP server '%s' skipped: 401 OAuth challenge -> %s",
+                    "MCP server '%s' skipped: 401 OAuth challenge detected",
                     server_name,
-                    challenge_url,
                     exc_info=True,
                 )
             else:

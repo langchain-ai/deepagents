@@ -1842,8 +1842,11 @@ class TestFormatOptionLabel:
             ),
             install_required=True,
         )
-        # Not dimmed when selected; the missing-creds warning color applies.
-        assert DARK_COLORS.warning in label.markup
+        # Not dimmed when selected, and the missing-creds warning color is
+        # dropped so the CSS row flip ($primary bg, $background fg) owns the
+        # highlight instead of bleeding orange text onto it.
+        assert "dim" not in label.markup
+        assert DARK_COLORS.warning not in label.markup
 
 
 class TestFormatAuthIndicator:

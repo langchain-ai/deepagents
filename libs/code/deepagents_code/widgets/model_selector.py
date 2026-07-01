@@ -1269,8 +1269,14 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         # When selected, skip the inline primary color — CSS already flips the
         # row to ($primary bg, $background fg). Keep `bold` so the default
         # emphasis survives both states.
-        if install_required and not selected:
-            spec = Content.styled(model_spec, "dim")
+        if install_required:
+            # Uninstalled rows are dimmed since selecting one prompts an install
+            # rather than switching. When highlighted, drop the inline color so
+            # the CSS row flip renders cleanly instead of leaking the
+            # missing-credentials warning color onto the selected background.
+            spec = (
+                Content(model_spec) if selected else Content.styled(model_spec, "dim")
+            )
         elif auth_status.blocks_start:
             spec = Content.styled(model_spec, colors.warning)
         elif is_default and selected:

@@ -1271,8 +1271,8 @@ class TestNemotronUltraProfile:
         assert "<stop_condition>" in suffix
         assert "Verify each result once" in suffix
 
-    def test_tool_message_shim_fills_empty_content(self) -> None:
-        """The shim replaces empty tool content; non-empty content is untouched."""
+    def test_tool_call_shim_fix_result(self) -> None:
+        """Normalize empty content, reframe the overwrite-block error, keep other content."""
         from langchain_core.messages import ToolMessage  # noqa: PLC0415
 
         from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
@@ -1280,10 +1280,29 @@ class TestNemotronUltraProfile:
         )
 
         shim = NemotronToolCallShim()
-        empty = shim._normalize(ToolMessage(content="", tool_call_id="t1"))
+        empty = shim._fix_result(ToolMessage(content="", tool_call_id="t1"))
         assert empty.content == "(empty tool result)"
-        kept = shim._normalize(ToolMessage(content="ok", tool_call_id="t2"))
+        kept = shim._fix_result(ToolMessage(content="ok", tool_call_id="t2"))
         assert kept.content == "ok"
+        # The FilesystemMiddleware write guard's overwrite error gets reframed to
+        # steer edit_file, replacing (not appending to) the terse original.
+        block = shim._fix_result(
+            ToolMessage(
+                content=("Cannot write to /app/x.py because it already exists. Read and then make an edit, or write to a new path."),
+                tool_call_id="t3",
+                name="write_file",
+            )
+        )
+        assert "edit_file" in block.content
+        assert "write to a new path" not in block.content
+
+    def test_nemotron_ultra_overrides_write_file_description(self) -> None:
+        """The profile overrides write_file's description to steer edits to edit_file."""
+        profile = _get_harness_profile("NVIDIA:nvidia/nemotron-3-ultra-550b-a55b")
+        assert profile is not None
+        desc = profile.tool_description_overrides.get("write_file")
+        assert desc is not None
+        assert "edit_file" in desc
 
     def test_read_file_continuation_notice(self) -> None:
         """A full page of source lines gets a continuation notice; a short read does not."""

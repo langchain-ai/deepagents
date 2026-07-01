@@ -113,12 +113,26 @@ def _tool_content_is_empty(content: str | list[Any] | None) -> bool:
 # these with the key `path` instead, so the shim below remaps it.
 _FILE_PATH_TOOLS: frozenset[str] = frozenset({"read_file", "write_file", "edit_file"})
 
+# Signature of the FilesystemMiddleware write guard's overwrite error (backends emit
+# "Cannot write to <path> because it already exists. Read and then make an edit ...").
+_OVERWRITE_BLOCK_SIGNATURE = "because it already exists"
+# Sharper redirect for Nemotron, which otherwise re-emits the whole file (wasting the
+# emission), gets blocked, and burns ~16 steps recovering — or re-reads then rewrites
+# the whole artifact. Names the tool, and tells it not to re-read or re-send.
+_OVERWRITE_REFRAME = (
+    "That file already exists — do not overwrite it by re-sending the whole file. "
+    "Use the `edit_file` tool to change only the specific lines you need (match "
+    "old_string, replace with new_string). You already have the file's content from "
+    "writing it, so do not read it again or re-send it in full. Rewriting the entire "
+    "file wastes your step budget and tends to reintroduce the problem you are fixing."
+)
+
 
 class NemotronToolCallShim(AgentMiddleware):
     """Fix Nemotron's tool-call payload quirks at the `wrap_tool_call` layer.
 
-    Two Nemotron-specific tool-call compatibility fixes, kept in one interceptor
-    (same hook, same concern) rather than separate middleware:
+    Nemotron-specific tool-call compatibility fixes, kept in one interceptor (same
+    hook, same concern) rather than separate middleware:
 
     - Request side (`_fix_args`): Nemotron frequently calls `read_file`/`write_file`/
       `edit_file` with `{"path": ...}` instead of the schema-required
@@ -132,6 +146,11 @@ class NemotronToolCallShim(AgentMiddleware):
       `role="tool"` message whose content normalizes to null (an empty string
       collapses to null), crashing the run. This coerces empty/None tool content to
       a non-empty placeholder. Idempotent; a no-op for non-empty results.
+    - Result side (`_reframe_overwrite`): Nemotron systematically retries `write_file`
+      on a file it already wrote instead of using `edit_file` (observed across tasks),
+      re-emitting the whole artifact into a call the write guard rejects, then burning
+      many turns recovering. This replaces that guard's terse overwrite error with a
+      sharper redirect to `edit_file` that tells it not to re-read or re-send the file.
 
     Implements BOTH sync and async hooks: Deep Agents executes tools asynchronously,
     so a sync-only `wrap_tool_call` raises `NotImplementedError` and breaks every
@@ -153,9 +172,13 @@ class NemotronToolCallShim(AgentMiddleware):
         return request.override(tool_call={**tool_call, "args": new_args})
 
     @staticmethod
-    def _normalize(result: ToolMessage | Command[Any]) -> ToolMessage | Command[Any]:
-        if isinstance(result, ToolMessage) and _tool_content_is_empty(result.content):
+    def _fix_result(result: ToolMessage | Command[Any]) -> ToolMessage | Command[Any]:
+        if not isinstance(result, ToolMessage):
+            return result
+        if _tool_content_is_empty(result.content):
             return result.model_copy(update={"content": _EMPTY_TOOL_PLACEHOLDER})
+        if isinstance(result.content, str) and _OVERWRITE_BLOCK_SIGNATURE in result.content:
+            return result.model_copy(update={"content": _OVERWRITE_REFRAME})
         return result
 
     def wrap_tool_call(
@@ -163,14 +186,14 @@ class NemotronToolCallShim(AgentMiddleware):
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
     ) -> ToolMessage | Command[Any]:
-        return self._normalize(handler(self._fix_args(request)))
+        return self._fix_result(handler(self._fix_args(request)))
 
     async def awrap_tool_call(
         self,
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
     ) -> ToolMessage | Command[Any]:
-        return self._normalize(await handler(self._fix_args(request)))
+        return self._fix_result(await handler(self._fix_args(request)))
 
 
 _READ_NOTICE_DEFAULT_LIMIT = 100  # Deep Agents default read limit (FilesystemMiddleware).
@@ -753,11 +776,30 @@ def _build_extra_middleware() -> list[AgentMiddleware]:
     ]
 
 
+# Replaces the stock write_file description for this profile. Nemotron systematically
+# retries write_file on files it already wrote instead of using edit_file (4/6 task
+# types in trace analysis); the stock description's soft "prefer to edit" line does not
+# stop it. This states the create-only purpose up front and points edits at edit_file
+# — a preventive steer at tool-choice time, complementing NemotronToolCallShim's
+# post-hoc reframe of the overwrite-block error.
+_WRITE_FILE_TOOL_DESCRIPTION = """Create a NEW file in the filesystem.
+
+Use write_file ONLY to create a file that does not exist yet. To change a file that
+already exists — including one you just created this session — use the edit_file tool
+to replace the specific lines that differ (match old_string, replace with new_string).
+
+Do NOT re-send an entire existing file through write_file to make an edit. Rewriting
+the whole file wastes your step budget, is rejected when the file already exists, and
+tends to reintroduce the very bug you are fixing. Always prefer a targeted edit_file
+over recreating a file you already wrote."""
+
+
 def register() -> None:
     """Register the built-in Nemotron 3 Ultra harness profile (suffix + middleware)."""
     profile = HarnessProfile(
         system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX,
         extra_middleware=_build_extra_middleware,
+        tool_description_overrides={"write_file": _WRITE_FILE_TOOL_DESCRIPTION},
     )
     for spec in _NEMOTRON_ULTRA_MODEL_SPECS:
         _register_harness_profile_impl(spec, profile)

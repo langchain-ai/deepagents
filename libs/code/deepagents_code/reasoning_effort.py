@@ -21,6 +21,32 @@ supported by a *specific* model — that is enforced at runtime by
 `supported_efforts_for_model`.
 """
 
+ReasoningProvider: TypeAlias = Literal[
+    "anthropic", "fireworks", "google_genai", "openai", "openai_codex"
+]
+"""Provider identifiers that support model-specific reasoning effort controls.
+
+Values must stay byte-identical to the provider strings from `ModelSpec.parse`
+used throughout `model_config.py` (e.g. `CODEX_PROVIDER`).
+"""
+
+
+class ReasoningProviderConfig(NamedTuple):
+    """Provider-specific reasoning effort behavior."""
+
+    supported_efforts: Callable[[str], tuple[EffortLabel, ...]]
+    """Return supported effort labels for a lowercased model name."""
+
+    default_effort: Callable[[str], EffortLabel | None]
+    """Return the provider default effort for a lowercased model name, if known."""
+
+    model_params: Callable[[str], dict[str, Any]]
+    """Translate an effort label into provider-specific model params."""
+
+    current_effort: Callable[[dict[str, Any]], str | None]
+    """Read the configured effort label from provider-specific model params."""
+
+
 OPENAI_EFFORTS: tuple[EffortLabel, ...] = ("none", "low", "medium", "high", "xhigh")
 """OpenAI GPT-5 effort labels for `reasoning.effort`.
 
@@ -80,61 +106,10 @@ FIREWORKS_GLM_EFFORTS: tuple[EffortLabel, ...] = ("none", "high", "max")
 See https://docs.fireworks.ai/guides/reasoning.
 """
 
-ReasoningProvider: TypeAlias = Literal[
-    "anthropic", "fireworks", "google_genai", "openai", "openai_codex"
-]
-"""Provider identifiers that support model-specific reasoning effort controls.
-
-Values must stay byte-identical to the provider strings from `ModelSpec.parse`
-used throughout `model_config.py` (e.g. `CODEX_PROVIDER`).
-"""
-
 _REASONING_KEYS: frozenset[str] = frozenset(
     {"effort", "reasoning", "thinking", "thinking_level"}
 )
 """Runtime config keys that may already carry provider reasoning settings."""
-
-
-def _anthropic_efforts(model: str) -> tuple[EffortLabel, ...]:
-    """Return the effort levels an Anthropic model accepts.
-
-    Args:
-        model: Lowercased Anthropic model name (e.g. `claude-opus-4-8`).
-
-    Returns:
-        Supported effort labels, or an empty tuple when the model does not
-        accept `effort` (e.g. Sonnet 4.5).
-    """
-    if model.startswith("claude-opus-"):
-        if "opus-4-5" in model:
-            # Opus 4.5 predates both `max` (4.6+) and `xhigh` (4.7+).
-            return ANTHROPIC_EFFORTS_NO_MAX
-        # Opus 4.6 predates `xhigh`; 4.7+ accept the full range.
-        return ANTHROPIC_EFFORTS_NO_XHIGH if "opus-4-6" in model else ANTHROPIC_EFFORTS
-    if model.startswith("claude-sonnet-"):
-        if "sonnet-4-5" in model:
-            return ()
-        # Sonnet 4.6 predates `xhigh`; Sonnet 5 accepts the full range.
-        return (
-            ANTHROPIC_EFFORTS_NO_XHIGH if "sonnet-4-6" in model else ANTHROPIC_EFFORTS
-        )
-    return ()
-
-
-class ReasoningProviderConfig(NamedTuple):
-    """Provider-specific reasoning effort behavior."""
-
-    supported_efforts: Callable[[str], tuple[EffortLabel, ...]]
-    """Return supported effort labels for a lowercased model name."""
-
-    default_effort: Callable[[str], EffortLabel | None]
-    """Return the provider default effort for a lowercased model name, if known."""
-
-    model_params: Callable[[str], dict[str, Any]]
-    """Translate an effort label into provider-specific model params."""
-
-    current_effort: Callable[[dict[str, Any]], str | None]
-    """Read the configured effort label from provider-specific model params."""
 
 
 def _openai_supported_efforts(_model: str) -> tuple[EffortLabel, ...]:
@@ -167,9 +142,35 @@ def _openai_current_effort(model_params: dict[str, Any]) -> str | None:
     return None
 
 
+def _anthropic_supported_efforts(model: str) -> tuple[EffortLabel, ...]:
+    """Return the effort levels an Anthropic model accepts.
+
+    Args:
+        model: Lowercased Anthropic model name (e.g. `claude-opus-4-8`).
+
+    Returns:
+        Supported effort labels, or an empty tuple when the model does not
+        accept `effort` (e.g. Sonnet 4.5).
+    """
+    if model.startswith("claude-opus-"):
+        if "opus-4-5" in model:
+            # Opus 4.5 predates both `max` (4.6+) and `xhigh` (4.7+).
+            return ANTHROPIC_EFFORTS_NO_MAX
+        # Opus 4.6 predates `xhigh`; 4.7+ accept the full range.
+        return ANTHROPIC_EFFORTS_NO_XHIGH if "opus-4-6" in model else ANTHROPIC_EFFORTS
+    if model.startswith("claude-sonnet-"):
+        if "sonnet-4-5" in model:
+            return ()
+        # Sonnet 4.6 predates `xhigh`; Sonnet 5 accepts the full range.
+        return (
+            ANTHROPIC_EFFORTS_NO_XHIGH if "sonnet-4-6" in model else ANTHROPIC_EFFORTS
+        )
+    return ()
+
+
 def _anthropic_default_effort(model: str) -> EffortLabel | None:
     """Return the Anthropic default reasoning effort when known."""
-    return "high" if _anthropic_efforts(model) else None
+    return "high" if _anthropic_supported_efforts(model) else None
 
 
 def _anthropic_model_params(effort: str) -> dict[str, Any]:
@@ -273,7 +274,7 @@ _PROVIDER_CONFIGS: dict[ReasoningProvider, ReasoningProviderConfig] = {
     "openai": _OPENAI_CONFIG,
     "openai_codex": _OPENAI_CONFIG,
     "anthropic": ReasoningProviderConfig(
-        supported_efforts=_anthropic_efforts,
+        supported_efforts=_anthropic_supported_efforts,
         default_effort=_anthropic_default_effort,
         model_params=_anthropic_model_params,
         current_effort=_anthropic_current_effort,
@@ -314,22 +315,6 @@ def _classify_reasoning_provider(provider: str, model: str) -> ReasoningProvider
     if provider == "fireworks" and model_lower.startswith("accounts/fireworks/models/"):
         return "fireworks"
     return None
-
-
-def _reasoning_provider(model_spec: str) -> ReasoningProvider | None:
-    """Classify `model_spec` into a reasoning-capable provider, or `None`.
-
-    Args:
-        model_spec: `provider:model` spec for the active model.
-
-    Returns:
-        The reasoning provider, or `None` when the model family does not support
-            reasoning effort (or the spec is unparseable).
-    """
-    parsed = ModelSpec.try_parse(model_spec)
-    if parsed is None:
-        return None
-    return _classify_reasoning_provider(parsed.provider, parsed.model)
 
 
 def _reasoning_config(model_spec: str) -> tuple[ReasoningProviderConfig, str] | None:

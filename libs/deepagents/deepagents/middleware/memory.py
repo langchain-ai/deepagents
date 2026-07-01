@@ -78,6 +78,7 @@ from langchain.agents.middleware.types import (
 from langchain.tools import ToolRuntime
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import ContentBlock, SystemMessage
+from langgraph.channels import UntrackedValue
 
 from deepagents.backends.protocol import _resolve_backend
 from deepagents.middleware._utils import append_to_system_message
@@ -93,7 +94,7 @@ class MemoryState(AgentState):
             Marked as private so it's not included in the final agent state.
     """
 
-    memory_contents: NotRequired[Annotated[dict[str, str], PrivateStateAttr]]
+    memory_contents: NotRequired[Annotated[dict[str, str], PrivateStateAttr, UntrackedValue(dict)]]
 
 
 class MemoryStateUpdate(TypedDict):
@@ -300,25 +301,12 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         memory_body = "\n\n".join(sections)
         return template.format(agent_memory=memory_body)
 
-    def before_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:  # ty: ignore[invalid-method-override]
-        """Load memory content before agent execution (synchronous).
-
-        Loads memory from all configured sources and stores in state.
-        Only loads if not already present in state.
-
-        Args:
-            state: Current agent state.
-            runtime: Runtime context.
-            config: Runnable config.
-
-        Returns:
-            State update with memory_contents populated.
-        """
-        # Skip if already loaded
+    def _load_memory_update(self, state: MemoryState, runtime: Runtime, config: RunnableConfig | None = None) -> MemoryStateUpdate | None:
+        """Load memory content when it is not already available in state."""
         if "memory_contents" in state:
             return None
 
-        backend = self._get_backend(state, runtime, config)
+        backend = self._get_backend(state, runtime, config or {})
         contents: dict[str, str] = {}
 
         results = backend.download_files(list(self.sources))
@@ -334,25 +322,12 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
 
         return MemoryStateUpdate(memory_contents=contents)
 
-    async def abefore_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:  # ty: ignore[invalid-method-override]
-        """Load memory content before agent execution.
-
-        Loads memory from all configured sources and stores in state.
-        Only loads if not already present in state.
-
-        Args:
-            state: Current agent state.
-            runtime: Runtime context.
-            config: Runnable config.
-
-        Returns:
-            State update with memory_contents populated.
-        """
-        # Skip if already loaded
+    async def _aload_memory_update(self, state: MemoryState, runtime: Runtime, config: RunnableConfig | None = None) -> MemoryStateUpdate | None:
+        """Load memory content when it is not already available in state."""
         if "memory_contents" in state:
             return None
 
-        backend = self._get_backend(state, runtime, config)
+        backend = self._get_backend(state, runtime, config or {})
         contents: dict[str, str] = {}
 
         results = await backend.adownload_files(list(self.sources))
@@ -367,6 +342,22 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
                 logger.debug("Loaded memory from: %s", path)
 
         return MemoryStateUpdate(memory_contents=contents)
+
+    def before_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:  # ty: ignore[invalid-method-override]
+        """Load memory content before agent execution."""
+        return self._load_memory_update(state, runtime, config)
+
+    async def abefore_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:  # ty: ignore[invalid-method-override]
+        """Load memory content before agent execution."""
+        return await self._aload_memory_update(state, runtime, config)
+
+    def before_model(self, state: MemoryState, runtime: Runtime, config: RunnableConfig | None = None) -> MemoryStateUpdate | None:  # ty: ignore[invalid-method-override]
+        """Restore untracked memory content before each model call if needed."""
+        return self._load_memory_update(state, runtime, config)
+
+    async def abefore_model(self, state: MemoryState, runtime: Runtime, config: RunnableConfig | None = None) -> MemoryStateUpdate | None:  # ty: ignore[invalid-method-override]
+        """Restore untracked memory content before each model call if needed."""
+        return await self._aload_memory_update(state, runtime, config)
 
     def modify_request(self, request: ModelRequest[ContextT]) -> ModelRequest[ContextT]:
         """Inject memory content into the system message.

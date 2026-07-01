@@ -1,6 +1,7 @@
 """Unit tests for style-link click handling."""
 
 import os
+import webbrowser
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock, patch
@@ -80,6 +81,22 @@ def test_open_style_link_opens_browser_and_stops_event() -> None:
     assert args[0] == "Opening URL in default browser: https://example.com"
     assert kwargs["severity"] == "information"
     assert kwargs["markup"] is False
+    assert kwargs["timeout"] == 4
+
+
+def test_open_style_link_stops_event_even_if_toast_fails() -> None:
+    """A failing success toast must not turn a successful open into a bubble."""
+    event = _event_with_link("https://example.com")
+    event.app.notify.side_effect = TypeError("notify signature mismatch")
+
+    with (
+        patch.dict(os.environ, {SHOW_URL_OPEN_TOAST: "1"}),
+        patch("deepagents_code.widgets._links.webbrowser.open", return_value=True),
+    ):
+        open_style_link(event)  # ty: ignore
+
+    event.app.notify.assert_called_once()
+    event.stop.assert_called_once()
 
 
 def test_open_style_link_notifies_from_event_widget_app() -> None:
@@ -125,6 +142,22 @@ async def test_open_url_async_can_toast_on_success() -> None:
     args, kwargs = notify.call_args
     assert args[0] == "Opening URL in default browser: https://example.com"
     assert kwargs["severity"] == "information"
+    assert kwargs["markup"] is False
+
+
+async def test_open_url_async_warns_on_failure() -> None:
+    """Async link opening warns with the URL when the browser declines."""
+    notify = MagicMock()
+    app = cast("App[None]", SimpleNamespace(notify=notify))
+
+    with patch("deepagents_code.widgets._links.webbrowser.open", return_value=False):
+        opened = await open_url_async("https://example.com", app=app)
+
+    assert opened is False
+    notify.assert_called_once()
+    args, kwargs = notify.call_args
+    assert "https://example.com" in args[0]
+    assert kwargs["severity"] == "warning"
     assert kwargs["markup"] is False
 
 
@@ -180,8 +213,8 @@ def test_open_style_link_config_can_suppress_success_toast() -> None:
     event.app.notify.assert_not_called()
 
 
-def test_open_style_link_no_toast_when_browser_does_not_open() -> None:
-    """When the browser backend declines, no toast is shown and event bubbles."""
+def test_open_style_link_warns_when_browser_does_not_open() -> None:
+    """When the browser backend declines, warn the user and bubble the event."""
     event = _event_with_link("https://example.com")
 
     with patch("deepagents_code.widgets._links.webbrowser.open") as mock_open:
@@ -190,7 +223,29 @@ def test_open_style_link_no_toast_when_browser_does_not_open() -> None:
 
     mock_open.assert_called_once_with("https://example.com")
     event.stop.assert_not_called()
-    event.app.notify.assert_not_called()
+    event.app.notify.assert_called_once()
+    args, kwargs = event.app.notify.call_args
+    assert "https://example.com" in args[0]
+    assert kwargs["severity"] == "warning"
+    assert kwargs["markup"] is False
+
+
+def test_open_style_link_warns_when_browser_open_raises() -> None:
+    """A `webbrowser.Error` should warn the user and bubble the event."""
+    event = _event_with_link("https://example.com")
+
+    with patch(
+        "deepagents_code.widgets._links.webbrowser.open",
+        side_effect=webbrowser.Error("no browser backend"),
+    ):
+        open_style_link(event)  # ty: ignore
+
+    event.stop.assert_not_called()
+    event.app.notify.assert_called_once()
+    args, kwargs = event.app.notify.call_args
+    assert "https://example.com" in args[0]
+    assert kwargs["severity"] == "warning"
+    assert kwargs["markup"] is False
 
 
 def test_open_style_link_ignores_malformed_markdown_link_action() -> None:

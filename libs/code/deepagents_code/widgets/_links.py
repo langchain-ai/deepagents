@@ -30,6 +30,35 @@ def _event_app(event: object, app: App | None = None) -> App | None:
 logger = logging.getLogger(__name__)
 
 
+def _notify(
+    app: App | None, message: str, *, severity: str, timeout: int | None = None
+) -> None:
+    """Post a best-effort Textual toast, tolerating apps without `notify`.
+
+    Centralizes the guard/`markup=False`/exception-swallowing pattern shared by
+    every toast in this module so the call sites cannot drift apart. `markup` is
+    always disabled so URL content can never be interpreted as Textual markup.
+
+    Args:
+        app: App-like object used to post the toast, or `None`.
+        message: The toast body. Callers must sanitize any URL with
+            `strip_dangerous_unicode` before interpolating it here.
+        severity: Textual notification severity (e.g. `information`, `warning`).
+        timeout: Optional toast lifetime in seconds; the Textual default is used
+            when omitted.
+    """
+    notify = getattr(app, "notify", None)
+    if not callable(notify):
+        return
+    kwargs: dict[str, object] = {"severity": severity, "markup": False}
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    try:
+        notify(message, **kwargs)
+    except (AttributeError, TypeError):
+        logger.debug("Could not send notification", exc_info=True)
+
+
 def _url_open_toasts_enabled() -> bool:
     """Return whether successful URL-open clicks should show a toast."""
     from deepagents_code.config_manifest import (
@@ -49,14 +78,12 @@ def _notify_url_opened(app: App | None, url: str) -> None:
     """Show the URL-opened toast when the user has not opted out."""
     if app is None or not _url_open_toasts_enabled():
         return
-    notify = getattr(app, "notify", None)
-    if callable(notify):
-        notify(
-            f"Opening URL in default browser: {strip_dangerous_unicode(url)}",
-            severity="information",
-            timeout=4,
-            markup=False,
-        )
+    _notify(
+        app,
+        f"Opening URL in default browser: {strip_dangerous_unicode(url)}",
+        severity="information",
+        timeout=4,
+    )
 
 
 def _link_action_url(click: object) -> str | None:
@@ -139,11 +166,11 @@ async def open_url_async(
         logger.warning("webbrowser.open failed for %s: %s", url, exc, exc_info=True)
         opened = False
     if not opened:
-        app.notify(
-            f"Could not open a browser. URL: {url}",
+        _notify(
+            app,
+            f"Could not open a browser. URL: {strip_dangerous_unicode(url)}",
             severity="warning",
             timeout=8,
-            markup=False,
         )
     elif notify_on_success:
         _notify_url_opened(app, url)
@@ -162,10 +189,12 @@ def open_style_link(event: Click, *, app: App | None = None) -> None:
     homograph domains) are blocked and not opened; the event bubbles and a
     warning is logged and displayed as a Textual notification.
 
-    On success the event is stopped so it does not bubble further and an
-    informational toast confirms which URL was opened. On failure (e.g. no
-    browser available in a headless environment) the error is logged at debug
-    level and the event bubbles normally.
+    On success the event is stopped so it does not bubble further and, unless
+    the user has opted out, a best-effort informational toast reports the URL
+    that was opened. If the browser cannot be launched -- either
+    `webbrowser.open` raises or the backend declines and returns a falsy value
+    -- a warning toast with the URL is shown so it can be copied manually, the
+    failure is logged, and the event bubbles normally.
 
     Args:
         event: The Textual click event to inspect.
@@ -180,29 +209,25 @@ def open_style_link(event: Click, *, app: App | None = None) -> None:
     if not safety.safe:
         detail = safety.warnings[0] if safety.warnings else "Suspicious URL"
         logger.warning("Blocked suspicious URL: %s (%s)", url, detail)
-        try:
-            notify = getattr(notify_app, "notify", None)
-            if callable(notify):
-                safe_url = strip_dangerous_unicode(url)
-                notify(
-                    f"Blocked suspicious URL: {safe_url}\n{detail}",
-                    severity="warning",
-                    markup=False,
-                )
-        except (AttributeError, TypeError):
-            logger.debug("Could not send URL-blocked notification", exc_info=True)
+        _notify(
+            notify_app,
+            f"Blocked suspicious URL: {strip_dangerous_unicode(url)}\n{detail}",
+            severity="warning",
+        )
         return
 
     try:
         opened = webbrowser.open(url)
-    except Exception:
-        logger.debug("Could not open browser for URL: %s", url, exc_info=True)
-        return
+    except (webbrowser.Error, OSError) as exc:
+        logger.warning("webbrowser.open failed for %s: %s", url, exc, exc_info=True)
+        opened = False
     if not opened:
-        logger.debug("Browser backend did not open URL: %s", url)
+        _notify(
+            notify_app,
+            f"Could not open a browser. URL: {strip_dangerous_unicode(url)}",
+            severity="warning",
+            timeout=8,
+        )
         return
-    try:
-        _notify_url_opened(notify_app, url)
-    except (AttributeError, TypeError):
-        logger.debug("Could not send URL-opened notification", exc_info=True)
+    _notify_url_opened(notify_app, url)
     event.stop()

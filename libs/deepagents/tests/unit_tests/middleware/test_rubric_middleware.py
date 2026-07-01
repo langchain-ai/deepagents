@@ -329,6 +329,56 @@ class TestAfterAgentDirect:
         assert events[0]["iteration"] == 0
         assert events[1]["result"] == "satisfied"
 
+    def test_needs_revision_below_cap_loops(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        events: list[dict[str, Any]] = []
+        mw = RubricMiddleware(model=_STUB_MODEL, max_iterations=2)
+        _stub_grader(
+            mw,
+            monkeypatch,
+            GraderResponse(
+                result="needs_revision",
+                explanation="tests missing",
+                criteria=[{"name": "tests", "passed": False, "gap": "not run"}],
+            ),
+        )
+
+        update = mw.after_agent(self._state(), _runtime(events))
+
+        assert update is not None
+        assert update["_rubric_status"] == "needs_revision"
+        assert update["_rubric_iterations"] == 1
+        assert update["jump_to"] == "model"
+        injected = update["messages"][0]
+        assert isinstance(injected, HumanMessage)
+        assert injected.name == RUBRIC_GRADER_MESSAGE_SOURCE
+        assert injected.additional_kwargs["lc_source"] == RUBRIC_GRADER_MESSAGE_SOURCE
+        assert "tests missing" in injected.content
+        assert events[-1]["result"] == "needs_revision"
+
+    def test_needs_revision_at_second_iteration_reports_cap(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        events: list[dict[str, Any]] = []
+        mw = RubricMiddleware(model=_STUB_MODEL, max_iterations=2)
+        _stub_grader(
+            mw,
+            monkeypatch,
+            GraderResponse(
+                result="needs_revision",
+                explanation="still missing",
+                criteria=[{"name": "tests", "passed": False, "gap": "not run"}],
+            ),
+        )
+
+        update = mw.after_agent(
+            self._state(_rubric_iterations=1),
+            _runtime(events),
+        )
+
+        assert update is not None
+        assert update["_rubric_status"] == "max_iterations_reached"
+        assert update["_rubric_iterations"] == 2
+        assert "jump_to" not in update
+        assert events[-1]["result"] == "max_iterations_reached"
+
 
 # ---------------------------------------------------------------------- #
 # Grader plumbing
@@ -777,15 +827,15 @@ class TestTranscriptSkipsSelfInjected:
 
 
 class TestMaxIterationsObservability:
-    def test_logger_warning_emitted_when_cap_hits(
+    def test_info_log_emitted_when_cap_hits(
         self,
         monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """The cap fires a `WARNING`-level log so it's visible under default config.
+        """The cap fires an info log because it is controlled termination.
 
         The terminal `max_iterations_reached` status is visible through state,
-        callbacks, stream events, and a warning log.
+        callbacks, stream events, and an info log.
         """
         events: list[dict[str, Any]] = []
         seen: list[RubricEvaluation] = []
@@ -810,7 +860,7 @@ class TestMaxIterationsObservability:
             "_current_grading_run_id": "grading-cap",
             "_rubric_iterations": 0,
         }
-        with caplog.at_level("WARNING", logger="deepagents.middleware.rubric"):
+        with caplog.at_level("INFO", logger="deepagents.middleware.rubric"):
             update = mw.after_agent(state, _runtime(events))
         assert update is not None
         assert update["_rubric_status"] == "max_iterations_reached"
@@ -820,3 +870,41 @@ class TestMaxIterationsObservability:
         assert events[-1]["result"] == "max_iterations_reached"
         assert seen[0]["result"] == "max_iterations_reached"
         assert any("exhausted max_iterations" in rec.message and "grading-cap" in rec.message for rec in caplog.records)
+
+    async def test_aafter_agent_reports_cap_on_all_surfaces(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        events: list[dict[str, Any]] = []
+        seen: list[RubricEvaluation] = []
+        mw = RubricMiddleware(
+            model=_STUB_MODEL,
+            max_iterations=1,
+            on_evaluation=seen.append,
+        )
+        _stub_grader(
+            mw,
+            monkeypatch,
+            GraderResponse(
+                result="needs_revision",
+                explanation="not yet",
+                criteria=[{"name": "c", "passed": False, "gap": "missing"}],
+            ),
+        )
+        state: dict[str, Any] = {
+            "messages": [HumanMessage(content="do it"), AIMessage(content="draft")],
+            "rubric": "- thing",
+            "_active_rubric": "- thing",
+            "_current_grading_run_id": "async-grading-cap",
+            "_rubric_iterations": 0,
+        }
+
+        update = await mw.aafter_agent(state, _runtime(events))
+
+        assert update is not None
+        assert update["_rubric_status"] == "max_iterations_reached"
+        assert update["_rubric_evaluations"][0]["result"] == "max_iterations_reached"
+        assert "jump_to" not in update
+        assert events[-1]["type"] == "rubric_evaluation_end"
+        assert events[-1]["result"] == "max_iterations_reached"
+        assert seen[0]["result"] == "max_iterations_reached"

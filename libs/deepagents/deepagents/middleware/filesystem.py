@@ -521,6 +521,8 @@ GLOB_TOOL_DESCRIPTION = """Find files matching a glob pattern.
 Supports standard glob patterns: `*` (any characters), `**` (any directories), `?` (single character).
 Returns a list of absolute file paths that match the pattern.
 
+**Required**: `pattern` — a non-empty glob string. Never call `glob` with no arguments; the call will be rejected with `pattern Field required`.
+
 Examples:
 - `**/*.py` - Find all Python files
 - `*.txt` - Find all text files in the backend's default root
@@ -530,6 +532,8 @@ GREP_TOOL_DESCRIPTION = """Search for a text pattern across files.
 
 Searches for literal text (not regex) and returns matching files or content based on output_mode.
 Special characters like parentheses, brackets, pipes, etc. are treated as literal characters, not regex operators.
+
+**Required**: `pattern` — a non-empty search string. Never call `grep` with no arguments; the call will be rejected with `pattern Field required`.
 
 Examples:
 - Search all files: `grep(pattern="TODO")`

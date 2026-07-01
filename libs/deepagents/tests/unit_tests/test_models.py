@@ -1247,27 +1247,18 @@ class TestNemotronUltraProfile:
             "StallBreakerMiddleware",
         ]
 
-    def test_spec_fidelity_augments_write_edit_execute(self) -> None:
-        """Reminder appended to successful write/edit/execute results; no-op otherwise."""
-        from langchain_core.messages import ToolMessage  # noqa: PLC0415
-
+    def test_spec_fidelity_injects_once_at_start(self) -> None:
+        """Injects the reminder on turn 1, then no-ops once the flag is set."""
         from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
             SpecFidelityMiddleware,
         )
 
-        aug = SpecFidelityMiddleware._augment
-        wrote = aug(ToolMessage(content="Updated file /app/x.proto", name="write_file", tool_call_id="t1", status="success"))
-        assert "Spec check" in wrote.content
-        edited = aug(ToolMessage(content="Successfully replaced 1 instance", name="edit_file", tool_call_id="t2", status="success"))
-        assert "Spec check" in edited.content
-        # execute is covered too (Nemotron writes files via shell), fired on every call.
-        ran = aug(ToolMessage(content="[Command succeeded with exit code 0]", name="execute", tool_call_id="t3", status="success"))
-        assert "Spec check" in ran.content
-        # No-op: failed calls and tools outside the set.
-        failed = aug(ToolMessage(content="err", name="execute", tool_call_id="t4", status="error"))
-        assert failed.content == "err"
-        other = aug(ToolMessage(content="['/app']", name="ls", tool_call_id="t5", status="success"))
-        assert other.content == "['/app']"
+        mw = SpecFidelityMiddleware()
+        first = mw.before_model({}, None)  # type: ignore[arg-type]
+        assert first["spec_fidelity_injected"] is True
+        assert first["messages"][0].content  # a reminder was injected
+        again = mw.before_model({"spec_fidelity_injected": True}, None)  # type: ignore[arg-type]
+        assert "messages" not in again
 
     def test_nemotron_ultra_does_not_apply_to_other_nvidia_models(self) -> None:
         """Per-model keys keep other NVIDIA-catalog models unchanged."""

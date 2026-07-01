@@ -701,66 +701,77 @@ class CompletionPressureMiddleware(AgentMiddleware):
         return self._pressure(state)
 
 
-# Filesystem tools that write identifiers to disk, where spec-fidelity mistakes land.
-_SPEC_FIDELITY_TOOLS: frozenset[str] = frozenset({"write_file", "edit_file", "execute"})
-
-# Appended to each successful write_file/edit_file/execute result. Nemotron
-# under-weights standing system-prompt guidance (the "reproduce identifiers verbatim"
-# rule is ignored even when stated prominently) but attends to in-loop interventions,
-# so the discipline is delivered at the moment of highest risk — just after a step that
-# may have written identifiers to disk. `execute` is covered because Nemotron
-# frequently creates/edits files via shell (heredoc/redirect) instead of the file
-# tools; the conditional wording makes the reminder a harmless no-op cue when the
-# command wrote nothing. General wording (no task-specific example) so it does not
-# overfit, and no shell parsing (it fires on every successful call, not by matching).
-_SPEC_FIDELITY_REMINDER = (
-    "Spec check: if you just created or changed a file, re-read the task and confirm "
-    "that every name, field, path, and output format in it matches the task's wording "
-    "exactly — reproduce each spelling verbatim, and fix any that differ. If the task "
-    "spells two related things differently, that difference is intentional; do not "
-    "normalize or unify them."
+# Injected as a HumanMessage on the first model turn. Nemotron under-weights standing
+# system-prompt guidance (the "reproduce identifiers verbatim" rule was ignored even in
+# a prominent base) and did not act on the same discipline appended to tool results
+# either — so this front-loads it as an in-conversation message before the first
+# action, forcing an explicit "extract the exact identifiers, then use them" step.
+# General wording (no task-specific example) so it does not overfit.
+_SPEC_FIDELITY_NUDGE = (
+    "STOP — before writing any code, file, or command, do this first and treat it as "
+    "mandatory, not optional:\n\n"
+    "1. Re-read the task and copy out, verbatim and character-for-character, EVERY "
+    "identifier it names: message / field / RPC / class / function / variable names, "
+    "file paths and filenames, ports, and output formats. Record them (e.g. in a notes "
+    "file) as the authoritative contract you will build against.\n"
+    "2. Build strictly by copying from that list. Every name you produce must match the "
+    "task's spelling EXACTLY — not close, exact. One wrong character means you have "
+    "built a different interface than the one asked for: anything that relies on the "
+    "task's names will fail to find yours, no matter how well your code otherwise runs.\n"
+    "3. NEVER normalize, unify, rename, abbreviate, pluralize, re-case, or otherwise "
+    '"tidy" the task\'s names — even when they look inconsistent, redundant, or wrong to '
+    "you. If the task spells two related things differently, that is deliberate; "
+    "reproduce each exactly as written. The task's wording is the authority, not your "
+    "sense of what is consistent or correct. When unsure, copy the task's text — never "
+    "retype an identifier from memory or paraphrase it."
 )
 
 
+class SpecFidelityState(AgentState):
+    """State schema for ``SpecFidelityMiddleware``."""
+
+    # `PrivateStateAttr` keeps the once-flag out of the input/output schema while it
+    # persists internally across turns (default last-value reducer).
+    spec_fidelity_injected: NotRequired[Annotated[bool, PrivateStateAttr]]
+
+
 class SpecFidelityMiddleware(AgentMiddleware):
-    """Append a spec-fidelity re-check reminder after file-producing tool calls.
+    """Inject a one-time spec-fidelity reminder as a `HumanMessage` on the first turn.
 
     Nemotron under-weights standing system-prompt guidance — the "reproduce every
-    identifier verbatim" rule is ignored even when stated prominently — but it attends
-    to in-loop interventions (injected messages, tool results). Rather than state the
-    discipline once in the prompt, this delivers it at the moment of highest risk: just
-    after a step that may have written identifiers to disk. It covers `write_file`,
-    `edit_file`, AND `execute` — the last because Nemotron frequently creates/edits
-    files via shell (heredoc/redirect) instead of the file tools; the reminder's
-    conditional wording ("if you just created or changed a file") makes it a harmless
-    no-op cue when the command wrote nothing. Stateless; skips other tools, failed
-    calls, and non-`ToolMessage` results.
-
-    Implements BOTH sync and async `wrap_tool_call` hooks, since Deep Agents runs tools
-    asynchronously.
+    identifier verbatim" rule was ignored even when stated prominently — and did not
+    act on the same discipline appended to `write_file`/`edit_file`/`execute` results.
+    This delivers it as an in-conversation `HumanMessage` before the first model action,
+    front-loading the "extract the exact identifiers, then use them verbatim" step.
+    Fires once per run via a `PrivateStateAttr`.
     """
 
     name = "SpecFidelityMiddleware"
+    state_schema = SpecFidelityState  # type: ignore[assignment]
 
-    @staticmethod
-    def _augment(result: ToolMessage | Command[Any]) -> ToolMessage | Command[Any]:
-        if isinstance(result, ToolMessage) and result.name in _SPEC_FIDELITY_TOOLS and result.status == "success" and isinstance(result.content, str):
-            return result.model_copy(update={"content": f"{result.content}\n\n{_SPEC_FIDELITY_REMINDER}"})
-        return result
+    def _maybe_inject(self, state: SpecFidelityState) -> dict[str, Any]:
+        if state.get("spec_fidelity_injected"):
+            return {}
+        return {
+            "messages": [HumanMessage(content=_SPEC_FIDELITY_NUDGE)],
+            "spec_fidelity_injected": True,
+        }
 
-    def wrap_tool_call(
+    def before_model(
         self,
-        request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
-    ) -> ToolMessage | Command[Any]:
-        return self._augment(handler(request))
+        state: SpecFidelityState,
+        runtime: Runtime[Any],  # noqa: ARG002  (part of the hook signature)
+    ) -> dict[str, Any]:
+        """Inject the spec-fidelity reminder on the first turn only."""
+        return self._maybe_inject(state)
 
-    async def awrap_tool_call(
+    async def abefore_model(
         self,
-        request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
-    ) -> ToolMessage | Command[Any]:
-        return self._augment(await handler(request))
+        state: SpecFidelityState,
+        runtime: Runtime[Any],  # noqa: ARG002  (part of the hook signature)
+    ) -> dict[str, Any]:
+        """Async variant of ``before_model``."""
+        return self._maybe_inject(state)
 
 
 def _build_extra_middleware() -> list[AgentMiddleware]:

@@ -280,7 +280,7 @@ class TestInitialPromptOnMount:
                 await asyncio.sleep(0)
 
         status_bar.set_model.assert_called_once_with(
-            provider="anthropic", model="claude-opus-4-7", effort=""
+            provider="anthropic", model="claude-opus-4-7", effort="high"
         )
 
     async def test_server_ready_warns_when_status_bar_missing(

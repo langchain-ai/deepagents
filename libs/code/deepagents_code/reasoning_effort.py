@@ -197,6 +197,44 @@ def supported_efforts_for_model(model_spec: str | None) -> tuple[str, ...]:
     return efforts
 
 
+def default_effort_for_model(model_spec: str | None) -> EffortLabel | None:
+    """Return the documented default reasoning effort when known.
+
+    Args:
+        model_spec: `provider:model` spec for the active model.
+
+    Returns:
+        The provider default effort label, or `None` when the default is unknown
+            or cannot be represented by the supported effort labels.
+    """
+    if not model_spec:
+        return None
+    provider = _reasoning_provider(model_spec)
+    if provider is None:
+        return None
+    parsed = ModelSpec.try_parse(model_spec)
+    model = parsed.model.lower() if parsed else ""
+    match provider:
+        case "openai" | "openai_codex":
+            if model.startswith("gpt-5.5"):
+                return "medium"
+        case "anthropic":
+            return "high" if _anthropic_efforts(model) else None
+        case "google_genai":
+            if model.startswith("gemini-3.5-flash"):
+                return "medium"
+            if model.startswith(("gemini-3.1-pro", "gemini-3-flash", "gemini-3-pro")):
+                return "high"
+        case "fireworks":
+            if "deepseek-v4-pro" in model:
+                return "high"
+            if "glm-5p2" in model:
+                return "max"
+        case _:
+            assert_never(provider)
+    return None
+
+
 def model_params_for_effort(model_spec: str, effort: str) -> dict[str, Any] | None:
     """Translate an effort label into provider-specific model params.
 

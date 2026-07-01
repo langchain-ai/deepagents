@@ -79,6 +79,7 @@ class EffortSelectorScreen(ModalScreen[str | None]):
         model_spec: str,
         efforts: tuple[str, ...],
         current_effort: str | None = None,
+        default_effort: str | None = None,
     ) -> None:
         """Initialize the effort selector.
 
@@ -86,11 +87,13 @@ class EffortSelectorScreen(ModalScreen[str | None]):
             model_spec: Active `provider:model` spec.
             efforts: Supported effort labels for `model_spec`.
             current_effort: Current per-session effort override, if any.
+            default_effort: Provider default effort for `model_spec`, if known.
         """
         super().__init__()
         self._model_spec = model_spec
         self._efforts = efforts
         self._current_effort = current_effort
+        self._default_effort = default_effort
 
     def compose(self) -> ComposeResult:
         """Compose the screen layout.
@@ -102,8 +105,9 @@ class EffortSelectorScreen(ModalScreen[str | None]):
         options = [
             Option(self._format_label(effort), id=effort) for effort in self._efforts
         ]
+        highlighted_effort = self._current_effort or self._default_effort
         try:
-            highlighted = self._efforts.index(self._current_effort)
+            highlighted = self._efforts.index(highlighted_effort)
         except ValueError:
             highlighted = 0
         help_text = (
@@ -128,8 +132,16 @@ class EffortSelectorScreen(ModalScreen[str | None]):
         Returns:
             Styled option label.
         """
+        markers = []
         if effort == self._current_effort:
-            return Content.from_markup("$effort [dim](current)[/dim]", effort=effort)
+            markers.append("current")
+        if effort == self._default_effort:
+            markers.append("default")
+        if markers:
+            suffix = ", ".join(markers)
+            return Content.from_markup(
+                "$effort [dim]($suffix)[/dim]", effort=effort, suffix=suffix
+            )
         return Content.from_markup("$effort", effort=effort)
 
     def on_mount(self) -> None:

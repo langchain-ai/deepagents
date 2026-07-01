@@ -9955,7 +9955,10 @@ class DeepAgentsApp(App):
     def _sync_status_model(self) -> None:
         """Update the status bar with the active model and reasoning effort."""
         from deepagents_code.config import settings
-        from deepagents_code.reasoning_effort import current_effort_from_model_params
+        from deepagents_code.reasoning_effort import (
+            current_effort_from_model_params,
+            default_effort_for_model,
+        )
 
         if self._status_bar is None:
             return
@@ -9969,11 +9972,13 @@ class DeepAgentsApp(App):
                 model,
             )
         spec = self._effective_model_spec()
-        effort = (
-            current_effort_from_model_params(spec, self._model_params_override)
-            if spec
-            else None
-        ) or ""
+        effort = ""
+        if spec:
+            effort = (
+                current_effort_from_model_params(spec, self._model_params_override)
+                or default_effort_for_model(spec)
+                or ""
+            )
         self._status_bar.set_model(provider=provider, model=model, effort=effort)
 
     def _resolve_effort_context(self) -> tuple[str, tuple[str, ...]] | str:
@@ -10013,7 +10018,10 @@ class DeepAgentsApp(App):
         Args:
             command: The raw `/effort` slash command.
         """
-        from deepagents_code.reasoning_effort import current_effort_from_model_params
+        from deepagents_code.reasoning_effort import (
+            current_effort_from_model_params,
+            default_effort_for_model,
+        )
         from deepagents_code.widgets.effort_selector import EffortSelectorScreen
 
         context = self._resolve_effort_context()
@@ -10024,10 +10032,12 @@ class DeepAgentsApp(App):
         spec, efforts = context
 
         current = current_effort_from_model_params(spec, self._model_params_override)
+        default = default_effort_for_model(spec)
         screen = EffortSelectorScreen(
             model_spec=spec,
             efforts=efforts,
             current_effort=current,
+            default_effort=default,
         )
 
         async def apply_effort(effort: str) -> None:

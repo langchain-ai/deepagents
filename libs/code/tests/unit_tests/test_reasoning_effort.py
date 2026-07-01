@@ -11,6 +11,7 @@ from deepagents_code.app import DeepAgentsApp
 from deepagents_code.config import settings
 from deepagents_code.reasoning_effort import (
     current_effort_from_model_params,
+    default_effort_for_model,
     merge_effort_model_params,
     model_params_for_effort,
     supported_efforts_for_model,
@@ -54,6 +55,26 @@ def _restore_settings() -> Iterator[None]:
 )
 def test_supported_efforts_for_model(model_spec: str, efforts: tuple[str, ...]) -> None:
     assert supported_efforts_for_model(model_spec) == efforts
+
+
+@pytest.mark.parametrize(
+    ("model_spec", "default"),
+    [
+        ("openai:gpt-5.5", "medium"),
+        ("openai_codex:gpt-5.5", "medium"),
+        ("anthropic:claude-opus-4-8", "high"),
+        ("anthropic:claude-sonnet-4-6", "high"),
+        ("anthropic:claude-sonnet-4-5", None),
+        ("google_genai:gemini-3.5-flash", "medium"),
+        ("google_genai:gemini-3.1-pro-preview", "high"),
+        ("fireworks:accounts/fireworks/models/deepseek-v4-pro", "high"),
+        ("fireworks:accounts/fireworks/models/glm-5p2", "max"),
+        ("fireworks:accounts/fireworks/models/kimi-k2p7-code", None),
+        ("ollama:llama3.1", None),
+    ],
+)
+def test_default_effort_for_model(model_spec: str, default: str | None) -> None:
+    assert default_effort_for_model(model_spec) == default
 
 
 def test_model_params_for_effort_maps_provider_kwargs() -> None:
@@ -134,6 +155,7 @@ async def test_effort_command_without_args_opens_selector() -> None:
     assert screen._model_spec == "openai:gpt-5.5"
     assert screen._efforts == ("none", "low", "medium", "high", "xhigh")
     assert screen._current_effort == "medium"
+    assert screen._default_effort == "medium"
     app._mount_message.assert_not_awaited()  # ty: ignore[unresolved-attribute]
 
 
@@ -259,11 +281,11 @@ class _EffortSelectorHost(App[None]):
 
 
 @pytest.mark.parametrize(
-    ("current_effort", "expected_index"),
-    [("medium", 2), (None, 0), ("bogus", 0)],
+    ("current_effort", "default_effort", "expected_index"),
+    [("medium", "low", 2), (None, "medium", 2), (None, None, 0), ("bogus", None, 0)],
 )
 async def test_effort_selector_highlights_current(
-    current_effort: str | None, expected_index: int
+    current_effort: str | None, default_effort: str | None, expected_index: int
 ) -> None:
     app = _EffortSelectorHost()
     async with app.run_test() as pilot:
@@ -272,6 +294,7 @@ async def test_effort_selector_highlights_current(
                 model_spec="openai:gpt-5.5",
                 efforts=("none", "low", "medium", "high", "xhigh"),
                 current_effort=current_effort,
+                default_effort=default_effort,
             )
         )
         await pilot.pause()
@@ -317,11 +340,22 @@ async def test_effort_selector_escape_cancels() -> None:
         assert results == [None]
 
 
-def test_effort_selector_format_label_marks_current() -> None:
+def test_effort_selector_format_label_marks_current_and_default() -> None:
     screen = EffortSelectorScreen(
         model_spec="openai:gpt-5.5",
         efforts=("low", "high"),
         current_effort="high",
+        default_effort="low",
     )
     assert "(current)" in str(screen._format_label("high"))
-    assert "(current)" not in str(screen._format_label("low"))
+    assert "(default)" in str(screen._format_label("low"))
+
+
+def test_effort_selector_format_label_combines_current_default() -> None:
+    screen = EffortSelectorScreen(
+        model_spec="openai:gpt-5.5",
+        efforts=("low", "high"),
+        current_effort="high",
+        default_effort="high",
+    )
+    assert "(current, default)" in str(screen._format_label("high"))

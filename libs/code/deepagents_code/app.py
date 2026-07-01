@@ -15307,6 +15307,7 @@ class DeepAgentsApp(App):
                 # prior per-session override.
                 self._model_override = current
                 self._model_params_override = extra_kwargs
+                self._sync_status_model()
                 params_suffix = _format_model_params(extra_kwargs)
                 if announce_unchanged:
                     message = f"Already using {current}{params_suffix}"

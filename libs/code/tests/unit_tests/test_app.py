@@ -4741,13 +4741,13 @@ class TestGoalCommand:
         assert "the goal stays active for this thread" in usage
         assert "when you want dcode to propose" not in usage
 
-    def test_goal_usage_text_mentions_grader_aliases(self) -> None:
-        """Goal help should surface the shared-grader aliases."""
+    def test_goal_usage_text_mentions_grader_settings(self) -> None:
+        """Goal help should surface the grader settings without alias wording."""
         usage = DeepAgentsApp._goal_usage_text()
 
         assert "/goal model [provider:model|clear]" in usage
-        assert "/goal max-iterations <1-20|clear>" in usage
-        assert "aliases for /rubric model" in usage
+        assert "/goal max-iterations <N|clear>" in usage
+        assert "aliases for /rubric model" not in usage
 
     async def test_goal_model_alias_dispatches_to_rubric_setter(self) -> None:
         """`/goal model <spec>` should route to the shared grader-model setter."""
@@ -4796,25 +4796,25 @@ class TestGoalCommand:
             with patch.object(
                 app, "_set_rubric_max_iterations", new_callable=AsyncMock
             ) as setter:
-                await app._handle_command("/goal max-iterations 10")
+                await app._handle_command("/goal max-iterations 21")
                 await pilot.pause()
 
-            setter.assert_awaited_once_with(10)
+            setter.assert_awaited_once_with(21)
 
-    async def test_goal_max_iterations_alias_rejects_invalid(self) -> None:
-        """An invalid `/goal max-iterations` value should not call the setter."""
+    async def test_goal_max_iterations_alias_rejects_non_positive(self) -> None:
+        """A non-positive `/goal max-iterations` value should not call the setter."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
             with patch.object(
                 app, "_set_rubric_max_iterations", new_callable=AsyncMock
             ) as setter:
-                await app._handle_command("/goal max-iterations 21")
+                await app._handle_command("/goal max-iterations 0")
                 await pilot.pause()
 
             setter.assert_not_awaited()
             rendered = "\n".join(str(w._content) for w in app.query(ErrorMessage))
-            assert "between 1 and 20" in rendered
+            assert "positive whole number" in rendered
 
     async def test_goal_show_displays_grader_line(self) -> None:
         """`/goal show` should surface the shared grader model and cap."""
@@ -4861,7 +4861,7 @@ class TestGoalCommand:
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "/goal model [provider:model|clear]" in rendered
-            assert "/goal max-iterations <1-20|clear>" in rendered
+            assert "/goal max-iterations <N|clear>" in rendered
 
     async def test_goal_max_iterations_alias_no_arg_shows_usage(self) -> None:
         """Bare `/goal max-iterations` shows goal-branded usage without setting."""
@@ -4876,7 +4876,7 @@ class TestGoalCommand:
 
             setter.assert_not_awaited()
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "Usage: /goal max-iterations <1-20|clear>" in rendered
+            assert "Usage: /goal max-iterations <N|clear>" in rendered
 
     async def test_goal_max_iterations_alias_clears_cap(self) -> None:
         """`/goal max-iterations clear` should route to the setter with `None`."""
@@ -6765,21 +6765,23 @@ class TestRubricCommand:
         ("raw", "expected", "err_substr"),
         [
             ("10", 10, None),
+            ("21", 21, None),
+            ("1", 1, None),
             ("clear", None, None),
             ("default", None, None),
-            ("0", None, "between 1 and 20"),
-            ("21", None, "between 1 and 20"),
-            ("many", None, "whole number"),
+            ("0", None, "positive whole number"),
+            ("-5", None, "positive whole number"),
+            ("many", None, "clear' to reset"),
         ],
     )
     def test_parse_rubric_max_iterations(
         self, raw: str, expected: int | None, err_substr: str | None
     ) -> None:
-        """`/rubric max-iterations` accepts bounded ints or clearing.
+        """`/rubric max-iterations` accepts positive ints or clearing.
 
         `err_substr` is `None` for accepted input and a substring of the
         expected message when the input is rejected, so parse errors and
-        out-of-range errors stay distinguishable to the user.
+        non-positive errors stay distinguishable to the user.
         """
         value, error = _parse_rubric_max_iterations(raw)
 
@@ -6800,28 +6802,30 @@ class TestRubricCommand:
             app._server_proc = None
             app._server_kwargs = {}
 
-            await app._handle_command("/rubric max-iterations 10")
+            await app._handle_command("/rubric max-iterations 21")
             await pilot.pause()
 
-            assert app._rubric_max_iterations == 10
-            assert app._server_kwargs["rubric_max_iterations"] == 10
+            assert app._rubric_max_iterations == 21
+            assert app._server_kwargs["rubric_max_iterations"] == 21
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "Rubric max iterations set to 10" in rendered
+            assert "Rubric max iterations set to 21" in rendered
 
-    async def test_rubric_max_iterations_command_rejects_invalid_value(self) -> None:
-        """Invalid max-iteration values should not mutate app state."""
+    async def test_rubric_max_iterations_command_rejects_non_positive(
+        self,
+    ) -> None:
+        """Non-positive max-iteration values should not mutate app state."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
             app._server_kwargs = {}
 
-            await app._handle_command("/rubric max-iterations 21")
+            await app._handle_command("/rubric max-iterations 0")
             await pilot.pause()
 
             assert app._rubric_max_iterations is None
             assert "rubric_max_iterations" not in app._server_kwargs
             rendered = "\n".join(str(w._content) for w in app.query(ErrorMessage))
-            assert "between 1 and 20" in rendered
+            assert "positive whole number" in rendered
 
     async def test_set_rubric_max_iterations_restarts_owned_server(self) -> None:
         """Changing the cap should update server env and respawn the graph."""

@@ -6891,6 +6891,12 @@ class TestRubricCommand:
 
             assert app._rubric_model == "anthropic:claude-sonnet-4-6"
             assert app._server_kwargs["rubric_model"] == "anthropic:claude-sonnet-4-6"
+            # The failed forward staging must be re-staged back to the previous
+            # model so a later restart cannot resurrect the rolled-back value.
+            assert app._server_proc.update_env.call_count == 2
+            assert app._server_proc.update_env.call_args_list[-1].kwargs == {
+                "DEEPAGENTS_CODE_SERVER_RUBRIC_MODEL": "anthropic:claude-sonnet-4-6",
+            }
 
     async def test_set_rubric_model_sets_before_owned_server_starts(self) -> None:
         """With owned server config, the grader model is staged and confirmed."""
@@ -13409,6 +13415,29 @@ class TestRestartServerForAgentSwap:
         failures = [m for m in posted if isinstance(m, DeepAgentsApp.ServerStartFailed)]
         assert len(failures) == 1
         assert failures[0].error is boom
+
+    async def test_failure_restages_previous_assistant_id(self) -> None:
+        """A failed swap re-stages the previous assistant_id env override.
+
+        Otherwise the failed target stays staged in the server's one-shot env
+        overrides and a later, unrelated restart would silently resurrect it.
+        """
+        app, server_proc = self._make_app()
+        server_proc.restart = AsyncMock(side_effect=RuntimeError("boom"))
+        posted: list[object] = []
+        with patch.object(app, "post_message", side_effect=posted.append):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._restart_server_for_agent_swap("researcher")
+
+        # Forward staging (researcher) then rollback re-staging (coder).
+        assert server_proc.update_env.call_count == 2
+        assert server_proc.update_env.call_args_list[0].kwargs == {
+            "DEEPAGENTS_CODE_SERVER_ASSISTANT_ID": "researcher",
+        }
+        assert server_proc.update_env.call_args_list[-1].kwargs == {
+            "DEEPAGENTS_CODE_SERVER_ASSISTANT_ID": "coder",
+        }
 
 
 class TestResolveResumeThread:

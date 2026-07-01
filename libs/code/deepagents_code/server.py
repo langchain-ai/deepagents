@@ -504,7 +504,13 @@ class ServerProcess:
 
         cmd = _build_server_cmd(config_path, host=self.host, port=self.port)
         env = _build_server_env()
+        # Persisted overrides are defaults; a one-shot override staged via
+        # `update_env()` for THIS restart must win over them. `_env_overrides`
+        # is already reflected in the `os.environ` copy above (applied by
+        # `_scoped_env_overrides`), but persisted values would otherwise shadow
+        # a freshly staged value, so re-apply the one-shot set last.
         env.update(self._persistent_env_overrides)
+        env.update(self._env_overrides)
 
         logger.info("Starting langgraph dev server: %s", " ".join(cmd))
         self._log_file = tempfile.NamedTemporaryFile(  # noqa: SIM115

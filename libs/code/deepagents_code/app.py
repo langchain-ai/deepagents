@@ -8990,6 +8990,13 @@ class DeepAgentsApp(App):
                 self._rubric_model = previous
                 if self._server_kwargs is not None:
                     self._server_kwargs["rubric_model"] = previous
+                # A failed restart keeps the new value staged in the server's
+                # one-shot env overrides (retained for retry). Re-stage
+                # `previous` so a later restart cannot resurrect the model this
+                # command just rolled back.
+                self._server_proc.update_env(
+                    **{f"{SERVER_ENV_PREFIX}RUBRIC_MODEL": previous or ""},
+                )
                 return
 
         if display:
@@ -12531,6 +12538,13 @@ class DeepAgentsApp(App):
                 self._default_assistant_id = previous_default_agent
                 if self._server_kwargs is not None:
                     self._server_kwargs["assistant_id"] = previous_agent
+                # A failed restart keeps `agent_name` staged in the server's
+                # one-shot env overrides (retained for retry). Re-stage the
+                # previous agent so a later restart cannot resurrect the swap
+                # target this handler just rolled back.
+                server_proc.update_env(
+                    **{f"{SERVER_ENV_PREFIX}ASSISTANT_ID": previous_agent or ""},
+                )
                 self._agent = None
                 self._connecting = False
                 self._reconnecting = False

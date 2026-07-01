@@ -180,8 +180,8 @@ COMMANDS: tuple[SlashCommand, ...] = (
         name="/rubric",
         description="Set explicit acceptance criteria for rubric grading",
         bypass_tier=BypassTier.IMMEDIATE_UI,
-        hidden_keywords="criteria acceptance grader grading evaluation",
-        argument_hint="[set|next|file|show|clear|model]",
+        hidden_keywords="criteria acceptance grader grading evaluation iterations",
+        argument_hint="[set|next|file|show|clear|model|max-iterations]",
         aliases=("/criteria",),
     ),
     SlashCommand(

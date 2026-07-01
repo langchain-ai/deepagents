@@ -49,6 +49,7 @@ from deepagents_code.app import (
     _build_whats_new_message,
     _display_model_label,
     _extra_is_ready,
+    _parse_rubric_max_iterations,
     _ThreadHistoryPayload,
     _warn_discarded_goal_channels,
 )
@@ -6548,6 +6549,248 @@ class TestRubricCommand:
             errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
             assert "is empty" in errors
             assert app._active_rubric is None
+
+    @pytest.mark.parametrize(
+        ("raw", "expected", "err_substr"),
+        [
+            ("10", 10, None),
+            ("clear", None, None),
+            ("default", None, None),
+            ("0", None, "between 1 and 20"),
+            ("21", None, "between 1 and 20"),
+            ("many", None, "Usage:"),
+        ],
+    )
+    def test_parse_rubric_max_iterations(
+        self, raw: str, expected: int | None, err_substr: str | None
+    ) -> None:
+        """`/rubric max-iterations` accepts bounded ints or clearing.
+
+        `err_substr` is `None` for accepted input and a substring of the
+        expected message when the input is rejected, so parse errors and
+        out-of-range errors stay distinguishable to the user.
+        """
+        value, error = _parse_rubric_max_iterations(raw)
+
+        assert value == expected
+        if err_substr is None:
+            assert error is None
+        else:
+            assert error is not None
+            assert err_substr in error
+
+    async def test_rubric_max_iterations_command_sets_before_owned_server_starts(
+        self,
+    ) -> None:
+        """The TUI command should stage the cap in owned server kwargs."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = None
+            app._server_kwargs = {}
+
+            await app._handle_command("/rubric max-iterations 10")
+            await pilot.pause()
+
+            assert app._rubric_max_iterations == 10
+            assert app._server_kwargs["rubric_max_iterations"] == 10
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Rubric max iterations set to 10" in rendered
+
+    async def test_rubric_max_iterations_command_rejects_invalid_value(self) -> None:
+        """Invalid max-iteration values should not mutate app state."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {}
+
+            await app._handle_command("/rubric max-iterations 21")
+            await pilot.pause()
+
+            assert app._rubric_max_iterations is None
+            assert "rubric_max_iterations" not in app._server_kwargs
+            rendered = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "between 1 and 20" in rendered
+
+    async def test_set_rubric_max_iterations_restarts_owned_server(self) -> None:
+        """Changing the cap should update server env and respawn the graph."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            with patch.object(
+                app,
+                "_respawn_server",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as respawn:
+                await app._set_rubric_max_iterations(12)
+            await pilot.pause()
+
+            assert app._rubric_max_iterations == 12
+            assert app._server_kwargs["rubric_max_iterations"] == 12
+            app._server_proc.update_env.assert_called_once_with(
+                DEEPAGENTS_CODE_SERVER_RUBRIC_MAX_ITERATIONS="12",
+            )
+            app._server_proc.persist_env.assert_called_once_with(
+                DEEPAGENTS_CODE_SERVER_RUBRIC_MAX_ITERATIONS="12",
+            )
+            assert respawn.await_count == 1
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Rubric max iterations set to 12" in rendered
+
+    async def test_set_rubric_max_iterations_rolls_back_on_failed_respawn(self) -> None:
+        """A failed respawn should restore the previous cap."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._rubric_max_iterations = 10
+            app._server_kwargs = {"rubric_max_iterations": 10}
+            app._server_proc = MagicMock()
+
+            with patch.object(
+                app,
+                "_respawn_server",
+                new_callable=AsyncMock,
+                return_value=False,
+            ):
+                await app._set_rubric_max_iterations(12)
+
+            assert app._rubric_max_iterations == 10
+            assert app._server_kwargs["rubric_max_iterations"] == 10
+            app._server_proc.persist_env.assert_not_called()
+            # The failed forward staging (12) must be re-staged back to the
+            # previous value (10) so a later restart cannot resurrect it.
+            assert app._server_proc.update_env.call_count == 2
+            assert app._server_proc.update_env.call_args_list[-1].kwargs == {
+                "DEEPAGENTS_CODE_SERVER_RUBRIC_MAX_ITERATIONS": "10",
+            }
+
+    async def test_set_rubric_max_iterations_defers_while_agent_running(self) -> None:
+        """A cap change during a run is deferred, not applied immediately."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            app._server_kwargs = {}
+
+            with patch.object(app, "_defer_action") as defer:
+                await app._set_rubric_max_iterations(10)
+
+            defer.assert_called_once()
+            deferred = defer.call_args.args[0]
+            assert deferred.kind == "rubric_max_iterations_switch"
+            # The cap is untouched until the deferred action runs.
+            assert app._rubric_max_iterations is None
+
+    async def test_set_rubric_max_iterations_noop_when_value_matches(self) -> None:
+        """Re-issuing the current cap should not respawn the server."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._rubric_max_iterations = 10
+            app._server_kwargs = {"rubric_max_iterations": 10}
+            app._server_proc = MagicMock()
+
+            with patch.object(
+                app, "_respawn_server", new_callable=AsyncMock
+            ) as respawn:
+                await app._set_rubric_max_iterations(10)
+            await pilot.pause()
+
+            respawn.assert_not_awaited()
+            app._server_proc.update_env.assert_not_called()
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "already set to 10" in rendered
+
+    async def test_set_rubric_max_iterations_noop_when_already_default(self) -> None:
+        """Clearing an already-default cap should not respawn the server."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {}
+            app._server_proc = MagicMock()
+
+            with patch.object(
+                app, "_respawn_server", new_callable=AsyncMock
+            ) as respawn:
+                await app._set_rubric_max_iterations(None)
+            await pilot.pause()
+
+            respawn.assert_not_awaited()
+            app._server_proc.update_env.assert_not_called()
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "already use the SDK default" in rendered
+
+    async def test_rubric_max_iterations_command_clears_owned_server(self) -> None:
+        """`/rubric max-iterations clear` resets the cap to the SDK default."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._rubric_max_iterations = 10
+            app._server_kwargs = {"rubric_max_iterations": 10}
+            app._server_proc = MagicMock()
+
+            with patch.object(
+                app,
+                "_respawn_server",
+                new_callable=AsyncMock,
+                return_value=True,
+            ):
+                await app._handle_command("/rubric max-iterations clear")
+            await pilot.pause()
+
+            assert app._rubric_max_iterations is None
+            assert app._server_kwargs["rubric_max_iterations"] is None
+            app._server_proc.update_env.assert_called_once_with(
+                DEEPAGENTS_CODE_SERVER_RUBRIC_MAX_ITERATIONS="",
+            )
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "cleared; using the SDK default" in rendered
+
+    async def test_rubric_max_iterations_shown_in_state_and_usage(self) -> None:
+        """A set cap should surface in `/rubric show` and bare `/rubric`."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._rubric_max_iterations = 7
+
+            await app._handle_command("/rubric show")
+            await app._handle_command("/rubric")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Rubric max iterations: 7" in rendered
+
+    async def test_rubric_state_reports_sdk_default_when_cap_unset(self) -> None:
+        """`/rubric show` labels an unset cap as the SDK default."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._active_rubric = "tests pass"
+
+            await app._handle_command("/rubric show")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Rubric max iterations: SDK default" in rendered
+
+    async def test_set_rubric_max_iterations_rejects_without_owned_server(self) -> None:
+        """External graph sessions cannot change construction-time rubric caps."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = None
+            app._server_kwargs = None
+
+            await app._set_rubric_max_iterations(10)
+            await pilot.pause()
+
+            assert app._rubric_max_iterations is None
+            rendered = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "does not own a restartable server" in rendered
 
     async def test_rubric_model_bare_opens_grader_model_selector(self) -> None:
         """Bare `/rubric model` should open the grader-model picker."""

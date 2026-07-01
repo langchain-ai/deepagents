@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 from urllib.parse import quote
 
+from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code.config import _INHERITED_PYTHONPATH_ENV
 
 if TYPE_CHECKING:
@@ -406,6 +407,7 @@ class ServerProcess:
         self._temp_dir: tempfile.TemporaryDirectory | None = None
         self._log_file: tempfile.NamedTemporaryFile | None = None  # ty: ignore[invalid-type-form]
         self._env_overrides: dict[str, str] = {}
+        self._persistent_env_overrides: dict[str, str] = {}
 
     @property
     def url(self) -> str:
@@ -502,6 +504,7 @@ class ServerProcess:
 
         cmd = _build_server_cmd(config_path, host=self.host, port=self.port)
         env = _build_server_env()
+        env.update(self._persistent_env_overrides)
 
         logger.info("Starting langgraph dev server: %s", " ".join(cmd))
         self._log_file = tempfile.NamedTemporaryFile(  # noqa: SIM115
@@ -692,6 +695,25 @@ class ServerProcess:
                 (e.g., `DEEPAGENTS_CODE_SERVER_MODEL="anthropic:claude-sonnet-4-6"`).
         """
         self._env_overrides.update(overrides)
+
+    def persist_env(self, **overrides: str) -> None:
+        """Persist env var overrides for every future subprocess start.
+
+        Args:
+            **overrides: Key/value env var pairs that should be passed to all
+                future server subprocesses.
+
+        Raises:
+            ValueError: If an override is not an app-owned server env var.
+        """
+        invalid = [key for key in overrides if not key.startswith(SERVER_ENV_PREFIX)]
+        if invalid:
+            msg = (
+                "persistent server env overrides must use the "
+                f"{SERVER_ENV_PREFIX!r} prefix"
+            )
+            raise ValueError(msg)
+        self._persistent_env_overrides.update(overrides)
 
     async def restart(self, *, timeout: float = _HEALTH_TIMEOUT) -> None:  # noqa: ASYNC109
         """Restart the server process, reusing the existing config directory.

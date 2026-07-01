@@ -45,6 +45,7 @@ from langchain.agents.middleware.types import (
     ExtendedModelResponse,
     ModelResponse,
     PrivateStateAttr,
+    hook_config,
 )
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.config import get_config
@@ -790,25 +791,61 @@ _PLAN_FIRST_NUDGE = (
 )
 
 
+# Path the plan-first message tells the model to write its plan to. The finalize gate
+# checks this exact path on disk (real-fs harbor backend; a virtual state/store backend
+# would not surface it, same real-fs assumption as the write-overwrite redirect).
+_PLAN_FILE = "/tmp/plan.md"  # noqa: S108  # agreed plan path inside the sandboxed eval container
+
+# Finalize-gate messages (injected as HumanMessages when the model tries to finish).
+_PLAN_MISSING_NUDGE = (
+    "STOP — you are about to finish, but you never wrote your plan to /tmp/plan.md. That "
+    "was step one and it is not optional. Write it now with write_file — the ordered "
+    "steps, the exact interface contract (identifiers copied verbatim), and how you will "
+    "verify by running — then carry it out. Do not finish without it."
+)
+_PLAN_ADHERENCE_NUDGE = (
+    "STOP — do not finish yet. Re-read /tmp/plan.md and check your work against it, line "
+    "by line. For EVERY verification step and every case, mode, or configuration you "
+    "planned to test, confirm you ACTUALLY ran it and saw it pass — not that you meant "
+    "to, that you did. If you planned to test something (a parameter value, a "
+    "multi-worker or otherwise non-trivial configuration, an edge case) and skipped it "
+    "or only ran the easy/degenerate version, that is unfinished work: run it now and "
+    "fix whatever it surfaces. You are done only when every check your own plan lists "
+    "has actually run and passed."
+)
+
+
 class PlanFirstState(AgentState):
     """State schema for ``PlanFirstMiddleware``."""
 
-    # `PrivateStateAttr` keeps the once-flag out of the input/output schema while it
-    # persists internally across turns (default last-value reducer).
+    # `PrivateStateAttr` keeps these flags out of the input/output schema while they
+    # persist internally across turns (default last-value reducer). Each gates a
+    # one-time injection so nothing loops.
     plan_injected: NotRequired[Annotated[bool, PrivateStateAttr]]
+    plan_missing_nudged: NotRequired[Annotated[bool, PrivateStateAttr]]
+    plan_adherence_nudged: NotRequired[Annotated[bool, PrivateStateAttr]]
 
 
 class PlanFirstMiddleware(AgentMiddleware):
-    """Inject a one-time plan-first reminder as a `HumanMessage` on the first turn.
+    """Own the plan lifecycle: write a plan first, then hold the model to it.
 
-    Front-loads "STOP and write a plan before implementing" as an in-conversation
-    `HumanMessage` before the first model action. The plan's implementation contract
-    carries the spec-fidelity discipline (reproduce every identifier verbatim) as a
-    strict subset of planning — Nemotron under-weights standing system-prompt guidance
-    (that rule was ignored even when stated prominently) and did not act on it when
-    appended to `write_file`/`edit_file`/`execute` results, so it is delivered here.
-    Because the plan doubles as the task list, the profile drops the separate to-do
-    tool. Fires once per run via a `PrivateStateAttr`.
+    Two phases, on the correct hooks:
+
+    - `before_agent`: front-load "STOP and write a plan to /tmp/plan.md before
+      implementing" as an in-conversation `HumanMessage`, once at the start (the plan's
+      implementation contract carries the spec-fidelity discipline as a strict subset of
+      planning). Delivered as a message because Nemotron under-weights standing
+      system-prompt guidance. The plan file doubles as the task list, so the profile
+      drops the separate to-do tool. A `PrivateStateAttr` flag keeps it to once per
+      thread (guards against re-injecting when the harness resumes the thread).
+    - `after_model` (finalize gate): when the model tries to finish (an `AIMessage`
+      with no tool calls and non-empty content), reconcile against the plan before
+      letting it stop. If `/tmp/plan.md` does not exist, it never planned — send it back
+      to write it. If it exists, demand it confirm every verification step / case it
+      planned was actually run and passed — the plan-vs-execution gap (e.g. planning to
+      test all configs but only running the degenerate one). Each branch fires at most
+      once (loop-safe). This is the plan-anchored successor to a generic finalize gate:
+      the check is against the model's own written checklist, not a vague "prove it".
     """
 
     name = "PlanFirstMiddleware"
@@ -822,21 +859,75 @@ class PlanFirstMiddleware(AgentMiddleware):
             "plan_injected": True,
         }
 
-    def before_model(
+    @staticmethod
+    def _is_finalizing(message: AIMessage) -> bool:
+        """True if `message` is a finish attempt: no tool calls, non-empty content."""
+        if message.tool_calls:
+            return False
+        content = message.content
+        if isinstance(content, str):
+            return bool(content.strip())
+        if isinstance(content, list):
+            return any(isinstance(p, dict) and str(p.get("text", "")).strip() for p in content)
+        return False
+
+    def _finalize_gate(self, state: PlanFirstState) -> dict[str, Any] | None:
+        messages = state.get("messages") or []
+        if not messages:
+            return None
+        last = messages[-1]
+        if not isinstance(last, AIMessage) or not self._is_finalizing(last):
+            return None
+        # About to finish. Ensure the plan file exists, then that it was carried out.
+        if not Path(_PLAN_FILE).is_file():
+            if state.get("plan_missing_nudged"):
+                return None
+            return {
+                "messages": [HumanMessage(content=_PLAN_MISSING_NUDGE)],
+                "jump_to": "model",
+                "plan_missing_nudged": True,
+            }
+        if state.get("plan_adherence_nudged"):
+            return None
+        return {
+            "messages": [HumanMessage(content=_PLAN_ADHERENCE_NUDGE)],
+            "jump_to": "model",
+            "plan_adherence_nudged": True,
+        }
+
+    def before_agent(
         self,
         state: PlanFirstState,
         runtime: Runtime[Any],  # noqa: ARG002  (part of the hook signature)
     ) -> dict[str, Any]:
-        """Inject the plan-first reminder on the first turn only."""
+        """Inject the plan-first reminder once, at the start of the run."""
         return self._maybe_inject(state)
 
-    async def abefore_model(
+    async def abefore_agent(
         self,
         state: PlanFirstState,
         runtime: Runtime[Any],  # noqa: ARG002  (part of the hook signature)
     ) -> dict[str, Any]:
-        """Async variant of ``before_model``."""
+        """Async variant of ``before_agent``."""
         return self._maybe_inject(state)
+
+    @hook_config(can_jump_to=["model"])
+    def after_model(
+        self,
+        state: PlanFirstState,
+        runtime: Runtime[Any],  # noqa: ARG002  (part of the hook signature)
+    ) -> dict[str, Any] | None:
+        """Reconcile against the plan before allowing the run to finish."""
+        return self._finalize_gate(state)
+
+    @hook_config(can_jump_to=["model"])
+    async def aafter_model(
+        self,
+        state: PlanFirstState,
+        runtime: Runtime[Any],  # noqa: ARG002  (part of the hook signature)
+    ) -> dict[str, Any] | None:
+        """Async variant of ``after_model``."""
+        return self._finalize_gate(state)
 
 
 def _build_extra_middleware() -> list[AgentMiddleware]:

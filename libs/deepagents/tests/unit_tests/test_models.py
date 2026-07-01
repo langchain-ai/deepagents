@@ -1259,7 +1259,7 @@ class TestNemotronUltraProfile:
         )
 
         mw = PlanFirstMiddleware()
-        first = mw.before_model({}, None)  # type: ignore[arg-type]
+        first = mw.before_agent({}, None)  # type: ignore[arg-type]
         assert first["plan_injected"] is True
         content = first["messages"][0].content
         # Next action is a write_file to a plan FILE (durable against summarization);
@@ -1273,8 +1273,57 @@ class TestNemotronUltraProfile:
         assert "RUNNING" in content
         # Verification must cover every enumerated case, not just the default path.
         assert "EVERY case" in content
-        again = mw.before_model({"plan_injected": True}, None)  # type: ignore[arg-type]
+        again = mw.before_agent({"plan_injected": True}, None)  # type: ignore[arg-type]
         assert "messages" not in again
+
+    def test_plan_first_gate_blocks_finish_when_plan_file_missing(self, monkeypatch, tmp_path) -> None:
+        """On a finish attempt with no plan file on disk, send the model back to write it."""
+        from langchain_core.messages import AIMessage, HumanMessage  # noqa: PLC0415
+
+        from deepagents.profiles.harness import _nvidia_nemotron_3_ultra as mod  # noqa: PLC0415
+
+        monkeypatch.setattr(mod, "_PLAN_FILE", str(tmp_path / "nope.md"))  # does not exist
+        mw = mod.PlanFirstMiddleware()
+        state = {"messages": [HumanMessage("task"), AIMessage("All done, the solution is complete.")]}
+        out = mw.after_model(state, None)
+        assert out is not None
+        assert out["jump_to"] == "model"
+        assert out["plan_missing_nudged"] is True
+        assert "never wrote your plan" in out["messages"][0].content
+        # Already nudged about the missing plan -> no re-fire (loop-safe).
+        assert mw.after_model({**state, "plan_missing_nudged": True}, None) is None
+
+    def test_plan_first_gate_checks_adherence_when_plan_file_exists(self, monkeypatch, tmp_path) -> None:
+        """On a finish attempt with the plan on disk, demand the planned checks were run."""
+        from langchain_core.messages import AIMessage, HumanMessage  # noqa: PLC0415
+
+        from deepagents.profiles.harness import _nvidia_nemotron_3_ultra as mod  # noqa: PLC0415
+
+        plan = tmp_path / "plan.md"
+        plan.write_text("steps + contract + verification")
+        monkeypatch.setattr(mod, "_PLAN_FILE", str(plan))
+        mw = mod.PlanFirstMiddleware()
+        state = {"messages": [HumanMessage("task"), AIMessage("Done.")]}
+        out = mw.after_model(state, None)
+        assert out["jump_to"] == "model"
+        assert out["plan_adherence_nudged"] is True
+        assert "Re-read /tmp/plan.md" in out["messages"][0].content
+        # Fires once.
+        assert mw.after_model({**state, "plan_adherence_nudged": True}, None) is None
+
+    def test_plan_first_gate_ignores_non_finalization(self, monkeypatch, tmp_path) -> None:
+        """A tool-call turn (not a finish attempt) is left alone."""
+        from langchain_core.messages import AIMessage, HumanMessage  # noqa: PLC0415
+
+        from deepagents.profiles.harness import _nvidia_nemotron_3_ultra as mod  # noqa: PLC0415
+
+        monkeypatch.setattr(mod, "_PLAN_FILE", str(tmp_path / "nope.md"))
+        mw = mod.PlanFirstMiddleware()
+        ai = AIMessage(
+            content="",
+            tool_calls=[{"name": "execute", "args": {"command": "ls"}, "id": "1", "type": "tool_call"}],
+        )
+        assert mw.after_model({"messages": [HumanMessage("t"), ai]}, None) is None
 
     def test_nemotron_ultra_does_not_apply_to_other_nvidia_models(self) -> None:
         """Per-model keys keep other NVIDIA-catalog models unchanged."""

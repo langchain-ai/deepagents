@@ -16,6 +16,7 @@ import uuid
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
+from langgraph.errors import GraphInterrupt
 from quickjs_rs import (
     UNDEFINED,
     ConcurrentEvalError,
@@ -633,6 +634,8 @@ class _ThreadREPL:
                         payload,
                         state=state,
                     )
+                except GraphInterrupt:
+                    raise
                 except Exception as e:
                     # Subagent dispatches are part of the eval language, not
                     # PTC calls. Surface their validation/runtime failures as

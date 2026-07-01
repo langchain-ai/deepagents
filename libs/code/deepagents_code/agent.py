@@ -122,10 +122,14 @@ def _validate_rubric_grader_read_path(file_path: str) -> str | None:
 
 def _create_rubric_grader_tools(backend: CompositeBackend) -> list[BaseTool]:
     filesystem = FilesystemMiddleware(backend=backend)
-    sdk_read_file = cast(
-        "StructuredTool",
-        next(tool for tool in filesystem.tools if tool.name == "read_file"),
-    )
+    sdk_read_file: StructuredTool | None = None
+    for candidate in filesystem.tools:
+        if candidate.name == "read_file":
+            sdk_read_file = cast("StructuredTool", candidate)
+            break
+    if sdk_read_file is None:
+        msg = "SDK read_file tool is unavailable."
+        raise RuntimeError(msg)
 
     sdk_read_file_func = sdk_read_file.func
     if sdk_read_file_func is None:

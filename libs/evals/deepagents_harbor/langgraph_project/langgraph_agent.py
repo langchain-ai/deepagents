@@ -226,6 +226,13 @@ def make_graph(config: dict[str, object] | None = None) -> object:
             system_prompt=_SYSTEM_PROMPT,
             interactive=False,
             auto_approve=True,
+            # No human is available in this headless eval, so `ask_user` can only
+            # ever raise GraphInterrupt and kill the trial with empty output
+            # (observed on Nemotron: it asks install-method permission / requests a
+            # file it could read itself). Remove the tool entirely; a stray call to
+            # a now-absent tool degrades to a recoverable unknown-tool error rather
+            # than a run-ending interrupt.
+            enable_ask_user=False,
             enable_memory=False,
             enable_skills=False,
             enable_shell=True,

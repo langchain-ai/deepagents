@@ -111,6 +111,9 @@ def test_make_graph_builds_headless_local_deepagent(
     assert captured_create[0]["enable_memory"] is False
     assert captured_create[0]["enable_skills"] is False
     assert captured_create[0]["enable_shell"] is True
+    # ask_user is fatal in this headless eval: a call raises GraphInterrupt with
+    # no human to answer, killing the trial with empty output. It must be off.
+    assert captured_create[0]["enable_ask_user"] is False
     # Finalize + anti-ramble are no longer create_cli_agent flags; they are
     # attached via the GLM-5.2 harness profile, so they must not be passed here.
     assert "enable_finalize" not in captured_create[0]

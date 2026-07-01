@@ -111,7 +111,7 @@ See https://docs.fireworks.ai/guides/reasoning.
 """
 
 _REASONING_KEYS: frozenset[str] = frozenset(
-    {"effort", "reasoning", "thinking", "thinking_level"}
+    {"effort", "reasoning", "reasoning_effort", "thinking", "thinking_level"}
 )
 """Runtime config keys that may already carry provider reasoning settings."""
 

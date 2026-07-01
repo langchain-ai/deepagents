@@ -175,6 +175,7 @@ async def test_effort_command_clear_removes_only_effort_params() -> None:
     app._model_params_override = {
         "temperature": 0.2,
         "reasoning": {"effort": "high", "summary": "auto"},
+        "reasoning_effort": "high",
     }
     settings.model_provider = "openai"
     settings.model_name = "gpt-5.5"
@@ -371,6 +372,13 @@ def test_without_effort_clears_google_thinking_level() -> None:
     effort_params = model_params_for_effort("google_genai:gemini-3.5-flash", "low")
     assert effort_params is not None
     assert without_effort_model_params(effort_params) is None
+
+
+def test_without_effort_clears_top_level_openai_reasoning_effort() -> None:
+    cleaned = without_effort_model_params(
+        {"reasoning_effort": "high", "temperature": 0.1}
+    )
+    assert cleaned == {"temperature": 0.1}
 
 
 def test_without_effort_preserves_non_dict_model_kwargs() -> None:

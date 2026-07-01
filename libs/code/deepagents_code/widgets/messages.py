@@ -967,6 +967,14 @@ class ToolCallMessage(Vertical):
     Inline rendering uses `result: value` rather than a standalone labeled block.
     """
 
+    _RUNNING_TIMER_THRESHOLD_SECS = 10
+    """Seconds a tool must run before the elapsed-time counter appears.
+
+    Short tool calls finish well under this threshold, so the timer would only
+    flicker on briefly; suppressing it until the tool is genuinely slow keeps
+    the "Running..." row quiet for the common case.
+    """
+
     def __init__(
         self,
         tool_name: str,
@@ -1191,7 +1199,8 @@ class ToolCallMessage(Vertical):
         elapsed = ""
         if self._start_time is not None:
             elapsed_secs = int(time() - self._start_time)
-            elapsed = f" ({format_duration(elapsed_secs)})"
+            if elapsed_secs >= self._RUNNING_TIMER_THRESHOLD_SECS:
+                elapsed = f" ({format_duration(elapsed_secs)})"
 
         text = f"{frame} Running...{elapsed}"
         self._status_widget.update(

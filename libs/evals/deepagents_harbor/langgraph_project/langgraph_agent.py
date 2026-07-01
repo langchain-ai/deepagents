@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -12,6 +13,11 @@ from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
 from deepagents_code.agent import create_cli_agent
 from langchain.chat_models import init_chat_model
+
+# This module is loaded by Harbor as a top-level langgraph entrypoint; make sibling
+# modules in the project directory importable.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _text_only_media_middleware import TextOnlyMediaMiddleware  # noqa: E402
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -53,6 +59,27 @@ current directory.
 
 Prefer non-interactive command variants. Do not run commands that wait for
 human input.
+
+This model is text-only. Never read an image, video, audio, or other binary file into
+the conversation (for example, do not use read_file on a .png/.jpg/.mp4/.wav) — passing
+binary/image content to the model will fail. To work with such files, inspect them
+programmatically instead: write and run code (e.g. Python with PIL/OpenCV/numpy, ffmpeg,
+tesseract/OCR) or use shell tools (`file`, `xxd`, `identify`), and reason from the
+program, data, or rendered output that produced them.
+
+Your solution is graded by automated programmatic tests, so correctness is checked
+mechanically — never by your own assertion that you are done. Before finishing, VERIFY:
+re-read the exact requirements (output file paths, formats, and expected values must
+match precisely), then run a concrete check that exercises your solution against the
+task's own inputs/examples — e.g. run your regex against the provided sample, execute
+your script and diff its output against what is required, or run the query and inspect
+the rows. Run this check the way the grader will: in a FRESH shell or new process (e.g.
+`bash -lc '...'`), not your current session, and make any required setup persistent
+(symlink the binary into a standard PATH directory, install it, or write a profile entry)
+rather than relying on an `export` that only lives in your current shell. If the check
+fails, fix it and re-verify — but if it still fails after two or three focused attempts,
+submit your best solution and stop; do not loop indefinitely re-verifying. Cover edge
+cases, not just the happy path.
 """
 
 
@@ -84,11 +111,16 @@ def _configurable(config: dict[str, object] | None) -> dict[str, object]:
 def _model_kwargs(configurable: dict[str, object]) -> dict[str, Any]:
     value = configurable.get("model_kwargs")
     if value is None:
-        return {}
-    if not isinstance(value, dict):
+        kwargs: dict[str, Any] = {}
+    elif not isinstance(value, dict):
         msg = "`configurable.model_kwargs` must be a dictionary"
         raise TypeError(msg)
-    return {str(key): item for key, item in value.items()}
+    else:
+        kwargs = {str(key): item for key, item in value.items()}
+    # Retry transient/rate-limit errors (e.g. Baseten 429 throttle) with backoff so a
+    # single 429 doesn't fatally crash the agent. Override via configurable.model_kwargs.
+    kwargs.setdefault("max_retries", 8)
+    return kwargs
 
 
 def _model_name(configurable: dict[str, object]) -> str:
@@ -143,6 +175,7 @@ def make_graph(config: dict[str, object] | None = None) -> object:
             enable_memory=False,
             enable_skills=False,
             enable_shell=True,
+            extra_middleware=[TextOnlyMediaMiddleware()],
             cwd=_workdir(configurable),
         )
     return graph

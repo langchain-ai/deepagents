@@ -315,6 +315,9 @@ jobs:
       - name: "📦 Install Dependencies"
         run: uv sync --group test --locked
 
+      - name: "🩹 Patch Harbor venv-setup guard (branch-local; recovers ~17 setup-crash tasks — see IDEAS Iter-VENV)"
+        run: python3 ../../.github/scripts/patch_harbor_venv.py
+
       - name: "🔇 Suppress Harbor first-run tips"
         run: |
           mkdir -p ~/.cache/harbor

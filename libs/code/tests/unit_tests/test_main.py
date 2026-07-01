@@ -1326,6 +1326,7 @@ class TestRunTextualCliAsyncMcp:
                 "agent",
                 thread_id="thread-123",
                 model_name="openai:gpt-5.5",
+                initial_goal="add refresh tokens",
             )
 
         assert result == app_result
@@ -1346,6 +1347,7 @@ class TestRunTextualCliAsyncMcp:
         assert captured_kwargs["model_kwargs"] is not None
         assert captured_kwargs["model_kwargs"]["model_spec"] == "openai:gpt-5.5"
         assert captured_kwargs["model_kwargs"]["extra_kwargs"] is None
+        assert captured_kwargs["initial_goal"] == "add refresh tokens"
 
     async def test_no_mcp_kwargs_when_disabled(self) -> None:
         """mcp_preload_kwargs should be None when no_mcp=True."""

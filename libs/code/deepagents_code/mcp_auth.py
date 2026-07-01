@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextlib
+import contextvars
 import hashlib
 import html
 import json
@@ -43,6 +44,7 @@ from mcp.shared.auth import (
     OAuthToken,
 )
 from pydantic import BaseModel, ConfigDict, ValidationError
+from typing_extensions import override
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -109,6 +111,47 @@ class McpServerSpec(TypedDict, total=False):
 
 
 logger = logging.getLogger(__name__)
+_SUPPRESS_EXPECTED_REAUTH_LOGS: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "suppress_expected_mcp_reauth_logs",
+    default=False,
+)
+
+
+_TOKEN_REFRESH_FAILED_PREFIX = "Token refresh failed: "  # noqa: S105  # log-message prefix, not a credential
+"""Prefix of the SDK's `Token refresh failed: <status>` warning (`oauth2.py`)."""
+
+_EXPECTED_REAUTH_REFRESH_STATUSES = frozenset({"400", "401", "403"})
+"""Refresh-endpoint statuses that mean the grant was rejected (token stale).
+
+The SDK logs `Token refresh failed: <status>` and clears tokens for *any*
+non-200 on the refresh endpoint. Only these statuses indicate the refresh
+token itself is expired/revoked — i.e. the expected re-auth cases our hint
+replaces. Transient failures (`429`, `5xx`, gateway timeouts) must stay
+visible so a provider outage isn't silently relabeled as "go re-login".
+"""
+
+
+class _ExpectedReauthLogFilter(logging.Filter):
+    """Drop SDK OAuth log records that are replaced by our reauth hint."""
+
+    @override
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Return whether the SDK OAuth log record should be emitted."""
+        if not _SUPPRESS_EXPECTED_REAUTH_LOGS.get():
+            return True
+        message = record.getMessage()
+        if message.startswith(_TOKEN_REFRESH_FAILED_PREFIX):
+            status = message.removeprefix(_TOKEN_REFRESH_FAILED_PREFIX)
+            if status in _EXPECTED_REAUTH_REFRESH_STATUSES:
+                return False
+        if message == "OAuth flow error" and record.exc_info is not None:
+            exc = record.exc_info[1]
+            if exc is not None and find_reauth_required(exc) is not None:
+                return False
+        return True
+
+
+logging.getLogger("mcp.client.auth.oauth2").addFilter(_ExpectedReauthLogFilter())
 
 _REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 """Matches `${VAR}` placeholders inside config strings for env-var substitution."""
@@ -723,7 +766,7 @@ class _LoopbackOAuthCallbackServer:
                     200,
                     _oauth_success_html(
                         "MCP authorization complete. "
-                        "This tab will close automatically.",
+                        "You can close this tab and return to your terminal.",
                     ),
                 )
             else:
@@ -767,7 +810,8 @@ class _LoopbackOAuthCallbackServer:
             handler,
             200,
             _oauth_success_html(
-                "MCP authorization complete. This tab will close automatically.",
+                "MCP authorization complete. "
+                "You can close this tab and return to your terminal.",
             ),
         )
 
@@ -817,12 +861,20 @@ def _oauth_result_html(
     escaped_heading = html.escape(heading)
     escaped = html.escape(message)
     # `window.close()` is only honored for tabs the script itself opened
-    # (browser policy), but for the common case where the auth flow was
-    # launched via `window.open` / `target=_blank` from another page, the
-    # tab closes cleanly. When the browser refuses, the user still sees the
-    # static success page and the message text remains accurate.
+    # (browser policy). The loopback flow launches the browser via
+    # `webbrowser.open`, so the callback tab was opened by the OS rather than
+    # by a script and the browser refuses to close it. Attempt the close for
+    # the rare script-opened case, then rewrite the message so it stays
+    # accurate when the tab stays open instead of promising it will vanish.
     auto_close = (
-        "<script>setTimeout(function(){window.close();},2000);</script>"
+        "<script>setTimeout(function(){"
+        "window.close();"
+        "setTimeout(function(){"
+        "var m=document.getElementById('oauth-message');"
+        "if(m){m.textContent="
+        "'You can close this tab and return to your terminal.';}"
+        "},500);"
+        "},1000);</script>"
         if status == "success"
         else ""
     )
@@ -844,7 +896,7 @@ def _oauth_result_html(
         "</style></head><body>"
         '<main class="panel">'
         f'<div class="mark" style="background:{background};color:{accent}">{mark}</div>'
-        f"<h1>{escaped_heading}</h1><p>{escaped}</p>"
+        f'<h1>{escaped_heading}</h1><p id="oauth-message">{escaped}</p>'
         "</main>"
         f"{auto_close}"
         "</body></html>"
@@ -1095,6 +1147,9 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self._suppress_expected_reauth_logs = bool(
+            kwargs.pop("suppress_expected_reauth_logs", False)
+        )
         super().__init__(*args, **kwargs)
         _strip_duplicate_client_id_under_basic_auth(self.context)
 
@@ -1245,6 +1300,9 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
         # `asend`/`aclose` (never `athrow`), so forwarding sent values and
         # closing the inner generator on `GeneratorExit` is sufficient — no
         # `athrow` forwarding needed.
+        token: contextvars.Token[bool] | None = None
+        if self._suppress_expected_reauth_logs:
+            token = _SUPPRESS_EXPECTED_REAUTH_LOGS.set(True)
         inner = super().async_auth_flow(request)
         try:
             # Prime with `anext()` (no response to send yet); thereafter every
@@ -1257,6 +1315,8 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
             return
         finally:
             await inner.aclose()
+            if token is not None:
+                _SUPPRESS_EXPECTED_REAUTH_LOGS.reset(token)
 
 
 def build_oauth_provider(
@@ -1347,6 +1407,7 @@ def build_oauth_provider(
         storage=storage,
         redirect_handler=redirect,
         callback_handler=callback,
+        suppress_expected_reauth_logs=not interactive,
     )
 
 

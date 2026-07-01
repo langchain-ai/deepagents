@@ -56,7 +56,7 @@ from deepagents_code._session_stats import (
     SpinnerStatus as SpinnerStatus,
     format_token_count as format_token_count,
 )
-from deepagents_code.config import build_stream_config
+from deepagents_code.config import build_stream_config, get_glyphs
 from deepagents_code.file_ops import FileOpTracker
 from deepagents_code.formatting import format_duration
 from deepagents_code.hooks import dispatch_hook
@@ -213,6 +213,66 @@ def _is_summarization_chunk(metadata: dict | None) -> bool:
     if metadata is None:
         return False
     return metadata.get("lc_source") == "summarization"
+
+
+def _format_rubric_event(data: dict[str, Any]) -> str | None:
+    """Format a rubric custom-stream event for the chat transcript.
+
+    Returns:
+        A user-visible message for rubric events, or `None` for custom-stream
+        events that are not rubric events.
+    """
+    glyphs = get_glyphs()
+    event_type = data.get("type")
+    if event_type == "rubric_evaluation_start":
+        iteration = data.get("iteration", 0)
+        show_iteration = data.get("show_iteration") is True
+        label = (
+            f" (iteration {iteration + 1})"
+            if show_iteration and isinstance(iteration, int)
+            else ""
+        )
+        return (
+            f"{glyphs.hourglass} Checking acceptance criteria{label}{glyphs.ellipsis}"
+        )
+    if event_type != "rubric_evaluation_end":
+        return None
+
+    result = data.get("result")
+    explanation = str(data.get("explanation") or "").strip()
+    if result is None:
+        return None
+    if result == "satisfied":
+        return f"{glyphs.checkmark} Acceptance criteria satisfied"
+    if result == "needs_revision":
+        lines = [
+            f"{glyphs.retry} Changes need revision"
+            + (f": {explanation}" if explanation else ""),
+        ]
+        for criterion in data.get("criteria", []):
+            if isinstance(criterion, dict) and criterion.get("passed") is False:
+                name = str(criterion.get("name", "criterion"))
+                gap = str(criterion.get("gap", "")).strip()
+                lines.append(f"  {glyphs.error} {name}" + (f" — {gap}" if gap else ""))
+        return "\n".join(lines)
+    if result == "max_iterations_reached":
+        return (
+            f"{glyphs.warning} Acceptance criteria not satisfied "
+            "(iteration limit reached)"
+        )
+    if result in {"failed", "grader_error"}:
+        label = "grader failed" if result == "failed" else "grader error"
+        return (
+            f"{glyphs.warning} Rubric "
+            + label
+            + (f": {explanation}" if explanation else "")
+        )
+    # A `rubric_evaluation_end` with an unrecognized result is still a terminal
+    # grading event; surface it rather than silently dropping it (e.g. if the
+    # SDK adds a new verdict the chat would otherwise go quiet mid-turn).
+    return f"{glyphs.warning} Rubric grading ended" + (
+        f": {explanation}" if explanation else ""
+    )
 
 
 class TextualUIAdapter:
@@ -412,6 +472,8 @@ async def execute_task_textual(
     *,
     sandbox_type: str | None = None,
     message_kwargs: dict[str, Any] | None = None,
+    rubric: str | None = None,
+    blocked_goal_retry_context: str | None = None,
     turn_stats: SessionStats | None = None,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
@@ -437,6 +499,11 @@ async def execute_task_textual(
         message_kwargs: Extra fields merged into the stream input message
             dict (e.g., `additional_kwargs` for persisting skill metadata
             in the checkpoint).
+        rubric: Acceptance criteria supplied to `RubricMiddleware` via graph
+            input state.
+        blocked_goal_retry_context: One-turn model context for retrying a
+            previously blocked goal. This is carried via runtime context so it
+            is not parsed for file mentions or checkpointed as human input.
         turn_stats: Pre-created `SessionStats` to accumulate into.
 
             When the caller holds a reference to the same object, stats are
@@ -504,7 +571,27 @@ async def execute_task_textual(
         message_content = final_input
 
     thread_id = session_state.thread_id
-    config = build_stream_config(thread_id, assistant_id, sandbox_type=sandbox_type)
+    # Advance the per-thread turn markers (coding-agent-v1 turn_id/turn_number)
+    # once per user prompt, before building the stream config. `session_state`
+    # is duck-typed (`Any`): the production `TextualSessionState` always has
+    # `advance_turn`, but lightweight callers/test doubles may not, so probe for
+    # it and degrade to no turn markers rather than raising.
+    advance_turn = getattr(session_state, "advance_turn", None)
+    if callable(advance_turn):
+        turn_id, turn_number = advance_turn()
+    else:
+        turn_id, turn_number = None, None
+    # `build_stream_config` does blocking git filesystem reads and may shell out
+    # to `git`; offload it so the Textual event loop stays responsive. Advancing
+    # the turn markers above is pure/cheap and stays on the loop.
+    config = await asyncio.to_thread(
+        build_stream_config,
+        thread_id,
+        assistant_id,
+        sandbox_type=sandbox_type,
+        turn_id=turn_id,
+        turn_number=turn_number,
+    )
 
     await dispatch_hook("session.start", {"thread_id": thread_id})
 
@@ -555,6 +642,8 @@ async def execute_task_textual(
     # `Command(update=...)` would be rebuilt with `goto=None` by the LangGraph
     # API server and crash `_control_branch` on a fresh thread.
     stream_input: dict | Command = {"messages": [user_msg]}
+    if rubric:
+        stream_input["rubric"] = rubric
 
     # Track summarization lifecycle so spinner status and notification stay in sync.
     summarization_in_progress = False
@@ -575,6 +664,11 @@ async def execute_task_textual(
             # direction, but the same store write also propagates turning it on.
             if context is None:
                 context = CLIContext()
+            context["thread_id"] = thread_id
+            if blocked_goal_retry_context is not None:
+                context["blocked_goal_retry_context"] = blocked_goal_retry_context
+            else:
+                context.pop("blocked_goal_retry_context", None)
             auto_approve = bool(session_state.auto_approve)
             context["auto_approve"] = auto_approve
             try:
@@ -634,6 +728,21 @@ async def execute_task_textual(
                 # nested custom events never reach the panel; forwarding must
                 # never raise into the stream loop.
                 if current_stream_mode == "custom":
+                    rubric_message = data if isinstance(data, dict) else None
+                    formatted_rubric_event = (
+                        _format_rubric_event(rubric_message) if rubric_message else None
+                    )
+                    if formatted_rubric_event is not None and is_main_agent:
+                        await adapter._mount_message(AppMessage(formatted_rubric_event))
+                        continue
+                    if formatted_rubric_event is not None:
+                        # Rubric events come from the main agent today; a
+                        # non-main namespace would be dropped by the gate above,
+                        # so leave a breadcrumb if that ever changes.
+                        logger.debug(
+                            "Dropping rubric event from non-main namespace %r",
+                            ns_key,
+                        )
                     if (
                         adapter._on_subagent_event is not None
                         and _is_renderable_subagent_event(
@@ -783,6 +892,13 @@ async def execute_task_textual(
                                 assistant_message_by_namespace,
                             )
                             pending_text_by_namespace[ns_key] = ""
+                            # Drop the cached assistant bubble too, not just the
+                            # pending text: a mid-turn HumanMessage (e.g. the
+                            # rubric revision loop re-prompting the agent) means
+                            # the next assistant text is a fresh response and
+                            # must start a new bubble rather than appending to
+                            # the pre-revision one.
+                            assistant_message_by_namespace.pop(ns_key, None)
                         continue
 
                     if isinstance(message, ToolMessage):

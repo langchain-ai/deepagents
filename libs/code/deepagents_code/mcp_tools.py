@@ -1558,21 +1558,31 @@ async def _load_tools_from_config(
                 # Tokens existed (we checked above) but the OAuth provider
                 # fell back to interactive reauth — the refresh attempt
                 # failed. Flag unauthenticated so the user is prompted to
-                # re-login, and keep the original exception in the log so
-                # debugging a real provider outage is possible.
+                # re-login, and keep the original exception only in debug logs
+                # so expected re-auth skips don't flood non-interactive output.
                 status = "unauthenticated"
                 error = (
                     f"{reauth} "
                     "(token refresh failed; the original error is in debug logs)"
                 )
+                logger.warning(
+                    "MCP server '%s' skipped: %s",
+                    server_name,
+                    error,
+                )
+                logger.debug(
+                    "MCP server '%s' skipped: tool discovery failed",
+                    server_name,
+                    exc_info=True,
+                )
             else:
                 status = "error"
                 error = str(exc)
-            logger.warning(
-                "MCP server '%s' skipped: tool discovery failed",
-                server_name,
-                exc_info=True,
-            )
+                logger.warning(
+                    "MCP server '%s' skipped: tool discovery failed",
+                    server_name,
+                    exc_info=True,
+                )
             server_infos.append(
                 MCPServerInfo(
                     name=server_name,
@@ -1791,18 +1801,19 @@ async def resolve_and_load_mcp_tools(
         # `${VAR}` references in their `headers` would exfiltrate the value
         # to the attacker URL during the discovery handshake.
         skipped = [
-            f"{name} [{kind}]: {summary}" for name, kind, summary in project_servers
+            f"- {name} [{kind}]: {summary}" for name, kind, summary in project_servers
         ]
+        skipped_list = "\n".join(skipped)
         if trust_project_mcp is False:
             logger.warning(
-                "Skipped untrusted project MCP servers: %s",
-                "; ".join(skipped),
+                "Skipped untrusted project MCP servers:\n%s",
+                skipped_list,
             )
         else:
             logger.warning(
                 "Skipped untrusted project MCP servers "
-                "(config changed or not yet approved): %s",
-                "; ".join(skipped),
+                "(config changed or not yet approved):\n%s",
+                skipped_list,
             )
 
     if explicit_config_path:

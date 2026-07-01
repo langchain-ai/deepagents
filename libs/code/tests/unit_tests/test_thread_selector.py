@@ -3673,7 +3673,10 @@ class TestResumeModelAdoption:
 
     @staticmethod
     def _payload(
-        model_spec: str, *, with_messages: bool = True
+        model_spec: str,
+        *,
+        with_messages: bool = True,
+        model_params: dict[str, Any] | None = None,
     ) -> _ThreadHistoryPayload:
         from deepagents_code.widgets.message_store import MessageData, MessageType
 
@@ -3686,6 +3689,7 @@ class TestResumeModelAdoption:
             messages=messages,
             context_tokens=0,
             model_spec=model_spec,
+            model_params=model_params,
         )
 
     async def test_adopts_persisted_model_session_only(self) -> None:
@@ -3704,11 +3708,38 @@ class TestResumeModelAdoption:
         call = switch_mock.await_args
         assert call is not None
         assert call.args[0] == "anthropic:claude-sonnet-4-5"
+        assert call.kwargs["extra_kwargs"] is None
         assert call.kwargs["persist"] is False
         assert call.kwargs["announce_unchanged"] is False
         assert call.kwargs["from_resume"] is True
         # One-shot: the flag is consumed so later loads don't re-adopt.
         assert app._should_adopt_resumed_model is False
+
+    async def test_adopts_persisted_model_params(self) -> None:
+        """Resume restores the invocation params saved with the model spec."""
+        app = self._make_app()
+        switch_mock = AsyncMock()
+        _app_test_double(app)._switch_model = switch_mock
+        app._should_adopt_resumed_model = True
+
+        await app._load_thread_history(
+            thread_id="tid-1",
+            preloaded_payload=self._payload(
+                "anthropic:claude-sonnet-4-5",
+                model_params={"temperature": 0.7, "max_tokens": 1024},
+            ),
+        )
+
+        switch_mock.assert_awaited_once()
+        call = switch_mock.await_args
+        assert call is not None
+        assert call.args[0] == "anthropic:claude-sonnet-4-5"
+        assert call.kwargs["extra_kwargs"] == {
+            "temperature": 0.7,
+            "max_tokens": 1024,
+        }
+        assert call.kwargs["persist"] is False
+        assert call.kwargs["from_resume"] is True
 
     async def test_no_adoption_when_flag_unset(self) -> None:
         """Without the armed flag (e.g. in-session switch), model is untouched."""

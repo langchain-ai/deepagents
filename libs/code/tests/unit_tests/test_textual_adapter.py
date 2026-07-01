@@ -5,7 +5,6 @@ import sys
 from asyncio import Future
 from collections.abc import AsyncIterator, Awaitable, Callable, Generator
 from datetime import datetime
-from importlib.metadata import PackageNotFoundError
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,12 +20,13 @@ from rich.console import Console
 from deepagents_code import config as config_module
 from deepagents_code._ask_user_types import AskUserWidgetResult, Question
 from deepagents_code.approval_mode import APPROVAL_MODE_NAMESPACE, approval_mode_key
-from deepagents_code.config import build_stream_config
+from deepagents_code.config import ASCII_GLYPHS, UNICODE_GLYPHS, build_stream_config
 from deepagents_code.textual_adapter import (
     ModelStats,
     SessionStats,
     TextualUIAdapter,
     _build_interrupted_ai_message,
+    _format_rubric_event,
     _handle_interrupt_cleanup,
     _is_summarization_chunk,
     _read_mentioned_file,
@@ -659,8 +659,64 @@ class TestBuildStreamConfig:
     """Tests for `build_stream_config` metadata construction."""
 
     def setup_method(self) -> None:
-        """Clear the git-branch cache between tests."""
+        """Clear the git lookup caches between tests."""
         config_module._git_branch_cache.clear()
+        config_module._repo_metadata_cache.clear()
+
+    @pytest.fixture(autouse=True)
+    def _hermetic_git(self) -> Generator[None, None, None]:
+        """Stub git/repo lookups so tests don't read the host repo's real `.git`.
+
+        These tests assert on the identity/turn keys, not on git attribution, so
+        pinning the repo/commit lookups keeps them deterministic in exported
+        checkouts (e.g. a CI tarball with no `.git`).
+        """
+        with (
+            patch.object(config_module, "_get_repository_metadata", return_value=None),
+            patch.object(config_module, "_get_git_commit_sha", return_value=None),
+        ):
+            yield
+
+    def test_coding_agent_identity_block_present(self) -> None:
+        """The coding-agent-v1 identity block is stamped on every config."""
+        from deepagents_code._version import __version__
+
+        metadata = build_stream_config("t-id", assistant_id=None)["metadata"]
+        assert metadata["ls_agent_kind"] == "coding_agent"
+        assert metadata["ls_integration"] == "deepagents-code"
+        assert metadata["ls_agent_runtime"] == "Deep Agents Code"
+        assert metadata["ls_trace_schema_version"] == "coding-agent-v1"
+        assert metadata["ls_integration_version"] == __version__
+        assert metadata["ls_agent_runtime_version"] == __version__
+
+    def test_thread_id_set_as_top_level_metadata(self) -> None:
+        """thread_id is mirrored to top-level metadata for contract grouping."""
+        config = build_stream_config("t-group", assistant_id=None)
+        assert config["metadata"]["thread_id"] == "t-group"
+        assert config["configurable"]["thread_id"] == "t-group"
+
+    def test_turn_markers_passed_through(self) -> None:
+        """turn_id / turn_number reach metadata when provided."""
+        metadata = build_stream_config(
+            "t-turn", assistant_id=None, turn_id="turn-9", turn_number=4
+        )["metadata"]
+        assert metadata["turn_id"] == "turn-9"
+        assert metadata["turn_number"] == 4
+
+    def test_turn_markers_absent_when_unset(self) -> None:
+        """turn_id / turn_number are omitted when not provided."""
+        metadata = build_stream_config("t-noturn", assistant_id=None)["metadata"]
+        assert "turn_id" not in metadata
+        assert "turn_number" not in metadata
+
+    def test_scope_restricted_keys_not_emitted(self) -> None:
+        """approval_policy / ls_subagent_* are never stamped trace-wide."""
+        metadata = build_stream_config(
+            "t-scope", assistant_id="agent", turn_id="t", turn_number=1
+        )["metadata"]
+        assert "approval_policy" not in metadata
+        assert "ls_subagent_id" not in metadata
+        assert "ls_subagent_type" not in metadata
 
     def test_dcode_agent_fields_present(self) -> None:
         """Selected dcode agent metadata should be present."""
@@ -747,12 +803,35 @@ class TestBuildStreamConfig:
         """CLI version should always be present in metadata.lc_versions."""
         from deepagents_code._version import __version__
 
-        config = build_stream_config("t-ver", assistant_id=None)
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch("deepagents_code.config._get_deepagents_version", return_value=None),
+        ):
+            config = build_stream_config("t-ver", assistant_id=None)
         assert config["metadata"]["lc_versions"] == {"deepagents-code": __version__}
+
+    def test_versions_marks_editable_cli_version(self) -> None:
+        """Editable dcode installs should be visible in metadata.lc_versions."""
+        from deepagents_code._version import __version__
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=True),
+            patch("deepagents_code.config._get_deepagents_version", return_value=None),
+        ):
+            config = build_stream_config("t-editable", assistant_id=None)
+        assert config["metadata"]["lc_versions"] == {
+            "deepagents-code": f"{__version__} (editable)"
+        }
 
     def test_dcode_client_deepagents_version_is_diagnostic_metadata(self) -> None:
         """Client-side SDK version should not be reported as graph instrumentation."""
-        with patch("deepagents_code.config.version", return_value="1.2.3"):
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.extras_info.resolve_sdk_version",
+                return_value=("1.2.3", "resolved"),
+            ),
+        ):
             config = build_stream_config("t-sdk", assistant_id=None)
         assert config["metadata"]["dcode_client_deepagents_version"] == "1.2.3"
         assert "deepagents" not in config["metadata"]["lc_versions"]
@@ -761,9 +840,12 @@ class TestBuildStreamConfig:
         self,
     ) -> None:
         """Missing SDK metadata should not prevent stream config construction."""
-        with patch(
-            "deepagents_code.config.version",
-            side_effect=PackageNotFoundError("deepagents"),
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.extras_info.resolve_sdk_version",
+                return_value=(None, "not_installed"),
+            ),
         ):
             config = build_stream_config("t-missing-sdk", assistant_id=None)
 
@@ -778,13 +860,51 @@ class TestBuildStreamConfig:
             if module == "deepagents" or module.startswith("deepagents."):
                 monkeypatch.delitem(sys.modules, module, raising=False)
 
-        with patch("deepagents_code.config.version", return_value="1.2.3"):
+        with patch("deepagents_code.config._is_editable_install", return_value=False):
             build_stream_config("t-no-sdk-import", assistant_id=None)
 
         assert not any(
             module == "deepagents" or module.startswith("deepagents.")
             for module in sys.modules
         )
+
+    def test_get_deepagents_version_maps_status_to_value(self) -> None:
+        """Only a `resolved` status yields a version; other statuses map to None.
+
+        The guard keys on `status`, not on the version string, so a non-resolved
+        status must drop even a non-`None` version the resolver flagged as
+        untrustworthy.
+        """
+        from deepagents_code.config import _get_deepagents_version
+
+        with patch(
+            "deepagents_code.extras_info.resolve_sdk_version",
+            return_value=("1.2.3", "error"),
+        ):
+            assert _get_deepagents_version() is None
+
+        with patch(
+            "deepagents_code.extras_info.resolve_sdk_version",
+            return_value=("1.2.3", "resolved"),
+        ):
+            assert _get_deepagents_version() == "1.2.3"
+
+    def test_versions_editable_with_resolved_sdk_version(self) -> None:
+        """Editable suffix and SDK diagnostic version are populated independently."""
+        from deepagents_code._version import __version__
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=True),
+            patch(
+                "deepagents_code.extras_info.resolve_sdk_version",
+                return_value=("1.2.3", "resolved"),
+            ),
+        ):
+            config = build_stream_config("t-editable-sdk", assistant_id=None)
+        assert config["metadata"]["lc_versions"] == {
+            "deepagents-code": f"{__version__} (editable)"
+        }
+        assert config["metadata"]["dcode_client_deepagents_version"] == "1.2.3"
 
     def test_user_id_included_when_set(self) -> None:
         """DEEPAGENTS_CODE_USER_ID should appear in metadata when set."""
@@ -824,6 +944,27 @@ class TestGetGitBranch:
         mock_resolve.assert_called_once_with("/tmp/repo")
 
 
+class TestGetGitCommitSha:
+    """Tests for `_get_git_commit_sha` freshness."""
+
+    def test_resolves_commit_fresh_on_each_call(self) -> None:
+        """HEAD moves mid-session, so the SHA must be re-resolved every call."""
+        with (
+            patch(
+                "deepagents_code.config.Path.cwd",
+                return_value=Path("/tmp/repo"),
+            ),
+            patch(
+                "deepagents_code._git.resolve_git_commit_sha",
+                side_effect=["sha-before", "sha-after"],
+            ) as mock_resolve,
+        ):
+            assert config_module._get_git_commit_sha() == "sha-before"
+            assert config_module._get_git_commit_sha() == "sha-after"
+
+        assert mock_resolve.call_count == 2
+
+
 class TestGetGitBranchOSError:
     """Tests for _get_git_branch when Path.cwd() raises OSError."""
 
@@ -844,8 +985,9 @@ class TestBuildStreamConfigOSError:
     """Tests for build_stream_config when Path.cwd() raises OSError."""
 
     def setup_method(self) -> None:
-        """Clear the git-branch cache between tests."""
+        """Clear the git lookup caches between tests."""
         config_module._git_branch_cache.clear()
+        config_module._repo_metadata_cache.clear()
 
     def test_cwd_absent_on_oserror(self) -> None:
         """Cwd should be absent from metadata when Path.cwd() raises."""
@@ -887,6 +1029,158 @@ class TestIsSummarizationChunk:
         assert _is_summarization_chunk({"langgraph_node": None}) is False
 
 
+class TestFormatRubricEvent:
+    """Tests for rubric custom-stream event formatting."""
+
+    @pytest.fixture(autouse=True)
+    def _pin_unicode_glyphs(self) -> Generator[None, None, None]:
+        """Pin Unicode glyphs so literal assertions hold on any terminal.
+
+        `_format_rubric_event` resolves glyphs via `get_glyphs()`, which depends
+        on charset detection. Pinning keeps these assertions deterministic in
+        CI; `test_ascii_mode_degrades_to_ascii_glyphs` covers the ASCII path.
+        """
+        with patch(
+            "deepagents_code.textual_adapter.get_glyphs",
+            return_value=UNICODE_GLYPHS,
+        ):
+            yield
+
+    def test_start_event_omits_iteration_by_default(self) -> None:
+        """Start events should avoid noisy iteration numbers by default."""
+        assert (
+            _format_rubric_event(
+                {"type": "rubric_evaluation_start", "iteration": 1},
+            )
+            == "⏳ Checking acceptance criteria…"
+        )
+
+    def test_start_event_mentions_explicit_iteration(self) -> None:
+        """Explicit iteration display should surface the 1-based count."""
+        assert (
+            _format_rubric_event(
+                {
+                    "type": "rubric_evaluation_start",
+                    "iteration": 1,
+                    "show_iteration": True,
+                },
+            )
+            == "⏳ Checking acceptance criteria (iteration 2)…"
+        )
+
+    def test_needs_revision_includes_failed_criteria(self) -> None:
+        """Failed criteria should be shown with actionable gaps."""
+        assert (
+            _format_rubric_event(
+                {
+                    "type": "rubric_evaluation_end",
+                    "result": "needs_revision",
+                    "explanation": "missing coverage",
+                    "criteria": [
+                        {"name": "tests pass", "passed": False, "gap": "not run"},
+                        {"name": "docs", "passed": True},
+                    ],
+                },
+            )
+            == "↻ Changes need revision: missing coverage\n  ✗ tests pass — not run"
+        )
+
+    def test_satisfied_event(self) -> None:
+        """Satisfied events should render compact success text."""
+        assert (
+            _format_rubric_event(
+                {"type": "rubric_evaluation_end", "result": "satisfied"},
+            )
+            == "✓ Acceptance criteria satisfied"
+        )
+
+    def test_start_event_without_int_iteration_omits_number(self) -> None:
+        """A non-integer iteration should fall back to the unnumbered label."""
+        assert (
+            _format_rubric_event(
+                {"type": "rubric_evaluation_start", "iteration": None},
+            )
+            == "⏳ Checking acceptance criteria…"
+        )
+
+    def test_max_iterations_reached_event(self) -> None:
+        """Hitting the iteration cap should warn the user it is unsatisfied."""
+        assert (
+            _format_rubric_event(
+                {"type": "rubric_evaluation_end", "result": "max_iterations_reached"},
+            )
+            == "⚠ Acceptance criteria not satisfied (iteration limit reached)"
+        )
+
+    def test_grader_failure_results_render_warning(self) -> None:
+        """Grader failures should surface as warnings with the explanation."""
+        assert (
+            _format_rubric_event(
+                {
+                    "type": "rubric_evaluation_end",
+                    "result": "failed",
+                    "explanation": "timeout",
+                },
+            )
+            == "⚠ Rubric grader failed: timeout"
+        )
+        assert (
+            _format_rubric_event(
+                {"type": "rubric_evaluation_end", "result": "grader_error"},
+            )
+            == "⚠ Rubric grader error"
+        )
+
+    def test_unknown_terminal_result_renders_fallback(self) -> None:
+        """An unrecognized terminal result must not be silently dropped."""
+        assert (
+            _format_rubric_event(
+                {"type": "rubric_evaluation_end", "result": "something_new"},
+            )
+            == "⚠ Rubric grading ended"
+        )
+
+    def test_end_event_without_result_returns_none(self) -> None:
+        """Partial end events should not render a spurious warning."""
+        assert _format_rubric_event({"type": "rubric_evaluation_end"}) is None
+
+    def test_unrelated_event_returns_none(self) -> None:
+        """Only rubric events should render rubric messages."""
+        assert _format_rubric_event({"type": "subagent_start"}) is None
+
+    def test_ascii_mode_degrades_to_ascii_glyphs(self) -> None:
+        """In ASCII mode the transcript glyphs must degrade, not stay Unicode."""
+        with patch(
+            "deepagents_code.textual_adapter.get_glyphs",
+            return_value=ASCII_GLYPHS,
+        ):
+            start = _format_rubric_event(
+                {"type": "rubric_evaluation_start", "iteration": 0},
+            )
+            revision = _format_rubric_event(
+                {
+                    "type": "rubric_evaluation_end",
+                    "result": "needs_revision",
+                    "criteria": [
+                        {"name": "tests pass", "passed": False, "gap": "not run"},
+                    ],
+                },
+            )
+            satisfied = _format_rubric_event(
+                {"type": "rubric_evaluation_end", "result": "satisfied"},
+            )
+            failed = _format_rubric_event(
+                {"type": "rubric_evaluation_end", "result": "failed"},
+            )
+        assert start == f"{ASCII_GLYPHS.hourglass} Checking acceptance criteria..."
+        assert revision == (
+            f"{ASCII_GLYPHS.retry} Changes need revision\n"
+            f"  {ASCII_GLYPHS.error} tests pass — not run"
+        )
+        assert satisfied == f"{ASCII_GLYPHS.checkmark} Acceptance criteria satisfied"
+        assert failed == f"{ASCII_GLYPHS.warning} Rubric grader failed"
+
+
 class _FakeAgent:
     """Minimal async stream agent used for adapter execution tests."""
 
@@ -906,6 +1200,7 @@ class _SequencedAgent:
         self._streams_by_call = streams_by_call
         self.stream_inputs: list[dict | Command] = []
         self.contexts: list[Any] = []
+        self.configs: list[Any] = []
         self.store_items: list[tuple[tuple[str, ...], str, dict[str, Any]]] = []
 
     async def aput_store_item(
@@ -922,6 +1217,7 @@ class _SequencedAgent:
         stream_input: dict | Command,
         *_: Any,
         context: object = None,
+        config: object = None,
         **__: Any,
     ) -> AsyncIterator[tuple[Any, ...]]:
         """Yield chunks for this invocation and record stream inputs/context.
@@ -933,6 +1229,7 @@ class _SequencedAgent:
         """
         self.stream_inputs.append(stream_input)
         self.contexts.append(dict(context) if isinstance(context, dict) else context)
+        self.configs.append(config)
         chunks = self._streams_by_call.pop(0) if self._streams_by_call else []
         for chunk in chunks:
             yield chunk
@@ -951,6 +1248,58 @@ class _FailingApprovalStoreAgent(_SequencedAgent):
         _ = (namespace, key, value)
         msg = "approval-mode store unavailable"
         raise RuntimeError(msg)
+
+
+class TestExecuteTaskTextualTurnMarkers:
+    """End-to-end: turn markers advance and reach the stream config metadata."""
+
+    async def test_turn_markers_flow_into_stream_config_and_advance(self) -> None:
+        """A real session state advances turn markers into each turn's config.
+
+        Guards the full wiring (`advance_turn` -> `build_stream_config` ->
+        `astream` config) that the per-piece unit tests don't exercise together:
+        a dropped `advance_turn()` call or mis-passed turn tuple would still pass
+        those, but not this.
+        """
+        from deepagents_code.app import TextualSessionState
+
+        session_state = TextualSessionState(thread_id="thread-1", auto_approve=True)
+        agent = _SequencedAgent([[], []])
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        # Stub git lookups so the captured metadata is deterministic.
+        with (
+            patch.object(config_module, "_get_repository_metadata", return_value=None),
+            patch.object(config_module, "_get_git_commit_sha", return_value=None),
+        ):
+            await execute_task_textual(
+                user_input="first",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=session_state,
+                adapter=adapter,
+            )
+            await execute_task_textual(
+                user_input="second",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=session_state,
+                adapter=adapter,
+            )
+
+        first_meta = agent.configs[0]["metadata"]
+        second_meta = agent.configs[1]["metadata"]
+        assert first_meta["turn_number"] == 1
+        assert second_meta["turn_number"] == 2
+        assert first_meta["turn_id"]
+        assert second_meta["turn_id"]
+        assert first_meta["turn_id"] != second_meta["turn_id"]
+        # The session state itself reflects the latest turn.
+        assert session_state.turn_number == 2
 
 
 class TestExecuteTaskTextualAutoApproveInput:
@@ -982,11 +1331,99 @@ class TestExecuteTaskTextualAutoApproveInput:
         assert not isinstance(stream_input, Command)
         assert stream_input == {"messages": [{"role": "user", "content": "hi"}]}
         assert agent.contexts[0]["auto_approve"] is True
+        assert agent.contexts[0]["thread_id"] == "thread-1"
         key = approval_mode_key("thread-1")
         assert agent.contexts[0]["approval_mode_key"] == key
         assert agent.store_items == [
             (APPROVAL_MODE_NAMESPACE, key, {"auto_approve": True})
         ]
+
+    async def test_rubric_is_sent_as_graph_state(self) -> None:
+        """Rubrics should travel beside messages, not inside user content."""
+        agent = _SequencedAgent([[]])
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+            rubric="tests pass",
+        )
+
+        stream_input = agent.stream_inputs[0]
+        assert not isinstance(stream_input, Command)
+        assert stream_input == {
+            "messages": [{"role": "user", "content": "hi"}],
+            "rubric": "tests pass",
+        }
+
+    async def test_blocked_goal_retry_context_is_not_user_input(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Retry context should not be parsed for file mentions or checkpointed."""
+        secret = tmp_path / "secret.txt"
+        secret.write_text("do not attach me")
+        agent = _SequencedAgent([[]])
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="continue now",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+            blocked_goal_retry_context=f"blocked on @{secret}",
+        )
+
+        stream_input = agent.stream_inputs[0]
+        assert not isinstance(stream_input, Command)
+        assert stream_input == {
+            "messages": [{"role": "user", "content": "continue now"}]
+        }
+        assert (
+            agent.contexts[0]["blocked_goal_retry_context"] == f"blocked on @{secret}"
+        )
+
+    async def test_stale_blocked_goal_retry_context_is_cleared(self) -> None:
+        """A reused context must not leak a prior turn's retry context.
+
+        `CLIContext` is reused across turns, so a turn with no blocked goal
+        (`blocked_goal_retry_context=None`) must actively pop any stale value
+        left by an earlier turn rather than silently carrying it forward.
+        """
+        agent = _SequencedAgent([[]])
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        # Simulate a context carried over from an earlier blocked-goal turn.
+        stale_context: dict[str, Any] = {
+            "blocked_goal_retry_context": "stale blocker from a prior turn"
+        }
+
+        await execute_task_textual(
+            user_input="continue now",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+            context=cast("Any", stale_context),
+            blocked_goal_retry_context=None,
+        )
+
+        assert "blocked_goal_retry_context" not in agent.contexts[0]
 
     async def test_live_approval_write_failure_fails_closed_context(self) -> None:
         """A failed live-mode write must not reuse a stale approval key."""
@@ -1113,6 +1550,8 @@ class TestExecuteTaskTextualAutoApproveInput:
         assert len(agent.contexts) == 2
         assert agent.contexts[0]["auto_approve"] is False
         assert agent.contexts[1]["auto_approve"] is True
+        assert agent.contexts[0]["thread_id"] == "thread-1"
+        assert agent.contexts[1]["thread_id"] == "thread-1"
         key = approval_mode_key("thread-1")
         assert agent.contexts[0]["approval_mode_key"] == key
         assert agent.contexts[1]["approval_mode_key"] == key
@@ -2127,6 +2566,105 @@ class TestExecuteTaskTextualTextThenToolSpinner:
             f"Expected 2 Thinking calls (start + after tool); got "
             f"{thinking_count}: {statuses}"
         )
+
+
+class TestExecuteTaskTextualRubricRevisionStreaming:
+    """Regression coverage for rubric-driven assistant reattempts."""
+
+    async def test_rubric_feedback_starts_new_assistant_message(self) -> None:
+        """A rubric-injected human turn must separate assistant attempts."""
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        class FakeAssistantMessage:
+            def __init__(self, content: str = "", **kwargs: str | None) -> None:
+                self.id = kwargs.get("id")
+                self._content = content
+
+            async def append_content(self, text: str) -> None:
+                self._content += text
+
+            async def stop_stream(self) -> None:
+                pass
+
+            async def write_initial_content(self) -> None:
+                pass
+
+        chunks = [
+            ((), "messages", (_text_message("Hi Mason."), {})),
+            (
+                (),
+                "messages",
+                (
+                    HumanMessage(
+                        content="Please revise.",
+                        name="rubric_grader",
+                        additional_kwargs={"lc_source": "rubric_grader"},
+                    ),
+                    {},
+                ),
+            ),
+            (
+                (),
+                "custom",
+                {"type": "rubric_evaluation_start", "iteration": 0},
+            ),
+            (
+                (),
+                "custom",
+                {
+                    "type": "rubric_evaluation_end",
+                    "result": "needs_revision",
+                    "explanation": "say yellow",
+                    "criteria": [],
+                },
+            ),
+            ((), "messages", (_text_message("yellow yellow"), {})),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        with (
+            patch(
+                "deepagents_code.textual_adapter.AssistantMessage",
+                side_effect=FakeAssistantMessage,
+            ),
+            patch(
+                "deepagents_code.textual_adapter.get_glyphs",
+                return_value=UNICODE_GLYPHS,
+            ),
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+                adapter=adapter,
+            )
+
+        assistant_messages = [
+            widget for widget in mounted if isinstance(widget, FakeAssistantMessage)
+        ]
+        assert [msg._content for msg in assistant_messages] == [
+            "Hi Mason.",
+            "yellow yellow",
+        ]
+
+        app_messages = [widget for widget in mounted if isinstance(widget, AppMessage)]
+        app_text = [str(widget._content) for widget in app_messages]
+        assert app_text == [
+            (
+                f"{UNICODE_GLYPHS.hourglass} Checking acceptance criteria"
+                f"{UNICODE_GLYPHS.ellipsis}"
+            ),
+            f"{UNICODE_GLYPHS.retry} Changes need revision: say yellow",
+        ]
 
 
 class TestExecuteTaskTextualHITLShellSuppression:
@@ -3440,3 +3978,77 @@ class TestReadMentionedFile:
 
         assert "too large to embed" in snippet
         assert "```" not in snippet
+
+
+class TestExecuteTaskTextualRubricEvents:
+    """Rubric custom-stream events surface only for the main agent."""
+
+    async def test_main_agent_rubric_event_mounts_message(self) -> None:
+        """A main-agent rubric verdict is rendered in the transcript."""
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        # (namespace, stream_mode, data); empty namespace == main agent.
+        chunks = [
+            ((), "custom", {"type": "rubric_evaluation_end", "result": "satisfied"}),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        rubric_msgs = [
+            m
+            for m in mounted
+            if isinstance(m, AppMessage)
+            and "Acceptance criteria satisfied" in str(m._content)
+        ]
+        assert len(rubric_msgs) == 1
+
+    async def test_subagent_rubric_event_is_not_mounted(self) -> None:
+        """A rubric event from a subagent namespace must not reach the transcript."""
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        # Non-empty namespace == subagent; the is_main_agent gate suppresses it.
+        chunks = [
+            (
+                ("subagent",),
+                "custom",
+                {"type": "rubric_evaluation_end", "result": "satisfied"},
+            ),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert not [
+            m
+            for m in mounted
+            if isinstance(m, AppMessage) and "Rubric" in str(m._content)
+        ]

@@ -1431,7 +1431,7 @@ class ChatInput(Vertical):
         min-height: 3;
         max-height: 25;
         padding: 0;
-        background: $surface;
+        background: $background;
         border: solid $primary;
     }
 

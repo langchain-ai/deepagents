@@ -14,6 +14,7 @@ from deepagents_code._server_config import (
     _interpreter_suppressed_by_sandbox,
     _normalize_path,
     _read_env_bool,
+    _read_env_int,
     _read_env_json,
     _read_env_optional_bool,
     _read_env_str,
@@ -86,6 +87,25 @@ class TestReadEnvJson:
             pytest.raises(ValueError, match=r"\{bad"),
         ):
             _read_env_json("DATA")
+
+
+# ------------------------------------------------------------------
+# _read_env_int
+# ------------------------------------------------------------------
+
+
+class TestReadEnvInt:
+    def test_valid_int(self) -> None:
+        with patch.dict(os.environ, {f"{SERVER_ENV_PREFIX}COUNT": "5"}):
+            assert _read_env_int("COUNT", default=3) == 5
+
+    def test_missing_returns_default(self) -> None:
+        with patch.dict(os.environ, {}, clear=True):
+            assert _read_env_int("COUNT", default=3) == 3
+
+    def test_malformed_returns_default(self) -> None:
+        with patch.dict(os.environ, {f"{SERVER_ENV_PREFIX}COUNT": "abc"}):
+            assert _read_env_int("COUNT", default=3) == 3
 
 
 # ------------------------------------------------------------------
@@ -354,6 +374,28 @@ class TestServerConfigEdgeCases:
             restored = ServerConfig.from_env()
 
         assert restored.enable_interpreter is False
+
+    def test_malformed_rubric_max_iterations_env_uses_sdk_default(self) -> None:
+        """Bad optional rubric iteration config must fall back to SDK default."""
+        with patch.dict(
+            os.environ,
+            {f"{SERVER_ENV_PREFIX}RUBRIC_MAX_ITERATIONS": "abc"},
+            clear=True,
+        ):
+            restored = ServerConfig.from_env()
+
+        assert restored.rubric_max_iterations is None
+
+    def test_rubric_max_iterations_env_parses_int(self) -> None:
+        """Valid rubric iteration config survives the server env boundary."""
+        with patch.dict(
+            os.environ,
+            {f"{SERVER_ENV_PREFIX}RUBRIC_MAX_ITERATIONS": "7"},
+            clear=True,
+        ):
+            restored = ServerConfig.from_env()
+
+        assert restored.rubric_max_iterations == 7
 
     def test_sandbox_type_none_string_round_trips(self) -> None:
         """sandbox_type='none' normalizes to None and survives round-trip."""

@@ -390,6 +390,146 @@ class TestStoredCredentials:
         assert apply_stored_credentials("google_genai") is True
         assert "GOOGLE_GEMINI_BASE_URL" not in os.environ
 
+    def test_apply_stored_credentials_blank_base_url_clears_anthropic_custom_headers(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored Anthropic key with no base_url clears `ANTHROPIC_CUSTOM_HEADERS`.
+
+        The Anthropic SDK reads `ANTHROPIC_CUSTOM_HEADERS` and injects the
+        headers into every request. A gateway-provisioned environment sets
+        this to `X-Api-Key: <gateway-key>`, which overrides the SDK's own
+        `api_key`-derived header. When switching to a personal key, the
+        custom header must also be cleared or the gateway key is sent to
+        the provider's native endpoint and rejected.
+        """
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import apply_stored_credentials
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv(
+            "ANTHROPIC_BASE_URL", "https://gateway.smith.langchain.com/anthropic"
+        )
+        monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Api-Key: lsv2_sk_gateway_key")
+        auth_store.set_stored_key("anthropic", "sk-ant-personal")
+
+        assert apply_stored_credentials("anthropic") is True
+        assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-personal"
+        assert "ANTHROPIC_BASE_URL" not in os.environ
+        assert "ANTHROPIC_API_URL" not in os.environ
+        assert "ANTHROPIC_CUSTOM_HEADERS" not in os.environ
+
+    def test_apply_stored_credentials_with_base_url_preserves_anthropic_custom_headers(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored Anthropic key *with* a base_url preserves custom headers.
+
+        When the user stores a gateway endpoint in `/auth`, the custom
+        headers env var should be left in place — it carries the gateway
+        auth header that the gateway expects.
+        """
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import apply_stored_credentials
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Api-Key: lsv2_sk_gateway_key")
+        auth_store.set_stored_key(
+            "anthropic",
+            "lsv2_sk_gateway_key",
+            base_url="https://gateway.smith.langchain.com/anthropic",
+        )
+
+        assert apply_stored_credentials("anthropic") is True
+        assert (
+            os.environ["ANTHROPIC_BASE_URL"]
+            == "https://gateway.smith.langchain.com/anthropic"
+        )
+        assert (
+            os.environ["ANTHROPIC_CUSTOM_HEADERS"] == "X-Api-Key: lsv2_sk_gateway_key"
+        )
+
+    def test_apply_stored_credentials_config_base_url_preserves_anthropic_headers(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A config-routed Anthropic gateway keeps its custom headers."""
+        import os
+
+        from deepagents_code import auth_store, model_config
+        from deepagents_code.model_config import apply_stored_credentials, clear_caches
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+base_url = "https://configured.gateway.example/anthropic"
+models = ["claude-sonnet-4-5"]
+""")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv(
+            "ANTHROPIC_BASE_URL", "https://stale.gateway.example/anthropic"
+        )
+        monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Api-Key: lsv2_sk_gateway_key")
+        auth_store.set_stored_key("anthropic", "sk-ant-personal")
+
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            clear_caches()
+            assert apply_stored_credentials("anthropic") is True
+            assert (
+                model_config.ModelConfig.load().get_base_url("anthropic")
+                == "https://configured.gateway.example/anthropic"
+            )
+
+        assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-personal"
+        assert "ANTHROPIC_BASE_URL" not in os.environ
+        assert "ANTHROPIC_API_URL" not in os.environ
+        assert (
+            os.environ["ANTHROPIC_CUSTOM_HEADERS"] == "X-Api-Key: lsv2_sk_gateway_key"
+        )
+
+    def test_apply_stored_credentials_prefixed_base_url_preserves_anthropic_headers(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A scoped Anthropic endpoint override keeps its gateway headers."""
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import apply_stored_credentials
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv(
+            "ANTHROPIC_BASE_URL", "https://stale.gateway.example/anthropic"
+        )
+        monkeypatch.setenv(
+            "DEEPAGENTS_CODE_ANTHROPIC_BASE_URL",
+            "https://scoped.gateway.example/anthropic",
+        )
+        monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Api-Key: lsv2_sk_gateway_key")
+        auth_store.set_stored_key("anthropic", "sk-ant-personal")
+
+        assert apply_stored_credentials("anthropic") is True
+
+        assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-personal"
+        assert "ANTHROPIC_BASE_URL" not in os.environ
+        assert "ANTHROPIC_API_URL" not in os.environ
+        assert (
+            os.environ["DEEPAGENTS_CODE_ANTHROPIC_BASE_URL"]
+            == "https://scoped.gateway.example/anthropic"
+        )
+        assert (
+            os.environ["ANTHROPIC_CUSTOM_HEADERS"] == "X-Api-Key: lsv2_sk_gateway_key"
+        )
+
     def test_apply_stored_credentials_clears_config_base_url_env(
         self,
         fake_state_dir: Path,  # noqa: ARG002

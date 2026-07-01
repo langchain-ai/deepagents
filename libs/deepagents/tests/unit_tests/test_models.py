@@ -1266,6 +1266,10 @@ class TestNemotronUltraProfile:
         assert "second-guess" not in suffix
         # kept: the anti-loop tool line still present
         assert "never re-issue the same failing call" in suffix
+        # dna-assembly fix: verify each result once, then finalize — don't re-run
+        # a passed check on the same inputs and loop until the turn budget is gone.
+        assert "<stop_condition>" in suffix
+        assert "Verify each result once" in suffix
 
     def test_tool_message_shim_fills_empty_content(self) -> None:
         """The shim replaces empty tool content; non-empty content is untouched."""

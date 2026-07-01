@@ -1,0 +1,24 @@
+libs/evals/Makefile
+  s_75a1c10d8adcb8::t_69edb8d85c8904 63
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.4",
+  "base_commit_sha": "5aa4a2af23dfd598f93b14ec6973396a30813f26",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  },
+  "sessions": {
+    "s_75a1c10d8adcb8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6ec38988-59c6-407d-8819-66a1b9c6974e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

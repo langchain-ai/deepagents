@@ -1,0 +1,45 @@
+.github/workflows/harbor.yml
+  s_81cc8133fe25c5::t_b25829811f6096 439-443,449-451,464,478-489
+  s_a87466ee53ae47::t_f3d5754f0f4778 459,490-500
+.github/scripts/shard_matrix.py
+  s_81cc8133fe25c5::t_ce4d1364f9bde1 5,7-8,10-12,14-22,44-45,50,52-54,58,76,85-87,89-90,100,102-103,105-106,109-111,138-141,144-148,152-153,156,160-161,163-164,170,181,190-193,195
+  h_9f69767fa5fabf 6,9,201,208
+  s_81cc8133fe25c5::t_e55d6bf4742470 13
+  s_81cc8133fe25c5::t_5e3f356783eda6 99,101,104,107-108,112-128
+  s_81cc8133fe25c5::t_897ed65f769fcc 142,157-159,162,165-167
+  s_81cc8133fe25c5::t_92438969fbbcdc 168,199-200,202,206-207,209
+libs/evals/tests/unit_tests/test_harbor_langsmith_integration.py
+  s_a87466ee53ae47::t_8757794190b3df 97-99
+.github/scripts/test_shard_matrix.py
+  s_81cc8133fe25c5::t_f8852a1542010e 244-429
+  s_81cc8133fe25c5::t_cbface82259118 10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.4",
+  "base_commit_sha": "70e9c39c4f96e7584e1a048e6910fd9b9508bff9",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  },
+  "sessions": {
+    "s_81cc8133fe25c5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "83fa1820-d463-4dc0-929c-7e8cab497669",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    },
+    "s_a87466ee53ae47": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f19ba-57a1-7160-b783-71e521a6a5c9",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

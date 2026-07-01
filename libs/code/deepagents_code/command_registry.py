@@ -121,7 +121,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
         description="Set reasoning effort for the current model",
         bypass_tier=BypassTier.QUEUED,
         hidden_keywords="reasoning thinking level",
-        argument_hint="[none|minimal|low|medium|high|xhigh|max|clear]",
+        argument_hint="[none|low|medium|high|xhigh|max|clear]",
     ),
     SlashCommand(
         name="/mcp",

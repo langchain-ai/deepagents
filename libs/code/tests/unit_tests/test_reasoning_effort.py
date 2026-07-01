@@ -31,8 +31,13 @@ def _restore_settings() -> Iterator[None]:
     [
         ("openai:gpt-5.5", ("none", "low", "medium", "high", "xhigh")),
         ("openai_codex:gpt-5.5", ("none", "low", "medium", "high", "xhigh")),
+        ("anthropic:claude-opus-4-8", ("low", "medium", "high", "xhigh", "max")),
+        ("anthropic:claude-opus-4-6", ("low", "medium", "high", "max")),
         ("anthropic:claude-sonnet-5", ("low", "medium", "high", "xhigh", "max")),
-        ("google_genai:gemini-3.5-flash", ("minimal", "low", "medium", "high")),
+        ("anthropic:claude-sonnet-4-6", ("low", "medium", "high", "max")),
+        ("anthropic:claude-sonnet-4-5", ()),
+        ("google_genai:gemini-3.5-flash", ("low", "medium", "high")),
+        ("google_genai:gemini-3.1-pro-preview", ("low", "medium", "high")),
         (
             "fireworks:accounts/fireworks/models/deepseek-v4-pro",
             ("none", "low", "medium", "high", "xhigh", "max"),
@@ -56,8 +61,8 @@ def test_model_params_for_effort_maps_provider_kwargs() -> None:
         "thinking": {"type": "adaptive", "display": "summarized"},
         "effort": "xhigh",
     }
-    assert model_params_for_effort("google_genai:gemini-3.5-flash", "minimal") == {
-        "thinking_level": "minimal"
+    assert model_params_for_effort("google_genai:gemini-3.5-flash", "low") == {
+        "thinking_level": "low"
     }
     assert model_params_for_effort(
         "fireworks:accounts/fireworks/models/deepseek-v4-pro", "max"

@@ -7,8 +7,14 @@ from typing import Any, Literal, TypeAlias
 from deepagents_code.model_config import ModelSpec
 
 OPENAI_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh")
+# `effort` maps to Anthropic's `output_config.effort`, whose accepted values
+# vary by model version: `xhigh` exists only on Opus 4.7+ and Sonnet 5, `max`
+# is unavailable before Opus 4.6 / Sonnet 4.6, and Sonnet 4.5 rejects `effort`.
 ANTHROPIC_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
-GOOGLE_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high")
+ANTHROPIC_EFFORTS_NO_XHIGH: tuple[str, ...] = ("low", "medium", "high", "max")
+# Gemini 3.1 Pro and 3.5 Flash accept low/medium/high only (`minimal` is
+# Flash-Lite / original-Pro territory, neither of which is offered here).
+GOOGLE_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
 FIREWORKS_REASONING_EFFORTS: tuple[str, ...] = (
     "none",
     "low",
@@ -27,6 +33,29 @@ ReasoningProvider: TypeAlias = Literal[
 _REASONING_KEYS: frozenset[str] = frozenset(
     {"effort", "reasoning", "thinking", "thinking_level"}
 )
+
+
+def _anthropic_efforts(model: str) -> tuple[str, ...]:
+    """Return the effort levels an Anthropic model accepts.
+
+    Args:
+        model: Lowercased Anthropic model name (e.g. `claude-opus-4-8`).
+
+    Returns:
+        Supported effort labels, or an empty tuple when the model does not
+        accept `effort` (e.g. Sonnet 4.5).
+    """
+    if model.startswith("claude-opus-"):
+        # Opus 4.6 predates `xhigh`; 4.7+ accept the full range.
+        return ANTHROPIC_EFFORTS_NO_XHIGH if "opus-4-6" in model else ANTHROPIC_EFFORTS
+    if model.startswith("claude-sonnet-"):
+        if "sonnet-4-5" in model:
+            return ()
+        # Sonnet 4.6 predates `xhigh`; Sonnet 5 accepts the full range.
+        return (
+            ANTHROPIC_EFFORTS_NO_XHIGH if "sonnet-4-6" in model else ANTHROPIC_EFFORTS
+        )
+    return ()
 
 
 def _reasoning_provider(model_spec: str) -> ReasoningProvider | None:
@@ -65,7 +94,8 @@ def supported_efforts_for_model(model_spec: str | None) -> tuple[str, ...]:
     if provider in {"openai", "openai_codex"}:
         return OPENAI_EFFORTS
     if provider == "anthropic":
-        return ANTHROPIC_EFFORTS
+        parsed = ModelSpec.try_parse(model_spec)
+        return _anthropic_efforts(parsed.model.lower()) if parsed is not None else ()
     if provider == "google_genai":
         return GOOGLE_EFFORTS
     if provider == "fireworks":

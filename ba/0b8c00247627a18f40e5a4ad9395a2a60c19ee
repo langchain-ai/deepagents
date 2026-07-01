@@ -1,0 +1,41 @@
+libs/code/tests/unit_tests/test_app.py
+  s_51f585a2e3455d::t_02b990d23032c8 17746-17796
+libs/code/deepagents_code/mcp_auth.py
+  s_51f585a2e3455d::t_79441db7ef0589 1608-1628,1630-1643,1645-1647,1660-1661,1673,1675-1677,1683
+libs/code/tests/unit_tests/test_mcp_auth.py
+  s_51f585a2e3455d::t_9d789f36d554ec 896-899,901-902,906-907,913-914,918-921,925-935,937-947,952,960,963-976,982,1009,1015-1018,1020-1021,1023,1031
+  s_51f585a2e3455d::t_17ef80a1039dde 900,1010
+  s_51f585a2e3455d::t_f0631a43e79b87 936
+  s_51f585a2e3455d::t_bc0580c80ccc88 31
+  s_51f585a2e3455d::t_68b82fa56ffd7c 28-30
+  s_51f585a2e3455d::t_60c9ccb8721a96 911
+  s_51f585a2e3455d::t_016bdd7717a4cb 894-895
+  s_51f585a2e3455d::t_c55b3f0294bc97 1008
+  s_51f585a2e3455d::t_1e257edc11443d 1011-1014
+  s_51f585a2e3455d::t_7be70983011cca 36,984,994,998,1004
+libs/code/tests/unit_tests/test_mcp_tools.py
+  s_51f585a2e3455d::t_dc7cc834b796d5 1576-1618
+libs/code/deepagents_code/mcp_tools.py
+  s_51f585a2e3455d::t_47a3e63a9be42e 1573-1592,1614-1618,1631,1633
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "ba0b8c00247627a18f40e5a4ad9395a2a60c19ee",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  },
+  "sessions": {
+    "s_51f585a2e3455d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6e6f5785-987d-4cf7-addb-5c3cf25bfdd1",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

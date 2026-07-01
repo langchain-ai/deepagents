@@ -9720,6 +9720,23 @@ class DeepAgentsApp(App):
             effort=self._current_effort_label(),
         )
 
+    def _resolve_effort_context(self) -> tuple[str, tuple[str, ...]] | str:
+        """Resolve the active model spec and its supported reasoning efforts.
+
+        Returns:
+            A `(spec, efforts)` tuple, or an error message when no model is
+            configured or the model does not support reasoning effort.
+        """
+        from deepagents_code.reasoning_effort import supported_efforts_for_model
+
+        spec = self._effective_model_spec()
+        if not spec:
+            return "No model is configured yet. Run `/model` to choose one."
+        efforts = supported_efforts_for_model(spec)
+        if not efforts:
+            return f"Reasoning effort is not configurable for {spec}."
+        return spec, efforts
+
     async def _handle_effort_command(self, command: str) -> None:
         """Set or select reasoning effort for the current model.
 
@@ -9740,27 +9757,15 @@ class DeepAgentsApp(App):
         Args:
             command: The raw `/effort` slash command.
         """
-        from deepagents_code.reasoning_effort import (
-            current_effort_from_model_params,
-            supported_efforts_for_model,
-        )
+        from deepagents_code.reasoning_effort import current_effort_from_model_params
         from deepagents_code.widgets.effort_selector import EffortSelectorScreen
 
-        spec = self._effective_model_spec()
-        if not spec:
+        context = self._resolve_effort_context()
+        if isinstance(context, str):
             await self._mount_message(UserMessage(command))
-            await self._mount_message(
-                AppMessage("No model is configured yet. Run `/model` to choose one."),
-            )
+            await self._mount_message(AppMessage(context))
             return
-
-        efforts = supported_efforts_for_model(spec)
-        if not efforts:
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(
-                AppMessage(f"Reasoning effort is not configurable for {spec}."),
-            )
-            return
+        spec, efforts = context
 
         current = current_effort_from_model_params(spec, self._model_params_override)
         screen = EffortSelectorScreen(
@@ -9790,23 +9795,14 @@ class DeepAgentsApp(App):
         from deepagents_code.reasoning_effort import (
             merge_effort_model_params,
             model_params_for_effort,
-            supported_efforts_for_model,
             without_effort_model_params,
         )
 
-        spec = self._effective_model_spec()
-        if not spec:
-            await self._mount_message(
-                AppMessage("No model is configured yet. Run `/model` to choose one."),
-            )
+        context = self._resolve_effort_context()
+        if isinstance(context, str):
+            await self._mount_message(AppMessage(context))
             return
-
-        efforts = supported_efforts_for_model(spec)
-        if not efforts:
-            await self._mount_message(
-                AppMessage(f"Reasoning effort is not configurable for {spec}."),
-            )
-            return
+        spec, efforts = context
 
         if effort in {"clear", "--clear", "reset"}:
             self._model_params_override = without_effort_model_params(

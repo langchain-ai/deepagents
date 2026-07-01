@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 from typing import Any, Literal, TypeAlias
+
+from deepagents_code.model_config import ModelSpec
 
 OPENAI_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh")
 ANTHROPIC_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
@@ -28,18 +29,11 @@ _REASONING_KEYS: frozenset[str] = frozenset(
 )
 
 
-def _split_model_spec(model_spec: str) -> tuple[str, str] | None:
-    provider, sep, model = model_spec.partition(":")
-    if not sep or not provider or not model:
-        return None
-    return provider, model
-
-
 def _reasoning_provider(model_spec: str) -> ReasoningProvider | None:
-    parsed = _split_model_spec(model_spec)
+    parsed = ModelSpec.try_parse(model_spec)
     if parsed is None:
         return None
-    provider, model = parsed
+    provider, model = parsed.provider, parsed.model
     model_lower = model.lower()
     if provider == "openai" and model_lower.startswith("gpt-5"):
         return "openai"
@@ -75,8 +69,8 @@ def supported_efforts_for_model(model_spec: str | None) -> tuple[str, ...]:
     if provider == "google_genai":
         return GOOGLE_EFFORTS
     if provider == "fireworks":
-        parsed = _split_model_spec(model_spec)
-        model = parsed[1].lower() if parsed is not None else ""
+        parsed = ModelSpec.try_parse(model_spec)
+        model = parsed.model.lower() if parsed is not None else ""
         if "kimi-k2" in model:
             return FIREWORKS_KIMI_EFFORTS
         if "glm-5" in model:
@@ -159,7 +153,7 @@ def merge_effort_model_params(
     Returns:
         A new merged dictionary preserving unrelated nested `model_kwargs`.
     """
-    merged = deepcopy(existing) if existing else {}
+    merged = dict(existing) if existing else {}
     for key, value in effort_params.items():
         if key == "model_kwargs" and isinstance(value, dict):
             current = merged.get("model_kwargs")
@@ -185,7 +179,7 @@ def without_effort_model_params(
     if not existing:
         return None
     cleaned = {
-        key: deepcopy(value)
+        key: (dict(value) if isinstance(value, dict) else value)
         for key, value in existing.items()
         if key not in _REASONING_KEYS
     }

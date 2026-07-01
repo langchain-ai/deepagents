@@ -1419,6 +1419,50 @@ class TestLoadToolsFromConfigOAuth:
         assert isinstance(recorded[0].get("auth"), OAuthClientProvider)
         await manager.cleanup()
 
+    async def test_authorization_header_skips_stored_oauth_without_explicit_oauth(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Static `Authorization` headers take precedence over stored OAuth."""
+        from mcp.shared.auth import OAuthToken
+
+        monkeypatch.setenv("DA_TOKEN", "tok-123")
+        storage = FileTokenStorage("notion", server_url="https://mcp.notion.com/mcp")
+        await storage.set_tokens(OAuthToken(access_token="at", token_type="Bearer"))
+
+        recorded: list[dict[str, Any]] = []
+        session = AsyncMock()
+        session.initialize = AsyncMock()
+        session.list_tools = AsyncMock(return_value=_make_tool_page([]))
+
+        @asynccontextmanager
+        async def _fake(
+            connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            await asyncio.sleep(0)
+            recorded.append(connection)
+            yield session
+
+        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+            config = {
+                "mcpServers": {
+                    "notion": {
+                        "transport": "http",
+                        "url": "https://mcp.notion.com/mcp",
+                        "headers": {"Authorization": "Bearer ${DA_TOKEN}"},
+                    }
+                }
+            }
+            tools, manager, _ = await _load_tools_from_config(config)
+
+        assert tools == []
+        assert isinstance(manager, MCPSessionManager)
+        assert recorded[0]["headers"] == {"Authorization": "Bearer tok-123"}
+        assert "auth" not in recorded[0]
+        await manager.cleanup()
+
     async def test_discovery_401_challenge_marks_unauthenticated(self) -> None:
         """A 401 OAuth challenge during discovery is surfaced as unauthenticated."""
         request = httpx.Request("GET", "https://mcp.notion.com/mcp")

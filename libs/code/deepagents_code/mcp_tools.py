@@ -1483,6 +1483,10 @@ async def _load_tools_from_config(
                 )
 
                 explicit_oauth = server_config.get("auth") == "oauth"
+                header_names = {
+                    name.lower() for name in (server_config.get("headers") or {})
+                }
+                has_authorization_header = "authorization" in header_names
                 storage = FileTokenStorage(
                     server_name,
                     server_url=server_config["url"],
@@ -1500,10 +1504,13 @@ async def _load_tools_from_config(
                     skipped[server_name] = ("unauthenticated", auth_msg)
                     continue
 
-                if explicit_oauth or stored_tokens is not None:
+                if explicit_oauth or (
+                    stored_tokens is not None and not has_authorization_header
+                ):
                     # Attach the provider when the user opted in, or when a
                     # prior login (possibly triggered by 401 auto-detection)
-                    # already stored tokens for this server.
+                    # already stored tokens for this server. Static
+                    # Authorization headers take precedence over stored OAuth.
                     conn["auth"] = build_oauth_provider(
                         server_name=server_name,
                         server_url=server_config["url"],

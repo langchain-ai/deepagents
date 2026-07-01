@@ -1,0 +1,258 @@
+import base64
+
+import pytest
+from langchain.tools import ToolRuntime
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages.utils import convert_to_openai_messages
+from langgraph.types import Command
+
+import deepagents.middleware.filesystem as filesystem_middleware
+from deepagents.backends import StateBackend
+from deepagents.backends.protocol import ReadResult
+from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemState
+
+
+def test_read_file_video_routes_to_frame_extractor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Video reads route through the frame extractor, not generic base64 media."""
+    raw_bytes = b"\x00\x01\x02 fake video bytes"
+    sentinel = [
+        {"type": "text", "text": "Frame at t=00:00:00.000"},
+        {"type": "image", "base64": "AAAA", "mime_type": "image/jpeg"},
+        {"type": "text", "text": "Frame at t=00:00:02.000"},
+        {"type": "image", "base64": "BBBB", "mime_type": "image/jpeg"},
+    ]
+    calls: list[dict[str, float | int]] = []
+
+    def fake_extract(
+        content: bytes,
+        *,
+        offset_seconds: float,
+        duration_seconds: float,
+        sampling_rate: float,
+    ) -> list[dict[str, str]]:
+        calls.append(
+            {
+                "len": len(content),
+                "offset_seconds": offset_seconds,
+                "duration_seconds": duration_seconds,
+                "sampling_rate": sampling_rate,
+            }
+        )
+        return list(sentinel)
+
+    monkeypatch.setattr(filesystem_middleware, "extract_video_frames", fake_extract)
+
+    middleware = FilesystemMiddleware(backend=_video_backend(raw_bytes))
+    state = FilesystemState(messages=[], files={})
+    runtime = _build_runtime(state, "video-read-1")
+    read_file_tool = next(t for t in middleware.tools if t.name == "read_file")
+
+    result = read_file_tool.invoke(
+        {
+            "file_path": "/clips/intro.mkv",
+            "offset": 0,
+            "limit": 30,
+            "runtime": runtime,
+        }
+    )
+
+    assert isinstance(result, Command)
+    assert isinstance(result.update, dict)
+    messages = result.update["messages"]
+    assert isinstance(messages, list)
+    assert len(messages) == 2
+    tool_message, media_message = messages
+    assert isinstance(tool_message, ToolMessage)
+    assert tool_message.status == "success"
+    assert tool_message.content == "Read video /clips/intro.mkv: sampled 2 frames. The sampled frames are attached in the following message."
+    assert tool_message.additional_kwargs["read_file_path"] == "/clips/intro.mkv"
+    assert tool_message.additional_kwargs["read_file_frame_count"] == 2
+    assert isinstance(media_message, HumanMessage)
+    assert media_message.additional_kwargs["read_file_media_result"] is True
+    assert media_message.additional_kwargs["read_file_path"] == "/clips/intro.mkv"
+    assert media_message.additional_kwargs["read_file_tool_call_id"] == "video-read-1"
+    assert media_message.content == [
+        {"type": "text", "text": "Reading first 30s of /clips/intro.mkv at 0.5 fps."},
+        *sentinel,
+    ]
+    assert b"\x00\x01\x02" not in str(media_message.content).encode()
+
+    openai_messages = convert_to_openai_messages(
+        [
+            HumanMessage(content="read video"),
+            AIMessage(content="", tool_calls=[{"id": "video-read-1", "name": "read_file", "args": {"file_path": "/clips/intro.mkv"}}]),
+            *messages,
+        ]
+    )
+    openai_tool_message = next(message for message in openai_messages if message["role"] == "tool")
+    assert isinstance(openai_tool_message["content"], str)
+    assert all(
+        block.get("type") != "video"
+        for message in openai_messages
+        for block in (message["content"] if isinstance(message.get("content"), list) else [])
+    )
+
+    assert calls == [
+        {
+            "len": len(raw_bytes),
+            "offset_seconds": 0,
+            "duration_seconds": 30,
+            "sampling_rate": 0.5,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("tool_input", "expected"),
+    [
+        (
+            {"offset": 12, "limit": 90},
+            {"offset_seconds": 12.0, "duration_seconds": 90.0, "sampling_rate": 0.5},
+        ),
+        (
+            {},
+            {"offset_seconds": 0.0, "duration_seconds": 100.0, "sampling_rate": 0.5},
+        ),
+    ],
+    ids=["explicit-window", "default-window"],
+)
+def test_read_file_video_window_forwards_seconds(
+    monkeypatch: pytest.MonkeyPatch,
+    tool_input: dict[str, int],
+    expected: dict[str, float],
+) -> None:
+    """`offset`/`limit` become seconds, with the default window preserved."""
+    captured: dict[str, float] = {}
+
+    def fake_extract(
+        _content: bytes,
+        *,
+        offset_seconds: float,
+        duration_seconds: float,
+        sampling_rate: float,
+    ) -> list[dict[str, str]]:
+        captured.update(offset_seconds=offset_seconds, duration_seconds=duration_seconds, sampling_rate=sampling_rate)
+        return [{"type": "text", "text": "ok"}]
+
+    monkeypatch.setattr(filesystem_middleware, "extract_video_frames", fake_extract)
+    middleware = FilesystemMiddleware(backend=_video_backend())
+    state = FilesystemState(messages=[], files={})
+    runtime = _build_runtime(state, "video-read-window")
+    read_file_tool = next(t for t in middleware.tools if t.name == "read_file")
+
+    read_file_tool.invoke({"file_path": "/c.mp4", "runtime": runtime, **tool_input})
+
+    assert captured == expected
+
+
+def test_read_file_video_media_result_ordered_after_parallel_tool_results() -> None:
+    """Video frame attachments do not split a provider-required tool result batch."""
+    ai_message = AIMessage(
+        content="",
+        tool_calls=[
+            {"id": "call_video", "name": "read_file", "args": {"file_path": "/c.mp4"}},
+            {"id": "call_ls", "name": "ls", "args": {"path": "/"}},
+        ],
+    )
+    video_tool = ToolMessage(content="sampled frames", name="read_file", tool_call_id="call_video")
+    video_media = HumanMessage(
+        content=[
+            {"type": "text", "text": "Reading first 100s of /c.mp4 at 0.5 fps."},
+            {"type": "image", "base64": "AAAA", "mime_type": "image/jpeg"},
+        ],
+        additional_kwargs={"read_file_media_result": True},
+    )
+    ls_tool = ToolMessage(content="[]", name="ls", tool_call_id="call_ls")
+
+    user_message = HumanMessage(content="read and list")
+    reordered = filesystem_middleware._move_media_results_after_tool_results([user_message, ai_message, video_tool, video_media, ls_tool])
+
+    assert reordered == [user_message, ai_message, video_tool, ls_tool, video_media]
+
+
+def test_read_file_video_extraction_error_surfaces_as_error_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PyAV failures and missing-dep errors render as a tool error, not an exception."""
+
+    def fake_extract(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
+        msg = "av not installed"
+        raise filesystem_middleware.VideoExtractionError(msg)
+
+    monkeypatch.setattr(filesystem_middleware, "extract_video_frames", fake_extract)
+    middleware = FilesystemMiddleware(backend=_video_backend(b"corrupt"))
+    state = FilesystemState(messages=[], files={})
+    runtime = _build_runtime(state, "video-read-err")
+    read_file_tool = next(t for t in middleware.tools if t.name == "read_file")
+
+    result = read_file_tool.invoke({"file_path": "/c.mp4", "runtime": runtime})
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    assert "av not installed" in result.content
+
+
+def test_read_file_video_non_positive_limit_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-positive `limit` is rejected as a tool error, not silently clamped."""
+    called = {"count": 0}
+
+    def fake_extract(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
+        called["count"] += 1
+        return [{"type": "text", "text": "ok"}]
+
+    monkeypatch.setattr(filesystem_middleware, "extract_video_frames", fake_extract)
+    middleware = FilesystemMiddleware(backend=_video_backend())
+    state = FilesystemState(messages=[], files={})
+    runtime = _build_runtime(state, "video-read-bad-limit")
+    read_file_tool = next(t for t in middleware.tools if t.name == "read_file")
+
+    result = read_file_tool.invoke({"file_path": "/c.mp4", "limit": 0, "runtime": runtime})
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    assert "limit must be > 0" in result.content
+    assert called["count"] == 0
+
+
+def test_read_file_video_payload_size_cap_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """State/store/custom video payloads are capped after base64 decoding."""
+    called = {"count": 0}
+
+    def fake_extract(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
+        called["count"] += 1
+        return [{"type": "text", "text": "ok"}]
+
+    monkeypatch.setattr(filesystem_middleware, "MAX_VIDEO_INPUT_BYTES", 3)
+    monkeypatch.setattr(filesystem_middleware, "extract_video_frames", fake_extract)
+    middleware = FilesystemMiddleware(backend=_video_backend(b"abcd"))
+    state = FilesystemState(messages=[], files={})
+    runtime = _build_runtime(state, "video-read-big-payload")
+    read_file_tool = next(t for t in middleware.tools if t.name == "read_file")
+
+    result = read_file_tool.invoke({"file_path": "/c.mp4", "runtime": runtime})
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    assert "video payload exceeds maximum input size of 3 bytes" in result.content
+    assert called["count"] == 0
+
+
+def _build_runtime(state: FilesystemState, tool_call_id: str) -> ToolRuntime[None, FilesystemState]:
+    """Build a `ToolRuntime` for video `read_file` tests."""
+    return ToolRuntime(
+        state=state,
+        context=None,
+        tool_call_id=tool_call_id,
+        store=None,
+        stream_writer=lambda _: None,
+        config={},
+    )
+
+
+def _video_backend(raw: bytes = b"raw") -> StateBackend:
+    """Backend stub that returns `raw` base64-encoded for any video read."""
+    payload = base64.b64encode(raw).decode("ascii")
+
+    class VideoBackend(StateBackend):
+        def read(self, file_path: str, offset: int = 0, limit: int = 100) -> ReadResult:
+            return ReadResult(file_data={"content": payload, "encoding": "base64"})
+
+    return VideoBackend()

@@ -2,12 +2,14 @@
 # ruff: noqa: E501
 
 import asyncio
+import base64
 import concurrent.futures
 import contextlib
 import contextvars
 import mimetypes
 import threading
 import uuid
+from binascii import Error as BinasciiError
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -28,7 +30,7 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
-from langchain_core.messages import AnyMessage, HumanMessage, RemoveMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.channels.delta import DeltaChannel
@@ -60,6 +62,7 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.sandbox import BaseSandbox
 from deepagents.backends.utils import (
+    MAX_VIDEO_INPUT_BYTES,
     _get_file_type,
     _glob_anchor,
     _paths_overlap,
@@ -78,6 +81,10 @@ from deepagents.middleware._message_eviction import (
     _offload_tool_message_content,
 )
 from deepagents.middleware._utils import append_to_system_message
+from deepagents.middleware._video import (
+    VideoExtractionError,
+    extract_video_frames,
+)
 
 _FS_WCMATCH_FLAGS = wcglob.BRACE | wcglob.GLOBSTAR
 _SYNC_GLOB_WORKERS = 4
@@ -93,6 +100,131 @@ _DEFAULT_FS_TOOL_OPS: dict[str, FilesystemOperation] = {
     "edit_file": "write",
     "delete": "write",
 }
+
+_READ_FILE_MEDIA_RESULT = "read_file_media_result"
+_VIDEO_SAMPLING_RATE = 0.5
+
+
+def _tool_error(name: str, tool_call_id: str | None, content: str) -> ToolMessage:
+    """Build a `ToolMessage` carrying a plain text error."""
+    return ToolMessage(content=content, name=name, tool_call_id=tool_call_id, status="error")
+
+
+def _is_read_file_media_result(message: AnyMessage) -> bool:
+    """Return whether `message` carries media emitted by a `read_file` tool result."""
+    return isinstance(message, HumanMessage) and message.additional_kwargs.get(_READ_FILE_MEDIA_RESULT) is True
+
+
+def _move_media_results_after_tool_results(messages: list[AnyMessage]) -> list[AnyMessage]:
+    """Keep synthetic media messages after the tool-result batch they describe.
+
+    Tool-call providers require every `ToolMessage` for an assistant tool-call
+    batch to arrive before any non-tool message. Video reads attach sampled
+    frames as a synthetic `HumanMessage`; when multiple tools run in the same
+    turn this helper keeps those attachments behind the full batch.
+    """
+    reordered: list[AnyMessage] = []
+    i = 0
+    while i < len(messages):
+        message = messages[i]
+        reordered.append(message)
+        i += 1
+        if not isinstance(message, AIMessage) or not message.tool_calls:
+            continue
+
+        batch: list[AnyMessage] = []
+        while i < len(messages):
+            next_message = messages[i]
+            if isinstance(next_message, ToolMessage) or _is_read_file_media_result(next_message):
+                batch.append(next_message)
+                i += 1
+                continue
+            break
+        if batch:
+            reordered.extend(message for message in batch if isinstance(message, ToolMessage))
+            reordered.extend(message for message in batch if _is_read_file_media_result(message))
+    return reordered
+
+
+def _handle_video_read(
+    content: str,
+    validated_path: str,
+    tool_call_id: str | None,
+    offset: int,
+    limit: int,
+) -> ToolMessage | Command:
+    """Slice a video byte payload into a sampled frame window for the model.
+
+    `offset` is reinterpreted as seconds into the source to skip; `limit` as
+    seconds of source to sample. The agent's supplied `limit` is authoritative
+    (no per-call upper clamp), and supplying a non-positive value is rejected
+    as a tool error. Output volume is bounded by the layered caps on the
+    extractor (`MAX_VIDEO_DECODE_SECONDS`, `MAX_VIDEO_SAMPLED_FRAMES`,
+    `MAX_VIDEO_EMITTED_BYTES`, `MAX_VIDEO_FRAME_PIXELS`, `MAX_VIDEO_FRAME_SIDE`).
+
+    Errors are returned as `ToolMessage` errors so the turn still completes and
+    the agent can recover (e.g. by retrying with a smaller window).
+    """
+    if limit <= 0:
+        return _tool_error("read_file", tool_call_id, f"Error reading video {validated_path}: limit must be > 0, got {limit!r}")
+    rate = _VIDEO_SAMPLING_RATE
+    offset_seconds = max(0.0, float(offset))
+    duration_seconds = float(limit)
+    header = _video_window_header(validated_path, offset_seconds, duration_seconds, rate)
+
+    def _err(msg: str) -> ToolMessage:
+        return _tool_error("read_file", tool_call_id, f"Error reading video {validated_path}: {msg}\n{header}")
+
+    try:
+        raw_bytes = base64.b64decode(content, validate=True) if isinstance(content, str) else content
+    except (ValueError, TypeError, BinasciiError) as exc:
+        return _err(f"video bytes are not valid base64 ({exc})")
+    if len(raw_bytes) > MAX_VIDEO_INPUT_BYTES:
+        return _err(f"video payload exceeds maximum input size of {MAX_VIDEO_INPUT_BYTES} bytes")
+
+    try:
+        blocks = extract_video_frames(
+            raw_bytes,
+            offset_seconds=offset_seconds,
+            duration_seconds=duration_seconds,
+            sampling_rate=rate,
+        )
+    except VideoExtractionError as exc:
+        return _err(str(exc))
+    blocks.insert(0, {"type": "text", "text": header})
+    frame_count = sum(1 for block in blocks if isinstance(block, dict) and block.get("type") == "image")
+    frame_label = "frame" if frame_count == 1 else "frames"
+    tool_message = ToolMessage(
+        content=f"Read video {validated_path}: sampled {frame_count} {frame_label}. The sampled frames are attached in the following message.",
+        name="read_file",
+        tool_call_id=tool_call_id,
+        additional_kwargs={"read_file_path": validated_path, "read_file_frame_count": frame_count},
+        status="success",
+    )
+    media_message = HumanMessage(
+        content_blocks=blocks,
+        additional_kwargs={
+            _READ_FILE_MEDIA_RESULT: True,
+            "read_file_path": validated_path,
+            "read_file_tool_call_id": tool_call_id,
+        },
+    )
+    return Command(
+        update={
+            "messages": [
+                tool_message,
+                media_message,
+            ],
+        }
+    )
+
+
+def _video_window_header(path: str, offset_seconds: float, duration_seconds: float, rate: float) -> str:
+    """Render the model-facing text header introducing a sampled frame window."""
+    end = offset_seconds + duration_seconds
+    if offset_seconds <= 0.0:
+        return f"Reading first {int(duration_seconds)}s of {path} at {rate} fps."
+    return f"Reading [{offset_seconds:.3f}s, {end:.3f}s) of {path} at {rate} fps."
 
 
 @dataclass
@@ -390,12 +522,12 @@ class ReadFileSchema(BaseModel):
 
     offset: int = Field(
         default=DEFAULT_READ_OFFSET,
-        description="Line number to start reading from (0-indexed). Use for pagination of large files.",
+        description="Line number to start reading from for text files (0-indexed). For videos, seconds into the source to start sampling.",
     )
 
     limit: int = Field(
         default=DEFAULT_READ_LIMIT,
-        description="Maximum number of lines to read. Use for pagination of large files.",
+        description="Maximum number of lines to read for text files. For videos, seconds of source to sample.",
     )
 
 
@@ -472,11 +604,11 @@ READ_FILE_TOOL_DESCRIPTION = """Reads a file from the filesystem.
 Assume this tool is able to read all files. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
 
 Usage:
-- By default, it reads up to 100 lines starting from the beginning of the file
+- For text files, by default it reads up to 100 lines starting from the beginning of the file
 - **IMPORTANT for large files and codebase exploration**: Use pagination with offset and limit parameters to avoid context overflow
     - First scan: read_file(file_path="...", limit=100) to see file structure
     - Read more sections: read_file(file_path="...", offset=100, limit=200) for next 200 lines
-    - Only omit limit (read full file) when necessary for editing
+    - Omit `limit` to use the default window; increase it only when necessary for editing
 - Specify offset and limit: read_file(file_path="...", offset=0, limit=100) reads first 100 lines
 - Results are returned using cat -n format, with line numbers starting at 1
 - Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.). `limit` applies to source lines, so continuation rows do not consume the budget.
@@ -486,7 +618,8 @@ Usage:
 
 For multimodal reads (image, audio, video, PDF, etc.):
 - Use `read_file(file_path=...)`
-- Do NOT use `offset`/`limit` for images (pagination is text-only)
+- For images and PDFs, pagination via `offset`/`limit` is text-only - supply `file_path` only
+- For videos, `offset`/`limit` are interpreted as seconds (default window 100 s; sampled at a fixed rate). Use smaller windows when you need more temporal detail.
 - If file details were compacted from history, call `read_file` again on the same path
 
 - You should ALWAYS make sure a file has been read before editing it."""
@@ -1122,13 +1255,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
             return content
 
-        def _handle_read_result(
+        def _handle_read_result(  # noqa: PLR0911
             read_result: ReadResult | str,
             validated_path: str,
             tool_call_id: str | None,
             offset: int,
             limit: int,
-        ) -> ToolMessage:
+        ) -> ToolMessage | Command:
             if isinstance(read_result, str):
                 warn_deprecated(
                     since="0.5.0",
@@ -1180,6 +1313,18 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="success",
                 )
 
+            # Video reads must be sliced into a sampled frame window before the
+            # generic base64 branch runs; otherwise raw video bytes would reach
+            # the model.
+            if file_type == "video":
+                return _handle_video_read(
+                    content,
+                    validated_path,
+                    tool_call_id,
+                    offset,
+                    limit,
+                )
+
             # Route on the backend-declared encoding first: `"base64"` means the
             # content is binary and must never be line-numbered as text, even
             # when the extension is absent from `_EXTENSION_TO_FILE_TYPE`.
@@ -1210,9 +1355,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         def sync_read_file(
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
             runtime: ToolRuntime[None, FilesystemState],
-            offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
-            limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
-        ) -> ToolMessage:
+            offset: Annotated[
+                int,
+                "Line number to start reading from for text files (0-indexed). For videos, seconds into the source to start sampling.",
+            ] = DEFAULT_READ_OFFSET,
+            limit: Annotated[int, "Maximum number of lines to read for text files. For videos, seconds of source to sample."] = DEFAULT_READ_LIMIT,
+        ) -> ToolMessage | Command:
             """Synchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
@@ -1237,9 +1385,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         async def async_read_file(
             file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
             runtime: ToolRuntime[None, FilesystemState],
-            offset: Annotated[int, "Line number to start reading from (0-indexed). Use for pagination of large files."] = DEFAULT_READ_OFFSET,
-            limit: Annotated[int, "Maximum number of lines to read. Use for pagination of large files."] = DEFAULT_READ_LIMIT,
-        ) -> ToolMessage:
+            offset: Annotated[
+                int,
+                "Line number to start reading from for text files (0-indexed). For videos, seconds into the source to start sampling.",
+            ] = DEFAULT_READ_OFFSET,
+            limit: Annotated[int, "Maximum number of lines to read for text files. For videos, seconds of source to sample."] = DEFAULT_READ_LIMIT,
+        ) -> ToolMessage | Command:
             """Asynchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
             try:
@@ -2168,6 +2319,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """
         request = self._filter_unsupported_tools_and_apply_prompt(request)
 
+        request_messages = _move_media_results_after_tool_results(list(request.messages))
+        if request_messages != list(request.messages):
+            request = request.override(messages=request_messages)
+
         eviction_result = self._evict_and_truncate_messages(request)
         if eviction_result is not None:
             messages, state_command = eviction_result
@@ -2198,6 +2353,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 with a state update tagging newly evicted messages.
         """
         request = self._filter_unsupported_tools_and_apply_prompt(request)
+
+        request_messages = _move_media_results_after_tool_results(list(request.messages))
+        if request_messages != list(request.messages):
+            request = request.override(messages=request_messages)
 
         eviction_result = await self._aevict_and_truncate_messages(request)
         if eviction_result is not None:

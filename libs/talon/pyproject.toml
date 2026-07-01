@@ -39,6 +39,9 @@ speech = [
     "torchaudio>=2.11.0,<2.12.0",
     "transformers>=5.12.1,<6.0.0",
 ]
+video = [
+    "deepagents[video]>=0.6.12,<0.7.0",
+]
 
 [project.scripts]
 deepagents-talon = "deepagents_talon.__main__:main"

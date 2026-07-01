@@ -599,8 +599,8 @@ _PRESSURE_TIERS: tuple[tuple[float, str], ...] = (
     (
         0.82,
         "Step budget is running low (~82% used). Ship the best solution you have to the "
-        "required path this turn — a submitted best-effort artifact can score, an "
-        "unfinished one cannot. Re-read your notes for the exact contract if unsure.",
+        "required path this turn — a finished best-effort artifact is a usable result, an "
+        "unfinished one is not. Re-read your notes for the exact contract if unsure.",
     ),
     (
         0.90,

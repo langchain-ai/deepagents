@@ -120,6 +120,8 @@ def test_make_graph_builds_headless_local_deepagent(
     assert "enable_anti_ramble" not in captured_create[0]
     assert isinstance(captured_create[0]["system_prompt"], str)
     assert "autonomous coding agent" in captured_create[0]["system_prompt"]
+    # Grader-agnostic: the prompt must not reveal the agent is inside an eval.
+    assert "grader" not in captured_create[0]["system_prompt"]
 
 
 def test_make_graph_defaults_to_app_workdir(monkeypatch: pytest.MonkeyPatch) -> None:

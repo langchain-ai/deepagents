@@ -88,7 +88,7 @@ context about what you're solving.
 
 ## Verify against the real check, not your own
 
-Run it the way the grader will. If the task ships tests, examples, or sample
+Run it the way it will actually be run. If the task ships tests, examples, or sample
 input/output, run them; they are your success signal. Otherwise turn a concrete example
 from the task into a runnable check and iterate until it passes — the exact command, from
 a clean directory. Derive what you check from the task's literal wording, not your own

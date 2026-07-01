@@ -114,6 +114,34 @@ _BLOCKED_GOAL_RETRY_CONTEXT = (
     "</dcode_blocked_goal_retry_context>"
 )
 
+
+def _parse_rubric_max_iterations(raw: str) -> tuple[int | None, str | None]:
+    """Parse a grader `max-iterations` argument shared by `/rubric` and `/goal`.
+
+    Error strings are command-agnostic so they read correctly regardless of the
+    slash command the user typed.
+
+    Args:
+        raw: The raw argument text following the subcommand.
+
+    Returns:
+        A `(value, error)` pair. On success `error` is `None` and `value` is
+            either `None` (clear / reset to the SDK default) or a positive int.
+            On invalid input `value` is `None` and `error` carries a user-facing
+            message.
+    """
+    value = raw.strip().lower()
+    if value in {"clear", "default"}:
+        return None, None
+    try:
+        parsed = int(value)
+    except ValueError:
+        return None, "Max iterations must be a whole number, or 'clear' to reset."
+    if parsed < 1:
+        return None, "Max iterations must be a positive whole number."
+    return parsed, None
+
+
 # Serializes process-local read-modify-write operations for `config.toml`.
 # Without this, overlapping global-theme and per-terminal-theme saves can each
 # read the same pre-mutation state and then clobber the other's keys.
@@ -1258,6 +1286,7 @@ DeferredActionKind = Literal[
     "agent_switch",
     "mcp_login",
     "rubric_model_switch",
+    "rubric_max_iterations_switch",
 ]
 """Valid `DeferredAction.kind` values for type-checked deduplication."""
 
@@ -2224,6 +2253,11 @@ class DeepAgentsApp(App):
 
         self._rubric_model: str | None = (server_kwargs or {}).get("rubric_model")
         """Optional grader model spec for rubric evaluation."""
+
+        self._rubric_max_iterations: int | None = (server_kwargs or {}).get(
+            "rubric_max_iterations"
+        )
+        """Optional grader iterations per rubric attempt."""
 
         self._active_goal: str | None = None
         """Goal objective accepted by the user and backed by the active rubric."""
@@ -7880,9 +7914,10 @@ class DeepAgentsApp(App):
         """Clear every goal and rubric field (sticky, one-shot, goal, pending).
 
         Single reset point so the clear paths cannot drift out of sync over the
-        nine correlated fields. The grader model (`_rubric_model`) is
-        intentionally left untouched — it is configured separately via
-        `/rubric model` and survives `/rubric clear` and `/clear`.
+        ten correlated fields. Grader settings (`_rubric_model` and
+        `_rubric_max_iterations`) are intentionally left untouched — they are
+        configured separately via `/rubric model` and `/rubric max-iterations`
+        and survive `/rubric clear` and `/clear`.
         """
         self._active_rubric = None
         self._next_rubric = None
@@ -8176,10 +8211,97 @@ class DeepAgentsApp(App):
         self._last_consumed_next_rubric = None
         self._last_consumed_next_previous_rubric = None
 
+    @staticmethod
+    def _is_grader_alias_arg(arg: str) -> bool:
+        """Whether a `/goal` grader-alias argument is a grader value, not prose.
+
+        Grader arguments (`clear`, a model spec like `openai:gpt-5.1`, or an
+        iteration count) are always a single token, so a multi-word argument is
+        a plain-language objective that merely starts with `model` /
+        `max-iterations`. Such objectives must fall through to the objective
+        workflow instead of being hijacked as a grader command.
+
+        Returns:
+            `True` when the argument is empty or a single token (i.e. a grader
+            value); `False` for multi-word objective text.
+        """
+        return len(arg.split()) <= 1
+
+    async def _dispatch_grader_model(self, command: str, arg: str) -> None:
+        """Route a grader-model argument to the shared setter or picker.
+
+        Shared by `/rubric model` and the `/goal model` alias so both entry
+        points stay in lockstep.
+        """
+        await self._mount_message(UserMessage(command))
+        if not arg:
+            await self._show_rubric_model_selector()
+        elif arg.lower() == "clear":
+            await self._set_rubric_model(None)
+        else:
+            await self._set_rubric_model(arg)
+
+    async def _dispatch_grader_max_iterations(
+        self, command: str, arg: str, *, usage_prefix: str
+    ) -> None:
+        """Route a grader `max-iterations` argument to the shared setter.
+
+        Shared by `/rubric max-iterations` and the `/goal max-iterations` alias.
+        `usage_prefix` names the invoking command in the empty-argument usage
+        hint so each entry point advertises its own spelling.
+        """
+        await self._mount_message(UserMessage(command))
+        if not arg:
+            await self._mount_message(
+                AppMessage(f"Usage: {usage_prefix} max-iterations <N|clear>")
+            )
+            return
+        value, error = _parse_rubric_max_iterations(arg)
+        if error is not None:
+            await self._mount_message(ErrorMessage(error))
+            return
+        await self._set_rubric_max_iterations(value)
+
+    def _grader_display_values(self) -> tuple[str, str]:
+        """Return display strings for the shared grader model and iteration cap.
+
+        Both fall back to human-readable defaults when unset. Shared by
+        `/goal show` and `/rubric show` so the default wording stays in sync.
+        """
+        model = self._rubric_model or "current chat model"
+        iterations = (
+            str(self._rubric_max_iterations)
+            if self._rubric_max_iterations is not None
+            else "SDK default"
+        )
+        return model, iterations
+
     async def _handle_goal_command(self, command: str) -> None:
         """Handle `/goal` as a user-approved rubric proposal workflow."""
         remainder = command.strip()[len("/goal") :].strip()
         subcommand = remainder.lower()
+
+        # Grader settings are shared with `/rubric` — one `RubricMiddleware`
+        # grades both goals and ad-hoc rubrics. Expose them here as aliases that
+        # call the same setters (no separate state) so goal-first users can tune
+        # grading without discovering `/rubric`. These intercept ahead of every
+        # `/goal` subcommand below, but only when the argument is a single grader
+        # token (a model spec, an iteration count, or `clear`); a multi-word
+        # objective that merely starts with `model` / `max-iterations` still
+        # falls through to the objective workflow.
+        grader_sub, _, grader_arg = remainder.partition(" ")
+        grader_sub = grader_sub.lower()
+        grader_arg = grader_arg.strip()
+        if grader_sub == "model" and self._is_grader_alias_arg(grader_arg):
+            await self._dispatch_grader_model(command, grader_arg)
+            return
+        if grader_sub in {"max-iterations", "max_iterations"} and (
+            self._is_grader_alias_arg(grader_arg)
+        ):
+            await self._dispatch_grader_max_iterations(
+                command, grader_arg, usage_prefix="/goal"
+            )
+            return
 
         if not remainder or subcommand in {"show", "status"}:
             await self._mount_message(UserMessage(command))
@@ -8224,10 +8346,13 @@ class DeepAgentsApp(App):
             "Usage:\n"
             "  /goal <objective>\n"
             "  /goal show\n"
-            "  /goal clear\n\n"
+            "  /goal clear\n"
+            "  /goal model [provider:model|clear]\n"
+            "  /goal max-iterations <N|clear>\n\n"
             "Use /goal when you have a plain-language objective; dcode will "
-            "draft a checklist and ask before applying it. Use /rubric to set "
-            "the checklist text directly."
+            "draft a checklist and ask before applying it. Once accepted, the "
+            "goal stays active for this thread until completed, blocked, or "
+            "cleared. Follow-up prompts continue working toward that goal."
         )
 
     async def _show_goal_state(self) -> None:
@@ -8253,7 +8378,21 @@ class DeepAgentsApp(App):
                 ],
             )
         if lines:
-            lines.append("Commands:\n/goal clear\n/goal show")
+            grader_model, grader_iterations = self._grader_display_values()
+            lines.append(
+                f"Grader: {grader_model} · max iterations: {grader_iterations}"
+            )
+            if self._active_goal and self._goal_status == "active":
+                lines.append(
+                    "Goal is active for this thread until completed, blocked, or "
+                    "cleared.\nFollow-up prompts will continue working toward this "
+                    "goal."
+                )
+            lines.append(
+                "Commands:\n/goal clear\n/goal show\n"
+                "/goal model [provider:model|clear]\n"
+                "/goal max-iterations <N|clear>"
+            )
             await self._mount_message(AppMessage("\n\n".join(lines)))
             return
         await self._mount_message(
@@ -8461,7 +8600,13 @@ class DeepAgentsApp(App):
         self._pending_goal_rubric = None
         self._sync_status_rubric()
         persisted = await self._persist_goal_rubric_state()
-        await self._mount_message(AppMessage("Goal accepted. Rubric set."))
+        await self._mount_message(
+            AppMessage(
+                "Goal accepted. It will stay active for this thread until completed, "
+                "blocked, or cleared.\nUse /goal show to inspect it or /goal clear "
+                "to remove it."
+            )
+        )
         if not persisted:
             await self._mount_message(
                 ErrorMessage(
@@ -8610,16 +8755,14 @@ class DeepAgentsApp(App):
             await self._mount_goal_rubric_result("Rubric cleared.", persisted=persisted)
             return
 
+        if subcommand in {"max-iterations", "max_iterations"}:
+            await self._dispatch_grader_max_iterations(
+                command, arg, usage_prefix="/rubric"
+            )
+            return
+
         if subcommand == "model":
-            if not arg:
-                await self._mount_message(UserMessage(command))
-                await self._show_rubric_model_selector()
-                return
-            await self._mount_message(UserMessage(command))
-            if arg.lower() == "clear":
-                await self._set_rubric_model(None)
-            else:
-                await self._set_rubric_model(arg)
+            await self._dispatch_grader_model(command, arg)
             return
 
         await self._mount_message(UserMessage(command))
@@ -8635,14 +8778,21 @@ class DeepAgentsApp(App):
             "  /rubric file <path>\n"
             "  /rubric show\n"
             "  /rubric clear\n"
-            "  /rubric model [provider:model|clear]\n\n"
-            "Alias: /criteria"
+            "  /rubric model [provider:model|clear]\n"
+            "  /rubric max-iterations <N|clear>\n\n"
+            "Use /rubric next for a one-turn quality gate. Use /rubric set "
+            "when you want explicit acceptance criteria to persist across turns."
         )
 
     async def _show_rubric_usage(self) -> None:
         """Render rubric command usage with current active state if present."""
         parts = [self._rubric_usage_text()]
-        if self._active_rubric or self._next_rubric or self._rubric_model:
+        if (
+            self._active_rubric
+            or self._next_rubric
+            or self._rubric_model
+            or self._rubric_max_iterations is not None
+        ):
             state: list[str] = []
             if self._active_rubric:
                 state.append("Sticky rubric is set.")
@@ -8650,6 +8800,8 @@ class DeepAgentsApp(App):
                 state.append("Next-turn rubric is set.")
             if self._rubric_model:
                 state.append(f"Rubric grader model: {self._rubric_model}")
+            if self._rubric_max_iterations is not None:
+                state.append(f"Rubric max iterations: {self._rubric_max_iterations}")
             parts.append(
                 "Current state:\n" + "\n".join(f"  - {line}" for line in state)
             )
@@ -8662,13 +8814,16 @@ class DeepAgentsApp(App):
             lines.append(f"Rubric:\n{self._active_rubric}")
         if self._next_rubric:
             lines.append(f"Next-turn rubric:\n{self._next_rubric}")
-        if self._rubric_model:
-            lines.append(f"Rubric grader model: {self._rubric_model}")
-        if not lines:
+        if not lines and not self._rubric_model and self._rubric_max_iterations is None:
             await self._mount_message(AppMessage("No rubric set."))
             return
-        if not self._rubric_model:
-            lines.append("Rubric grader model: current chat model")
+        grader_model, grader_iterations = self._grader_display_values()
+        lines.extend(
+            [
+                f"Rubric grader model: {grader_model}",
+                f"Rubric max iterations: {grader_iterations}",
+            ]
+        )
         await self._mount_message(AppMessage("\n\n".join(lines)))
 
     async def _set_rubric_from_file(self, path_arg: str) -> None:
@@ -8751,6 +8906,87 @@ class DeepAgentsApp(App):
         )
         self.push_screen(screen, handle_result)
 
+    async def _set_rubric_max_iterations(self, value: int | None) -> None:
+        """Set the grader iterations per rubric attempt used by `RubricMiddleware`."""
+        from functools import partial
+
+        from deepagents_code._env_vars import SERVER_ENV_PREFIX
+
+        if self._agent_running or self._shell_running or self._connecting:
+            self._defer_action(
+                DeferredAction(
+                    kind="rubric_max_iterations_switch",
+                    execute=partial(self._set_rubric_max_iterations, value),
+                ),
+            )
+            self.notify(
+                "Rubric max iterations will change after current work finishes."
+            )
+            return
+
+        if self._server_kwargs is None and self._server_proc is None:
+            await self._mount_message(
+                ErrorMessage(
+                    "Rubric max-iterations switching is unavailable in this session "
+                    "because it does not own a restartable server."
+                )
+            )
+            return
+
+        if self._rubric_max_iterations == value:
+            message = (
+                f"Rubric max iterations already set to {value}."
+                if value is not None
+                else "Rubric max iterations already use the SDK default."
+            )
+            await self._mount_message(AppMessage(message))
+            return
+
+        previous = self._rubric_max_iterations
+        self._rubric_max_iterations = value
+        if self._server_kwargs is not None:
+            self._server_kwargs["rubric_max_iterations"] = value
+
+        if self._server_proc is not None:
+            env_key = f"{SERVER_ENV_PREFIX}RUBRIC_MAX_ITERATIONS"
+            env_value = str(value) if value is not None else ""
+            self._server_proc.update_env(
+                **{env_key: env_value},
+            )
+            restarted = await self._respawn_server(
+                log_message=(
+                    "Server restart failed while changing rubric max iterations"
+                ),
+                mcp_failure_log=(
+                    "MCP metadata preload after rubric max-iterations change failed"
+                ),
+                mcp_failure_toast=(
+                    "MCP tool metadata could not be refreshed. Use /mcp to check."
+                ),
+            )
+            if not restarted:
+                self._rubric_max_iterations = previous
+                if self._server_kwargs is not None:
+                    self._server_kwargs["rubric_max_iterations"] = previous
+                # A failed restart keeps `env_value` staged in the server's
+                # one-shot env overrides (retained for retry) and never persists
+                # it. Re-stage `previous` so a later restart cannot resurrect the
+                # value this command just rolled back.
+                self._server_proc.update_env(
+                    **{env_key: str(previous) if previous is not None else ""},
+                )
+                return
+            self._server_proc.persist_env(**{env_key: env_value})
+
+        if value is None:
+            await self._mount_message(
+                AppMessage("Rubric max iterations cleared; using the SDK default."),
+            )
+        else:
+            await self._mount_message(
+                AppMessage(f"Rubric max iterations set to {value}."),
+            )
+
     async def _set_rubric_model(self, model_spec: str | None) -> None:
         """Set the grader model used by `RubricMiddleware`."""
         from functools import partial
@@ -8790,7 +9026,7 @@ class DeepAgentsApp(App):
                     ErrorMessage(
                         f"Missing credentials: {auth_status.missing_detail()}\n\n"
                         f"Run `/auth` for the '{auth_status.provider}' provider, "
-                        f"then re-issue `/rubric model {model_spec}`.",
+                        f"then set the grader model again.",
                     ),
                 )
                 return
@@ -8830,6 +9066,13 @@ class DeepAgentsApp(App):
                 self._rubric_model = previous
                 if self._server_kwargs is not None:
                     self._server_kwargs["rubric_model"] = previous
+                # A failed restart keeps the new value staged in the server's
+                # one-shot env overrides (retained for retry). Re-stage
+                # `previous` so a later restart cannot resurrect the model this
+                # command just rolled back.
+                self._server_proc.update_env(
+                    **{f"{SERVER_ENV_PREFIX}RUBRIC_MODEL": previous or ""},
+                )
                 return
 
         if display:
@@ -9625,11 +9868,36 @@ class DeepAgentsApp(App):
             # Any send (typed reply or skill invocation) counts as the user
             # acting on a blocked goal, so reset it and attach one-turn context.
             blocker_note = await self._reset_blocked_goal_for_user_turn()
+            resuming_blocked = blocker_note is not None
             blocked_goal_retry_context = (
                 self._blocked_goal_retry_context(blocker_note)
-                if blocker_note is not None
+                if resuming_blocked
                 else None
             )
+
+            # `_reset_blocked_goal_for_user_turn` flips a blocked goal to active
+            # just above, so the status alone can't distinguish an already-active
+            # goal from one resumed this turn. Branch the wording on the reset
+            # signal instead. The status guard still holds: a failed reset rolls
+            # the status back to blocked, so no notice fires in that case.
+            #
+            # The `message != _active_goal` check suppresses the notice on the
+            # goal-setting turn, and works only because acceptance sends the
+            # objective verbatim as the message. If a future change wraps or
+            # annotates the objective before sending (as the skill path already
+            # does with its envelope prompt), the equality would no longer match
+            # and the notice would wrongly fire on the initial turn.
+            if (
+                self._active_goal
+                and self._goal_status == "active"
+                and message.strip() != self._active_goal.strip()
+            ):
+                notice = (
+                    f"Resuming previously blocked goal: {self._active_goal}"
+                    if resuming_blocked
+                    else f"Continuing active goal: {self._active_goal}"
+                )
+                await self._mount_message(AppMessage(notice))
 
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=False)
@@ -12346,6 +12614,13 @@ class DeepAgentsApp(App):
                 self._default_assistant_id = previous_default_agent
                 if self._server_kwargs is not None:
                     self._server_kwargs["assistant_id"] = previous_agent
+                # A failed restart keeps `agent_name` staged in the server's
+                # one-shot env overrides (retained for retry). Re-stage the
+                # previous agent so a later restart cannot resurrect the swap
+                # target this handler just rolled back.
+                server_proc.update_env(
+                    **{f"{SERVER_ENV_PREFIX}ASSISTANT_ID": previous_agent or ""},
+                )
                 self._agent = None
                 self._connecting = False
                 self._reconnecting = False

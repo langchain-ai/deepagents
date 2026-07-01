@@ -108,9 +108,6 @@ when a single tool call returns a large blob (e.g. a file dump or test
 log).
 """
 
-_MAX_ITERATIONS_HARD_CAP = 20
-"""Hard upper bound for `max_iterations`."""
-
 _PAYLOAD_CLOSER_RE = re.compile(r"</(rubric|transcript)", re.IGNORECASE)
 """Matches a closing `rubric` or `transcript` tag in payload content."""
 
@@ -329,8 +326,8 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
             `GraderResponse`.
 
             With none, the grader reasons from the transcript alone.
-        max_iterations: Hard cap on grader iterations per rubric attempt;
-            hard-capped at 20.
+        max_iterations: Maximum grader iterations per rubric attempt; must be a
+            positive integer.
 
             When the cap is reached without a `satisfied` verdict, the agent
             terminates with status `'max_iterations_reached'` (see the
@@ -342,8 +339,7 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
             suppressed; do not use this callback to enforce control flow.
 
     Raises:
-        ValueError: If `max_iterations` is outside `[1, 20]`, or if `model`
-            is falsy.
+        ValueError: If `max_iterations` is less than 1, or if `model` is falsy.
         TypeError: If `max_iterations` is not an `int`.
     """
 
@@ -364,8 +360,8 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         if not isinstance(max_iterations, int) or isinstance(max_iterations, bool):
             msg = f"RubricMiddleware: `max_iterations` must be an int, got {type(max_iterations).__name__}."
             raise TypeError(msg)
-        if not 1 <= max_iterations <= _MAX_ITERATIONS_HARD_CAP:
-            msg = f"RubricMiddleware: `max_iterations` must be in [1, {_MAX_ITERATIONS_HARD_CAP}], got {max_iterations}."
+        if max_iterations < 1:
+            msg = f"RubricMiddleware: `max_iterations` must be positive, got {max_iterations}."
             raise ValueError(msg)
 
         self.max_iterations = max_iterations

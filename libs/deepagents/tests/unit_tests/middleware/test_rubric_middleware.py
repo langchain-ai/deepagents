@@ -121,9 +121,14 @@ class TestConstruction:
         with pytest.raises(ValueError, match="max_iterations"):
             RubricMiddleware(model=_STUB_MODEL, max_iterations=0)
 
-    def test_max_iterations_upper_bound(self) -> None:
-        with pytest.raises(ValueError, match="max_iterations"):
-            RubricMiddleware(model=_STUB_MODEL, max_iterations=21)
+    def test_max_iterations_lower_bound_accepted(self) -> None:
+        # 1 is the smallest accepted value; the guard is `max_iterations < 1`.
+        mw = RubricMiddleware(model=_STUB_MODEL, max_iterations=1)
+        assert mw.max_iterations == 1
+
+    def test_max_iterations_above_previous_hard_cap_allowed(self) -> None:
+        mw = RubricMiddleware(model=_STUB_MODEL, max_iterations=21)
+        assert mw.max_iterations == 21
 
     def test_max_iterations_bool_rejected(self) -> None:
         # bool is a subclass of int; reject explicitly so True/False can't

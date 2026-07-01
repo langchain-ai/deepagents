@@ -279,7 +279,7 @@ class TestInitialPromptOnMount:
                 await asyncio.sleep(0)
 
         status_bar.set_model.assert_called_once_with(
-            provider="anthropic", model="claude-opus-4-7"
+            provider="anthropic", model="claude-opus-4-7", effort=""
         )
 
     async def test_server_ready_warns_when_status_bar_missing(
@@ -344,7 +344,7 @@ class TestInitialPromptOnMount:
         # Still calls set_model with the falsy-coerced strings so the widget
         # doesn't render stale state — but emits a warning so the misconfig
         # isn't invisible.
-        status_bar.set_model.assert_called_once_with(provider="", model="")
+        status_bar.set_model.assert_called_once_with(provider="", model="", effort="")
         assert any(
             "Settings missing model identity" in record.message
             for record in caplog.records

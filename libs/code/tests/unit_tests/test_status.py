@@ -416,6 +416,26 @@ class TestModelLabelPrefixStripping:
             rendered = str(label.render())
             assert "openai:gpt-5.5" in rendered
 
+    async def test_effort_suffix_rendered(self) -> None:
+        """Active reasoning effort should be shown next to the model."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_model(provider="openai", model="gpt-5.5", effort="xhigh")
+            await pilot.pause()
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            assert str(label.render()) == "openai:gpt-5.5 xhigh"
+
+    async def test_effort_suffix_survives_provider_drop(self) -> None:
+        """When narrow, provider is dropped before the effort label."""
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5"
+            label.effort = "xhigh"
+            label.styles.width = 18
+            await pilot.pause()
+            assert str(label.render()) == "gpt-5.5 xhigh"
+
     async def test_no_provider_no_stripping(self) -> None:
         """Without a provider, the model name is passed through unchanged."""
         async with StatusBarApp().run_test() as pilot:

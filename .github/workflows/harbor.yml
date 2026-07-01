@@ -186,6 +186,11 @@ on:
         options:
           - "false"
           - "true"
+      reasoning_effort:
+        description: "Fireworks reasoning_effort override forwarded as model_kwargs (e.g. 'high' to step GLM-5.2 down from its Max default). Empty = model default."
+        required: false
+        default: ""
+        type: string
 permissions:
   contents: read
 
@@ -306,6 +311,7 @@ jobs:
       HARBOR_N_SHARDS: ${{ inputs.n_shards || '1' }}
       HARBOR_RAMBLE_OUTPUT_TOKENS: ${{ inputs.ramble_output_tokens }}
       HARBOR_ENABLE_VERIFY_BEHAVIOR: ${{ inputs.enable_verify_behavior || 'false' }}
+      HARBOR_REASONING_EFFORT: ${{ inputs.reasoning_effort }}
       HARBOR_SANDBOX_ENV: ${{ inputs.sandbox_env }}
       HARBOR_AGENT_IMPL: ${{ inputs.agent_impl }}
       HARBOR_MODEL: ${{ matrix.model }}
@@ -458,6 +464,18 @@ jobs:
             *) echo "::error::Invalid enable_verify_behavior (true|false): $HARBOR_ENABLE_VERIFY_BEHAVIOR"; exit 1 ;;
           esac
 
+          # Optional Fireworks reasoning_effort override. Validate against the
+          # allowlist BEFORE interpolating into the model_kwargs JSON so an
+          # arbitrary value can never reach the shell/agent kwargs.
+          reasoning_kwarg=()
+          if [ -n "$HARBOR_REASONING_EFFORT" ]; then
+            case "$HARBOR_REASONING_EFFORT" in
+              low|medium|high|max|xhigh|none) ;;
+              *) echo "::error::Invalid reasoning_effort (low|medium|high|max|xhigh|none): $HARBOR_REASONING_EFFORT"; exit 1 ;;
+            esac
+            reasoning_kwarg=(--agent-kwarg "model_kwargs={\"reasoning_effort\":\"$HARBOR_REASONING_EFFORT\"}")
+          fi
+
           if ! [[ "$HARBOR_DATASET" =~ ^[A-Za-z0-9._/-]+$ ]]; then
             echo "::error::Invalid Harbor dataset ref: $HARBOR_DATASET"
             exit 1
@@ -574,6 +592,7 @@ jobs:
             --agent-kwarg project_path=deepagents_harbor/langgraph_project \
             --agent-kwarg config=langgraph.json \
             --agent-kwarg graph="$HARBOR_AGENT_GRAPH" \
+            "${reasoning_kwarg[@]}" \
             --dataset "$HARBOR_DATASET" \
             -n "$HARBOR_CONCURRENCY" \
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \

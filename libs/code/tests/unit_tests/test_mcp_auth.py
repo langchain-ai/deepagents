@@ -887,13 +887,29 @@ class TestFindOauthChallenge:
     """Tests for detecting a 401 OAuth challenge in an exception tree."""
 
     def test_direct_401_with_challenge(self) -> None:
-        """A bare 401 carrying `WWW-Authenticate` is detected."""
-        exc = _http_status_error(401, headers={"WWW-Authenticate": "Bearer"})
+        """A 401 carrying an RFC 9728 Bearer challenge is detected."""
+        exc = _http_status_error(
+            401,
+            headers={
+                "WWW-Authenticate": (
+                    'Bearer resource_metadata="https://mcp.example.com/.well-known/'
+                    'oauth-protected-resource"'
+                )
+            },
+        )
         assert find_oauth_challenge(exc) is True
 
     def test_401_header_match_is_case_insensitive(self) -> None:
         """The header lookup ignores casing."""
-        exc = _http_status_error(401, headers={"www-authenticate": "Bearer"})
+        exc = _http_status_error(
+            401,
+            headers={
+                "www-authenticate": (
+                    'bearer resource_METADATA="https://mcp.example.com/.well-known/'
+                    'oauth-protected-resource"'
+                )
+            },
+        )
         assert find_oauth_challenge(exc) is True
 
     def test_401_without_challenge_header_ignored(self) -> None:
@@ -901,9 +917,30 @@ class TestFindOauthChallenge:
         exc = _http_status_error(401)
         assert find_oauth_challenge(exc) is False
 
+    def test_401_basic_challenge_ignored(self) -> None:
+        """A non-OAuth auth challenge is not treated as an MCP login prompt."""
+        exc = _http_status_error(
+            401,
+            headers={"WWW-Authenticate": 'Basic realm="mcp"'},
+        )
+        assert find_oauth_challenge(exc) is False
+
+    def test_401_bearer_without_resource_metadata_ignored(self) -> None:
+        """A generic Bearer challenge is not enough for OAuth discovery."""
+        exc = _http_status_error(401, headers={"WWW-Authenticate": "Bearer"})
+        assert find_oauth_challenge(exc) is False
+
     def test_non_401_status_ignored(self) -> None:
         """Other status codes never count as a challenge."""
-        exc = _http_status_error(403, headers={"WWW-Authenticate": "Bearer"})
+        exc = _http_status_error(
+            403,
+            headers={
+                "WWW-Authenticate": (
+                    'Bearer resource_metadata="https://mcp.example.com/.well-known/'
+                    'oauth-protected-resource"'
+                )
+            },
+        )
         assert find_oauth_challenge(exc) is False
 
     def test_found_inside_exception_group(self) -> None:
@@ -912,14 +949,30 @@ class TestFindOauthChallenge:
             "outer",
             [
                 RuntimeError("x"),
-                _http_status_error(401, headers={"WWW-Authenticate": "Bearer"}),
+                _http_status_error(
+                    401,
+                    headers={
+                        "WWW-Authenticate": (
+                            'Bearer resource_metadata="https://mcp.example.com/.well-known/'
+                            'oauth-protected-resource"'
+                        )
+                    },
+                ),
             ],
         )
         assert find_oauth_challenge(exc) is True
 
     def test_found_via_cause_chain(self) -> None:
         """`raise X from HTTPStatusError(...)` is unwrapped."""
-        challenge = _http_status_error(401, headers={"WWW-Authenticate": "Bearer"})
+        challenge = _http_status_error(
+            401,
+            headers={
+                "WWW-Authenticate": (
+                    'Bearer resource_metadata="https://mcp.example.com/.well-known/'
+                    'oauth-protected-resource"'
+                )
+            },
+        )
         wrapped = RuntimeError("wrapped")
         wrapped.__cause__ = challenge
         assert find_oauth_challenge(wrapped) is True

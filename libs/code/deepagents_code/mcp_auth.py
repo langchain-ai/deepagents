@@ -1605,12 +1605,24 @@ def find_reauth_required(exc: BaseException) -> MCPReauthRequiredError | None:
     return None
 
 
+def _has_oauth_resource_challenge(headers: httpx.Headers) -> bool:
+    values = headers.get_list("www-authenticate")
+    if not values:
+        return False
+    return any(
+        value.lstrip().lower().startswith("bearer ")
+        and re.search(r"(?:^|[\s,])resource_metadata\s*=", value, re.IGNORECASE)
+        is not None
+        for value in values
+    )
+
+
 def find_oauth_challenge(exc: BaseException) -> bool:
     """Return whether `exc`'s tree holds a 401 OAuth challenge response.
 
     Per the MCP authorization spec (RFC 9728), a server requiring OAuth
-    answers an unauthenticated request with HTTP 401 plus a
-    `WWW-Authenticate` header pointing at its protected-resource metadata.
+    answers an unauthenticated request with HTTP 401 plus a Bearer
+    `WWW-Authenticate` challenge pointing at its protected-resource metadata.
     The MCP client surfaces that as an `httpx.HTTPStatusError`. Walks
     `exceptions` (for `ExceptionGroup`), then `__cause__`/`__context__`,
     tracking visited nodes to terminate on cyclic chains.
@@ -1619,8 +1631,8 @@ def find_oauth_challenge(exc: BaseException) -> bool:
         exc: Root exception to inspect.
 
     Returns:
-        `True` when a 401 response carrying a `WWW-Authenticate` header is
-        found, `False` otherwise.
+        `True` when a 401 response carrying a Bearer `resource_metadata`
+            challenge is found, `False` otherwise.
     """
     visited: set[int] = set()
     stack: list[BaseException] = [exc]
@@ -1634,7 +1646,7 @@ def find_oauth_challenge(exc: BaseException) -> bool:
             if (
                 response is not None
                 and response.status_code == 401  # noqa: PLR2004  # HTTP Unauthorized
-                and any(name.lower() == "www-authenticate" for name in response.headers)
+                and _has_oauth_resource_challenge(response.headers)
             ):
                 return True
         if isinstance(current, BaseExceptionGroup):

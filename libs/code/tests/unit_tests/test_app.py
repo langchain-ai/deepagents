@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
     from langchain_core.messages import HumanMessage
 
+    from deepagents_code.mcp_auth import McpServerSpec
     from deepagents_code.notifications import PendingNotification
     from deepagents_code.sessions import ThreadInfo
 
@@ -17687,6 +17688,60 @@ class TestMCPLoginCommand:
             rendered = " ".join(str(w._content) for w in app.query(ErrorMessage))
             assert sentinel not in rendered
             assert "_FakeMcpError" in rendered or "FakeMcpError" in rendered
+
+    async def test_mcp_login_worker_allows_auto_detected_remote_oauth(
+        self,
+    ) -> None:
+        """Remote servers can log in after OAuth is auto-detected."""
+        from pathlib import Path as _Path
+
+        from deepagents_code.mcp_login_service import (
+            ConfigResolution,
+            ServerSelection,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._mcp_preload_kwargs = {
+                "mcp_config_path": None,
+                "no_mcp": False,
+                "trust_project_mcp": None,
+            }
+
+            config: McpServerSpec = {"type": "http", "url": "https://example"}
+            resolution = ConfigResolution(
+                config={"mcpServers": {"notion": config}},
+                used_paths=(_Path("/tmp/mcp.json"),),
+            )
+            selection = ServerSelection(
+                server_name="notion",
+                server_config=config,
+            )
+
+            with (
+                patch(
+                    "deepagents_code.mcp_login_service.resolve_mcp_config",
+                    return_value=resolution,
+                ),
+                patch(
+                    "deepagents_code.mcp_login_service.select_server",
+                    return_value=selection,
+                ),
+                patch("deepagents_code.mcp_auth.login", new=AsyncMock()) as login,
+                patch.object(app, "_prompt_mcp_reconnect", new=AsyncMock()) as prompt,
+            ):
+                await app._run_mcp_login_worker("notion")
+                await pilot.pause()
+
+            login.assert_awaited_once()
+            awaited = login.await_args
+            assert awaited is not None
+            assert awaited.kwargs["server_config"] == config
+            prompt.assert_awaited_once_with("notion")
+            assert not any(
+                "does not use OAuth" in str(w._content) for w in app.query(ErrorMessage)
+            )
 
     async def test_mcp_login_success_invokes_reconnect_prompt(self) -> None:
         """A successful login routes through `_prompt_mcp_reconnect`.

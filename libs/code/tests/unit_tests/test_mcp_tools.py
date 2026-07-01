@@ -1423,7 +1423,14 @@ class TestLoadToolsFromConfigOAuth:
         """A 401 OAuth challenge during discovery is surfaced as unauthenticated."""
         request = httpx.Request("GET", "https://mcp.notion.com/mcp")
         response = httpx.Response(
-            401, headers={"WWW-Authenticate": "Bearer"}, request=request
+            401,
+            headers={
+                "WWW-Authenticate": (
+                    'Bearer resource_metadata="https://mcp.notion.com/.well-known/'
+                    'oauth-protected-resource"'
+                )
+            },
+            request=request,
         )
         challenge = httpx.HTTPStatusError("boom", request=request, response=response)
 
@@ -1458,6 +1465,42 @@ class TestLoadToolsFromConfigOAuth:
         """A 401 lacking `WWW-Authenticate` is not treated as an OAuth challenge."""
         request = httpx.Request("GET", "https://mcp.notion.com/mcp")
         response = httpx.Response(401, request=request)
+        error = httpx.HTTPStatusError("boom", request=request, response=response)
+
+        @asynccontextmanager
+        async def _fake(
+            _connection: dict[str, Any],
+            *,
+            _mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[None]:
+            await asyncio.sleep(0)
+            raise error
+            yield
+
+        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+            config = {
+                "mcpServers": {
+                    "notion": {
+                        "transport": "http",
+                        "url": "https://mcp.notion.com/mcp",
+                    }
+                }
+            }
+            tools, manager, server_infos = await _load_tools_from_config(config)
+
+        assert tools == []
+        assert isinstance(manager, MCPSessionManager)
+        assert server_infos[0].status == "error"
+        await manager.cleanup()
+
+    async def test_discovery_401_basic_challenge_stays_error(self) -> None:
+        """A non-OAuth auth challenge is not treated as an MCP login prompt."""
+        request = httpx.Request("GET", "https://mcp.notion.com/mcp")
+        response = httpx.Response(
+            401,
+            headers={"WWW-Authenticate": 'Basic realm="mcp"'},
+            request=request,
+        )
         error = httpx.HTTPStatusError("boom", request=request, response=response)
 
         @asynccontextmanager

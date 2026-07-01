@@ -1,0 +1,23 @@
+libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py
+  s_b525ff6365a718::t_35a764f64d2333 91
+libs/evals/tests/unit_tests/test_harbor_langgraph_agent.py
+  s_b525ff6365a718::t_bbf3b8748cc9c7 123-124
+libs/deepagents/deepagents/profiles/harness/_nvidia_nemotron_3_ultra.py
+  s_b525ff6365a718::t_e84071847a9501 602-603
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "df3ee634c187876c51002745d3bf37c4244ba389",
+  "prompts": {},
+  "sessions": {
+    "s_b525ff6365a718": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d6e8e752-8729-40f4-a330-b209f0da9174",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

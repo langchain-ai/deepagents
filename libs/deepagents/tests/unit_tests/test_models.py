@@ -2672,3 +2672,112 @@ class TestNemotronToolCallShimPathArg:
         orig = {"path": "/app/x"}
         mw.wrap_tool_call(self._req("read_file", orig), lambda _r: "ok")
         assert orig == {"path": "/app/x"}
+
+
+class TestNemotronToolCallShimOverwrite:
+    """Tests for the write_file overwrite redirect in NemotronToolCallShim.
+
+    deepagents' write_file refuses to overwrite an existing file; Nemotron reacts
+    by reading then re-calling write_file, looping. The shim clears the existing
+    on-disk file so the backend then writes fresh (overwrite semantics), reusing the
+    backend for the actual write.
+    """
+
+    @staticmethod
+    def _req(name, args):  # noqa: ANN205  (returns a ToolCallRequest; imported locally)
+        from langchain.agents.middleware.types import ToolCallRequest  # noqa: PLC0415
+
+        tc = {"name": name, "args": args, "id": "t1", "type": "tool_call"}
+        return ToolCallRequest(tool_call=tc, tool=None, state={}, runtime=None)
+
+    def _mw(self):
+        from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
+            NemotronToolCallShim,
+        )
+
+        return NemotronToolCallShim()
+
+    @staticmethod
+    def _backend_handler(calls):  # noqa: ANN205
+        """A fake write_file that mimics the backend's no-overwrite guard."""
+        from pathlib import Path  # noqa: PLC0415
+
+        from langchain_core.messages import ToolMessage  # noqa: PLC0415
+
+        def handler(req):
+            calls.append(1)
+            fp = req.tool_call["args"]["file_path"]
+            content = req.tool_call["args"].get("content", "")
+            if Path(fp).is_file():
+                return ToolMessage(
+                    content=f"Cannot write to {fp} because it already exists. Read and then make an edit, or write to a new path.",
+                    tool_call_id="t1",
+                    name="write_file",
+                    status="error",
+                )
+            Path(fp).write_text(content, encoding="utf-8")
+            return ToolMessage(content=f"Updated file {fp}", tool_call_id="t1", name="write_file", status="success")
+
+        return handler
+
+    def test_overwrites_existing_real_file(self, tmp_path) -> None:
+        target = tmp_path / "eval.scm"
+        target.write_text("old contents")
+        calls: list[int] = []
+        mw = self._mw()
+        result = mw.wrap_tool_call(
+            self._req("write_file", {"file_path": str(target), "content": "new contents"}),
+            self._backend_handler(calls),
+        )
+        # The backend wrote the new content (overwrite succeeded), and the shim retried
+        # the write after clearing the file (two handler calls: block, then success).
+        assert target.read_text() == "new contents"
+        assert result.status == "success"
+        assert len(calls) == 2
+
+    def test_new_file_writes_once_without_retry(self, tmp_path) -> None:
+        target = tmp_path / "new.txt"  # does not exist
+        calls: list[int] = []
+        mw = self._mw()
+        result = mw.wrap_tool_call(
+            self._req("write_file", {"file_path": str(target), "content": "hello"}),
+            self._backend_handler(calls),
+        )
+        assert target.read_text() == "hello"
+        assert result.status == "success"
+        assert len(calls) == 1  # no overwrite retry for a fresh path
+
+    def test_non_write_tool_is_not_cleared(self, tmp_path) -> None:
+        from langchain_core.messages import ToolMessage  # noqa: PLC0415
+
+        target = tmp_path / "keep.txt"
+        target.write_text("data")
+        mw = self._mw()
+
+        def handler(_req):
+            return ToolMessage(content="ok", tool_call_id="t1", name="read_file", status="success")
+
+        mw.wrap_tool_call(self._req("read_file", {"file_path": str(target)}), handler)
+        assert target.exists()  # read_file never triggers the overwrite/removal path
+
+    def test_missing_file_keeps_original_error(self, tmp_path) -> None:
+        from langchain_core.messages import ToolMessage  # noqa: PLC0415
+
+        # write_file blocked, but the path is not a real on-disk file (e.g. a virtual
+        # state/store backend): the shim must not retry — it returns the original error.
+        virtual = "/virtual/eval.scm"  # not on the real filesystem
+        calls: list[int] = []
+        mw = self._mw()
+
+        def handler(_req):
+            calls.append(1)
+            return ToolMessage(
+                content=f"Cannot write to {virtual} because it already exists. Read and then make an edit, or write to a new path.",
+                tool_call_id="t1",
+                name="write_file",
+                status="error",
+            )
+
+        result = mw.wrap_tool_call(self._req("write_file", {"file_path": virtual, "content": "x"}), handler)
+        assert result.status == "error"
+        assert len(calls) == 1  # no retry when there is no real file to clear

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, NotRequired
 
 from langchain.agents.middleware import ToolRetryMiddleware
@@ -123,6 +124,12 @@ _FILE_PATH_TOOLS: frozenset[str] = frozenset({"read_file", "write_file", "edit_f
 # re-trigger the re-read we are trying to eliminate.
 _NEMOTRON_DEFAULT_READ_LIMIT = 2000
 
+# Substring of the backend's no-overwrite error. write_file refuses to overwrite an
+# existing file; Nemotron reacts by reading then re-calling write_file, looping. The
+# shim clears the existing file and retries so the backend writes fresh (see
+# NemotronToolCallShim._clear_for_overwrite).
+_WRITE_EXISTS_MARKER = "because it already exists"
+
 
 class NemotronToolCallShim(AgentMiddleware):
     """Fix Nemotron's tool-call payload quirks at the `wrap_tool_call` layer.
@@ -145,6 +152,13 @@ class NemotronToolCallShim(AgentMiddleware):
       `role="tool"` message whose content normalizes to null (an empty string
       collapses to null), crashing the run. This coerces empty/None tool content to
       a non-empty placeholder. Idempotent; a no-op for non-empty results.
+    - Overwrite redirect (`_clear_for_overwrite`): `write_file` refuses to overwrite
+      an existing file, and Nemotron reacts by reading then re-calling `write_file`
+      (not `edit_file`), looping. When a `write_file` is blocked because its target
+      already exists on disk, this removes the file and retries once so the backend
+      writes fresh — giving the overwrite semantics the model expects. Guarded to real
+      on-disk files (no-op for virtual backends); the actual write still runs through
+      the backend.
 
     Implements BOTH sync and async hooks: Deep Agents executes tools asynchronously,
     so a sync-only `wrap_tool_call` raises `NotImplementedError` and breaks every
@@ -180,19 +194,57 @@ class NemotronToolCallShim(AgentMiddleware):
             return result.model_copy(update={"content": _EMPTY_TOOL_PLACEHOLDER})
         return result
 
+    @staticmethod
+    def _clear_for_overwrite(request: ToolCallRequest, result: ToolMessage | Command[Any]) -> bool:
+        """Clear an existing file so a blocked `write_file` can be retried as an overwrite.
+
+        Returns True (and removes the file) only when the model's `write_file` was
+        blocked *because the target already exists* and that target is a real on-disk
+        file. The caller then re-runs the handler, so the actual write still goes
+        through the backend (preserving its path validation, `O_NOFOLLOW`, and newline
+        handling) — only the removal is done here. For virtual state/store backends the
+        path is not on disk, so this is a no-op and the original error is preserved. The
+        model already has an `execute` shell tool, so this grants no capability it
+        lacks; it only makes `write_file` match the overwrite semantics it expects.
+        """
+        tool_call = request.tool_call
+        if tool_call.get("name") != "write_file":
+            return False
+        if not isinstance(result, ToolMessage) or _WRITE_EXISTS_MARKER not in (result.text or ""):
+            return False
+        args = tool_call.get("args") or {}
+        file_path = args.get("file_path")
+        if not (isinstance(file_path, str) and "content" in args and Path(file_path).is_file()):
+            return False
+        try:
+            Path(file_path).unlink()
+        except OSError:
+            # Removal failed — fall back to the original (visible) error rather than
+            # swallow it; the model still sees the block and can choose another path.
+            return False
+        return True
+
     def wrap_tool_call(
         self,
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
     ) -> ToolMessage | Command[Any]:
-        return self._normalize(handler(self._fix_args(request)))
+        fixed = self._fix_args(request)
+        result = handler(fixed)
+        if self._clear_for_overwrite(fixed, result):
+            result = handler(fixed)
+        return self._normalize(result)
 
     async def awrap_tool_call(
         self,
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
     ) -> ToolMessage | Command[Any]:
-        return self._normalize(await handler(self._fix_args(request)))
+        fixed = self._fix_args(request)
+        result = await handler(fixed)
+        if self._clear_for_overwrite(fixed, result):
+            result = await handler(fixed)
+        return self._normalize(result)
 
 
 _READ_NOTICE_DEFAULT_LIMIT = 100  # Deep Agents default read limit (FilesystemMiddleware).

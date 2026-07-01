@@ -796,6 +796,15 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.KITTY_KEYBOARD,
     ),
     ConfigOption(
+        key="display.show_scrollbar",
+        group="Display",
+        summary="Show the vertical scrollbar in the chat area (off by default).",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.SHOW_SCROLLBAR,
+        toml_keys=("ui", "show_scrollbar"),
+    ),
+    ConfigOption(
         key="display.hide_cwd",
         group="Display",
         summary="Hide local path displays in the footer and startup splash.",

@@ -18,6 +18,21 @@ if TYPE_CHECKING:
     from langchain_core.tools import BaseTool
 
 
+# Prompt markers that drive `ToolCallingIntegrationChatModel`. Each marker is the
+# full token (including the trailing `=`); the file path follows on the same line,
+# e.g. `DCA_TEST_WRITE_FILE=/tmp/out.txt`. These are the single source of truth
+# shared with the integration tests, so the model and tests cannot drift apart.
+DCA_TEST_WRITE_FILE_MARKER = "DCA_TEST_WRITE_FILE="
+DCA_TEST_DELEGATE_WRITE_MARKER = "DCA_TEST_DELEGATE_WRITE="
+DCA_SUBAGENT_WRITE_FILE_MARKER = "DCA_SUBAGENT_WRITE_FILE="
+
+# Distinct file contents per write path, so a test asserting on file content can
+# prove which branch executed — in particular that subagent mode delegated through
+# the `task` tool rather than writing directly.
+TOP_LEVEL_WRITE_CONTENT = "auto-approved"
+SUBAGENT_WRITE_CONTENT = "auto-approved-subagent"
+
+
 class DeterministicIntegrationChatModel(GenericFakeChatModel):
     """Deterministic chat model for integration tests.
 
@@ -141,4 +156,162 @@ class DeterministicIntegrationChatModel(GenericFakeChatModel):
             "messages to summarize" in lowered
             or "condense the following conversation" in lowered
             or "<summary>" in lowered
+        )
+
+
+def _extract_marker_path(prompt: str, marker: str) -> str:
+    """Extract the file path that follows a prompt marker on the same line.
+
+    Args:
+        prompt: The flattened prompt text.
+        marker: The marker token (including its trailing `=`) to locate.
+
+    Returns:
+        The stripped file path immediately following the marker.
+
+    Raises:
+        ValueError: If the marker is present but not followed by a path, so a
+            malformed test prompt fails loudly here instead of silently
+            degrading to a `"done"` reply or raising an opaque `IndexError`.
+    """
+    _, _, tail = prompt.partition(marker)
+    lines = tail.splitlines()
+    file_path = lines[0].strip() if lines else ""
+    if not file_path:
+        msg = (
+            f"Test model saw marker {marker!r} but found no file path after it; "
+            f"check the integration-test prompt construction."
+        )
+        raise ValueError(msg)
+    return file_path
+
+
+def _tool_call_result(name: str, args: dict[str, Any], call_id: str) -> ChatResult:
+    """Build a single-tool-call `ChatResult`.
+
+    Returns:
+        A `ChatResult` wrapping an `AIMessage` with exactly one tool call.
+    """
+    return ChatResult(
+        generations=[
+            ChatGeneration(
+                message=AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": name,
+                            "args": args,
+                            "id": call_id,
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            )
+        ]
+    )
+
+
+class ToolCallingIntegrationChatModel(DeterministicIntegrationChatModel):
+    """Deterministic tool-calling model for auto-approve integration tests.
+
+    Generation is driven entirely by prompt markers (the module-level `DCA_*`
+    constants), so output is restart-safe and independent of call ordering — the
+    same rationale as the parent `DeterministicIntegrationChatModel`:
+
+    - `DCA_TEST_WRITE_FILE=<path>` emits a top-level `write_file` call.
+    - `DCA_TEST_DELEGATE_WRITE=<path>` emits a `task` call delegating to the
+      `general-purpose` subagent, whose prompt then carries
+      `DCA_SUBAGENT_WRITE_FILE=<path>` to trigger the subagent's `write_file`.
+    - `DCA_SUBAGENT_WRITE_FILE=<path>` emits the subagent's `write_file` call.
+
+    Each marker fires only on the agent's first turn (no prior `ToolMessage`),
+    so once the tool result returns the model replies with a plain `"done"` and
+    the agent loop terminates instead of re-issuing the tool call.
+    """
+
+    # Only `_generate` is overridden; the inherited `_stream` would bypass this
+    # marker dispatch entirely, so streaming must be disabled.
+    disable_streaming: bool = True
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,  # noqa: ARG002
+        run_manager: CallbackManagerForLLMRun | None = None,  # noqa: ARG002
+        **kwargs: Any,  # noqa: ARG002
+    ) -> ChatResult:
+        """Emit a deterministic tool call (or terminal reply) from prompt markers.
+
+        The `has_tool_result` guard ensures each marker fires only on the
+        agent's first turn; once a `ToolMessage` is present the model returns
+        `"done"` so the agent loop terminates.
+
+        A recognized marker with no file path raises `ValueError` (via
+        `_extract_marker_path`) rather than degrading to `"done"`.
+
+        Returns:
+            A single-message `ChatResult`: an `AIMessage` carrying a `task` or
+            `write_file` tool call when a marker matches and no tool result is
+            present yet, otherwise a plain `"done"` reply.
+        """
+        prompt = "\n".join(
+            text
+            for message in messages
+            if (text := self._stringify_message(message)).strip()
+        )
+        has_tool_result = any(message.type == "tool" for message in messages)
+        if not has_tool_result:
+            for marker, build_tool_call in self._marker_dispatch():
+                if marker in prompt:
+                    name, args, call_id = build_tool_call(
+                        _extract_marker_path(prompt, marker)
+                    )
+                    return _tool_call_result(name, args, call_id)
+
+        return ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content="done"))]
+        )
+
+    @staticmethod
+    def _marker_dispatch() -> tuple[
+        tuple[str, Callable[[str], tuple[str, dict[str, Any], str]]], ...
+    ]:
+        """Return ordered `(marker, tool-call builder)` pairs.
+
+        The delegate marker is checked before the plain write markers because
+        its emitted `task` description embeds `DCA_SUBAGENT_WRITE_FILE=`; the
+        first marker found in the prompt wins.
+
+        Returns:
+            Marker-to-builder pairs in precedence order. Each builder maps an
+            extracted file path to a `(tool_name, args, call_id)` triple.
+        """
+        return (
+            (
+                DCA_TEST_DELEGATE_WRITE_MARKER,
+                lambda path: (
+                    "task",
+                    {
+                        "description": f"{DCA_SUBAGENT_WRITE_FILE_MARKER}{path}",
+                        "subagent_type": "general-purpose",
+                    },
+                    "call_task",
+                ),
+            ),
+            (
+                DCA_SUBAGENT_WRITE_FILE_MARKER,
+                lambda path: (
+                    "write_file",
+                    {"file_path": path, "content": SUBAGENT_WRITE_CONTENT},
+                    "call_write_file",
+                ),
+            ),
+            (
+                DCA_TEST_WRITE_FILE_MARKER,
+                lambda path: (
+                    "write_file",
+                    {"file_path": path, "content": TOP_LEVEL_WRITE_CONTENT},
+                    "call_write_file",
+                ),
+            ),
         )

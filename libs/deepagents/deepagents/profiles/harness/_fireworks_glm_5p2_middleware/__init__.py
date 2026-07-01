@@ -64,10 +64,7 @@ _FINALIZE_NUDGE_TEXT = (
     "submitted best-effort artifact can score; an unfinished one cannot."
 )
 
-_HARD_TEXT = (
-    "Step budget exhausted — ending the run. Whatever is on disk is the final "
-    "submission."
-)
+_HARD_TEXT = "Step budget exhausted — ending the run. Whatever is on disk is the final submission."
 
 
 class FinalizeState(AgentState):
@@ -113,16 +110,8 @@ class FinalizeMiddleware(AgentMiddleware):
         Returns:
             A ``(soft, hard)`` pair with ``soft < hard`` guaranteed.
         """
-        soft = (
-            self._soft_override
-            if self._soft_override is not None
-            else _positive_int_env(_SOFT_ENV, _DEFAULT_SOFT_TURNS)
-        )
-        hard = (
-            self._hard_override
-            if self._hard_override is not None
-            else _positive_int_env(_HARD_ENV, _DEFAULT_HARD_TURNS)
-        )
+        soft = self._soft_override if self._soft_override is not None else _positive_int_env(_SOFT_ENV, _DEFAULT_SOFT_TURNS)
+        hard = self._hard_override if self._hard_override is not None else _positive_int_env(_HARD_ENV, _DEFAULT_HARD_TURNS)
         if not 0 < soft < hard:
             return _DEFAULT_SOFT_TURNS, _DEFAULT_HARD_TURNS
         return soft, hard
@@ -156,9 +145,7 @@ class FinalizeMiddleware(AgentMiddleware):
         return {"finalize_turns": turns}
 
     @hook_config(can_jump_to=["end"])
-    async def abefore_model(
-        self, state: FinalizeState, runtime: Runtime[Any]
-    ) -> dict[str, Any]:
+    async def abefore_model(self, state: FinalizeState, runtime: Runtime[Any]) -> dict[str, Any]:
         """Async variant of ``before_model``.
 
         Returns:
@@ -178,11 +165,12 @@ _RAMBLE_TOKENS_ENV = "DEEPAGENTS_RAMBLE_OUTPUT_TOKENS"
 _TRUNCATED_FINISH_REASONS = frozenset({"length", "max_tokens"})
 
 _RAMBLE_NUDGE_TEXT = (
-    "You produced a long response with no tool call. Writing prose or hand-authoring "
-    "file contents in your reply burns your output budget before anything reaches "
-    "disk. Stop and act: write a short script and run it in the shell to compute, "
-    "generate, or verify the result, then read the output back. The graded deliverable "
-    "must be a file on disk, not text in this message."
+    "STOP — you just produced a long response with NO tool call. You are talking, not "
+    "acting, and that spends your output budget without putting anything on disk. Do "
+    "NOT hand-write prose or file contents into your reply. Your next action MUST be a "
+    "tool call: write and run a short script in the shell (or edit the file directly), "
+    "then read the result back. The deliverable must be a file on disk, not text in "
+    "this message — produce it now."
 )
 
 
@@ -199,9 +187,13 @@ class RambleMiddleware(AgentMiddleware):
 
     After each model turn, inspects the latest ``AIMessage``. If it has no tool calls
     and was either length-truncated or exceeds the output-token boundary, injects a
-    one-time ``HumanMessage`` and jumps back to the model. The boundary defaults to the
-    module constant and is overridable via ``DEEPAGENTS_RAMBLE_OUTPUT_TOKENS``. The
-    one-time flag caps it at a single extra model re-invocation per run.
+    ``HumanMessage`` and jumps back to the model. The boundary defaults to the module
+    constant and is overridable via ``DEEPAGENTS_RAMBLE_OUTPUT_TOKENS``.
+
+    The nudge re-arms per ramble *episode*: it fires once, and does not re-fire while
+    the model keeps rambling back-to-back (loop-safe); the flag is cleared as soon as
+    the model produces a non-ramble turn (i.e. acts), so a later ramble is nudged
+    again rather than being ignored for the rest of the run.
     """
 
     state_schema = RambleState  # type: ignore[assignment]
@@ -226,11 +218,7 @@ class RambleMiddleware(AgentMiddleware):
         """Return True if ``message`` is a long/truncated turn with no tool call."""
         if message.tool_calls:
             return False
-        finish = str(
-            message.response_metadata.get("finish_reason")
-            or message.response_metadata.get("stop_reason")
-            or ""
-        ).lower()
+        finish = str(message.response_metadata.get("finish_reason") or message.response_metadata.get("stop_reason") or "").lower()
         if finish in _TRUNCATED_FINISH_REASONS:
             return True
         usage = message.usage_metadata or {}
@@ -242,19 +230,26 @@ class RambleMiddleware(AgentMiddleware):
         state: RambleState,
         runtime: Runtime[Any],  # noqa: ARG002  (part of the hook signature)
     ) -> dict[str, Any] | None:
-        """Nudge once + loop back to the model when the latest turn rambled.
+        """Nudge + loop back to the model when the latest turn rambled; re-arm on action.
 
         Returns:
             ``{"messages": [...], "jump_to": "model", "ramble_nudged": True}`` on a
-            detected ramble not yet nudged; otherwise ``None``.
+            fresh ramble; ``{"ramble_nudged": False}`` to re-arm when the model acted
+            after a nudge; otherwise ``None``.
         """
-        if state.get("ramble_nudged"):
-            return None
         messages = state.get("messages") or []
         if not messages:
             return None
         last = messages[-1]
-        if not isinstance(last, AIMessage) or not self._is_ramble(last):
+        if not isinstance(last, AIMessage):
+            return None
+        if not self._is_ramble(last):
+            # The model acted (or produced a normal turn) — re-arm so the NEXT ramble
+            # episode is nudged again, instead of the historical once-per-run cap.
+            return {"ramble_nudged": False} if state.get("ramble_nudged") else None
+        if state.get("ramble_nudged"):
+            # Already nudged this episode; don't re-nudge a back-to-back ramble (the
+            # model is ignoring it — re-arm only once it actually acts). Loop-safe.
             return None
         return {
             "messages": [HumanMessage(content=_RAMBLE_NUDGE_TEXT)],
@@ -263,9 +258,7 @@ class RambleMiddleware(AgentMiddleware):
         }
 
     @hook_config(can_jump_to=["model"])
-    async def aafter_model(
-        self, state: RambleState, runtime: Runtime[Any]
-    ) -> dict[str, Any] | None:
+    async def aafter_model(self, state: RambleState, runtime: Runtime[Any]) -> dict[str, Any] | None:
         """Async variant of ``after_model``.
 
         Returns:

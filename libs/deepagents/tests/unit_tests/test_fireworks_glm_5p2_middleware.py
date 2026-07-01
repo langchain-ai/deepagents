@@ -80,9 +80,7 @@ def test_message_with_tool_call_is_left_alone() -> None:
     # A huge output is fine as long as the model actually called a tool.
     mw = RambleMiddleware(output_tokens=10)
     tool_call = {"name": "ls", "args": {"path": "."}, "id": "1", "type": "tool_call"}
-    result = _ramble(
-        mw, messages=[_ai("", tool_calls=[tool_call], output_tokens=999_999)]
-    )
+    result = _ramble(mw, messages=[_ai("", tool_calls=[tool_call], output_tokens=999_999)])
     assert result is None
 
 
@@ -93,7 +91,8 @@ def test_short_no_toolcall_message_does_not_misfire() -> None:
     assert result is None
 
 
-def test_nudge_fires_only_once() -> None:
+def test_no_renudge_while_ramble_persists() -> None:
+    # Already nudged this episode and still rambling back-to-back: no re-nudge (loop-safe).
     mw = RambleMiddleware()
     result = _ramble(
         mw,
@@ -101,6 +100,19 @@ def test_nudge_fires_only_once() -> None:
         ramble_nudged=True,
     )
     assert result is None
+
+
+def test_acting_turn_rearms_after_nudge() -> None:
+    # After a nudge, a turn that actually acts (tool call) clears the flag so the NEXT
+    # ramble episode is nudged again instead of being ignored for the rest of the run.
+    mw = RambleMiddleware(output_tokens=10)
+    tool_call = {"name": "ls", "args": {}, "id": "1", "type": "tool_call"}
+    result = _ramble(
+        mw,
+        messages=[_ai("", tool_calls=[tool_call], output_tokens=5)],
+        ramble_nudged=True,
+    )
+    assert result == {"ramble_nudged": False}
 
 
 def test_non_ai_last_message_is_ignored() -> None:

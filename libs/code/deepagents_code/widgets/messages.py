@@ -43,7 +43,11 @@ from deepagents_code.widgets._js_eval_display import (
     JsEvalStdout,
     parse_js_eval_blocks,
 )
-from deepagents_code.widgets._links import event_targets_link, open_style_link
+from deepagents_code.widgets._links import (
+    event_targets_link,
+    open_checked_url_async,
+    open_style_link,
+)
 from deepagents_code.widgets.diff import compose_diff_lines
 
 if TYPE_CHECKING:
@@ -718,7 +722,7 @@ class AssistantMessage(Vertical):
         """
         from textual.widgets import Markdown
 
-        yield Markdown("", id="assistant-content")
+        yield Markdown("", id="assistant-content", open_links=False)
 
     def on_mount(self) -> None:
         """Store reference to markdown widget."""
@@ -742,6 +746,11 @@ class AssistantMessage(Vertical):
         """Reset the markdown pointer shape when the mouse leaves the message."""
         if self._markdown is not None:
             self._markdown.styles.pointer = "text"
+
+    async def on_markdown_link_clicked(self, event: Markdown.LinkClicked) -> None:
+        """Open Markdown links with the same toast feedback as style links."""
+        event.stop()
+        await open_checked_url_async(event.href, app=self.app, notify_on_success=True)
 
     def _get_markdown(self) -> Markdown:
         """Get the markdown widget, querying if not cached.
@@ -956,6 +965,14 @@ class ToolCallMessage(Vertical):
     """Maximum single-line `js_eval` result length rendered inline.
 
     Inline rendering uses `result: value` rather than a standalone labeled block.
+    """
+
+    _RUNNING_TIMER_THRESHOLD_SECS = 10
+    """Seconds a tool must run before the elapsed-time counter appears.
+
+    Short tool calls finish well under this threshold, so the timer would only
+    flicker on briefly; suppressing it until the tool is genuinely slow keeps
+    the "Running..." row quiet for the common case.
     """
 
     def __init__(
@@ -1182,7 +1199,8 @@ class ToolCallMessage(Vertical):
         elapsed = ""
         if self._start_time is not None:
             elapsed_secs = int(time() - self._start_time)
-            elapsed = f" ({format_duration(elapsed_secs)})"
+            if elapsed_secs >= self._RUNNING_TIMER_THRESHOLD_SECS:
+                elapsed = f" ({format_duration(elapsed_secs)})"
 
         text = f"{frame} Running...{elapsed}"
         self._status_widget.update(

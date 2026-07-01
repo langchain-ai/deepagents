@@ -20,6 +20,7 @@ agent's response text.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 import threading
@@ -161,7 +162,6 @@ async def _terminate_startup_process(proc: Process) -> None:
     Args:
         proc: Process returned by `asyncio.create_subprocess_shell`.
     """
-    import asyncio
     import sys
 
     if proc.returncode is not None:
@@ -277,6 +277,9 @@ class StreamState:
 
     spinner: _ConsoleSpinner | None = None
     """Optional animated spinner shown during agent work in verbose mode."""
+
+    show_rubric_iterations: bool = False
+    """Whether rubric lifecycle messages should include iteration numbers."""
 
 
 @dataclass
@@ -504,9 +507,18 @@ def _process_rubric_event(
         state.spinner.stop()
 
     if event_type == "rubric_evaluation_start":
+        # `iteration` is untrusted streamed payload; only render the 1-based
+        # number when it is actually an int and the user explicitly requested an
+        # iteration cap. A non-int previously raised `TypeError` here and aborted
+        # the whole non-interactive run.
         iteration = data.get("iteration", 0)
+        label = (
+            f" (iteration {iteration + 1})"
+            if state.show_rubric_iterations and isinstance(iteration, int)
+            else ""
+        )
         console.print(
-            f"[dim]⏳ Grading against rubric (iteration {iteration + 1})…[/dim]",
+            f"[dim]⏳ Checking acceptance criteria{label}…[/dim]",
             highlight=False,
         )
         if state.spinner:
@@ -516,11 +528,11 @@ def _process_rubric_event(
     result = data.get("result")
     explanation = (data.get("explanation") or "").strip()
     if result == "satisfied":
-        console.print("[green]✓ Rubric satisfied[/green]", highlight=False)
+        console.print("[green]✓ Acceptance criteria satisfied[/green]", highlight=False)
     elif result == "needs_revision":
         suffix = f": {escape_markup(explanation)}" if explanation else ""
         console.print(
-            f"[yellow]↻ Rubric needs revision{suffix}[/yellow]", highlight=False
+            f"[yellow]↻ Changes need revision{suffix}[/yellow]", highlight=False
         )
         for criterion in data.get("criteria", []):
             if isinstance(criterion, dict) and not criterion.get("passed", True):
@@ -530,12 +542,23 @@ def _process_rubric_event(
                 console.print(f"[yellow]  ✗ {name}{detail}[/yellow]", highlight=False)
     elif result == "max_iterations_reached":
         console.print(
-            "[yellow]⚠ Rubric not satisfied (max iterations reached)[/yellow]",
+            "[yellow]⚠ Acceptance criteria not satisfied "
+            "(iteration limit reached)[/yellow]",
             highlight=False,
         )
-    elif result == "failed":
+    elif result in {"failed", "grader_error"}:
+        label = "grader failed" if result == "failed" else "grader error"
         suffix = f": {escape_markup(explanation)}" if explanation else ""
-        console.print(f"[red]⚠ Rubric grader failed{suffix}[/red]", highlight=False)
+        console.print(f"[red]⚠ Rubric {label}{suffix}[/red]", highlight=False)
+    elif result is not None:
+        # A `rubric_evaluation_end` with an unrecognized result is still a
+        # terminal grading event; surface it rather than letting the run go
+        # quiet mid-task (e.g. if the SDK adds a new verdict). Mirrors the
+        # interactive fallback in `textual_adapter._format_rubric_event`.
+        suffix = f": {escape_markup(explanation)}" if explanation else ""
+        console.print(
+            f"[yellow]⚠ Rubric grading ended{suffix}[/yellow]", highlight=False
+        )
 
     if state.spinner:
         state.spinner.start()
@@ -763,6 +786,7 @@ async def _run_agent_loop(
     thread_url_lookup: ThreadUrlLookupState | None = None,
     max_turns: int | None = None,
     rubric: str | None = None,
+    show_rubric_iterations: bool = False,
 ) -> None:
     """Run the agent and handle HITL interrupts until the task completes.
 
@@ -793,12 +817,19 @@ async def _run_agent_loop(
             graph's `rubric` state field.
 
             `None` leaves it unset (no grading).
+        show_rubric_iterations: Whether rubric lifecycle messages should include
+            iteration numbers.
 
     Raises:
         HITLIterationLimitError: If the effective turn limit is exceeded.
     """
     spinner = None if quiet else _ConsoleSpinner(console)
-    state = StreamState(quiet=quiet, stream=stream, spinner=spinner)
+    state = StreamState(
+        quiet=quiet,
+        stream=stream,
+        spinner=spinner,
+        show_rubric_iterations=show_rubric_iterations,
+    )
     user_msg: dict[str, Any] = {"role": "user", "content": message}
     if message_kwargs:
         user_msg.update(message_kwargs)
@@ -954,7 +985,6 @@ async def _run_startup_command(
         asyncio.CancelledError: If the caller cancels while the startup command
             is running.
     """
-    import asyncio
     import sys
 
     if not quiet:
@@ -1200,12 +1230,20 @@ async def run_non_interactive(
         return 1
 
     result.apply_to_settings()
+
     thread_id = generate_thread_id()
+
+    # One user turn per process: fresh turn id, turn_number 1.
+    from uuid import uuid4
 
     from deepagents_code.config import build_stream_config
 
     config: RunnableConfig = build_stream_config(
-        thread_id, assistant_id, sandbox_type=sandbox_type
+        thread_id,
+        assistant_id,
+        sandbox_type=sandbox_type,
+        turn_id=str(uuid4()),
+        turn_number=1,
     )
 
     thread_url_lookup: ThreadUrlLookupState | None = None
@@ -1213,11 +1251,11 @@ async def run_non_interactive(
         thread_url_lookup = _start_langsmith_thread_url_lookup(thread_id)
         console.print(Text("Running task non-interactively...", style="dim"))
         header = _build_non_interactive_header(
-            assistant_id, thread_id, rubric_active=rubric is not None
+            assistant_id,
+            thread_id,
+            rubric_active=rubric is not None,
         )
         console.print(header)
-
-    import asyncio
 
     from deepagents_code.server_manager import server_session
 
@@ -1275,9 +1313,7 @@ async def run_non_interactive(
             interpreter_ptc=interpreter_ptc,
             interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
             rubric_model=rubric_model,
-            rubric_max_iterations=(
-                rubric_max_iterations if rubric_max_iterations is not None else 3
-            ),
+            rubric_max_iterations=rubric_max_iterations,
             mcp_config_path=mcp_config_path,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
@@ -1314,6 +1350,7 @@ async def run_non_interactive(
                 thread_url_lookup=thread_url_lookup,
                 max_turns=max_turns,
                 rubric=rubric,
+                show_rubric_iterations=rubric_max_iterations is not None,
             )
 
     except KeyboardInterrupt:

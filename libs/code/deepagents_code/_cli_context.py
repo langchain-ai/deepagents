@@ -35,13 +35,13 @@ class CLIContextSchema:
 
     model_params: dict[str, Any] = field(default_factory=dict)
 
-    effective_model: str | None = None
-
     auto_approve: bool = False
 
     approval_mode_key: str | None = None
 
     thread_id: str | None = None
+
+    blocked_goal_retry_context: str | None = None
 
 
 class CLIContext(TypedDict, total=False):
@@ -60,17 +60,6 @@ class CLIContext(TypedDict, total=False):
     model_params: dict[str, Any]
     """Invocation params (e.g. `temperature`, `max_tokens`) to merge
     into `model_settings`."""
-
-    effective_model: str | None
-    """Resolved `provider:model` spec actually in use for this invocation.
-
-    Unlike `model` (a swap *instruction* that is `None` when the base model is
-    used), this carries the model in effect — whether from a `/model` override
-    or the startup default — so `ResumeStateMiddleware` can record it to
-    checkpoint state for restore on resume. `None` when no usable spec is
-    resolved yet (e.g. credentials not configured), in which case nothing is
-    recorded rather than a malformed spec.
-    """
 
     auto_approve: bool
     """Whether gated tool calls should skip the human-approval interrupt.
@@ -96,4 +85,12 @@ class CLIContext(TypedDict, total=False):
     Mirrors `config.configurable.thread_id` into runtime context for model-call
     middleware that needs per-request session identity, including Fireworks
     session-affinity headers.
+    """
+
+    blocked_goal_retry_context: str | None
+    """One-turn model context for retrying a previously blocked goal.
+
+    This is intentionally carried in runtime context instead of the user
+    message so it is not parsed as a file mention or checkpointed as human
+    input.
     """

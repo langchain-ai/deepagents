@@ -48,10 +48,16 @@ class ModelLabel(Widget):
     When the full `provider:model` text doesn't fit, the provider is dropped
     first. If the bare model name still doesn't fit, it is left-truncated
     with a leading ellipsis so the most distinctive tail stays visible.
+
+    When a reasoning effort is set, its label is appended to the model and
+    participates in the same ladder: the effort suffix is preserved (with the
+    model left-truncated to make room) and is only dropped once even the
+    left-truncated model plus effort cannot fit.
     """
 
     provider: reactive[str] = reactive("", layout=True)
     model: reactive[str] = reactive("", layout=True)
+    effort: reactive[str] = reactive("", layout=True)
 
     def _clean_model(self) -> str:
         """Strip the provider's registered prefix so the status bar stays compact.
@@ -68,6 +74,19 @@ class ModelLabel(Widget):
                 return name[len(prefix) :]
         return name
 
+    def _with_effort(self, text: str) -> str:
+        """Append the reasoning effort label when one is set.
+
+        Args:
+            text: Base model display text.
+
+        Returns:
+            Model display text with the effort suffix (a per-session override or
+                the provider default) when one is present, else
+                `text` unchanged.
+        """
+        return f"{text} {self.effort}" if self.effort else text
+
     def get_content_width(self, container: Size, viewport: Size) -> int:  # noqa: ARG002
         """Return the intrinsic width so `width: auto` works.
 
@@ -82,7 +101,7 @@ class ModelLabel(Widget):
             return 0
         model = self._clean_model()
         full = f"{self.provider}:{model}" if self.provider else model
-        return len(full)
+        return len(self._with_effort(full))
 
     def render(self) -> RenderResult:
         """Render the model label with width-aware truncation.
@@ -95,8 +114,15 @@ class ModelLabel(Widget):
             return ""
         model = self._clean_model()
         full = f"{self.provider}:{model}" if self.provider else model
-        if len(full) <= width:
-            return Content(full)
+        full_with_effort = self._with_effort(full)
+        model_with_effort = self._with_effort(model)
+        if len(full_with_effort) <= width:
+            return Content(full_with_effort)
+        if len(model_with_effort) <= width:
+            return Content(model_with_effort)
+        if self.effort and width > len(self.effort) + 2:
+            model_width = width - len(self.effort) - 1
+            return Content(f"\u2026{model[-(model_width - 1) :]} {self.effort}")
         if len(model) <= width:
             return Content(model)
         if width > 1:
@@ -111,7 +137,7 @@ class StatusBar(Horizontal):
     StatusBar {
         height: 1;
         dock: bottom;
-        background: $surface;
+        background: $background;
     }
 
     StatusBar .status-mode {
@@ -197,6 +223,13 @@ class StatusBar(Horizontal):
         color: $text-muted;
     }
 
+    StatusBar .status-rubric {
+        width: auto;
+        padding: 0 1;
+        color: $success;
+        text-style: bold;
+    }
+
     StatusBar ModelLabel {
         width: auto;
         padding: 0 2;
@@ -214,6 +247,7 @@ class StatusBar(Horizontal):
     cwd: reactive[str] = reactive("", init=False)
     branch: reactive[str] = reactive("", init=False)
     tokens: reactive[int] = reactive(0, init=False)
+    rubric_label: reactive[str] = reactive("", init=False)
 
     def __init__(self, cwd: str | Path | None = None, **kwargs: Any) -> None:
         """Initialize the status bar.
@@ -248,6 +282,7 @@ class StatusBar(Horizontal):
             yield Static("", classes="status-message", id="status-message")
             yield Static("", classes="status-cwd", id="cwd-display")
             yield Static("", classes="status-branch", id="branch-display")
+        yield Static("", classes="status-rubric", id="rubric-display")
         yield Static("", classes="status-tokens", id="tokens-display")
         yield ModelLabel(id="model-display")
 
@@ -295,6 +330,8 @@ class StatusBar(Horizontal):
         label = self.query_one("#model-display", ModelLabel)
         label.provider = settings.model_provider or ""
         label.model = settings.model_name or ""
+        with suppress(NoMatches):
+            self.query_one("#rubric-display", Static).display = False
         # Reactives are `init=False`, so the connection watcher never fires on
         # mount; render once to hide the empty indicator (and its padding).
         self._render_connection()
@@ -503,6 +540,15 @@ class StatusBar(Horizontal):
         """Update token display when count changes."""
         self._render_tokens(new_value, approximate=self._approximate)
 
+    def watch_rubric_label(self, new_value: str) -> None:
+        """Update rubric display when active rubric state changes."""
+        try:
+            display = self.query_one("#rubric-display", Static)
+        except NoMatches:
+            return
+        display.display = bool(new_value)
+        display.update(new_value)
+
     def _render_tokens(self, count: int, *, approximate: bool = False) -> None:
         """Render the token count into the display widget.
 
@@ -525,6 +571,14 @@ class StatusBar(Horizontal):
                 display.update(f"{count}{suffix} tokens")
         else:
             display.update("")
+
+    def set_rubric_label(self, label: str) -> None:
+        """Set the rubric status label.
+
+        Args:
+            label: Label to display, or empty string to hide the badge.
+        """
+        self.rubric_label = label
 
     def set_tokens(self, count: int, *, approximate: bool = False) -> None:
         """Set the token count.
@@ -557,13 +611,16 @@ class StatusBar(Horizontal):
         except NoMatches:
             return
 
-    def set_model(self, *, provider: str, model: str) -> None:
+    def set_model(self, *, provider: str, model: str, effort: str = "") -> None:
         """Update the model display text.
 
         Args:
             provider: Model provider name (e.g., `'anthropic'`).
             model: Model name (e.g., `'claude-sonnet-4-5'`).
+            effort: Reasoning effort label to display (per-session override or
+                provider default), or empty when none applies.
         """
         label = self.query_one("#model-display", ModelLabel)
         label.provider = provider
         label.model = model
+        label.effort = effort

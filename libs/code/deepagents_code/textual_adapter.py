@@ -226,12 +226,15 @@ def _format_rubric_event(data: dict[str, Any]) -> str | None:
     event_type = data.get("type")
     if event_type == "rubric_evaluation_start":
         iteration = data.get("iteration", 0)
-        if isinstance(iteration, int):
-            return (
-                f"{glyphs.hourglass} Grading against rubric "
-                f"(iteration {iteration + 1}){glyphs.ellipsis}"
-            )
-        return f"{glyphs.hourglass} Grading against rubric{glyphs.ellipsis}"
+        show_iteration = data.get("show_iteration") is True
+        label = (
+            f" (iteration {iteration + 1})"
+            if show_iteration and isinstance(iteration, int)
+            else ""
+        )
+        return (
+            f"{glyphs.hourglass} Checking acceptance criteria{label}{glyphs.ellipsis}"
+        )
     if event_type != "rubric_evaluation_end":
         return None
 
@@ -240,10 +243,10 @@ def _format_rubric_event(data: dict[str, Any]) -> str | None:
     if result is None:
         return None
     if result == "satisfied":
-        return f"{glyphs.checkmark} Rubric satisfied"
+        return f"{glyphs.checkmark} Acceptance criteria satisfied"
     if result == "needs_revision":
         lines = [
-            f"{glyphs.retry} Rubric needs revision"
+            f"{glyphs.retry} Changes need revision"
             + (f": {explanation}" if explanation else ""),
         ]
         for criterion in data.get("criteria", []):
@@ -253,7 +256,10 @@ def _format_rubric_event(data: dict[str, Any]) -> str | None:
                 lines.append(f"  {glyphs.error} {name}" + (f" — {gap}" if gap else ""))
         return "\n".join(lines)
     if result == "max_iterations_reached":
-        return f"{glyphs.warning} Rubric not satisfied (max iterations reached)"
+        return (
+            f"{glyphs.warning} Acceptance criteria not satisfied "
+            "(iteration limit reached)"
+        )
     if result in {"failed", "grader_error"}:
         label = "grader failed" if result == "failed" else "grader error"
         return (

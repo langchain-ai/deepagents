@@ -44,7 +44,6 @@ from langchain.agents.middleware.types import (
     ExtendedModelResponse,
     ModelResponse,
     PrivateStateAttr,
-    hook_config,
 )
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.config import get_config
@@ -488,87 +487,6 @@ class StallBreakerMiddleware(AgentMiddleware):
         return self._nudge(state)
 
 
-_VERIFY_NUDGE_TEXT = (
-    "Before you finish: you have not yet proven this works. Do not stop yet. Re-read the "
-    "task's exact wording — every required output file, path, name, format, and every "
-    "specified case, mode, size, or count — and PROVE each requirement holds by running a "
-    "concrete command in the shell and reading its output. Verify the real artifact the "
-    "way it will be checked, not a proxy and not your own prior reasoning; a claim like "
-    "'all tests pass' or 'the file is correct' is not evidence unless a command you just "
-    "ran shows it. If any check fails or a required artifact is missing or misnamed, fix "
-    "it and re-verify. Only once a command has demonstrated the deliverable meets the "
-    "spec may you finish."
-)
-
-
-class VerifyBeforeFinalizeState(AgentState):
-    """State schema for ``VerifyBeforeFinalizeMiddleware``."""
-
-    # `PrivateStateAttr` keeps the gate flag out of the input/output schema while it
-    # persists internally across turns (default last-value reducer).
-    verify_gate_fired: NotRequired[Annotated[bool, PrivateStateAttr]]
-
-
-class VerifyBeforeFinalizeMiddleware(AgentMiddleware):
-    """Force one verification pass before the agent is allowed to finish.
-
-    Targets the dominant observed failure mode: overconfident false completion, where
-    the model ends with a confident "done / verified / all checks pass" while the grader
-    disagrees (e.g. claiming "zero overfull hbox warnings" when its own compile output
-    showed one). When the latest turn is a finalization — an ``AIMessage`` with no tool
-    calls and non-empty content, i.e. the agent is about to end — this injects a
-    just-in-time demand to verify each requirement by running a real command, and jumps
-    back to the model. Fires at most once per run via a `PrivateStateAttr` flag, so it
-    adds a single verify turn and cannot loop (no external backstop is required). This
-    is a control-flow gate at the finish line, not standing prompt advice.
-    """
-
-    name = "VerifyBeforeFinalizeMiddleware"
-    state_schema = VerifyBeforeFinalizeState  # type: ignore[assignment]
-
-    @staticmethod
-    def _is_finalizing(message: AIMessage) -> bool:
-        if message.tool_calls:
-            return False
-        content = message.content
-        if isinstance(content, str):
-            return bool(content.strip())
-        if isinstance(content, list):
-            return any(isinstance(p, dict) and str(p.get("text", "")).strip() for p in content)
-        return False
-
-    def _gate(self, state: VerifyBeforeFinalizeState) -> dict[str, Any] | None:
-        if state.get("verify_gate_fired"):
-            return None
-        messages = state.get("messages") or []
-        if not messages:
-            return None
-        last = messages[-1]
-        if not isinstance(last, AIMessage) or not self._is_finalizing(last):
-            return None
-        return {
-            "messages": [HumanMessage(content=_VERIFY_NUDGE_TEXT)],
-            "jump_to": "model",
-            "verify_gate_fired": True,
-        }
-
-    @hook_config(can_jump_to=["model"])
-    def after_model(
-        self,
-        state: VerifyBeforeFinalizeState,
-        runtime: Runtime[Any],  # noqa: ARG002  (part of the hook signature)
-    ) -> dict[str, Any] | None:
-        return self._gate(state)
-
-    @hook_config(can_jump_to=["model"])
-    async def aafter_model(
-        self,
-        state: VerifyBeforeFinalizeState,
-        runtime: Runtime[Any],  # noqa: ARG002  (part of the hook signature)
-    ) -> dict[str, Any] | None:
-        return self._gate(state)
-
-
 _SYSTEM_PROMPT_SUFFIX: str = """<approach>
 Plan briefly before acting. When several reads or lookups are independent, issue them as parallel tool calls rather than one at a time.
 </approach>
@@ -776,36 +694,44 @@ class CompletionPressureMiddleware(AgentMiddleware):
 
 
 # Injected as a HumanMessage on the first model turn: STOP and write a plan before
-# implementing. Spec fidelity is the strict subset of planning that must be letter-
-# perfect, so it lives here as the rules for the plan's "implementation contract".
-# Nemotron under-weights standing system-prompt guidance (the "reproduce identifiers
-# verbatim" rule was ignored even in a prominent base) and did not act on the same
-# discipline appended to tool results either — so this front-loads it as an in-
-# conversation message before the first action. It also lets us drop the separate
-# to-do tool: the plan is the to-do list. General wording (no task-specific example)
-# so it does not overfit.
+# implementing — to a FILE, so it survives context compaction. The dcode stack's
+# SummarizationMiddleware compacts the oldest messages on long runs, and the turn-1
+# plan would be first to go, so the plan lives on disk (re-read/updated) rather than
+# only in this message. Spec fidelity is the strict subset of planning that must be
+# letter-perfect (the implementation contract). Verification is framed as
+# run-don't-read, mirroring the execute-and-diff loop that solves these tasks (vs.
+# Nemotron's habit of re-reading source to reason). Nemotron under-weights standing
+# system-prompt guidance, so this front-loads it as an in-conversation message and
+# lets us drop the separate to-do tool: the plan file is the to-do list. General
+# wording (no task-specific example) so it does not overfit.
 _PLAN_FIRST_NUDGE = (
-    "STOP — do not write any code, file, or command yet. First carefully inspect the "
-    "task and write a short PLAN; treat this as mandatory, and do not start "
-    "implementing until the plan exists.\n\n"
-    "Your plan has two parts:\n\n"
+    "STOP — do not write any code, file, or command yet. First inspect the task and "
+    "write a short PLAN to a file (e.g. /tmp/plan.md); treat this as mandatory. Keep "
+    "that file updated as steps complete and re-read it whenever you lose the thread — "
+    "it is your durable source of truth, because earlier messages may be compacted "
+    "away on a long run.\n\n"
+    "Your plan has three parts:\n\n"
     "A) STEPS — a brief ordered list of the concrete actions that will complete the "
-    "task (install X, generate Y, write file Z, run it and check the result).\n\n"
+    "task, ending in how you will verify the result.\n\n"
     "B) IMPLEMENTATION CONTRACT — the exact interface the task specifies: every "
     "message / field / RPC / class / function / variable name, every file path and "
-    "filename, port, and output format, copied from the task. Record it (e.g. in a "
-    "notes file) as the authority you build against. This is the part you must get "
-    "letter-perfect, so write it by these rules:\n"
+    "filename, port, and output format, copied from the task. This is the part you "
+    "must get letter-perfect:\n"
     "  1. Copy each identifier VERBATIM, character-for-character, then use exactly "
     "those strings when you build — never retype one from memory or paraphrase it.\n"
     "  2. One wrong character means you have built a different interface than the one "
     "asked for: anything that relies on the task's names will fail to find yours, no "
     "matter how well your code otherwise runs.\n"
-    "  3. NEVER normalize, unify, rename, abbreviate, pluralize, re-case, or otherwise "
-    '"tidy" the task\'s names — even when they look inconsistent, redundant, or wrong '
-    "to you. If the task spells two related things differently, that is deliberate; "
-    "reproduce each exactly as written. The task's wording is the authority, not your "
-    "sense of what is consistent or correct.\n\n"
+    "  3. NEVER normalize, unify, rename, abbreviate, pluralize, or re-case a name to "
+    '"tidy" an inconsistency — if the task spells two related things differently, that '
+    "is deliberate; reproduce each exactly as written.\n\n"
+    "C) VERIFICATION — how you will prove it works, by RUNNING, not reading. To learn "
+    "how existing code behaves, run it on concrete inputs and read the output instead "
+    "of re-reading the source to reason about it. Build a small runnable check early: "
+    "run your artifact and the task's reference implementation (or provided examples) "
+    "on the same inputs and diff the results, then iterate against what you observe "
+    "until they match. If you catch yourself re-reading a file you have already read, "
+    "run something instead.\n\n"
     "Then build strictly from the plan, copying names from the contract."
 )
 
@@ -883,7 +809,6 @@ def _build_extra_middleware() -> list[AgentMiddleware]:
         NemotronTextToolCallParser(),
         CompletionPressureMiddleware(),
         RambleMiddleware(),
-        VerifyBeforeFinalizeMiddleware(),
         StallBreakerMiddleware(),
     ]
 

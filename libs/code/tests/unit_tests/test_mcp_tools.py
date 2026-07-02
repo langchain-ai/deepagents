@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -2034,6 +2035,34 @@ class TestHealthChecks:
             pytest.raises(RuntimeError, match="not found on PATH"),
         ):
             _check_stdio_server("srv", {"command": "missing"})
+
+    async def test_check_stdio_server_runs_off_event_loop(
+        self,
+        write_config: Callable[..., str],
+    ) -> None:
+        """The stdio pre-flight's `shutil.which` runs off the event loop.
+
+        `shutil.which` makes blocking `os.access` calls, which blockbuster
+        rejects on the server event loop (issue #4433).
+        """
+        path = write_config({"mcpServers": {"srv": {"command": "missing"}}})
+        which_threads: list[threading.Thread] = []
+
+        def _record_which(_command: str) -> None:
+            which_threads.append(threading.current_thread())
+
+        with patch(
+            "deepagents_code.mcp_tools.shutil.which",
+            side_effect=_record_which,
+        ):
+            tools, manager, server_infos = await get_mcp_tools(path)
+
+        assert which_threads
+        assert which_threads[0] is not threading.current_thread()
+        assert tools == []
+        assert server_infos[0].status == "error"
+        assert manager is not None
+        await manager.cleanup()
 
     async def test_check_remote_server_transport_error(self) -> None:
         """Transport errors are wrapped as `RuntimeError`."""

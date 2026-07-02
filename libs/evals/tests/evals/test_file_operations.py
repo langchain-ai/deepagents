@@ -428,7 +428,7 @@ def test_grep_finds_matching_paths(model: BaseChatModel) -> None:
     )
 
 
-@pytest.mark.eval_tier("hillclimb")
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.eval_category("retrieval")
 @pytest.mark.langsmith
 def test_grep_alternation_regex_recovers(model: BaseChatModel) -> None:
@@ -462,7 +462,7 @@ def test_grep_alternation_regex_recovers(model: BaseChatModel) -> None:
     )
 
 
-@pytest.mark.eval_tier("hillclimb")
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.eval_category("retrieval")
 @pytest.mark.langsmith
 def test_grep_wildcard_regex_recovers(model: BaseChatModel) -> None:
@@ -493,7 +493,7 @@ def test_grep_wildcard_regex_recovers(model: BaseChatModel) -> None:
     )
 
 
-@pytest.mark.eval_tier("hillclimb")
+@pytest.mark.eval_tier("baseline")
 @pytest.mark.eval_category("retrieval")
 @pytest.mark.langsmith
 def test_grep_escaped_metachar_regex_recovers(model: BaseChatModel) -> None:

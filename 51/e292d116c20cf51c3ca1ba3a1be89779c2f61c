@@ -1,0 +1,25 @@
+libs/deepagents/deepagents/middleware/_video.py
+  h_9f69767fa5fabf 56
+  s_85a7b928d69797::t_0fb455ac934541 32-33,35-36,38-39,41-42,44-45,47-48,50-51,53-54
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "51e292d116c20cf51c3ca1ba3a1be89779c2f61c",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  },
+  "sessions": {
+    "s_85a7b928d69797": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a41cd2893631ace46",
+        "model": "unknown"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

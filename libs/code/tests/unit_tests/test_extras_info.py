@@ -41,7 +41,8 @@ def _declared_extras() -> frozenset[str]:
 def test_nvidia_extra_requires_aiohttp_safe_ai_endpoints_release() -> None:
     """The NVIDIA extra must require an aiohttp-safe ai-endpoints release."""
     assert _optional_dependencies()["nvidia"] == [
-        "langchain-nvidia-ai-endpoints>=1.4.3,<2.0.0"
+        "aiohttp>=3.14.1,<3.15.0",
+        "langchain-nvidia-ai-endpoints>=1.4.3,<2.0.0",
     ]
 
 

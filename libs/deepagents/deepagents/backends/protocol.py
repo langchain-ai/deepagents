@@ -322,11 +322,16 @@ class GrepResult:
 
     Attributes:
         error: Error message on failure, `None` on success.
-        matches: List of grep match dicts on success, `None` on failure.
+        matches: List of grep match dicts. Populated on success and, when the
+            search was cut short, with whatever was found before stopping.
+            `None` only on a hard failure.
+        truncated: True when the search stopped early (e.g. hit its time limit)
+            and `matches` is therefore incomplete but still valid.
     """
 
     error: str | None = None
     matches: list["GrepMatch"] | None = None
+    truncated: bool = False
 
 
 @dataclass
@@ -335,11 +340,16 @@ class GlobResult:
 
     Attributes:
         error: Error message on failure, `None` on success.
-        matches: List of matching file info dicts on success, `None` on failure.
+        matches: List of matching file info dicts. Populated on success and,
+            when the walk was cut short, with whatever was found before
+            stopping. `None` only on a hard failure.
+        truncated: True when the walk stopped early (e.g. hit its time limit)
+            and `matches` is therefore incomplete but still valid.
     """
 
     error: str | None = None
     matches: list["FileInfo"] | None = None
+    truncated: bool = False
 
 
 # @abstractmethod to avoid breaking subclasses that only implement a subset

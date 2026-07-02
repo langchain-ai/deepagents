@@ -290,7 +290,11 @@ When these disagree, the same version can behave differently for different users
 
 ## Alpha / Beta / Pre-release Versions
 
-release-please is SemVer-only internally. Its `prerelease` versioning strategy produces versions like `0.0.35-alpha.1`, which is **not valid [PEP 440](https://peps.python.org/pep-0440/)**. Python/PyPI requires `0.0.35a1` (no hyphen, no dot). The Python file updaters write the SemVer string verbatim and their regexes cannot round-trip PEP 440 versions, so bumping version files on `main` to a PEP 440 pre-release would break subsequent release-please runs.
+release-please can maintain normal Python versions for us, but it cannot safely maintain Python pre-release versions on long-lived branches.
+
+The problem is the difference between SemVer and Python's [PEP 440](https://peps.python.org/pep-0440/) version syntax. release-please's built-in prerelease strategy produces SemVer versions like `0.0.35-alpha.1`, but PyPI requires the PEP 440 form `0.0.35a1`. If we manually commit that PEP 440 version to `main` or a long-lived `vX.Y` branch, a later release-please PR may not be able to move every version file back to the final GA version. In particular, the `_version.py` updater only matches stable-looking `X.Y.Z` / `X.Y.Z-suffix` values, not values like `0.0.35a1` or `0.0.35rc1`. The next GA release PR could update `pyproject.toml` to `0.0.35` while leaving `_version.py` stuck at `0.0.35a1`.
+
+For that reason, never commit PEP 440 pre-release version bumps to `main` or a long-lived `vX.Y` version branch. Keep those branches in the stable-version shape release-please can maintain, and use the throwaway branch flow below for alpha, beta, RC, or `.dev` artifacts.
 
 ### How to publish a pre-release
 

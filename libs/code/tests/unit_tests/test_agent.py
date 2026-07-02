@@ -24,6 +24,8 @@ from deepagents_code.agent import (
     DEFAULT_AGENT_NAME,
     _add_interrupt_on,
     _apply_inherited_pythonpath,
+    _create_rubric_grader_tools,
+    _format_delete_description,
     _format_edit_file_description,
     _format_execute_description,
     _format_fetch_url_description,
@@ -417,6 +419,30 @@ def test_format_edit_file_description_all_occurrences():
 
     assert "Action: Replace text (all occurrences)" in description
     assert "File:" not in description
+
+
+def test_format_delete_description() -> None:
+    """Test delete description for approval prompts."""
+    tool_call = cast(
+        "ToolCall",
+        {"name": "delete", "args": {"file_path": "/path/to/file.py"}, "id": "call-5"},
+    )
+
+    description = _format_delete_description(
+        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
+    )
+
+    assert "Action: Delete file or directory" in description
+
+
+def test_add_interrupt_on_gates_delete() -> None:
+    """The destructive delete tool is approval-gated like other write tools."""
+    interrupt_map = _add_interrupt_on()
+
+    assert "delete" in interrupt_map
+    assert interrupt_map["delete"]["allowed_decisions"] == ["approve", "reject"]
+    assert interrupt_map["delete"]["description"] is _format_delete_description
+    assert interrupt_map["delete"]["when"] is _should_interrupt_tool_call
 
 
 def test_format_web_search_description():
@@ -3155,6 +3181,114 @@ class TestCreateCliAgentInterpreterWiring:
         mock_settings.interpreter_ptc_acknowledge_unsafe = False
         return mock_settings
 
+    def test_appends_rubric_middleware(self, tmp_path: Path) -> None:
+        from deepagents.middleware.rubric import RubricMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                rubric_model="custom-grader-model",
+                rubric_max_iterations=5,
+            )
+
+        _, kwargs = mock_create.call_args
+        rubrics = [
+            mw for mw in kwargs["middleware"] if isinstance(mw, RubricMiddleware)
+        ]
+        assert len(rubrics) == 1
+        assert rubrics[0]._model == "custom-grader-model"
+        assert rubrics[0].max_iterations == 5
+        assert "use the `read_file` tool" in rubrics[0]._system_prompt
+        assert [tool.name for tool in rubrics[0]._tools] == ["read_file"]
+
+    def test_omits_default_rubric_max_iterations(self, tmp_path: Path) -> None:
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch("deepagents_code.agent.RubricMiddleware") as mock_rubric,
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+            )
+
+        _, kwargs = mock_rubric.call_args
+        assert "max_iterations" not in kwargs
+
+    def test_rubric_grader_read_tool_only_reads_large_results(
+        self, tmp_path: Path
+    ) -> None:
+        from deepagents.backends import CompositeBackend
+        from deepagents.backends.filesystem import FilesystemBackend
+
+        large_results = FilesystemBackend(
+            root_dir=tmp_path / "large",
+            virtual_mode=True,
+        )
+        project = FilesystemBackend(
+            root_dir=tmp_path / "project",
+            virtual_mode=False,
+        )
+        backend = CompositeBackend(
+            default=project,
+            routes={"/large_tool_results/": large_results},
+        )
+        backend.upload_files(
+            [("/large_tool_results/tool-call-id", b"first\nsecond\nthird")]
+        )
+        read_tool = cast("Any", _create_rubric_grader_tools(backend)[0])
+
+        runtime = SimpleNamespace(tool_call_id="grader-read")
+        allowed = read_tool.func(
+            file_path="/large_tool_results/tool-call-id",
+            runtime=runtime,
+            limit=2,
+        )
+        denied = read_tool.func(
+            file_path="/Users/mason/.ssh/id_rsa",
+            runtime=runtime,
+        )
+
+        assert "1\tfirst" in allowed.content
+        assert "2\tsecond" in allowed.content
+        assert "can only read" in denied
+
     def test_appends_interpreter_middleware_when_enabled(self, tmp_path: Path) -> None:
         from langchain_quickjs import CodeInterpreterMiddleware
 
@@ -3413,11 +3547,16 @@ class TestResolvePtcOption:
             return ""
 
         @tool
+        def delete(path: str) -> str:  # noqa: ARG001
+            """Delete."""
+            return ""
+
+        @tool
         def grep(pattern: str) -> str:  # noqa: ARG001
             """Search."""
             return ""
 
-        return [read_file, write_file, grep]
+        return [read_file, write_file, delete, grep]
 
     def test_false_returns_none(self) -> None:
         from deepagents_code.agent import _resolve_ptc_option
@@ -3474,7 +3613,7 @@ class TestResolvePtcOption:
         assert result is not None
         # `all` enumerates only the tools passed to `create_cli_agent`; SDK
         # runtime built-ins are injected later and are not enumerable here.
-        assert sorted(result) == ["grep", "read_file", "write_file"]
+        assert sorted(result) == ["delete", "grep", "read_file", "write_file"]
 
     @staticmethod
     def _tools_with_task() -> list:

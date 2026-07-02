@@ -95,6 +95,7 @@ if [ "${{1:-}}" = "-v" ]; then
 fi
 if [ "${{1:-}}" = "tools" ]; then
   printf '%s\\n' "$*" >> {str(tools_log)!r}
+  printf 'Using ripgrep already on PATH at /tmp/fake-rg\\n'
   exit "${{FAKE_DCODE_TOOLS_RC:-0}}"
 fi
 exit 0
@@ -292,13 +293,13 @@ def test_install_script_default_invocation_installs_plain_package(
     """A fresh machine installs the bare package with no prompt.
 
     Guards the most common `curl ... | bash` path against accidentally
-    appending a version pin, extras, or a `--prerelease` flag.
+    appending a version pin or extras, while allowing stable releases that pin
+    pre-release dependencies to resolve.
     """
     args = _run_install_script(tmp_path, {}, installed_version=None)
 
     assert args[:3] == ["tool", "install", "-U"]
-    assert args[-1] == "deepagents-code"
-    assert "--prerelease" not in args
+    assert args[-3:] == ["--prerelease", "allow", "deepagents-code"]
 
 
 def test_install_script_supports_exact_version_with_extras(tmp_path: Path) -> None:
@@ -583,7 +584,21 @@ _DEPENDENCY_UPDATE_DIFF = " - boto3==1.43.33\n + boto3==1.43.34"
 _DEPENDENCY_ADDITION_DIFF = " + brand-new-dep==1.0.0"
 
 # uv ran but moved nothing — only timing/summary noise, no `± pkg==ver` lines.
-_NO_PACKAGE_CHANGE_STDERR = "Resolved 5 packages in 12ms\nAudited 5 packages in 1ms"
+_NO_PACKAGE_CHANGE_STDERR = (
+    "Resolved 5 packages in 12ms\n"
+    "Resolved in 12ms\n"
+    "Prepared 1 package for build in 20ms\n"
+    "Checked in 1ms\n"
+    "Audited 5 packages in 1ms"
+)
+
+_UV_PROGRESS_STDERR = (
+    "Downloading uvloop (1.3MiB)\n"
+    " Downloading pygments (1.2MiB)\n"
+    "Downloaded uvloop\n"
+    "Building forbiddenfruit==0.1.4\n"
+    "Built forbiddenfruit==0.1.4"
+)
 
 
 def test_install_script_fresh_install_hides_packages(tmp_path: Path) -> None:
@@ -612,6 +627,41 @@ def test_install_script_verbose_lists_every_package(tmp_path: Path) -> None:
     assert "agent-client-protocol==0.10.1" in proc.stderr
     assert "zstandard==0.25.0" in proc.stderr
     assert "Installed 3 packages" not in proc.stderr
+
+
+def test_install_script_hides_uv_download_and_build_progress(tmp_path: Path) -> None:
+    """Non-verbose installs hide uv's download and build progress lines."""
+    proc, _ = _invoke(
+        tmp_path,
+        {"FAKE_UV_INSTALL_STDERR": _UV_PROGRESS_STDERR},
+        installed_version=None,
+    )
+
+    assert proc.returncode == 0
+    assert "Downloading uvloop" not in proc.stderr
+    assert "Downloaded uvloop" not in proc.stderr
+    assert "Building forbiddenfruit" not in proc.stderr
+    assert "Built forbiddenfruit" not in proc.stderr
+
+
+def test_install_script_verbose_shows_uv_download_and_build_progress(
+    tmp_path: Path,
+) -> None:
+    """Verbose installs preserve uv's raw download and build progress lines."""
+    proc, _ = _invoke(
+        tmp_path,
+        {
+            "FAKE_UV_INSTALL_STDERR": _UV_PROGRESS_STDERR,
+            "DEEPAGENTS_CODE_VERBOSE": "1",
+        },
+        installed_version=None,
+    )
+
+    assert proc.returncode == 0
+    assert "Downloading uvloop" in proc.stderr
+    assert "Downloaded uvloop" in proc.stderr
+    assert "Building forbiddenfruit" in proc.stderr
+    assert "Built forbiddenfruit" in proc.stderr
 
 
 def test_install_script_upgrade_still_shows_diff(tmp_path: Path) -> None:
@@ -1182,6 +1232,92 @@ def test_install_script_linux_skips_clt_check(tmp_path: Path) -> None:
     assert uv_args.exists()
 
 
+def _invoke_with_local_uv_not_on_path(
+    tmp_path: Path, *, env_file_content: str | None = None
+) -> tuple[subprocess.CompletedProcess[str], Path]:
+    """Run with uv present only in ~/.local/bin, absent from PATH."""
+    bin_dir, home, uv = _write_fake_tools(
+        tmp_path, installed_version=None, latest_version="0.2.0"
+    )
+
+    local_bin = home / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    local_uv = local_bin / "uv"
+    local_uv.write_text(uv.read_text())
+    _make_executable(local_uv)
+    uv.unlink()
+    if env_file_content is not None:
+        (local_bin / "env").write_text(env_file_content)
+
+    path_without_uv = os.pathsep.join(
+        entry
+        for entry in _path_without_dcode().split(os.pathsep)
+        if entry and not (Path(entry) / "uv").exists()
+    )
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+        "PATH": f"{bin_dir}{os.pathsep}{path_without_uv}",
+        "DEEPAGENTS_CODE_SKIP_OPTIONAL": "1",
+    }
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    return proc, tmp_path / "uv-args.txt"
+
+
+def test_install_script_uses_local_uv_when_not_on_path(tmp_path: Path) -> None:
+    """A minimal MDM PATH must not reinstall uv when ~/.local/bin/uv exists."""
+    proc, uv_args = _invoke_with_local_uv_not_on_path(tmp_path)
+
+    assert proc.returncode == 0
+    assert uv_args.exists()
+    assert "uv not found — installing" not in proc.stdout + proc.stderr
+    assert uv_args.read_text().splitlines()[:3] == ["tool", "install", "-U"]
+
+
+def test_install_script_sources_uv_env_file_defensively(tmp_path: Path) -> None:
+    """A non-zero command in uv's env file must not abort the installer."""
+    proc, uv_args = _invoke_with_local_uv_not_on_path(
+        tmp_path,
+        env_file_content='export PATH="$HOME/.local/bin:$PATH"\nfalse\n',
+    )
+
+    assert proc.returncode == 0
+    assert uv_args.exists()
+    assert "uv not found — installing" not in proc.stdout + proc.stderr
+    assert uv_args.read_text().splitlines()[:3] == ["tool", "install", "-U"]
+
+
+def test_install_script_rejects_invalid_uv_bin_without_installing(
+    tmp_path: Path,
+) -> None:
+    """A bad `UV_BIN` should fail clearly instead of reinstalling uv."""
+    cases = [
+        (tmp_path / "missing", tmp_path / "missing" / "uv"),
+        (tmp_path / "directory", tmp_path / "directory" / "uv"),
+    ]
+    cases[1][1].mkdir(parents=True)
+
+    for root, uv_bin in cases:
+        root.mkdir(exist_ok=True)
+        proc, uv_args = _invoke(root, {"UV_BIN": str(uv_bin)})
+
+        assert proc.returncode != 0
+        assert not uv_args.exists()
+        assert (
+            f"UV_BIN is set but does not point to an executable uv: {uv_bin}"
+            in proc.stderr
+        )
+
+
 def _invoke_with_local_dcode_not_on_path(
     tmp_path: Path, *, create_env_file: bool = False
 ) -> subprocess.CompletedProcess[str]:
@@ -1273,6 +1409,27 @@ def test_install_script_managed_ripgrep_calls_tools_install(tmp_path: Path) -> N
     tools_log = tmp_path / "dcode-tools.txt"
     assert tools_log.exists(), proc.stdout + proc.stderr
     assert "tools install" in tools_log.read_text()
+    combined = proc.stdout + proc.stderr
+    assert "Setting up ripgrep..." not in combined
+    assert "Using ripgrep already on PATH" not in combined
+    assert "opt out with DEEPAGENTS_CODE_RIPGREP_INSTALLER=system" not in combined
+
+
+def test_install_script_managed_ripgrep_verbose_reports_tools_install(
+    tmp_path: Path,
+) -> None:
+    """Verbose mode prints the otherwise quiet managed-ripgrep setup details."""
+    proc, _ = _invoke(
+        tmp_path,
+        {"DEEPAGENTS_CODE_SKIP_OPTIONAL": "0", "DEEPAGENTS_CODE_VERBOSE": "1"},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    combined = proc.stdout + proc.stderr
+    assert "Setting up ripgrep..." in combined
+    assert "Using ripgrep already on PATH" in combined
 
 
 def test_install_script_system_ripgrep_skips_tools_install(tmp_path: Path) -> None:
@@ -1305,7 +1462,11 @@ def test_install_script_skip_optional_skips_tools_install(tmp_path: Path) -> Non
 
 
 def test_install_script_managed_ripgrep_failure_warns(tmp_path: Path) -> None:
-    """A failed `dcode tools install` falls back with a slow-grep warning."""
+    """A failed `dcode tools install` falls back with a slow-grep warning.
+
+    The captured command output is surfaced on failure — the whole reason the
+    quiet path writes to a temp file instead of discarding to `/dev/null`.
+    """
     proc, _ = _invoke(
         tmp_path,
         {"DEEPAGENTS_CODE_SKIP_OPTIONAL": "0", "FAKE_DCODE_TOOLS_RC": "1"},
@@ -1314,7 +1475,31 @@ def test_install_script_managed_ripgrep_failure_warns(tmp_path: Path) -> None:
     )
 
     assert proc.returncode == 0, proc.stderr
-    assert "slower fallback" in (proc.stdout + proc.stderr)
+    combined = proc.stdout + proc.stderr
+    assert "slower fallback" in combined
+    assert "Using ripgrep already on PATH" in combined
+
+
+def test_install_script_managed_ripgrep_verbose_failure_warns(
+    tmp_path: Path,
+) -> None:
+    """Verbose mode still warns and shows setup output when the install fails."""
+    proc, _ = _invoke(
+        tmp_path,
+        {
+            "DEEPAGENTS_CODE_SKIP_OPTIONAL": "0",
+            "DEEPAGENTS_CODE_VERBOSE": "1",
+            "FAKE_DCODE_TOOLS_RC": "1",
+        },
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    combined = proc.stdout + proc.stderr
+    assert "Setting up ripgrep..." in combined
+    assert "Using ripgrep already on PATH" in combined
+    assert "slower fallback" in combined
 
 
 def test_install_script_skips_managed_install_when_verify_failed(

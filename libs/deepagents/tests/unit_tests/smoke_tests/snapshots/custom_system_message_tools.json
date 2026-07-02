@@ -165,7 +165,7 @@
   },
   {
     "function": {
-      "description": "Find files matching a glob pattern.\n\nSupports standard glob patterns: `*` (any characters), `**` (any directories), `?` (single character).\nReturns a list of absolute file paths that match the pattern.\n\nExamples:\n- `**/*.py` - Find all Python files\n- `*.txt` - Find all text files in the backend's default root\n- `/subdir/**/*.md` - Find all markdown files under /subdir",
+      "description": "Find files matching a glob pattern.\n\nSupports standard glob patterns: `*` (any characters), `**` (any directories), `?` (single character).\nReturns a list of absolute file paths that match the pattern.\n\n**Required**: `pattern` \u2014 a non-empty glob string. Never call `glob` with no arguments; the call will be rejected.\n\nExamples:\n- `**/*.py` - Find all Python files\n- `*.txt` - Find all text files in the backend's default root\n- `/subdir/**/*.md` - Find all markdown files under /subdir",
       "name": "glob",
       "parameters": {
         "properties": {
@@ -196,7 +196,7 @@
   },
   {
     "function": {
-      "description": "Search for a text pattern across files.\n\nSearches for literal text (not regex) and returns matching files or content based on output_mode.\nSpecial characters like parentheses, brackets, pipes, etc. are treated as literal characters, not regex operators.\n\nExamples:\n- Search all files: `grep(pattern=\"TODO\")`\n- Search Python files only: `grep(pattern=\"import\", glob=\"*.py\")`\n- Show matching lines: `grep(pattern=\"error\", output_mode=\"content\")`\n- Search for code with special chars: `grep(pattern=\"def __init__(self):\")`",
+      "description": "Search for a text pattern across files.\n\nSearches for literal text (not regex) and returns matching files or content based on output_mode.\nSpecial characters like parentheses, brackets, pipes, etc. are treated as literal characters, not regex operators.\n\n**Required**: `pattern` \u2014 a non-empty search string. Never call `grep` with no arguments; the call will be rejected.\n\nExamples:\n- Search all files: `grep(pattern=\"TODO\")`\n- Search Python files only: `grep(pattern=\"import\", glob=\"*.py\")`\n- Show matching lines: `grep(pattern=\"error\", output_mode=\"content\")`\n- Search for code with special chars: `grep(pattern=\"def __init__(self):\")`",
       "name": "grep",
       "parameters": {
         "properties": {

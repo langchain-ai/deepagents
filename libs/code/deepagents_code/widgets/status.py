@@ -48,10 +48,16 @@ class ModelLabel(Widget):
     When the full `provider:model` text doesn't fit, the provider is dropped
     first. If the bare model name still doesn't fit, it is left-truncated
     with a leading ellipsis so the most distinctive tail stays visible.
+
+    When a reasoning effort is set, its label is appended to the model and
+    participates in the same ladder: the effort suffix is preserved (with the
+    model left-truncated to make room) and is only dropped once even the
+    left-truncated model plus effort cannot fit.
     """
 
     provider: reactive[str] = reactive("", layout=True)
     model: reactive[str] = reactive("", layout=True)
+    effort: reactive[str] = reactive("", layout=True)
 
     def _clean_model(self) -> str:
         """Strip the provider's registered prefix so the status bar stays compact.
@@ -68,6 +74,19 @@ class ModelLabel(Widget):
                 return name[len(prefix) :]
         return name
 
+    def _with_effort(self, text: str) -> str:
+        """Append the reasoning effort label when one is set.
+
+        Args:
+            text: Base model display text.
+
+        Returns:
+            Model display text with the effort suffix (a per-session override or
+                the provider default) when one is present, else
+                `text` unchanged.
+        """
+        return f"{text} {self.effort}" if self.effort else text
+
     def get_content_width(self, container: Size, viewport: Size) -> int:  # noqa: ARG002
         """Return the intrinsic width so `width: auto` works.
 
@@ -82,7 +101,7 @@ class ModelLabel(Widget):
             return 0
         model = self._clean_model()
         full = f"{self.provider}:{model}" if self.provider else model
-        return len(full)
+        return len(self._with_effort(full))
 
     def render(self) -> RenderResult:
         """Render the model label with width-aware truncation.
@@ -95,8 +114,15 @@ class ModelLabel(Widget):
             return ""
         model = self._clean_model()
         full = f"{self.provider}:{model}" if self.provider else model
-        if len(full) <= width:
-            return Content(full)
+        full_with_effort = self._with_effort(full)
+        model_with_effort = self._with_effort(model)
+        if len(full_with_effort) <= width:
+            return Content(full_with_effort)
+        if len(model_with_effort) <= width:
+            return Content(model_with_effort)
+        if self.effort and width > len(self.effort) + 2:
+            model_width = width - len(self.effort) - 1
+            return Content(f"\u2026{model[-(model_width - 1) :]} {self.effort}")
         if len(model) <= width:
             return Content(model)
         if width > 1:
@@ -111,7 +137,7 @@ class StatusBar(Horizontal):
     StatusBar {
         height: 1;
         dock: bottom;
-        background: $surface;
+        background: $background;
     }
 
     StatusBar .status-mode {
@@ -585,13 +611,16 @@ class StatusBar(Horizontal):
         except NoMatches:
             return
 
-    def set_model(self, *, provider: str, model: str) -> None:
+    def set_model(self, *, provider: str, model: str, effort: str = "") -> None:
         """Update the model display text.
 
         Args:
             provider: Model provider name (e.g., `'anthropic'`).
             model: Model name (e.g., `'claude-sonnet-4-5'`).
+            effort: Reasoning effort label to display (per-session override or
+                provider default), or empty when none applies.
         """
         label = self.query_one("#model-display", ModelLabel)
         label.provider = provider
         label.model = model
+        label.effort = effort

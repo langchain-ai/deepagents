@@ -43,7 +43,11 @@ from deepagents_code.widgets._js_eval_display import (
     JsEvalStdout,
     parse_js_eval_blocks,
 )
-from deepagents_code.widgets._links import event_targets_link, open_style_link
+from deepagents_code.widgets._links import (
+    event_targets_link,
+    open_checked_url_async,
+    open_style_link,
+)
 from deepagents_code.widgets.diff import compose_diff_lines
 
 if TYPE_CHECKING:
@@ -125,6 +129,17 @@ _TOOLS_WITH_HEADER_INFO: set[str] = {
     # Agent tools
     "task",
     "write_todos",
+}
+
+
+# Tools whose key info (file path / search pattern) is already in the header, so
+# their output body is collapsed entirely by default — an expand affordance
+# replaces the inline preview. `read_file` echoes the file; grep/glob echo the
+# matches for a pattern the header already names.
+_COLLAPSE_OUTPUT_BY_DEFAULT: set[str] = {
+    "read_file",
+    "grep",
+    "glob",
 }
 
 
@@ -719,7 +734,7 @@ class AssistantMessage(Vertical):
         """
         from textual.widgets import Markdown
 
-        yield Markdown("", id="assistant-content")
+        yield Markdown("", id="assistant-content", open_links=False)
 
     def on_mount(self) -> None:
         """Store reference to markdown widget."""
@@ -743,6 +758,11 @@ class AssistantMessage(Vertical):
         """Reset the markdown pointer shape when the mouse leaves the message."""
         if self._markdown is not None:
             self._markdown.styles.pointer = "text"
+
+    async def on_markdown_link_clicked(self, event: Markdown.LinkClicked) -> None:
+        """Open Markdown links with the same toast feedback as style links."""
+        event.stop()
+        await open_checked_url_async(event.href, app=self.app, notify_on_success=True)
 
     def _get_markdown(self) -> Markdown:
         """Get the markdown widget, querying if not cached.
@@ -959,6 +979,14 @@ class ToolCallMessage(Vertical):
     Inline rendering uses `result: value` rather than a standalone labeled block.
     """
 
+    _RUNNING_TIMER_THRESHOLD_SECS = 10
+    """Seconds a tool must run before the elapsed-time counter appears.
+
+    Short tool calls finish well under this threshold, so the timer would only
+    flicker on briefly; suppressing it until the tool is genuinely slow keeps
+    the "Running..." row quiet for the common case.
+    """
+
     def __init__(
         self,
         tool_name: str,
@@ -1112,6 +1140,7 @@ class ToolCallMessage(Vertical):
             case "success":
                 self._status = "success"
                 self._output = output
+                self._show_success_status()
                 self._update_output_display()
             case "error":
                 self._status = "error"
@@ -1183,7 +1212,8 @@ class ToolCallMessage(Vertical):
         elapsed = ""
         if self._start_time is not None:
             elapsed_secs = int(time() - self._start_time)
-            elapsed = f" ({format_duration(elapsed_secs)})"
+            if elapsed_secs >= self._RUNNING_TIMER_THRESHOLD_SECS:
+                elapsed = f" ({format_duration(elapsed_secs)})"
 
         text = f"{frame} Running...{elapsed}"
         self._status_widget.update(
@@ -1223,11 +1253,33 @@ class ToolCallMessage(Vertical):
         self._status = "success"
         # Strip redundant success trailer — the UI already conveys success
         self._output = _strip_success_exit_line(result)
-        if self._status_widget:
-            self._status_widget.remove_class("pending")
-            # Hide status on success - output speaks for itself
-            self._status_widget.display = False
+        self._show_success_status()
         self._update_output_display()
+
+    def _show_success_status(self) -> None:
+        """Render the status marker for a completed successful call.
+
+        When the call produces visible output it speaks for itself and the
+        status stays hidden; otherwise show a "Success!" marker so a completed
+        call (e.g. `edit_file`) isn't left without any outcome indicator.
+        """
+        if self._status_widget is None:
+            return
+        self._status_widget.remove_class("pending")
+        if (
+            self._tool_name != "edit_file"
+            and self._format_output(
+                self._output, is_preview=False
+            ).content.plain.strip()
+        ):
+            self._status_widget.remove_class("success")
+            self._status_widget.display = False
+            return
+        glyph = get_glyphs().checkmark
+        colors = theme.get_theme_colors(self)
+        self._status_widget.add_class("success")
+        self._status_widget.update(Content.styled(f"{glyph} Success!", colors.success))
+        self._status_widget.display = True
 
     def set_error(self, error: str) -> None:
         """Mark the tool call as failed.
@@ -1385,7 +1437,7 @@ class ToolCallMessage(Vertical):
             "ls": self._format_ls_output,
             "read_file": self._format_file_output,
             "write_file": self._format_file_output,
-            "edit_file": self._format_file_output,
+            "edit_file": self._format_edit_file_output,
             "grep": self._format_search_output,
             "glob": self._format_search_output,
             "execute": self._format_shell_output,
@@ -1426,11 +1478,50 @@ class ToolCallMessage(Vertical):
         """
         return self._has_expandable_output()
 
+    def _is_search_no_result_output(self, output: str) -> bool:
+        """Return whether search output is a terminal no-result message.
+
+        These sentinels must match the empty-result strings the SDK emits
+        (`format_grep_matches` and `_format_file_paths` in
+        `deepagents.middleware.filesystem`). If those change, this silently
+        stops matching and empty searches revert to collapsing behind an expand
+        affordance rather than rendering inline.
+        """
+        if self._tool_name == "grep":
+            return output.strip() == "No matches found"
+        if self._tool_name == "glob":
+            return output.strip() == "No files found"
+        return False
+
     def _has_expandable_output(self) -> bool:
         """Return whether collapsed output has hidden content to expand."""
         output = self._output.strip()
-        if not output:
+        if not output or self._is_search_no_result_output(output):
             return False
+
+        # Tools in `_COLLAPSE_OUTPUT_BY_DEFAULT` (read_file, grep, glob) collapse
+        # their body entirely by default (the header already carries the file
+        # path / search pattern), so any result with something to show is
+        # expandable regardless of size. The exception is a search that finds
+        # nothing: grep/glob return the terminal "No matches found" / "No files
+        # found" message, caught by `_is_search_no_result_output` above so it
+        # renders inline (see `_update_output_display`) instead of hiding a
+        # "nothing found" result behind an expand click. Beyond that, confirm the
+        # formatted output is non-empty rather than trusting the raw string —
+        # output that formats to blank (all whitespace, or a serialized empty
+        # collection like `[]`) has nothing to reveal. Successful `edit_file`
+        # similarly hides its redundant success line in the collapsed view while
+        # keeping the raw output expandable. This mirrors the empty-output guard
+        # in `_update_output_display`, which suppresses any body that would
+        # render blank before the collapse branch is reached — the two must move
+        # together if that assumption changes. Errors are excluded because
+        # `set_error` force-expands every error; treating a short error as
+        # always-expandable would offer a collapse that hides it entirely.
+        if self._tool_name in _COLLAPSE_OUTPUT_BY_DEFAULT and self._status != "error":
+            formatted = self._format_output(output, is_preview=False)
+            return bool(formatted.content.plain.strip())
+        if self._tool_name == "edit_file" and self._status == "success":
+            return True
 
         if self._tool_name == "write_todos":
             return self._format_output(output, is_preview=True).truncation is not None
@@ -1734,6 +1825,23 @@ class ToolCallMessage(Vertical):
             f"{row[0]:>{width}}  {row[1]}" if row else line
             for line, row in zip(lines, parsed, strict=True)
         )
+
+    def _format_edit_file_output(
+        self, output: str, *, is_preview: bool = False
+    ) -> FormattedOutput:
+        """Render edit_file output, hiding success only in the preview.
+
+        On success the collapsed status glyph and the diff already convey the
+        outcome, so the "Successfully replaced ..." line is hidden by default.
+        The full rendering still shows the raw tool output so clicking the row
+        can recover the original message. Errors still render in both modes.
+
+        Returns:
+            Empty preview on success, otherwise the file formatter.
+        """
+        if self._status == "success" and is_preview:
+            return FormattedOutput(content=Content(""))
+        return self._format_file_output(output, is_preview=is_preview)
 
     def _format_file_output(
         self, output: str, *, is_preview: bool = False
@@ -2245,13 +2353,16 @@ class ToolCallMessage(Vertical):
             total_lines > self._PREVIEW_LINES or total_chars > self._PREVIEW_CHARS
         )
 
-        # Some tools serialize an empty successful result as a non-empty literal
-        # (e.g. glob "[]") that formats to no visible content. The raw `_output`
-        # is truthy, so the early-return guard at the top of this method doesn't
-        # catch it, but rendering it would show an empty box with a misleading
-        # expand affordance. Treat it like empty output and render nothing. This
-        # also subsumes the all-whitespace case (formats to empty), so the
-        # collapsed branch below no longer needs its own empty guard.
+        # Some output is a non-empty raw string that the formatter renders as no
+        # visible content — all whitespace, or a serialized empty collection like
+        # `[]`. The raw `_output` is truthy, so the early-return guard at the top
+        # of this method doesn't catch it, but rendering it would show an empty
+        # box with a misleading expand affordance. Treat it like empty output and
+        # render nothing. (A search that found nothing is not this case: grep/glob
+        # return a human-readable "No matches found" / "No files found" that
+        # formats non-empty and renders inline; see the collapse branch below.)
+        # This also subsumes the all-whitespace case, so the collapsed branch
+        # below no longer needs its own empty guard.
         #
         # This fires for errors too, but never hides one: a real error body is
         # human-readable text that formats non-empty (and execute errors keep
@@ -2283,6 +2394,25 @@ class ToolCallMessage(Vertical):
         else:
             # Show collapsed preview
             self._full_row.display = False
+            # `read_file` echoes the file the agent read, grep/glob echo the
+            # matches for a pattern the header already names, and `edit_file`
+            # success output repeats the status/diff — so the body is noise by
+            # default. Collapse it entirely (no preview) while keeping the
+            # original output expandable for when the user does want to see it.
+            # A grep/glob that found nothing is excluded: its terminal "No
+            # matches/files found" message is the whole result, so it renders
+            # inline rather than hiding behind an expand click.
+            if not self._is_search_no_result_output(self._output) and (
+                self._tool_name in _COLLAPSE_OUTPUT_BY_DEFAULT
+                or (self._tool_name == "edit_file" and self._status == "success")
+            ):
+                self._preview_row.display = False
+                ellipsis = get_glyphs().ellipsis
+                self._hint_widget.update(
+                    Content.styled(f"{ellipsis} click or Ctrl+O to expand", "dim")
+                )
+                self._hint_widget.display = True
+                return
             # Truncate the preview only when the output is large enough to
             # warrant it; `write_todos` always uses its compact per-item preview
             # regardless of size.

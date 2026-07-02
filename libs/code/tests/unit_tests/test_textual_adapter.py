@@ -5,7 +5,6 @@ import sys
 from asyncio import Future
 from collections.abc import AsyncIterator, Awaitable, Callable, Generator
 from datetime import datetime
-from importlib.metadata import PackageNotFoundError
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -804,12 +803,35 @@ class TestBuildStreamConfig:
         """CLI version should always be present in metadata.lc_versions."""
         from deepagents_code._version import __version__
 
-        config = build_stream_config("t-ver", assistant_id=None)
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch("deepagents_code.config._get_deepagents_version", return_value=None),
+        ):
+            config = build_stream_config("t-ver", assistant_id=None)
         assert config["metadata"]["lc_versions"] == {"deepagents-code": __version__}
+
+    def test_versions_marks_editable_cli_version(self) -> None:
+        """Editable dcode installs should be visible in metadata.lc_versions."""
+        from deepagents_code._version import __version__
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=True),
+            patch("deepagents_code.config._get_deepagents_version", return_value=None),
+        ):
+            config = build_stream_config("t-editable", assistant_id=None)
+        assert config["metadata"]["lc_versions"] == {
+            "deepagents-code": f"{__version__} (editable)"
+        }
 
     def test_dcode_client_deepagents_version_is_diagnostic_metadata(self) -> None:
         """Client-side SDK version should not be reported as graph instrumentation."""
-        with patch("deepagents_code.config.version", return_value="1.2.3"):
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.extras_info.resolve_sdk_version",
+                return_value=("1.2.3", "resolved"),
+            ),
+        ):
             config = build_stream_config("t-sdk", assistant_id=None)
         assert config["metadata"]["dcode_client_deepagents_version"] == "1.2.3"
         assert "deepagents" not in config["metadata"]["lc_versions"]
@@ -818,9 +840,12 @@ class TestBuildStreamConfig:
         self,
     ) -> None:
         """Missing SDK metadata should not prevent stream config construction."""
-        with patch(
-            "deepagents_code.config.version",
-            side_effect=PackageNotFoundError("deepagents"),
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.extras_info.resolve_sdk_version",
+                return_value=(None, "not_installed"),
+            ),
         ):
             config = build_stream_config("t-missing-sdk", assistant_id=None)
 
@@ -835,13 +860,51 @@ class TestBuildStreamConfig:
             if module == "deepagents" or module.startswith("deepagents."):
                 monkeypatch.delitem(sys.modules, module, raising=False)
 
-        with patch("deepagents_code.config.version", return_value="1.2.3"):
+        with patch("deepagents_code.config._is_editable_install", return_value=False):
             build_stream_config("t-no-sdk-import", assistant_id=None)
 
         assert not any(
             module == "deepagents" or module.startswith("deepagents.")
             for module in sys.modules
         )
+
+    def test_get_deepagents_version_maps_status_to_value(self) -> None:
+        """Only a `resolved` status yields a version; other statuses map to None.
+
+        The guard keys on `status`, not on the version string, so a non-resolved
+        status must drop even a non-`None` version the resolver flagged as
+        untrustworthy.
+        """
+        from deepagents_code.config import _get_deepagents_version
+
+        with patch(
+            "deepagents_code.extras_info.resolve_sdk_version",
+            return_value=("1.2.3", "error"),
+        ):
+            assert _get_deepagents_version() is None
+
+        with patch(
+            "deepagents_code.extras_info.resolve_sdk_version",
+            return_value=("1.2.3", "resolved"),
+        ):
+            assert _get_deepagents_version() == "1.2.3"
+
+    def test_versions_editable_with_resolved_sdk_version(self) -> None:
+        """Editable suffix and SDK diagnostic version are populated independently."""
+        from deepagents_code._version import __version__
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=True),
+            patch(
+                "deepagents_code.extras_info.resolve_sdk_version",
+                return_value=("1.2.3", "resolved"),
+            ),
+        ):
+            config = build_stream_config("t-editable-sdk", assistant_id=None)
+        assert config["metadata"]["lc_versions"] == {
+            "deepagents-code": f"{__version__} (editable)"
+        }
+        assert config["metadata"]["dcode_client_deepagents_version"] == "1.2.3"
 
     def test_user_id_included_when_set(self) -> None:
         """DEEPAGENTS_CODE_USER_ID should appear in metadata when set."""
@@ -983,13 +1046,26 @@ class TestFormatRubricEvent:
         ):
             yield
 
-    def test_start_event_mentions_iteration(self) -> None:
-        """Start events should surface visible grading state."""
+    def test_start_event_omits_iteration_by_default(self) -> None:
+        """Start events should avoid noisy iteration numbers by default."""
         assert (
             _format_rubric_event(
                 {"type": "rubric_evaluation_start", "iteration": 1},
             )
-            == "⏳ Grading against rubric (iteration 2)…"
+            == "⏳ Checking acceptance criteria…"
+        )
+
+    def test_start_event_mentions_explicit_iteration(self) -> None:
+        """Explicit iteration display should surface the 1-based count."""
+        assert (
+            _format_rubric_event(
+                {
+                    "type": "rubric_evaluation_start",
+                    "iteration": 1,
+                    "show_iteration": True,
+                },
+            )
+            == "⏳ Checking acceptance criteria (iteration 2)…"
         )
 
     def test_needs_revision_includes_failed_criteria(self) -> None:
@@ -1006,7 +1082,7 @@ class TestFormatRubricEvent:
                     ],
                 },
             )
-            == "↻ Rubric needs revision: missing coverage\n  ✗ tests pass — not run"
+            == "↻ Changes need revision: missing coverage\n  ✗ tests pass — not run"
         )
 
     def test_satisfied_event(self) -> None:
@@ -1015,7 +1091,7 @@ class TestFormatRubricEvent:
             _format_rubric_event(
                 {"type": "rubric_evaluation_end", "result": "satisfied"},
             )
-            == "✓ Rubric satisfied"
+            == "✓ Acceptance criteria satisfied"
         )
 
     def test_start_event_without_int_iteration_omits_number(self) -> None:
@@ -1024,7 +1100,7 @@ class TestFormatRubricEvent:
             _format_rubric_event(
                 {"type": "rubric_evaluation_start", "iteration": None},
             )
-            == "⏳ Grading against rubric…"
+            == "⏳ Checking acceptance criteria…"
         )
 
     def test_max_iterations_reached_event(self) -> None:
@@ -1033,7 +1109,7 @@ class TestFormatRubricEvent:
             _format_rubric_event(
                 {"type": "rubric_evaluation_end", "result": "max_iterations_reached"},
             )
-            == "⚠ Rubric not satisfied (max iterations reached)"
+            == "⚠ Acceptance criteria not satisfied (iteration limit reached)"
         )
 
     def test_grader_failure_results_render_warning(self) -> None:
@@ -1096,14 +1172,12 @@ class TestFormatRubricEvent:
             failed = _format_rubric_event(
                 {"type": "rubric_evaluation_end", "result": "failed"},
             )
-        assert (
-            start == f"{ASCII_GLYPHS.hourglass} Grading against rubric (iteration 1)..."
-        )
+        assert start == f"{ASCII_GLYPHS.hourglass} Checking acceptance criteria..."
         assert revision == (
-            f"{ASCII_GLYPHS.retry} Rubric needs revision\n"
+            f"{ASCII_GLYPHS.retry} Changes need revision\n"
             f"  {ASCII_GLYPHS.error} tests pass — not run"
         )
-        assert satisfied == f"{ASCII_GLYPHS.checkmark} Rubric satisfied"
+        assert satisfied == f"{ASCII_GLYPHS.checkmark} Acceptance criteria satisfied"
         assert failed == f"{ASCII_GLYPHS.warning} Rubric grader failed"
 
 
@@ -2567,10 +2641,10 @@ class TestExecuteTaskTextualRubricRevisionStreaming:
         app_text = [str(widget._content) for widget in app_messages]
         assert app_text == [
             (
-                f"{UNICODE_GLYPHS.hourglass} Grading against rubric (iteration 1)"
+                f"{UNICODE_GLYPHS.hourglass} Checking acceptance criteria"
                 f"{UNICODE_GLYPHS.ellipsis}"
             ),
-            f"{UNICODE_GLYPHS.retry} Rubric needs revision: say yellow",
+            f"{UNICODE_GLYPHS.retry} Changes need revision: say yellow",
         ]
 
 
@@ -3919,7 +3993,8 @@ class TestExecuteTaskTextualRubricEvents:
         rubric_msgs = [
             m
             for m in mounted
-            if isinstance(m, AppMessage) and "Rubric satisfied" in str(m._content)
+            if isinstance(m, AppMessage)
+            and "Acceptance criteria satisfied" in str(m._content)
         ]
         assert len(rubric_msgs) == 1
 

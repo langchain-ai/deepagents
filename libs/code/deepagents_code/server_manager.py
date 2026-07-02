@@ -286,7 +286,7 @@ async def start_server_and_get_agent(
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
     rubric_model: str | None = None,
-    rubric_max_iterations: int = 3,
+    rubric_max_iterations: int | None = None,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
@@ -315,7 +315,8 @@ async def start_server_and_get_agent(
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
         rubric_model: Grader model spec; `None` reuses the main model.
-        rubric_max_iterations: Grader iterations per rubric attempt.
+        rubric_max_iterations: Explicit grader iterations per rubric attempt;
+            `None` uses the SDK default.
         mcp_config_path: Path to MCP config.
         no_mcp: Disable MCP.
         trust_project_mcp: Trust project MCP servers.
@@ -420,7 +421,7 @@ async def server_session(
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
     rubric_model: str | None = None,
-    rubric_max_iterations: int = 3,
+    rubric_max_iterations: int | None = None,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
@@ -452,7 +453,8 @@ async def server_session(
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
         rubric_model: Grader model spec; `None` reuses the main model.
-        rubric_max_iterations: Grader iterations per rubric attempt.
+        rubric_max_iterations: Explicit grader iterations per rubric attempt;
+            `None` uses the SDK default.
         mcp_config_path: Path to MCP config.
         no_mcp: Disable MCP.
         trust_project_mcp: Trust project MCP servers.

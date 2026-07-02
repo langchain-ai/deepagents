@@ -1579,6 +1579,34 @@ class TestToolCallMessageEmptyResult:
             assert app.msg._hint_widget.display is False
             assert app.msg._has_expandable_output() is False
 
+    @pytest.mark.parametrize(
+        ("tool", "output"),
+        [
+            ("grep", "No matches found"),
+            ("glob", "No files found"),
+        ],
+    )
+    async def test_search_no_result_message_renders_without_expand_hint(
+        self, tool: str, output: str
+    ) -> None:
+        """Search no-result messages stay visible and are not expandable."""
+        app = _tool_msg_app(tool)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._preview_row is not None
+            assert app.msg._preview_widget is not None
+            assert app.msg._full_row is not None
+            assert app.msg._hint_widget is not None
+            assert app.msg._preview_row.display is True
+            assert app.msg._full_row.display is False
+            assert app.msg._hint_widget.display is False
+            assert app.msg._has_expandable_output() is False
+            preview = app.msg._preview_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert preview.plain == output
+
     async def test_non_empty_serialized_result_still_renders(self) -> None:
         """A populated result must still render — the guard can't false-positive.
 

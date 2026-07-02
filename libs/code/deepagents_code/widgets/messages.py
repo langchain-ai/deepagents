@@ -1477,10 +1477,18 @@ class ToolCallMessage(Vertical):
         """
         return self._has_expandable_output()
 
+    def _is_search_no_result_output(self, output: str) -> bool:
+        """Return whether search output is a terminal no-result message."""
+        if self._tool_name == "grep":
+            return output.strip() == "No matches found"
+        if self._tool_name == "glob":
+            return output.strip() == "No files found"
+        return False
+
     def _has_expandable_output(self) -> bool:
         """Return whether collapsed output has hidden content to expand."""
         output = self._output.strip()
-        if not output:
+        if not output or self._is_search_no_result_output(output):
             return False
 
         # Tools in `_COLLAPSE_OUTPUT_BY_DEFAULT` (read_file, grep, glob) collapse
@@ -2376,8 +2384,9 @@ class ToolCallMessage(Vertical):
             # success output repeats the status/diff — so the body is noise by
             # default. Collapse it entirely (no preview) while keeping the
             # original output expandable for when the user does want to see it.
-            if self._tool_name in _COLLAPSE_OUTPUT_BY_DEFAULT or (
-                self._tool_name == "edit_file" and self._status == "success"
+            if not self._is_search_no_result_output(self._output) and (
+                self._tool_name in _COLLAPSE_OUTPUT_BY_DEFAULT
+                or (self._tool_name == "edit_file" and self._status == "success")
             ):
                 self._preview_row.display = False
                 ellipsis = get_glyphs().ellipsis

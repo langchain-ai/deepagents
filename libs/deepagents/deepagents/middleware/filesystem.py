@@ -460,14 +460,27 @@ def _format_grep_tool_result(
     result: GrepResult,
     output_mode: Literal["files_with_matches", "content", "count"],
 ) -> tuple[str, Literal["success", "error"]]:
-    """Format a backend grep result for the tool boundary."""
+    """Format a backend grep result for the tool boundary.
+
+    Size-truncation is applied to the match body here, before any note is
+    appended, so a trailing `SEARCH_TRUNCATION_NOTE` survives instead of being
+    sliced off by an outer `truncate_if_too_long` at the call site. Callers
+    should use the returned content as-is rather than re-truncating it.
+    """
     matches = result.matches or []
     if result.error and not matches:
         return result.error, "error"
 
-    formatted = format_grep_matches(matches, output_mode)
+    formatted = truncate_if_too_long(format_grep_matches(matches, output_mode))
     if result.error:
-        return f"{result.error}\n\nPartial matches:\n{formatted}", "error"
+        # Truncate the error separately so the already-size-limited partial
+        # matches survive. A very long error string (e.g. many collected file
+        # read errors from the Python fallback) would otherwise push the
+        # "Partial matches:" section past the token limit and cut it off.
+        error = truncate_if_too_long(result.error)
+        return f"{error}\n\nPartial matches:\n{formatted}", "error"
+    if result.truncated:
+        return f"{formatted}\n\n{SEARCH_TRUNCATION_NOTE}", "success"
     return formatted, "success"
 
 
@@ -496,9 +509,21 @@ def _format_file_paths(paths: list[str]) -> str:
     return str(truncate_if_too_long(paths))
 
 
+def _format_glob_tool_result(paths: list[str], *, truncated: bool) -> str:
+    """Render glob paths for the tool boundary, appending the truncation note when partial."""
+    content = _format_file_paths(paths)
+    if truncated:
+        return f"{content}\n\n{SEARCH_TRUNCATION_NOTE}"
+    return content
+
+
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 GLOB_TIMEOUT = 20.0  # seconds
 LINE_NUMBER_WIDTH = 6
+SEARCH_TRUNCATION_NOTE = (
+    "Note: the search stopped early because it hit its time limit. The matches above are valid but incomplete. "
+    "Narrow the search (a more specific pattern or a narrower path) to see the rest."
+)
 
 
 def _glob_timeout_message() -> str:
@@ -1967,7 +1992,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             infos = glob_result.matches or []
             paths = _apply_permissions_to_glob_results(self._permissions, infos)
             return ToolMessage(
-                content=_format_file_paths(paths),
+                content=_format_glob_tool_result(paths, truncated=glob_result.truncated),
                 tool_call_id=runtime.tool_call_id,
                 name="glob",
                 status="success",
@@ -2031,7 +2056,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             infos = glob_result.matches or []
             paths = _apply_permissions_to_glob_results(self._permissions, infos)
             return ToolMessage(
-                content=_format_file_paths(paths),
+                content=_format_glob_tool_result(paths, truncated=glob_result.truncated),
                 tool_call_id=runtime.tool_call_id,
                 name="glob",
                 status="success",
@@ -2080,11 +2105,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             matches = grep_result.matches or []
             filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read")
             formatted, status = _format_grep_tool_result(
-                GrepResult(error=grep_result.error, matches=filtered_matches),
+                GrepResult(error=grep_result.error, matches=filtered_matches, truncated=grep_result.truncated),
                 output_mode,
             )
             return ToolMessage(
-                content=truncate_if_too_long(formatted),
+                # `formatted` is already size-truncated inside
+                # `_format_grep_tool_result` so the truncation note survives.
+                content=formatted,
                 tool_call_id=runtime.tool_call_id,
                 name="grep",
                 status=status,
@@ -2120,11 +2147,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             matches = grep_result.matches or []
             filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read")
             formatted, status = _format_grep_tool_result(
-                GrepResult(error=grep_result.error, matches=filtered_matches),
+                GrepResult(error=grep_result.error, matches=filtered_matches, truncated=grep_result.truncated),
                 output_mode,
             )
             return ToolMessage(
-                content=truncate_if_too_long(formatted),
+                # `formatted` is already size-truncated inside
+                # `_format_grep_tool_result` so the truncation note survives.
+                content=formatted,
                 tool_call_id=runtime.tool_call_id,
                 name="grep",
                 status=status,

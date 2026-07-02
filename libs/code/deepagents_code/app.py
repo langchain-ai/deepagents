@@ -10804,23 +10804,41 @@ class DeepAgentsApp(App):
             except NoMatches:
                 return
 
-            # 6-7. Create and mount only visible widgets (max WINDOW_SIZE)
-            widgets = [msg_data.to_widget() for msg_data in visible]
-            if widgets:
-                nodes: list[Widget] = []
-                for widget, msg_data in zip(widgets, visible, strict=False):
-                    nodes.append(widget)
-                    footer = self._build_message_timestamp_footer(
-                        msg_data, visible=self._message_timestamps_visible
+            # 6-7. Create and mount only visible widgets (max WINDOW_SIZE).
+            # Skip any whose ID already exists in the DOM: mounting a duplicate
+            # ID raises `DuplicateIds`, which would abort the entire history
+            # load. Widened message IDs make natural collisions vanishingly
+            # unlikely, but re-entrant loads (e.g. a stale preloaded payload
+            # remounted over surviving widgets) can still reintroduce one.
+            existing_ids = {
+                node.id for node in messages_container.children if node.id is not None
+            }
+            mounted: list[tuple[Widget, MessageData]] = []
+            nodes: list[Widget] = []
+            for msg_data in visible:
+                if msg_data.id in existing_ids:
+                    logger.warning(
+                        "Skipping history widget %s: a widget with that ID is "
+                        "already mounted",
+                        msg_data.id,
                     )
-                    if footer is not None:
-                        nodes.append(footer)
+                    continue
+                existing_ids.add(msg_data.id)
+                widget = msg_data.to_widget()
+                mounted.append((widget, msg_data))
+                nodes.append(widget)
+                footer = self._build_message_timestamp_footer(
+                    msg_data, visible=self._message_timestamps_visible
+                )
+                if footer is not None:
+                    nodes.append(footer)
+            if nodes:
                 await messages_container.mount(*nodes)
 
             # 8. Render content for AssistantMessage after mount
             assistant_updates = [
                 widget.set_content(msg_data.content)
-                for widget, msg_data in zip(widgets, visible, strict=False)
+                for widget, msg_data in mounted
                 if isinstance(widget, AssistantMessage) and msg_data.content
             ]
             if assistant_updates:

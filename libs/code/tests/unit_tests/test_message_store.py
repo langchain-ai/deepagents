@@ -216,6 +216,21 @@ class TestMessageData:
         assert data.is_streaming is False
         assert data.height_hint is None
 
+    def test_default_ids_use_full_uuid_hex(self):
+        """Auto-generated IDs use the full 128-bit hex, not a truncated prefix.
+
+        A wider ID keeps widget IDs unique across large histories and long
+        sessions; a collision raises `DuplicateIds` when the widget mounts.
+        """
+        ids = {
+            MessageData(type=MessageType.USER, content="test").id for _ in range(1000)
+        }
+        # 1000 distinct IDs, each a full uuid4 hex suffix.
+        assert len(ids) == 1000
+        for message_id in ids:
+            assert message_id.startswith("msg-")
+            assert len(message_id.removeprefix("msg-")) == 32
+
     def test_tool_message_requires_tool_name(self):
         """Test that TOOL messages must have a tool_name."""
         with pytest.raises(ValueError, match="TOOL messages must have a tool_name"):

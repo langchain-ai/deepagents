@@ -1393,12 +1393,15 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         filter_input.focus()
         self.call_after_refresh(self._update_controls_overflow_hint)
 
-        if self._has_initial_threads:
-            self.call_after_refresh(self._scroll_selected_into_view)
-            if self._current_thread:
-                self._resolve_thread_url()
+        # Resolve the LangSmith thread URL as soon as the modal mounts. The URL
+        # only depends on `self._current_thread` (known at construction), not on
+        # the thread list, so the header hyperlink should not wait for the DB
+        # load to finish.
+        if self._current_thread:
+            self._resolve_thread_url()
 
         if self._has_initial_threads:
+            self.call_after_refresh(self._scroll_selected_into_view)
             # Defer by one message cycle so Textual finishes processing
             # mount messages before we start the DB refresh.
             self.call_after_refresh(self._start_thread_load)

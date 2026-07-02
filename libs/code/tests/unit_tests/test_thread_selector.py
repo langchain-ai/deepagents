@@ -1571,6 +1571,44 @@ class TestFetchThreadUrl:
                 assert isinstance(content, Content)
                 assert "abc12345" in content.plain
 
+    async def test_url_resolves_before_thread_load_completes(self) -> None:
+        """Header link should appear without waiting for the DB load to finish."""
+        from textual.content import Content
+
+        load_gate = asyncio.Event()
+
+        async def _blocking_list_threads(*_args: Any, **_kwargs: Any) -> list[Any]:
+            await load_gate.wait()
+            return list(MOCK_THREADS)
+
+        with (
+            patch(
+                "deepagents_code.sessions.list_threads",
+                new=_blocking_list_threads,
+            ),
+            patch(
+                "deepagents_code.widgets.thread_selector.build_langsmith_thread_url",
+                return_value="https://smith.langchain.com/p/t/abc12345",
+            ),
+        ):
+            app = ThreadSelectorTestApp(current_thread="abc12345")
+            async with app.run_test() as pilot:
+                app.show_selector()
+                # Pump a few cycles; the thread load is still blocked on the gate.
+                await pilot.pause()
+                await pilot.pause()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                assert not screen._disk_load_complete
+                title_widget = screen.query_one("#thread-title", Static)
+                content = title_widget._Static__content
+                assert isinstance(content, Content)
+                assert "abc12345" in content.plain
+
+                load_gate.set()
+
     async def test_timeout_leaves_title_unchanged(self) -> None:
         """Timeout during URL resolution should not crash or change the title."""
         import time

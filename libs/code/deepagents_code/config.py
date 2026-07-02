@@ -769,8 +769,8 @@ def _ensure_bootstrap() -> None:
                         logger.warning(
                             "%s and %s are both set to different values. Deep "
                             "Agents Code uses %s for this session (the "
-                            "%s-prefixed value takes precedence); your shell's "
-                            "%s is left untouched for other tools. This is "
+                            "%s-prefixed value takes precedence). The %s you "
+                            "exported in your own shell is unaffected. This is "
                             "expected. To silence this warning, unset %s or set "
                             "%s=1.",
                             canonical,

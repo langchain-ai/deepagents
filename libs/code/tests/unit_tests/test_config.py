@@ -4875,6 +4875,49 @@ class TestLazyModuleAttributes:
             config_mod._bootstrap_state.done = original_done
             config_mod._bootstrap_state.original_langsmith_project = original_ls
 
+    def test_bootstrap_no_warning_when_values_match(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Matching canonical and prefixed values propagate without warning."""
+        import logging
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code.config import _ensure_bootstrap
+
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        config_mod._bootstrap_state.done = False
+
+        try:
+            monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_same")
+            monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_same")
+            monkeypatch.delenv(
+                "DEEPAGENTS_CODE_SUPPRESS_ENV_OVERRIDE_WARNING", raising=False
+            )
+            monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
+
+            with (
+                patch("deepagents_code.config._load_dotenv"),
+                patch(
+                    "deepagents_code.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+                caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
+            ):
+                _ensure_bootstrap()
+
+            # No conflict, so no warning; the shared value stays in place.
+            assert os.environ["LANGSMITH_API_KEY"] == "lsv2_same"
+            assert not [
+                r
+                for r in caplog.records
+                if "DEEPAGENTS_CODE_LANGSMITH_API_KEY" in r.getMessage()
+            ]
+        finally:
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
+
     def test_bootstrap_propagates_empty_string(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -231,10 +231,12 @@ LangSmith variable overrides its canonical counterpart (e.g. both
 `LANGSMITH_API_KEY` and `DEEPAGENTS_CODE_LANGSMITH_API_KEY` are set to
 different values).
 
-The override is intentional and safe: the prefixed value wins inside the
-Deep Agents Code process while the canonical variable is left untouched for
-other tools. Set to a truthy value (`1`, `true`, `yes`, `on`) to suppress the
-warning when this coexistence is expected. Parsed by `is_env_truthy`.
+The override is intentional: the prefixed value overwrites the canonical
+variable inside the Deep Agents Code process (so the LangSmith SDK, which
+only reads canonical names, picks it up). The value you exported in your own
+shell is unaffected, since a process cannot change its parent's environment.
+Off by default; set to a truthy value (`1`, `true`, `yes`, `on`) to suppress
+the warning when this coexistence is expected. Parsed by `is_env_truthy`.
 """
 
 THEME = "DEEPAGENTS_CODE_THEME"

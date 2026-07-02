@@ -39,9 +39,10 @@ def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
 
     String models are resolved via `init_chat_model`, composed with any
     provider-specific initialization behavior registered in the
-    `ProviderProfile` registry. Built-in registrations supply the OpenAI
-    Responses API default and OpenRouter app attribution headers; users can
-    layer additional providers or overrides via `register_provider_profile`.
+    `ProviderProfile` registry. Built-in registrations supply NVIDIA NIM and
+    OpenRouter app attribution headers plus the OpenAI Responses API default;
+    users can layer additional providers or overrides via
+    `register_provider_profile`.
 
     Args:
         model: Model string (e.g. `"openai:gpt-5.4"`) or pre-configured

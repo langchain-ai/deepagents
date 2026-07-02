@@ -219,6 +219,8 @@ def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
 
 _BASETEN_NEMOTRON = "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B"
 _FIREWORKS_NEMOTRON = "fireworks:accounts/fireworks/models/nemotron-3-ultra-nvfp4"
+# Nemotron 3 Ultra served by a Fireworks dedicated deployment; gets the same sampling.
+_FIREWORKS_NEMOTRON_DEPLOYMENT = "fireworks:accounts/langchain-fireworks/deployments/nemotron-tb-test"
 # NVIDIA's Nemotron 3 Ultra agentic-coding cookbook sampling; top_p is not a
 # first-class ChatFireworks field so it rides in model_kwargs.
 _FW_SAMPLING = {"temperature": 0.6, "max_tokens": 32000, "model_kwargs": {"top_p": 0.95}}
@@ -287,6 +289,14 @@ def test_resolve_init_kwargs_fireworks_caller_overrides_sampling() -> None:
     # A caller-provided sampling value wins over the spec default; the rest hold.
     out = langgraph_agent._resolve_init_kwargs(_FIREWORKS_NEMOTRON, {"temperature": 0.0})
     assert out == {"temperature": 0.0, "max_tokens": 32000, "model_kwargs": {"top_p": 0.95}}
+
+
+def test_resolve_init_kwargs_sets_fireworks_deployment_ultra_sampling() -> None:
+    # The Fireworks dedicated deployment gets the same cookbook sampling as the
+    # serverless nvfp4 model, so it does not run at Fireworks server defaults.
+    assert (
+        langgraph_agent._resolve_init_kwargs(_FIREWORKS_NEMOTRON_DEPLOYMENT, {}) == _FW_SAMPLING
+    )
 
 
 def test_make_graph_enables_thinking_for_baseten_nemotron(

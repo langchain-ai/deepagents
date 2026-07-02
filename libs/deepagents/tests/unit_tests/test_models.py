@@ -1208,6 +1208,8 @@ class TestNemotronUltraProfile:
             "nvidia:nvidia/nemotron-3-ultra-550b-a55b",
             "fireworks:accounts/fireworks/models/nemotron-3-ultra-nvfp4",
             "fireworks:accounts/fireworks/models/nemotron-3-ultra-bf16",
+            # Nemotron 3 Ultra served by a Fireworks dedicated deployment.
+            "fireworks:accounts/langchain-fireworks/deployments/nemotron-tb-test",
             "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
             "openrouter:nvidia/nemotron-3-ultra-550b-a55b",
         ],

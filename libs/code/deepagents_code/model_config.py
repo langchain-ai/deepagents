@@ -742,6 +742,9 @@ OPTIONAL_AUTH_ENV: dict[str, str] = {"ollama": "OLLAMA_API_KEY"}
 PROVIDER_HOST_ENV: dict[str, str] = {"ollama": "OLLAMA_HOST"}
 """Provider-specific env vars that can point a local provider at a remote host."""
 
+PROVIDER_CUSTOM_HEADERS_ENV: dict[str, str] = {"anthropic": "ANTHROPIC_CUSTOM_HEADERS"}
+"""Provider SDK env vars that inject custom request headers (e.g. gateway auth)."""
+
 OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
 """Default endpoint assumed when no `base_url` or `OLLAMA_HOST` is configured."""
 
@@ -2170,6 +2173,10 @@ def _apply_stored_base_url(provider: str, base_url: str | None) -> None:
     clears every name when `base_url` is `None` (reset to the provider
     default). See `apply_stored_credentials` for the pairing rationale.
 
+    When switching to a provider-native key (no `base_url`), also clears the
+    provider's custom-headers env var (e.g. `ANTHROPIC_CUSTOM_HEADERS`) so a
+    gateway-provisioned auth header isn't sent to the native endpoint.
+
     Args:
         provider: Provider name.
         base_url: The stored endpoint, or `None` to reset to the default.
@@ -2183,11 +2190,55 @@ def _apply_stored_base_url(provider: str, base_url: str | None) -> None:
         names.add(canonical)
     if not names:
         return
+    configured_base_url_survives = _configured_base_url_survives_env_clear(provider)
     for name in names:
         if base_url and name == canonical:
             os.environ[name] = base_url
         else:
             os.environ.pop(name, None)
+
+    # A provider SDK's custom-header env var (e.g. `ANTHROPIC_CUSTOM_HEADERS`)
+    # injects headers into every request. A gateway-provisioned environment
+    # often sets it to `X-Api-Key: <gateway-key>`, which overrides the SDK's
+    # own `api_key`-derived header. When switching to a provider-native key
+    # (no stored `base_url`), that header must also be cleared — otherwise the
+    # gateway key is sent to the native endpoint and rejected.
+    custom_headers_env = PROVIDER_CUSTOM_HEADERS_ENV.get(provider)
+    if custom_headers_env and not base_url:
+        if not configured_base_url_survives:
+            if os.environ.pop(custom_headers_env, None) is not None:
+                # Log the env var name only — never its value, which carries
+                # auth headers. Surfaces the removal for the user who set a
+                # header deliberately for the native endpoint and later wonders
+                # where it went.
+                logger.info(
+                    "Cleared %s while applying a provider-native %s key",
+                    custom_headers_env,
+                    provider,
+                )
+        elif os.environ.get(custom_headers_env) is not None:
+            # A provider base URL still routes (config or a prefixed env var),
+            # so the custom-header env is deliberately kept. Log the name only —
+            # never the value — so the retention is observable when a user later
+            # wonders why a gateway header is still in effect after applying a
+            # native key.
+            logger.debug(
+                "Kept %s: a %s base URL is still configured",
+                custom_headers_env,
+                provider,
+            )
+
+
+def _configured_base_url_survives_env_clear(provider: str) -> bool:
+    """Return whether endpoint config still routes after plain env cleanup."""
+    config = ModelConfig.load()
+    provider_cfg = config.providers.get(provider)
+    if provider_cfg and provider_cfg.get("base_url"):
+        return True
+    for env_var in get_base_url_env_vars(provider):
+        if os.environ.get(f"{_ENV_PREFIX}{env_var}"):
+            return True
+    return False
 
 
 def warn_on_split_credential_source(provider: str) -> None:

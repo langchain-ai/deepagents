@@ -315,6 +315,66 @@ class ReadFileContinuationNoticeMiddleware(AgentMiddleware):
         return self._annotate(request, await handler(request))
 
 
+_LARGE_FILE_READ_THRESHOLD = 5
+"""read_file page count on a single file beyond which manual paging is impractical."""
+
+_LARGE_FILE_NUDGE = (
+    "You have read this file in {n} separate pages and it still continues — it is too large "
+    "to work through by hand, and paging further will exhaust your budget before you reach "
+    "what matters. Let code do it: use grep/sed to jump to the relevant section, or write a "
+    "script to parse, search, or render the whole file programmatically. If you truly need a "
+    "specific part, target it directly instead of reading start to finish."
+)
+
+
+class LargeFileReadState(AgentState):
+    """State schema for ``LargeFileReadNudgeMiddleware`` (files already advised on)."""
+
+    large_file_nudged: NotRequired[Annotated[list[str], PrivateStateAttr]]
+
+
+class LargeFileReadNudgeMiddleware(AgentMiddleware):
+    """Once a file has been `read_file`-paged past a threshold, advise scripting it.
+
+    The continuation notice tells the model a file continues, which nudges it to keep
+    paging. For a genuinely large file (logs, gcode, data dumps) that strategy exhausts
+    the budget before reaching the relevant part. When the same file has been read
+    ``_LARGE_FILE_READ_THRESHOLD``+ times, inject one advisory HumanMessage to grep/script
+    it instead. Advisory, not a hard stop, so it cannot derail a large file the model
+    legitimately needs to read section by section. Fires at most once per file.
+    """
+
+    name = "LargeFileReadNudgeMiddleware"
+    state_schema = LargeFileReadState
+
+    @staticmethod
+    def _nudge(state: LargeFileReadState) -> dict[str, Any] | None:
+        counts: dict[str, int] = {}
+        for message in state.get("messages", []):
+            if not isinstance(message, AIMessage):
+                continue
+            for call in message.tool_calls or []:
+                if call.get("name") != "read_file":
+                    continue
+                path = (call.get("args") or {}).get("file_path")
+                if path:
+                    counts[path] = counts.get(path, 0) + 1
+        nudged = list(state.get("large_file_nudged") or [])
+        for path, n in counts.items():
+            if n >= _LARGE_FILE_READ_THRESHOLD and path not in nudged:
+                return {
+                    "messages": [HumanMessage(content=_LARGE_FILE_NUDGE.format(n=n))],
+                    "large_file_nudged": [*nudged, path],
+                }
+        return None
+
+    def before_model(self, state: LargeFileReadState, runtime: Any) -> dict[str, Any] | None:
+        return self._nudge(state)
+
+    async def abefore_model(self, state: LargeFileReadState, runtime: Any) -> dict[str, Any] | None:
+        return self._nudge(state)
+
+
 _FUNCTION_BLOCK_RE = re.compile(r"<function=([^>\s]+)\s*>(.*?)</function>", re.DOTALL)
 """Matches a `<function=NAME> ... </function>` text tool-call block."""
 
@@ -824,7 +884,12 @@ _PLAN_FIRST_NUDGE = (
     "every value of every parameter, both states of every boolean flag (test it ON and "
     "OFF), and the non-trivial configs (more than one worker/shard/item), not just the "
     "default or degenerate one. A check that skips a required case proves nothing about "
-    "that case."
+    "that case.\n"
+    "- WHAT is required, before HOW: quote from the task verbatim every output (filename, "
+    "format, columns/fields, count), every parameter value and flag state, and every named "
+    "entity, direction, or constraint. Separate what the task LITERALLY states from what you "
+    "are ASSUMING — do not invent requirements or silently drop stated ones; a "
+    "plausible-but-unstated interpretation is exactly where these go wrong."
 )
 
 
@@ -841,18 +906,28 @@ _PLAN_MISSING_NUDGE = (
     "verify by running — then carry it out. Do not finish without it."
 )
 _PLAN_ADHERENCE_NUDGE = (
-    "STOP — do not finish on a self-assessment. A confident summary is not evidence; the "
-    "only proof is your solution producing the required result from a CLEAN starting "
-    "state. Before finishing: (1) restore every input you edited back to its ORIGINAL "
-    "contents — the working copy you debugged against is contaminated, and a check run "
-    "against it can show 'matches' while the real thing fails; (2) run your solution the "
-    "way it is actually meant to run — end to end, from scratch, on the real inputs — and "
-    "read the OBSERVED output; (3) compare that observed output to what the task "
-    "requires, for every case, every parameter value, and both states of any boolean flag "
-    "(run it ON and OFF) — the results you actually see, not the ones you assumed. If "
-    "observed does not match required, that is unfinished work: fix it and re-run. You are "
-    "done only when you have re-run from a clean state and SEEN the required result — not "
-    "when you believe you did."
+    "STOP — do not finish on a self-assessment. A confident summary is not evidence; verify "
+    "the way an independent check from a clean checkout would, and believe only what you "
+    "OBSERVE.\n"
+    "0. Re-read the TASK itself as the source of truth, and scan your /tmp/plan.md for any "
+    "step you planned but never executed. Verify against what the TASK requires — not only "
+    "what your plan listed (a plan can under-cover the task or bake in a misreading).\n"
+    "1. Restore every input you edited back to its ORIGINAL contents and check against those "
+    "— a check against the working copy you mutated can show 'matches' while the real thing "
+    "fails.\n"
+    "2. Run each deliverable via its EXACT stated invocation — the exact command, filename, "
+    "and interpreter the task names (if it says `python`, run `python`, not `python3`) — in "
+    "the BASE environment. Do not rely on packages you installed this session or paths only "
+    "you created; a fresh run will not have them.\n"
+    "3. Reproduce EVERY required mode/command, not just the one that passes — if two build "
+    "commands or both states of a flag are required, run both.\n"
+    "4. Confirm each named output actually EXISTS and matches the required shape exactly: "
+    "filename, format, field/column names, line count, byte-for-byte if specified.\n"
+    "5. For any stated threshold or constraint (a time limit, a tolerance, a count), MEASURE "
+    "it and compare — do not assume it holds.\n"
+    "If any observed result does not match what the task requires, that is unfinished work: "
+    "fix it and re-run. You are done only when a clean, independent re-run has SHOWN every "
+    "requirement met — not when you believe it."
 )
 
 
@@ -981,6 +1056,7 @@ def _build_extra_middleware() -> list[AgentMiddleware]:
     """
     return [
         ReadFileContinuationNoticeMiddleware(),
+        LargeFileReadNudgeMiddleware(),
         ToolRetryMiddleware(
             max_retries=1,
             tools=list(_FILESYSTEM_TOOLS),

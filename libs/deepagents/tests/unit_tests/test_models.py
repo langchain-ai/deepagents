@@ -1293,6 +1293,7 @@ class TestNemotronUltraProfile:
         names = [type(m).__name__ for m in profile.materialize_extra_middleware()]
         assert names == [
             "ReadFileContinuationNoticeMiddleware",
+            "LargeFileReadNudgeMiddleware",
             "ToolRetryMiddleware",
             "NemotronToolCallShim",
             "PlanFirstMiddleware",
@@ -1329,6 +1330,8 @@ class TestNemotronUltraProfile:
         assert "RUNNING" in content
         # Verification must cover every enumerated case, not just the default path.
         assert "EVERY case" in content
+        # Spec-reading discipline: extract requirements verbatim + flag assumptions.
+        assert "ASSUMING" in content
         again = mw.before_agent({"plan_injected": True}, None)  # type: ignore[arg-type]
         assert "messages" not in again
 
@@ -1364,14 +1367,47 @@ class TestNemotronUltraProfile:
         assert out["jump_to"] == "model"
         assert out["plan_adherence_nudged"] is True
         content = out["messages"][0].content.lower()
-        # Empirical, not introspective: demand a re-run from a CLEAN state and reading the
-        # OBSERVED output — a re-read/self-assessment is what lets confident-wrong through.
+        # v2 — empirical + itemized + faithful to the literal contract: re-run from a CLEAN
+        # state via the EXACT stated invocation in the BASE env, cross-check the plan for
+        # planned-but-skipped steps, and stay anchored on the TASK (not the agent's notion).
         assert "restore" in content or "original" in content or "clean" in content
         assert "observed" in content or "re-run" in content or "re-execute" in content
-        # Still task-anchored (reconcile against what the task requires).
+        assert "invocation" in content or "exact command" in content
+        assert "base environment" in content or "base env" in content
+        assert "plan" in content
         assert "task" in content
         # Fires once.
         assert mw.after_model({**state, "plan_adherence_nudged": True}, None) is None
+
+    def test_large_file_nudge_fires_and_is_once_per_file(self) -> None:
+        """>=5 paginated reads of one file -> advisory 'script it' nudge, once per file."""
+        from langchain_core.messages import AIMessage  # noqa: PLC0415
+
+        from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
+            LargeFileReadNudgeMiddleware,
+        )
+
+        mw = LargeFileReadNudgeMiddleware()
+
+        def reads(n: int) -> dict:
+            return {
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"name": "read_file", "args": {"file_path": "/app/big.txt", "offset": i * 100}, "id": str(i), "type": "tool_call"}],
+                    )
+                    for i in range(n)
+                ]
+            }
+
+        assert mw.before_model(reads(4), None) is None  # below threshold
+        out = mw.before_model(reads(5), None)  # at threshold
+        assert out is not None
+        c = out["messages"][0].content.lower()
+        assert "script" in c or "grep" in c
+        assert "/app/big.txt" in out["large_file_nudged"]
+        # Once per file: already nudged -> no re-fire.
+        assert mw.before_model({**reads(7), "large_file_nudged": ["/app/big.txt"]}, None) is None
 
     def test_plan_first_gate_ignores_non_finalization(self, monkeypatch, tmp_path) -> None:
         """A tool-call turn (not a finish attempt) is left alone."""

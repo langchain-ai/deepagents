@@ -236,15 +236,36 @@ def list_trusted_skill_dirs(*, store_path: Path | None = None) -> list[str]:
 
 
 def load_trusted_skill_dirs(*, store_path: Path | None = None) -> list[Path]:
-    """Return trusted skill directories as resolved `Path` objects.
+    """Return verified trusted skill directories as canonical `Path` objects.
 
     Used to extend the containment allowlist passed to `load_skill_content`.
+
+    Stored entries are the exact canonical directory the user approved (already
+    resolved at trust time). Each entry is re-verified here rather than blindly
+    re-resolved: if a stored path no longer resolves to itself — because it, or
+    a parent component, was replaced with a symlink after approval — the current
+    resolution would point somewhere the user never approved. Such entries are
+    dropped (and logged) instead of silently allowlisting the swapped target, so
+    a post-approval symlink swap re-prompts rather than granting access.
 
     Args:
         store_path: Path to the trust store file. Defaults to
             `~/.deepagents/.state/skill_trust.json`.
 
     Returns:
-        Resolved directory paths; empty when nothing is trusted.
+        Canonical directory paths that still resolve to themselves; empty when
+        nothing is trusted.
     """
-    return [Path(p) for p in list_trusted_skill_dirs(store_path=store_path)]
+    verified: list[Path] = []
+    for entry in list_trusted_skill_dirs(store_path=store_path):
+        stored = Path(entry)
+        if stored.resolve() == stored:
+            verified.append(stored)
+        else:
+            logger.warning(
+                "Trusted skill directory %s no longer resolves to itself "
+                "(a symlink may have been introduced since approval); "
+                "ignoring the stale trust entry.",
+                entry,
+            )
+    return verified

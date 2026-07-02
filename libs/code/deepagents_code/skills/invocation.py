@@ -65,8 +65,12 @@ def discover_skills_and_roots(
     roots.extend(path.resolve() for path in settings.get_extra_skills_dirs())
     # Persisted in-the-moment approvals extend the containment allowlist just
     # like the declarative `extra_allowed_dirs`, but are managed by the trust
-    # store rather than hand-edited config.
-    roots.extend(path.resolve() for path in load_trusted_skill_dirs())
+    # store rather than hand-edited config. These entries are already the
+    # canonical approved directories and are verified against post-approval
+    # symlink swaps by `load_trusted_skill_dirs`, so they are added as-is
+    # rather than re-resolved (re-resolving would follow an injected symlink to
+    # a directory the user never approved).
+    roots.extend(load_trusted_skill_dirs())
     return skills, roots
 
 

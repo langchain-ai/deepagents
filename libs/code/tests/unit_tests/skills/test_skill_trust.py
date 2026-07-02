@@ -75,6 +75,35 @@ class TestSkillTrustStore:
         trust_skill_dir(target, store_path=store)
         assert load_trusted_skill_dirs(store_path=store) == [target.resolve()]
 
+    def test_load_skips_post_approval_symlink_swap(self, tmp_path: Path) -> None:
+        """A stored dir swapped for a symlink after approval is not loaded.
+
+        The stored entry is the canonical directory that was approved. If that
+        path is later replaced by a symlink to a different directory, loading it
+        must not follow the symlink and allowlist the swapped target.
+        """
+        store = tmp_path / "skill_trust.json"
+        approved = tmp_path / "approved"
+        approved.mkdir()
+        trust_skill_dir(approved, store_path=store)
+        assert load_trusted_skill_dirs(store_path=store) == [approved.resolve()]
+
+        # Attacker replaces the approved directory with a symlink elsewhere.
+        attacker = tmp_path / "attacker"
+        attacker.mkdir()
+        approved.rmdir()
+        approved.symlink_to(attacker)
+
+        assert load_trusted_skill_dirs(store_path=store) == []
+
+    def test_load_keeps_unchanged_dir(self, tmp_path: Path) -> None:
+        """An unchanged stored dir is still returned as its canonical path."""
+        store = tmp_path / "skill_trust.json"
+        target = tmp_path / "shared"
+        target.mkdir()
+        trust_skill_dir(target, store_path=store)
+        assert load_trusted_skill_dirs(store_path=store) == [target.resolve()]
+
     def test_clear(self, tmp_path: Path) -> None:
         """Clearing removes every trusted directory."""
         store = tmp_path / "skill_trust.json"

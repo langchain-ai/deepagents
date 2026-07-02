@@ -185,8 +185,12 @@ def test_system_prompt_snapshot(
 
     assert len(model.captured_system_messages) >= 1
     actual = str(model.captured_system_messages[0].text).rstrip("\n") + "\n"
-    # Redact the pytest tmp_path so the snapshot is reproducible across runs.
+    # Redact machine-specific paths so the snapshot is reproducible across
+    # machines and CI checkouts with different repo roots.
     actual = actual.replace(str(tmp_path), "<tmp_path>")
+    actual = actual.replace(
+        str(Settings.get_built_in_skills_dir()), "<built_in_skills_dir>"
+    )
 
     _assert_snapshot(
         snapshots_dir / "system_prompt_interactive_local.md",

@@ -469,7 +469,7 @@ When using `ask_user`:
 
 You have access to a skills library that provides specialized capabilities and domain knowledge.
 
-**Built-in Skills**: `/Users/chestercurme/repos/deepagents/libs/code/deepagents_code/built_in_skills`
+**Built-in Skills**: `<built_in_skills_dir>`
 **User Deepagents Skills**: `<tmp_path>/skills`
 **User Agents Skills**: `<tmp_path>/agents_skills` (higher priority)
 
@@ -484,9 +484,9 @@ Sources labeled "Deepagents" are specific to this agent tool; sources labeled "A
 **Available Skills:**
 
 - **remember**: Review the current conversation and capture valuable knowledge — best practices, coding conventions, architecture decisions, workflows, and user feedback — into persistent memory (AGENTS.md) or reusable skills. Use when the user says: (1) remember this, (2) save what we learned, (3) update memory, (4) capture learnings. (License: MIT, Compatibility: designed for deepagents-code)
-  -> Read `/Users/chestercurme/repos/deepagents/libs/code/deepagents_code/built_in_skills/remember/SKILL.md` for full instructions
+  -> Read `<built_in_skills_dir>/remember/SKILL.md` for full instructions
 - **skill-creator**: Guide for creating effective skills that extend agent capabilities with specialized knowledge, workflows, or tool integrations. Use this skill when the user asks to: (1) create a new skill, (2) make a skill, (3) build a skill, (4) set up a skill, (5) initialize a skill, (6) scaffold a skill, (7) update or modify an existing skill, (8) validate a skill, (9) learn about skill structure, (10) understand how skills work, or (11) get guidance on skill design patterns. Trigger on phrases like "create a skill", "new skill", "make a skill", "skill for X", "how do I create a skill", or "help me build a skill". (License: MIT, Compatibility: designed for deepagents-code)
-  -> Read `/Users/chestercurme/repos/deepagents/libs/code/deepagents_code/built_in_skills/skill-creator/SKILL.md` for full instructions
+  -> Read `<built_in_skills_dir>/skill-creator/SKILL.md` for full instructions
 
 **How to Use Skills (Progressive Disclosure):**
 

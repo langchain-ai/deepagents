@@ -289,6 +289,9 @@ def _sample_frames_in_window(
                 break
             if frame_seconds + 1e-6 < next_emit_seconds:
                 continue
+            if emitted_frames >= MAX_VIDEO_SAMPLED_FRAMES:
+                truncated = True
+                break
 
             jpeg_bytes = _encode_jpeg(frame)
             image_base64 = base64.b64encode(jpeg_bytes)
@@ -313,9 +316,6 @@ def _sample_frames_in_window(
             emitted_frames += 1
             emitted_bytes += next_block_bytes
             last_emitted_seconds = frame_seconds
-            if emitted_frames >= MAX_VIDEO_SAMPLED_FRAMES:
-                truncated = True
-                break
             emitted_index = math.floor((frame_seconds - offset_seconds) / frame_interval_seconds) + 1
             next_emit_seconds = max(
                 next_emit_seconds + frame_interval_seconds,

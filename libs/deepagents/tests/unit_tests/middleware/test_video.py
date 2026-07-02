@@ -396,6 +396,28 @@ def test_sample_frames_caps_frame_count(monkeypatch: pytest.MonkeyPatch) -> None
     assert "Coverage truncated" in headers[-1]
 
 
+def test_sample_frames_no_truncation_hint_when_cap_exactly_covers_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A full window with exactly the frame-count cap is not reported as truncated."""
+    monkeypatch.setattr(video_module, "_encode_jpeg", lambda _frame: b"jpeg")
+    monkeypatch.setattr(video_module, "MAX_VIDEO_SAMPLED_FRAMES", 2)
+
+    blocks = cast(
+        "list[dict[str, str]]",
+        video_module._sample_frames_in_window(
+            [_FakeFrame(0), _FakeFrame(1), _FakeFrame(2)],
+            offset_seconds=0,
+            duration_seconds=2,
+            sampling_rate=1,
+            time_base=1,
+        ),
+    )
+
+    headers = [block["text"] for block in blocks if block["type"] == "text"]
+    assert headers == ["Frame at t=00:00:00.000", "Frame at t=00:00:01.000"]
+
+
 def test_sample_frames_rejects_oversized_output(monkeypatch: pytest.MonkeyPatch) -> None:
     """Extraction fails before retaining an oversized first image block."""
     monkeypatch.setattr(video_module, "_encode_jpeg", lambda _frame: b"jpeg")

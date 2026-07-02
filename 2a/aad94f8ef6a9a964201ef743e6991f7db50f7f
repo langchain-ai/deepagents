@@ -1,0 +1,23 @@
+.github/workflows/harbor.yml
+  s_8bd2472f1ab009::t_94d0315bbb28e9 595-596
+  s_8bd2472f1ab009::t_13655abf21c90a 619,625-627
+  s_8bd2472f1ab009::t_54a113b02fb56f 479-484
+.github/scripts/test_shard_matrix.py
+  s_8bd2472f1ab009::t_dcbb2b782b20d2 187-205
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "2aaad94f8ef6a9a964201ef743e6991f7db50f7f",
+  "prompts": {},
+  "sessions": {
+    "s_8bd2472f1ab009": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6890b97-fafa-42dc-b776-6a00d35e8b51",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

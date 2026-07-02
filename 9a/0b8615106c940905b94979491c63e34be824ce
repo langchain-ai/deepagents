@@ -1,0 +1,80 @@
+libs/deepagents/tests/unit_tests/middleware/test_filesystem_video.py
+  s_9e7681e794be95::t_034121e23f2053 212,229,243-244,247,252-263
+  s_9e7681e794be95::t_397e3bd45f3b4f 209-211
+  s_9e7681e794be95::t_9b210e86598f96 213-215,226-228
+  s_9e7681e794be95::t_3faec0c8a9b120 230-232,240-242
+  s_9e7681e794be95::t_7d6137b521844a 245-246
+  s_9e7681e794be95::t_84bc18eb48629e 248-251
+  s_9e7681e794be95::t_3c1c31500629f5 17-22,201-208,216-225,233-239
+libs/deepagents/deepagents/middleware/filesystem.py
+  s_9e7681e794be95::t_a51d5577f5709b 65
+  s_9e7681e794be95::t_4f289da4b36523 639,644,658,663,669,671-683
+  s_9e7681e794be95::t_a7a836c05c2e33 553-558
+  s_9e7681e794be95::t_aff45b8567665d 662,664-668,670
+  s_9e7681e794be95::t_823503aa83b944 550-552
+  s_9e7681e794be95::t_a0635eda2aff3b 559
+libs/deepagents/tests/unit_tests/middleware/test_video_deps.py
+  s_9e7681e794be95::t_3d2d8f1152e1bb 1-41
+libs/deepagents/tests/unit_tests/backends/test_store_backend.py
+  s_9e7681e794be95::t_9851526383212d 54-74
+libs/deepagents/deepagents/backends/state.py
+  s_9e7681e794be95::t_e7aafbd88ab57c 234
+  s_9e7681e794be95::t_65d55e6b16926c 27
+libs/deepagents/tests/unit_tests/backends/test_sandbox_backend.py
+  s_9e7681e794be95::t_47cf856022f0f9 33
+  s_9e7681e794be95::t_e0bdb66a495292 1147-1153
+libs/deepagents/deepagents/backends/utils.py
+  s_9e7681e794be95::t_71db92a3cb3d77 200-231
+  s_9e7681e794be95::t_c6b1798adad4ed 61-64
+libs/deepagents/deepagents/backends/sandbox.py
+  s_9e7681e794be95::t_61a78f912a348e 45
+  s_9e7681e794be95::t_c513cab129d04e 441
+libs/deepagents/deepagents/middleware/_video.py
+  s_9e7681e794be95::t_2223425ee3084a 22,32-33,38-55
+  s_9e7681e794be95::t_b83c5de093480f 56-58
+  s_9e7681e794be95::t_a997c42425b4e3 20
+libs/deepagents/deepagents/backends/store.py
+  s_9e7681e794be95::t_00d69210bc0672 547,585
+  s_9e7681e794be95::t_79c7bbb2131765 31
+libs/deepagents/tests/unit_tests/backends/test_filesystem_backend.py
+  s_ee6db90a0adeff::t_4c7e09317109e3 1,261-277,285-293,297
+  s_ee6db90a0adeff::t_ac7c3668fc1ea2 294-296
+libs/deepagents/deepagents/backends/langsmith.py
+  s_9e7681e794be95::t_38947b3e7048d0 175
+  s_9e7681e794be95::t_36fe9aae0601fa 23
+libs/deepagents/deepagents/backends/filesystem.py
+  s_9e7681e794be95::t_59432d52349407 41
+  s_9e7681e794be95::t_ffdc6c8aa6e933 439
+libs/deepagents/tests/unit_tests/backends/test_utils.py
+  s_9e7681e794be95::t_ce3ebc324ff01a 12
+  s_9e7681e794be95::t_3fc1713a94e258 208-221
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "9a0b8615106c940905b94979491c63e34be824ce",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  },
+  "sessions": {
+    "s_9e7681e794be95": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a5877921-6961-4ace-a600-4836db9fde62",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    },
+    "s_ee6db90a0adeff": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2139-11b5-7022-bc03-48dce2231838",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

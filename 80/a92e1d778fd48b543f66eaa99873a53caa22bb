@@ -1,0 +1,21 @@
+libs/deepagents/deepagents/middleware/_video.py
+  s_d24a2a46955b91::t_f7d22b6cb8ec58 292-294
+libs/deepagents/tests/unit_tests/middleware/test_video.py
+  s_d24a2a46955b91::t_e2b9691f3455cc 399-420
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "80a92e1d778fd48b543f66eaa99873a53caa22bb",
+  "prompts": {},
+  "sessions": {
+    "s_d24a2a46955b91": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2117-0ac3-70b3-8517-510e97b851fd",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

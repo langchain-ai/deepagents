@@ -1,0 +1,39 @@
+libs/code/deepagents_code/app.py
+  s_d0160f780769a2::t_94b3c73c997263 10067,10069
+  s_d0160f780769a2::t_7c47be5ec76966 10113,10120-10121,10126-10129,10134-10137,10139
+  s_d0160f780769a2::t_60801c0d37fc7b 10016
+  s_d0160f780769a2::t_7cce1a0e317c33 1323-1335
+  s_d0160f780769a2::t_6ffc1c8b805b42 10020-10024,10030-10032,10035-10037
+  s_d0160f780769a2::t_91f99cf64c5fc5 10091
+  s_d0160f780769a2::t_2222b7891840ad 1322
+libs/code/deepagents_code/reasoning_effort.py
+  s_d0160f780769a2::t_83c40e55a22ccd 81,83-86
+  s_d0160f780769a2::t_cfd10a62f6e6ba 6
+  s_d0160f780769a2::t_b8f051d72dc534 310-317
+libs/code/deepagents_code/widgets/effort_selector.py
+  s_d0160f780769a2::t_3aac0e517dd345 161-166
+libs/code/tests/unit_tests/test_reasoning_effort.py
+  s_d0160f780769a2::t_c354a95e23650b 61-68
+  s_d0160f780769a2::t_21723a080c8867 212-232
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "dc41652ef251e4ec970cbfabeca5a8479d01f918",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  },
+  "sessions": {
+    "s_d0160f780769a2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7be46ea3-1d49-467c-b8dd-16f140251e35",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

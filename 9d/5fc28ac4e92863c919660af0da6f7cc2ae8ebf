@@ -1,0 +1,14 @@
+libs/deepagents/tests/unit_tests/middleware/test_filesystem_video.py
+  h_9f69767fa5fabf 2,5,261-262,264-315,317-500,506-527
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "9d5fc28ac4e92863c919660af0da6f7cc2ae8ebf",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

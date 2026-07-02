@@ -1,0 +1,26 @@
+libs/deepagents/tests/unit_tests/test_fireworks_glm_5p2_middleware.py
+  s_b525ff6365a718::t_961e289fbd698c 83
+  s_b525ff6365a718::t_b94e3a32bc1cab 94-95,105-115
+  s_b525ff6365a718::t_a9274419d695ca 116-117
+libs/deepagents/deepagents/profiles/harness/_fireworks_glm_5p2_middleware/__init__.py
+  s_b525ff6365a718::t_961e289fbd698c 67,113-114,148,221,261
+  s_b525ff6365a718::t_7a5fb6bd5d86df 168-173
+  s_b525ff6365a718::t_4ff52938f81188 233,237-238,244-252
+  s_b525ff6365a718::t_5c09b485743322 190-196
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "b57306cdcc23837c30746d0835dda032ca356a2a",
+  "prompts": {},
+  "sessions": {
+    "s_b525ff6365a718": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d6e8e752-8729-40f4-a330-b209f0da9174",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

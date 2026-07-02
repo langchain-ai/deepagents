@@ -1,0 +1,24 @@
+libs/evals/pyproject.toml
+  s_75a1c10d8adcb8::t_395d6dc8313b11 24
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.4",
+  "base_commit_sha": "56b72e49d980a2cd5ba573c35dbe5451f0986fd6",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  },
+  "sessions": {
+    "s_75a1c10d8adcb8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6ec38988-59c6-407d-8819-66a1b9c6974e",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

@@ -1,0 +1,756 @@
+libs/code/tests/unit_tests/test_command_registry.py
+  s_b525ff6365a718::t_3e9d1850fce17c 215-238,297-308,310,317-327,329-330,338-341
+libs/partners/quickjs/tests/unit_tests/smoke_tests/test_system_prompt.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-18,145
+.github/workflows/_eval.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 7,128
+libs/partners/vercel/pyproject.toml
+  s_b525ff6365a718::t_3e9d1850fce17c 25-26,39,45-46,54
+libs/code/tests/unit_tests/test_goal_rubric.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-104
+libs/code/deepagents_code/goal_tools.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-439
+libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py
+  s_b525ff6365a718::t_3e9d1850fce17c 11,17,319-439
+  s_b525ff6365a718::t_ca272b078778c0 440
+libs/code/tests/unit_tests/test_cwd_switch.py
+  s_b525ff6365a718::t_3e9d1850fce17c 7,9,11-16,93-153
+examples/talon/README.md
+  s_b525ff6365a718::t_3e9d1850fce17c 1-83
+libs/code/deepagents_code/memory_guard.py
+  s_b525ff6365a718::t_3e9d1850fce17c 12-21,51,73-80,101-104,142-143,157,161-167,361-398,435-438,443-444,462-465,470-471
+libs/talon/deepagents_talon/host.py
+  s_b525ff6365a718::t_3e9d1850fce17c 14,19,27,29,40,45,56-57,60-71,77-80,84-92,121,143-146,196-210,213-221,227-228,230-233,235-269,278-279,287,293-294,309-313,315,321,341,385-399,404-405,407-419,429,434-449,476-477,482-489,492-496,498,511-515,521-525,532-571,581,587,597,599-603,667-683,702-703,723-724,726-731,749,763-766,778,794-796,802-874
+.github/workflows/integration_tests.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 95
+.github/workflows/harbor.yml
+  s_b525ff6365a718::t_613d31ef676bd9 591-596
+  s_b525ff6365a718::t_3e9d1850fce17c 29-42,132,140,147,149,154,159,164,169,176-177,179,183-187,193,202-204,215,248,258-261,265-266,289-291,357,370-375,400-401,418-427,442,457-462,469-470,473-476,480-484,487-513,517-522,530-533,556-564,629-630,653,659-661
+.github/scripts/test_check_release_deps.py
+  s_b525ff6365a718::t_3e9d1850fce17c 9-14,16,108-115,118,129-133,181-184,255-257,259-491
+.github/workflows/release_please_scope_check.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 85,91
+examples/better-harness/pyproject.toml
+  s_b525ff6365a718::t_3e9d1850fce17c 11-12
+libs/code/deepagents_code/sessions.py
+  s_b525ff6365a718::t_3e9d1850fce17c 233-234
+.github/workflows/check_partner_bounds.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 32
+libs/code/tests/unit_tests/test_server_helpers.py
+  s_b525ff6365a718::t_3e9d1850fce17c 105-106,108-118
+libs/code/tests/unit_tests/test_install_confirm.py
+  s_b525ff6365a718::t_3e9d1850fce17c 105,123,139,147
+examples/async-subagent-server/pyproject.toml
+  s_b525ff6365a718::t_3e9d1850fce17c 7-8,10-11,23
+libs/deepagents/deepagents/backends/composite.py
+  s_b525ff6365a718::t_3e9d1850fce17c 13,30-31,538-572
+  s_b525ff6365a718::t_c387f0ee734458 573
+libs/evals/deepagents_clbench/sync_to_clbench.sh
+  s_b525ff6365a718::t_3e9d1850fce17c 1-35
+libs/evals/EVAL_CATALOG.md
+  s_b525ff6365a718::t_3e9d1850fce17c 13-37,42-46
+libs/code/tests/unit_tests/test_file_ops.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1,104-124,143-210
+libs/code/deepagents_code/server_manager.py
+  s_b525ff6365a718::t_3e9d1850fce17c 37,114,285,288-289,295,313,317-319,325-327,366-367,387,420,423-424,430,451,455-457,463-465,489-490
+.github/scripts/test_models.py
+  s_b525ff6365a718::t_3e9d1850fce17c 102-130
+libs/code/scripts/check_imports.py
+  s_b525ff6365a718::t_3e9d1850fce17c 11,15,22-42
+libs/code/tests/unit_tests/test_history.py
+  s_b525ff6365a718::t_3e9d1850fce17c 38-138
+libs/deepagents/tests/unit_tests/backends/test_filesystem_backend.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1,17,261-303,1439-1483,1714-1829
+libs/code/tests/unit_tests/test_autocomplete.py
+  s_b525ff6365a718::t_3e9d1850fce17c 793-855,1147-1168
+  s_b525ff6365a718::t_54bbee4b50ade1 1169
+libs/code/deepagents_code/_version.py
+  s_b525ff6365a718::t_3e9d1850fce17c 5
+libs/deepagents/deepagents/profiles/__init__.py
+  s_b525ff6365a718::t_3e9d1850fce17c 9-10,12-37
+libs/code/deepagents_code/tools.py
+  s_b525ff6365a718::t_3e9d1850fce17c 10,18,204-283,440-446
+libs/acp/pyproject.toml
+  s_b525ff6365a718::t_3e9d1850fce17c 33-34,37,44-45
+libs/code/deepagents_code/widgets/approval.py
+  s_b525ff6365a718::t_3e9d1850fce17c 141,151-152,163,401-403
+libs/partners/quickjs/langchain_quickjs/_prompt.py
+  s_b525ff6365a718::t_3e9d1850fce17c 48,66-69,244-247,367-368
+libs/partners/quickjs/tests/unit_tests/test_thread_affinity.py
+  s_b525ff6365a718::t_3e9d1850fce17c 134-135,176-177
+libs/code/deepagents_code/widgets/model_selector.py
+  s_b525ff6365a718::t_3e9d1850fce17c 12,46-56,69-70,80,84-86,100-101,105,108,123-125,258,260,295-297,339,449-454,462,466,485-490,543,557-563,589-590,619,624-626,629,705,717-718,746,756-789,834,855,912-951,990,1019-1034,1171,1582-1585,1587-1592,1594-1595
+examples/talon/docker-compose.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 1-22
+libs/partners/daytona/pyproject.toml
+  s_b525ff6365a718::t_3e9d1850fce17c 25,39,45-46
+libs/code/deepagents_code/widgets/launch_init.py
+  s_b525ff6365a718::t_3e9d1850fce17c 10,12,17-18,26-30,34-42,72-92,148,158,170,177-191,243-249,253-256,272,281-282,291,305,309-327,329-331,337,344,354-395,397-400,405-406,411-414,416-429,466,468,472-478
+libs/code/tests/unit_tests/test_config_manifest.py
+  s_b525ff6365a718::t_3e9d1850fce17c 37-42,197-220,232-591
+  s_b525ff6365a718::t_0c29307a2611c7 592-593
+libs/code/deepagents_code/_cli_context.py
+  s_b525ff6365a718::t_3e9d1850fce17c 40-45,72-96
+libs/deepagents/tests/unit_tests/middleware/test_filesystem_video.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-613
+examples/nvidia_deep_agent/pyproject.toml
+  s_b525ff6365a718::t_3e9d1850fce17c 7-11,15-16,18
+libs/code/deepagents_code/textual_adapter.py
+  s_b525ff6365a718::t_3e9d1850fce17c 59,215-274,287,299,342-349,440-457,472-473,499-503,527-528,571-591,642-643,657-661,664-690,702,722-755,892-898,1170-1178,1189-1193,1451-1453,1468,1491,1674-1678,1697-1718
+  s_b525ff6365a718::t_3618b7b6ec54de 1719
+libs/deepagents/tests/unit_tests/test_local_sandbox_operations.py
+  s_b525ff6365a718::t_3e9d1850fce17c 29,31,45,64-65,289-290,295,298-299,301,1607-1729
+.github/workflows/evals.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 282,865
+libs/code/tests/unit_tests/test_status.py
+  s_b525ff6365a718::t_3e9d1850fce17c 419-474,599-601,625-737
+  s_b525ff6365a718::t_3237229e85fb66 738-739
+libs/code/tests/unit_tests/test_config.py
+  s_b525ff6365a718::t_3e9d1850fce17c 15,25,34,36,44,137,141,156,1930-2294,2307-2308,2378-2391,2499-2699,2732,2736,2739-2781,2800-2817,2904,2980,2992-3006,4385-4398,4409-4411,4417-4443,4639-4640,4649,4651,4668-4670,4685,4690-4691,4700-4702,4717-4719,4724-4725,4734-4736,4759-4760,4769-4771,4792-4793,4802-4804,4825-4826,4843-4845,4864-4865,4883-4885,4916-5075,5226,5231,5283,5311
+libs/code/deepagents_code/resume_state.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1,3-6,9-38,40-43,48-56,69-115,117-139,147-155,187,189,191-193,197,200-201
+libs/code/tests/unit_tests/test_update_check.py
+  s_b525ff6365a718::t_3e9d1850fce17c 28,30,32,55,61,80,109,123-125,128,277-291,310-341,354-371,539-692,1864-1949,2168-2177,2569-2583,2807,2810,2813-2814,2820-2821,2828-2830,2832-2834,2840,2846,2851-2852,2855-2921,2933-2935,2937-2939,2941,2951,2955-2959,2962-2964,2966,2973,2976-2980,2983-2985,2987,2998,3002-3034,3040-3041,3047,3071-3072,3078,3081-3086,3090,3096,3099-3104,3109,3119,3123-3208,3211-3243,3246-3273,3340-3374,3400,3408-3430,3462-3463,3613-3667,3690,3715-3718,3740,4240-4288,4517-4526,4563-4613
+libs/deepagents/deepagents/middleware/rubric.py
+  s_b525ff6365a718::t_3e9d1850fce17c 304,316,319-322,326-334,336-339,342,363-364,505-513,520,649
+libs/deepagents/tests/unit_tests/backends/test_protocol.py
+  s_b525ff6365a718::t_3e9d1850fce17c 19,24,73-76,121-137
+  s_b525ff6365a718::t_54aa81ac77dbe1 138
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_sync_and_async_subagents_tools.json
+  s_b525ff6365a718::t_3e9d1850fce17c 62,72,77,91,100,142-159
+  s_b525ff6365a718::t_dd1c3e2fb5289e 160
+libs/code/deepagents_code/doctor.py
+  s_b525ff6365a718::t_3e9d1850fce17c 26-27,80-98,100-106,112,114-122,221-226,231-249,277-290,294-296,309-314,316,319,322
+.github/workflows/pr_scope_file_check.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 11-17,36-41,84,90
+.release-please-manifest.json
+  s_b525ff6365a718::t_3e9d1850fce17c 3,5-6,11
+libs/code/tests/unit_tests/tools/test_fetch_url.py
+  s_b525ff6365a718::t_3e9d1850fce17c 7,9,14-21,110-229
+  s_b525ff6365a718::t_305bee504fc961 230-231
+libs/deepagents/deepagents/backends/context_hub.py
+  s_b525ff6365a718::t_3e9d1850fce17c 19,107-114,118,130-134,213-240,325
+libs/code/deepagents_code/mcp_tools.py
+  s_b525ff6365a718::t_3e9d1850fce17c 607-712,756-766,1480-1483,1485-1501,1504-1513,1567-1570,1573-1592,1597-1598,1604-1634,1638-1642,1861,1863,1866-1867,1872-1873
+.github/workflows/pr_labeler.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 54
+.github/workflows/close_unchecked_issues.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 38
+libs/code/tests/unit_tests/test_links.py
+  s_b525ff6365a718::t_3e9d1850fce17c 3-4,6,9-46,58-66,68,71-75,80-282
+.github/dependabot.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 26,32-33,36
+libs/partners/quickjs/tests/unit_tests/test_subagent_events.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-229
+libs/talon/deepagents_talon/interfaces.py
+  s_b525ff6365a718::t_3e9d1850fce17c 10,35-53,80,84-100,160,179,185-187,190,196-198,201,208-217,224-233
+  s_b525ff6365a718::t_fdedc92de3b9f1 234-235
+libs/code/tests/unit_tests/test_hatch_build.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-159
+libs/talon/deepagents_talon/channels/whatsapp_bridge/bridge.js
+  s_b525ff6365a718::t_3e9d1850fce17c 15,278-285,340-349
+  s_b525ff6365a718::t_4b8b3256151285 350-351
+libs/code/tests/unit_tests/test_rubric_cli.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-352
+libs/code/deepagents_code/remote_client.py
+  s_b525ff6365a718::t_3e9d1850fce17c 16,30,313-328,331,333-334,354,366,368-372,384,393-428,576
+libs/partners/quickjs/langchain_quickjs/_subagent.py
+  s_b525ff6365a718::t_3e9d1850fce17c 6-7,10,27-31,33-34,36-37,39-40,42-161,197,199-203,214-250,252-267
+libs/code/tests/unit_tests/test_install_script.py
+  s_b525ff6365a718::t_3e9d1850fce17c 35,42-44,88-89,94-99,115,122,142,157,296-297,302,587-601,632-666,1001-1522
+libs/code/tests/unit_tests/test_main_args.py
+  s_b525ff6365a718::t_3e9d1850fce17c 91-94,1445,1478-1481,1562-1583,1602,1622,1641,1752-1755,1783-1786,1844-1846,1851-1856,1879-1880,1882,1885-1894,1912-1915,1942,1952-1953,1956-1986,2007-2008,2023-2024,2237-2365,2369,2372,2377,2379,2381,2395,2408,2414,2425-2434,2453,2456-2615
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_mixed_foreign_functions_turn.md
+  s_b525ff6365a718::t_3e9d1850fce17c 69,78,147,165-168,343-346
+libs/talon/pyproject.toml
+  s_b525ff6365a718::t_3e9d1850fce17c 7,26-27,29,33-34,38,40,54,60-61
+libs/code/deepagents_code/widgets/status.py
+  s_b525ff6365a718::t_3e9d1850fce17c 51-55,60,77-89,104,117-125,140,226-232,250,266,286,334-335,395-398,412,414,421-435,437,456,459,485-514,591-599,623-630,662,668-669,674
+.github/workflows/release-please.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 34,36,43-59,64-112,139,282,286-288,295,306,312,333,335-409,412-417,422-426,429,431,433-449,453-455,481-483,544,596,720-721,726,811-846,849-862,866,909-914,969-972,975,977,992-996
+.github/workflows/clbench.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 1-371
+libs/code/tests/unit_tests/test_agent_friendly.py
+  s_b525ff6365a718::t_3e9d1850fce17c 572-579
+libs/deepagents/pyproject.toml
+  s_b525ff6365a718::t_3e9d1850fce17c 3,23-27,32-34,56-57,63-67
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_routed_backend_tools.json
+  s_b525ff6365a718::t_3e9d1850fce17c 62,72,77,91,100,147-159
+  s_b525ff6365a718::t_599b7581adec8b 160-165
+examples/deep_research/pyproject.toml
+  s_b525ff6365a718::t_3e9d1850fce17c 7-8,13-14,17,19-20,26,32
+libs/code/deepagents_code/command_registry.py
+  s_b525ff6365a718::t_3e9d1850fce17c 83,85-87,107-115,121-127,188-195,208-213
+libs/code/deepagents_code/_env_vars.py
+  s_b525ff6365a718::t_3e9d1850fce17c 125-127,164-172,183-192,209-226
+  s_b525ff6365a718::t_308c2da4043e1b 227
+.github/scripts/check_release_deps.py
+  s_b525ff6365a718::t_3e9d1850fce17c 20,24-26,30,43-60,73-75,99-101,163-165,179-347,398-399,404,408-410,413-415,426-446,448-458
+AGENTS.md
+  s_b525ff6365a718::t_3e9d1850fce17c 86,138,248-285
+  s_b525ff6365a718::t_770dd3d2c31ae8 286
+libs/code/deepagents_code/widgets/update_progress.py
+  s_b525ff6365a718::t_3e9d1850fce17c 30,259-263,320-321
+libs/code/tests/integration_tests/test_auto_approve_remote.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-198
+.github/scripts/check_sdk_pin.py
+  s_b525ff6365a718::t_3e9d1850fce17c 5,8-18,25-29,56,60-140,142,146-147,150-155,157,169-171
+libs/code/tests/unit_tests/test_configurable_model.py
+  s_b525ff6365a718::t_3e9d1850fce17c 4,10-15,23,25,40,63-72,96-107,114,118,123,127-175,251,255-258,332,335-338,342,347-371,528-746,782,788-791
+libs/code/tests/unit_tests/test_server.py
+  s_b525ff6365a718::t_3e9d1850fce17c 8,55-79,120-207,321-385,407,449,536,573,617,660,725-826
+  s_b525ff6365a718::t_5fc2bb1371a82a 827
+libs/deepagents/tests/unit_tests/test_end_to_end.py
+  s_b525ff6365a718::t_3e9d1850fce17c 29,1360-1510,2850-2989,3952-4002,4405-4406
+libs/partners/quickjs/tests/unit_tests/test_repl_middleware.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1080,1084,1087-1090,1095,1132,1152,1158,1187,1217-1219,1240,1292-1294
+libs/talon/deepagents_talon/__init__.py
+  s_b525ff6365a718::t_3e9d1850fce17c 25,28-30,51,65-66,68
+libs/code/deepagents_code/config_commands.py
+  s_b525ff6365a718::t_3e9d1850fce17c 5-8,25,27,136-138,140-217,224-235,241-250,277,283-286,290-297,329-358,372-374,377,383-389,401-405,412,495-499,502-511,519,524-527
+libs/code/tests/unit_tests/test_thread_selector.py
+  s_b525ff6365a718::t_3e9d1850fce17c 23-24,211,216,427-428,442,446,448,457-578,613,636,640,674,684,688,692,702-715,742,750,760,776-777,796-797,816,822,824,826,829,844,849,851,874,879,881,906,911,913-914,919,922,1091,1097,1111,1131,3102-3103,3107-3112,3684-3687,3700,3719,3726-3751,4666,4691,4694,4700,4707,4731
+libs/deepagents/tests/integration_tests/test_filesystem_middleware.py
+  s_b525ff6365a718::t_3e9d1850fce17c 349,379-380
+libs/code/deepagents_code/tool_display.py
+  s_b525ff6365a718::t_3e9d1850fce17c 192
+libs/deepagents/tests/unit_tests/backends/test_file_format.py
+  s_b525ff6365a718::t_3e9d1850fce17c 22,303,308,310
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_no_tools_call.md
+  s_b525ff6365a718::t_3e9d1850fce17c 69,78,147,165-168,343-346
+libs/code/tests/unit_tests/test_tool_display.py
+  s_b525ff6365a718::t_3e9d1850fce17c 184-186,193-195,200-202
+libs/code/deepagents_code/widgets/subagent_panel.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-969
+.gitignore
+  s_b525ff6365a718::t_3e9d1850fce17c 254-256
+.github/workflows/ci.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 50,99-107,362-440,480,482,517
+libs/deepagents/deepagents/_version.py
+  s_b525ff6365a718::t_3e9d1850fce17c 7
+libs/deepagents/tests/unit_tests/middleware/test_rubric_middleware.py
+  s_b525ff6365a718::t_3e9d1850fce17c 124-131,337-386,835,840,842-843,845-851,868-869,872,874-876,878-915
+libs/talon/deepagents_talon/_version.py
+  s_b525ff6365a718::t_3e9d1850fce17c 3
+libs/code/tests/unit_tests/test_agent.py
+  s_b525ff6365a718::t_3e9d1850fce17c 4,6,27-28,50-70,107-111,114,134-257,424-447,3184-3291,3549-3553,3559,3616
+.github/workflows/deepagents-example.yml.example
+  s_b525ff6365a718::t_3e9d1850fce17c 93
+libs/code/tests/unit_tests/test_auth_commands.py
+  s_b525ff6365a718::t_3e9d1850fce17c 165-222,485-493,625-628,635,641-645,651-654,657
+libs/code/tests/unit_tests/test_server_manager.py
+  s_b525ff6365a718::t_3e9d1850fce17c 152,179,182,198,222-263,274,278
+libs/code/tests/unit_tests/test_update_progress.py
+  s_b525ff6365a718::t_3e9d1850fce17c 5-6,14-16,229-275
+libs/deepagents/deepagents/backends/utils.py
+  s_b525ff6365a718::t_3e9d1850fce17c 11,13-14,22-23,61-64,83-130,245-276,677-696,815-816
+libs/code/tests/unit_tests/test_launch_init.py
+  s_b525ff6365a718::t_3e9d1850fce17c 5,10,14-20,93-94,104-105,148-204,256,258-422
+libs/partners/quickjs/langchain_quickjs/__init__.py
+  s_b525ff6365a718::t_3e9d1850fce17c 4-10,14,17-20
+.github/scripts/test_check_pr_scope_files.py
+  s_b525ff6365a718::t_3e9d1850fce17c 8,12-14,147-389,444-467,508-527
+  s_b525ff6365a718::t_e47aa4e10ccf85 528-529
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_no_tools_turn.md
+  s_b525ff6365a718::t_3e9d1850fce17c 69,78,147,165-168,343-346
+.github/actions/uv_setup/action.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 35
+libs/code/tests/unit_tests/test_sessions.py
+  s_b525ff6365a718::t_3e9d1850fce17c 452-464,523-590
+  s_b525ff6365a718::t_fab3ca40d0de7c 591
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_routed_backend.md
+  s_b525ff6365a718::t_3e9d1850fce17c 69,78
+libs/deepagents/deepagents/backends/langsmith.py
+  s_b525ff6365a718::t_3e9d1850fce17c 23,51-54,175
+action.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 123,267
+libs/code/tests/unit_tests/test_install_command.py
+  s_b525ff6365a718::t_3e9d1850fce17c 17-20,197-198,219,294-301,315-316,331-338,352-353,357-463
+  s_b525ff6365a718::t_20c0a8ea7a6e76 464-465
+libs/deepagents/deepagents/middleware/filesystem.py
+  s_b525ff6365a718::t_3e9d1850fce17c 5,12,16,33,44,48,50,60,63,65-67,69-70,86-90,93-94,96,99,108,110-246,299-324,422-428,494,553-570,574,594-599,639,644,648,658,662-683,694,697,701-709,781,790,951,1158,1213,1244,1252,1283,1300-1303,1319,1325,1361,1377-1388,1417,1419-1421,1444,1446-1448,1476,1484-1485,1523-1524,1575-1577,1580,1617-1619,1622,1667-1757,1763,1765,1852,1859,1861,1916,1936,1938-1940,1976,1978-1980,2024-2091,2097,2099,2147,2149-2160,2177,2184,2186,2233,2235-2246,2263,2278-2279,2281-2287,2289-2290,2292-2294,2296-2298,2300-2302,2304-2308,2321-2322,2334-2366,2396,2398-2400
+libs/code/deepagents_code/widgets/effort_selector.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-189
+release-please-config.json
+  s_b525ff6365a718::t_3e9d1850fce17c 68-71,83-86,98-101,113-116,128-131,143-146,158-161,173-176,188-191,203-206
+libs/deepagents/tests/unit_tests/backends/test_composite_backend.py
+  s_b525ff6365a718::t_3e9d1850fce17c 11,1407-1518
+libs/deepagents/tests/unit_tests/conftest.py
+  s_b525ff6365a718::t_3e9d1850fce17c 65-79
+libs/evals/deepagents_clbench/system/system.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-248
+libs/talon/deepagents_talon/media.py
+  s_b525ff6365a718::t_3e9d1850fce17c 41,84-85,89,272-275,305
+libs/talon/tests/channels/test_whatsapp.py
+  s_b525ff6365a718::t_3e9d1850fce17c 7,11-15,17,20-22,27-29,60,97,100,107-159,183,191,247,251,294,336,356-398,421,460,481,488,502,510,542,551-591,596,622-623
+libs/talon/deepagents_talon/channels/__init__.py
+  s_b525ff6365a718::t_3e9d1850fce17c 12,15-16,22-25,28
+libs/code/tests/unit_tests/test_messages.py
+  s_b525ff6365a718::t_3e9d1850fce17c 4-5,12,15,298,306-426,678-752,1082-1181,1185-1191,1215-1220,1230-1239,1244-1245,1250,1299-1300,1312,1318-1319,1337,1342,1357-1730,2256-2261,2621-2677,3429-3702
+libs/code/tests/unit_tests/test_doctor.py
+  s_b525ff6365a718::t_3e9d1850fce17c 7,12,18,98,102,110-111,116-124,126-137,140-145,198-255,266,282,290-342
+  s_b525ff6365a718::t_e45bbe6dc5c138 343
+libs/code/deepagents_code/mcp_auth.py
+  s_b525ff6365a718::t_3e9d1850fce17c 16,28,47,52-53,114-154,769,813-814,864-868,870-877,899,1103-1131,1149-1155,1303-1305,1318-1319,1410,1608-1685,1711,1722-1725
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_execute_tools.json
+  s_b525ff6365a718::t_3e9d1850fce17c 62,72,77,91,100,147-159
+  s_b525ff6365a718::t_cce986c5bb3476 160-165
+libs/talon/tests/test_runtime.py
+  s_b525ff6365a718::t_3e9d1850fce17c 19,23,262-313,586-647
+  s_b525ff6365a718::t_e64bda6761fcdd 648-649
+libs/code/deepagents_code/extras_info.py
+  s_b525ff6365a718::t_3e9d1850fce17c 10,12,21,23-24,40-122,124,127-132,139,149-156,207,210-212,476,481,502-504,508-510
+libs/talon/deepagents_talon/channels/telegram.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-1284
+examples/content-builder-agent/pyproject.toml
+  s_b525ff6365a718::t_3e9d1850fce17c 7-8,12
+libs/code/deepagents_code/widgets/thread_selector.py
+  s_b525ff6365a718::t_3e9d1850fce17c 13,26-31,121-123,140,543,548-549,573,578-579,585,595,601,605-643,701-703,705,781,1078,1088,1184,1204,1232-1233,1289,1300,1313-1333,1346,1486,2347,2374-2378,2404-2418
+  s_b525ff6365a718::t_8262ba5d7b3682 2419-2420
+libs/deepagents/deepagents/backends/protocol.py
+  s_b525ff6365a718::t_3e9d1850fce17c 290-305,564,567,622-653,852-871,953-969
+  s_b525ff6365a718::t_664dd7053323e9 289,970-971
+libs/deepagents/tests/unit_tests/test_permissions.py
+  s_b525ff6365a718::t_3e9d1850fce17c 14,26,119-325,440
+.github/workflows/release_please_initial_baseline_check.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 31,36
+libs/code/deepagents_code/config.py
+  s_b525ff6365a718::t_3e9d1850fce17c 15,17,44-63,90-92,95,97,107,114-133,136-142,204-210,305-309,368-373,496-520,531-535,542,544,546-550,559,589-684,696,700,709-710,726-731,774-778,785,793-794,882-883,916-917,946-947,983,985-987,990,992-995,997-1004,1006-1019,1272-1419,1425-1426,1430-1450,1457-1459,1465-1466,1479-1496,1509,2075,2104,2159-2161,2365-2368,2838-2950,3061-3101,3120-3181,3204,3217-3218,3226-3227,3243,3254-3256,3266-3268,3272-3286,3303,3306,3309-3310,3925-3928,3932-3936,4416,4420
+libs/code/deepagents_code/widgets/tool_renderers.py
+  s_b525ff6365a718::t_3e9d1850fce17c 8,31,36-37,51,76,81-114,121,170
+libs/code/tests/unit_tests/test_reload.py
+  s_b525ff6365a718::t_3e9d1850fce17c 395-399,404,409-413,417,425-429,433,512-556
+  s_b525ff6365a718::t_2b7a4a850c5ca2 557
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_memory_and_skills.md
+  s_b525ff6365a718::t_3e9d1850fce17c 115,124
+libs/code/deepagents_code/reasoning_effort.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-552
+libs/code/deepagents_code/tools_commands.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-191
+.github/workflows/_lint.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 33
+libs/code/deepagents_code/widgets/auth.py
+  s_b525ff6365a718::t_3e9d1850fce17c 30,34,44-48,61,66,92,115,163-181,250,478,491-493,502-507,513-519,530,533-536,548,650-651,659-672,676-682,710-756,758-760,787-790,804,806,808,825-839,879-883,887,889,891-892,896-897,916-918,966-967,971-976,978-987,992-995,1011-1012,1091-1093,1143,1151-1159,1166-1167,1169-1170,1226,1231-1248,1316,1319,1322,1392,1395-1396,1455-1473,1475-1476,1479-1480,1514-1519,1527-1530,1542-1543
+libs/code/tests/unit_tests/test_model_config.py
+  s_b525ff6365a718::t_3e9d1850fce17c 18,323-343,393-532,597,600-624,711-727,1449-1459,1763-1777,1820-1823,1827,1830,1895-1918
+  s_b525ff6365a718::t_8404ccc81577b9 1919
+libs/deepagents/deepagents/_models.py
+  s_b525ff6365a718::t_3e9d1850fce17c 19-32,121-142
+  s_b525ff6365a718::t_427c18c262ba96 143-144
+libs/deepagents/deepagents/backends/state.py
+  s_b525ff6365a718::t_3e9d1850fce17c 13,27,234,255,261-262,294-318
+  s_b525ff6365a718::t_578e06e8bce609 319
+libs/code/tests/unit_tests/test_mcp_auth.py
+  s_b525ff6365a718::t_3e9d1850fce17c 11,14,22,28-42,125-141,532-591,641-832,890-1033,1208-1235,2256-2257,2261-2269,2271-2275,2279-2282
+  s_b525ff6365a718::t_15810a1f029e43 2283
+libs/code/tests/unit_tests/test_managed_tools.py
+  s_b525ff6365a718::t_3e9d1850fce17c 18,123-269
+  s_b525ff6365a718::t_05d6f42abdd5b0 270-271
+libs/code/tests/unit_tests/test_model_selector.py
+  s_b525ff6365a718::t_3e9d1850fce17c 5-6,11,243-244,253-254,257-293,302-344,384,667-707,1375-1614,1618-1640,1649,1659,1666,1673,1690-1704,2208-2254,2281-2312,2352,2445,2499-2532,2560-2562,2592,2601,2627,2670,2719
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_sandbox_default.md
+  s_b525ff6365a718::t_3e9d1850fce17c 69,78
+libs/deepagents/tests/unit_tests/test_middleware_async.py
+  s_b525ff6365a718::t_3e9d1850fce17c 13,142-148,300,706-768
+  s_b525ff6365a718::t_47b50e47cbc66f 769-770
+libs/code/tests/unit_tests/test_mcp_tools.py
+  s_b525ff6365a718::t_3e9d1850fce17c 7,13,29,323-452,1328-1332,1352-1353,1370-1616,1709,1725-1729,1737,1745-1748
+libs/evals/deepagents_clbench/README.md
+  s_b525ff6365a718::t_3e9d1850fce17c 1-86
+libs/code/deepagents_code/configurable_model.py
+  s_b525ff6365a718::t_3e9d1850fce17c 12-13,16-19,22,26,33-34,41-77,93-102,110-163,175-176,180-182,187-211,245-256,308-309,321-322,326,343-347,349-356,359,363-364,368,385-389,391-414,434-444,448,452-453,455-462,466,470-471,473-478
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_without_execute.md
+  s_b525ff6365a718::t_3e9d1850fce17c 69,78
+libs/code/tests/unit_tests/test_auth_widgets.py
+  s_b525ff6365a718::t_3e9d1850fce17c 62,69-76,84-94,96,98-104,160-166,174-182,254,354-368,389,410-411,437-438,463-482,585-597,612-640,704-731,745-846,1043-1062,1083-1109,1173-1421,1519-1527,1683-1729,1753
+libs/code/tests/unit_tests/test_server_config.py
+  s_b525ff6365a718::t_3e9d1850fce17c 14,17,22,92-110,211-330,349-398
+  s_b525ff6365a718::t_cae1ccdd7bcc2a 399
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/custom_system_message_tools.json
+  s_b525ff6365a718::t_3e9d1850fce17c 62,72,77,91,100,147-159
+  s_b525ff6365a718::t_07f6838785c217 160-165
+libs/code/tests/unit_tests/test_welcome.py
+  s_b525ff6365a718::t_3e9d1850fce17c 98-99,104,631-634
+  s_b525ff6365a718::t_6264b203049e1c 635
+libs/deepagents/tests/unit_tests/test_graph.py
+  s_b525ff6365a718::t_3e9d1850fce17c 19,25-26,33-34,354-435,724-786,2232-2598
+libs/evals/tests/evals/utils.py
+  s_b525ff6365a718::t_3e9d1850fce17c 514-556,859-868
+  s_b525ff6365a718::t_bb3f7df7394d0e 869-870
+.github/scripts/test_check_sdk_pin.py
+  s_b525ff6365a718::t_3e9d1850fce17c 3-6,10,39,44-48,54,71,86-143,149-201,203-262
+libs/deepagents/tests/unit_tests/middleware/test_video_deps.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-41
+libs/deepagents/deepagents/middleware/async_subagents.py
+  s_b525ff6365a718::t_3e9d1850fce17c 455,457,624,626
+libs/partners/quickjs/langchain_quickjs/_ptc.py
+  s_b525ff6365a718::t_3e9d1850fce17c 42-43
+libs/code/tests/unit_tests/test_extras_info.py
+  s_b525ff6365a718::t_3e9d1850fce17c 16,30-35,38,41-46,322,328,333-335,341,373-382,387-591
+  s_b525ff6365a718::t_a269d1fd0e1963 592
+libs/code/deepagents_code/widgets/history.py
+  s_b525ff6365a718::t_3e9d1850fce17c 100-107
+libs/code/Makefile
+  s_b525ff6365a718::t_3e9d1850fce17c 108,111
+libs/code/README.md
+  s_b525ff6365a718::t_3e9d1850fce17c 45-50
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_mixed_foreign_functions.md
+  s_b525ff6365a718::t_3e9d1850fce17c 69,78,147,165-168,343-346
+libs/partners/quickjs/CHANGELOG.md
+  s_b525ff6365a718::t_3e9d1850fce17c 5-15
+libs/code/deepagents_code/widgets/chat_input.py
+  s_b525ff6365a718::t_3e9d1850fce17c 94-96,124-131,347-350,1132-1147,1434,1660-1684,1686-1688,1691-1694,1706,1824-1825,1989-2038,2476-2478,2483,2485-2486,2491,2547-2549,2596
+libs/deepagents/deepagents/backends/store.py
+  s_b525ff6365a718::t_3e9d1850fce17c 11,17,31,426-454,547,585,606,615-618,637-640,721-762
+  s_b525ff6365a718::t_6f56d7dc3f1e22 763
+libs/code/deepagents_code/non_interactive.py
+  s_b525ff6365a718::t_3e9d1850fce17c 16-18,23,42,238-240,281-283,429-431,478-482,487-566,601-602,745,757,764,767,788-789,816-821,827-832,837-838,841-844,850-852,881,916,928-929,957-959,1054,1058-1060,1117,1124-1130,1233,1236-1238,1242-1246,1253-1257,1315-1316,1352-1353
+libs/partners/runloop/pyproject.toml
+  s_b525ff6365a718::t_3e9d1850fce17c 25,40,46-47
+libs/code/tests/unit_tests/test_startup_fast_paths.py
+  s_b525ff6365a718::t_3e9d1850fce17c 61-62,66-68,105,170
+libs/talon/deepagents_talon/channels/whatsapp.py
+  s_b525ff6365a718::t_3e9d1850fce17c 18,26-28,30,32-37,39-46,64,69,91-94,114,134,144,152-159,166-167,171,175,187,244,254,263,311,317-319,322-323,325,331-333,335-339,352-353,361,363,370-372,382,399,447-451,458,468,481,485,489,493,529,544-551,559,585,592,599,608,610,617-618,621-622,635-692,698,712,723,737,771
+libs/code/deepagents_code/managed_tools.py
+  s_b525ff6365a718::t_3e9d1850fce17c 18,20,113-155,172-186,430-433,439,442,465-475
+libs/deepagents/deepagents/backends/sandbox.py
+  s_b525ff6365a718::t_3e9d1850fce17c 28,30,43,45,86,91,441,585-726,749-760,780-830,886,889-892,898-899,914,917,1140-1164
+  s_b525ff6365a718::t_1fca3940bc2bfc 1165
+.github/workflows/check_sdk_pin.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 2,5-6,30,53-85,90,93-94,108,119-120,123-124,134-165,171,183-184,205,209
+libs/evals/pyproject.toml
+  s_b525ff6365a718::t_3e9d1850fce17c 21-25,27,32-33,35-36,39,41-42,49,57,62,65-66,70,103,108,123-127,131-132
+libs/talon/deepagents_talon/channels/base.py
+  s_b525ff6365a718::t_3e9d1850fce17c 8,10,13,15-16,18,22-24,27-34,41-42,53,57-58,60-78,81-82,84-85,87-90,104,111-132,177-242,249,275-322,324-436,442,445,452-474,495-593
+libs/code/tests/unit_tests/test_goal_review.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-314
+libs/code/tests/unit_tests/data/coding_agent_v1_validator.json
+  s_b525ff6365a718::t_3e9d1850fce17c 1-241
+examples/talon/AGENTS.md
+  s_b525ff6365a718::t_3e9d1850fce17c 1-4
+libs/code/tests/unit_tests/test_local_context.py
+  s_b525ff6365a718::t_3e9d1850fce17c 5,14,163-198
+  s_b525ff6365a718::t_fa1835e7977250 199
+libs/deepagents/CHANGELOG.md
+  s_b525ff6365a718::t_3e9d1850fce17c 5-16
+libs/deepagents/tests/unit_tests/backends/test_store_backend.py
+  s_b525ff6365a718::t_3e9d1850fce17c 11,54-75,83,85,87,90,538-730
+.github/workflows/tag-external-issues.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 52,120
+libs/code/deepagents_code/widgets/welcome.py
+  s_b525ff6365a718::t_3e9d1850fce17c 51,56,60
+libs/talon/deepagents_talon/__main__.py
+  s_b525ff6365a718::t_3e9d1850fce17c 16,28,33,54-58,74,116,120,149,157-158,167,199-223
+libs/code/tests/unit_tests/test_textual_adapter.py
+  s_b525ff6365a718::t_3e9d1850fce17c 6,11,22-23,29,32,43-45,271-399,662,664-719,806-810,813-825,828-834,843-848,863,871-908,947-967,988,990,1032-1183,1203-1213,1220,1232,1238-1304,1334-1339,1341-1458,1461,1471-1474,1515-1531,1536,1553-1562,1982-1983,2044-2046,2229-2230,2232-2234,2270,2273,2336-2338,2443-2446,2449-2450,2505-2506,2510-2511,2545-2611,2614-2649,3936-4035
+libs/talon/deepagents_talon/config.py
+  s_b525ff6365a718::t_3e9d1850fce17c 19-20
+examples/text-to-sql-agent/pyproject.toml
+  s_b525ff6365a718::t_3e9d1850fce17c 8-10,12-13,15
+libs/code/tests/unit_tests/test_tool_renderers.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-43
+libs/talon/tests/test_speech.py
+  s_b525ff6365a718::t_3e9d1850fce17c 4,10,68-137
+libs/talon/deepagents_talon/runtime.py
+  s_b525ff6365a718::t_3e9d1850fce17c 51,56-57,306-308,324-325,328,332,372,782-813,868-883,889,892
+libs/talon/tests/channels/test_telegram.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-1397
+libs/deepagents/tests/unit_tests/backends/test_context_hub_backend.py
+  s_b525ff6365a718::t_3e9d1850fce17c 581-672
+libs/partners/quickjs/pyproject.toml
+  s_b525ff6365a718::t_3e9d1850fce17c 21,26-30,46,55,57
+libs/talon/CHANGELOG.md
+  s_b525ff6365a718::t_3e9d1850fce17c 3-21
+.github/PULL_REQUEST_TEMPLATE.md
+  s_b525ff6365a718::t_3e9d1850fce17c 30-32
+libs/deepagents/tests/unit_tests/middleware/test_tool_schemas.py
+  s_b525ff6365a718::t_3e9d1850fce17c 28
+libs/deepagents/tests/unit_tests/test_middleware.py
+  s_b525ff6365a718::t_3e9d1850fce17c 3,24,127,134,140,147,183-189,422,1757-1810
+  s_b525ff6365a718::t_9a579604cf0f47 1811
+.github/workflows/dependabot_lockfile_fix.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 26-32,39,50,66,212
+libs/code/tests/unit_tests/test_git.py
+  s_b525ff6365a718::t_3e9d1850fce17c 11,18,21-24,26-27,30-32,276-589
+libs/evals/tests/unit_tests/test_harbor_langsmith_integration.py
+  s_b525ff6365a718::t_3e9d1850fce17c 15,80-85,87,92-94,97-99
+.github/scripts/models.py
+  s_b525ff6365a718::t_3e9d1850fce17c 833-845,1005,1009,1036
+libs/code/deepagents_code/_session_stats.py
+  s_b525ff6365a718::t_3e9d1850fce17c 14-22
+libs/code/deepagents_code/model_config.py
+  s_b525ff6365a718::t_3e9d1850fce17c 550-557,559,564-568,639-640,667-669,671-675,678,696-703,745-747,1979-1998,2013-2014,2038-2042,2050-2059,2090-2093,2105-2110,2176-2179,2193,2200-2242,2544-2549,2552-2554,2581-2585,2587-2590
+libs/code/tests/unit_tests/test_memory_guard.py
+  s_b525ff6365a718::t_3e9d1850fce17c 318-429
+libs/talon/tests/integration_tests/test_core_flows.py
+  s_b525ff6365a718::t_3e9d1850fce17c 11-17,37,39,41-43,45-50
+.github/workflows/_benchmark.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 46,60,68
+libs/code/deepagents_code/_testing_models.py
+  s_b525ff6365a718::t_3e9d1850fce17c 21-35,160-317
+libs/code/tests/unit_tests/test_coding_agent_metadata.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-255
+.github/workflows/check_versions.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 30
+.github/workflows/pr_labeler_backfill.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 29
+.github/scripts/test_shard_matrix.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-429
+libs/deepagents/deepagents/backends/filesystem.py
+  s_b525ff6365a718::t_3e9d1850fce17c 23,38-39,41,437-455,482,485,489,576-609,813,858-859
+libs/code/deepagents_code/server.py
+  s_b525ff6365a718::t_3e9d1850fce17c 21,23,32-39,43,116,148,156-157,377,386-388,390-391,410,498-501,503,507-513,543-620,705-722
+  s_b525ff6365a718::t_43bdd4f02e3b2e 723
+libs/code/scripts/generate_commands_catalog.py
+  s_b525ff6365a718::t_3e9d1850fce17c 29
+.github/scripts/shard_matrix.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-233
+libs/code/tests/unit_tests/test_chat_input.py
+  s_b525ff6365a718::t_3e9d1850fce17c 14,30,232-347,970-1025,1746-1905,1945-1962,1990-1991,2010-2011,2014-2015,2272-2304,3966,3974-3975,3977,3982,3984
+libs/code/tests/unit_tests/test_version.py
+  s_b525ff6365a718::t_3e9d1850fce17c 44-47,511-514,519-557,595-598,883-886,1197,1213-1220,1240
+.github/workflows/close_open_swe_prs.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 33
+libs/code/tests/unit_tests/test_resume_state.py
+  s_b525ff6365a718::t_3e9d1850fce17c 4,6,14,32-46,52-69,132-133,148,150
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/custom_system_message.md
+  s_b525ff6365a718::t_3e9d1850fce17c 71,80
+.github/CODEOWNERS
+  s_b525ff6365a718::t_3e9d1850fce17c 6-7,9
+libs/code/deepagents_code/widgets/cwd_switch.py
+  s_b525ff6365a718::t_3e9d1850fce17c 20-25,37,89,96,108-112,121,141-145,147,156-174,183-187
+  s_b525ff6365a718::t_fb9676b03ec7f9 188
+libs/code/deepagents_code/server_graph.py
+  s_b525ff6365a718::t_3e9d1850fce17c 3-9,14,18,27-29,50-61,81,90-96,120-121,123-129,147,161-165,169-177,180,183-187,235-281,283-321
+libs/code/deepagents_code/ui.py
+  s_b525ff6365a718::t_3e9d1850fce17c 119-121,170-174,188-202,226,515-566,711,725-727
+libs/code/CHANGELOG.md
+  s_b525ff6365a718::t_3e9d1850fce17c 5-144
+libs/code/tests/unit_tests/test_tools_commands.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-144
+libs/code/tests/unit_tests/test_server_graph.py
+  s_b525ff6365a718::t_3e9d1850fce17c 8,12-13,35-71,78-94,106,109-110,166-172,174,176-184,208-209,215-388
+.github/workflows/check_lockfiles.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 27
+libs/code/deepagents_code/widgets/goal_review.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-381
+libs/deepagents/deepagents/middleware/_video.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-404
+libs/partners/quickjs/langchain_quickjs/_repl.py
+  s_b525ff6365a718::t_3e9d1850fce17c 534-535,537-538,540-542,554-561,567-583,599
+libs/partners/quickjs/tests/unit_tests/test_prompt_modes.py
+  s_b525ff6365a718::t_3e9d1850fce17c 92-93
+libs/code/tests/unit_tests/test_remote_client.py
+  s_b525ff6365a718::t_3e9d1850fce17c 5,560-572,600-635,844-879
+  s_b525ff6365a718::t_eb965bd6a6be53 880-881
+.github/workflows/evals_trials.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 180,499
+libs/code/deepagents_code/_git.py
+  s_b525ff6365a718::t_3e9d1850fce17c 6,8-9,240-521
+libs/code/scripts/install.sh
+  s_b525ff6365a718::t_3e9d1850fce17c 10,13-17,53-54,61-67,69-70,81-85,151-167,347-348,357-372,390-395,429-441,443,445,447,451-458,461-472,474-486,489-490,492-508,588,607,612,637,642-643,685,698-707,799-804,809-811,888-900,996-1000,1002-1031
+libs/deepagents/tests/unit_tests/backends/test_sandbox_backend.py
+  s_b525ff6365a718::t_3e9d1850fce17c 33,544-559,564,568,1147-1153,1555-1619
+libs/code/hatch_build.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-67
+libs/evals/deepagents_clbench/system/__init__.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-5
+.github/workflows/release.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 157,260,285-288,378,790,826,855,862-875,877-901,912-917,942-947,1010,1061
+.github/workflows/bump_uv_pin.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 35
+libs/code/deepagents_code/widgets/messages.py
+  s_b525ff6365a718::t_3e9d1850fce17c 46-50,60,62,120,135-145,737,745-766,870-878,991-998,1015,1152,1224-1225,1258-1261,1265,1270,1272-1279,1282-1306,1463,1504-1518,1522,1525-1548,1852-1868,2379-2400,2404,2420-2431,2433-2437,2481-2501,2611-2960
+  s_b525ff6365a718::t_a07334a1fb1cda 2961-2962
+libs/deepagents/tests/unit_tests/test_models.py
+  s_b525ff6365a718::t_3e9d1850fce17c 16,48,231-280
+  s_b525ff6365a718::t_979bc84284d063 281-282
+libs/evals/deepagents_harbor/langgraph_project/langgraph.json
+  s_b525ff6365a718::t_3e9d1850fce17c 16,22-23
+libs/code/deepagents_code/auth_commands.py
+  s_b525ff6365a718::t_3e9d1850fce17c 105-110,170-174,247,268-271,273,307-311,317-322,361,367-371,381-387,422-427,429-432
+  s_b525ff6365a718::t_4e7b2f004842d0 104
+libs/code/pyproject.toml
+  s_b525ff6365a718::t_3e9d1850fce17c 7,29,41,43,57,61,89-90,93-94,100-103,116,125-128,149-152,167-170,312-315
+libs/talon/deepagents_talon/speech.py
+  s_b525ff6365a718::t_3e9d1850fce17c 19,190-193,250
+.github/workflows/_test.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 99
+.github/scripts/check_pr_scope_files.py
+  s_b525ff6365a718::t_3e9d1850fce17c 17,23,26-156,297-301,309,314-316,321-322,324-336,347-353,360,368-384,387,392-402
+  s_b525ff6365a718::t_704ea4267d9802 403
+libs/talon/tests/channels/test_base.py
+  s_b525ff6365a718::t_3e9d1850fce17c 8,14-16,19,23,25,38-50,103-110,127-232
+examples/llm-wiki/pyproject.toml
+  s_b525ff6365a718::t_3e9d1850fce17c 7-8
+libs/code/tests/unit_tests/test_main.py
+  s_b525ff6365a718::t_3e9d1850fce17c 12,22,26,35-39,44-59,502,505,531,539,541-542,551,555-560,580,582-584,588-589,627,629,632,668,676-678,711,713,716,719-720,767-769,779-784,1087-1209,1329,1350,1613-1616,1627-1648
+  s_b525ff6365a718::t_c88676b9ae3e93 1649
+libs/code/COMMANDS.md
+  s_b525ff6365a718::t_3e9d1850fce17c 1,11,16,23,26,37-38
+.github/workflows/check_release_deps.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 35-37,40,51,56-134
+libs/cli/pyproject.toml
+  s_b525ff6365a718::t_3e9d1850fce17c 28-29,36,59-61
+libs/code/tests/unit_tests/test_non_interactive.py
+  s_b525ff6365a718::t_3e9d1850fce17c 8,13,31,309,477-479,484-512,1156-1177
+  s_b525ff6365a718::t_2229c46cb86895 1178
+libs/deepagents/deepagents/_tools.py
+  s_b525ff6365a718::t_3e9d1850fce17c 23
+.github/RELEASING.md
+  s_b525ff6365a718::t_3e9d1850fce17c 50,293-297,334,401,407,413-420,422-430,433,484-485,676,678,681,686-688,690
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_memory_and_skills_tools.json
+  s_b525ff6365a718::t_3e9d1850fce17c 62,72,77,91,100,147-159
+  s_b525ff6365a718::t_d1c65570b1310c 160-165
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_mixed_foreign_functions_call.md
+  s_b525ff6365a718::t_3e9d1850fce17c 69,78,147,165-168,343-346
+libs/deepagents/deepagents/graph.py
+  s_b525ff6365a718::t_3e9d1850fce17c 10,189-210,230-266,412-413,693-694,698,713-723,731-732,782-783,790-803,870-873,877,900-910
+libs/deepagents/tests/unit_tests/backends/test_utils.py
+  s_b525ff6365a718::t_3e9d1850fce17c 12,15,200-250,260-273
+  s_b525ff6365a718::t_32b56a7f0a4b08 274-275
+libs/code/tests/unit_tests/test_subagent_panel.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-549
+libs/code/deepagents_code/agent.py
+  s_b525ff6365a718::t_3e9d1850fce17c 12-13,19-25,61-64,77,103-162,291,348-350,353-354,358,984-994,1115-1146,1169,1171-1172,1175-1178,1231-1236,1265,1323-1324,1400-1408,1499,1561-1567,1570,1665,1794-1809
+  s_b525ff6365a718::t_5bbe8731531673 1810
+libs/code/THREAT_MODEL.md
+  s_b525ff6365a718::t_3e9d1850fce17c 210,253,262-263,351,388,417-426,438,462-463,495-496
+libs/code/deepagents_code/widgets/_links.py
+  s_b525ff6365a718::t_3e9d1850fce17c 5,15-28,33-173,183-185,197-199,203-204,208,220-225,229,231-232,240-244,248-258,260
+libs/code/tests/unit_tests/test_reasoning_effort.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-618
+.github/workflows/check_extras_sync.yml
+  s_b525ff6365a718::t_3e9d1850fce17c 33
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_execute.md
+  s_b525ff6365a718::t_3e9d1850fce17c 69,78
+libs/code/tests/unit_tests/test_app.py
+  s_b525ff6365a718::t_3e9d1850fce17c 12,23-26,29,33,42-43,53,55-57,60,62-66,69,87-94,105-127,197-217,254-288,321,386,554,579,585,1011-1014,1039-1329,1340-1341,1364-1492,1630-1632,1749-1751,1791-1792,2897,2906,2910,2914,3602-3603,3606-3607,3610-3611,3613,3626-3627,3630-3631,3635-3636,3638,3644-3647,3650-3651,3654-3655,3658-3659,3661,3664,3668-3716,3890-3917,3950-3953,4059-4061,4293,4771-4772,4774-4781,4784,4786,4788,4790,4792-4796,4798-4802,4805-4811,4813-4814,4816-4818,4821-4822,4824-4830,4832-4833,4835-4837,4839-4842,4844-4846,4848-4850,4852-4861,4863,4865-4874,4876,4878-4887,4889,4891-4892,4894-4900,4902,4904-4905,4907-4913,4915-4917,4919-4920,4922-4927,4929-4930,4932-4933,4935-4937,4940-4941,4943,4946-4949,4951-4953,4956-4957,4959-4960,4962-7621,8096-8395,8397-8400,8402-8405,8408-8411,8413-8419,8424,8434,8438,8445,8449,8454,8457-8458,8461,8463-8464,8466,8472-8473,8476,8479-8480,8482-8486,8488-8489,8491-8496,8498,8501,8504,8507,8509-8513,8515-8536,8656-8676,8736-8738,9024-9026,9139-9141,9222-9223,9265,9294,9296-9342,9352,9368,9379,9417,9521-9523,9529,9567,9581,9597,9617,9623-9627,9630,9634,9636-9637,9641-9648,9759-9762,9769,10577-10753,10755-10756,10758-10764,10766-10770,10772-10773,10775-10777,10779-10785,10787-10791,10793-10798,11162-11172,11176-11180,11189,11193,11195-11198,11203-11207,11211,11226,11300,11309,11325,11356,11370,11385-11392,11432-11439,11477-11484,11520-11527,11618-11622,11667,11685,11707,11739,11768,12470,12472-12478,12482-12487,12518-12572,12710-12985,13339,13347-13350,13357,13374-13406,13854-13876,14020-14024,14029-14030,14039-14041,14068-14305,15386-15430,15432,15463,15465-15466,15468-15472,15475-15477,15494,15508,15595-15598,15610-15658,15701-15704,17014-17218,17423,18053-18174,18191,18193,18197-18198,18210-18211,18213,18216-18222,18436-18437,18442-18444,18447-18456,18461-18484,18493,18495,18499-18501,20607-20610,20624-20657,20675-20678,20843,20894-20983,21388-21670
+libs/deepagents/tests/unit_tests/middleware/test_video.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-480
+libs/code/deepagents_code/goal_rubric.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-115
+libs/evals/tests/evals/test_file_operations.py
+  s_b525ff6365a718::t_3e9d1850fce17c 22,25,53-135,696-850
+libs/code/deepagents_code/main.py
+  s_b525ff6365a718::t_3e9d1850fce17c 138-215,219,252,283,299,301,308,323-327,379-381,431-435,581-595,597-677,688,694,873-875,880,907-908,1091,1115-1116,1394-1410,1559-1591,1673-1674,1676,1684,1705,1851,1856-1857,1894-1895,1908-1912,2015,2023,2466,2469-2472,2538-2542,2622,2712-2780,2826,2871-2884,2906,2912-2915,3060-3063,3065,3069-3070,3143-3156,3160,3171-3183,3429-3430,3439-3450,3473,3476-3480,3511,3533-3534,3570,3575-3576,3592-3603
+libs/deepagents/deepagents/middleware/_fs_interrupt.py
+  s_b525ff6365a718::t_3e9d1850fce17c 43
+libs/code/tests/unit_tests/conftest.py
+  s_b525ff6365a718::t_3e9d1850fce17c 16-23,92-93,96,105-122,137-138,142-143,156-159,164-175,181-185,194-195,197
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_without_execute_tools.json
+  s_b525ff6365a718::t_3e9d1850fce17c 62,72,77,91,100,147-159
+  s_b525ff6365a718::t_009e5e452b82e1 160-165
+libs/talon/README.md
+  s_b525ff6365a718::t_3e9d1850fce17c 5-7,19-21,23,25,30,56-63,76,80,99-128,174-176,192
+libs/code/deepagents_code/app.py
+  s_b525ff6365a718::t_3e9d1850fce17c 6,19,21,60-62,86,91,95,99,107-146,189-255,344,350,634-682,1026-1084,1193-1206,1290-1291,1307-1343,1358-1397,1666-1702,1710-1711,1831,1909,1919,1948-1949,1980-1984,2100-2107,2120-2135,2233-2234,2279-2321,2328-2334,2361-2369,2382-2385,2396,2398-2400,2610-2612,2789-2791,2818,2824,2846-2852,2854-2861,2893,2914,2932-2962,3142,3269-3272,3283,3330-3331,3403-3409,3528-3531,3554-3557,3561-3562,3564-3565,3571,3573,3577-3578,3584-3641,3645-3646,3652-3663,3861,3989-3992,3996-4000,4275,4305-4312,4476,4516-4523,4591-4602,4623,4640,4662-4665,4877-4879,4900,4933,4954,4958,4993-4997,5024-5028,5040-5057,5071-5085,5097-5098,5130,5662-5665,5667,5669-5674,5682-5694,5696,5699,5823,5848-5851,5861-5862,6094-6130,6143-6147,6269-6402,6493-6499,6681-6683,6718-6751,6771,6778-6779,6793-6796,6812,6837-6843,6854-6855,6883,6917-6992,7080,7086-7087,7094-7097,7099,7101-7108,7111-7112,7114-7118,7131-7136,7141-7143,7146,7149-7154,7156-7162,7460,7463,7515-7516,7524,7526,7528-7540,7784,7802-7803,7876,7911-7970,7973-7974,7976-7985,7987-7988,7990-9200,9202-9205,9234-9239,9247-9250,9254-9255,9332-9340,9398-9399,9430-9431,9967-10000,10007-10011,10052-10192,10194-10198,10200-10237,10244,10254-10255,10268-10285,10297-10298,10308-10317,10360-10369,10426,10608-10621,10625,10636,10642,10649-10650,10657,10662-10663,10668,10775-10776,10785-10789,10937-10989,11029-11038,11049-11081,11132-11238,11271-11275,11392-11397,11516-11524,11694-11700,11802-11810,11873-11966,12024-12043,12046,12058-12061,12063,12065-12068,12070-12071,12073-12082,12178,12200-12204,12240-12245,12286-12287,12470-12471,12637,12643-12647,12662-12666,12669,12672,12675-12744,12749-12750,12753,12765,12776-12781,13067-13073,13662,13693,13723,13939-13970,14242-14248,14284-14299,14400-14403,14406-14407,14644,14681,14683,14685,14711-14713,15499,15509-15510,15513-15518,15534,15537-15538,15919,15938-15943,15963-15965,15973,16217,16227,16255-16256,16281-16283,16305,16315
+libs/code/deepagents_code/_server_config.py
+  s_b525ff6365a718::t_3e9d1850fce17c 83-101,120-180,235-241,261-269,306-308,315-320,365-370,419-420,453,456-457,487,491-493,504-507,518,521-522
+libs/code/deepagents_code/widgets/autocomplete.py
+  s_b525ff6365a718::t_3e9d1850fce17c 620,633-638,654,657-662,666-667
+libs/code/deepagents_code/app.tcss
+  s_b525ff6365a718::t_3e9d1850fce17c 42-45,48,255-325
+  s_b525ff6365a718::t_4fe46d273f61c2 326
+libs/code/tests/unit_tests/test_model_switch.py
+  s_b525ff6365a718::t_3e9d1850fce17c 8,26,334-363,1224-1340
+libs/talon/tests/integration_tests/test_telegram_host.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-120
+libs/code/AGENTS.md
+  s_b525ff6365a718::t_3e9d1850fce17c 72
+libs/code/deepagents_code/update_check.py
+  s_b525ff6365a718::t_3e9d1850fce17c 17,24,34,75-77,138-140,244-245,258-383,427-428,440-448,453-455,464-469,471-489,497-572,1054,1068,1071-1076,1612,1623-1627,1643-1650,1670,1684,2135-2137,2141-2160,2164-2168,2175-2176,2180-2181,2184,2189-2194,2206,2208,2217-2221,2228-2229,2243,2335-2353,2358,2364-2370,2378-2383,2388,2396,2398-2405,2413,2415-2419,2429,2432,2440-2442,2447-2512,2550-2554,2583-2584,2590-2591,2603-2608,2621-2626,2682,2684-2686,2688-2689,2889-2914,2935-2939
+libs/code/deepagents_code/approval_mode.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-131
+libs/code/tests/unit_tests/test_goal_tools.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-385
+libs/partners/modal/pyproject.toml
+  s_b525ff6365a718::t_3e9d1850fce17c 25,39,45-46
+libs/code/tests/unit_tests/test_auth_store.py
+  s_b525ff6365a718::t_3e9d1850fce17c 92-152,265-271
+  s_b525ff6365a718::t_4bbb4c79d090d7 272
+libs/code/deepagents_code/config_manifest.py
+  s_b525ff6365a718::t_3e9d1850fce17c 53,58,213-222,753,798-806,863-879,907-915,990,1112-1119
+libs/talon/tests/test_host.py
+  s_b525ff6365a718::t_3e9d1850fce17c 4,15,18,24,36,40-41,49-53,55-56,58,62,65,69-72,175-237,315-343,370-412,453-778,842-851
+libs/code/deepagents_code/file_ops.py
+  s_b525ff6365a718::t_3e9d1850fce17c 213-234,312-313,315,326,399-414
+libs/code/deepagents_code/auth_store.py
+  s_b525ff6365a718::t_3e9d1850fce17c 70-78,147-151,328-336,377-392,394-398,407-412,419-422,429-431,455-467
+libs/acp/examples/demo_agent.py
+  s_b525ff6365a718::t_3e9d1850fce17c 107-108
+libs/code/tests/unit_tests/test_approval_mode.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-129
+examples/talon/Dockerfile
+  s_b525ff6365a718::t_3e9d1850fce17c 1-64
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_no_tools.md
+  s_b525ff6365a718::t_3e9d1850fce17c 69,78,147,165-168,343-346
+libs/code/tests/unit_tests/test_subagent_stream.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-41
+libs/talon/tests/test_media.py
+  s_b525ff6365a718::t_3e9d1850fce17c 44-54
+libs/evals/tests/unit_tests/test_harbor_langgraph_agent.py
+  s_b525ff6365a718::t_3e9d1850fce17c 8,10,22,346-391
+libs/talon/tests/conftest.py
+  s_b525ff6365a718::t_3e9d1850fce17c 1-95
+libs/talon/tests/test_fleet.py
+  s_b525ff6365a718::t_3e9d1850fce17c 16,269,286-290,301-305,367,381
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_sync_and_async_subagents.md
+  s_b525ff6365a718::t_3e9d1850fce17c 69,78
+libs/evals/Makefile
+  s_b525ff6365a718::t_3e9d1850fce17c 49,56,59,61,63
+examples/async-subagent-server/uv.lock
+  s_b525ff6365a718::t_7ee77f5f9182c1 79,81-82,91,353,366-374,377,381,385,395,397,420,429,431,645,652,654,659,666,668,673,686,688,693,701,703,708,713,715,720,730,732,737,743,745,779,782-783,790-791,797,799,1089,1098,1100
+examples/better-harness/uv.lock
+  s_b525ff6365a718::t_f53703dcfacfda 18-19,70,79,81,86,88,90-106
+examples/content-builder-agent/uv.lock
+  s_b525ff6365a718::t_64744ee66599e5 222-223,227,294,304,306,356,370,372,529,536,538,543,550,552,557,570,572,577,585,587,592,597,599,1263,1270,1272
+examples/deep_research/uv.lock
+  s_b525ff6365a718::t_6d549ca0e166a4 14,717,719,721-723,725,731-732,738,748,750,1193,1203,1210,1212,1504,1512,1514,1516,1687,1694,1696,1701,1708,1710,1715,1728,1730,1735,1743,1745,1750,1757,1759,1764,1769,1771,1864,1873,1875,2403-2404,2406,2408,2843,2845,2847-2853,3520-3540,3640,3647,3649
+examples/llm-wiki/uv.lock
+  s_b525ff6365a718::t_7be2a3277cb293 284,297-305,308,312,316,326,328,556,563,565,570,577,579,584,597,599,604,612,614,619,624,626,648,654,656,690,693-694,701-702,708,710,725
+examples/nvidia_deep_agent/uv.lock
+  s_b525ff6365a718::t_29129f98ebf756 20,31-117,510,520,522,1115,1122,1124,1129,1136,1138,1143,1156,1158,1163,1171,1173,1191,1198,1200,1205,1210,1212,1217,1227,1229,1290,1299,1301,1421,1438,1440,1581,1583-1584,1586-1588,1590,1592,2399,2404,2406,2411,2418,2420
+examples/talon/.env.example
+  s_b525ff6365a718::t_49bd9447094080 2,5,17-37
+examples/text-to-sql-agent/uv.lock
+  s_b525ff6365a718::t_db53c268c53a55 421,431,433,812,819,821,826,833,835,880,893,895,900,908,910,915,920,922,939,949,951,1841,1847-1884,1889,1896,1898,1928-1930,1932,1935-1936
+libs/acp/uv.lock
+  s_b525ff6365a718::t_77d6b1ab37caea 433,446-452,455,471,473,512-513,516,523-524,756,763,765,770,777,779,784,791,793,798,811,813,818,826,828,833,840,842,847,852,854,876,882,884,918,921-922,929-930,936,938,1247,1256,1258,1533-1553,1696-1716
+libs/cli/uv.lock
+  s_b525ff6365a718::t_3f5b56b89863b9 410,423-429,432,448,450,487,489,496,505,507,844,851,853,858,865,867,872,885,887,892,900,902,907,912,914,936,942,944,978,981-982,989-990,996,998,1360,1369,1371,1614-1634,1744-1764
+libs/code/uv.lock
+  s_b525ff6365a718::t_0cec5e1da46b8c 268-295,1051,1064-1072,1075,1079,1083,1093,1095,1114,1126,1137,1156,1221-1224,1232,1266,1286,1288,1295,1298-1299,1303-1305,1314,1320,1329,1334,1336,1349,1354,1366,1369,2113-2127,2699,2706,2708,2727,2736,2738,2743,2750,2752,2808,2814-2815,2833,2842,2844,2849,2857,2859,2988,2994-2995,3000,3007,3009,3079,3094-3097,3105,3114,3117,3138,3144-3145,3178,3184,3190-3191,3367,3370-3371,3378-3379,3385,3387,5329,5334,5336,5673-5693,6189-6197,6229-6249
+libs/deepagents/uv.lock
+  s_b525ff6365a718::t_06fd65f37bfcba 57-84,94-121,131-180,521,533-535,539-542,546,550,567-575,578,582,586,596,598,894-902,944,951,953,958,965,967-982,987,1000,1002,1007,1015,1017,1036,1041,1043,1048,1051,1058,1060,1104,1110,1112,1146,1149-1150,1157-1158,1164,1166,1456-1542,1873-1884,1951,1953-1956,1958,2130-2162,2178-2186,2359-2379,2454-2472
+libs/evals/uv.lock
+  s_b525ff6365a718::t_5212bac3e80b4a 20-21,48,59,61-68,398,411-419,422,426,430,440,442,461,473,484,500,502,509,512-513,517-519,528,534,543,548,550,563,568,580,583,641-644,646-647,650,652-653,656-657,667-668,674-675,772,774,776,1017,1023,1029,1042,1044,1270-1278,1381,1388,1390,1395,1408,1410,1428,1437,1439,1444,1452,1454,1502,1509,1511,1543,1549,1551,1556,1561,1563,1568,1583-1586,1594,1603,1606,1626,1636,1638,1686,1692,1694,1782,1785-1786,1793-1794,1800,1802,1896,1909,1911-1919,2078,2090,2092,2112,2117,2120,2122,2301,2303,2305,2367,2369,2371-2373,2514,2522,2524,2624,2629,2631,2741,2743,2745-2747,3084,3086,3088-3090
+libs/partners/daytona/uv.lock
+  s_b525ff6365a718::t_588ad9bad4f0e9 647,660-666,669,685,687,1082,1089,1091,1096,1103,1105,1110,1123,1125,1159,1165-1166,1171,1179,1181,1186,1191,1193,1237,1243,1245,1279,1282-1283,1290-1291,1297,1299,2131,2140,2142,2377-2397,2504-2524
+libs/partners/modal/uv.lock
+  s_b525ff6365a718::t_6ac64786b992aa 593,606-612,615,631,633,1023,1030,1032,1037,1044,1046,1051,1064,1066,1071,1079,1081,1115,1121-1122,1127,1132,1134,1178,1184,1186,1220,1223-1224,1231-1232,1238,1240,1895,1904,1906,2120-2140,2259-2279
+libs/partners/quickjs/uv.lock
+  s_b525ff6365a718::t_fc9794371f62e0 470,483-489,492,508,510,866,873,875,880,887,889,894,907,909,914,922,924,929,934,936,941,976-979,987,996,999,1004,1014,1016,1021,1027,1029,1078,1081-1082,1089-1090,1096,1098,1556,1565,1567,1787,1792,1794,1862-1882,2008-2028
+libs/partners/runloop/uv.lock
+  s_b525ff6365a718::t_8f446b190a0f24 385,398-404,407,423,425,666,673,675,680,687,689,694,707,709,714,722,724,729,734,736,770,776-777,821,827,829,863,866-867,874-875,881,883,1282,1291,1293,1507-1527,1634-1654
+libs/partners/vercel/uv.lock
+  s_b525ff6365a718::t_34c36c3f4d099a 11,442,455-461,464,480,482,728,735,737,742,749,751,756,769,771,776,784,786,848,854,860-861,925,928-929,936-937,943,945,1349,1358,1360,1593-1613,1702-1722
+libs/talon/uv.lock
+  s_b525ff6365a718::t_4242d48c7df396 159-186,230-279,752,765-773,776,780,784,794,796,815,827,838,852-857,860,862,869,872-873,877-879,888,894,903,908,910,923,928,940,943,948,958-959,984,986-992,994,998,1004-1005,1639,1652,1654,1659,1667,1669,1702,1707,1709-1752,1757,1767,1769,1913,1916-1917,1924-1925,1931,1933,3133,3142,3144,3314-3325,3644-3664,4390,4403,4405,4436-4456,4660-4678
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "cf63b3073e693f3f296d21152199ac0ed5dd412c",
+  "prompts": {},
+  "sessions": {
+    "s_b525ff6365a718": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d6e8e752-8729-40f4-a330-b209f0da9174",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

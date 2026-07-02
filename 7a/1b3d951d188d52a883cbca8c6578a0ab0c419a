@@ -1,0 +1,19 @@
+libs/evals/Makefile
+  s_a2f1814be1f15c::t_e41856aa97811f 49
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "7a1b3d951d188d52a883cbca8c6578a0ab0c419a",
+  "prompts": {},
+  "sessions": {
+    "s_a2f1814be1f15c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "42ae9967-23f2-4a17-b4a6-8066a2cda8a1",
+        "model": "claude-sonnet-5"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

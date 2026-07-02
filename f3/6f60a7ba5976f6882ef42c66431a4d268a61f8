@@ -1,0 +1,22 @@
+libs/code/deepagents_code/widgets/messages.py
+  s_4f420195867ef8::t_1db181f55fb32f 1453-1461,1463
+libs/code/tests/unit_tests/test_messages.py
+  s_4f420195867ef8::t_cf167dc83e657a 1212-1292
+  s_4f420195867ef8::t_91ae74c351fa02 1333-1337
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "f36f60a7ba5976f6882ef42c66431a4d268a61f8",
+  "prompts": {},
+  "sessions": {
+    "s_4f420195867ef8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1ad584fa-af6c-41ab-8d00-b5082d79f8b3",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

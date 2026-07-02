@@ -1,0 +1,19 @@
+libs/code/deepagents_code/widgets/messages.py
+  s_d9e3abfa2342ba::t_f1599d74807320 1480-1487,1491,2387-2389
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "b54ae87d295dff57395f6e7696072e0af0898b5f",
+  "prompts": {},
+  "sessions": {
+    "s_d9e3abfa2342ba": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a7af093dc1f50d363",
+        "model": "unknown"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

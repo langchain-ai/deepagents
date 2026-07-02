@@ -1,0 +1,19 @@
+libs/evals/deepagents_harbor/RUN_PLAYBOOK.md
+  s_15e7846dc2c767::t_c3dd1f44799532 1-177
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "330fd33fd6e469b17d9036fb091baf2dc666bec1",
+  "prompts": {},
+  "sessions": {
+    "s_15e7846dc2c767": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fd18de2c-5b2b-4125-8ef6-c29809e66c05",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

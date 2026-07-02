@@ -1,0 +1,27 @@
+libs/code/tests/unit_tests/test_reasoning_effort.py
+  s_ce55e7cabb153a::t_d521e23cd693db 178,377-381
+  s_ce55e7cabb153a::t_94fac9140cf9bf 382-383
+libs/code/deepagents_code/reasoning_effort.py
+  s_ce55e7cabb153a::t_1b8c5aa315db19 114
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "c7f1f3a0a41bdccc03a0fac3cadb934d9a3745a4",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  },
+  "sessions": {
+    "s_ce55e7cabb153a": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f1efc-7415-7623-851b-cf6141cf98af",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

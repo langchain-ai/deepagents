@@ -1,0 +1,29 @@
+libs/code/scripts/install.sh
+  s_fa354d2c349366::t_a94b9482a78e1d 1014-1017,1019-1029
+  s_fa354d2c349366::t_550f24db534a59 996-1000
+  s_fa354d2c349366::t_210b49052c3d51 1011-1013
+  s_fa354d2c349366::t_3d7d4f8439b9fd 1008-1010
+libs/code/tests/unit_tests/test_install_script.py
+  s_fa354d2c349366::t_504e72b8e47bce 1419-1420,1422-1423,1430-1432,1465-1469,1478-1502
+  s_fa354d2c349366::t_003fd004f469d4 1418
+  s_fa354d2c349366::t_1747bfe4523627 1421
+  s_fa354d2c349366::t_eb9b1a864f335a 1424-1429
+  s_fa354d2c349366::t_aeeff6e2b7b077 1433-1434
+  s_fa354d2c349366::t_ec36b6113e24f4 98,1413-1414
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "f854ef8f8688850b47e3a0e312acd959d0297ed4",
+  "prompts": {},
+  "sessions": {
+    "s_fa354d2c349366": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "12801818-fbc6-4176-b535-11ff7ecc205a",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

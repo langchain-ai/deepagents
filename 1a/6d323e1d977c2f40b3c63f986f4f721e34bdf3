@@ -1,0 +1,21 @@
+libs/code/deepagents_code/extras_info.py
+  s_5c25fbb99a1bee::t_ed9a7534498e26 210-212
+libs/deepagents/deepagents/middleware/filesystem.py
+  s_5c25fbb99a1bee::t_4f5691ded956d2 90-91,93,96,107,110-111,113
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "1a6d323e1d977c2f40b3c63f986f4f721e34bdf3",
+  "prompts": {},
+  "sessions": {
+    "s_5c25fbb99a1bee": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2105-3990-7621-8c2a-64a6bc75a693",
+        "model": "unknown"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

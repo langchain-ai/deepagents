@@ -1,0 +1,14 @@
+AGENTS.md
+  h_9f69767fa5fabf 138
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.4",
+  "base_commit_sha": "0f1d6f0fcec55335c07f95f7ec5b1ceb5c05b3a3",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

@@ -1,0 +1,41 @@
+libs/code/deepagents_code/reasoning_effort.py
+  s_681ecf4f3d39db::t_8e03eca76e5114 163-197
+  s_681ecf4f3d39db::t_9aebd9fe85069d 106-108
+  s_681ecf4f3d39db::t_2f49eeb91a664d 249-250,252-266
+  s_681ecf4f3d39db::t_69d2d649e48941 5-6,10-21,27,33,40-47,55,68,74,83-87
+  s_681ecf4f3d39db::t_e0e0f56145d103 214-231
+  s_681ecf4f3d39db::t_5f03e8fd3817c4 307-310,314,318,321-322
+  s_681ecf4f3d39db::t_c64d0c76bf71c2 122-130
+libs/code/deepagents_code/model_config.py
+  s_681ecf4f3d39db::t_44cc07caf2d9c5 2176-2179
+  s_681ecf4f3d39db::t_9a54cb7c662f48 2206-2218
+libs/code/deepagents_code/app.py
+  s_681ecf4f3d39db::t_aecee49716e14d 10033-10044,10048
+libs/code/tests/unit_tests/test_status.py
+  s_681ecf4f3d39db::t_5614e60f4ba2f7 439-456
+libs/code/tests/unit_tests/test_reasoning_effort.py
+  s_681ecf4f3d39db::t_8f3839b028eb35 181-327
+  s_681ecf4f3d39db::t_1e2fc23e39d0e7 7-8
+  s_681ecf4f3d39db::t_f2f917319fe555 38
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "6c6a374b1415bf819c799bbf440aa36482c380a1",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  },
+  "sessions": {
+    "s_681ecf4f3d39db": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e5b3fe1d-5b72-45f6-95fc-a734bf98f3e6",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

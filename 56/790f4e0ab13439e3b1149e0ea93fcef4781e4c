@@ -1,0 +1,31 @@
+libs/evals/deepagents_harbor/analysis/README.md
+  s_15e7846dc2c767::t_d4b330b5e19714 1-23
+libs/evals/deepagents_harbor/analysis/failure_digest.py
+  s_15e7846dc2c767::t_a2ba3fd981db5e 1-46
+.github/workflows/harbor.yml
+  s_15e7846dc2c767::t_df3a0f2a41fcf8 500-501
+  s_15e7846dc2c767::t_c6c28944b78975 266-267
+  s_15e7846dc2c767::t_031496cbd3985d 168-177
+  s_15e7846dc2c767::t_85241c22808181 350-352
+  s_15e7846dc2c767::t_2e804b4e063c16 402-413
+libs/evals/deepagents_harbor/analysis/failure_map.py
+  s_15e7846dc2c767::t_a2ba3fd981db5e 1-60
+libs/evals/deepagents_harbor/TRACE_INSPECTION.md
+  s_15e7846dc2c767::t_a2ba3fd981db5e 1-204
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "56790f4e0ab13439e3b1149e0ea93fcef4781e4c",
+  "prompts": {},
+  "sessions": {
+    "s_15e7846dc2c767": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fd18de2c-5b2b-4125-8ef6-c29809e66c05",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

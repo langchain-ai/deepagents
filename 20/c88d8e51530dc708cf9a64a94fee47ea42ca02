@@ -1,0 +1,21 @@
+libs/evals/Makefile
+  s_15e7846dc2c767::t_67a07c795b3707 59
+.github/workflows/harbor.yml
+  s_15e7846dc2c767::t_7f9910cdef0f3c 379-388
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "20c88d8e51530dc708cf9a64a94fee47ea42ca02",
+  "prompts": {},
+  "sessions": {
+    "s_15e7846dc2c767": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fd18de2c-5b2b-4125-8ef6-c29809e66c05",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

@@ -1,0 +1,14 @@
+libs/deepagents/deepagents/middleware/_video.py
+  h_9f69767fa5fabf 25,40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "c452870e7ce2c5760405341bfe37477b68124596",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

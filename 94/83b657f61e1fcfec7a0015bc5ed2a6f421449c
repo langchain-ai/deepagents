@@ -1,0 +1,28 @@
+libs/deepagents/deepagents/middleware/rubric.py
+  s_f6e19da31b8e12::t_dbcfae1c325cd3 329-330
+libs/deepagents/tests/unit_tests/middleware/test_rubric_middleware.py
+  s_f6e19da31b8e12::t_e16460494da4e4 124-128
+libs/code/tests/unit_tests/test_app.py
+  s_f6e19da31b8e12::t_9f262a0e7642dd 4812
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.5",
+  "base_commit_sha": "9483b657f61e1fcfec7a0015bc5ed2a6f421449c",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  },
+  "sessions": {
+    "s_f6e19da31b8e12": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bad86c76-4458-4202-8b68-bf9113578a08",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

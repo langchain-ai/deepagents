@@ -3,14 +3,15 @@
 `ResumeState` declares several checkpointed, schema-private channels. They fall
 into two groups with *different* write paths:
 
-Written by `ResumeStateMiddleware.after_model`, from inside the graph:
+Written from inside the graph on successful model turns:
 
 - `_context_tokens` — total context tokens from the latest
-    `AIMessage.usage_metadata`. Powers `/tokens` and the status bar.
-- `_model_spec` — the `provider:model` spec that was effectively in use for
-    the turn, read from `runtime.context["effective_model"]`. Lets `dcode -r`
-    restore the model the resumed thread was actually using instead of falling
-    back to the user's global default.
+    `AIMessage.usage_metadata`, written by `ResumeStateMiddleware.after_model`.
+    Powers `/tokens` and the status bar.
+- `_model_spec` / `_model_params` — the model and invocation params effectively
+    in use for the turn, written by `ConfigurableModelMiddleware` after a
+    successful model call. Lets `dcode -r` restore the model the resumed thread
+    was actually using instead of falling back to the user's global default.
 
 Written primarily by the TUI client, via `aupdate_state` (see
 `DeepAgentsApp._persist_goal_rubric_state`) — these are user/agent-owned. Most
@@ -31,10 +32,10 @@ have no model-node write site; the two exceptions are called out below:
 All of these are facts the CLI reads back from `state_values` on thread resume
 so it can rehydrate the session without replaying or re-tokenizing history.
 
-The `after_model` channels are persisted from inside the graph (rather than via
-a separate client-side `aupdate_state` call) so the write rides the same
-checkpoint as the model response and avoids creating a standalone `UpdateState`
-run in LangSmith. Because they are versioned channel state, resuming a specific
+The model-turn channels are persisted from inside the graph (rather than via a
+separate client-side `aupdate_state` call) so the write rides the same checkpoint
+as the model response and avoids creating a standalone `UpdateState` run in
+LangSmith. Because they are versioned channel state, resuming a specific
 checkpoint yields the values as of *that* checkpoint — not a thread-level
 aggregate. The goal/rubric channels are client-written because the user sets
 them outside any model turn (except `_goal_status`/`_goal_status_note`, which the
@@ -61,8 +62,6 @@ from langchain.agents.middleware.types import (
     PrivateStateAttr,
 )
 from langchain_core.messages import AIMessage
-
-from deepagents_code._cli_context import CLIContextSchema
 
 if TYPE_CHECKING:
     from langgraph.runtime import Runtime
@@ -145,6 +144,9 @@ class ResumeState(GoalRubricChannels):
     _model_spec: Annotated[NotRequired[str], PrivateStateAttr]
     """`provider:model` spec effectively in use for the latest turn."""
 
+    _model_params: Annotated[NotRequired[dict[str, Any] | None], PrivateStateAttr]
+    """Invocation params effectively in use for the latest turn."""
+
     _pending_goal_objective: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Goal objective awaiting acceptance of proposed criteria."""
 
@@ -169,25 +171,6 @@ def _extract_context_tokens(message: AIMessage) -> int | None:
     return total or None
 
 
-def _extract_model_spec(runtime: Runtime[ContextT]) -> str | None:
-    """Return the effective `provider:model` spec from the runtime context.
-
-    The CLI passes the resolved spec in `context["effective_model"]` on every
-    invocation. Returns `None` when no context is present (e.g. non-CLI
-    callers) or the field is unset/blank.
-    """
-    ctx = getattr(runtime, "context", None)
-    if isinstance(ctx, CLIContextSchema):
-        spec = ctx.effective_model
-    elif isinstance(ctx, dict):
-        spec = ctx.get("effective_model")
-    else:
-        return None
-    if isinstance(spec, str) and spec:
-        return spec
-    return None
-
-
 class ResumeStateMiddleware(AgentMiddleware[ResumeState, ContextT]):
     """Persists per-checkpoint resume facts after each model call.
 
@@ -201,20 +184,21 @@ class ResumeStateMiddleware(AgentMiddleware[ResumeState, ContextT]):
     def after_model(  # noqa: PLR6301  # AgentMiddleware hook must be an instance method.
         self,
         state: ResumeState,
-        runtime: Runtime[ContextT],
+        runtime: Runtime[ContextT],  # noqa: ARG002
     ) -> dict[str, Any] | None:
-        """Write `_context_tokens` and `_model_spec` for the latest turn.
+        """Write `_context_tokens` for the latest turn.
 
-        Token count comes from the most recent `AIMessage.usage_metadata`; the
-        model spec comes from `runtime.context["effective_model"]`.
+        Model metadata is written by `ConfigurableModelMiddleware` from the
+        actual request that completed successfully; this hook only records token
+        usage from the most recent `AIMessage.usage_metadata`.
 
         Args:
             state: Current agent state; only `messages` is inspected.
-            runtime: LangGraph runtime; `context["effective_model"]` is read.
+            runtime: LangGraph runtime required by the middleware interface.
 
         Returns:
-            State update with whichever of `_context_tokens` / `_model_spec`
-            could be resolved, or `None` when neither is available.
+            State update with `_context_tokens`, or `None` when no token count is
+            available.
         """
         update: dict[str, Any] = {}
 
@@ -224,9 +208,5 @@ class ResumeStateMiddleware(AgentMiddleware[ResumeState, ContextT]):
                 if tokens is not None:
                     update["_context_tokens"] = tokens
                 break
-
-        spec = _extract_model_spec(runtime)
-        if spec is not None:
-            update["_model_spec"] = spec
 
         return update or None

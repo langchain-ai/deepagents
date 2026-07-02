@@ -9,8 +9,10 @@ from pydantic import TypeAdapter
 from deepagents.backends.protocol import FileData, ReadResult
 from deepagents.backends.utils import (
     _EXTENSION_TO_FILE_TYPE,
+    _get_backend_read_file_type,
     _get_file_type,
     _glob_search_files,
+    grep_matches_from_files,
     perform_string_replacement,
     slice_read_response,
     to_posix_path,
@@ -195,6 +197,57 @@ class TestGlobSearchFiles:
         assert "/foo/b.txt" not in result
 
 
+class TestGrepIncludeGlob:
+    """Shared grep include-glob semantics (ripgrep-like) across backends.
+
+    These document the contract implemented by `compile_grep_include_glob` and
+    consumed by `grep_matches_from_files` (StateBackend/StoreBackend) and the
+    FilesystemBackend Python fallback:
+
+    - A pattern with no `/` matches the basename at any depth (`*.py` matches
+      `/src/app/main.py`).
+    - A pattern containing `/` matches the path relative to the search root,
+      with `**` support (`src/**/*.py` matches `/src/app/main.py`).
+    """
+
+    @pytest.fixture
+    def sample_files(self) -> dict[str, Any]:
+        """Files whose every line contains the literal token `import`."""
+        return {
+            "/src/app/main.py": {"content": "import os\n"},
+            "/top.py": {"content": "import sys\n"},
+            "/README.md": {"content": "import note\n"},
+        }
+
+    def _paths(self, files: dict[str, Any], glob: str | None, path: str = "/") -> list[str]:
+        result = grep_matches_from_files(files, "import", path, glob=glob)
+        return sorted(m["path"] for m in result.matches)
+
+    def test_directory_glob_matches_nested(self, sample_files: dict[str, Any]) -> None:
+        assert self._paths(sample_files, "src/**/*.py") == ["/src/app/main.py"]
+
+    def test_recursive_glob_matches_all_python(self, sample_files: dict[str, Any]) -> None:
+        assert self._paths(sample_files, "**/*.py") == ["/src/app/main.py", "/top.py"]
+
+    def test_slashless_glob_matches_at_any_depth(self, sample_files: dict[str, Any]) -> None:
+        assert self._paths(sample_files, "*.py") == ["/src/app/main.py", "/top.py"]
+
+    def test_extension_glob_matches_only_that_extension(self, sample_files: dict[str, Any]) -> None:
+        assert self._paths(sample_files, "*.md") == ["/README.md"]
+
+    def test_glob_relative_to_search_root(self, sample_files: dict[str, Any]) -> None:
+        """Path-containing patterns resolve relative to the supplied root."""
+        assert self._paths(sample_files, "app/*.py", path="/src") == ["/src/app/main.py"]
+
+    def test_leading_slash_anchors_to_root(self, sample_files: dict[str, Any]) -> None:
+        """A leading `/` anchors to the root; it narrows rather than widens."""
+        assert self._paths(sample_files, "/*.py") == ["/top.py"]
+
+    def test_leading_slash_with_globstar(self, sample_files: dict[str, Any]) -> None:
+        """A leading `/` still supports `**` for anchored recursive matches."""
+        assert self._paths(sample_files, "/src/**/*.py") == ["/src/app/main.py"]
+
+
 _content_block_adapter = TypeAdapter(ContentBlock)
 
 
@@ -202,6 +255,22 @@ def test_get_file_type_returns_text_for_unknown_extensions() -> None:
     assert _get_file_type("/foo/bar.txt") == "text"
     assert _get_file_type("/foo/bar.py") == "text"
     assert _get_file_type("/foo/bar") == "text"
+
+
+def test_get_file_type_does_not_recognize_mkv() -> None:
+    """`.mkv` is intentionally absent from the shared multimodal map."""
+    assert _get_file_type("/foo/bar.mkv") == "text"
+
+
+def test_get_backend_read_file_type_forces_mkv_to_binary() -> None:
+    """Backends must read `.mkv` as binary even though it is not in the map."""
+    assert _get_backend_read_file_type("/foo/bar.mkv") == "video"
+
+
+def test_get_backend_read_file_type_matches_get_file_type_for_other_extensions() -> None:
+    """The backend classifier only adds `.mkv`; everything else is unchanged."""
+    for path in ("/foo/bar.mp4", "/foo/bar.png", "/foo/bar.txt", "/foo/bar", "/foo/bar.pdf"):
+        assert _get_backend_read_file_type(path) == _get_file_type(path)
 
 
 def test_get_file_type_non_text_values_are_valid_content_block_types() -> None:

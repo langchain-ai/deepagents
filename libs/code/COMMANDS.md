@@ -8,7 +8,7 @@ Regenerate this file with `make commands-catalog` after changing command names,
 aliases, descriptions, visibility, or hidden-command metadata.
 
 
-## Public (31)
+## Public (32)
 
 | Command | Aliases | Description |
 | --- | --- | --- |
@@ -20,6 +20,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/copy` |  | Copy the latest assistant message to clipboard |
 | `/docs` |  | Open the docs |
 | `/editor` |  | Open prompt in an external editor ($EDITOR) |
+| `/effort` |  | Set reasoning effort for the current model |
 | `/feedback` |  | Send feedback or report an issue |
 | `/force-clear` |  | Stop active work, clear the chat, and start a new thread |
 | `/goal` |  | Set a persistent objective by drafting acceptance criteria |

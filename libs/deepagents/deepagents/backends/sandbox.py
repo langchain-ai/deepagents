@@ -42,7 +42,7 @@ from deepagents.backends.protocol import (
     WriteResult,
     execute_accepts_timeout,
 )
-from deepagents.backends.utils import _get_file_type
+from deepagents.backends.utils import _get_backend_read_file_type
 
 logger = logging.getLogger(__name__)
 
@@ -438,7 +438,7 @@ def _parse_ls_output(output: str, path: str) -> LsResult:
 
 
 def _build_read_cmd(file_path: str, offset: int, limit: int) -> str:
-    file_type = _get_file_type(file_path)
+    file_type = _get_backend_read_file_type(file_path)
     path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
     # Defensive int coercion in case callers bypass type checking.
     return _READ_COMMAND_TEMPLATE.format(

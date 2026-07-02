@@ -78,9 +78,6 @@ _hitl_adapter_cache: TypeAdapter | None = None
 
 _ASK_USER_UNSUPPORTED_ERROR = "ask_user not supported by this UI"
 
-_TOOL_CALLS_KEEP_THINKING_SPINNER = frozenset({"edit_file"})
-"""Tool calls whose argument/approval phase can be long enough to need feedback."""
-
 
 def _get_hitl_request_adapter(hitl_request_type: type) -> TypeAdapter:
     """Return a cached `TypeAdapter(HITLRequest)`.
@@ -226,12 +223,15 @@ def _format_rubric_event(data: dict[str, Any]) -> str | None:
     event_type = data.get("type")
     if event_type == "rubric_evaluation_start":
         iteration = data.get("iteration", 0)
-        if isinstance(iteration, int):
-            return (
-                f"{glyphs.hourglass} Grading against rubric "
-                f"(iteration {iteration + 1}){glyphs.ellipsis}"
-            )
-        return f"{glyphs.hourglass} Grading against rubric{glyphs.ellipsis}"
+        show_iteration = data.get("show_iteration") is True
+        label = (
+            f" (iteration {iteration + 1})"
+            if show_iteration and isinstance(iteration, int)
+            else ""
+        )
+        return (
+            f"{glyphs.hourglass} Checking acceptance criteria{label}{glyphs.ellipsis}"
+        )
     if event_type != "rubric_evaluation_end":
         return None
 
@@ -240,10 +240,10 @@ def _format_rubric_event(data: dict[str, Any]) -> str | None:
     if result is None:
         return None
     if result == "satisfied":
-        return f"{glyphs.checkmark} Rubric satisfied"
+        return f"{glyphs.checkmark} Acceptance criteria satisfied"
     if result == "needs_revision":
         lines = [
-            f"{glyphs.retry} Rubric needs revision"
+            f"{glyphs.retry} Changes need revision"
             + (f": {explanation}" if explanation else ""),
         ]
         for criterion in data.get("criteria", []):
@@ -253,7 +253,10 @@ def _format_rubric_event(data: dict[str, Any]) -> str | None:
                 lines.append(f"  {glyphs.error} {name}" + (f" — {gap}" if gap else ""))
         return "\n".join(lines)
     if result == "max_iterations_reached":
-        return f"{glyphs.warning} Rubric not satisfied (max iterations reached)"
+        return (
+            f"{glyphs.warning} Acceptance criteria not satisfied "
+            "(iteration limit reached)"
+        )
     if result in {"failed", "grader_error"}:
         label = "grader failed" if result == "failed" else "grader error"
         return (
@@ -1164,17 +1167,15 @@ async def execute_task_textual(
                                     buffer_name, parsed_args, buffer_id
                                 )
 
-                                keep_thinking_spinner = (
-                                    buffer_name in _TOOL_CALLS_KEEP_THINKING_SPINNER
-                                )
-
-                                # Hide spinner before showing most tool calls.
-                                # `edit_file` can spend noticeable time between
-                                # argument streaming, HITL interrupt delivery, and
-                                # approval handling, so re-anchor Thinking below
-                                # the row instead of leaving the UI visually idle.
-                                if adapter._set_spinner and not keep_thinking_spinner:
-                                    await adapter._set_spinner(None)
+                                # Keep the global "Thinking" spinner visible
+                                # across tool calls rather than hiding it per
+                                # tool: it's a stable turn-level indicator, and
+                                # the tool's own progress now shows in its
+                                # collapsed group row. Re-assert it so it stays
+                                # pinned at the bottom as the new row mounts
+                                # above it.
+                                if adapter._set_spinner:
+                                    await adapter._set_spinner("Thinking")
 
                                 # Mount tool call message
                                 logger.debug(
@@ -1185,20 +1186,11 @@ async def execute_task_textual(
                                 tool_msg = ToolCallMessage(buffer_name, parsed_args)
                                 await adapter._mount_message(tool_msg)
                                 adapter._current_tool_messages[buffer_id] = tool_msg
-                                if keep_thinking_spinner:
-                                    # The argument/approval phase uses the global
-                                    # "Thinking" spinner instead of a per-tool one.
-                                    if adapter._set_spinner:
-                                        await adapter._set_spinner("Thinking")
-                                else:
-                                    # Show a per-tool running spinner immediately so
-                                    # auto-executed tools such as grep, glob,
-                                    # read_file, and ls display activity instead of
-                                    # sitting idle until their result arrives. Every
-                                    # tool outside the frozenset hits this branch;
-                                    # those that go on to interrupt for approval are
-                                    # paused again below.
-                                    tool_msg.set_running()
+                                # Mark running so the group row reflects live
+                                # progress; the row itself is hidden inside the
+                                # group, so this drives state, not a visible
+                                # per-tool spinner.
+                                tool_msg.set_running()
 
                             tool_call_buffers.pop(buffer_key, None)
 

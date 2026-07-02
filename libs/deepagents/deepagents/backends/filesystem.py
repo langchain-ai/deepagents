@@ -37,7 +37,8 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.utils import (
-    _get_file_type,
+    MAX_VIDEO_INPUT_BYTES,
+    _get_backend_read_file_type,
     check_empty_content,
     perform_string_replacement,
 )
@@ -434,15 +435,25 @@ class FilesystemBackend(BackendProtocol):
                 return ReadResult(error=f"File '{file_path}' not found")
 
             fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-            if _get_file_type(file_path) != "text":
-                with os.fdopen(fd, "rb") as f:
-                    raw = f.read()
-                encoded = base64.standard_b64encode(raw).decode("ascii")
-                file_data = FileData(content=encoded, encoding="base64")
-            else:
-                with os.fdopen(fd, "r", encoding="utf-8") as f:
-                    content = f.read()
+            try:
+                file_type = _get_backend_read_file_type(file_path)
+                if file_type != "text":
+                    if file_type == "video" and os.fstat(fd).st_size > MAX_VIDEO_INPUT_BYTES:
+                        return ReadResult(error=f"Video file exceeds maximum input size of {MAX_VIDEO_INPUT_BYTES} bytes")
+                    with os.fdopen(fd, "rb") as f:
+                        fd = -1
+                        raw = f.read()
+                    encoded = base64.standard_b64encode(raw).decode("ascii")
+                    file_data = FileData(content=encoded, encoding="base64")
+                else:
+                    with os.fdopen(fd, "r", encoding="utf-8") as f:
+                        fd = -1
+                        content = f.read()
+            finally:
+                if fd >= 0:
+                    os.close(fd)
 
+            if file_type == "text":
                 empty_msg = check_empty_content(content)
                 if empty_msg:
                     file_data = FileData(content=empty_msg, encoding="utf-8")

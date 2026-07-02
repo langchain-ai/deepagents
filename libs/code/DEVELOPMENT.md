@@ -17,13 +17,15 @@ This package uses [`uv`](https://docs.astral.sh/uv/) for environment and depende
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-Clone the monorepo and sync the `code` package with its test dependencies (this creates the virtualenv and installs everything you need to run and test the app):
+Clone the monorepo and bootstrap the `code` package. This creates the virtualenv, installs test dependencies, and installs local git hooks (`pre-commit` + `commit-msg`) so the same checks can run before you push:
 
 ```bash
 git clone https://github.com/langchain-ai/deepagents.git
 cd deepagents/libs/code
-uv sync --group test
+make bootstrap
 ```
+
+If you only want to sync dependencies without installing hooks, run `uv sync --group test` instead.
 
 Run the TUI from `libs/code` in your local checkout:
 
@@ -35,7 +37,15 @@ uv run deepagents-code
 
 ### Running the tests and linters
 
-All commands run from `libs/code`. These mirror what CI enforces, so run them before opening a PR.
+All commands run from `libs/code`. Before opening a PR, run the full local check suite:
+
+```bash
+make check
+```
+
+This runs linting, import checks, unit tests, and lockfile/version/extras checks.
+
+For targeted checks while iterating:
 
 ```bash
 # Unit tests (no network)

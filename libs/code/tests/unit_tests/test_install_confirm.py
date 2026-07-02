@@ -102,7 +102,7 @@ class TestInstallProviderConfirmScreen:
 
             app.push_screen(
                 InstallProviderConfirmScreen(
-                    "baseten", "baseten", "baseten:moonshotai/Kimi-K2.6"
+                    "baseten", "baseten", "baseten:moonshotai/Kimi-K2.7-Code"
                 ),
                 outcomes.append,
             )
@@ -120,7 +120,7 @@ class TestInstallProviderConfirmScreen:
 
             app.push_screen(
                 InstallProviderConfirmScreen(
-                    "baseten", "baseten", "baseten:moonshotai/Kimi-K2.6"
+                    "baseten", "baseten", "baseten:moonshotai/Kimi-K2.7-Code"
                 ),
                 outcomes.append,
             )
@@ -136,7 +136,7 @@ class TestInstallProviderConfirmScreen:
         async with app.run_test() as pilot:
             app.push_screen(
                 InstallProviderConfirmScreen(
-                    "baseten", "baseten", "baseten:moonshotai/Kimi-K2.6"
+                    "baseten", "baseten", "baseten:moonshotai/Kimi-K2.7-Code"
                 )
             )
             await pilot.pause()
@@ -144,7 +144,7 @@ class TestInstallProviderConfirmScreen:
             bodies = app.screen.query(".install-confirm-body")
             assert len(bodies) == 1
             rendered = str(bodies.first().render())
-            assert "baseten:moonshotai/Kimi-K2.6" in rendered
+            assert "baseten:moonshotai/Kimi-K2.7-Code" in rendered
             assert "baseten" in rendered
 
     async def test_renders_add_key_body_without_model_spec(self) -> None:

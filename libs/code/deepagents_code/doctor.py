@@ -16,11 +16,14 @@ import platform
 import sys
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 from deepagents_code.output import write_json
 
 if TYPE_CHECKING:
     import argparse
+
+    from deepagents_code.config import TracingStatus
 
 logger = logging.getLogger(__name__)
 
@@ -74,15 +77,49 @@ def _sdk_version() -> tuple[str, bool]:
     return "unknown", False
 
 
+def _build_commit() -> str | None:
+    """Return the commit stamped into the package at build time, if present.
+
+    Released wheels carry a generated `_build_info.py` (see `hatch_build.py`);
+    editable and local installs do not, so this returns `None` for them.
+    """
+    try:
+        from deepagents_code._build_info import (  # ty: ignore[unresolved-import]  # generated at build time
+            BUILD_COMMIT,
+        )
+    except ImportError:
+        return None
+    except Exception:  # a corrupt stamp must never crash `doctor`
+        logger.debug("Build-info module present but failed to import", exc_info=True)
+        return None
+    commit = (BUILD_COMMIT or "").strip()
+    return commit or None
+
+
 def _commit_hash(path: str) -> str:
-    """Return the short git commit hash for a source path, if available.
+    """Return the short git commit hash for the install, if available.
+
+    Prefers the commit stamped into a released wheel at build time, but only for
+    non-editable installs: an editable install may carry a stale stamp from a
+    prior local build (the generated file is gitignored and survives a failed
+    build), so it always probes the live git working tree, which reflects local
+    changes.
 
     Args:
         path: Directory used as the git command working directory.
 
     Returns:
-        The short commit hash, or `unknown` when git metadata cannot be read.
+        The short commit hash, or `unknown` when no commit can be determined.
     """
+    baked = _build_commit()
+    if baked:
+        from deepagents_code.config import _is_editable_install
+
+        # A baked commit only describes a built wheel; ignore it for editable
+        # installs so a stale stamp can't mask the live working-tree commit.
+        if not _is_editable_install():
+            return baked
+
     import shutil
     import subprocess  # noqa: S404  # fixed-argv git metadata probe
     from pathlib import Path
@@ -181,9 +218,114 @@ def _collect_updates() -> DiagnosticSection:
         update_status = f"v{latest} available"
     else:
         update_status = "up to date"
-    items.append(DiagnosticItem("Latest version", update_status))
+    items.extend(
+        (
+            DiagnosticItem("Latest version", update_status),
+            DiagnosticItem("Last checked", _format_last_checked()),
+        )
+    )
 
     return DiagnosticSection(title="Updates", items=items)
+
+
+def _format_last_checked() -> str:
+    """Return a relative description of the last update check, or `never`.
+
+    `never` covers both the no-check-recorded case and, defensively, a stamp
+    that cannot be formatted. `get_last_update_check_time` only returns finite,
+    in-range epochs, so the formatting path does not raise here.
+    """
+    from datetime import UTC, datetime
+
+    from deepagents_code.sessions import format_relative_timestamp
+    from deepagents_code.update_check import get_last_update_check_time
+
+    checked_at = get_last_update_check_time()
+    if checked_at is None:
+        return "never"
+    iso = datetime.fromtimestamp(checked_at, tz=UTC).isoformat()
+    return format_relative_timestamp(iso) or "never"
+
+
+def _sanitize_endpoint(endpoint: str) -> str:
+    """Return a paste-safe custom endpoint identifier.
+
+    Args:
+        endpoint: Configured endpoint URL.
+
+    Returns:
+        The endpoint origin when parseable, otherwise a generic configured
+        marker that does not include user-controlled URL contents.
+    """
+    parsed = urlsplit(endpoint.strip())
+    if not parsed.scheme or not parsed.hostname:
+        return "(custom endpoint configured)"
+
+    host = parsed.hostname
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+
+    netloc = f"{host}:{port}" if port is not None else host
+    return f"{parsed.scheme}://{netloc}"
+
+
+def _format_tracing_project(status: TracingStatus) -> str:
+    """Render the tracing project, marking the unconfigured default.
+
+    Returns:
+        The project name with a `(default)` suffix when it is the built-in
+            fallback rather than an explicit setting, or `(unset)` when absent.
+    """
+    if not status.project:
+        return "(unset)"
+    if status.project_is_default:
+        return f"{status.project} (default)"
+    return status.project
+
+
+def _collect_tracing() -> DiagnosticSection:
+    """Collect LangSmith tracing status from env and profile (offline).
+
+    Tracing reads `enabled` when a flag is truthy, `disabled` only when a flag
+    is explicitly set to a falsy value, and `not configured` when no flag is set.
+    Credentials are reported as configured/not set only — the API key
+    value is never read or printed. The `Credentials` item is flagged as a
+    problem only when tracing is enabled without a key and without a custom
+    endpoint, mirroring the runtime's orphaned-tracing guard (a keyless
+    self-hosted endpoint is a valid, healthy setup).
+
+    Returns:
+        The `Tracing` section.
+    """
+    from deepagents_code.config import get_tracing_status
+
+    status = get_tracing_status()
+    creds_required = status.enabled and status.endpoint is None
+    if status.enabled:
+        tracing_value = "enabled"
+    elif status.explicitly_disabled:
+        tracing_value = "disabled"
+    else:
+        tracing_value = "not configured"
+    items = [
+        DiagnosticItem("Tracing", tracing_value),
+        DiagnosticItem(
+            "Credentials",
+            "configured" if status.has_credentials else "not set",
+            ok=status.has_credentials or not creds_required,
+        ),
+        DiagnosticItem("Project", _format_tracing_project(status)),
+    ]
+    if status.endpoint:
+        items.append(DiagnosticItem("Endpoint", _sanitize_endpoint(status.endpoint)))
+    if status.replica_project:
+        items.append(DiagnosticItem("Replica project", status.replica_project))
+    return DiagnosticSection(title="Tracing", items=items)
 
 
 def _path_status(label: str, path: object) -> DiagnosticItem:
@@ -245,6 +387,7 @@ def collect_sections() -> list[DiagnosticSection]:
     return [
         _collect_diagnostics(),
         _collect_updates(),
+        _collect_tracing(),
         _collect_configuration(),
     ]
 
@@ -285,6 +428,19 @@ def _render_text(sections: list[DiagnosticSection]) -> None:
                 highlight=False,
             )
         console.print()
+
+    console.print(
+        "  Tip: Run `dcode config show` or `dcode config get <key>` "
+        "to drill into config details.",
+        style=theme.MUTED,
+        highlight=False,
+    )
+    console.print(
+        "       Run `dcode --version` (or `dcode -v`) for dependency versions.",
+        style=theme.MUTED,
+        highlight=False,
+    )
+    console.print()
 
 
 def run_doctor_command(args: argparse.Namespace) -> int:

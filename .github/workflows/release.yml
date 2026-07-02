@@ -154,7 +154,7 @@ jobs:
       # SHA (resolve-sha validates that ${WORKING_DIR}/pyproject.toml at the
       # input SHA declares the version being released). All downstream jobs
       # check out the resolved SHA so wheel bytes and tag tree agree.
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
 
@@ -257,7 +257,7 @@ jobs:
       # Build from the validated release commit (not dispatch HEAD) so the wheel
       # bytes match the GitHub release tag's tree. See RELEASING.md > Hotfix
       # Protocol for the integrity invariant this enforces.
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 
@@ -282,6 +282,10 @@ jobs:
       - name: Build project for distribution
         run: uv build
         working-directory: ${{ env.WORKING_DIR }}
+        env:
+          # Stamp the exact release commit into deepagents-code so `dcode doctor`
+          # reports it on installed wheels. Other packages ignore this env var.
+          DEEPAGENTS_CODE_BUILD_COMMIT: ${{ needs.setup.outputs.release-sha }}
 
       - name: Upload build
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -371,7 +375,7 @@ jobs:
       release-body: ${{ steps.generate-release-body.outputs.release-body }}
       tag: ${{ steps.check-tags.outputs.tag }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
           fetch-depth: 0
@@ -692,7 +696,9 @@ jobs:
             fi
           done
 
-          echo "Found community contributors: $CONTRIBUTOR_LIST"
+          if [ -n "$CONTRIBUTOR_LIST" ]; then
+            echo "Found community contributors: $CONTRIBUTOR_LIST"
+          fi
 
           # Build internal maintainers list: @ghuser, @ghuser, ...
           INTERNAL_LIST=""
@@ -704,7 +710,13 @@ jobs:
             fi
           done
 
-          echo "Found internal maintainers: $INTERNAL_LIST"
+          if [ -n "$INTERNAL_LIST" ]; then
+            echo "Found internal maintainers: $INTERNAL_LIST"
+          fi
+
+          if [ -n "$RELEASER" ]; then
+            echo "Found releaser: @$RELEASER"
+          fi
 
           # Prepend pre-release banner
           if [ "$IS_PRERELEASE" = "true" ]; then
@@ -775,7 +787,7 @@ jobs:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
 
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 
@@ -811,7 +823,7 @@ jobs:
     env:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 
@@ -840,44 +852,53 @@ jobs:
           name: dist
           path: ${{ env.WORKING_DIR }}/dist/
 
-      - name: Verify package pins latest SDK version
+      - name: Verify package pins SDK at or ahead of workspace version
         if: |
           needs.build.outputs.pkg-name == 'deepagents-code'
           && !inputs.dangerous-skip-sdk-pin-check
         env:
           PKG_NAME: ${{ needs.build.outputs.pkg-name }}
         run: |
-          case "$PKG_NAME" in
-            deepagents-code) PKG_PYPROJECT="libs/code/pyproject.toml" ;;
-            *)
-              echo "::error::Unexpected pkg-name for SDK pin check: $PKG_NAME"
-              exit 1
-              ;;
-          esac
+          python - <<'PY'
+          import importlib.util
+          import os
+          from pathlib import Path
 
-          SDK_VERSION=$(sed -nE 's/^version = "([^"]*)".*/\1/p' libs/deepagents/pyproject.toml | head -1)
-          if [ -z "$SDK_VERSION" ]; then
-            echo "::error file=libs/deepagents/pyproject.toml::Failed to extract SDK version. Expected a line matching: version = \"X.Y.Z\""
-            exit 1
-          fi
+          pkg_name = os.environ["PKG_NAME"]
+          root = Path.cwd()
+          script = root / ".github" / "scripts" / "check_sdk_pin.py"
+          spec = importlib.util.spec_from_file_location("check_sdk_pin", script)
+          if spec is None or spec.loader is None:
+              print(f"::error::Could not load {script}")
+              raise SystemExit(1)
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
 
-          PKG_SDK_PIN=$(sed -nE 's/.*deepagents==([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PKG_PYPROJECT" | head -1)
-          if [ -z "$PKG_SDK_PIN" ]; then
-            echo "::error file=${PKG_PYPROJECT}::Failed to extract SDK pin. Expected a dependency matching: deepagents==X.Y.Z"
-            exit 1
-          fi
+          try:
+              sdk_version = module._sdk_version(root)
+              pkg_pin = module._code_pin(root)
+              comparison = module.compare_versions(pkg_pin, sdk_version)
+          except ValueError as e:
+              print(
+                  "::error file=.github/scripts/check_sdk_pin.py::"
+                  f"Could not determine {pkg_name} SDK pin status: {e}"
+              )
+              raise SystemExit(1) from None
 
-          if [ "$SDK_VERSION" != "$PKG_SDK_PIN" ]; then
-            echo "::error::${PKG_NAME} SDK pin does not match SDK version!"
-            echo "SDK version (libs/deepagents/pyproject.toml): $SDK_VERSION"
-            echo "${PKG_NAME} SDK pin (${PKG_PYPROJECT}): $PKG_SDK_PIN"
-            echo ""
-            echo "Update the deepagents dependency in ${PKG_PYPROJECT} to deepagents==$SDK_VERSION"
-            echo "Or re-run with 'dangerous-skip-sdk-pin-check' enabled to bypass."
-            exit 1
-          else
-            echo "${PKG_NAME} SDK pin matches SDK version: $SDK_VERSION"
-          fi
+          if comparison < 0:
+              print(f"::error::{pkg_name} SDK pin is older than the workspace SDK version!")
+              print(f"SDK version (libs/deepagents/pyproject.toml): {sdk_version}")
+              print(f"{pkg_name} SDK pin (libs/code/pyproject.toml): {pkg_pin}")
+              print("")
+              print(f"Update the deepagents dependency in libs/code/pyproject.toml to deepagents=={sdk_version}")
+              print("Or re-run with 'dangerous-skip-sdk-pin-check' enabled to bypass.")
+              raise SystemExit(1)
+
+          if comparison > 0:
+              print(f"{pkg_name} SDK pin is ahead of workspace SDK: {pkg_pin} >= {sdk_version}")
+          else:
+              print(f"{pkg_name} SDK pin matches SDK version: {sdk_version}")
+          PY
 
       - name: Import dist package
         shell: bash
@@ -888,7 +909,12 @@ jobs:
         # Install directly from the locally-built wheel (no index resolution needed)
         run: |
           uv venv
-          VIRTUAL_ENV=.venv uv pip install dist/*.whl
+          INSTALL_ARGS=(dist/*.whl)
+          # Talon transitively requires a prerelease deepagents pin via deepagents-code.
+          if [ "$PKG_NAME" = "deepagents-talon" ]; then
+            INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")
+          fi
+          VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"
 
           # Replace all dashes in the package name with underscores,
           # since that's how Python imports packages with dashes in the name.
@@ -913,7 +939,12 @@ jobs:
           PKG_NAME: ${{ needs.build.outputs.pkg-name }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
-          VIRTUAL_ENV=.venv uv pip install dist/*.whl
+          INSTALL_ARGS=(dist/*.whl)
+          # Talon transitively requires a prerelease deepagents pin via deepagents-code.
+          if [ "$PKG_NAME" = "deepagents-talon" ]; then
+            INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")
+          fi
+          VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"
 
       - name: Run unit tests
         run: make test COV_ARGS= PYTEST_EXTRA="--no-cov -v"
@@ -976,7 +1007,7 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 
@@ -1027,7 +1058,7 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 

@@ -7,11 +7,14 @@
 # Install an exact pre-release version:
 #   curl -LsSf https://langch.in/dcode | DEEPAGENTS_CODE_VERSION="0.1.0rc1" bash
 #
-# Allow uv to consider alpha/beta/rc releases when resolving the latest version:
+# Override uv's pre-release strategy when resolving the latest version:
 #   curl -LsSf https://langch.in/dcode | DEEPAGENTS_CODE_PRERELEASE="allow" bash
 #
-# DEEPAGENTS_CODE_VERSION and DEEPAGENTS_CODE_PRERELEASE are mutually exclusive:
-# an exact pin already selects a single version, so setting both is an error.
+# By default, the installer uses uv's `allow` pre-release strategy so stable
+# deepagents-code releases that pin a pre-release dependency can resolve.
+# DEEPAGENTS_CODE_VERSION and an explicit DEEPAGENTS_CODE_PRERELEASE are mutually
+# exclusive: an exact pin already selects a single version, so setting both is an
+# error.
 #
 # Already installed?
 #   Safe to re-run. If a newer version exists, it asks before upgrading — or
@@ -47,16 +50,24 @@
 #     (mutually exclusive with DEEPAGENTS_CODE_PRERELEASE)
 #   DEEPAGENTS_CODE_PRERELEASE — uv pre-release strategy applied when
 #     resolving the latest version: disallow, allow, if-necessary, explicit,
-#     or if-necessary-or-explicit (mutually exclusive with
-#     DEEPAGENTS_CODE_VERSION)
+#     or if-necessary-or-explicit (default: allow; explicitly setting it is
+#     mutually exclusive with DEEPAGENTS_CODE_VERSION)
 #   DEEPAGENTS_CODE_PYTHON — Python version to use (default: 3.13)
 #   DEEPAGENTS_CODE_YES — set to 1 to accept an available update without
 #     prompting (assume "yes"). Exists so automated runs that still attach a
 #     terminal (CI, wrapper scripts) update instead of stalling at the y/n
 #     prompt.
 #   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
+#   DEEPAGENTS_CODE_RIPGREP_INSTALLER — how to provision ripgrep:
+#     "managed" (default) eagerly installs the pinned, SHA-256-verified binary
+#     into ~/.deepagents/bin (no sudo) via `dcode tools install`; "system"
+#     keeps the interactive package-manager install (brew/apt/cargo/...). Set
+#     DEEPAGENTS_CODE_OFFLINE=1 to skip the managed download entirely.
+#   DEEPAGENTS_CODE_SKIP_XCODE_CHECK — set to 1 to bypass the macOS Xcode
+#     Command Line Tools preflight check
 #   DEEPAGENTS_CODE_VERBOSE — set to 1 to show uv's raw stderr (timing lines,
-#     unfiltered package diff) and the quiet-by-default status lines
+#     unfiltered package diff), the uv installer's own output (shown only when
+#     uv isn't already installed), and the quiet-by-default status lines
 #     (optional-tool checks, post-install footer); useful when debugging. A
 #     fresh install otherwise hides the full list of installed dependencies.
 #   UV_BIN — path to uv binary (auto-detected if unset)
@@ -66,6 +77,11 @@
 #   patterns adapted from hermes-agent (NousResearch/hermes-agent).
 
 set -euo pipefail
+
+# Keep the shell PATH the user started with. The installer may source
+# ~/.local/bin/env later so it can find a freshly installed uv, but that does
+# not update the parent shell that will receive the final "Run: dcode" advice.
+ORIGINAL_PATH="${PATH:-}"
 
 # ---------------------------------------------------------------------------
 # Colors & logging
@@ -131,6 +147,23 @@ detect_os() {
   esac
 }
 detect_os
+
+# ---------------------------------------------------------------------------
+# macOS: require Xcode Command Line Tools
+# ---------------------------------------------------------------------------
+# On a fresh Mac the /usr/bin shims for git, python3, etc. are stubs that pop a
+# blocking GUI dialog ("...requires the command line developer tools") the first
+# time they run. uv's interpreter discovery and dcode's own git usage hit those
+# stubs, so fail fast here with a clear instruction instead of leaving the user
+# staring at a confusing popup mid-install. `xcode-select -p` only reports the
+# active developer dir — it never triggers the install dialog itself.
+if [ "$OS" = "macos" ] && [ "${DEEPAGENTS_CODE_SKIP_XCODE_CHECK:-}" != "1" ] && ! xcode-select -p >/dev/null 2>&1; then
+  log_error "Xcode Command Line Tools are required but not installed."
+  log_error "  Install them with:  xcode-select --install"
+  log_error "  To bypass this check, set:  DEEPAGENTS_CODE_SKIP_XCODE_CHECK=1"
+  log_error "  Then re-run this installer."
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Root / MDM support (macOS — Kandji, Jamf, etc.)
@@ -311,7 +344,8 @@ copy_install_log() {
 # ---------------------------------------------------------------------------
 EXTRAS="${DEEPAGENTS_CODE_EXTRAS:-}"
 VERSION="${DEEPAGENTS_CODE_VERSION:-}"
-PRERELEASE="${DEEPAGENTS_CODE_PRERELEASE:-}"
+PRERELEASE_REQUESTED="${DEEPAGENTS_CODE_PRERELEASE:-}"
+PRERELEASE="${PRERELEASE_REQUESTED:-allow}"
 PYTHON_REQUESTED=false
 if [[ -n "${DEEPAGENTS_CODE_PYTHON:-}" ]]; then
   PYTHON_REQUESTED=true
@@ -320,6 +354,22 @@ PYTHON_VERSION="${DEEPAGENTS_CODE_PYTHON:-3.13}"
 SKIP_OPTIONAL="${DEEPAGENTS_CODE_SKIP_OPTIONAL:-0}"
 VERBOSE="${DEEPAGENTS_CODE_VERBOSE:-0}"
 ASSUME_YES="${DEEPAGENTS_CODE_YES:-0}"
+# How ripgrep gets provisioned: "managed" (default) eagerly fetches the
+# pinned, SHA-256-verified binary into ~/.deepagents/bin via `dcode tools
+# install`; "system" keeps the interactive package-manager path below. Any
+# value other than "system" normalizes to "managed".
+#
+# Lowercase and strip whitespace first so this matches the `.strip().lower()`
+# normalization in managed_tools.ripgrep_installer(). Without this, a value
+# like "System" would parse as "managed" here but "system" in dcode, and the
+# eager `dcode tools install` would skip silently while this script also
+# skipped the package-manager path — leaving ripgrep unprovisioned.
+RIPGREP_INSTALLER="$(printf '%s' "${DEEPAGENTS_CODE_RIPGREP_INSTALLER:-managed}" \
+  | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+case "$RIPGREP_INSTALLER" in
+  system) RIPGREP_INSTALLER="system" ;;
+  *)      RIPGREP_INSTALLER="managed" ;;
+esac
 
 # PyPI JSON endpoint used to discover the latest published release so we can
 # tell whether an existing install is out of date before upgrading it.
@@ -337,11 +387,12 @@ if [[ -n "$EXTRAS" ]]; then
   EXTRAS="[${EXTRAS}]"
 fi
 
-# An exact pin already selects a single version, so a pre-release strategy
-# (which only affects how a range resolves) is redundant at best and
-# contradictory at worst (e.g. an rc pin with "disallow"). Reject the combo
-# up front rather than forwarding an ambiguous request to uv.
-if [[ -n "$VERSION" && -n "$PRERELEASE" ]]; then
+# An exact pin already selects a single version, so an explicitly requested
+# pre-release strategy (which only affects how a range resolves) is redundant at
+# best and contradictory at worst (e.g. an rc pin with "disallow"). Reject only
+# user-provided combinations; the installer's default `if-necessary` strategy is
+# not forwarded when a version is pinned.
+if [[ -n "$VERSION" && -n "$PRERELEASE_REQUESTED" ]]; then
   log_error "DEEPAGENTS_CODE_VERSION and DEEPAGENTS_CODE_PRERELEASE are mutually exclusive."
   log_error "Pin an exact version, or set a pre-release strategy — not both."
   exit 1
@@ -375,47 +426,86 @@ fi
 # uv installation
 # ---------------------------------------------------------------------------
 install_uv() {
+  # The upstream uv installer is chatty (download progress, install paths,
+  # PATH-setup hints). Capture it and surface the output only when debugging
+  # or when the install fails — by default it's noise the user doesn't need.
+  local uv_install_out uv_install_rc=0
+  uv_install_out=$(mktemp 2>/dev/null) || {
+    log_error "mktemp is required to create a secure temp file."
+    exit 1
+  }
+  # Only the piped `sh` (the installer body) is captured by `>"$uv_install_out"
+  # 2>&1`; curl/wget keep their own stderr on the terminal. That's intentional —
+  # `-fsSL` includes `-S`, so a failed download still prints curl's error
+  # directly (above the "uv installation failed" line) even though the captured
+  # file is then empty. Don't assume curl's stderr is in the capture.
   if command -v curl >/dev/null 2>&1; then
-    log_info "Downloading uv installer..."
-    if ! curl -fsSL https://astral.sh/uv/install.sh | sh; then
-      log_error "uv installation failed. See errors above."
-      exit 1
-    fi
+    curl -fsSL https://astral.sh/uv/install.sh | sh >"$uv_install_out" 2>&1 || uv_install_rc=$?
   elif command -v wget >/dev/null 2>&1; then
-    log_info "Downloading uv installer..."
-    if ! wget -qO- https://astral.sh/uv/install.sh | sh; then
-      log_error "uv installation failed. See errors above."
-      exit 1
-    fi
+    wget -qO- https://astral.sh/uv/install.sh | sh >"$uv_install_out" 2>&1 || uv_install_rc=$?
   else
+    rm -f "$uv_install_out"
     log_error "curl or wget is required to install uv."
+    exit 1
+  fi
+  if [ "$VERBOSE" = "1" ] || [ "$uv_install_rc" -ne 0 ]; then
+    cat "$uv_install_out" >&2
+  fi
+  rm -f "$uv_install_out"
+  if [ "$uv_install_rc" -ne 0 ]; then
+    log_error "uv installation failed. See errors above."
     exit 1
   fi
 }
 
-if ! command -v uv >/dev/null 2>&1; then
+# Resolve uv binary: honor UV_BIN override, then PATH, the env file written by
+# uv's installer, then the default install location (~/.local/bin). MDM and cron
+# jobs often run with a minimal PATH, so an existing uv in ~/.local/bin must
+# count as installed before we invoke the upstream installer.
+resolve_uv_bin() {
+  if [ -n "${UV_BIN:-}" ]; then
+    case "$UV_BIN" in
+      */*) [ -f "$UV_BIN" ] && [ -x "$UV_BIN" ] ;;
+      *)   command -v "$UV_BIN" >/dev/null 2>&1 ;;
+    esac
+    return $?
+  fi
+
+  if command -v uv >/dev/null 2>&1; then
+    UV_BIN="uv"
+    return 0
+  fi
+
+  if [ -f "${HOME}/.local/bin/env" ]; then
+    set +e +u
+    # shellcheck source=/dev/null
+    . "${HOME}/.local/bin/env"
+    set -e -u
+    if command -v uv >/dev/null 2>&1; then
+      UV_BIN="uv"
+      return 0
+    fi
+  fi
+
+  if [ -x "${HOME}/.local/bin/uv" ]; then
+    UV_BIN="${HOME}/.local/bin/uv"
+    return 0
+  fi
+
+  return 1
+}
+
+if ! resolve_uv_bin; then
+  if [ -n "${UV_BIN:-}" ]; then
+    log_error "UV_BIN is set but does not point to an executable uv: ${UV_BIN}"
+    exit 1
+  fi
   log_info "uv not found — installing..."
   install_uv
   fix_owner "${HOME}/.local/bin"  # root installs: restore user ownership
-fi
-
-# Resolve uv binary: honor UV_BIN override, then PATH, then the default
-# install location (~/.local/bin). A fresh install may not have updated PATH
-# in the current session, so we source the env file the installer creates.
-if [ -z "${UV_BIN:-}" ]; then
-  UV_BIN="uv"
-  if ! command -v "$UV_BIN" >/dev/null 2>&1; then
-    if [ -f "${HOME}/.local/bin/env" ]; then
-      # shellcheck source=/dev/null
-      . "${HOME}/.local/bin/env"
-    fi
-  fi
-  if ! command -v uv >/dev/null 2>&1; then
-    UV_BIN="${HOME}/.local/bin/uv"
-    if [ ! -x "$UV_BIN" ]; then
-      log_error "uv not found after installation. Restart your shell or add ~/.local/bin to PATH."
-      exit 1
-    fi
+  if ! resolve_uv_bin; then
+    log_error "uv not found after installation. Restart your shell or add ~/.local/bin to PATH."
+    exit 1
   fi
 fi
 
@@ -495,7 +585,7 @@ if [ "$IS_EDITABLE" = true ]; then
     log_info "deepagents-code ${pre_label} found (editable install from local source)."
   fi
   log_info "  Replacing with a standard install from PyPI — the existing environment will be rebuilt."
-elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE" ]; then
+elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" ]; then
   # Default path with an existing install: probe PyPI and prompt before
   # upgrading, rather than silently pulling the latest version every run.
   # A pinned version or pre-release strategy (handled by the branches above and
@@ -514,12 +604,12 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE" ]; then
     log_warn "Could not determine the latest version from PyPI — continuing with an upgrade attempt."
   elif [ -n "$EXTRAS" ] || [ "$PYTHON_REQUESTED" = true ]; then
     if [ "$LATEST_VERSION" = "$PRE_VERSION" ]; then
-      log_info "deepagents-code ${PRE_VERSION} is already up to date — rebuilding with requested options."
+      log_info "deepagents-code is already up to date — rebuilding with requested options."
     else
       log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION} with requested options..."
     fi
   elif [ "$LATEST_VERSION" = "$PRE_VERSION" ]; then
-    log_success "deepagents-code ${PRE_VERSION} is already up to date."
+    log_success "deepagents-code is already up to date."
     exit 0
   elif [ "$ASSUME_YES" = "1" ]; then
     log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."
@@ -544,13 +634,13 @@ else
 fi
 
 # Capture uv stderr so we can:
-#   1. Rewrite the cryptic "Ignoring existing environment …" warning into
+#   1. Rewrite the cryptic "Ignoring existing environment ..." warning into
 #      plain English. uv emits that line when it rebuilds the tool venv
 #      instead of upgrading in place (e.g., Python interpreter mismatch, or
 #      editable↔regular install swap).
 #   2. Drop uv's per-step timing lines ("Resolved N packages in...", etc.)
-#      and the trailing "Installed N executables:" line — we already show
-#      a Verified line with the binary name and version.
+#      download/build progress, and the trailing "Installed N executables:" line
+#      — we already show a concise install/update summary.
 #   3. Reformat the `- pkg==X` / `+ pkg==Y` diff into an aligned
 #      "pkg  X → Y" table under a single header.
 #   4. Detect whether uv actually moved any packages (those same
@@ -592,7 +682,7 @@ if [ -n "$cache_root" ]; then
     fi
   fi
 fi
-if [[ -n "$PRERELEASE" ]]; then
+if [[ -z "$VERSION" ]]; then
   "$UV_BIN" tool install -U --python "$PYTHON_VERSION" \
     --prerelease "$PRERELEASE" "$PACKAGE" 2>"$uv_stderr" || uv_rc=$?
 else
@@ -605,12 +695,16 @@ if [ "$VERBOSE" != "1" ] && command -v awk >/dev/null 2>&1; then
       print "⚠ Existing environment uses a different Python — rebuilding from scratch (this is normal)."
       next
     }
-    /^Resolved [0-9]+ packages? in /    { next }
-    /^Prepared [0-9]+ packages? in /    { next }
-    /^Uninstalled [0-9]+ packages? in / { next }
-    /^Installed [0-9]+ packages? in /   { next }
-    /^Audited [0-9]+ packages? in /     { next }
-    /^Checked [0-9]+ packages? in /     { next }
+    /^Resolved( [0-9]+ packages?)? in /     { next }
+    /^Prepared [0-9]+ packages?( |$)/       { next }
+    /^Uninstalled [0-9]+ packages? in /     { next }
+    /^Installed [0-9]+ packages? in /       { next }
+    /^Audited( [0-9]+ packages?)? in /      { next }
+    /^Checked( [0-9]+ packages?)? in /      { next }
+    /^[[:space:]]*Downloading /         { next }
+    /^[[:space:]]*Downloaded /          { next }
+    /^[[:space:]]*Building /            { next }
+    /^[[:space:]]*Built /                { next }
     /^Installed [0-9]+ executables?:/   { next }
     /^ - / {
       s = $0; sub(/^ - /, "", s); n = index(s, "==")
@@ -702,10 +796,19 @@ fix_install_log_owner
 # ---------------------------------------------------------------------------
 DCODE_BIN=""
 DCODE_NAME=""
+# Tracks whether the binary would have resolved via the user's original PATH,
+# not the installer-mutated PATH. A fresh `uv tool install` drops the binary in
+# ~/.local/bin, and this script may have sourced ~/.local/bin/env earlier to
+# find uv; the parent shell still won't have dcode on PATH until it is
+# restarted or the env file is sourced.
+DCODE_ON_PATH=false
 for candidate in dcode deepagents-code; do
   if resolved=$(command -v "$candidate" 2>/dev/null) && [ -n "$resolved" ]; then
     DCODE_BIN="$resolved"
     DCODE_NAME="$candidate"
+    if PATH="$ORIGINAL_PATH" command -v "$candidate" >/dev/null 2>&1; then
+      DCODE_ON_PATH=true
+    fi
     break
   elif [ -x "${HOME}/.local/bin/${candidate}" ]; then
     DCODE_BIN="${HOME}/.local/bin/${candidate}"
@@ -780,6 +883,19 @@ elif [ -n "$DCODE_BIN" ]; then
 else
   log_warn "dcode (or deepagents-code) command not found in PATH. Restart your shell or run:"
   log_warn "  source ~/.zshrc   # (or ~/.bashrc)"
+fi
+
+# The binary verified via its absolute path but isn't on the current shell's
+# PATH (typical right after a fresh `uv tool install`): typing `dcode` won't
+# work until the shell picks up ~/.local/bin. Point the user at the fix so the
+# "Run: dcode" footer below isn't a dead end.
+if [ "$VERIFY_OK" = true ] && [ "$DCODE_ON_PATH" = false ]; then
+  log_warn "${DCODE_NAME} isn't on your PATH yet${DCODE_BIN_DISPLAY:+ (installed at ${DCODE_BIN_DISPLAY})}. Restart your shell, or run:"
+  if [ -f "${HOME}/.local/bin/env" ]; then
+    log_warn "  source ~/.local/bin/env"
+  else
+    log_warn "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -877,8 +993,42 @@ ripgrep_manual_hint() {
   esac
 }
 
+ripgrep_managed_failed() {
+  log_warn "Managed ripgrep setup did not complete; the grep tool will use a slower fallback."
+  ripgrep_manual_hint
+}
+
 if [ "$SKIP_OPTIONAL" != "1" ]; then
-  if command -v rg >/dev/null 2>&1; then
+  if [ "$RIPGREP_INSTALLER" = "managed" ] && [ "$VERIFY_OK" = true ] && [ -n "$DCODE_BIN" ]; then
+    # Eager, non-prompting managed install through the freshly installed binary
+    # — the same pinned, SHA-256-verified path dcode uses on first run
+    # (downloads into ~/.deepagents/bin, no sudo). Doing it here removes the
+    # first-run download latency. The binary reuses a system `rg` already on
+    # PATH and honors DEEPAGENTS_CODE_OFFLINE and
+    # DEEPAGENTS_CODE_RIPGREP_INSTALLER=system. Routine output stays behind
+    # verbose mode because most users do not need ripgrep setup details.
+    if [ "$VERBOSE" = "1" ]; then
+      echo ""
+      log_info "Setting up ripgrep..."
+      if "$DCODE_BIN" tools install; then
+        fix_owner "${HOME}/.deepagents/bin"
+      else
+        ripgrep_managed_failed
+      fi
+    else
+      # Quiet path: capture setup output and surface it only on failure, so a
+      # broken install stays debuggable without noise in the common case.
+      ripgrep_setup_out=$(mktemp 2>/dev/null) || ripgrep_setup_out="/tmp/deepagents-ripgrep-setup.$$.out"
+      if "$DCODE_BIN" tools install >"$ripgrep_setup_out" 2>&1; then
+        fix_owner "${HOME}/.deepagents/bin"
+      else
+        echo ""
+        cat "$ripgrep_setup_out" >&2 2>/dev/null || true
+        ripgrep_managed_failed
+      fi
+      rm -f "$ripgrep_setup_out"
+    fi
+  elif command -v rg >/dev/null 2>&1; then
     if [ "$VERBOSE" = "1" ]; then
       echo ""
       log_info "Checking optional tools..."

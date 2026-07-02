@@ -971,7 +971,7 @@ def build_missing_tool_notification(tool: str) -> "PendingNotification":
             key="dep:tavily",
             title="Web search disabled",
             body=(
-                "Add a Tavily API key to enable web search (takes effect next launch)."
+                "Add a Tavily API key to enable web search."
             ),
             actions=(
                 NotificationAction(

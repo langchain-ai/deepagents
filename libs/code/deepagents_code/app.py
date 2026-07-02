@@ -1857,6 +1857,13 @@ class DeepAgentsApp(App):
             show=False,
             priority=True,
         ),
+        Binding(
+            "ctrl+backslash",
+            "toggle_debug_console",
+            "Debug Console",
+            show=False,
+            priority=True,
+        ),
         # Approval menu keys (handled at App level for reliability)
         Binding("up", "approval_up", "Up", show=False),
         Binding("k", "approval_up", "Up", show=False),
@@ -9172,6 +9179,7 @@ class DeepAgentsApp(App):
                 f"  {newline_shortcut():<15} Insert newline\n"
                 "  Ctrl+X          Open prompt in external editor\n"
                 "  Ctrl+N          Review pending notifications\n"
+                "  Ctrl+\\          Toggle the debug console\n"
                 "  Shift+Tab       Toggle auto-approve mode\n"
                 "  @filename       Auto-complete files and inject content\n"
                 "  /command        Slash commands (/help, /clear, /quit)\n"
@@ -9516,6 +9524,8 @@ class DeepAgentsApp(App):
         elif cmd.startswith("/skill:"):
             await self._handle_skill_command(command)
         # -- Debug commands (not in COMMANDS / autocomplete) ------------------
+        elif cmd == "/debug":
+            self._open_debug_console()
         elif cmd == "/debug-error":
             await self._mount_message(
                 ErrorMessage(
@@ -13246,6 +13256,70 @@ class DeepAgentsApp(App):
     def action_open_notifications(self) -> None:
         """Open the notification center via the `ctrl+n` keybind."""
         self._open_notification_center()
+
+    def action_toggle_debug_console(self) -> None:
+        """Toggle the Debug Console overlay via keybind or the `/debug` command."""
+        from deepagents_code.widgets.debug_console import DebugConsoleScreen
+
+        if isinstance(self.screen, DebugConsoleScreen):
+            self.pop_screen()
+            if self._chat_input:
+                self._chat_input.focus_input()
+            return
+        self._open_debug_console()
+
+    def _open_debug_console(self) -> None:
+        """Push the read-only Debug Console modal, or toast if a modal is open."""
+        from deepagents_code.widgets.debug_console import DebugConsoleScreen
+
+        if isinstance(self.screen, ModalScreen):
+            self.notify(
+                "Close the current dialog to open the debug console.",
+                severity="information",
+                timeout=3,
+                markup=False,
+            )
+            return
+
+        def handle_result(_: None) -> None:
+            if self._chat_input:
+                self._chat_input.focus_input()
+
+        self.push_screen(
+            DebugConsoleScreen(self._build_debug_snapshot()), handle_result
+        )
+
+    def _build_debug_snapshot(self) -> list[tuple[str, str]]:
+        """Capture a point-in-time session/runtime snapshot for the console.
+
+        Returns:
+            Ordered ``(label, value)`` pairs for the console header.
+        """
+        from deepagents_code._debug import installed_debug_log_path
+        from deepagents_code._version import __version__
+
+        servers = self._mcp_server_info or []
+        if servers:
+            mcp_str = ", ".join(f"{s.name} ({s.status})" for s in servers)
+        else:
+            mcp_str = "none"
+        stats = self._session_stats
+        log_path = installed_debug_log_path()
+        tokens = (
+            f"{stats.input_tokens} in / {stats.output_tokens} out "
+            f"/ {stats.request_count} req"
+        )
+        return [
+            ("Version", __version__),
+            ("Model", self._effective_model_spec() or "(not configured)"),
+            ("Thread", self._lc_thread_id or "(none)"),
+            ("CWD", self._cwd),
+            ("Auto-approve", "on" if self._auto_approve else "off"),
+            ("Sandbox", self._sandbox_type or "local"),
+            ("MCP servers", mcp_str),
+            ("Tokens", tokens),
+            ("Debug log", str(log_path) if log_path else "in-memory only"),
+        ]
 
     def _open_notification_center(self) -> None:
         """Push the notification center modal, or toast when empty."""

@@ -6,12 +6,14 @@ import logging
 from typing import TYPE_CHECKING
 
 from deepagents_code._debug import configure_debug_logging
+from deepagents_code._debug_buffer import install_log_buffer
 from deepagents_code._version import __version__
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 configure_debug_logging(logging.getLogger(__name__))  # noqa: RUF067  # package logger must be configured before child modules emit logs
+install_log_buffer(logging.getLogger(__name__))  # noqa: RUF067  # always-on in-memory tail for the Debug Console
 
 __all__ = [
     "__version__",

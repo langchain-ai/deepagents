@@ -45,8 +45,9 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/update` |  | Check for and install updates |
 | `/version` | `/about` | Show version information |
 
-## Hidden (1)
+## Hidden (2)
 
 These commands are intentionally omitted from autocomplete and help. See the `HIDDEN_COMMANDS` docstring in the registry for context.
 
+- `/debug`
 - `/debug-error`

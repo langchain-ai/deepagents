@@ -2,6 +2,28 @@
 
 # Deep Agents Changelog
 
+## [0.7.0](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.12...deepagents==0.7.0) (2026-07-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sdk:** Agents can now overwrite existing files with `write_file` instead of receiving a file-exists error. Workflows, prompts, tests, or guardrails that relied on that error to force `edit_file` usage or to protect existing content must add explicit permission/HITL checks or use `edit_file` when preserving existing content matters.
+* **sdk:** Agents now see a destructive `delete` filesystem tool when the backend supports it. Existing agents may choose to remove files or directories recursively, and existing filesystem permission rules that allow writes can now authorize deletion unless a narrower deny or interrupt rule blocks the target subtree.
+
+### Features
+
+* **code,sdk:** add rubric iteration controls ([#4405](https://github.com/langchain-ai/deepagents/issues/4405)) ([d6692a7](https://github.com/langchain-ai/deepagents/commit/d6692a7c713490f170b17510d613e02ee37574ab))
+* **sdk:** add recursive filesystem delete support ([f2a21ec](https://github.com/langchain-ai/deepagents/commit/f2a21ec1606c2560bd2fd5765409a05c2a44edee))
+* **sdk:** allow `write_file` to overwrite existing files ([2506fcc](https://github.com/langchain-ai/deepagents/commit/2506fccfac0e09b656d5e2fefe23162f1c762331))
+* **sdk:** allow users to override default middleware by name ([#4251](https://github.com/langchain-ai/deepagents/issues/4251)) ([90c8472](https://github.com/langchain-ai/deepagents/commit/90c8472ae226394a186bf2075459645c2056db7d))
+* **sdk:** reduce round trips when offloading large tool results with `sandbox.execute` ([#4230](https://github.com/langchain-ai/deepagents/issues/4230)) ([02f5bd7](https://github.com/langchain-ai/deepagents/commit/02f5bd7bc02f2baaf5a1eefce7d686ba62493647))
+
+
+### Bug Fixes
+
+* **sdk:** emit terminal rubric iteration status ([#4406](https://github.com/langchain-ai/deepagents/issues/4406)) ([a51c8d2](https://github.com/langchain-ai/deepagents/commit/a51c8d2b1723d143439a1466f5a49a52c442bdfc))
+* **sdk:** return sentinel for empty file lists ([#3709](https://github.com/langchain-ai/deepagents/issues/3709)) ([efafd1e](https://github.com/langchain-ai/deepagents/commit/efafd1e070aeae8901ee3123c7fcbf1815a33c4f))
+
 ## [0.6.12](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.11...deepagents==0.6.12) (2026-06-25)
 
 This release adds the `deepagents[aws]` extra, which installs `langchain-aws` so Bedrock users get the automatic prompt caching integration added in [#4108](https://github.com/langchain-ai/deepagents/issues/4108).

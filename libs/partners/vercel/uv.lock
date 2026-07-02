@@ -439,7 +439,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.6.12"
+version = "0.7.0"
 source = { editable = "../../deepagents" }
 dependencies = [
     { name = "langchain" },
@@ -1888,11 +1888,11 @@ name = "vercel-workers"
 version = "0.0.24"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "anyio", marker = "python_full_version >= '3.12'" },
-    { name = "httpx", marker = "python_full_version >= '3.12'" },
-    { name = "pydantic", marker = "python_full_version >= '3.12'" },
-    { name = "python-dotenv", marker = "python_full_version >= '3.12'" },
-    { name = "vercel", marker = "python_full_version >= '3.12'" },
+    { name = "anyio" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "python-dotenv" },
+    { name = "vercel" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/90/07/3befa3d3f0fb6e1e603ac0919414d732720bba4661c10b8069b49b276634/vercel_workers-0.0.24.tar.gz", hash = "sha256:d21deb13b02ccaf57c3a0f9ac898df5473dc3e617723366b4bdffd53f161a6aa", size = 63095, upload-time = "2026-05-21T15:18:03.359Z" }
 wheels = [

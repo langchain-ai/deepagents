@@ -830,9 +830,19 @@ _EVAL_PRESETS: dict[str, str | None] = _build_presets("eval")
 _HARBOR_PRESETS: dict[str, str | None] = _build_presets("harbor")
 """Flat preset name → `harbor:{tag}` mapping for the Harbor workflow."""
 
-_WORKFLOW_CONFIG: dict[str, tuple[str, dict[str, str | None]]] = {
-    "eval": ("EVAL_MODELS", _EVAL_PRESETS),
-    "harbor": ("HARBOR_MODELS", _HARBOR_PRESETS),
+# workflow -> (dispatch env var, preset map, registry tag prefix). The tag
+# prefix is how a `None`-suffixed preset such as `all` resolves: it selects
+# every REGISTRY model carrying a group under that prefix (see `_resolve_models`
+# / `_filter_by_tag`). It is usually the workflow name, but clbench borrows
+# Harbor's so the two benchmarks stay in lockstep on model groups.
+_WORKFLOW_CONFIG: dict[str, tuple[str, dict[str, str | None], str]] = {
+    "eval": ("EVAL_MODELS", _EVAL_PRESETS, "eval"),
+    "harbor": ("HARBOR_MODELS", _HARBOR_PRESETS, "harbor"),
+    # clbench (continual-learning-bench) runs the same model set as Harbor and,
+    # like Harbor, consumes a single flat `{model, provider}` matrix (see the
+    # non-"eval" early return in `_matrix_outputs`). It reuses `_HARBOR_PRESETS`
+    # and the `harbor` tag prefix so group selections resolve identically.
+    "clbench": ("CLBENCH_MODELS", _HARBOR_PRESETS, "harbor"),
 }
 
 _EVAL_PROVIDER_OUTPUTS: tuple[str, ...] = (
@@ -992,11 +1002,11 @@ def _resolve_models(workflow: str, selection: str) -> list[str]:
     Raises:
         ValueError: If the selection is empty or contains invalid specs.
     """
-    env_var, presets = _WORKFLOW_CONFIG[workflow]
+    env_var, presets, tag_prefix = _WORKFLOW_CONFIG[workflow]
     normalized = selection.strip()
 
     if normalized in presets:
-        specs = _filter_by_tag(f"{workflow}:", presets[normalized])
+        specs = _filter_by_tag(f"{tag_prefix}:", presets[normalized])
     else:
         specs = [s.strip() for s in normalized.split(",") if s.strip()]
         if not specs:
@@ -1023,7 +1033,7 @@ def main() -> None:
         raise SystemExit(msg)
 
     workflow = sys.argv[1]
-    env_var, _ = _WORKFLOW_CONFIG[workflow]
+    env_var, _, _ = _WORKFLOW_CONFIG[workflow]
     selection = os.environ.get(env_var, "all")
     models = _resolve_models(workflow, selection)
     outputs = _matrix_outputs(workflow, models)

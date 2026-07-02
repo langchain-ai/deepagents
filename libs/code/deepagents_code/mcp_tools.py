@@ -604,6 +604,112 @@ def _validate_tool_filter_fields(
             raise ValueError(error_msg)
 
 
+def _looks_like_comment(doc: str, lineno: int) -> bool:
+    """Return `True` if the offending line *begins* with `//` or `/*`.
+
+    Only the failing line is checked, and only its leading characters (after
+    stripping indentation). A `url` value such as `"url": "https://..."`
+    begins with a quote, not `//`, so a URL scheme inside a quoted string
+    never triggers a false comment hint.
+
+    Args:
+        doc: Full source text that failed to parse.
+        lineno: 1-based line number of the error; out-of-range values
+            return `False`.
+
+    Returns:
+        `True` when the stripped failing line starts with `//` or `/*`.
+    """
+    lines = doc.splitlines()
+    if lineno < 1 or lineno > len(lines):
+        return False
+    stripped = lines[lineno - 1].lstrip()
+    return stripped.startswith(("//", "/*"))
+
+
+def _json_error_hint(exc: json.JSONDecodeError) -> str | None:
+    """Return an actionable hint for a common JSON mistake, or `None`.
+
+    Checks are ordered most-specific-first (trailing comma, then comment,
+    then generic decoder-message keywords) so a more precise hint wins when
+    several could apply.
+
+    Args:
+        exc: The decode error to classify.
+
+    Returns:
+        A hint string for a recognized mistake, or `None` when no specific
+            guidance applies.
+    """
+    msg = exc.msg.lower()
+    if "trailing comma" in msg:
+        return (
+            "Hint: JSON does not allow trailing commas. Remove the comma "
+            "before the closing '}' or ']'."
+        )
+    if _looks_like_comment(exc.doc, exc.lineno):
+        return "Hint: JSON does not allow comments (// or /* */). Remove them."
+    if "expecting property name" in msg:
+        return (
+            "Hint: check for trailing commas, a missing key, or an unquoted "
+            "property name near this position."
+        )
+    if "expecting value" in msg:
+        return (
+            "Hint: check for a missing value, an extra comma, or unquoted text "
+            "near this position."
+        )
+    if "delimiter" in msg:
+        return (
+            "Hint: check for a missing comma, ':', or closing bracket near "
+            "this position."
+        )
+    return None
+
+
+def _trailing_comma_pos(doc: str, pos: int) -> int | None:
+    """Return the comma position for decoder errors at a trailing comma."""
+    if pos < 0 or pos >= len(doc) or doc[pos] not in "}]":
+        return None
+    idx = pos - 1
+    while idx >= 0 and doc[idx].isspace():
+        idx -= 1
+    if idx >= 0 and doc[idx] == ",":
+        return idx
+    return None
+
+
+def _json_error_snippet(
+    doc: str, lineno: int, colno: int, *, pos: int | None = None
+) -> str | None:
+    """Build a caret snippet pointing at a JSON error location.
+
+    Args:
+        doc: Full source text that failed to parse.
+        lineno: 1-based line number of the error.
+        colno: 1-based column number of the error.
+        pos: 0-based absolute error offset, if available.
+
+    Returns:
+        A two-line `<source line>` + caret string, or `None` when the line
+        is out of range or blank.
+    """
+    if pos is not None:
+        trailing_pos = _trailing_comma_pos(doc, pos)
+        if trailing_pos is not None:
+            lineno = doc.count("\n", 0, trailing_pos) + 1
+            line_start = doc.rfind("\n", 0, trailing_pos) + 1
+            colno = trailing_pos - line_start + 1
+    lines = doc.splitlines()
+    if lineno < 1 or lineno > len(lines):
+        return None
+    source = lines[lineno - 1].rstrip()
+    if not source:
+        return None
+    caret_col = max(0, min(colno - 1, len(source)))
+    return f"    {source}\n    {' ' * caret_col}^"
+
+
 def load_mcp_config(config_path: str) -> dict[str, Any]:
     """Load and validate MCP configuration from a JSON file.
 
@@ -647,7 +753,17 @@ def load_mcp_config(config_path: str) -> dict[str, Any]:
         with path.open(encoding="utf-8") as file_obj:
             config = json.load(file_obj)
     except json.JSONDecodeError as exc:
-        error_msg = f"Invalid JSON in MCP config file: {exc.msg}"
+        # Build a layered message: core reason, an actionable hint for common
+        # mistakes, then a caret snippet last so the auto-appended
+        # "line X column Y" suffix reads as the location of the caret.
+        parts = [f"Invalid JSON in MCP config file: {exc.msg}"]
+        hint = _json_error_hint(exc)
+        if hint is not None:
+            parts.append(hint)
+        snippet = _json_error_snippet(exc.doc, exc.lineno, exc.colno, pos=exc.pos)
+        if snippet is not None:
+            parts.append(snippet)
+        error_msg = "\n".join(parts)
         raise json.JSONDecodeError(error_msg, exc.doc, exc.pos) from exc
 
     if "mcpServers" not in config:
@@ -1361,26 +1477,40 @@ async def _load_tools_from_config(
                         server_name=server_name,
                     )
 
-                if server_config.get("auth") == "oauth":
-                    from deepagents_code.mcp_auth import (
-                        FileTokenStorage,
-                        build_oauth_provider,
-                    )
+                from deepagents_code.mcp_auth import (
+                    FileTokenStorage,
+                    build_oauth_provider,
+                )
 
-                    storage = FileTokenStorage(
+                explicit_oauth = server_config.get("auth") == "oauth"
+                header_names = {
+                    name.lower() for name in (server_config.get("headers") or {})
+                }
+                has_authorization_header = "authorization" in header_names
+                storage = FileTokenStorage(
+                    server_name,
+                    server_url=server_config["url"],
+                )
+                stored_tokens = await storage.get_tokens()
+
+                if explicit_oauth and stored_tokens is None:
+                    # Config opted into OAuth but no tokens are stored yet —
+                    # require an upfront login before connecting.
+                    auth_msg = f"MCP server {server_name!r} needs re-authentication."
+                    logger.warning(
+                        "MCP server '%s' skipped: not authenticated.",
                         server_name,
-                        server_url=server_config["url"],
                     )
-                    if await storage.get_tokens() is None:
-                        auth_msg = (
-                            f"MCP server {server_name!r} needs re-authentication."
-                        )
-                        logger.warning(
-                            "MCP server '%s' skipped: not authenticated.",
-                            server_name,
-                        )
-                        skipped[server_name] = ("unauthenticated", auth_msg)
-                        continue
+                    skipped[server_name] = ("unauthenticated", auth_msg)
+                    continue
+
+                if explicit_oauth or (
+                    stored_tokens is not None and not has_authorization_header
+                ):
+                    # Attach the provider when the user opted in, or when a
+                    # prior login (possibly triggered by 401 auto-detection)
+                    # already stored tokens for this server. Static
+                    # Authorization headers take precedence over stored OAuth.
                     conn["auth"] = build_oauth_provider(
                         server_name=server_name,
                         server_url=server_config["url"],
@@ -1434,29 +1564,82 @@ async def _load_tools_from_config(
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
             raise
         except Exception as exc:
-            from deepagents_code.mcp_auth import find_reauth_required
+            from deepagents_code.mcp_auth import (
+                find_oauth_challenge,
+                find_reauth_required,
+            )
 
-            reauth = find_reauth_required(exc)
             status: MCPServerStatus
+            try:
+                reauth = find_reauth_required(exc)
+                challenge_url = (
+                    find_oauth_challenge(exc)
+                    if transport in _SUPPORTED_REMOTE_TYPES
+                    else None
+                )
+            except Exception:
+                # Classifying the failure is best-effort. If a classifier
+                # itself raises, degrade this one server to a plain error
+                # rather than letting the exception abort tool loading for
+                # every remaining server.
+                reauth = None
+                challenge_url = None
+                logger.debug(
+                    "MCP server '%s': failed to classify discovery error",
+                    server_name,
+                    exc_info=True,
+                )
+
             if reauth is not None:
                 # Tokens existed (we checked above) but the OAuth provider
                 # fell back to interactive reauth — the refresh attempt
                 # failed. Flag unauthenticated so the user is prompted to
-                # re-login, and keep the original exception in the log so
-                # debugging a real provider outage is possible.
+                # re-login, and keep the original exception only in debug logs
+                # so expected re-auth skips don't flood non-interactive output.
                 status = "unauthenticated"
                 error = (
                     f"{reauth} "
                     "(token refresh failed; the original error is in debug logs)"
                 )
+                logger.warning(
+                    "MCP server '%s' skipped: %s",
+                    server_name,
+                    error,
+                )
+                logger.debug(
+                    "MCP server '%s' skipped: tool discovery failed",
+                    server_name,
+                    exc_info=True,
+                )
+            elif challenge_url is not None:
+                # A remote server answered with a 401 OAuth challenge
+                # (RFC 9728) that wasn't already handled as a token refresh —
+                # typically a server not opted into OAuth in config. Surface it
+                # as unauthenticated so the user can log in, rather than as an
+                # opaque connection error.
+                status = "unauthenticated"
+                error = (
+                    f"MCP server {server_name!r} requires authentication; "
+                    f"run `dcode mcp login {server_name}`."
+                )
+                logger.warning(
+                    "MCP server '%s' skipped: %s",
+                    server_name,
+                    error,
+                )
+                logger.debug(
+                    "MCP server '%s' skipped: 401 OAuth challenge detected",
+                    server_name,
+                    exc_info=True,
+                )
             else:
                 status = "error"
                 error = str(exc)
-            logger.warning(
-                "MCP server '%s' skipped: tool discovery failed",
-                server_name,
-                exc_info=True,
-            )
+                logger.warning(
+                    "MCP server '%s' skipped: tool discovery failed",
+                    server_name,
+                    exc_info=True,
+                )
             server_infos.append(
                 MCPServerInfo(
                     name=server_name,
@@ -1675,18 +1858,19 @@ async def resolve_and_load_mcp_tools(
         # `${VAR}` references in their `headers` would exfiltrate the value
         # to the attacker URL during the discovery handshake.
         skipped = [
-            f"{name} [{kind}]: {summary}" for name, kind, summary in project_servers
+            f"- {name} [{kind}]: {summary}" for name, kind, summary in project_servers
         ]
+        skipped_list = "\n".join(skipped)
         if trust_project_mcp is False:
             logger.warning(
-                "Skipped untrusted project MCP servers: %s",
-                "; ".join(skipped),
+                "Skipped untrusted project MCP servers:\n%s",
+                skipped_list,
             )
         else:
             logger.warning(
                 "Skipped untrusted project MCP servers "
-                "(config changed or not yet approved): %s",
-                "; ".join(skipped),
+                "(config changed or not yet approved):\n%s",
+                skipped_list,
             )
 
     if explicit_config_path:

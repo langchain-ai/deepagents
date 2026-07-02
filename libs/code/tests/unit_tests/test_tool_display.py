@@ -181,19 +181,25 @@ class TestFormatToolDisplay:
 
     # --- file tools ---
 
-    @pytest.mark.parametrize("tool_name", ["read_file", "write_file", "edit_file"])
+    @pytest.mark.parametrize(
+        "tool_name", ["read_file", "write_file", "edit_file", "delete"]
+    )
     def test_file_tool_with_file_path(self, tool_name: str) -> None:
         result = format_tool_display(tool_name, {"file_path": "/tmp/test.py"})
         assert result.startswith(_PREFIX)
         assert tool_name in result
         assert "test.py" in result
 
-    @pytest.mark.parametrize("tool_name", ["read_file", "write_file", "edit_file"])
+    @pytest.mark.parametrize(
+        "tool_name", ["read_file", "write_file", "edit_file", "delete"]
+    )
     def test_file_tool_with_path_key(self, tool_name: str) -> None:
         result = format_tool_display(tool_name, {"path": "/tmp/test.py"})
         assert "test.py" in result
 
-    @pytest.mark.parametrize("tool_name", ["read_file", "write_file", "edit_file"])
+    @pytest.mark.parametrize(
+        "tool_name", ["read_file", "write_file", "edit_file", "delete"]
+    )
     def test_file_tool_missing_path_falls_back_to_generic(self, tool_name: str) -> None:
         result = format_tool_display(tool_name, {})
         assert _PREFIX in result

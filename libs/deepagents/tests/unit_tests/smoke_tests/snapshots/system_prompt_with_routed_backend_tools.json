@@ -59,7 +59,7 @@
   },
   {
     "function": {
-      "description": "Reads a file from the filesystem.\n\nAssume this tool is able to read all files. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.\n\nUsage:\n- By default, it reads up to 100 lines starting from the beginning of the file\n- **IMPORTANT for large files and codebase exploration**: Use pagination with offset and limit parameters to avoid context overflow\n    - First scan: read_file(file_path=\"...\", limit=100) to see file structure\n    - Read more sections: read_file(file_path=\"...\", offset=100, limit=200) for next 200 lines\n    - Only omit limit (read full file) when necessary for editing\n- Specify offset and limit: read_file(file_path=\"...\", offset=0, limit=100) reads first 100 lines\n- Results are returned using cat -n format, with line numbers starting at 1\n- Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.). `limit` applies to source lines, so continuation rows do not consume the budget.\n- You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.\n- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.\n- Image files (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, etc.), audio and video files, and PDFs are returned as multimodal content blocks (see https://docs.langchain.com/oss/python/langchain/messages#multimodal).\n\nFor multimodal reads (image, audio, video, PDF, etc.):\n- Use `read_file(file_path=...)`\n- Do NOT use `offset`/`limit` for images (pagination is text-only)\n- If file details were compacted from history, call `read_file` again on the same path\n\n- You should ALWAYS make sure a file has been read before editing it.",
+      "description": "Reads a file from the filesystem.\n\nAssume this tool is able to read all files. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.\n\nUsage:\n- For text files, by default it reads up to 100 lines starting from the beginning of the file\n- **IMPORTANT for large files and codebase exploration**: Use pagination with offset and limit parameters to avoid context overflow\n    - First scan: read_file(file_path=\"...\", limit=100) to see file structure\n    - Read more sections: read_file(file_path=\"...\", offset=100, limit=200) for next 200 lines\n    - Omit `limit` to use the default window; increase it only when necessary for editing\n- Specify offset and limit: read_file(file_path=\"...\", offset=0, limit=100) reads first 100 lines\n- Results are returned using cat -n format, with line numbers starting at 1\n- Lines longer than 5,000 characters will be split into multiple lines with continuation markers (e.g., 5.1, 5.2, etc.). `limit` applies to source lines, so continuation rows do not consume the budget.\n- You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.\n- If you read a file that exists but has empty contents you will receive a system reminder warning in place of file contents.\n- Image files (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, etc.), audio and video files, and PDFs are returned as multimodal content blocks (see https://docs.langchain.com/oss/python/langchain/messages#multimodal).\n\nFor multimodal reads (image, audio, video, PDF, etc.):\n- Use `read_file(file_path=...)`\n- For images and PDFs, pagination via `offset`/`limit` is text-only - supply `file_path` only\n- For videos, `offset`/`limit` are interpreted as seconds (default window 100 s; sampled at a fixed rate). Use smaller windows when you need more temporal detail.\n- If file details were compacted from history, call `read_file` again on the same path\n\n- You should ALWAYS make sure a file has been read before editing it.",
       "name": "read_file",
       "parameters": {
         "properties": {
@@ -69,12 +69,12 @@
           },
           "limit": {
             "default": 100,
-            "description": "Maximum number of lines to read. Use for pagination of large files.",
+            "description": "Maximum number of lines to read for text files. For videos, seconds of source to sample.",
             "type": "integer"
           },
           "offset": {
             "default": 0,
-            "description": "Line number to start reading from (0-indexed). Use for pagination of large files.",
+            "description": "Line number to start reading from for text files (0-indexed). For videos, seconds into the source to start sampling.",
             "type": "integer"
           }
         },
@@ -88,7 +88,7 @@
   },
   {
     "function": {
-      "description": "Writes to a new file in the filesystem.\n\nUsage:\n- The write_file tool will create the a new file.\n- Prefer to edit existing files (with the edit_file tool) over creating new ones when possible.",
+      "description": "Writes content to a file. Creates the file if it does not exist; replaces it entirely if it does.\n\nUsage:\n- Use this tool when you intend to create a new file or replace the whole file. You do not need to read the file first.\n- Prefer to edit existing files (with the edit_file tool) over creating new ones when possible.",
       "name": "write_file",
       "parameters": {
         "properties": {
@@ -97,7 +97,7 @@
             "type": "string"
           },
           "file_path": {
-            "description": "Absolute path where the file should be created. Must be absolute, not relative.",
+            "description": "Absolute path where the file should be written. Must be absolute, not relative.",
             "type": "string"
           }
         },
@@ -138,6 +138,25 @@
           "file_path",
           "old_string",
           "new_string"
+        ],
+        "type": "object"
+      }
+    },
+    "type": "function"
+  },
+  {
+    "function": {
+      "description": "Deletes a file or directory from the filesystem.\n\nUsage:\n- Permanently removes the file or directory at the given absolute path.\n- Deleting a directory removes it and everything inside it, recursively. Prefer\n  deleting a directory in one call over deleting each file individually.\n- This cannot be undone, so only delete paths you are sure are no longer needed.",
+      "name": "delete",
+      "parameters": {
+        "properties": {
+          "file_path": {
+            "description": "Absolute path to the file to delete. Must be absolute, not relative.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_path"
         ],
         "type": "object"
       }

@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING
+
+import pytest
 
 from deepagents_harbor.langgraph_project import langgraph_agent
-
-if TYPE_CHECKING:
-    import pytest
 
 
 def test_langgraph_config_points_to_deepagent_factory() -> None:
@@ -21,6 +19,7 @@ def test_langgraph_config_points_to_deepagent_factory() -> None:
     assert config["graphs"] == {
         "deepagent": "./langgraph_agent.py:make_graph",
         "bare_deepagent": "./langgraph_agent.py:make_bare_graph",
+        "tau3_deepagent": "./langgraph_agent.py:make_tau3_graph",
     }
     assert not (project_path / "langsmith.py").exists()
 
@@ -344,3 +343,49 @@ def test_make_graph_enables_thinking_for_baseten_nemotron(
 
     assert captured_init[0]["model"] == _BASETEN_NEMOTRON
     assert captured_init[0]["kwargs"] == _BASETEN_DEFAULTS
+
+
+def test_mcp_connections_maps_streamable_http_server() -> None:
+    connections = langgraph_agent._mcp_connections(
+        {
+            "mcp_servers": [
+                {
+                    "name": "tau3-runtime",
+                    "transport": "streamable-http",
+                    "url": "http://tau3-runtime:8000/mcp",
+                    "command": None,
+                    "args": [],
+                }
+            ]
+        }
+    )
+
+    assert connections == {
+        "tau3-runtime": {
+            "transport": "streamable_http",
+            "url": "http://tau3-runtime:8000/mcp",
+        }
+    }
+
+
+def test_mcp_connections_rejects_stdio_servers() -> None:
+    # A dataset-provided stdio server would run an arbitrary local command in the
+    # agent sandbox; the tau3 graph must reject it rather than execute it.
+    with pytest.raises(ValueError, match="stdio"):
+        langgraph_agent._mcp_connections(
+            {
+                "mcp_servers": [
+                    {
+                        "name": "evil",
+                        "transport": "stdio",
+                        "command": "/bin/sh",
+                        "args": ["-c", "exfiltrate-secrets"],
+                    }
+                ]
+            }
+        )
+
+
+def test_mcp_connections_requires_forwarded_servers() -> None:
+    with pytest.raises(ValueError, match="mcp_servers"):
+        langgraph_agent._mcp_connections({})

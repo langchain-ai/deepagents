@@ -5,11 +5,12 @@ import io
 import signal
 import sys
 from collections.abc import AsyncIterator, Iterator, Sequence
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from rich.console import Console
 
 if TYPE_CHECKING:
@@ -27,6 +28,7 @@ from deepagents_code.non_interactive import (
     _collect_action_request_warnings,
     _make_hitl_decision,
     _process_ai_message,
+    _process_message_chunk,
     _run_agent_loop,
     _run_startup_command,
     _start_langsmith_thread_url_lookup,
@@ -304,6 +306,7 @@ class TestSandboxTypeForwarding:
 
         _, kwargs = mock_start_server.call_args
         assert kwargs["sandbox_type"] == "modal"
+        assert kwargs["enable_interpreter"] is None
 
     async def test_sandbox_snapshot_name_passed_to_server(self) -> None:
         """`sandbox_snapshot_name` must reach `start_server_and_get_agent`."""
@@ -471,11 +474,40 @@ class TestQuietMode:
         assert "Calling tool" not in stdout
         assert "Task completed" not in stdout
         assert "Running task" not in stdout
-        # Tool notifications still go to stderr
-        assert "Calling tool" in stderr or "read_file" in stderr
-        # Header and completion messages are fully suppressed in quiet mode
+        # Quiet mode suppresses diagnostics on stderr too.
+        assert "Calling tool" not in stderr
+        assert "read_file" not in stderr
         assert "Task completed" not in stderr
         assert "Running task" not in stderr
+
+
+class TestQuietFileOpNotification:
+    """The file-operation (📝) notification honors quiet mode."""
+
+    @staticmethod
+    def _run(*, quiet: bool) -> str:
+        """Drive a file-op `ToolMessage` chunk and return captured stderr."""
+        record = SimpleNamespace(diff="--- a\n+++ b", display_path="src/foo.py")
+        tracker = MagicMock()
+        tracker.complete_with_message.return_value = record
+
+        stderr_buf = io.StringIO()
+        console = Console(file=stderr_buf, width=200)
+        state = StreamState(quiet=quiet, stream=True, spinner=None)
+
+        _process_message_chunk(
+            (ToolMessage(content="ok", tool_call_id="tc1"), {}),
+            state,
+            console,
+            tracker,
+        )
+        return stderr_buf.getvalue()
+
+    def test_quiet_suppresses_file_op_notification(self) -> None:
+        assert self._run(quiet=True) == ""
+
+    def test_non_quiet_emits_file_op_notification(self) -> None:
+        assert "foo.py" in self._run(quiet=False)
 
 
 class TestNoStreamMode:
@@ -1120,6 +1152,29 @@ def _make_looping_agent() -> MagicMock:
 
 class TestMaxTurns:
     """Tests for max_turns parameter in _run_agent_loop."""
+
+    async def test_run_agent_loop_passes_thread_id_context(self) -> None:
+        """Non-interactive runs mirror `configurable.thread_id` into context."""
+        agent = MagicMock()
+        agent.astream = MagicMock(return_value=_async_iter([]))
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        config: RunnableConfig = {"configurable": {"thread_id": "t1"}}
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook", new_callable=AsyncMock
+        ):
+            await _run_agent_loop(
+                agent,
+                "task",
+                config,
+                console,
+                file_op_tracker,
+                quiet=True,
+            )
+
+        _, kwargs = agent.astream.call_args
+        assert kwargs["context"]["thread_id"] == "t1"
 
     async def test_raises_after_user_limit(self) -> None:
         """HITLIterationLimitError is raised after max_turns HITL iterations."""

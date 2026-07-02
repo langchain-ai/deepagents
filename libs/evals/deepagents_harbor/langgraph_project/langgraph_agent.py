@@ -47,6 +47,10 @@ filesystem access. No human is available to answer questions: make reasonable
 assumptions and keep working until the task is fully complete, rather than
 stopping to report what you would do.
 
+Never end your turn and hand control back to the human while the task is unfinished — no
+questions, no "shall I proceed?", no confirming a detail that the instruction already specifies.
+Reason through any ambiguity, pick the best interpretation, and keep acting.
+
 Work from the sandbox working directory (run `pwd` if unsure). Prefer
 non-interactive command flags; never run a command that waits for human input.
 
@@ -234,9 +238,7 @@ def make_graph(config: dict[str, object] | None = None) -> object:
             # profile (deepagents.profiles.harness), applied for the fireworks
             # glm-5p2 model this harness runs.
             enable_verify_behavior=verify_on,
-            verify_behavior_model=(
-                _verify_behavior_model(configurable) if verify_on else None
-            ),
+            verify_behavior_model=(_verify_behavior_model(configurable) if verify_on else None),
             cwd=_workdir(configurable),
         )
     return graph

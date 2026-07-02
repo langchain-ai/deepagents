@@ -131,9 +131,8 @@ Parts are joined by blank lines (`\\n\\n`). When any part is a
 concatenate each part's blocks (with `\\n\\n` text separators), preserving
 any `cache_control` markers.
 
-See `create_deep_agent`'s `system_prompt` parameter,
-[`SystemPromptConfig`][deepagents.SystemPromptConfig], and
-[`render_system_prompt`][deepagents.render_system_prompt].
+See `create_deep_agent`'s `system_prompt` parameter and
+[`SystemPromptConfig`][deepagents.SystemPromptConfig].
 """
 
 
@@ -199,32 +198,6 @@ def _normalize_system_prompt(
     if isinstance(system_prompt, (str, SystemMessage)):
         return {"prefix": system_prompt}
     return system_prompt
-
-
-def render_system_prompt(
-    config: str | SystemMessage | SystemPromptConfig | None,
-    *,
-    base_prompt: str | SystemMessage = BASE_AGENT_PROMPT,
-) -> str | SystemMessage:
-    """Render a `system_prompt` config to a single `str`/`SystemMessage`.
-
-    Assembles `prefix` -> `base` -> `suffix`. When the config omits `base`,
-    `base_prompt` is used; when `base` is `None`, no base is included. This is
-    the same assembly `create_deep_agent` uses (minus the harness-profile
-    suffix), exposed so callers can pre-render or re-render prompts themselves.
-    """
-    cfg = _normalize_system_prompt(config)
-    parts: list[str | SystemMessage] = []
-    prefix = cfg.get("prefix")
-    if prefix is not None:
-        parts.append(prefix)
-    base = cfg.get("base", base_prompt)
-    if base is not None:
-        parts.append(base)
-    suffix = cfg.get("suffix")
-    if suffix is not None:
-        parts.append(suffix)
-    return _assemble_prompt_parts(parts)
 
 
 def _build_default_model() -> ChatAnthropic:
@@ -469,9 +442,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             profile suffix, joined by blank lines. Any part may be a
             `SystemMessage` to preserve `cache_control` markers; the result is
             then a `SystemMessage` whose content blocks are concatenated.
-
-            See [`render_system_prompt`][deepagents.render_system_prompt] for
-            the same assembly exposed as a standalone function.
         middleware: Additional middleware to apply after the base stack
             but before the tail middleware. The full ordering is:
 

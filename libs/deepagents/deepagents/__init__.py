@@ -5,7 +5,6 @@ from deepagents.graph import (
     DeepAgentState,
     SystemPromptConfig,
     create_deep_agent,
-    render_system_prompt,
 )
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission, FsToolName
@@ -48,5 +47,4 @@ __all__ = [
     "create_deep_agent",
     "register_harness_profile",
     "register_provider_profile",
-    "render_system_prompt",
 ]

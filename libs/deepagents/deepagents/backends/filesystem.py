@@ -45,13 +45,13 @@ from deepagents.backends.utils import (
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_GLOB_TIMEOUT = 10
+_DEFAULT_GLOB_TIMEOUT = 5
 """Wall-clock budget in seconds for a single local `glob` walk.
 
 A fixed bound keeps `glob` from hanging on huge or slow trees; when it elapses
 the walk returns whatever it found so far with `GlobResult.truncated=True`
 rather than erroring. Kept below the middleware's `GLOB_TIMEOUT`
-(`deepagents.middleware.filesystem.GLOB_TIMEOUT`, currently 20s) so the backend
+(`deepagents.middleware.filesystem.GLOB_TIMEOUT`, currently 10s) so the backend
 returns partial results before that outer net abandons the call; the ordering is
 guarded by `test_glob_backend_budget_below_middleware_deadline`.
 """

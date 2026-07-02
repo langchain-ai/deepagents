@@ -113,7 +113,14 @@ See https://docs.fireworks.ai/guides/reasoning.
 """
 
 _REASONING_KEYS: frozenset[str] = frozenset(
-    {"effort", "reasoning", "reasoning_effort", "thinking", "thinking_level"}
+    {
+        "effort",
+        "output_config",
+        "reasoning",
+        "reasoning_effort",
+        "thinking",
+        "thinking_level",
+    }
 )
 """Runtime config keys that may already carry provider reasoning settings."""
 
@@ -227,7 +234,7 @@ def _anthropic_model_params(effort: str) -> dict[str, Any]:
     """Return Anthropic reasoning params for an effort label."""
     return {
         "thinking": {"type": "adaptive", "display": "summarized"},
-        "effort": effort,
+        "output_config": {"effort": effort},
     }
 
 
@@ -237,12 +244,21 @@ def _anthropic_current_effort(model_params: dict[str, Any]) -> str | None:
     Returns:
         The configured effort label, or `None` when unset.
     """
-    value = model_params.get("effort")
-    if value is not None and not isinstance(value, str):
+    output_config = model_params.get("output_config")
+    if isinstance(output_config, dict):
+        value = output_config.get("effort")
+        if value is not None and not isinstance(value, str):
+            logger.warning(
+                "Ignoring non-str Anthropic output_config.effort of type %s",
+                type(value).__name__,
+            )
+        return value if isinstance(value, str) else None
+    if output_config is not None:
         logger.warning(
-            "Ignoring non-str Anthropic effort of type %s", type(value).__name__
+            "Ignoring Anthropic output_config params of unexpected type %s",
+            type(output_config).__name__,
         )
-    return value if isinstance(value, str) else None
+    return None
 
 
 def _google_supported_efforts(_model: str) -> tuple[EffortLabel, ...]:

@@ -625,6 +625,52 @@ def _warn_if_interpreter_disabled_by_sandbox(args: argparse.Namespace) -> None:
     )
 
 
+def _resolve_rubric_text(rubric: str | None) -> str | None:
+    """Resolve the rubric from `--rubric` into one string.
+
+    `--rubric` accepts literal text, or `@path` to read a file. File paths
+    may be absolute, relative to the `dcode` process working directory, or
+    `~`-expanded home paths.
+
+    Args:
+        rubric: Value of `--rubric` (literal text or `@path`), or `None`.
+
+    Returns:
+        The resolved rubric text, or `None` when the flag was not supplied.
+
+    Raises:
+        ValueError: If the rubric is empty, or a referenced file is missing,
+            unreadable, or empty.
+    """
+    if rubric is None:
+        return None
+
+    # An `@`-prefixed value is always read as a file path. The path may be
+    # absolute, relative to the `dcode` process working directory, or `~`-based.
+    # There is no way to pass a literal rubric that begins with `@` (put such
+    # text in a file).
+    if rubric.startswith("@"):
+        path = rubric[1:]
+        try:
+            text = Path(path).expanduser().read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            # `UnicodeError` (e.g. `UnicodeDecodeError`) subclasses `ValueError`,
+            # not `OSError`. Catch it here so a binary/non-UTF-8 file yields the
+            # framed "Could not read rubric file" message instead of a raw codec
+            # error.
+            msg = f"Could not read rubric file {path!r}: {exc}."
+            raise ValueError(msg) from exc
+        if not text.strip():
+            msg = f"Rubric file {path!r} is empty."
+            raise ValueError(msg)
+        return text.strip()
+
+    if not rubric.strip():
+        msg = "--rubric must not be empty."
+        raise ValueError(msg)
+    return rubric.strip()
+
+
 def _warn_if_interpreter_tools_without_interpreter(
     args: argparse.Namespace, *, enable_interpreter: bool
 ) -> None:
@@ -1511,6 +1557,39 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--goal",
+        dest="goal",
+        metavar="TEXT",
+        help="Goal objective to turn into acceptance criteria. Opens a review "
+        "prompt on interactive launch, then runs the accepted goal as the first "
+        "task.",
+    )
+    parser.add_argument(
+        "--rubric",
+        dest="rubric",
+        metavar="TEXT|@PATH",
+        help="Acceptance criteria the agent self-evaluates against, looping "
+        "until satisfied. Accepts literal text or '@path' to read a file "
+        "(relative to the current working directory; '~' supported). "
+        "Requires -n or piped stdin.",
+    )
+    parser.add_argument(
+        "--rubric-model",
+        dest="rubric_model",
+        metavar="MODEL",
+        help="Model the rubric grader uses (e.g. anthropic:claude-sonnet-4-6). "
+        "Defaults to the main agent model.",
+    )
+    parser.add_argument(
+        "--rubric-max-iterations",
+        dest="rubric_max_iterations",
+        type=positive_int,
+        metavar="N",
+        help="Override grader iterations per rubric attempt before stopping "
+        "(must be >= 1; defaults to the SDK setting).",
+    )
+
+    parser.add_argument(
         "--stdin",
         action="store_true",
         help="Read input from stdin explicitly (instead of auto-detection)",
@@ -1769,6 +1848,7 @@ async def run_textual_cli_async(
     resume_thread: str | None = None,
     initial_prompt: str | None = None,
     initial_skill: str | None = None,
+    initial_goal: str | None = None,
     startup_cmd: str | None = None,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
@@ -1811,6 +1891,8 @@ async def run_textual_cli_async(
             Resolved asynchronously inside the TUI.
         initial_prompt: Optional prompt to auto-submit when session starts
         initial_skill: Optional skill name to invoke when the session starts.
+        initial_goal: Optional goal objective to draft criteria for when the
+            session starts.
         startup_cmd: Shell command to run at startup before the first prompt.
 
             Output is rendered in the transcript; non-zero exits warn but
@@ -1930,6 +2012,7 @@ async def run_textual_cli_async(
             resume_thread=resume_thread,
             initial_prompt=initial_prompt,
             initial_skill=initial_skill,
+            initial_goal=initial_goal,
             startup_cmd=startup_cmd,
             launch_init=should_run_onboarding(),
             profile_override=profile_override,
@@ -2626,6 +2709,75 @@ def cli_main() -> None:
             )
             sys.exit(2)
 
+        # `--goal` conflicts with every rubric flag, not just `--rubric`.
+        # `--rubric-model`/`--rubric-max-iterations` also require `-n` (see the
+        # non-interactive guard below), so without this check `--goal
+        # --rubric-model X` would slip past here and hit a contradictory "add
+        # -n" error — and adding `-n` then trips the interactive-only `--goal`
+        # guard. Reject the combination up front instead.
+        if getattr(args, "goal", None) is not None and any(
+            getattr(args, attr, None) is not None
+            for attr in ("rubric", "rubric_model", "rubric_max_iterations")
+        ):
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --goal is mutually exclusive with "
+                "--rubric/--rubric-model/--rubric-max-iterations. Use --goal to "
+                "generate criteria interactively, or --rubric (with -n) to "
+                "provide them directly."
+            )
+            sys.exit(2)
+
+        goal_text = getattr(args, "goal", None)
+        if goal_text is not None and not goal_text.strip():
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --goal must not be empty."
+            )
+            sys.exit(2)
+        if goal_text is not None and args.non_interactive_message:
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --goal is only supported in "
+                "interactive mode for now.\n"
+                "  dcode --goal 'add OAuth refresh handling'"
+            )
+            sys.exit(2)
+        if goal_text is not None and (
+            getattr(args, "initial_prompt", None) is not None
+            or getattr(args, "initial_skill", None)
+        ):
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --goal cannot be combined with "
+                "-m/--message or --skill.\n"
+                "  dcode --goal 'add OAuth refresh handling'"
+            )
+            sys.exit(2)
+
+        non_interactive_rubric_set = any(
+            getattr(args, attr, None) is not None
+            for attr in (
+                "rubric",
+                "rubric_model",
+                "rubric_max_iterations",
+            )
+        )
+        if non_interactive_rubric_set and not args.non_interactive_message:
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --rubric/--rubric-model/"
+                "--rubric-max-iterations require "
+                "--non-interactive (-n) or piped stdin\n"
+                "  dcode -n 'implement X' --rubric 'tests pass'"
+            )
+            sys.exit(2)
+
         if (args.quiet or args.no_stream) and not args.non_interactive_message:
             # Print to stderr (not the module-level stdout console) and exit
             # with code 2 to match the POSIX convention for usage errors, as
@@ -3289,6 +3441,14 @@ def cli_main() -> None:
             )
             _warn_if_interpreter_disabled_by_sandbox(args)
 
+            try:
+                rubric_text = _resolve_rubric_text(getattr(args, "rubric", None))
+            except ValueError as exc:
+                from rich.console import Console as _Console
+
+                _Console(stderr=True).print(f"[bold red]Error:[/bold red] {exc}")
+                sys.exit(2)
+
             timeout = getattr(args, "timeout", None)
             try:
                 exit_code = asyncio.run(
@@ -3313,6 +3473,11 @@ def cli_main() -> None:
                             enable_interpreter=enable_interpreter,
                             interpreter_ptc=interpreter_ptc,
                             max_turns=getattr(args, "max_turns", None),
+                            rubric=rubric_text,
+                            rubric_model=getattr(args, "rubric_model", None),
+                            rubric_max_iterations=getattr(
+                                args, "rubric_max_iterations", None
+                            ),
                         ),
                         timeout=timeout,
                     )
@@ -3402,6 +3567,7 @@ def cli_main() -> None:
                         resume_thread=resume_thread,
                         initial_prompt=getattr(args, "initial_prompt", None),
                         initial_skill=getattr(args, "initial_skill", None),
+                        initial_goal=getattr(args, "goal", None),
                         startup_cmd=getattr(args, "startup_cmd", None),
                         mcp_config_path=getattr(args, "mcp_config", None),
                         no_mcp=getattr(args, "no_mcp", False),

@@ -227,6 +227,43 @@ def _merge_fs_interrupt_on(
     return merged
 
 
+def _apply_custom_middleware(
+    base: list[AgentMiddleware[Any, Any, Any]],
+    custom: Sequence[AgentMiddleware[Any, Any, Any]],
+    *,
+    core_names: set[str] | None = None,
+) -> list[AgentMiddleware[Any, Any, Any]]:
+    """Merge custom middleware into the base stack by name.
+
+    - If its `.name` matches a name still present in `base`: replace in-place,
+      preserving stack order.
+    - Otherwise: a brand-new entry lands after the last `core_names` member (so it
+      precedes the profile/prompt-caching/memory tail), or at the end when
+      `core_names` is unset.
+    """
+    if not custom:
+        return list(base)
+    current_names = {m.name for m in base}
+    replacements: dict[str, AgentMiddleware[Any, Any, Any]] = {}
+    to_append: list[AgentMiddleware[Any, Any, Any]] = []
+    for m in custom:
+        if m.name in current_names:
+            replacements[m.name] = m
+        else:
+            to_append.append(m)
+    result = list(base)
+    for i, m in enumerate(result):
+        if m.name in replacements:
+            result[i] = replacements[m.name]
+    if to_append and core_names is not None:
+        # Land new middleware after the last core entry, ahead of the tail.
+        pos = max((i for i, m in enumerate(result) if m.name in core_names), default=len(result) - 1) + 1
+        result[pos:pos] = to_append
+    else:
+        result.extend(to_append)
+    return result
+
+
 _REQUIRED_MIDDLEWARE: tuple[tuple[type[AgentMiddleware[Any, Any, Any]], tuple[str, ...]], ...] = (
     (FilesystemMiddleware, ()),
     (SubAgentMiddleware, ()),
@@ -653,12 +690,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             subagent_skills = spec.get("skills")
             if subagent_skills:
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
-            subagent_middleware.extend(spec.get("middleware", []))
-
+            # Core names captured before the tail so new spec middleware splices in ahead of it.
+            _subagent_core_names = {m.name for m in subagent_middleware}
             # Harness-profile middleware for this subagent's model
             subagent_middleware.extend(_subagent_profile.materialize_extra_middleware())
-            if _subagent_profile.excluded_tools:
-                subagent_middleware.append(_ToolExclusionMiddleware(excluded=_subagent_profile.excluded_tools))
 
             _append_prompt_caching_middleware(subagent_middleware)
 
@@ -675,6 +710,17 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 matched_classes=_subagent_matched_classes,
                 matched_names=_subagent_matched_names,
             )
+            subagent_middleware = _apply_custom_middleware(
+                subagent_middleware,
+                spec.get("middleware", []),
+                core_names=_subagent_core_names,
+            )
+            subagent_middleware = _apply_excluded_middleware(
+                subagent_middleware,
+                _subagent_profile,
+                matched_classes=_subagent_matched_classes,
+                matched_names=_subagent_matched_names,
+            )
             _verify_excluded_middleware_coverage(
                 _subagent_profile,
                 _subagent_matched_classes,
@@ -682,6 +728,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 required_classes=_REQUIRED_MIDDLEWARE_CLASSES,
                 required_names=_REQUIRED_MIDDLEWARE_NAMES,
             )
+            if _subagent_profile.excluded_tools:
+                subagent_middleware.append(_ToolExclusionMiddleware(excluded=_subagent_profile.excluded_tools))
 
             subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
             subagent_interrupt_on = _merge_fs_interrupt_on(
@@ -731,17 +779,28 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # Add harness-profile middleware, if any
         gp_middleware.extend(_profile.materialize_extra_middleware())
 
-        # Strip excluded tools after all tool-injecting middleware has run
-        if _profile.excluded_tools:
-            gp_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
         _append_prompt_caching_middleware(gp_middleware)
-
+        _gp_original_name_to_index = {m.name: i for i, m in enumerate(gp_middleware)}
         gp_middleware = _apply_excluded_middleware(
             gp_middleware,
             _profile,
             matched_classes=_main_matched_classes,
             matched_names=_main_matched_names,
         )
+        # Inherit only middleware that overrides a default GP slot (including excluded
+        # ones) without carrying over middleware that's specific to the main agent.
+        _gp_inheritable = [m for m in (middleware or []) if m.name in _gp_original_name_to_index]
+        gp_middleware = _apply_custom_middleware(gp_middleware, _gp_inheritable)
+        gp_middleware = _apply_excluded_middleware(
+            gp_middleware,
+            _profile,
+            matched_classes=_main_matched_classes,
+            matched_names=_main_matched_names,
+        )
+        # Tool exclusion runs last so excluded tool names are stripped after all
+        # tool-injecting middleware has run.
+        if _profile.excluded_tools:
+            gp_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
 
         general_purpose_spec: SubAgent = {
             **GENERAL_PURPOSE_SUBAGENT,
@@ -808,14 +867,13 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # Currently this supports agents deployed via LangSmith deployments.
         deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
 
-    if middleware:
-        deepagent_middleware.extend(middleware)
-    # Harness-profile middleware goes between user middleware and memory so
+    # Names of the core stack, captured before the tail is appended so new user
+    # middleware can splice in ahead of the profile/prompt-caching/memory tail.
+    _main_core_names = {m.name for m in deepagent_middleware}
+    # Harness-profile middleware goes between core middleware and memory so
     # that memory updates (which change the system prompt) don't invalidate the
     # Anthropic prompt cache prefix.
     deepagent_middleware.extend(_profile.materialize_extra_middleware())
-    if _profile.excluded_tools:
-        deepagent_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
     _append_prompt_caching_middleware(deepagent_middleware)
     if memory is not None:
         # MemoryMiddleware applies the cache_control breakpoint only when the
@@ -839,6 +897,17 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         matched_classes=_main_matched_classes,
         matched_names=_main_matched_names,
     )
+    deepagent_middleware = _apply_custom_middleware(deepagent_middleware, middleware or [], core_names=_main_core_names)
+    deepagent_middleware = _apply_excluded_middleware(
+        deepagent_middleware,
+        _profile,
+        matched_classes=_main_matched_classes,
+        matched_names=_main_matched_names,
+    )
+    # Tool exclusion runs after custom middleware so excluded tool names are
+    # stripped last and cannot be restored by a custom wrap_model_call.
+    if _profile.excluded_tools:
+        deepagent_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
     private_state_keys = private_state_field_names(*(mw.state_schema for mw in deepagent_middleware if getattr(mw, "state_schema", None) is not None))
     if sub_agent_middleware is not None:
         sub_agent_middleware.private_state_keys = private_state_keys

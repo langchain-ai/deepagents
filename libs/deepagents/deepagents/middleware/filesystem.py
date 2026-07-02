@@ -491,7 +491,7 @@ def _format_grep_tool_result(
     notes: list[str] = []
     if result.truncated:
         notes.append(SEARCH_TRUNCATION_NOTE)
-    if not matches and not backend_had_matches and (hint := regex_literal_hint(pattern)):
+    if not result.truncated and not matches and not backend_had_matches and (hint := regex_literal_hint(pattern)):
         notes.append(hint)
     if notes:
         formatted_notes = "\n\n".join(notes)

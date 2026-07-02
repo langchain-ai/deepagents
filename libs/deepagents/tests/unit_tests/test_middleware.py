@@ -710,7 +710,7 @@ class TestFilesystemMiddleware:
         assert result.status == "success"
         assert result.content.startswith("No matches found")
         assert SEARCH_TRUNCATION_NOTE in result.content
-        assert "literal text, not regex" in result.content
+        assert "literal text, not regex" not in result.content
 
     def test_glob_truncated_renders_as_success_with_note(self):
         """A truncated glob returns its partial paths as a success plus the narrow-your-search note."""

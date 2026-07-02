@@ -172,6 +172,11 @@ When referencing code, use format: `file_path:line_number`
 
 ---
 
+### Model Identity
+
+You are running as model `claude-sonnet-4-20250514` (provider: anthropic).
+Your context window is 200,000 tokens.
+
 ### Current Working Directory
 
 The filesystem backend is currently operating in: `/home/user/project`
@@ -274,13 +279,6 @@ Keep working until the task is fully complete. Don't stop partway and explain wh
 ## Progress Updates
 
 For longer tasks, provide brief progress updates at reasonable intervals — a concise sentence recapping what you've done and what's next.
-
-### Model Identity
-
-You are running as model `claude-sonnet-4-20250514` (provider: anthropic).
-Your context window is 200,000 tokens.
-
-
 
 ## `write_todos`
 

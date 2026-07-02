@@ -13,7 +13,7 @@ import warnings
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
 
-from deepagents import create_deep_agent, render_system_prompt
+from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, LocalShellBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware import (
@@ -22,9 +22,6 @@ from deepagents.middleware import (
     MemoryMiddleware,
     RubricMiddleware,
     SkillsMiddleware,
-)
-from deepagents.profiles.harness.harness_profiles import (
-    _harness_profile_for_model,  # noqa: PLC2701
 )
 
 # Backwards-compat flag: SDKs before 0.5.4 accept only `list[str]` for
@@ -42,7 +39,6 @@ else:
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
-    from deepagents import SystemPromptConfig
     from deepagents.backends.sandbox import SandboxBackendProtocol
     from deepagents.middleware.async_subagents import AsyncSubAgent
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
@@ -51,14 +47,13 @@ if TYPE_CHECKING:
     from langchain.messages import ToolCall
     from langchain.tools import BaseTool
     from langchain_core.language_models import BaseChatModel
-    from langchain_core.messages import SystemMessage, ToolMessage
+    from langchain_core.messages import ToolMessage
     from langgraph.checkpoint.base import BaseCheckpointSaver
     from langgraph.prebuilt.tool_node import ToolCallRequest
     from langgraph.pregel import Pregel
     from langgraph.runtime import Runtime
     from langgraph.types import Command
 
-    from deepagents_code.config import ModelResult
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.output import OutputFormat
 
@@ -745,6 +740,11 @@ def reset_agent(
     console.print(f"Location: {agent_dir}\n", style=theme.MUTED)
 
 
+MODEL_IDENTITY_RE = re.compile(r"### Model Identity\n\n.*?(?=###|\Z)", re.DOTALL)
+"""Matches the `### Model Identity` section in the system prompt, up to the
+next heading or end of string."""
+
+
 def build_model_identity_section(
     name: str | None,
     provider: str | None = None,
@@ -786,37 +786,6 @@ def build_model_identity_section(
         )
     section += "\n"
     return section
-
-
-def _make_prompt_for(cli_prompt: str) -> Callable[[ModelResult], str | SystemMessage]:
-    """Build a renderer for the full system prompt of a given model.
-
-    Assembles `cli_prompt -> base -> model identity -> profile suffix` via
-    `render_system_prompt`, so a runtime `/model` switch re-renders the
-    model-specific tail from structured parts (identity built from the
-    `ModelResult` fields, base and suffix read off the harness profile) rather
-    than patching the rendered prompt.
-
-    Returns:
-        A callable that renders the system prompt for a resolved `ModelResult`.
-    """
-
-    def prompt_for(model_result: ModelResult) -> str | SystemMessage:
-        identity = build_model_identity_section(
-            model_result.model_name,
-            provider=model_result.provider,
-            context_limit=model_result.context_limit,
-            unsupported_modalities=model_result.unsupported_modalities,
-        )
-        profile = _harness_profile_for_model(model_result.model, None)
-        parts = (identity, profile.system_prompt_suffix)
-        suffix = "\n\n".join(part for part in parts if part)
-        config: SystemPromptConfig = {"prefix": cli_prompt, "suffix": suffix}
-        if profile.base_system_prompt is not None:
-            config["base"] = profile.base_system_prompt
-        return render_system_prompt(config)
-
-    return prompt_for
 
 
 def get_system_prompt(
@@ -912,6 +881,13 @@ def get_system_prompt(
             "7. Update todo status promptly as you complete each item"
         )
 
+    model_identity_section = build_model_identity_section(
+        settings.model_name,
+        provider=settings.model_provider,
+        context_limit=settings.model_context_limit,
+        unsupported_modalities=settings.model_unsupported_modalities,
+    )
+
     # Build working directory section (local vs sandbox)
     if sandbox_type:
         working_dir = get_default_working_dir(sandbox_type)
@@ -961,6 +937,7 @@ def get_system_prompt(
         .replace("{interactive_preamble}", interactive_preamble)
         .replace("{ambiguity_guidance}", ambiguity_guidance)
         .replace("{todo_guidance}", todo_guidance)
+        .replace("{model_identity_section}", model_identity_section)
         .replace("{working_dir_section}", working_dir_section)
         .replace("{skills_path}", skills_path)
     )
@@ -1576,36 +1553,9 @@ def create_cli_agent(
         }
         custom_subagents.append(general_purpose_subagent)
 
-    # Resolve the system prompt. When the caller didn't override it, build the
-    # model-agnostic base and carry the model identity in a `suffix` slot; the
-    # matching `prompt_for` lets ConfigurableModelMiddleware re-render both the
-    # identity and the profile suffix on a runtime `/model` switch.
-    resolved_system_prompt: str | SystemPromptConfig
-    main_prompt_for: Callable[[ModelResult], str | SystemMessage] | None
-    if system_prompt is None:
-        cli_prompt = get_system_prompt(
-            assistant_id=assistant_id,
-            sandbox_type=sandbox_type,
-            interactive=interactive,
-            cwd=effective_cwd,
-        )
-        resolved_system_prompt = {
-            "prefix": cli_prompt,
-            "suffix": build_model_identity_section(
-                settings.model_name,
-                provider=settings.model_provider,
-                context_limit=settings.model_context_limit,
-                unsupported_modalities=settings.model_unsupported_modalities,
-            ),
-        }
-        main_prompt_for = _make_prompt_for(cli_prompt)
-    else:
-        resolved_system_prompt = system_prompt
-        main_prompt_for = None
-
     # Build middleware stack based on enabled features
     agent_middleware: list[AgentMiddleware[Any, Any]] = [
-        ConfigurableModelMiddleware(prompt_for=main_prompt_for),
+        ConfigurableModelMiddleware(),
     ]
 
     # Resume state: declares private checkpoint channels used on resume.
@@ -1786,6 +1736,15 @@ def create_cli_agent(
         agent_middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
         shell_middleware_added = True
 
+    # Get or use custom system prompt
+    if system_prompt is None:
+        system_prompt = get_system_prompt(
+            assistant_id=assistant_id,
+            sandbox_type=sandbox_type,
+            interactive=interactive,
+            cwd=effective_cwd,
+        )
+
     # Configure interrupt_on based on auto_approve / shell_middleware_added
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None
     if auto_approve or shell_middleware_added:  # noqa: SIM108  # if-else clearer than ternary for dual-path config
@@ -1856,7 +1815,7 @@ def create_cli_agent(
     ]
     agent = create_deep_agent(
         model=model,
-        system_prompt=resolved_system_prompt,
+        system_prompt=system_prompt,
         tools=tools,
         backend=composite_backend,
         middleware=agent_middleware,

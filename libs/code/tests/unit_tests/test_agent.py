@@ -711,15 +711,10 @@ class TestBuildModelIdentitySection:
 
 
 class TestGetSystemPromptModelIdentity:
-    """Model identity is rendered outside get_system_prompt.
+    """Tests for model identity section in get_system_prompt."""
 
-    The section's content is covered by `TestBuildModelIdentitySection`; here we
-    lock that (a) the base template no longer carries it and (b) `_make_prompt_for`
-    assembles it back in for a given model.
-    """
-
-    def test_get_system_prompt_omits_model_identity(self) -> None:
-        """Identity moved to a config `suffix`, so the base template omits it."""
+    def test_includes_model_identity_when_all_settings_present(self) -> None:
+        """Test that model identity section is included when all settings are set."""
         mock_settings = Mock()
         mock_settings.model_name = "claude-sonnet-4-6"
         mock_settings.model_provider = "anthropic"
@@ -729,57 +724,112 @@ class TestGetSystemPromptModelIdentity:
         with patch("deepagents_code.agent.settings", mock_settings):
             prompt = get_system_prompt("test-agent")
 
-        assert "### Model Identity" not in prompt
-        assert "You are running as model" not in prompt
-
-    def test_make_prompt_for_renders_base_and_identity(self) -> None:
-        """`_make_prompt_for` assembles base -> identity (-> profile suffix)."""
-        from langchain_anthropic import ChatAnthropic
-
-        from deepagents_code.agent import _make_prompt_for
-        from deepagents_code.config import ModelResult
-
-        model = ChatAnthropic(model_name="claude-sonnet-4-6")
-        model_result = ModelResult(
-            model=model,
-            model_name="claude-sonnet-4-6",
-            provider="anthropic",
-            context_limit=200_000,
-        )
-        prompt = _make_prompt_for("BASE PROMPT")(model_result)
-
-        assert isinstance(prompt, str)
-        assert prompt.startswith("BASE PROMPT")
-        assert "You are running as model `claude-sonnet-4-6`" in prompt
+        assert "### Model Identity" in prompt
+        assert "claude-sonnet-4-6" in prompt
         assert "(provider: anthropic)" in prompt
-        assert "200,000 tokens" in prompt
+        assert "Your context window is 200,000 tokens." in prompt
 
-    def test_make_prompt_for_honors_profile_base(self) -> None:
-        """A target model whose profile sets a custom base uses it, not BASE."""
-        from deepagents import HarnessProfile
-        from deepagents.graph import BASE_AGENT_PROMPT
-        from langchain_anthropic import ChatAnthropic
+    def test_excludes_model_identity_when_model_name_is_none(self) -> None:
+        """Test that model identity section is excluded when model_name is None."""
+        mock_settings = Mock()
+        mock_settings.model_name = None
+        mock_settings.model_provider = "anthropic"
+        mock_settings.model_unsupported_modalities = frozenset()
+        mock_settings.model_context_limit = 200000
 
-        from deepagents_code.agent import _make_prompt_for
-        from deepagents_code.config import ModelResult
+        with patch("deepagents_code.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
 
-        model = ChatAnthropic(model_name="claude-sonnet-4-6")
-        model_result = ModelResult(
-            model=model, model_name="claude-sonnet-4-6", provider="anthropic"
+        assert "### Model Identity" not in prompt
+
+    def test_excludes_provider_when_not_set(self) -> None:
+        """Test that provider is excluded when model_provider is None."""
+        mock_settings = Mock()
+        mock_settings.model_name = "gpt-4"
+        mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
+        mock_settings.model_context_limit = 128000
+
+        with patch("deepagents_code.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "### Model Identity" in prompt
+        assert "gpt-4" in prompt
+        assert "(provider:" not in prompt
+        assert "Your context window is 128,000 tokens." in prompt
+
+    def test_excludes_context_limit_when_not_set(self) -> None:
+        """Test that context limit is excluded when model_context_limit is None."""
+        mock_settings = Mock()
+        mock_settings.model_name = "gemini-3-pro"
+        mock_settings.model_provider = "google"
+        mock_settings.model_unsupported_modalities = frozenset()
+        mock_settings.model_context_limit = None
+
+        with patch("deepagents_code.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "### Model Identity" in prompt
+        assert "gemini-3-pro" in prompt
+        assert "(provider: google)" in prompt
+        assert "context window" not in prompt
+
+    def test_model_identity_with_only_model_name(self) -> None:
+        """Test model identity section with only model_name set."""
+        mock_settings = Mock()
+        mock_settings.model_name = "test-model"
+        mock_settings.model_provider = None
+        mock_settings.model_unsupported_modalities = frozenset()
+        mock_settings.model_context_limit = None
+
+        with patch("deepagents_code.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "### Model Identity" in prompt
+        assert "You are running as model `test-model`." in prompt
+        assert "(provider:" not in prompt
+        assert "context window" not in prompt
+
+    def test_includes_unsupported_modalities_warning(self) -> None:
+        """Test that unsupported modalities are surfaced in the prompt."""
+        mock_settings = Mock()
+        mock_settings.model_name = "deepseek-r1"
+        mock_settings.model_provider = "deepseek"
+        mock_settings.model_unsupported_modalities = frozenset(
+            {"image", "audio", "video", "pdf"}
         )
-        profile = HarnessProfile(
-            base_system_prompt="CUSTOM PROFILE BASE", system_prompt_suffix="PROFILE SFX"
-        )
-        with patch(
-            "deepagents_code.agent._harness_profile_for_model", return_value=profile
-        ):
-            prompt = _make_prompt_for("CLI PROMPT")(model_result)
+        mock_settings.model_context_limit = 64000
 
-        assert isinstance(prompt, str)
-        assert "CLI PROMPT" in prompt
-        assert "CUSTOM PROFILE BASE" in prompt
-        assert "PROFILE SFX" in prompt
-        assert BASE_AGENT_PROMPT not in prompt
+        with patch("deepagents_code.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "Audio, image, pdf, and video input may not be available" in prompt
+
+    def test_single_unsupported_modality(self) -> None:
+        """Test warning with a single unsupported modality."""
+        mock_settings = Mock()
+        mock_settings.model_name = "test-model"
+        mock_settings.model_provider = "test"
+        mock_settings.model_unsupported_modalities = frozenset({"audio"})
+        mock_settings.model_context_limit = None
+
+        with patch("deepagents_code.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "Audio input may not be available" in prompt
+
+    def test_no_modality_warning_when_all_supported(self) -> None:
+        """Test that no modality warning appears when all modalities supported."""
+        mock_settings = Mock()
+        mock_settings.model_name = "claude-opus-4-6"
+        mock_settings.model_provider = "anthropic"
+        mock_settings.model_unsupported_modalities = frozenset()
+        mock_settings.model_context_limit = 200000
+
+        with patch("deepagents_code.agent.settings", mock_settings):
+            prompt = get_system_prompt("test-agent")
+
+        assert "may not be available" not in prompt
 
 
 class TestGetSystemPromptNonInteractive:

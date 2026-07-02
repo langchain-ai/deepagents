@@ -31,7 +31,6 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from langchain_core.language_models import BaseChatModel
-    from langchain_core.messages import SystemMessage
 
     from deepagents_code.config import ModelResult
 
@@ -211,27 +210,22 @@ def _model_spec_from_result(
 
 
 def _build_overrides(
-    request: ModelRequest,
-    ctx: CLIContextSchema,
-    model_result: ModelResult | None,
-    prompt_for: Callable[[ModelResult], str | SystemMessage] | None,
+    request: ModelRequest, ctx: CLIContextSchema, model_result: ModelResult | None
 ) -> ModelRequest:
     """Build the overridden request from a (possibly resolved) model result.
 
     Holds the post-construction logic shared by the sync and async override
     paths: applying the model swap, merging `model_params`, stripping
-    Anthropic-only settings on a cross-provider swap, and re-rendering the
-    system prompt for the swapped model. The only thing that differs between
-    the two callers is how `model_result` is produced (a direct `create_model`
-    call vs. an `asyncio.to_thread` offload).
+    Anthropic-only settings on a cross-provider swap, and patching the
+    `### Model Identity` system-prompt section. The only thing that differs
+    between the two callers is how `model_result` is produced (a direct
+    `create_model` call vs. an `asyncio.to_thread` offload).
 
     Args:
         request: The incoming model request from the middleware chain.
         ctx: Runtime CLI context carrying the requested overrides.
         model_result: The resolved model result from `create_model`, or `None`
             when no model swap was requested.
-        prompt_for: Renderer that rebuilds the system prompt for a model, or
-            `None` to leave the system prompt untouched (e.g. subagents).
 
     Returns:
         The original request when no overrides apply, otherwise a new request
@@ -278,34 +272,50 @@ def _build_overrides(
                 k: v for k, v in settings.items() if k not in dropped
             }
 
-    # Re-render the system prompt for the swapped model so its identity and
-    # model-specific profile suffix match. `prompt_for` rebuilds the prompt
-    # from structured parts (identity from `model_result`, suffix from the
-    # harness profile) — no parsing of the existing prompt. Metadata comes from
-    # `model_result` because the middleware runs in the server subprocess where
-    # `settings` are never updated by `/model`. Subagents pass `prompt_for=None`.
-    if model_result is not None and prompt_for is not None:
-        overrides["system_prompt"] = prompt_for(model_result)
+    # Patch the Model Identity section in the system prompt so the new model
+    # sees its own name/provider/context-limit, not the original's.
+    # We read metadata from model_result (not the app's settings singleton)
+    # because the middleware runs in the server subprocess where settings
+    # are never updated by /model.
+    if model_result is not None and request.system_prompt:
+        from deepagents_code.agent import (
+            MODEL_IDENTITY_RE,
+            build_model_identity_section,
+        )
+
+        prompt = request.system_prompt
+        new_identity = build_model_identity_section(
+            model_result.model_name,
+            provider=model_result.provider,
+            context_limit=model_result.context_limit,
+            unsupported_modalities=model_result.unsupported_modalities,
+        )
+        patched = MODEL_IDENTITY_RE.sub(new_identity, prompt, count=1)
+        if patched != prompt:
+            overrides["system_prompt"] = patched
+        elif "### Model Identity" in prompt:
+            logger.warning(
+                "System prompt contains '### Model Identity' but regex "
+                "did not match; identity section was NOT updated for "
+                "model '%s'. The regex may be out of sync with the "
+                "prompt template.",
+                model_result.model_name,
+            )
 
     return request.override(**overrides)
 
 
-def _apply_overrides(
-    request: ModelRequest,
-    prompt_for: Callable[[ModelResult], str | SystemMessage] | None,
-) -> _ResolvedModelRequest:
+def _apply_overrides(request: ModelRequest) -> _ResolvedModelRequest:
     """Apply model/param overrides and return checkpoint persistence metadata.
 
     Reads `'model'` and `'model_params'` from `runtime.context` and, when
     present, swaps the model and/or merges extra settings into the request.
     On a cross-provider swap away from Anthropic, Anthropic-only settings
-    (e.g. `cache_control`) are stripped. When `prompt_for` is set, the system
-    prompt is re-rendered for the new model.
+    (e.g. `cache_control`) are stripped. The `### Model Identity` section
+    in the system prompt is also patched to reflect the new model.
 
     Args:
         request: The incoming model request from the middleware chain.
-        prompt_for: Renderer that rebuilds the system prompt for a model, or
-            `None` to leave the system prompt untouched.
 
     Returns:
         The request to send downstream plus the actual model spec and user-supplied
@@ -336,7 +346,7 @@ def _apply_overrides(
                 model_params_known=True,
             )
 
-    updated = _build_overrides(request, ctx, model_result, prompt_for)
+    updated = _build_overrides(request, ctx, model_result)
     params = dict(ctx.model_params) if ctx.model_params else None
     return _ResolvedModelRequest(
         updated,
@@ -346,10 +356,7 @@ def _apply_overrides(
     )
 
 
-async def _apply_overrides_async(
-    request: ModelRequest,
-    prompt_for: Callable[[ModelResult], str | SystemMessage] | None,
-) -> _ResolvedModelRequest:
+async def _apply_overrides_async(request: ModelRequest) -> _ResolvedModelRequest:
     """Async variant of `_apply_overrides` that offloads model construction.
 
     Returns:
@@ -381,7 +388,7 @@ async def _apply_overrides_async(
                 model_params_known=True,
             )
 
-    updated = _build_overrides(request, ctx, model_result, prompt_for)
+    updated = _build_overrides(request, ctx, model_result)
     params = dict(ctx.model_params) if ctx.model_params else None
     return _ResolvedModelRequest(
         updated,
@@ -424,25 +431,14 @@ class ConfigurableModelMiddleware(AgentMiddleware):
     `AnthropicPromptCachingMiddleware`) runs.
     """
 
-    def __init__(
-        self,
-        *,
-        prompt_for: Callable[[ModelResult], str | SystemMessage] | None = None,
-        persist_model_state: bool = True,
-    ) -> None:
+    def __init__(self, *, persist_model_state: bool = True) -> None:
         """Initialize the middleware.
 
         Args:
-            prompt_for: Renderer that rebuilds the full system prompt for a
-                swapped model (main agent). Leave `None` to swap the model
-                without touching the system prompt (e.g. subagents, whose
-                prompts carry no model-identity segment).
             persist_model_state: Whether completed calls should write private
                 resume metadata. Subagent instances disable this because they do
                 not own the parent thread's resume state.
         """
-        super().__init__()
-        self._prompt_for = prompt_for
         self._persist_model_state = persist_model_state
 
     def wrap_model_call(
@@ -456,7 +452,7 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             The downstream response plus a private resume-state update when the
             completed call has model metadata to checkpoint.
         """
-        resolved = _apply_overrides(request, self._prompt_for)
+        resolved = _apply_overrides(request)
         response = handler(resolved.request)
         command = _checkpoint_command(resolved) if self._persist_model_state else None
         if command is None:
@@ -474,7 +470,7 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             The downstream response plus a private resume-state update when the
             completed call has model metadata to checkpoint.
         """
-        resolved = await _apply_overrides_async(request, self._prompt_for)
+        resolved = await _apply_overrides_async(request)
         response = await handler(resolved.request)
         command = _checkpoint_command(resolved) if self._persist_model_state else None
         if command is None:

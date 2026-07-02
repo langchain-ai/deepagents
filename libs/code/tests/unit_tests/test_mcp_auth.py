@@ -8,9 +8,10 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from unittest.mock import patch
 
+import httpx
 import pytest
 from mcp.client.auth import TokenStorage
 from mcp.shared.auth import OAuthToken
@@ -18,10 +19,26 @@ from mcp.shared.auth import OAuthToken
 from deepagents_code.mcp_auth import (
     FileTokenStorage,
     MCPReauthRequiredError,
+    find_oauth_challenge,
     find_reauth_required,
     format_login_failure,
     resolve_headers,
 )
+
+_RESOURCE_METADATA_URL = "https://mcp.example.com/.well-known/oauth-protected-resource"
+_BEARER_CHALLENGE = f'Bearer resource_metadata="{_RESOURCE_METADATA_URL}"'
+"""A minimal RFC 9728 Bearer challenge pointing at the resource metadata."""
+
+
+def _http_status_error(
+    status_code: int,
+    *,
+    headers: dict[str, str] | list[tuple[str, str]] | None = None,
+) -> httpx.HTTPStatusError:
+    """Build an `httpx.HTTPStatusError` with a canned response."""
+    request = httpx.Request("GET", "https://mcp.example.com/")
+    response = httpx.Response(status_code, headers=headers or {}, request=request)
+    return httpx.HTTPStatusError("boom", request=request, response=response)
 
 
 @pytest.fixture
@@ -512,6 +529,66 @@ class TestExpiryAwareOAuthClientProvider:
         assert "/.well-known/oauth-protected-resource" in str(discovery_request.url)
         await flow.aclose()
 
+    @pytest.mark.parametrize(
+        ("interactive", "expected"),
+        [(False, True), (True, False)],
+    )
+    async def test_delegated_flow_toggles_reauth_log_suppression(
+        self,
+        fake_home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        interactive: bool,
+        expected: bool,
+    ) -> None:
+        """The contextvar is set during delegation only for non-interactive runs.
+
+        Guards the wiring between `build_oauth_provider(interactive=...)` and the
+        filter: the SDK flow logs synchronously inside the delegated generator,
+        so the suppression flag must be visible there. A fake SDK flow records
+        what the contextvar reads at that point.
+        """
+        del fake_home
+        import httpx
+        from mcp.client.auth import OAuthClientProvider
+
+        from deepagents_code.mcp_auth import (
+            _SUPPRESS_EXPECTED_REAUTH_LOGS,
+            build_oauth_provider,
+        )
+
+        observed: dict[str, bool] = {}
+
+        async def fake_flow(
+            self: OAuthClientProvider,
+            request: httpx.Request,
+        ):
+            del self
+            observed["suppressed"] = _SUPPRESS_EXPECTED_REAUTH_LOGS.get()
+            _ = yield request
+
+        monkeypatch.setattr(OAuthClientProvider, "async_auth_flow", fake_flow)
+
+        storage = FileTokenStorage("notion")
+        await storage.set_client_info(_make_client_info())
+        await storage.set_tokens(_make_tokens())
+
+        provider = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=storage,
+            interactive=interactive,
+        )
+        flow = provider.async_auth_flow(
+            httpx.Request("POST", "https://mcp.notion.com/mcp")
+        )
+        await anext(flow)
+        await flow.aclose()
+
+        assert observed["suppressed"] is expected
+        # The flag never leaks past the flow.
+        assert _SUPPRESS_EXPECTED_REAUTH_LOGS.get() is False
+
     async def test_delegated_flow_forwards_responses_on_every_iteration(
         self,
         fake_home: Path,
@@ -664,6 +741,95 @@ class TestBasicAuthClientIdStripping:
         assert "client_secret" not in data
 
 
+class TestExpectedReauthLogFilter:
+    """Tests for suppressing noisy SDK OAuth logs during non-interactive reauth."""
+
+    def test_suppresses_expected_sdk_oauth_logs(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Expected non-interactive reauth logs are replaced by our login hint."""
+        from deepagents_code.mcp_auth import _SUPPRESS_EXPECTED_REAUTH_LOGS
+
+        sdk_logger = logging.getLogger("mcp.client.auth.oauth2")
+        caplog.set_level(logging.WARNING, logger="mcp.client.auth.oauth2")
+        server = "notion"
+        reauth = MCPReauthRequiredError(server)
+        msg = "boom"
+        unexpected = RuntimeError(msg)
+        token = _SUPPRESS_EXPECTED_REAUTH_LOGS.set(True)
+        try:
+            sdk_logger.warning("Token refresh failed: 400")
+            sdk_logger.error(
+                "OAuth flow error",
+                exc_info=(type(reauth), reauth, reauth.__traceback__),
+            )
+            sdk_logger.error(
+                "OAuth flow error",
+                exc_info=(type(unexpected), unexpected, unexpected.__traceback__),
+            )
+        finally:
+            _SUPPRESS_EXPECTED_REAUTH_LOGS.reset(token)
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert messages == ["OAuth flow error"]
+        exc_info = caplog.records[0].exc_info
+        assert exc_info is not None
+        assert isinstance(exc_info[1], RuntimeError)
+
+    def test_transient_refresh_failure_is_not_suppressed(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Transient refresh statuses (5xx/429) stay visible, not relabeled reauth.
+
+        The SDK logs `Token refresh failed: <status>` for any non-200. A `503`
+        means the provider is down and the refresh token is still valid, so the
+        operator must see it rather than be steered toward a pointless re-login.
+        """
+        from deepagents_code.mcp_auth import _SUPPRESS_EXPECTED_REAUTH_LOGS
+
+        sdk_logger = logging.getLogger("mcp.client.auth.oauth2")
+        caplog.set_level(logging.WARNING, logger="mcp.client.auth.oauth2")
+        token = _SUPPRESS_EXPECTED_REAUTH_LOGS.set(True)
+        try:
+            sdk_logger.warning("Token refresh failed: 503")
+            sdk_logger.warning("Token refresh failed: 429")
+            sdk_logger.warning("Token refresh failed: 400")
+        finally:
+            _SUPPRESS_EXPECTED_REAUTH_LOGS.reset(token)
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert messages == [
+            "Token refresh failed: 503",
+            "Token refresh failed: 429",
+        ]
+
+    def test_passes_through_when_not_suppressing(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """With the contextvar unset, the process-wide filter is inert.
+
+        The filter is installed on the SDK logger for every consumer of that
+        logger, so its default-off behavior guards against globally swallowing
+        real OAuth errors outside a non-interactive reauth window.
+        """
+        sdk_logger = logging.getLogger("mcp.client.auth.oauth2")
+        caplog.set_level(logging.WARNING, logger="mcp.client.auth.oauth2")
+        reauth = MCPReauthRequiredError("notion")
+
+        # No `_SUPPRESS_EXPECTED_REAUTH_LOGS.set(...)`: contextvar at default.
+        sdk_logger.warning("Token refresh failed: 400")
+        sdk_logger.error(
+            "OAuth flow error",
+            exc_info=(type(reauth), reauth, reauth.__traceback__),
+        )
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert messages == ["Token refresh failed: 400", "OAuth flow error"]
+
+
 class TestFindReauthRequired:
     """Tests for unwrapping nested re-auth errors."""
 
@@ -719,6 +885,150 @@ class TestFindReauthRequired:
         a.__context__ = b
         b.__context__ = a
         assert find_reauth_required(a) is None
+
+
+class TestFindOauthChallenge:
+    """Tests for detecting a 401 OAuth challenge in an exception tree."""
+
+    def test_direct_401_with_challenge(self) -> None:
+        """A 401 carrying an RFC 9728 Bearer challenge yields its URL."""
+        exc = _http_status_error(
+            401,
+            headers={"WWW-Authenticate": _BEARER_CHALLENGE},
+        )
+        assert find_oauth_challenge(exc) == _RESOURCE_METADATA_URL
+
+    def test_401_header_match_is_case_insensitive(self) -> None:
+        """The scheme and parameter matching ignore casing."""
+        exc = _http_status_error(
+            401,
+            headers={
+                "www-authenticate": (
+                    f'bearer resource_METADATA="{_RESOURCE_METADATA_URL}"'
+                )
+            },
+        )
+        assert find_oauth_challenge(exc) == _RESOURCE_METADATA_URL
+
+    def test_401_multiparam_bearer_challenge(self) -> None:
+        """`resource_metadata` is found after other Bearer auth-params."""
+        exc = _http_status_error(
+            401,
+            headers={
+                "WWW-Authenticate": (
+                    'Bearer error="invalid_token", '
+                    'error_description="The access token expired", '
+                    f'resource_metadata="{_RESOURCE_METADATA_URL}"'
+                )
+            },
+        )
+        assert find_oauth_challenge(exc) == _RESOURCE_METADATA_URL
+
+    def test_401_bearer_not_first_in_multischeme_line(self) -> None:
+        """A Bearer challenge behind another scheme on one line is detected."""
+        exc = _http_status_error(
+            401,
+            headers={"WWW-Authenticate": f'Basic realm="mcp", {_BEARER_CHALLENGE}'},
+        )
+        assert find_oauth_challenge(exc) == _RESOURCE_METADATA_URL
+
+    def test_401_bearer_across_repeated_headers(self) -> None:
+        """A Bearer challenge on a second `WWW-Authenticate` line is detected."""
+        exc = _http_status_error(
+            401,
+            headers=[
+                ("WWW-Authenticate", 'Basic realm="mcp"'),
+                (
+                    "WWW-Authenticate",
+                    _BEARER_CHALLENGE,
+                ),
+            ],
+        )
+        assert find_oauth_challenge(exc) == _RESOURCE_METADATA_URL
+
+    def test_401_without_challenge_header_ignored(self) -> None:
+        """A 401 lacking `WWW-Authenticate` is not an OAuth challenge."""
+        exc = _http_status_error(401)
+        assert find_oauth_challenge(exc) is None
+
+    def test_401_basic_challenge_ignored(self) -> None:
+        """A non-OAuth auth challenge is not treated as an MCP login prompt."""
+        exc = _http_status_error(
+            401,
+            headers={"WWW-Authenticate": 'Basic realm="mcp"'},
+        )
+        assert find_oauth_challenge(exc) is None
+
+    def test_401_bearer_without_resource_metadata_ignored(self) -> None:
+        """A Bearer challenge with params but no `resource_metadata` is ignored."""
+        exc = _http_status_error(
+            401,
+            headers={"WWW-Authenticate": 'Bearer realm="mcp"'},
+        )
+        assert find_oauth_challenge(exc) is None
+
+    def test_401_resource_metadata_substring_not_matched(self) -> None:
+        """`resource_metadata` embedded in another token is not a match."""
+        exc = _http_status_error(
+            401,
+            headers={"WWW-Authenticate": 'Bearer error="x_resource_metadata_y"'},
+        )
+        assert find_oauth_challenge(exc) is None
+
+    def test_non_401_status_ignored(self) -> None:
+        """Other status codes never count as a challenge."""
+        exc = _http_status_error(
+            403,
+            headers={"WWW-Authenticate": _BEARER_CHALLENGE},
+        )
+        assert find_oauth_challenge(exc) is None
+
+    def test_found_inside_exception_group(self) -> None:
+        """Nested exception groups are searched recursively."""
+        exc = ExceptionGroup(
+            "outer",
+            [
+                RuntimeError("x"),
+                _http_status_error(
+                    401,
+                    headers={"WWW-Authenticate": (_BEARER_CHALLENGE)},
+                ),
+            ],
+        )
+        assert find_oauth_challenge(exc) == _RESOURCE_METADATA_URL
+
+    def test_found_via_cause_chain(self) -> None:
+        """`raise X from HTTPStatusError(...)` is unwrapped."""
+        challenge = _http_status_error(
+            401,
+            headers={"WWW-Authenticate": _BEARER_CHALLENGE},
+        )
+        wrapped = RuntimeError("wrapped")
+        wrapped.__cause__ = challenge
+        assert find_oauth_challenge(wrapped) == _RESOURCE_METADATA_URL
+
+    def test_found_via_context_chain(self) -> None:
+        """Implicit chaining (`__context__`) is unwrapped, not only `__cause__`."""
+        challenge = _http_status_error(
+            401,
+            headers={"WWW-Authenticate": _BEARER_CHALLENGE},
+        )
+        wrapped = RuntimeError("wrapped")
+        wrapped.__context__ = challenge
+        assert find_oauth_challenge(wrapped) == _RESOURCE_METADATA_URL
+
+    def test_returns_none_when_absent(self) -> None:
+        """Trees without a 401 challenge yield `None`."""
+        exc = ExceptionGroup("outer", [RuntimeError("x"), ValueError("y")])
+        assert find_oauth_challenge(exc) is None
+
+    def test_handles_cyclic_chain(self) -> None:
+        """Self-referencing `__context__` cycles terminate without recursion."""
+        a = RuntimeError("a")
+        b = RuntimeError("b")
+        a.__context__ = b
+        b.__context__ = a
+        assert find_oauth_challenge(a) is None
 
 
 class TestFormatLoginFailure:
@@ -894,6 +1204,34 @@ class TestBuildOAuthProvider:
         assert metadata.token_endpoint_auth_method == "none"
         assert metadata.redirect_uris is not None
         assert [str(uri) for uri in metadata.redirect_uris] == [_SLACK_REDIRECT_URI]
+
+    def test_interactive_mode_maps_to_reauth_log_suppression(
+        self,
+        fake_home: Path,
+    ) -> None:
+        """Only non-interactive providers suppress expected reauth SDK logs.
+
+        Interactive sessions keep the SDK's OAuth diagnostics; non-interactive
+        runs replace the expected reauth noise with our login hint.
+        """
+        del fake_home
+        from deepagents_code.mcp_auth import build_oauth_provider
+
+        non_interactive = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=FileTokenStorage("notion"),
+            interactive=False,
+        )
+        interactive = build_oauth_provider(
+            server_name="notion",
+            server_url="https://mcp.notion.com/mcp",
+            storage=FileTokenStorage("notion"),
+            interactive=True,
+        )
+
+        assert cast("Any", non_interactive)._suppress_expected_reauth_logs is True
+        assert cast("Any", interactive)._suppress_expected_reauth_logs is False
 
     async def test_refresh_uses_cached_oauth_metadata_endpoint(
         self,
@@ -1915,17 +2253,33 @@ class TestLogin:
         assert tokens is not None
         assert tokens.access_token == "new"
 
-    async def test_login_rejects_non_oauth_server(self) -> None:
-        """Only `auth: oauth` servers support the login command."""
+    async def test_login_allows_http_server_without_explicit_oauth(self) -> None:
+        """Auto-detected servers (no `auth: oauth`) can still run OAuth login."""
         from deepagents_code.mcp_auth import login
         from deepagents_code.mcp_oauth_ui import CliOAuthInteraction
 
-        with pytest.raises(ValueError, match="does not use OAuth"):
+        async def _fake_handshake(connections: dict) -> None:
+            server_name, connection = next(iter(connections.items()))
+            storage = FileTokenStorage(server_name, server_url=connection["url"])
+            await storage.set_tokens(
+                OAuthToken(access_token="new", token_type="Bearer")
+            )
+            await storage.set_client_info(_make_client_info())
+
+        with patch("deepagents_code.mcp_auth._drive_handshake", _fake_handshake):
             await login(
-                server_name="srv",
-                server_config={"transport": "http", "url": "https://example.com"},
+                server_name="notion",
+                server_config={
+                    "transport": "http",
+                    "url": "https://mcp.notion.com/mcp",
+                },
                 ui=CliOAuthInteraction(),
             )
+
+        storage = FileTokenStorage("notion", server_url="https://mcp.notion.com/mcp")
+        tokens = await storage.get_tokens()
+        assert tokens is not None
+        assert tokens.access_token == "new"
 
     async def test_login_rejects_stdio_server(self) -> None:
         """OAuth login is limited to HTTP/SSE transports."""

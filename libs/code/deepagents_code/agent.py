@@ -9,13 +9,20 @@ import re
 import shutil
 import tempfile
 import tomllib
-from pathlib import Path
+import warnings
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, cast
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, LocalShellBackend
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.middleware import MemoryMiddleware, SkillsMiddleware
+from deepagents.middleware import (
+    GRADER_SYSTEM_PROMPT,
+    FilesystemMiddleware,
+    MemoryMiddleware,
+    RubricMiddleware,
+    SkillsMiddleware,
+)
 
 # Backwards-compat flag: SDKs before 0.5.4 accept only `list[str]` for
 # `SkillsMiddleware.sources`; newer SDKs expose the `SkillSource` alias
@@ -51,6 +58,10 @@ if TYPE_CHECKING:
     from deepagents_code.output import OutputFormat
 
 from langchain.agents.middleware.types import AgentMiddleware
+from langchain.tools import (
+    ToolRuntime,  # noqa: TC002  # LangChain inspects this annotation for runtime injection.
+)
+from langchain_core.tools import StructuredTool, tool
 
 from deepagents_code import theme
 from deepagents_code._cli_context import CLIContextSchema
@@ -88,6 +99,66 @@ logger = logging.getLogger(__name__)
 
 REQUIRE_COMPACT_TOOL_APPROVAL: bool = True
 """When `True`, `compact_conversation` requires HITL approval like other gated tools."""
+
+_RUBRIC_GRADER_READ_FILE_PREFIX = "/large_tool_results/"
+_RUBRIC_GRADER_SYSTEM_PROMPT = (
+    GRADER_SYSTEM_PROMPT
+    + "\n\nWhen the transcript says a tool result was saved under "
+    + f"`{_RUBRIC_GRADER_READ_FILE_PREFIX}`, use the `read_file` tool to inspect "
+    + "the referenced evidence before deciding that a criterion lacks support. "
+    + "Only read paths that are explicitly present in the transcript."
+)
+
+
+def _validate_rubric_grader_read_path(file_path: str) -> str | None:
+    normalized = file_path.replace("\\", "/")
+    if not normalized.startswith(_RUBRIC_GRADER_READ_FILE_PREFIX):
+        return "Rubric grader can only read files under /large_tool_results/."
+    parts = PurePosixPath(normalized).parts
+    if ".." in parts or "~" in parts:
+        return "Invalid path."
+    return None
+
+
+def _create_rubric_grader_tools(backend: CompositeBackend) -> list[BaseTool]:
+    filesystem = FilesystemMiddleware(backend=backend)
+    sdk_read_file: StructuredTool | None = None
+    for candidate in filesystem.tools:
+        if candidate.name == "read_file":
+            sdk_read_file = cast("StructuredTool", candidate)
+            break
+    if sdk_read_file is None:
+        msg = "SDK read_file tool is unavailable."
+        raise RuntimeError(msg)
+
+    sdk_read_file_func = sdk_read_file.func
+    if sdk_read_file_func is None:
+        msg = "SDK read_file tool is missing a sync implementation."
+        raise RuntimeError(msg)
+
+    @tool(description=sdk_read_file.description)
+    def read_file(
+        file_path: str,
+        runtime: ToolRuntime[None, Any],
+        offset: int = 0,
+        limit: int = 100,
+    ) -> object:
+        """Read an offloaded tool result referenced in the transcript.
+
+        Returns:
+            The SDK `read_file` tool result, or an error message when the path is
+            outside the grader evidence directory.
+        """
+        if error := _validate_rubric_grader_read_path(file_path):
+            return error
+        return sdk_read_file_func(
+            file_path=file_path,
+            runtime=runtime,
+            offset=offset,
+            limit=limit,
+        )
+
+    return [read_file]
 
 
 def _sanitize_agent_message_name(agent_name: str) -> str:
@@ -274,17 +345,17 @@ def _resolve_ptc_option(
         return None
 
     live_names: list[str] = []
-    for tool in tools:
-        if isinstance(tool, _BaseTool):
-            name = tool.name
+    for candidate in tools:
+        if isinstance(candidate, _BaseTool):
+            name = candidate.name
             if isinstance(name, str):
                 live_names.append(name)
-        elif isinstance(tool, dict):
-            raw_name = cast("dict[str, Any]", tool).get("name")
+        elif isinstance(candidate, dict):
+            raw_name = cast("dict[str, Any]", candidate).get("name")
             if isinstance(raw_name, str):
                 live_names.append(raw_name)
         else:
-            attr = getattr(tool, "name", None)
+            attr = getattr(candidate, "name", None)
             if isinstance(attr, str):
                 live_names.append(attr)
     live_set: set[str] = set(live_names)
@@ -1249,6 +1320,8 @@ def create_cli_agent(
     enable_skills: bool = True,
     enable_shell: bool = True,
     enable_interpreter: bool = False,
+    rubric_model: str | BaseChatModel | None = None,
+    rubric_max_iterations: int | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
     cwd: str | Path | None = None,
@@ -1325,6 +1398,14 @@ def create_cli_agent(
             `interpreter_ptc_acknowledge_unsafe=True`.
 
             Requires the core `langchain-quickjs` dependency.
+        rubric_model: Grader model for `RubricMiddleware`.
+
+            A `'provider:model'` string or `BaseChatModel`.
+
+            When `None`, the main `model` is reused.
+        rubric_max_iterations: Explicit grader iterations per rubric attempt
+            before the agent terminates with `'max_iterations_reached'`; `None`
+            uses the SDK default.
         checkpointer: Optional checkpointer for session persistence.
             When `None`, the graph is compiled without a checkpointer.
         mcp_server_info: MCP server metadata to surface in the system prompt.
@@ -1415,7 +1496,7 @@ def create_cli_agent(
     def _subagent_cli_middleware(*, has_explicit_model: bool) -> list[AgentMiddleware]:
         middleware: list[AgentMiddleware] = []
         if not has_explicit_model:
-            middleware.append(ConfigurableModelMiddleware())
+            middleware.append(ConfigurableModelMiddleware(persist_model_state=False))
         if restrictive_shell_allow_list is not None:
             middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
         # Subagents share the on-disk filesystem backend and can edit the user
@@ -1477,13 +1558,16 @@ def create_cli_agent(
         ConfigurableModelMiddleware(),
     ]
 
-    # Resume state: declares the `_context_tokens` and `_model_spec` channels
-    # and writes them from `after_model` (token count from the latest
-    # `AIMessage.usage_metadata`, model spec from `context["effective_model"]`).
-    # The CLI reads them back from `state_values` on thread resume.
+    # Resume state: declares private checkpoint channels used on resume.
+    # `ResumeStateMiddleware.after_model` writes `_context_tokens`; model metadata
+    # is written by `ConfigurableModelMiddleware` from the actual completed model
+    # request. The CLI reads them back from `state_values` on thread resume.
+    # Goal tools: exposes the read-only `get_goal`/`get_rubric` tools and the
+    # constrained `update_goal` tool, and injects goal guidance into the prompt.
+    from deepagents_code.goal_tools import GoalToolsMiddleware
     from deepagents_code.resume_state import ResumeStateMiddleware
 
-    agent_middleware.append(ResumeStateMiddleware())
+    agent_middleware.extend([ResumeStateMiddleware(), GoalToolsMiddleware()])
 
     # Add ask_user middleware (must be early so its tool is available)
     if enable_ask_user:
@@ -1706,6 +1790,23 @@ def create_cli_agent(
     agent_middleware.append(
         create_summarization_tool_middleware(model, composite_backend)
     )
+
+    # Rubric-driven self-evaluation. The middleware is a no-op until a
+    # `rubric` is supplied on invocation state, so installing it is safe.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="The middleware `RubricMiddleware` is in beta",
+            category=Warning,
+        )
+        rubric_kwargs: dict[str, Any] = {
+            "model": rubric_model if rubric_model is not None else model,
+            "system_prompt": _RUBRIC_GRADER_SYSTEM_PROMPT,
+            "tools": _create_rubric_grader_tools(composite_backend),
+        }
+        if rubric_max_iterations is not None:
+            rubric_kwargs["max_iterations"] = rubric_max_iterations
+        agent_middleware.append(RubricMiddleware(**rubric_kwargs))
 
     # Create the agent
     all_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = [

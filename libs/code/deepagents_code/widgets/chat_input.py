@@ -91,6 +91,9 @@ Keeps multi-line pastes grouped as one input even when newlines arrive as
 terminal read boundaries), instead of submitting mid-paste.
 """
 
+_FILE_CACHE_WORKER_GROUP = "file-cache"
+"""Textual worker group for all `@` file-completion cache warmers."""
+
 _BACKSLASH_ENTER_GAP_SECONDS = 0.15
 """Maximum gap between a `\\` key and a following `enter` key to treat the
 pair as a terminal-emitted shift+enter sequence.
@@ -117,6 +120,14 @@ an intentional click made shortly after refocusing is wrongly suppressed. 0.3s
 comfortably covers the FocusIn-to-mouse-report latency while staying below a
 deliberate click-pause-click interaction.
 """
+
+_FILE_CACHE_REFRESH_INTERVAL_SECONDS = 30.0
+"""How often to refresh the `@` file-completion cache in the background.
+
+The cache is pre-warmed on mount and re-warmed on cwd switches, but files
+created or deleted mid-session would otherwise stay stale until the next switch.
+A periodic refresh keeps `@` suggestions current; the walk runs off the event
+loop and swaps in atomically, so it never blocks typing."""
 
 if TYPE_CHECKING:
     from textual import events
@@ -1420,7 +1431,7 @@ class ChatInput(Vertical):
         min-height: 3;
         max-height: 25;
         padding: 0;
-        background: $surface;
+        background: $background;
         border: solid $primary;
     }
 
@@ -1646,12 +1657,41 @@ class ChatInput(Vertical):
 
         self._rebuild_argument_hints(SLASH_COMMANDS)
 
-        self.run_worker(
-            self._file_controller.warm_cache(),
-            exclusive=False,
-            exit_on_error=False,
+        self._warm_file_cache()
+        self.set_interval(
+            _FILE_CACHE_REFRESH_INTERVAL_SECONDS,
+            self._refresh_file_cache,
         )
         self._text_area.focus()
+
+    def _warm_file_cache(self, *, force: bool = False, exclusive: bool = False) -> None:
+        """Schedule an `@` file-completion cache warmer.
+
+        No-ops before `on_mount` wires up the file controller (the periodic
+        refresh interval can fire during teardown or a partial mount).
+
+        Args:
+            force: Re-walk even when the cache is already populated. The prior
+                cache stays visible until the new walk completes.
+            exclusive: Cancel any other in-flight warmer in the shared worker
+                group before starting, so a slow walk is superseded by the next
+                tick rather than stacking overlapping walks. Used by the
+                periodic refresh; the on-mount/cwd-switch warmers run
+                non-exclusively so a quick invalidation can warm concurrently.
+        """
+        file_controller = getattr(self, "_file_controller", None)
+        if file_controller is None:
+            return
+        self.run_worker(
+            file_controller.warm_cache(force=force),
+            exclusive=exclusive,
+            group=_FILE_CACHE_WORKER_GROUP,
+            exit_on_error=False,
+        )
+
+    def _refresh_file_cache(self) -> None:
+        """Re-warm the `@` file-completion cache off the event loop."""
+        self._warm_file_cache(force=True, exclusive=True)
 
     def set_cwd(self, cwd: str | Path) -> None:
         """Update file completion to use a new cwd.
@@ -1663,11 +1703,7 @@ class ChatInput(Vertical):
         file_controller = getattr(self, "_file_controller", None)
         if file_controller is not None:
             file_controller.set_cwd(self._cwd)
-            self.run_worker(
-                file_controller.warm_cache(),
-                exclusive=False,
-                exit_on_error=False,
-            )
+            self._warm_file_cache()
 
     def update_slash_commands(self, commands: list[CommandEntry]) -> None:
         """Update the slash command controller's command list.

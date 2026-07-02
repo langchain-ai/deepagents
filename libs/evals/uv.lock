@@ -271,38 +271,6 @@ wheels = [
 ]
 
 [[package]]
-name = "claude-agent-sdk"
-version = "0.1.48"
-source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "platform_machine == 'x86_64' and sys_platform == 'linux'",
-]
-dependencies = [
-    { name = "anyio", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "mcp", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/6c/dd/2818538efd18ed4ef72d4775efa75bb36cbea0fa418eda51df85ee9c2424/claude_agent_sdk-0.1.48.tar.gz", hash = "sha256:ee294d3f02936c0b826119ffbefcf88c67731cf8c2d2cb7111ccc97f76344272", size = 87375, upload-time = "2026-03-07T00:21:37.087Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/dc/99/55b0cd3bf54a7449e744d23cf50be104e9445cf623e1ed75722112aa6264/claude_agent_sdk-0.1.48-py3-none-manylinux_2_17_x86_64.whl", hash = "sha256:543d70acba468eccfff836965a14b8ac88cf90809aeeb88431dfcea3ee9a2fa9", size = 74583686, upload-time = "2026-03-07T00:21:28.969Z" },
-]
-
-[[package]]
-name = "claude-agent-sdk"
-version = "0.1.49"
-source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "platform_machine == 'arm64' and sys_platform == 'darwin'",
-]
-dependencies = [
-    { name = "anyio", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
-    { name = "mcp", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/03/cf/2bd8d55bab57e458044a5e530a2320fecfcc91ec5546972b2c3db15fd09a/claude_agent_sdk-0.1.49.tar.gz", hash = "sha256:6a93f7e51951623d94c0b35172d1d25d7c44f8dd083568d3252a6ed3ac8719bf", size = 95079, upload-time = "2026-03-20T17:31:09.274Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/65/08/0e33ede7b3035ba953f5a59597b8cb94ea2f3fb3124e5d6f6e255bf9c025/claude_agent_sdk-0.1.49-py3-none-macosx_11_0_arm64.whl", hash = "sha256:a869330d4a15b12c96ae24144b8e29999ff25315267f248634986179e9536a04", size = 57620663, upload-time = "2026-03-17T00:44:27.792Z" },
-]
-
-[[package]]
 name = "click"
 version = "8.1.8"
 source = { registry = "https://pypi.org/simple" }
@@ -440,6 +408,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "av", marker = "extra == 'video'", specifier = ">=17.0.0,<18.0.0" },
     { name = "langchain", specifier = ">=1.3.11,<2.0.0" },
     { name = "langchain-anthropic", specifier = ">=1.4.7,<2.0.0" },
     { name = "langchain-aws", marker = "extra == 'aws'", specifier = ">=1.6.1,<2.0.0" },
@@ -447,15 +416,18 @@ requires-dist = [
     { name = "langchain-google-genai", specifier = ">=4.2.6,<5.0.0" },
     { name = "langchain-quickjs", marker = "extra == 'quickjs'", specifier = ">=0.3.2" },
     { name = "langsmith", specifier = ">=0.9.3" },
+    { name = "pillow", marker = "extra == 'video'", specifier = ">=10.0.0,<13.0.0" },
     { name = "wcmatch", specifier = ">=10.1" },
 ]
-provides-extras = ["aws", "quickjs"]
+provides-extras = ["aws", "quickjs", "video"]
 
 [package.metadata.requires-dev]
 test = [
+    { name = "av", specifier = ">=17.0.0,<18.0.0" },
     { name = "build" },
     { name = "langchain-openai" },
     { name = "langchain-tests", specifier = ">=1.1.9" },
+    { name = "pillow", specifier = ">=10.0.0,<13.0.0" },
     { name = "pytest" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
     { name = "pytest-benchmark" },
@@ -486,7 +458,7 @@ wheels = [
 
 [[package]]
 name = "deepagents-code"
-version = "0.1.27"
+version = "0.1.30"
 source = { directory = "../code" }
 dependencies = [
     { name = "aiosqlite", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -525,7 +497,9 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiohttp", marker = "extra == 'nvidia'", specifier = ">=3.14.1,<3.15.0" },
     { name = "aiosqlite", specifier = ">=0.22.1,<1.0.0" },
+    { name = "av", marker = "extra == 'media'", specifier = ">=17.0.0,<18.0.0" },
     { name = "deepagents", editable = "../deepagents" },
     { name = "deepagents-acp", specifier = ">=0.0.8,<1.0.0" },
     { name = "deepagents-code", extras = ["agentcore", "daytona", "modal", "runloop", "vercel"], marker = "extra == 'all-sandboxes'" },
@@ -551,7 +525,7 @@ requires-dist = [
     { name = "langchain-mcp-adapters", specifier = ">=0.3.0,<1.0.0" },
     { name = "langchain-mistralai", marker = "extra == 'mistralai'", specifier = ">=1.1.5,<2.0.0" },
     { name = "langchain-modal", marker = "extra == 'modal'", editable = "../partners/modal" },
-    { name = "langchain-nvidia-ai-endpoints", marker = "extra == 'nvidia'", specifier = ">=1.4.2,<2.0.0" },
+    { name = "langchain-nvidia-ai-endpoints", marker = "extra == 'nvidia'", specifier = ">=1.4.3,<2.0.0" },
     { name = "langchain-ollama", marker = "extra == 'ollama'", specifier = ">=1.1.0,<2.0.0" },
     { name = "langchain-openai", specifier = ">=1.3.3,<2.0.0" },
     { name = "langchain-openai", marker = "extra == 'openai'", specifier = ">=1.3.3,<2.0.0" },
@@ -571,6 +545,7 @@ requires-dist = [
     { name = "mcp", specifier = ">=1.9.2,<2.0.0" },
     { name = "packaging", specifier = ">=26.2" },
     { name = "pillow", specifier = ">=12.2.0,<13.0.0" },
+    { name = "pillow", marker = "extra == 'media'", specifier = ">=12.2.0,<13.0.0" },
     { name = "prompt-toolkit", specifier = ">=3.0.52,<4.0.0" },
     { name = "pydantic", specifier = ">=2.12.5,<2.14.0a0" },
     { name = "pyperclip", specifier = ">=1.11.0,<2.0.0" },
@@ -585,7 +560,7 @@ requires-dist = [
     { name = "tomli-w", specifier = ">=1.2.0,<2.0.0" },
     { name = "uuid-utils", specifier = ">=0.16.2,<1.0.0" },
 ]
-provides-extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "together", "vertex", "xai", "all-providers", "agentcore", "daytona", "modal", "runloop", "vercel", "all-sandboxes", "quickjs"]
+provides-extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "together", "vertex", "xai", "all-providers", "agentcore", "daytona", "modal", "runloop", "vercel", "all-sandboxes", "media", "quickjs"]
 
 [package.metadata.requires-dev]
 test = [
@@ -663,7 +638,7 @@ requires-dist = [
     { name = "deepagents", editable = "../deepagents" },
     { name = "deepagents-code", directory = "../code" },
     { name = "dockerfile-parse", specifier = ">=2.0.1" },
-    { name = "harbor", extras = ["langsmith"], specifier = ">=0.13.2,<0.14.0" },
+    { name = "harbor", extras = ["langsmith"], specifier = ">=0.16.1,<0.17.0" },
     { name = "langchain", specifier = ">=1.3.11,<2.0.0" },
     { name = "langchain-anthropic", specifier = ">=1.4.7,<1.5.0" },
     { name = "langchain-baseten", specifier = ">=0.2.1,<0.3.0" },
@@ -794,11 +769,11 @@ wheels = [
 
 [[package]]
 name = "filelock"
-version = "3.25.2"
+version = "3.29.4"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/94/b8/00651a0f559862f3bb7d6f7477b192afe3f583cc5e26403b44e59a55ab34/filelock-3.25.2.tar.gz", hash = "sha256:b64ece2b38f4ca29dd3e810287aa8c48182bbecd1ae6e9ae126c9b35f1382694", size = 40480, upload-time = "2026-03-11T20:45:38.487Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e6/dc/be6cbe99670cd6e4ad387123647cb08e0c32975e223f82551e914c5568a6/filelock-3.29.4.tar.gz", hash = "sha256:10cdb3656fc44541cdf30652a93fb10ec6b05325620eb316bd26893e4201538a", size = 63028, upload-time = "2026-06-13T16:12:00.744Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a4/a5/842ae8f0c08b61d6484b52f99a03510a3a72d23141942d216ebe81fefbce/filelock-3.25.2-py3-none-any.whl", hash = "sha256:ca8afb0da15f229774c9ad1b455ed96e85a81373065fb10446672f64444ddf70", size = 26759, upload-time = "2026-03-11T20:45:37.437Z" },
+    { url = "https://files.pythonhosted.org/packages/13/37/a065dc3bd6e49423a6532c642ca7378d3f467b1ef44c2800c937af7f9739/filelock-3.29.4-py3-none-any.whl", hash = "sha256:dac1648087d5115554850d113e7dd8c83ab2d38e3435dde2d4f163847e57b767", size = 42757, upload-time = "2026-06-13T16:11:59.582Z" },
 ]
 
 [[package]]
@@ -1039,25 +1014,24 @@ wheels = [
 
 [[package]]
 name = "harbor"
-version = "0.13.2"
+version = "0.16.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "claude-agent-sdk", version = "0.1.48", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
-    { name = "claude-agent-sdk", version = "0.1.49", source = { registry = "https://pypi.org/simple" }, marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
     { name = "datasets", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "dirhash", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "fastapi", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "filelock", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "httpx", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "jinja2", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "litellm", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "packaging", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "pathspec", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
+    { name = "platformdirs", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "pydantic", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "python-dotenv", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "pyyaml", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "requests", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "rich", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
-    { name = "ruff", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "shortuuid", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "supabase", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "tenacity", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
@@ -1065,9 +1039,9 @@ dependencies = [
     { name = "typer", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
     { name = "uvicorn", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine == 'x86_64' and sys_platform == 'linux')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/09/d2/8ea1fa703ebc8acd15fffc020555259dd1bb4f4188e830b5467ca0fd1950/harbor-0.13.2.tar.gz", hash = "sha256:e5cf94f9dac9bb465d61f37a689679b69ecd1987bae1ad48714dc641bea2f699", size = 1154370, upload-time = "2026-06-11T00:15:35.44Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/37/46/49008d2a07f98ce0eb333366546cac8451d6e80c8068ac7687711c56c862/harbor-0.16.1.tar.gz", hash = "sha256:115c39ad76b3d1dbfd82ff51af904adf22acac240c90b12eb34e8cb7d46f8cc4", size = 1372236, upload-time = "2026-06-28T05:13:17.962Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e6/ae/fc41d4d2bf830a878cf778877aafe90c05ef45651dab05dee3df7e463e1d/harbor-0.13.2-py3-none-any.whl", hash = "sha256:7a60207965755268fb0a4748a553ce92ed91ce7b32805e7f0c8fea1ed61567b6", size = 1313409, upload-time = "2026-06-11T00:15:36.98Z" },
+    { url = "https://files.pythonhosted.org/packages/44/f3/5abb440eff288c5fef89079e49b873e825a4b563b874b849dc728d551fab/harbor-0.16.1-py3-none-any.whl", hash = "sha256:26264bb011baf25f44d5264ee74e1a0882eb936f9883f8618bce1573878c3f66", size = 1560633, upload-time = "2026-06-28T05:13:15.704Z" },
 ]
 
 [package.optional-dependencies]
@@ -2324,11 +2298,11 @@ wheels = [
 
 [[package]]
 name = "platformdirs"
-version = "4.9.4"
+version = "4.10.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/19/56/8d4c30c8a1d07013911a8fdbd8f89440ef9f08d07a1b50ab8ca8be5a20f9/platformdirs-4.9.4.tar.gz", hash = "sha256:1ec356301b7dc906d83f371c8f487070e99d3ccf9e501686456394622a01a934", size = 28737, upload-time = "2026-03-05T18:34:13.271Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d7/47/e4501f49c178ae1d9f4a75073fda4204f52647993f075a9db4d14930e0c5/platformdirs-4.10.0.tar.gz", hash = "sha256:31e761a6a0ca04faf7353ea759bdba55652be214725111e5aac52dfa29d4bef7", size = 31224, upload-time = "2026-05-28T03:32:53.587Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/63/d7/97f7e3a6abb67d8080dd406fd4df842c2be0efaf712d1c899c32a075027c/platformdirs-4.9.4-py3-none-any.whl", hash = "sha256:68a9a4619a666ea6439f2ff250c12a853cd1cbd5158d258bd824a7df6be2f868", size = 21216, upload-time = "2026-03-05T18:34:12.172Z" },
+    { url = "https://files.pythonhosted.org/packages/81/e6/cd9575ac904136b3cbf7aa7ee819ef86eedb7274e46f230e94ea4342e729/platformdirs-4.10.0-py3-none-any.whl", hash = "sha256:fb516cdb12eb0d857d0cd85a7c57cea4d060bee4578d6cf5a14dfdf8cbf8784a", size = 22743, upload-time = "2026-05-28T03:32:52.175Z" },
 ]
 
 [[package]]

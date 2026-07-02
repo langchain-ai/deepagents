@@ -8,9 +8,9 @@ enable composition without fragile string parsing.
 import functools
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 from typing import Any, Final, Literal, overload
 
 import wcmatch.glob as wcglob
@@ -80,9 +80,54 @@ GrepMatch = _GrepMatch
 
 
 @functools.lru_cache(maxsize=256)
-def _compile_glob(pattern: str) -> wcglob.WcMatcher:
-    """Compile a glob pattern once and cache it (BRACE flag)."""
-    return wcglob.compile(pattern, flags=wcglob.BRACE)
+def compile_grep_include_glob(pattern: str) -> Callable[[str], bool]:
+    """Compile a grep include-glob into a matcher with ripgrep-like semantics.
+
+    Provides one shared include-glob behavior for every backend so the same
+    `grep(..., glob=...)` call closely mirrors ripgrep for common include
+    patterns, whether or not ripgrep is installed:
+
+    - Patterns without a `/` match the basename at any depth.
+
+        Example: `*.py` matches `src/app/main.py`.
+    - Patterns containing a `/` match the path relative to the grep search
+        root, with `**` support.
+
+        Example: `src/**/*.py` matches `src/app/main.py`.
+    - A leading `/` anchors the pattern to the search root; it narrows the match
+        rather than widening it.
+
+        Example: `/*.py` matches `top.py` but not `src/app/main.py`.
+
+    Exclusion/negation patterns (a leading `!`) are not supported: the `!` is
+    treated literally rather than inverting the match, so results for such
+    patterns can diverge from `rg --glob '!...'`.
+
+    Args:
+        pattern: Glob include pattern.
+
+    Returns:
+        Predicate accepting a search-root-relative POSIX path; returns True when
+        the path is included by `pattern`.
+    """
+    flags = wcglob.BRACE | wcglob.GLOBSTAR
+    # A leading `/` anchors to the search root: strip it so it matches against
+    # the (slash-less) relative path, but decide anchoring from the original
+    # pattern so `/*.py` stays root-anchored instead of collapsing to a
+    # basename-at-any-depth match.
+    anchored = "/" in pattern
+    compiled = wcglob.compile(pattern.lstrip("/"), flags=flags)
+
+    if anchored:
+
+        def matcher(rel_path: str) -> bool:
+            return bool(compiled.match(rel_path))
+    else:
+
+        def matcher(rel_path: str) -> bool:
+            return bool(compiled.match(PurePosixPath(rel_path).name))
+
+    return matcher
 
 
 def _normalize_content(file_data: FileData) -> str:
@@ -629,6 +674,26 @@ def _filter_files_by_path(files: dict[str, Any], normalized_path: str) -> dict[s
     return {fp: fd for fp, fd in files.items() if fp.startswith(dir_prefix)}
 
 
+def _relative_to_root(file_path: str, normalized_path: str) -> str:
+    """Return `file_path` relative to a normalized grep/glob search root.
+
+    Args:
+        file_path: Absolute file path (e.g. "/src/app/main.py").
+        normalized_path: Normalized search root from `_normalize_path`.
+
+    Returns:
+        POSIX path relative to the search root (e.g. "src/app/main.py").
+
+            When `file_path` equals the search root (an exact-file search),
+            returns just the basename.
+    """
+    if normalized_path == "/":
+        return file_path[1:]
+    if file_path == normalized_path:
+        return file_path.rsplit("/", maxsplit=1)[-1]
+    return file_path[len(normalized_path) + 1 :]
+
+
 def _glob_search_files(
     files: dict[str, Any],
     pattern: str,
@@ -747,8 +812,8 @@ def grep_matches_from_files(
     filtered = _filter_files_by_path(files, normalized_path)
 
     if glob:
-        matcher = _compile_glob(glob)
-        filtered = {fp: fd for fp, fd in filtered.items() if matcher.match(Path(fp).name)}
+        matcher = compile_grep_include_glob(glob)
+        filtered = {fp: fd for fp, fd in filtered.items() if matcher(_relative_to_root(fp, normalized_path))}
 
     matches: list[GrepMatch] = []
     for file_path, file_data in filtered.items():

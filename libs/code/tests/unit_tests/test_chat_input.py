@@ -4529,3 +4529,42 @@ class TestPasteCollapseIntegration:
 
             assert len(copied) == 1
             assert copied[0] == big_text
+
+    async def test_paste_content_survives_undoable_clear(self) -> None:
+        """Undoable clear (discard_text) must not delete paste contents.
+
+        After clearing and undoing, the restored placeholder must still
+        have its backing content so submission expands correctly.
+        """
+        big_text = "F" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(big_text)
+            await pilot.pause()
+            assert 1 in chat._pasted_contents
+
+            # Undoable clear empties the text area
+            chat.discard_text()
+            await pilot.pause()
+
+            # Paste contents must survive so undo can restore them
+            assert 1 in chat._pasted_contents
+
+    async def test_orphan_cleanup_skips_empty_text(self) -> None:
+        """Setting text to empty must not trigger orphan cleanup."""
+        big_text = "G" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(big_text)
+            await pilot.pause()
+
+            chat._text_area.text = ""
+            await pilot.pause()
+
+            assert 1 in chat._pasted_contents

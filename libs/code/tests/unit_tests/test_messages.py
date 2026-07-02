@@ -3748,3 +3748,26 @@ class TestUserMessageTruncation:
 
         text = "C" * 10_000
         assert _truncate_for_display(text) == text
+
+    async def test_selection_returns_full_content_not_truncated(self) -> None:
+        """Selecting a truncated message should return the full original text."""
+        from textual.geometry import Offset
+        from textual.selection import Selection
+
+        big = "X" * 12_000
+        msg = UserMessage(big)
+
+        class _TestApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield msg
+
+        app = _TestApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Select the entire message body (skip prefix glyph)
+            selection = Selection(Offset(2, 0), None)
+            result = msg.get_selection(selection)
+            assert result is not None
+            text, _ending = result
+            assert text == big
+            assert "…" not in text

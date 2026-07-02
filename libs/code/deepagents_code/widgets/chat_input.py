@@ -2259,10 +2259,14 @@ class ChatInput(Vertical):
     def _cleanup_orphaned_paste_contents(self, text: str) -> None:
         """Remove stored paste content whose placeholder was deleted from input.
 
+        Skips cleanup when the text area is empty so an undoable clear
+        (``discard_text`` / ctrl+z) can still restore placeholders with their
+        backing content intact.
+
         Args:
             text: Current text in the input area.
         """
-        if not self._pasted_contents:
+        if not self._pasted_contents or not text:
             return
         referenced_ids = {paste_id for paste_id, _, _, _ in parse_paste_refs(text)}
         orphaned = [

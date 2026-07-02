@@ -269,7 +269,11 @@ class UserMessage(Static):
         self.add_class("-cancelled")
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
-        """Exclude the prompt prefix glyph from copied text.
+        """Return selected text from the full content, not the truncated render.
+
+        ``Static.get_selection`` extracts from ``render()``, which truncates
+        long messages.  Override to extract from ``_content`` so copy/select
+        always yields the complete original text.
 
         Args:
             selection: The active selection geometry.
@@ -277,7 +281,27 @@ class UserMessage(Static):
         Returns:
             The `(text, ending)` selection with the prefix removed, or `None`.
         """
-        return _strip_prompt_prefix(super().get_selection(selection), selection)
+        full_render = self._build_full_render()
+        text = str(full_render)
+        return _strip_prompt_prefix((selection.extract(text), "\n"), selection)
+
+    def _build_full_render(self) -> Content:
+        """Build a Content from the full content without display truncation.
+
+        Returns:
+            Content with the mode prefix glyph and the full message body.
+        """
+        colors = theme.get_theme_colors(self)
+        content = self._content
+        mode_match = detect_mode_prefix(content)
+        if mode_match:
+            prefix_text, mode = mode_match
+            glyph = MODE_DISPLAY_GLYPHS.get(mode, prefix_text[0])
+            prefix = (f"{glyph} ", f"bold {_mode_color(mode, self)}")
+            content = content[len(prefix_text) :]
+        else:
+            prefix = ("> ", f"bold {colors.primary}")
+        return Content.assemble(prefix, content)
 
     def text_select_all(self) -> None:
         """Select the message body without the prompt prefix glyph."""
@@ -385,7 +409,7 @@ class QueuedUserMessage(Static):
             self.add_class("-ascii")
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
-        """Exclude the prompt prefix glyph from copied text.
+        """Return selected text from the full content, not the truncated render.
 
         Args:
             selection: The active selection geometry.
@@ -393,7 +417,19 @@ class QueuedUserMessage(Static):
         Returns:
             The `(text, ending)` selection with the prefix removed, or `None`.
         """
-        return _strip_prompt_prefix(super().get_selection(selection), selection)
+        colors = theme.get_theme_colors(self)
+        content = self._content
+        mode_match = detect_mode_prefix(content)
+        if mode_match:
+            prefix_text, mode = mode_match
+            glyph = MODE_DISPLAY_GLYPHS.get(mode, prefix_text[0])
+            prefix = (f"{glyph} ", f"bold {colors.muted}")
+            content = content[len(prefix_text) :]
+        else:
+            prefix = ("> ", f"bold {colors.muted}")
+        full_render = Content.assemble(prefix, content)
+        text = str(full_render)
+        return _strip_prompt_prefix((selection.extract(text), "\n"), selection)
 
     def text_select_all(self) -> None:
         """Select the message body without the prompt prefix glyph."""

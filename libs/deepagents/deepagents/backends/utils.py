@@ -146,7 +146,7 @@ def compile_recursive_glob(pattern: str) -> Callable[[str], bool]:
         Predicate accepting a search-root-relative POSIX path; returns True when
         the path matches `pattern` under recursive-glob semantics.
     """
-    flags = wcglob.BRACE | wcglob.GLOBSTAR
+    flags = wcglob.BRACE | wcglob.GLOBSTAR | wcglob.DOTMATCH
     compiled = wcglob.compile("**/" + pattern.lstrip("/"), flags=flags)
 
     def matcher(rel_path: str) -> bool:

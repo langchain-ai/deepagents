@@ -85,6 +85,23 @@ def test_filesystem_backend_glob_default_matches_backend_root(tmp_path: Path) ->
     assert str(outside_root) not in omitted_paths
 
 
+def test_filesystem_backend_glob_matches_hidden_paths(tmp_path: Path) -> None:
+    root = tmp_path
+    write_file(root / ".env", "TOKEN=value")
+    write_file(root / ".hidden.py", "print('hidden')")
+    write_file(root / ".github" / "workflows" / "ci.yml", "name: ci")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    root_matches = {info["path"] for info in be.glob("*", path="/").matches or []}
+    py_matches = {info["path"] for info in be.glob("*.py", path="/").matches or []}
+    yml_matches = {info["path"] for info in be.glob("**/*.yml", path="/").matches or []}
+
+    assert "/.env" in root_matches
+    assert "/.hidden.py" in py_matches
+    assert "/.github/workflows/ci.yml" in yml_matches
+
+
 def test_filesystem_backend_virtual_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     root = tmp_path
     f1 = root / "a.txt"
@@ -1524,7 +1541,7 @@ class TestGrepPythonFallbackIncludeGlob:
         (tmp_path / "top.py").write_text("import sys\n")
         (tmp_path / "README.md").write_text("import note\n")
         be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
-        monkeypatch.setattr(be, "_ripgrep_search", lambda *_a, **_k: None)
+        monkeypatch.setattr(be, "_ripgrep_search", lambda *_a, **_k: (None, False))
         return be
 
     def _paths(self, be: FilesystemBackend, glob: str, path: str = "/") -> list[str]:

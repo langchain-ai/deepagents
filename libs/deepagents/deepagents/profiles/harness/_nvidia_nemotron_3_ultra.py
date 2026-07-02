@@ -841,16 +841,19 @@ _PLAN_MISSING_NUDGE = (
     "verify by running — then carry it out. Do not finish without it."
 )
 _PLAN_ADHERENCE_NUDGE = (
-    "STOP — do not finish yet. Re-read BOTH the TASK and /tmp/plan.md, and check your "
-    "work against them line by line. For every case, mode, parameter value, and flag "
-    "state the TASK specifies — not only the ones your plan happened to list — confirm "
-    "you ACTUALLY ran it and saw it pass, not that you meant to. In particular: every "
-    "value of every parameter, both states of every boolean flag (run it with the flag "
-    "ON and with it OFF), and the non-trivial configurations (more than one "
-    "worker/shard/item), not just the default or degenerate case. If the task calls for "
-    "a case you skipped — or only ran the easy/degenerate version of — that is "
-    "unfinished work: run it now and fix whatever it surfaces. You are done only when "
-    "every case the task requires has actually run and passed."
+    "STOP — do not finish on a self-assessment. A confident summary is not evidence; the "
+    "only proof is your solution producing the required result from a CLEAN starting "
+    "state. Before finishing: (1) restore every input you edited back to its ORIGINAL "
+    "contents — the working copy you debugged against is contaminated, and a check run "
+    "against it can show 'matches' while the real thing fails; (2) run your solution "
+    "exactly as it is meant to be run — if the task states how it will be exercised, "
+    "reproduce those exact steps from scratch; otherwise re-execute your artifact fresh — "
+    "and read the OBSERVED output; (3) compare that observed output to what the task "
+    "requires, for every case, every parameter value, and both states of any boolean flag "
+    "(run it ON and OFF) — the results you actually see, not the ones you assumed. If "
+    "observed does not match required, that is unfinished work: fix it and re-run. You are "
+    "done only when you have re-run from a clean state and SEEN the required result — not "
+    "when you believe you did."
 )
 
 

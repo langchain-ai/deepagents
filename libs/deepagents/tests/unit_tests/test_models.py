@@ -1309,11 +1309,13 @@ class TestNemotronUltraProfile:
         out = mw.after_model(state, None)
         assert out["jump_to"] == "model"
         assert out["plan_adherence_nudged"] is True
-        content = out["messages"][0].content
-        # Task-anchored: reconcile against the TASK (not only the plan), so a plan that
-        # under-covers still gets caught.
-        assert "plan.md" in content
-        assert "TASK" in content
+        content = out["messages"][0].content.lower()
+        # Empirical, not introspective: demand a re-run from a CLEAN state and reading the
+        # OBSERVED output — a re-read/self-assessment is what lets confident-wrong through.
+        assert "restore" in content or "original" in content or "clean" in content
+        assert "observed" in content or "re-run" in content or "re-execute" in content
+        # Still task-anchored (reconcile against what the task requires).
+        assert "task" in content
         # Fires once.
         assert mw.after_model({**state, "plan_adherence_nudged": True}, None) is None
 

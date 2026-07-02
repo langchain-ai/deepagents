@@ -9331,7 +9331,8 @@ class DeepAgentsApp(App):
         elif cmd == "/remember" or cmd.startswith("/remember "):
             # Convenience alias for /skill:remember — shorter and discoverable
             # before skill loading completes.
-            if not await self._has_conversation_messages():
+            args = command.strip()[len("/remember") :].strip()
+            if not args and not await self._has_conversation_messages():
                 await self._mount_message(UserMessage(command))
                 await self._mount_message(
                     AppMessage(
@@ -9340,7 +9341,6 @@ class DeepAgentsApp(App):
                     ),
                 )
                 return
-            args = command.strip()[len("/remember") :].strip()
             rewritten = f"/skill:remember {args}" if args else "/skill:remember"
             await self._handle_skill_command(rewritten)
         elif cmd == "/skill-creator" or cmd.startswith("/skill-creator "):

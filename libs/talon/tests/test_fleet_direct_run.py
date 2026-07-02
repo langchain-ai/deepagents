@@ -67,8 +67,7 @@ def test_fleet_direct_run_import_and_once_startup_path(
     )
     _assert_secret_free(summary, manifest_text, caplog.text)
     _run_once_startup_path(
-        channel=channel,
-        fleet=fleet,
+        context,
         caplog=caplog,
         monkeypatch=monkeypatch,
     )
@@ -156,9 +155,8 @@ def _assert_import_result(
 
 
 def _run_once_startup_path(
+    context: ImportContext,
     *,
-    channel: Channel,
-    fleet: Path,
     caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -213,22 +211,31 @@ def _run_once_startup_path(
     monkeypatch.setattr(talon_main, "DeepAgentRuntime", RecordingRuntime)
     monkeypatch.setattr(talon_main, "TelegramChannel", RecordingTelegramChannel)
     monkeypatch.setattr(talon_main, "WhatsAppChannel", RecordingWhatsAppChannel)
+    monkeypatch.delenv("DEEPAGENTS_TALON_TELEGRAM_ENABLED", raising=False)
+    monkeypatch.delenv("DEEPAGENTS_TALON_WHATSAPP_ENABLED", raising=False)
     monkeypatch.setattr(
         sys,
         "argv",
-        ["deepagents-talon", "--once", f"--{channel}"],
+        [
+            "deepagents-talon",
+            "run-fleet",
+            "--assistant-id",
+            context.assistant_id,
+            "--once",
+        ],
     )
 
-    with caplog.at_level(logging.INFO):
+    with caplog.at_level(logging.INFO), pytest.raises(SystemExit) as exc:
         talon_main.main()
 
-    assert [adapter.provider for adapter in channels] == [channel]
+    assert exc.value.code == 0
+    assert [adapter.provider for adapter in channels] == [context.channel]
     assert len(runtimes) == 1
     assert runtimes[0].model == "fleet:model"
     assert runtimes[0].started is True
     assert runtimes[0].stopped is True
-    assert load_calls == [(fleet, runtimes[0].env)]
-    assert load_calls[0][1]["DEEPAGENTS_TALON_FLEET_DIR"] == str(fleet)
+    assert load_calls == [(context.fleet.resolve(), runtimes[0].env)]
+    assert load_calls[0][1]["DEEPAGENTS_TALON_FLEET_DIR"] == str(context.fleet.resolve())
     assert load_calls[0][1]["LANGSMITH_API_KEY"] == OAUTH_TOKEN
     _assert_secret_free(caplog.text)
 

@@ -62,33 +62,34 @@ setup tasks, but missing local replacements do not block import. The default
 follow-up target for local MCP replacement configuration is the same manifest file,
 `<assistant-home>/agent/tools.json`.
 
-Run the imported Fleet export through the selected channel by using the same
-assistant id, Fleet directory, and channel activation path. For Telegram:
+Run the imported Fleet export through the selected channel by assistant id:
 
 ```bash
-DEEPAGENTS_TALON_FLEET_DIR=./fleet \
-DEEPAGENTS_TALON_TELEGRAM_ENABLED=true \
+uv run deepagents-talon run-fleet --assistant-id fleet-local
+```
+
+Use `uv run deepagents-talon run-fleet --assistant-id fleet-local --once` as a
+local startup check before leaving the host running. `run-fleet` activates the
+imported channel without requiring `DEEPAGENTS_TALON_<CHANNEL>_ENABLED`. Existing
+channel flags such as `--whatsapp` and `--telegram` can still be passed to attach
+additional adapters for the same run.
+
+For Telegram, provide the Bot API token and an exposure policy:
+
+```bash
 DEEPAGENTS_TALON_TELEGRAM_BOT_TOKEN=<telegram-bot-token> \
 DEEPAGENTS_TALON_TELEGRAM_EXPOSURE=allowlist \
 DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_USERS=<telegram-user-id> \
 DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_CHATS=<telegram-chat-id> \
-AGENT_ASSISTANT_ID=fleet-local \
-uv run deepagents-talon --telegram
+uv run deepagents-talon run-fleet --assistant-id fleet-local
 ```
 
 For WhatsApp:
 
 ```bash
-DEEPAGENTS_TALON_FLEET_DIR=./fleet \
-DEEPAGENTS_TALON_WHATSAPP_ENABLED=true \
 DEEPAGENTS_TALON_WHATSAPP_EXPOSURE=self \
-AGENT_ASSISTANT_ID=fleet-local \
-uv run deepagents-talon --whatsapp
+uv run deepagents-talon run-fleet --assistant-id fleet-local
 ```
-
-Use `uv run deepagents-talon --once --telegram` or
-`uv run deepagents-talon --once --whatsapp` as a local startup check before
-leaving the host running.
 
 In Fleet mode, Talon uses the model from `fleet/config.json` unless
 `DEEPAGENTS_TALON_MODEL` or `AGENT_MODEL` is set. The Fleet loader resolves MCP
@@ -101,24 +102,10 @@ tokens into the manifest, README examples, or command history. Locally-authored
 agents without `DEEPAGENTS_TALON_FLEET_DIR` continue to load from the assistant
 manifest directory and Talon's plain MCP config discovery.
 
-To persist the Fleet directory and selected local channel in the assistant manifest, import the export once and run it by assistant id:
+OAuth-backed Fleet MCP tools must be authorized once from an interactive shell before starting a headless host. Run the imported assistant in `--once` mode with the same Fleet directory and LangSmith environment you will use in production, complete the browser authorization if prompted, then start the long-running host:
 
 ```bash
-uv run deepagents-talon import-fleet ./fleet \
-  --assistant-id fleet-local \
-  --channel telegram
-
 uv run deepagents-talon run-fleet --assistant-id fleet-local --once
-```
-
-`run-fleet` activates the imported channel without requiring `DEEPAGENTS_TALON_<CHANNEL>_ENABLED`. Existing channel flags such as `--whatsapp` and `--telegram` can still be passed to attach additional adapters for the same run.
-
-OAuth-backed Fleet MCP tools must be authorized once from an interactive shell before starting a headless host. Run the host in `--once` mode with the same Fleet directory and LangSmith environment you will use in production, complete the browser authorization if prompted, then start the long-running host:
-
-```bash
-DEEPAGENTS_TALON_FLEET_DIR=./fleet \
-AGENT_ASSISTANT_ID=fleet-local \
-uv run deepagents-talon --once
 ```
 
 During a long-running Fleet session, Talon treats a 401/403 from an MCP tool as an expired OAuth credential signal. It reloads the Fleet components once, which re-mints tokens and rebuilds MCP connections, then retries the failed graph invocation once. If authorization still fails, Talon returns a structured `mcp_auth_failed` error instead of looping.

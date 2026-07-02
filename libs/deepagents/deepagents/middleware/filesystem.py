@@ -13,7 +13,7 @@ from binascii import Error as BinasciiError
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
+from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, NotRequired, cast
 
 if TYPE_CHECKING:
     from langchain_core.runnables.config import RunnableConfig
@@ -106,10 +106,10 @@ _DEFAULT_FS_TOOL_OPS: dict[str, FilesystemOperation] = {
 }
 """Default mapping from filesystem tool name to its operation category."""
 
-_READ_FILE_MEDIA_RESULT = "read_file_media_result"
+_READ_FILE_MEDIA_RESULT: Final = "read_file_media_result"
 """`additional_kwargs` key marking synthetic `HumanMessage` media from `read_file`."""
 
-_VIDEO_SAMPLING_RATE = 0.5
+_VIDEO_SAMPLING_RATE: Final = 0.5
 """Seconds between sampled frames when extracting stills from a video."""
 
 
@@ -197,7 +197,7 @@ def _handle_video_read(
             duration_seconds=duration_seconds,
             sampling_rate=rate,
         )
-    except VideoExtractionError as exc:
+    except (VideoExtractionError, ValueError) as exc:
         return _err(str(exc))
     blocks.insert(0, {"type": "text", "text": header})
     frame_count = sum(1 for block in blocks if isinstance(block, dict) and block.get("type") == "image")
@@ -1263,7 +1263,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
             return content
 
-        def _handle_read_result(  # noqa: PLR0911
+        def _handle_read_result(  # noqa: PLR0911  # one branch per distinct read-result disposition
             read_result: ReadResult | str,
             validated_path: str,
             tool_call_id: str | None,

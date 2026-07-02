@@ -1,9 +1,9 @@
-"""Video frame extraction for filesystem and request media handling.
+"""Video frame extraction for filesystem reads.
 
 This module is the boundary between Deep Agents middleware and the optional
 video backend (PyAV). It imports PyAV lazily so a `deepagents` install without
 the `[video]` extra stays lightweight; the import only fires when the agent
-actually tries to read or transform a video.
+actually tries to read a video.
 
 For each video read the module decodes a contiguous slice of the source
 (`offset`-seconds skip, `limit`-seconds window) and emits sampled
@@ -38,7 +38,7 @@ MAX_VIDEO_FRAME_PIXELS: Final = 1920 * 1080
 """Maximum pixel count a decoded frame may have before being downscaled."""
 
 MAX_VIDEO_FRAME_SIDE: Final = 4096
-"""Maximum width or height of a decoded frame before being downscaled."""
+"""Maximum width or height of a decoded frame before it is rejected."""
 
 MAX_VIDEO_OUTPUT_WIDTH: Final = 1920
 """Target width (pixels) for frames emitted to the model."""
@@ -50,7 +50,7 @@ MAX_VIDEO_EMITTED_BYTES: Final = 4 * 1024 * 1024
 """Maximum total encoded byte size for the frame set returned from one read."""
 
 MAX_VIDEO_DECODE_SECONDS: Final = 10.0
-"""Maximum source duration (seconds) decoded in a single read call."""
+"""Wall-clock deadline (seconds) for decoding frames in a single read call."""
 
 _JPEG_QUALITY: Final = 85
 """JPEG quality (1-100) used when encoding sampled frames."""
@@ -60,7 +60,7 @@ class VideoExtractionError(RuntimeError):
     """Raised when PyAV cannot produce frames for the requested window."""
 
 
-def _import_av() -> Any:  # noqa: ANN401
+def _import_av() -> Any:  # noqa: ANN401  # PyAV types are unavailable without the [video] extra
     """Import PyAV lazily so the dep stays optional.
 
     Returns:
@@ -133,7 +133,14 @@ def extract_video_frames(
     try:
         try:
             video_stream = _find_video_stream(container)
-            time_base = float(video_stream.time_base)
+            raw_time_base = video_stream.time_base
+            if raw_time_base is None:
+                msg = "Video stream has no time_base; cannot determine frame timestamps"
+                raise VideoExtractionError(msg)
+            time_base = float(raw_time_base)
+            if time_base == 0.0:
+                msg = "Video stream time_base is zero; cannot determine frame timestamps"
+                raise VideoExtractionError(msg)
             stream_start_seconds = _stream_start_seconds(video_stream, time_base)
             if offset_seconds > 0:
                 # `seek` keeps the math correct across containers that already sit
@@ -166,7 +173,7 @@ def extract_video_frames(
     return blocks
 
 
-def _open_video_container(av: Any, content: bytes) -> Any:  # noqa: ANN401
+def _open_video_container(av: Any, content: bytes) -> Any:  # noqa: ANN401  # PyAV types are unavailable without the [video] extra
     """Open a video byte payload, normalizing PyAV's failure modes.
 
     PyAV typically raises `av.error.InvalidDataError` for malformed inputs,
@@ -181,7 +188,7 @@ def _open_video_container(av: Any, content: bytes) -> Any:  # noqa: ANN401
         raise VideoExtractionError(msg) from exc
 
 
-def _video_backend_error_types(av: Any) -> tuple[type[BaseException], ...]:  # noqa: ANN401
+def _video_backend_error_types(av: Any) -> tuple[type[BaseException], ...]:  # noqa: ANN401  # PyAV types are unavailable without the [video] extra
     """Return backend failures that should surface as `VideoExtractionError`."""
     errors: list[type[BaseException]] = [OSError]
     av_error = getattr(av, "error", None)
@@ -196,7 +203,7 @@ def _video_backend_error_types(av: Any) -> tuple[type[BaseException], ...]:  # n
     return tuple(errors)
 
 
-def _find_video_stream(container: Any) -> Any:  # noqa: ANN401
+def _find_video_stream(container: Any) -> Any:  # noqa: ANN401  # PyAV types are unavailable without the [video] extra
     """Return the first video stream in `container` or raise."""
     video_stream = next((s for s in container.streams if s.type == "video"), None)
     if video_stream is None:
@@ -205,18 +212,18 @@ def _find_video_stream(container: Any) -> Any:  # noqa: ANN401
     return video_stream
 
 
-def _stream_start_pts(video_stream: Any) -> int:  # noqa: ANN401
+def _stream_start_pts(video_stream: Any) -> int:  # noqa: ANN401  # PyAV types are unavailable without the [video] extra
     """Return the stream start timestamp in stream time-base units."""
     start_time = getattr(video_stream, "start_time", None)
     return int(start_time) if start_time is not None else 0
 
 
-def _stream_start_seconds(video_stream: Any, time_base: float) -> float:  # noqa: ANN401
+def _stream_start_seconds(video_stream: Any, time_base: float) -> float:  # noqa: ANN401  # PyAV types are unavailable without the [video] extra
     """Return the stream start timestamp in seconds."""
     return _stream_start_pts(video_stream) * time_base
 
 
-def _frame_seconds(frame: Any, *, time_base: float, stream_start_seconds: float) -> float | None:  # noqa: ANN401
+def _frame_seconds(frame: Any, *, time_base: float, stream_start_seconds: float) -> float | None:  # noqa: ANN401  # PyAV types are unavailable without the [video] extra
     """Return a frame timestamp normalized to seconds from the video start."""
     pts = getattr(frame, "pts", None)
     if pts is not None:
@@ -227,7 +234,7 @@ def _frame_seconds(frame: Any, *, time_base: float, stream_start_seconds: float)
     return None
 
 
-def _frame_dimensions(frame: Any) -> tuple[int, int] | None:  # noqa: ANN401
+def _frame_dimensions(frame: Any) -> tuple[int, int] | None:  # noqa: ANN401  # PyAV types are unavailable without the [video] extra
     """Return frame dimensions when the decoder exposes them."""
     width = getattr(frame, "width", None)
     height = getattr(frame, "height", None)
@@ -253,7 +260,7 @@ def _check_decode_deadline(deadline_seconds: float | None) -> None:
 
 
 def _sample_frames_in_window(
-    decoded_frames: Any,  # noqa: ANN401
+    decoded_frames: Any,  # noqa: ANN401  # PyAV types are unavailable without the [video] extra
     *,
     offset_seconds: float,
     duration_seconds: float,
@@ -270,6 +277,8 @@ def _sample_frames_in_window(
     blocks: list[ContentBlock] = []
     emitted_frames = 0
     emitted_bytes = 0
+    last_emitted_seconds: float | None = None
+    truncated = False
     try:
         for frame in decoded_frames:
             _check_decode_deadline(deadline_seconds)
@@ -290,9 +299,10 @@ def _sample_frames_in_window(
                 if emitted_frames == 0:
                     msg = f"Video frame output exceeded the {MAX_VIDEO_EMITTED_BYTES} byte safety budget before emitting a frame"
                     raise VideoExtractionError(msg)
+                truncated = True
                 break
 
-            blocks.append({"type": "text", "text": f"Frame at t={ts}"})
+            blocks.append({"type": "text", "text": text})
             blocks.append(
                 {
                     "type": "image",
@@ -302,7 +312,9 @@ def _sample_frames_in_window(
             )
             emitted_frames += 1
             emitted_bytes += next_block_bytes
+            last_emitted_seconds = frame_seconds
             if emitted_frames >= MAX_VIDEO_SAMPLED_FRAMES:
+                truncated = True
                 break
             emitted_index = math.floor((frame_seconds - offset_seconds) / frame_interval_seconds) + 1
             next_emit_seconds = max(
@@ -312,10 +324,22 @@ def _sample_frames_in_window(
     except decode_error_types as exc:
         msg = f"Failed to decode video frames: {exc}"
         raise VideoExtractionError(msg) from exc
+    if truncated and last_emitted_seconds is not None:
+        last_ts = _format_timestamp(last_emitted_seconds)
+        blocks.append(
+            {
+                "type": "text",
+                "text": (
+                    f"Coverage truncated at t={last_ts}: the output or frame cap was reached "
+                    f"before the full window was decoded. Re-read with a narrower window "
+                    f"(e.g. offset={last_emitted_seconds:.3f}) to see the remaining frames."
+                ),
+            }
+        )
     return blocks
 
 
-def _encode_jpeg(frame: Any) -> bytes:  # noqa: ANN401
+def _encode_jpeg(frame: Any) -> bytes:  # noqa: ANN401  # PyAV types are unavailable without the [video] extra
     """Encode a decoded PyAV frame as JPEG bytes via Pillow.
 
     Pillow is part of the `video` extra, and the import stays lazy so module

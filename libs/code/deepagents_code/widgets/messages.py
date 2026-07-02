@@ -1255,6 +1255,10 @@ class ToolCallMessage(Vertical):
     def set_success(self, result: str = "") -> None:
         """Mark the tool call as successful.
 
+        For `execute` calls that actually ran (a start time was recorded via
+        `set_running`), the elapsed run time is shown in place of the usual
+        success marker; every other tool routes through `_show_success_status`.
+
         Args:
             result: Tool output/result to display
         """
@@ -1263,15 +1267,14 @@ class ToolCallMessage(Vertical):
         self._status = "success"
         # Strip redundant success trailer — the UI already conveys success
         self._output = _strip_success_exit_line(result)
-        if self._tool_name == "execute" and elapsed is not None:
-            if self._status_widget:
-                self._status_widget.remove_class("pending")
-                # `execute` calls can run for a while, so keep the row and report
-                # how long the command took once the spinner stops.
-                self._status_widget.update(
-                    Content.styled(f"Took {format_duration(elapsed)}", "dim")
-                )
-                self._status_widget.display = True
+        if self._tool_name == "execute" and elapsed is not None and self._status_widget:
+            self._status_widget.remove_class("pending")
+            # `execute` calls can run for a while, so keep the row and report
+            # how long the command took once the spinner stops.
+            self._status_widget.update(
+                Content.styled(f"Took {format_duration(elapsed)}", "dim")
+            )
+            self._status_widget.display = True
         else:
             self._show_success_status()
         self._update_output_display()

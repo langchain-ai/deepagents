@@ -680,16 +680,7 @@ class TestToolCallMessageDuration:
 
     async def test_execute_shows_took_after_success(self) -> None:
         """`execute` keeps its status row and reports how long it ran."""
-
-        class _Harness(App[None]):
-            def __init__(self) -> None:
-                super().__init__()
-                self.msg = ToolCallMessage("execute", {"command": "sleep 1"})
-
-            def compose(self) -> ComposeResult:
-                yield self.msg
-
-        app = _Harness()
+        app = _tool_msg_app("execute", {"command": "sleep 1"})
         async with app.run_test() as pilot:
             await pilot.pause()
             app.msg.set_running()
@@ -704,18 +695,48 @@ class TestToolCallMessageDuration:
             assert isinstance(content, Content)
             assert content.plain == "Took 5s"
 
+    async def test_execute_shows_fractional_seconds(self) -> None:
+        """Sub-minute `execute` runs report tenths — `elapsed` is a float.
+
+        The running spinner truncates to whole seconds, but `set_success`
+        passes the raw float to `format_duration`, so a regression that
+        truncated `elapsed` to `int` would be caught here.
+        """
+        app = _tool_msg_app("execute", {"command": "true"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_running()
+            app.msg._start_time -= 0.3  # ty: ignore
+            app.msg.set_success("done")
+            await pilot.pause()
+
+            status = app.msg._status_widget
+            assert status is not None
+            content = status._Static__content  # ty: ignore
+            assert isinstance(content, Content)
+            assert content.plain == "Took 0.3s"
+
+    async def test_execute_without_run_falls_back_to_success_status(self) -> None:
+        """`execute` success with no recorded start time hides the row.
+
+        Without a prior `set_running`, `_start_time` is `None`, so the
+        `elapsed is not None` guard must route to `_show_success_status`
+        (which hides the row here because output is present) rather than
+        computing a duration from `None` and crashing.
+        """
+        app = _tool_msg_app("execute", {"command": "true"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("done")
+            await pilot.pause()
+
+            status = app.msg._status_widget
+            assert status is not None
+            assert status.display is False
+
     async def test_non_execute_hides_status_on_success(self) -> None:
-        """Non-`execute` tools still hide the status row on success."""
-
-        class _Harness(App[None]):
-            def __init__(self) -> None:
-                super().__init__()
-                self.msg = ToolCallMessage("read_file", {"file_path": "a.py"})
-
-            def compose(self) -> ComposeResult:
-                yield self.msg
-
-        app = _Harness()
+        """Non-`execute` tools hide the status row and never show a duration."""
+        app = _tool_msg_app("read_file", {"file_path": "a.py"})
         async with app.run_test() as pilot:
             await pilot.pause()
             app.msg.set_running()
@@ -725,6 +746,8 @@ class TestToolCallMessageDuration:
             status = app.msg._status_widget
             assert status is not None
             assert status.display is False
+            content = status._Static__content  # ty: ignore
+            assert "Took" not in getattr(content, "plain", str(content))
 
 
 class TestToolCallMessageTodos:

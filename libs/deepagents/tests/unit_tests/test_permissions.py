@@ -255,6 +255,12 @@ class TestFindDeleteDenyPatterns:
             pytest.param("/work/secrets", "/work/logs", [], id="sibling-leaf"),
             # Single-component file glob: non-matching siblings are allowed
             pytest.param("/work/*.log", "/work/notes.txt", [], id="file-glob-does-not-block-non-matching-sibling"),
+            # Single-component wildcard: ancestor that matches the glob blocks
+            # delete of its descendants (wildcard-denied dirs get the same
+            # protection as literal-denied dirs)
+            pytest.param("/work/*", "/work/app/child", ["/work/*"], id="wildcard-ancestor-blocks-descendant-delete"),
+            pytest.param("/work/*.log", "/work/app.log/child", ["/work/*.log"], id="file-glob-ancestor-blocks-descendant-delete"),
+            pytest.param("/work/*", "/work/app/deep/nested", ["/work/*"], id="wildcard-ancestor-blocks-deep-descendant-delete"),
             # Directory wildcard after anchor: target below anchor is blocked (fail closed)
             pytest.param("/work/*/secrets", "/work/app", ["/work/*/secrets"], id="dir-wildcard-blocks-ancestor-target"),
             pytest.param("/work/**/secrets", "/work/app", ["/work/**/secrets"], id="globstar-wildcard-blocks-ancestor-target"),

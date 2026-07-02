@@ -297,6 +297,55 @@ def _check_fs_permission(
     return "allow"
 
 
+def _wildcard_delete_overlap(pattern: str, anchor: str, target: str) -> bool:
+    """Check whether a wildcard deny pattern overlaps a recursive delete target.
+
+    Args:
+        pattern: The original glob pattern (e.g. ``/work/*.log``).
+        anchor: The longest wildcard-free prefix of ``pattern``.
+        target: The absolute path being recursively deleted.
+
+    Returns:
+        True if the pattern's matches intersect the delete subtree.
+    """
+    # Root anchor ("/**/x"): pattern can match anywhere, block all.
+    if anchor == "/":
+        return True
+    # Target directly matches the glob: block.
+    if wcglob.globmatch(target, pattern, flags=_FS_WCMATCH_FLAGS):
+        return True
+    # Anchor is inside the delete subtree: recursive delete would remove
+    # matching descendants — block.
+    if PurePosixPath(anchor).is_relative_to(PurePosixPath(target)):
+        return True
+    # Target is below the anchor: safe to allow ONLY when the pattern suffix
+    # is a single, non-** component (fixed depth) AND no ancestor of the
+    # target matches the glob. "/work/*.log" can never match anything under
+    # "/work/notes.txt". But "/work/*" matches "/work/app", so deleting
+    # "/work/app/child" mutates a denied path's contents and must be blocked.
+    # Patterns with directory wildcards ("/work/*/secrets") could match
+    # descendants of the target, so fail closed for those.
+    if not PurePosixPath(target).is_relative_to(PurePosixPath(anchor)):
+        return False
+    anchor_parts = PurePosixPath(anchor).parts
+    pattern_parts = PurePosixPath(pattern).parts
+    suffix = pattern_parts[len(anchor_parts) :]
+    if len(suffix) != 1 or "**" in suffix[0]:
+        return True
+    # Check whether any ancestor of the target (between anchor and target)
+    # matches the glob. If so, the target is inside a denied directory's
+    # subtree.
+    target_parts = PurePosixPath(target).parts
+    return any(
+        wcglob.globmatch(
+            str(PurePosixPath(*target_parts[:depth])),
+            pattern,
+            flags=_FS_WCMATCH_FLAGS,
+        )
+        for depth in range(len(anchor_parts), len(target_parts))
+    )
+
+
 def _find_delete_deny_patterns(rules: list[FilesystemPermission], target: str) -> list[str]:
     """Return deny-write patterns that block deleting `target`.
 
@@ -321,38 +370,7 @@ def _find_delete_deny_patterns(rules: list[FilesystemPermission], target: str) -
                 continue
             anchor = _glob_anchor(pattern)
             if any(c in _GLOB_WILDCARD_CHARS for c in pattern):
-                # Wildcard pattern — three cases in priority order:
-                # 1. Root anchor ("/**/x"): pattern can match anywhere, block all.
-                # 2. Target directly matches the glob: block.
-                # 3. Anchor is inside the delete subtree (anchor.is_relative_to(target)):
-                #    recursive delete would remove matching descendants — block.
-                # 4. Target is below the anchor (target.is_relative_to(anchor)):
-                #    safe to allow ONLY when the pattern suffix is a single,
-                #    non-** component (fixed depth). "/work/*.log" can never match
-                #    anything under "/work/notes.txt". Patterns with directory
-                #    wildcards after the anchor ("/work/*/secrets",
-                #    "/work/**/secrets") could match descendants of the target,
-                #    so we fail closed for those.
-                if (
-                    anchor == "/"
-                    or wcglob.globmatch(target, pattern, flags=_FS_WCMATCH_FLAGS)
-                    or PurePosixPath(anchor).is_relative_to(PurePosixPath(target))
-                ):
-                    overlaps = True
-                elif PurePosixPath(target).is_relative_to(PurePosixPath(anchor)):
-                    # Target is below anchor. Safe to allow only when the pattern
-                    # suffix is a single non-** component (fixed depth): a file glob
-                    # like "*.log" can never match anything under a sibling target.
-                    # Patterns with directory wildcards ("/work/*/secrets") could
-                    # match descendants of target, so fail closed for those.
-                    anchor_parts = PurePosixPath(anchor).parts
-                    pattern_parts = PurePosixPath(pattern).parts
-                    suffix = pattern_parts[len(anchor_parts) :]
-                    single_filename_glob = len(suffix) == 1 and "**" not in suffix[0]
-                    overlaps = not single_filename_glob
-                else:
-                    # No subtree relationship at all — unrelated paths.
-                    overlaps = False
+                overlaps = _wildcard_delete_overlap(pattern, anchor, target)
             else:
                 # Literal pattern (no wildcards): keep the original subtree-overlap
                 # check so that a deny on "/work" blocks deletes of "/work/sub".

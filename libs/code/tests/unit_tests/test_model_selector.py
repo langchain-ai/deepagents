@@ -1646,7 +1646,7 @@ class TestCuratedModelSelection:
             ("openai:gpt-5.4", "openai"),
             ("anthropic:claude-opus-4-7", "anthropic"),
             ("google_genai:gemini-3.1-pro-preview", "google_genai"),
-            ("anthropic:claude-opus-4-6", "anthropic"),
+            ("anthropic:claude-opus-4-8", "anthropic"),
         ]
 
         curated = ModelSelectorScreen._curate_models(all_models)
@@ -1656,21 +1656,21 @@ class TestCuratedModelSelection:
             ("openai:gpt-5.4", "openai"),
             ("anthropic:claude-opus-4-7", "anthropic"),
             ("google_genai:gemini-3.1-pro-preview", "google_genai"),
-            ("anthropic:claude-opus-4-6", "anthropic"),
+            ("anthropic:claude-opus-4-8", "anthropic"),
         ]
 
     def test_curated_models_limit_to_frontier_subset(self) -> None:
         """Current/default models outside the frontier subset should stay hidden."""
         all_models = [
             ("openai:gpt-5.3-codex", "openai"),
-            ("anthropic:claude-opus-4-6", "anthropic"),
+            ("anthropic:claude-opus-4-8", "anthropic"),
             ("anthropic:claude-sonnet-4-5", "anthropic"),
         ]
 
         curated = ModelSelectorScreen._curate_models(all_models)
 
         assert curated == [
-            ("anthropic:claude-opus-4-6", "anthropic"),
+            ("anthropic:claude-opus-4-8", "anthropic"),
         ]
 
     def test_curated_models_fall_back_when_frontier_unavailable(self) -> None:

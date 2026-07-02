@@ -3351,3 +3351,201 @@ class TestUserMessageCancelled:
             msg.set_cancelled()
             await pilot.pause()
             assert msg.has_class("-cancelled")
+
+
+class TestSummarizeToolGroup:
+    """Tests for the tool-group summary phrasing."""
+
+    @pytest.mark.parametrize(
+        ("names", "expected"),
+        [
+            (["execute"], "Ran 1 shell command"),
+            (
+                ["read_file", "read_file", "execute", "execute", "execute"],
+                "Read 2 files, ran 3 shell commands",
+            ),
+            (["grep"], "Searched for 1 pattern"),
+            (["grep", "glob", "glob"], "Searched for 3 patterns"),
+            (["read_file"], "Read 1 file"),
+            (["web_search", "web_search"], "Searched the web 2 times"),
+            (["web_search"], "Searched the web"),
+            (["write_todos"], "Updated todos"),
+            (["task", "task"], "Ran 2 agents"),
+            (
+                ["edit_file", "write_file", "read_file"],
+                "Edited 1 file, wrote 1 file, read 1 file",
+            ),
+            (["mystery", "mystery"], "Ran 2 mystery calls"),
+        ],
+    )
+    def test_summary_phrasing(self, names: list[str], expected: str) -> None:
+        """The summary aggregates by category and lowercases trailing verbs."""
+        from deepagents_code.widgets.messages import summarize_tool_group
+
+        assert summarize_tool_group(names) == expected
+
+    def test_empty_group_has_fallback(self) -> None:
+        """An empty tool list yields a generic fallback rather than crashing."""
+        from deepagents_code.widgets.messages import summarize_tool_group
+
+        assert summarize_tool_group([]) == "Ran tools"
+
+
+class _ToolGroupApp(App[None]):
+    """Minimal app mounting two completed tools plus a group summary."""
+
+    def compose(self) -> ComposeResult:
+        from deepagents_code.widgets.messages import ToolGroupSummary
+
+        t1 = ToolCallMessage("read_file", {"file_path": "a.py"})
+        t1.id = "t1"
+        t2 = ToolCallMessage("execute", {"command": "ls"})
+        t2.id = "t2"
+        summary = ToolGroupSummary(tools=[t1, t2], collapsible=[t1, t2])
+        summary.id = "summary"
+        yield summary
+        yield t1
+        yield t2
+
+
+class TestToolGroupSummary:
+    """Runtime collapse/expand behavior for the group summary widget."""
+
+    async def test_collapsed_hides_members_and_renders_summary(self) -> None:
+        """On mount the summary collapses its members and shows the count line."""
+        from deepagents_code.widgets.messages import ToolGroupSummary
+
+        async with _ToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            t1 = pilot.app.query_one("#t1", ToolCallMessage)
+            t2 = pilot.app.query_one("#t2", ToolCallMessage)
+
+            assert summary._collapsed is True
+            assert t1.display is False
+            assert t2.display is False
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Read 1 file, ran 1 shell command" in rendered.plain
+
+    async def test_toggle_expands_and_recollapses_members(self) -> None:
+        """Toggling flips member visibility and the disclosure glyph."""
+        from deepagents_code.widgets.messages import ToolGroupSummary
+
+        async with _ToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            t1 = pilot.app.query_one("#t1", ToolCallMessage)
+            t2 = pilot.app.query_one("#t2", ToolCallMessage)
+
+            summary.toggle()
+            await pilot.pause()
+            assert summary._collapsed is False
+            assert t1.display is True
+            assert t2.display is True
+
+            summary.toggle()
+            await pilot.pause()
+            assert summary._collapsed is True
+            assert t1.display is False
+            assert t2.display is False
+
+    async def test_has_attached_members_tracks_removal(self) -> None:
+        """`has_attached_members` flips to False once members are removed."""
+        from deepagents_code.widgets.messages import ToolGroupSummary
+
+        async with _ToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            assert summary.has_attached_members is True
+
+            await pilot.app.query_one("#t1", ToolCallMessage).remove()
+            await pilot.app.query_one("#t2", ToolCallMessage).remove()
+            await pilot.pause()
+            assert summary.has_attached_members is False
+
+
+class TestSummarizeToolGroupPresentTense:
+    """Present-tense phrasing used while a step's tools are still running."""
+
+    def test_present_tense(self) -> None:
+        from deepagents_code.widgets.messages import summarize_tool_group
+
+        assert (
+            summarize_tool_group(["execute"], tense="present")
+            == "Running 1 shell command"
+        )
+        assert (
+            summarize_tool_group(["read_file", "read_file", "grep"], tense="present")
+            == "Reading 2 files, searching for 1 pattern"
+        )
+
+
+class _LiveToolGroupApp(App[None]):
+    """Minimal app with an empty live group and two tools to add to it."""
+
+    def compose(self) -> ComposeResult:
+        from deepagents_code.widgets.messages import ToolGroupSummary
+
+        summary = ToolGroupSummary(live=True)
+        summary.id = "summary"
+        t1 = ToolCallMessage("execute", {"command": "ls"})
+        t1.id = "t1"
+        t2 = ToolCallMessage("read_file", {"file_path": "a.py"})
+        t2.id = "t2"
+        yield summary
+        yield t1
+        yield t2
+
+
+class TestLiveToolGroupSummary:
+    """Eager/live group: collapsed from the start, running -> ran transition."""
+
+    async def test_present_tense_while_running_then_past_on_close(self) -> None:
+        from deepagents_code.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            t1 = pilot.app.query_one("#t1", ToolCallMessage)
+
+            # add_member renders synchronously; avoid pilot.pause() while the
+            # live spinner timer is running (it keeps the app from going idle).
+            summary.add_member(t1)
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Running 1 shell command" in rendered.plain
+            assert t1.display is False  # collapsed from the start
+
+            t1.set_success("done")
+            summary.close()  # stops the spinner timer, flips to past tense
+
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Ran 1 shell command" in rendered.plain
+            assert t1.display is False
+            # Survives the idle tick after close — guards against the summary's
+            # state attributes colliding with Textual's MessagePump internals
+            # (e.g. `_closed`), which would silently prune the widget.
+            await pilot.pause()
+            assert summary.is_attached
+            assert bool(pilot.app.query(ToolGroupSummary))
+
+    async def test_failed_member_is_evicted_on_close(self) -> None:
+        from deepagents_code.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            t1 = pilot.app.query_one("#t1", ToolCallMessage)
+            t2 = pilot.app.query_one("#t2", ToolCallMessage)
+
+            summary.add_member(t1)
+            summary.add_member(t2)
+            t1.set_error("boom")
+            t2.set_success("ok")
+            summary.close()
+            await pilot.pause()
+
+            # The errored tool is un-folded; the successful one stays collapsed.
+            assert t1.display is True
+            assert not t1.has_class("-grouped")
+            assert t2.display is False
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Read 1 file" in rendered.plain

@@ -21,10 +21,12 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
 
     from langchain_core.messages import HumanMessage
+    from textual.pilot import Pilot
 
     from deepagents_code.mcp_auth import McpServerSpec
     from deepagents_code.notifications import PendingNotification
     from deepagents_code.sessions import ThreadInfo
+    from deepagents_code.widgets.messages import ToolCallMessage
 
 import pytest
 from textual import events
@@ -3597,25 +3599,18 @@ class TestAskUserLifecycle:
 
     def test_ctrl_o_falls_back_to_tool_with_expandable_args(self) -> None:
         """When no ask_user is pending, Ctrl+O still expands an ask_user-like row."""
+        from deepagents_code.widgets.messages import ToolCallMessage
+
         app = DeepAgentsApp(agent=MagicMock())
         app._pending_ask_user_widget = None
-        tool = MagicMock()
+        tool = MagicMock(spec=ToolCallMessage)
+        tool.has_class.return_value = False
         tool.has_output = False
         tool.has_expandable_args = True
+        container = MagicMock()
+        container.children = [tool]
 
-        def fake_query(query_type: object) -> list[object]:
-            from deepagents_code.widgets.messages import (
-                SkillMessage,
-                ToolCallMessage,
-            )
-
-            if query_type is ToolCallMessage:
-                return [tool]
-            if query_type is SkillMessage:
-                return []
-            return []
-
-        with patch.object(app, "query", side_effect=fake_query):
+        with patch.object(app, "query_one", return_value=container):
             app.action_toggle_tool_output()
 
         tool.toggle_args.assert_called_once_with()
@@ -3628,60 +3623,96 @@ class TestAskUserLifecycle:
         which used to swallow the toggle and leave the collapsible code block
         stuck. The action must fall through to args in that case.
         """
+        from deepagents_code.widgets.messages import ToolCallMessage
+
         app = DeepAgentsApp(agent=MagicMock())
         app._pending_ask_user_widget = None
-        tool = MagicMock()
+        tool = MagicMock(spec=ToolCallMessage)
+        tool.has_class.return_value = False
         tool.has_output = True
         tool.has_expandable_output = False  # short result, nothing to expand
         tool.has_expandable_args = True  # multi-line code block
+        container = MagicMock()
+        container.children = [tool]
 
-        def fake_query(query_type: object) -> list[object]:
-            from deepagents_code.widgets.messages import (
-                SkillMessage,
-                ToolCallMessage,
-            )
-
-            if query_type is ToolCallMessage:
-                return [tool]
-            if query_type is SkillMessage:
-                return []
-            return []
-
-        with patch.object(app, "query", side_effect=fake_query):
+        with patch.object(app, "query_one", return_value=container):
             app.action_toggle_tool_output()
 
         tool.toggle_args.assert_called_once_with()
         tool.toggle_output.assert_not_called()
 
-    def test_ctrl_o_prefers_tool_with_output_over_expandable_args(self) -> None:
-        """Tool with real output wins over a later one with only expandable args."""
+    def test_ctrl_o_prefers_more_recent_tool_in_dom_order(self) -> None:
+        """The newest tool row in DOM order wins over an older one."""
+        from deepagents_code.widgets.messages import ToolCallMessage
+
         app = DeepAgentsApp(agent=MagicMock())
         app._pending_ask_user_widget = None
-        older = MagicMock()
+        older = MagicMock(spec=ToolCallMessage)
+        older.has_class.return_value = False
         older.has_output = True
         older.has_expandable_args = False
-        newer = MagicMock()
+        newer = MagicMock(spec=ToolCallMessage)
+        newer.has_class.return_value = False
         newer.has_output = False
         newer.has_expandable_args = True
+        container = MagicMock()
+        container.children = [older, newer]
 
-        def fake_query(query_type: object) -> list[object]:
-            from deepagents_code.widgets.messages import (
-                SkillMessage,
-                ToolCallMessage,
-            )
-
-            if query_type is ToolCallMessage:
-                return [older, newer]
-            if query_type is SkillMessage:
-                return []
-            return []
-
-        with patch.object(app, "query", side_effect=fake_query):
+        with patch.object(app, "query_one", return_value=container):
             app.action_toggle_tool_output()
 
-        # Iterates in reverse, so newer (expandable args) is hit first.
+        # Walks children in reverse, so the newer row is hit first.
         newer.toggle_args.assert_called_once_with()
         older.toggle_output.assert_not_called()
+
+    def test_ctrl_o_targets_content_mounted_after_a_group(self) -> None:
+        """Content mounted after a tool group stays reachable from Ctrl+O.
+
+        Regression: the handler used to toggle the last tool group whenever any
+        existed, leaving newer collapsible content (here a skill body)
+        unreachable.
+        """
+        from deepagents_code.widgets.messages import SkillMessage, ToolGroupSummary
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        group = MagicMock(spec=ToolGroupSummary)
+        skill = MagicMock(spec=SkillMessage)
+        skill._stripped_body = "body"
+        container = MagicMock()
+        container.children = [group, skill]  # skill mounted after the group
+
+        with patch.object(app, "query_one", return_value=container):
+            app.action_toggle_tool_output()
+
+        skill.toggle_body.assert_called_once_with()
+        group.toggle.assert_not_called()
+
+    def test_ctrl_o_toggles_group_and_skips_its_folded_rows(self) -> None:
+        """Toggling a group skips its folded rows and leaves older content alone."""
+        from deepagents_code.widgets.messages import (
+            SkillMessage,
+            ToolCallMessage,
+            ToolGroupSummary,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        skill = MagicMock(spec=SkillMessage)
+        skill._stripped_body = "body"
+        group = MagicMock(spec=ToolGroupSummary)
+        folded = MagicMock(spec=ToolCallMessage)
+        folded.has_class.return_value = True  # folded into the group
+        # DOM: older skill, then the group summary followed by its folded row.
+        container = MagicMock()
+        container.children = [skill, group, folded]
+
+        with patch.object(app, "query_one", return_value=container):
+            app.action_toggle_tool_output()
+
+        group.toggle.assert_called_once_with()
+        folded.toggle_output.assert_not_called()
+        skill.toggle_body.assert_not_called()
 
     async def test_request_ask_user_timeout_cleans_old_widget(self) -> None:
         """Timeout cleanup should cancel then remove the previous widget."""
@@ -3855,6 +3886,34 @@ class TestLoadingSpinnerLifecycle:
             assert app._loading_widget is widget
             children = list(messages.children)
             assert children[-1] is widget
+
+    async def test_spinner_stays_pinned_and_singular_as_messages_mount(self) -> None:
+        """The spinner is reused and stays last as new messages stream in.
+
+        New content mounts above the spinner (via `_mount_before_queued`), so it
+        never needs repositioning and exactly one spinner exists — the stability
+        that replaced the per-tool hide/show flicker.
+        """
+        from deepagents_code.widgets.loading import LoadingWidget
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._set_spinner("Thinking")
+            await pilot.pause()
+            widget = app._loading_widget
+            assert widget is not None
+
+            messages = app.query_one("#messages", Container)
+            for i in range(3):
+                await app._mount_message(AppMessage(f"line {i}"))
+                await app._set_spinner("Thinking")  # status update each "step"
+            await pilot.pause()
+
+            # Same instance the whole time; still exactly one; still last.
+            assert app._loading_widget is widget
+            assert len(list(app.query(LoadingWidget))) == 1
+            assert list(messages.children)[-1] is widget
 
 
 class TestTraceCommand:
@@ -17114,6 +17173,7 @@ class TestSetSpinnerTerminalProgress:
             await app._set_spinner("Thinking")
             await app._set_spinner(None)
             await app._set_spinner("Thinking")
+            await app._set_spinner(None)
             await pilot.pause()
 
         assert calls.count("set") >= 3
@@ -21078,3 +21138,229 @@ class TestCopyFocusedInputText:
                 assert app._copy_focused_input_text() is False
 
             copy_mock.assert_not_called()
+
+
+class TestToolGroupCollapse:
+    """Integration tests for auto-collapsing completed tool runs."""
+
+    @staticmethod
+    async def _mount_tools(
+        pilot: Pilot[DeepAgentsApp],
+        container: Container,
+        specs: list[tuple[str, str, dict[str, Any], str]],
+    ) -> list[ToolCallMessage]:
+        """Mount tool widgets and apply their terminal status.
+
+        Each spec is `(id, tool_name, args, status)` where status is
+        `"success"` or `"error"`.
+        """
+        from deepagents_code.widgets.messages import ToolCallMessage
+
+        tools: list[ToolCallMessage] = []
+        for tid, name, args, _status in specs:
+            tool = ToolCallMessage(name, args)
+            tool.id = tid
+            await container.mount(tool)
+            tools.append(tool)
+        await pilot.pause()
+        for tool, (_tid, _name, _args, status) in zip(tools, specs, strict=True):
+            if status == "success":
+                tool.set_success("output")
+            else:
+                tool.set_error("boom")
+        await pilot.pause()
+        return tools
+
+    async def test_regroup_collapses_success_run(self) -> None:
+        """A run of successful tools folds into one collapsed summary."""
+        from deepagents_code.widgets.messages import ToolGroupSummary
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-group")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            tools = await self._mount_tools(
+                pilot,
+                messages,
+                [
+                    ("g1", "read_file", {"file_path": "a.py"}, "success"),
+                    ("g2", "execute", {"command": "ls"}, "success"),
+                ],
+            )
+
+            await app._regroup_completed_tools()
+            await pilot.pause()
+
+            summaries = list(app.query(ToolGroupSummary))
+            assert len(summaries) == 1
+            assert all(tool.display is False for tool in tools)
+            rendered = summaries[0].render()
+            assert isinstance(rendered, Content)
+            assert "Read 1 file, ran 1 shell command" in rendered.plain
+
+    async def test_regroup_is_idempotent(self) -> None:
+        """Re-running regroup does not create duplicate summaries."""
+        from deepagents_code.widgets.messages import ToolGroupSummary
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-idem")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            await self._mount_tools(
+                pilot,
+                messages,
+                [("g1", "grep", {"pattern": "x"}, "success")],
+            )
+
+            await app._regroup_completed_tools()
+            await app._regroup_completed_tools()
+            await pilot.pause()
+
+            assert len(list(app.query(ToolGroupSummary))) == 1
+
+    async def test_errored_tool_stays_visible(self) -> None:
+        """An errored tool stays visible; only the successful prefix collapses."""
+        from deepagents_code.widgets.messages import ToolGroupSummary
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-err")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            ok_tool, err_tool = await self._mount_tools(
+                pilot,
+                messages,
+                [
+                    ("g1", "read_file", {"file_path": "a.py"}, "success"),
+                    ("g2", "execute", {"command": "ls"}, "error"),
+                ],
+            )
+
+            await app._regroup_completed_tools()
+            await pilot.pause()
+
+            # The success prefix folds; the errored tool is never grouped.
+            assert len(list(app.query(ToolGroupSummary))) == 1
+            assert ok_tool.display is False
+            assert err_tool.display is True
+            assert not err_tool.has_class("-grouped")
+
+    async def test_assistant_message_boundary_triggers_collapse(self) -> None:
+        """Mounting a non-tool message folds the preceding tool run."""
+        from deepagents_code.widgets.messages import ToolGroupSummary
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-boundary")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            tools = await self._mount_tools(
+                pilot,
+                messages,
+                [("g1", "read_file", {"file_path": "a.py"}, "success")],
+            )
+
+            await app._mount_message(AssistantMessage("next step"))
+            await pilot.pause()
+
+            assert len(list(app.query(ToolGroupSummary))) == 1
+            assert tools[0].display is False
+
+    async def test_separate_steps_get_separate_summaries(self) -> None:
+        """Tools split by an assistant message form two independent groups."""
+        from deepagents_code.widgets.messages import ToolGroupSummary
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-steps")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            await self._mount_tools(
+                pilot, messages, [("a1", "read_file", {"file_path": "a"}, "success")]
+            )
+            await messages.mount(AssistantMessage("step two"))
+            await self._mount_tools(
+                pilot, messages, [("b1", "execute", {"command": "ls"}, "success")]
+            )
+
+            await app._regroup_completed_tools()
+            await pilot.pause()
+
+            assert len(list(app.query(ToolGroupSummary))) == 2
+
+    async def test_mount_tool_creates_collapsed_live_group(self) -> None:
+        """Mounting a tool via _mount_message folds it immediately, no flash."""
+        from deepagents_code.widgets.messages import (
+            ToolCallMessage,
+            ToolGroupSummary,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-live")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+
+            tool = ToolCallMessage("read_file", {"file_path": "a.py"})
+            # _mount_message folds it synchronously; don't pilot.pause() while
+            # the live spinner timer runs (it blocks the idle wait).
+            await app._mount_message(tool)
+
+            # A live group was opened and the tool hidden from the start.
+            summaries = list(app.query(ToolGroupSummary))
+            assert len(summaries) == 1
+            assert tool.display is False
+            assert app._active_tool_group is summaries[0]
+
+            # A boundary closes the group and flips it to past tense.
+            tool.set_success("done")
+            await app._mount_message(AssistantMessage("done"))
+
+            assert app._active_tool_group is None
+            rendered = summaries[0].render()
+            assert isinstance(rendered, Content)
+            assert "Read 1 file" in rendered.plain
+            assert tool.display is False
+            await pilot.pause()
+
+    async def test_group_survives_idle_after_completion(self) -> None:
+        """A folded group stays mounted across completion, idle, and a boundary.
+
+        Regression guard: the summary's finalized flag must not collide with
+        Textual's MessagePump internals, or the widget is silently pruned on the
+        next idle tick (looked like the group "disappearing" when tools finish).
+        """
+        from deepagents_code.widgets.messages import (
+            ToolCallMessage,
+            ToolGroupSummary,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-idle")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+
+            t1 = ToolCallMessage("execute", {"command": "ls"})
+            t2 = ToolCallMessage("read_file", {"file_path": "a.py"})
+            await app._mount_message(t1)
+            await app._mount_message(t2)
+            group = app._active_tool_group
+            assert group is not None
+
+            t1.set_success("ok")
+            t2.set_success("ok")
+            group._tick()  # flips to past tense, stops the spinner timer
+            await pilot.pause()
+            assert group.is_attached  # survives the idle tick after completion
+
+            await app._mount_message(AssistantMessage("next step"))
+            await pilot.pause()
+            summaries = list(app.query(ToolGroupSummary))
+            assert len(summaries) == 1
+            assert summaries[0].is_attached
+            rendered = summaries[0].render()
+            assert isinstance(rendered, Content)
+            assert "Ran 1 shell command, read 1 file" in rendered.plain

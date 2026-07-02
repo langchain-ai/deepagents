@@ -137,7 +137,7 @@ def test_manifest_refresh_records_root_and_subagent_tool_requirements(tmp_path: 
     requirements = {requirement.tool_name: requirement for requirement in second.tool_requirements}
     assert set(requirements) == {"calendar", "missing", "search"}
     assert requirements["search"].scope == "root"
-    assert requirements["search"].mcp_server_url == "https://builtin.example/mcp"
+    assert requirements["search"].mcp_server_url == "https://builtin.example/catalog"
     assert requirements["search"].auth_path == "builtin"
     assert requirements["search"].loaded is True
     assert requirements["missing"].mcp_server_url == "https://missing.example/mcp"
@@ -155,6 +155,7 @@ def test_manifest_refresh_records_root_and_subagent_tool_requirements(tmp_path: 
     assert {task.tool_requirement_ids[0] for task in second.setup_tasks} == {
         requirements["calendar"].id,
         requirements["missing"].id,
+        requirements["search"].id,
     }
     assert "secret" not in manifest_path(config.home).read_text(encoding="utf-8")
 

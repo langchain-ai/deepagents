@@ -17,6 +17,8 @@ from deepagents_talon.mcp import MCPTools
 from deepagents_talon.runtime import INTERRUPT_ON_TOOLS_ENV_KEY, DeepAgentRuntime
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import pytest
 
 
@@ -44,10 +46,17 @@ description: {description}
 """
 
 
+def _write_required_fleet_files(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "AGENTS.md").write_text("Fleet prompt", encoding="utf-8")
+    (path / "config.json").write_text(json.dumps({"model": "fleet:model"}), encoding="utf-8")
+
+
 async def test_load_fleet_agent_components_coerces_public_loader_payload(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _write_required_fleet_files(tmp_path)
     monkeypatch.delenv("LANGSMITH_TENANT_ID", raising=False)
     subagent = {
         "name": "researcher",
@@ -89,6 +98,7 @@ async def test_load_fleet_agent_components_adds_static_skills_loader(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fleet_dir = tmp_path / "fleet"
+    _write_required_fleet_files(fleet_dir)
     fleet_skill = fleet_dir / "skills" / "fleet-skill"
     fleet_skill.mkdir(parents=True)
     (fleet_skill / "SKILL.md").write_text(
@@ -150,7 +160,7 @@ async def test_load_fleet_agent_components_logs_mcp_surface(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fleet_dir = tmp_path / "fleet"
-    fleet_dir.mkdir()
+    _write_required_fleet_files(fleet_dir)
     (fleet_dir / "tools.json").write_text(
         json.dumps(
             {

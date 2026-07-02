@@ -7121,6 +7121,56 @@ class TestRubricCommand:
             rendered = "\n".join(str(w._content) for w in app.query(ErrorMessage))
             assert "Missing credentials" in rendered
 
+    async def test_set_rubric_model_restarts_owned_server(self) -> None:
+        """Changing the grader model should update server env and respawn the graph."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {}
+            app._server_proc = MagicMock()
+
+            with (
+                patch("deepagents_code.app._create_model_with_deepagents_import_lock"),
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=None,
+                ),
+                patch.object(
+                    app,
+                    "_respawn_server",
+                    new_callable=AsyncMock,
+                    return_value=True,
+                ) as respawn,
+            ):
+                # Attach the env-staging calls and the respawn to a shared
+                # manager so their relative order can be asserted below.
+                manager = MagicMock()
+                manager.attach_mock(app._server_proc.update_env, "update_env")
+                manager.attach_mock(app._server_proc.persist_env, "persist_env")
+                manager.attach_mock(respawn, "respawn")
+                await app._set_rubric_model("openai:gpt-5.1")
+            await pilot.pause()
+
+            assert app._rubric_model == "openai:gpt-5.1"
+            assert app._server_kwargs["rubric_model"] == "openai:gpt-5.1"
+            app._server_proc.update_env.assert_called_once_with(
+                DEEPAGENTS_CODE_SERVER_RUBRIC_MODEL="openai:gpt-5.1",
+            )
+            app._server_proc.persist_env.assert_called_once_with(
+                DEEPAGENTS_CODE_SERVER_RUBRIC_MODEL="openai:gpt-5.1",
+            )
+            assert respawn.await_count == 1
+            # The persisted override must be written only after a successful
+            # respawn, never before the restart is confirmed healthy.
+            ordered = [
+                c[0]
+                for c in manager.mock_calls
+                if c[0] in {"update_env", "respawn", "persist_env"}
+            ]
+            assert ordered == ["update_env", "respawn", "persist_env"]
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Rubric grader model set to openai:gpt-5.1" in rendered
+
     async def test_set_rubric_model_rolls_back_on_failed_respawn(self) -> None:
         """A failed server respawn rolls the grader model back to the previous one."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -7147,12 +7197,45 @@ class TestRubricCommand:
 
             assert app._rubric_model == "anthropic:claude-sonnet-4-6"
             assert app._server_kwargs["rubric_model"] == "anthropic:claude-sonnet-4-6"
+            app._server_proc.persist_env.assert_not_called()
             # The failed forward staging must be re-staged back to the previous
             # model so a later restart cannot resurrect the rolled-back value.
             assert app._server_proc.update_env.call_count == 2
             assert app._server_proc.update_env.call_args_list[-1].kwargs == {
                 "DEEPAGENTS_CODE_SERVER_RUBRIC_MODEL": "anthropic:claude-sonnet-4-6",
             }
+
+    async def test_set_rubric_model_clears_owned_server(self) -> None:
+        """Clearing the grader model persists an empty override and respawns."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._rubric_model = "openai:gpt-5.1"
+            app._server_kwargs = {"rubric_model": "openai:gpt-5.1"}
+            app._server_proc = MagicMock()
+
+            with patch.object(
+                app,
+                "_respawn_server",
+                new_callable=AsyncMock,
+                return_value=True,
+            ) as respawn:
+                await app._set_rubric_model(None)
+            await pilot.pause()
+
+            assert app._rubric_model is None
+            assert app._server_kwargs["rubric_model"] is None
+            # Clearing must persist an empty override so a previously persisted
+            # model cannot resurrect on a later restart.
+            app._server_proc.update_env.assert_called_once_with(
+                DEEPAGENTS_CODE_SERVER_RUBRIC_MODEL="",
+            )
+            app._server_proc.persist_env.assert_called_once_with(
+                DEEPAGENTS_CODE_SERVER_RUBRIC_MODEL="",
+            )
+            assert respawn.await_count == 1
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Rubric grader model cleared; using current chat model." in rendered
 
     async def test_set_rubric_model_sets_before_owned_server_starts(self) -> None:
         """With owned server config, the grader model is staged and confirmed."""

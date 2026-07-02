@@ -14017,11 +14017,17 @@ class TestResolveResumeThread:
             assert app._should_adopt_resumed_model is False
 
     async def test_no_previous_thread_leaves_adoption_flag_unset(self) -> None:
-        """Falling back to a fresh thread must not arm model adoption."""
+        """Falling back to a fresh thread must not arm model adoption.
+
+        Also verifies the status bar stops showing "Resuming" when no
+        prior thread was found to resume.
+        """
         app = self._make_app("agent")
 
         async with app.run_test() as pilot:
             await pilot.pause()
+            app._connecting = True
+            app._resuming = True
             app._resume_thread_intent = "__MOST_RECENT__"
             with patch(
                 "deepagents_code.sessions.get_most_recent",
@@ -14030,6 +14036,9 @@ class TestResolveResumeThread:
                 await app._resolve_resume_thread()
 
             assert app._should_adopt_resumed_model is False
+            assert app._resuming is False
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "connecting"
 
     async def test_most_recent_resume_arms_adoption_flag(self) -> None:
         """`-r` (most recent) resolving to a thread also arms model adoption.
@@ -14057,11 +14066,17 @@ class TestResolveResumeThread:
             assert app._should_adopt_resumed_model is True
 
     async def test_abort_starts_new_thread(self) -> None:
-        """Choosing abort in the cwd prompt starts a fresh thread."""
+        """Choosing abort in the cwd prompt starts a fresh thread.
+
+        Also verifies the status bar drops the "Resuming" label in favor of
+        "Connecting" so the footer doesn't lie while the server boots.
+        """
         app = self._make_app("agent")
 
         async with app.run_test() as pilot:
             await pilot.pause()
+            app._connecting = True
+            app._resuming = True
             app._resume_thread_intent = "some-thread"
             app._offer_thread_cwd_switch = AsyncMock(  # ty: ignore[invalid-assignment]
                 return_value="abort"
@@ -14081,13 +14096,22 @@ class TestResolveResumeThread:
             assert app._lc_thread_id != "some-thread"
             assert app._assistant_id == "agent"
             assert app._should_adopt_resumed_model is False
+            assert app._resuming is False
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "connecting"
 
     async def test_abort_most_recent_starts_new_thread(self) -> None:
-        """Aborting a bare `-r` cwd prompt also starts a fresh thread."""
+        """Aborting a bare `-r` cwd prompt also starts a fresh thread.
+
+        Mirrors `test_abort_starts_new_thread` for the `__MOST_RECENT__` branch
+        and asserts the status bar flips from "Resuming" to "Connecting".
+        """
         app = self._make_app("agent")
 
         async with app.run_test() as pilot:
             await pilot.pause()
+            app._connecting = True
+            app._resuming = True
             app._resume_thread_intent = "__MOST_RECENT__"
             app._offer_thread_cwd_switch = AsyncMock(  # ty: ignore[invalid-assignment]
                 return_value="abort"
@@ -14106,6 +14130,9 @@ class TestResolveResumeThread:
 
             assert app._lc_thread_id != "recent-thread"
             assert app._should_adopt_resumed_model is False
+            assert app._resuming is False
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "connecting"
 
     async def test_resume_offers_abort_option_at_launch(self) -> None:
         """The launch-time cwd prompt is invoked with `allow_abort=True`."""
@@ -14164,6 +14191,59 @@ class TestResolveResumeThread:
 
             assert app._lc_thread_id != "some-thread"
             assert app._session_state.thread_id == app._lc_thread_id
+
+    async def test_thread_not_found_clears_resuming_status(self) -> None:
+        """A non-existent thread id falls back to fresh and drops "Resuming".
+
+        Covers the `elif await thread_exists(resume)` → `else` branch where
+        the thread id is never adopted.
+        """
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            app._resuming = True
+            app._resume_thread_intent = "ghost-thread"
+            with (
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=False),
+                ),
+                patch(
+                    "deepagents_code.sessions.find_similar_threads",
+                    AsyncMock(return_value=[]),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._lc_thread_id != "ghost-thread"
+            assert app._should_adopt_resumed_model is False
+            assert app._resuming is False
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "connecting"
+
+    async def test_resolve_exception_clears_resuming_status(self) -> None:
+        """An unhandled error in resume resolution drops "Resuming".
+
+        Guards the `except Exception` handler path.
+        """
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            app._resuming = True
+            app._resume_thread_intent = "some-thread"
+            with patch(
+                "deepagents_code.sessions.thread_exists",
+                AsyncMock(side_effect=RuntimeError("db offline")),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._resuming is False
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "connecting"
 
 
 def _missing_dep_entry(

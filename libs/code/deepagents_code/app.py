@@ -3561,6 +3561,8 @@ class DeepAgentsApp(App):
                 candidate = await get_most_recent(agent_filter)
                 if not candidate:
                     self._lc_thread_id = generate_thread_id()
+                    self._resuming = False
+                    self._sync_status_connection()
                     if agent_filter:
                         msg = f"No previous threads for '{agent_filter}', starting new."
                     else:
@@ -3572,6 +3574,8 @@ class DeepAgentsApp(App):
             else:
                 # Thread not found — notify + fall back to new thread
                 self._lc_thread_id = generate_thread_id()
+                self._resuming = False
+                self._sync_status_connection()
                 similar = await find_similar_threads(resume)
                 hint = f"Thread '{resume}' not found."
                 if similar:
@@ -3614,6 +3618,8 @@ class DeepAgentsApp(App):
                 # User declined the resume: start a fresh session and skip the
                 # agent/model adoption below so it inherits the launch default.
                 self._lc_thread_id = generate_thread_id()
+                self._resuming = False
+                self._sync_status_connection()
                 self.notify(
                     "Starting a new session.",
                     severity="information",
@@ -3634,6 +3640,8 @@ class DeepAgentsApp(App):
         except Exception:
             logger.exception("Failed to resolve resume thread %r", resume)
             self._lc_thread_id = generate_thread_id()
+            self._resuming = False
+            self._sync_status_connection()
             self.notify(
                 "Could not look up thread history. Starting new session.",
                 severity="warning",

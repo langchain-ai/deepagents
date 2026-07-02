@@ -71,6 +71,12 @@ class AskUserTextArea(TextArea):
             show=False,
             priority=True,
         ),
+        Binding(
+            "ctrl+backspace,alt+backspace",
+            "delete_word_left",
+            "Delete left to start of word",
+            show=False,
+        ),
     ]
 
     class Submitted(Message):

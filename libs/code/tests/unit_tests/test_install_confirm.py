@@ -5,7 +5,10 @@ from __future__ import annotations
 from textual.app import App, ComposeResult
 from textual.widgets import Static
 
-from deepagents_code.widgets.install_confirm import InstallPackageConfirmScreen
+from deepagents_code.widgets.install_confirm import (
+    InstallPackageConfirmScreen,
+    InstallProviderConfirmScreen,
+)
 
 
 class _InstallConfirmTestApp(App[None]):
@@ -86,3 +89,79 @@ class TestInstallPackageConfirmScreen:
             bodies = app.screen.query(".install-confirm-body")
             assert len(bodies) == 1
             assert "langchain-custom" in str(bodies.first().render())
+
+
+class TestInstallProviderConfirmScreen:
+    """Behavior tests for `InstallProviderConfirmScreen`."""
+
+    async def test_enter_dismisses_with_true(self) -> None:
+        """Pressing Enter confirms the provider install."""
+        app = _InstallConfirmTestApp()
+        async with app.run_test() as pilot:
+            outcomes: list[bool | None] = []
+
+            app.push_screen(
+                InstallProviderConfirmScreen(
+                    "baseten", "baseten", "baseten:moonshotai/Kimi-K2.7-Code"
+                ),
+                outcomes.append,
+            )
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert outcomes == [True]
+
+    async def test_escape_dismisses_with_false(self) -> None:
+        """Pressing Esc cancels (no implicit install)."""
+        app = _InstallConfirmTestApp()
+        async with app.run_test() as pilot:
+            outcomes: list[bool | None] = []
+
+            app.push_screen(
+                InstallProviderConfirmScreen(
+                    "baseten", "baseten", "baseten:moonshotai/Kimi-K2.7-Code"
+                ),
+                outcomes.append,
+            )
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+
+            assert outcomes == [False]
+
+    async def test_renders_model_and_extra(self) -> None:
+        """The model spec and extra are surfaced in the modal body."""
+        app = _InstallConfirmTestApp()
+        async with app.run_test() as pilot:
+            app.push_screen(
+                InstallProviderConfirmScreen(
+                    "baseten", "baseten", "baseten:moonshotai/Kimi-K2.7-Code"
+                )
+            )
+            await pilot.pause()
+
+            bodies = app.screen.query(".install-confirm-body")
+            assert len(bodies) == 1
+            rendered = str(bodies.first().render())
+            assert "baseten:moonshotai/Kimi-K2.7-Code" in rendered
+            assert "baseten" in rendered
+
+    async def test_renders_add_key_body_without_model_spec(self) -> None:
+        """The `/auth` path (no model spec) frames the install around a key.
+
+        Omitting `model_spec` switches the body to the "add a key" wording and
+        drops the model-centric "To use ..." copy, since the manager installs a
+        provider so a credential can be added, not to switch to a model.
+        """
+        app = _InstallConfirmTestApp()
+        async with app.run_test() as pilot:
+            app.push_screen(InstallProviderConfirmScreen("baseten", "baseten"))
+            await pilot.pause()
+
+            bodies = app.screen.query(".install-confirm-body")
+            assert len(bodies) == 1
+            rendered = str(bodies.first().render())
+            assert "add a key" in rendered
+            assert "baseten" in rendered
+            assert "To use" not in rendered

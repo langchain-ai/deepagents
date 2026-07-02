@@ -416,6 +416,62 @@ class TestModelLabelPrefixStripping:
             rendered = str(label.render())
             assert "openai:gpt-5.5" in rendered
 
+    async def test_effort_suffix_rendered(self) -> None:
+        """Active reasoning effort should be shown next to the model."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_model(provider="openai", model="gpt-5.5", effort="xhigh")
+            await pilot.pause()
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            assert str(label.render()) == "openai:gpt-5.5 xhigh"
+
+    async def test_effort_suffix_survives_provider_drop(self) -> None:
+        """When narrow, provider is dropped before the effort label."""
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5"
+            label.effort = "xhigh"
+            label.styles.width = 18
+            await pilot.pause()
+            assert str(label.render()) == "gpt-5.5 xhigh"
+
+    async def test_effort_suffix_left_truncates_model(self) -> None:
+        """Overflowing model text is left-truncated while the effort stays."""
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5-turbo-preview"
+            label.effort = "high"
+            label.styles.width = 15
+            await pilot.pause()
+            width = label.content_size.width
+            rendered = str(label.render())
+            # Starts with an ellipsis (left-truncated) yet retains the effort
+            # label — the branch that keeps effort while dropping model chars.
+            assert rendered.startswith("…")
+            assert rendered.endswith(" high")
+            assert "openai:" not in rendered
+            assert len(rendered) <= width
+
+    async def test_effort_suffix_dropped_when_only_bare_model_fits(self) -> None:
+        """In the narrow window where effort can't fit, the bare model wins.
+
+        When the width is too small for even the left-truncated `model effort`
+        form but still fits the bare model, the effort suffix is dropped rather
+        than the model — the last rung before ellipsis truncation.
+        """
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = ""
+            label.model = "o1"
+            label.effort = "medium"
+            # padding 0 2 -> content width = 6: too narrow for "o1 medium" (9)
+            # and below len("medium") + 2, but wide enough for bare "o1".
+            label.styles.width = 10
+            await pilot.pause()
+            assert str(label.render()) == "o1"
+
     async def test_no_provider_no_stripping(self) -> None:
         """Without a provider, the model name is passed through unchanged."""
         async with StatusBarApp().run_test() as pilot:
@@ -540,8 +596,9 @@ class TestConnectionIndicator:
             await pilot.pause()
             indicator = pilot.app.query_one("#connection-indicator", Static)
             rendered = str(indicator.render())
-            assert get_glyphs().spinner_frames[0] in rendered
-            assert "Reconnecting" in rendered
+            frame, _, label = rendered.partition(" ")
+            assert frame in get_glyphs().spinner_frames
+            assert label == "Reconnecting"
 
     async def test_unmount_stops_spinner(self) -> None:
         """Leaving the DOM must stop the timer so it can't tick detached."""
@@ -562,6 +619,121 @@ class TestConnectionIndicator:
         """
         bar = StatusBar()
         bar._start_spinner()
+        assert bar._spinner_timer is None
+
+
+class TestBusyIndicator:
+    """Tests for the animated busy indicator used during model switches."""
+
+    async def test_set_busy_shows_message_and_spinner(self) -> None:
+        """`set_busy` should render a spinner-prefixed message and run the timer."""
+        from deepagents_code.config import get_glyphs
+
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_busy("Switching model")
+            await pilot.pause()
+            msg = pilot.app.query_one("#status-message", Static)
+            rendered = str(msg.render())
+            assert "Switching model" in rendered
+            # A spinner frame prefixes the message. Don't pin frame[0]: the
+            # 0.1s timer may have ticked during the pause, so accept any frame.
+            assert any(frame in rendered for frame in get_glyphs().spinner_frames)
+            assert bar._spinner_timer is not None
+
+    async def test_set_busy_treats_bracket_text_as_literal(self) -> None:
+        """A model spec with markup-like brackets must render verbatim, not crash."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_busy("Switching to openai:[00]")
+            await pilot.pause()
+            msg = pilot.app.query_one("#status-message", Static)
+            assert "Switching to openai:[00]" in str(msg.render())
+
+    async def test_clear_busy_stops_spinner_and_clears_message(self) -> None:
+        """Clearing the busy state should stop the timer and empty the slot."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_busy("Switching model")
+            await pilot.pause()
+            bar.set_busy("")
+            await pilot.pause()
+            msg = pilot.app.query_one("#status-message", Static)
+            assert str(msg.render()) == ""
+            assert bar._spinner_timer is None
+
+    async def test_clear_busy_restores_status_message(self) -> None:
+        """A status message set before busy should reappear once busy clears."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_status_message("Thinking")
+            await pilot.pause()
+            bar.set_busy("Switching model")
+            await pilot.pause()
+            msg = pilot.app.query_one("#status-message", Static)
+            assert "Switching" in str(msg.render())
+            bar.set_busy("")
+            await pilot.pause()
+            assert str(msg.render()) == "Thinking"
+
+    async def test_status_message_deferred_while_busy(self) -> None:
+        """Regular status updates must not clobber an active busy indicator."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_busy("Switching model")
+            await pilot.pause()
+            bar.set_status_message("Executing")
+            await pilot.pause()
+            msg = pilot.app.query_one("#status-message", Static)
+            assert "Switching" in str(msg.render())
+
+    async def test_busy_keeps_spinner_running_while_connecting(self) -> None:
+        """Clearing busy while connecting must leave the shared spinner running."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_connection("connecting")
+            bar.set_busy("Switching model")
+            await pilot.pause()
+            assert bar._spinner_timer is not None
+            bar.set_busy("")
+            await pilot.pause()
+            assert bar._spinner_timer is not None
+
+    async def test_clear_busy_while_connecting_restores_message(self) -> None:
+        """Clearing busy mid-connection restores the message and keeps the spinner.
+
+        Exercises the combined state the shared-spinner refactor targets: the
+        busy slot and the independent connection indicator are both active, and
+        clearing busy must repaint the deferred message without stopping the
+        spinner that the still-active connection state owns.
+        """
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_connection("connecting")
+            bar.set_status_message("Thinking")
+            bar.set_busy("Switching model")
+            await pilot.pause()
+            msg = pilot.app.query_one("#status-message", Static)
+            conn = pilot.app.query_one("#connection-indicator", Static)
+            # Busy owns the message slot; the connection indicator is separate.
+            assert "Switching model" in str(msg.render())
+            assert "Connecting" in str(conn.render())
+            bar.set_busy("")
+            await pilot.pause()
+            # Deferred message reappears; spinner keeps ticking for the
+            # still-active connection state.
+            assert str(msg.render()) == "Thinking"
+            assert "Connecting" in str(conn.render())
+            assert bar._spinner_timer is not None
+
+    async def test_set_busy_before_mount_does_not_raise(self) -> None:
+        """`set_busy` on an unmounted bar is a safe no-op (no widgets, no timer)."""
+        bar = StatusBar()
+        bar.set_busy("Switching model")
+        assert bar._busy_message == "Switching model"
+        assert bar._spinner_timer is None
+        bar.set_busy("")
+        assert bar._busy_message == ""
         assert bar._spinner_timer is None
 
 

@@ -7,6 +7,7 @@ import ipaddress
 import logging
 import socket
 import threading
+from html.parser import HTMLParser
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urljoin, urlparse
 
@@ -14,7 +15,7 @@ from langchain_core.runnables import RunnableConfig  # noqa: TC002  # runtime hi
 from langchain_core.tools import tool
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from tavily import TavilyClient
 
@@ -200,6 +201,86 @@ def _pinned_dns(hostname: str, allowed_ips: list[str]) -> Iterator[None]:
             urllib3_connection.create_connection = original
 
 
+class _TextExtractor(HTMLParser):
+    """Extract text content from HTML as a markdownify fallback.
+
+    The character data inside raw-text elements (`script`, `style`,
+    `noscript`, `template`) is skipped so the fallback never emits
+    JavaScript or CSS source from the fetched (untrusted) page as page
+    content.
+    """
+
+    # Tags whose character data is never page content. Suppressed via an
+    # explicit allowlist of skipped tags rather than trying to detect script
+    # payloads after the fact.
+    _SKIP_TAGS = frozenset({"script", "style", "noscript", "template"})
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],  # noqa: ARG002  # required by HTMLParser override
+    ) -> None:
+        """Enter a raw-text element so its data is skipped."""
+        if tag in self._SKIP_TAGS:
+            self._skip_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        """Leave a raw-text element."""
+        if tag in self._SKIP_TAGS and self._skip_depth:
+            self._skip_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        """Collect non-empty, whitespace-collapsed text outside skipped tags."""
+        if self._skip_depth:
+            return
+        text = " ".join(data.split())
+        if text:
+            self.parts.append(text)
+
+    def get_text(self) -> str:
+        """Return extracted text fragments separated by blank lines."""
+        return "\n\n".join(self.parts)
+
+
+def _html_to_markdown_content(html: str, markdownify: Callable[[str], str]) -> str:
+    """Convert HTML to markdown, falling back to plain text on recursion.
+
+    Args:
+        html: Raw HTML to convert.
+        markdownify: The `markdownify.markdownify` callable, injected so this
+            module avoids an eager top-level import of the optional dependency.
+
+    Returns:
+        Markdown content, or text extracted from the HTML if markdown
+        conversion exceeds the recursion limit. Returns an empty string if
+        the text-extraction fallback itself fails.
+    """
+    try:
+        return markdownify(html)
+    except RecursionError:
+        logger.warning(
+            "markdownify hit recursion depth; falling back to text extraction",
+            exc_info=True,
+        )
+
+    # Best-effort plain-text extraction. Guard it so a failure here (e.g. the
+    # same pathological input that exhausted markdownify's recursion) cannot
+    # re-introduce the uncaught crash this fallback exists to prevent.
+    try:
+        parser = _TextExtractor()
+        parser.feed(html)
+        parser.close()
+    except Exception:  # fallback is best-effort; must never propagate
+        logger.warning("text-extraction fallback failed", exc_info=True)
+        return ""
+    return parser.get_text()
+
+
 def _get_tavily_client() -> TavilyClient | None:
     """Get or initialize the lazy Tavily client singleton.
 
@@ -356,7 +437,13 @@ def fetch_url(url: str, timeout: int = 30) -> dict[str, Any]:
     except requests.exceptions.RequestException as e:
         return {"error": f"Fetch URL error: {e!s}", "url": url, "category": "network"}
 
-    markdown_content = markdownify(response.text)
+    markdown_content = _html_to_markdown_content(response.text, markdownify)
+    if not markdown_content:
+        logger.warning(
+            "fetch_url produced empty content for %s (status %s)",
+            response.url,
+            response.status_code,
+        )
     return {
         "url": str(response.url),
         "markdown_content": markdown_content,

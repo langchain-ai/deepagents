@@ -88,7 +88,7 @@ class UnicodeIssue:
     Attributes:
         position: Zero-based index in the original string.
         character: The single raw character found in the input.
-        codepoint: Uppercase code point string like ``U+202E``.
+        codepoint: Uppercase code point string like `U+202E`.
         name: Unicode character name.
     """
 
@@ -512,7 +512,7 @@ def iter_string_values(
     """Flatten nested dict/list structures into key-path/string pairs.
 
     Returns:
-        List of ``(path, value)`` tuples for all string leaves.
+        List of `(path, value)` tuples for all string leaves.
     """
     values: list[tuple[str, str]] = []
     for key, value in data.items():

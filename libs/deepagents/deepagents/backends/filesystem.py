@@ -22,6 +22,7 @@ from deepagents.backends.protocol import (
     IS_DIRECTORY,
     PERMISSION_DENIED,
     BackendProtocol,
+    DeleteResult,
     EditResult,
     FileData,
     FileDownloadResponse,
@@ -36,7 +37,8 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.utils import (
-    _get_file_type,
+    MAX_VIDEO_INPUT_BYTES,
+    _get_backend_read_file_type,
     check_empty_content,
     perform_string_replacement,
 )
@@ -419,8 +421,9 @@ class FilesystemBackend(BackendProtocol):
             limit: Maximum number of lines to read.
 
         Returns:
-            ReadResult with raw (unformatted) content for the requested
-            window. Line-number formatting is applied by the middleware.
+            `ReadResult` with raw (unformatted) content for the requested window.
+
+                Line-number formatting is applied by the middleware.
         """
         try:
             resolved_path = self._resolve_path(file_path)
@@ -432,15 +435,25 @@ class FilesystemBackend(BackendProtocol):
                 return ReadResult(error=f"File '{file_path}' not found")
 
             fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-            if _get_file_type(file_path) != "text":
-                with os.fdopen(fd, "rb") as f:
-                    raw = f.read()
-                encoded = base64.standard_b64encode(raw).decode("ascii")
-                file_data = FileData(content=encoded, encoding="base64")
-            else:
-                with os.fdopen(fd, "r", encoding="utf-8") as f:
-                    content = f.read()
+            try:
+                file_type = _get_backend_read_file_type(file_path)
+                if file_type != "text":
+                    if file_type == "video" and os.fstat(fd).st_size > MAX_VIDEO_INPUT_BYTES:
+                        return ReadResult(error=f"Video file exceeds maximum input size of {MAX_VIDEO_INPUT_BYTES} bytes")
+                    with os.fdopen(fd, "rb") as f:
+                        fd = -1
+                        raw = f.read()
+                    encoded = base64.standard_b64encode(raw).decode("ascii")
+                    file_data = FileData(content=encoded, encoding="base64")
+                else:
+                    with os.fdopen(fd, "r", encoding="utf-8") as f:
+                        fd = -1
+                        content = f.read()
+            finally:
+                if fd >= 0:
+                    os.close(fd)
 
+            if file_type == "text":
                 empty_msg = check_empty_content(content)
                 if empty_msg:
                     file_data = FileData(content=empty_msg, encoding="utf-8")
@@ -467,15 +480,14 @@ class FilesystemBackend(BackendProtocol):
         file_path: str,
         content: str,
     ) -> WriteResult:
-        """Create a new file with content.
+        """Write content to a file, creating it or overwriting it if it already exists.
 
         Args:
-            file_path: Path where the new file will be created.
+            file_path: Path where the file will be written.
             content: Text content to write to the file.
 
         Returns:
-            `WriteResult` with path on success, or error message if the file
-                already exists or write fails.
+            `WriteResult` with path on success, or error message on write failure.
         """
         try:
             resolved_path = self._resolve_path(file_path)
@@ -483,10 +495,6 @@ class FilesystemBackend(BackendProtocol):
             return WriteResult(error=f"Error writing file '{file_path}': {e}")
 
         try:
-            if resolved_path.exists():
-                msg = f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path."
-                return WriteResult(error=msg)
-
             # Create parent directories if needed
             resolved_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -566,6 +574,40 @@ class FilesystemBackend(BackendProtocol):
         except (OSError, UnicodeDecodeError, UnicodeEncodeError) as e:
             return EditResult(error=f"Error editing file '{file_path}': {e}")
 
+    def delete(self, file_path: str) -> DeleteResult:
+        """Delete a file or directory from the filesystem.
+
+        Files are unlinked. Directories are removed recursively along with all
+        of their contents. Symlinks are removed as links and never followed into
+        their target (so deleting a symlink to a directory removes only the link).
+
+        Args:
+            file_path: Path to the file or directory to delete.
+
+        Returns:
+            `DeleteResult` with the deleted path on success, or an error if the
+                path does not exist or removal fails. A recursive directory
+                removal may delete some entries before failing partway (for
+                example when a nested entry is not writable).
+        """
+        try:
+            resolved_path = self._resolve_path(file_path)
+        except (OSError, RuntimeError) as e:
+            return DeleteResult(error=f"Error deleting '{file_path}': {e}")
+
+        try:
+            if not resolved_path.exists() and not resolved_path.is_symlink():
+                return DeleteResult(error=f"Error: '{file_path}' not found")
+            if resolved_path.is_symlink():
+                resolved_path.unlink()
+            elif resolved_path.is_dir():
+                shutil.rmtree(resolved_path)
+            else:
+                resolved_path.unlink()
+            return DeleteResult(path=file_path)
+        except (OSError, RuntimeError) as e:
+            return DeleteResult(error=f"Error deleting '{file_path}': {e}")
+
     def grep(
         self,
         pattern: str,
@@ -582,7 +624,7 @@ class FilesystemBackend(BackendProtocol):
             glob: Optional glob pattern to filter which files to search.
 
         Returns:
-            GrepResult with matches or error.
+            `GrepResult` with matches or error.
         """
         # Resolve base path
         try:
@@ -623,7 +665,9 @@ class FilesystemBackend(BackendProtocol):
 
         Returns:
             Dict mapping file paths to list of `(line_number, line_text)` tuples.
+
                 Returns `None` if ripgrep is unavailable or times out.
+
                 Results whose resolved path lies outside `base_full` are silently
                 filtered regardless of `virtual_mode`.
         """
@@ -882,10 +926,12 @@ class FilesystemBackend(BackendProtocol):
 
         Args:
             pattern: Glob pattern to match files against (e.g., `'*.py'`, `'**/*.txt'`).
-            path: Base directory to search from. Defaults to `root_dir` / `cwd`.
+            path: Base directory to search from.
+
+                Defaults to `root_dir` / `cwd`.
 
         Returns:
-            GlobResult with matching files or error.
+            `GlobResult` with matching files or error.
         """
         if pattern.startswith("/"):
             pattern = pattern.lstrip("/")
@@ -969,11 +1015,12 @@ class FilesystemBackend(BackendProtocol):
         """Upload multiple files to the filesystem.
 
         Args:
-            files: List of (path, content) tuples where content is bytes.
+            files: List of `(path, content)` tuples where content is bytes.
 
         Returns:
-            List of FileUploadResponse objects, one per input file.
-            Response order matches input order.
+            List of `FileUploadResponse` objects, one per input file.
+
+                Response order matches input order.
         """
         responses: list[FileUploadResponse] = []
         for path, content in files:
@@ -1006,7 +1053,7 @@ class FilesystemBackend(BackendProtocol):
             paths: List of file paths to download.
 
         Returns:
-            List of FileDownloadResponse objects, one per input path.
+            List of `FileDownloadResponse` objects, one per input path.
         """
         responses: list[FileDownloadResponse] = []
         for path in paths:

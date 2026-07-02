@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 from typing import TYPE_CHECKING
 
 import pytest
@@ -10,9 +11,12 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Container
 from textual.widgets import Static
+from textual.widgets.text_area import Selection
 
+from deepagents_code import _textual_patches as _textual_patches
 from deepagents_code.command_registry import SLASH_COMMANDS
 from deepagents_code.input import MediaTracker
+from deepagents_code.media_utils import ImageData
 from deepagents_code.widgets import chat_input as chat_input_module
 from deepagents_code.widgets.autocomplete import MAX_SUGGESTIONS
 from deepagents_code.widgets.chat_input import (
@@ -23,6 +27,7 @@ from deepagents_code.widgets.chat_input import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Coroutine
     from pathlib import Path
 
     from textual.pilot import Pilot
@@ -224,6 +229,209 @@ class _RecordingApp(App[None]):
         self.submitted.append(event)
 
 
+async def _noop() -> None:
+    pass
+
+
+class _RefreshController:
+    def __init__(self) -> None:
+        self.cwd_values: list[Path] = []
+        self.force_values: list[bool] = []
+
+    def set_cwd(self, cwd: Path) -> None:
+        self.cwd_values.append(cwd)
+
+    def warm_cache(self, *, force: bool = False) -> Coroutine[object, object, None]:
+        self.force_values.append(force)
+        return _noop()
+
+
+class TestChatInputFileCacheRefresh:
+    def test_refresh_file_cache_uses_exclusive_worker(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        chat = ChatInput()
+        controller = _RefreshController()
+        worker_calls: list[dict[str, object]] = []
+
+        def fake_run_worker(
+            work: Coroutine[object, object, None], **kwargs: object
+        ) -> None:
+            work.close()
+            worker_calls.append(kwargs)
+
+        monkeypatch.setattr(chat, "_file_controller", controller, raising=False)
+        monkeypatch.setattr(chat, "run_worker", fake_run_worker)
+
+        chat._refresh_file_cache()
+
+        assert controller.force_values == [True]
+        assert worker_calls == [
+            {
+                "exclusive": True,
+                "group": chat_input_module._FILE_CACHE_WORKER_GROUP,
+                "exit_on_error": False,
+            }
+        ]
+
+    def test_set_cwd_uses_file_cache_worker_group(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        chat = ChatInput()
+        controller = _RefreshController()
+        worker_calls: list[dict[str, object]] = []
+
+        def fake_run_worker(
+            work: Coroutine[object, object, None], **kwargs: object
+        ) -> None:
+            work.close()
+            worker_calls.append(kwargs)
+
+        monkeypatch.setattr(chat, "_file_controller", controller, raising=False)
+        monkeypatch.setattr(chat, "run_worker", fake_run_worker)
+
+        chat.set_cwd(tmp_path)
+
+        assert controller.cwd_values == [tmp_path]
+        assert controller.force_values == [False]
+        assert worker_calls == [
+            {
+                "exclusive": False,
+                "group": chat_input_module._FILE_CACHE_WORKER_GROUP,
+                "exit_on_error": False,
+            }
+        ]
+
+    def test_refresh_file_cache_noop_without_controller(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Refresh is a no-op before the file controller is wired up."""
+        chat = ChatInput()
+        worker_calls: list[object] = []
+        monkeypatch.setattr(
+            chat,
+            "run_worker",
+            lambda *args, **kwargs: worker_calls.append((args, kwargs)),
+        )
+
+        assert getattr(chat, "_file_controller", None) is None
+        chat._refresh_file_cache()
+
+        assert worker_calls == []
+
+    async def test_on_mount_schedules_file_cache_refresh(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`on_mount` schedules the periodic `@` file-cache refresh.
+
+        Without this the cache would only warm on mount and cwd switches, so
+        files created or deleted mid-session would never surface.
+        """
+        interval_calls: list[tuple[float, object]] = []
+
+        def fake_set_interval(
+            _self: ChatInput, interval: float, callback: object, **_kwargs: object
+        ) -> None:
+            interval_calls.append((interval, callback))
+
+        monkeypatch.setattr(ChatInput, "set_interval", fake_set_interval)
+
+        app = _ChatInputTestApp()
+        async with app.run_test():
+            chat = app.query_one(ChatInput)
+            assert (
+                chat_input_module._FILE_CACHE_REFRESH_INTERVAL_SECONDS,
+                chat._refresh_file_cache,
+            ) in interval_calls
+
+
+class TestChatInputScrollbar:
+    """Regression tests for the chat input's vertical scrollbar behavior.
+
+    `ChatTextArea` is `height: auto; max-height: 8; overflow-y: auto`. The base
+    `TextArea` grows its `virtual_size` height the moment a row is inserted, a
+    frame before this auto-height widget's container reflows to match. Left to
+    the base `_refresh_scrollbars`, that one-frame mismatch makes a short draft
+    look like it overflows and flashes the vertical scrollbar on, then off. The
+    `ChatTextArea._refresh_scrollbars` override corrects the comparison height
+    so the bar appears only on genuine overflow.
+    """
+
+    async def test_newline_into_short_draft_never_flashes_scrollbar(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A newline below `max-height` must never show the vertical scrollbar.
+
+        Records the scrollbar decision on every refresh triggered by the insert
+        (not just the settled state) so the one-frame flash is caught. Fails
+        against the unpatched base behavior, which shows the bar mid-reflow.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            text_area = chat.input_widget
+            assert text_area is not None
+            text_area.focus()
+            await pilot.pause()
+
+            decisions: list[bool] = []
+            original = ChatTextArea._refresh_scrollbars
+
+            def _record(self: ChatTextArea) -> None:
+                original(self)
+                decisions.append(self.show_vertical_scrollbar)
+
+            monkeypatch.setattr(ChatTextArea, "_refresh_scrollbars", _record)
+            await pilot.press("shift+enter")
+            for _ in range(4):
+                await pilot.pause()
+
+            assert text_area.text == "\n"
+            assert text_area.max_scroll_y == 0
+            assert decisions, "expected a scrollbar refresh during the insert"
+            assert not any(decisions), (
+                f"vertical scrollbar flashed during newline insert: {decisions}"
+            )
+            assert text_area.show_vertical_scrollbar is False
+
+    async def test_overflowing_draft_keeps_visible_scrollbar(self) -> None:
+        """A draft taller than `max-height` keeps a real, scrollable bar."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            text_area = chat.input_widget
+            assert text_area is not None
+            text_area.focus()
+            await pilot.pause()
+
+            for _ in range(15):
+                await pilot.press("shift+enter")
+            for _ in range(3):
+                await pilot.pause()
+
+            assert text_area.max_scroll_y > 0
+            assert text_area.show_vertical_scrollbar is True
+            assert text_area.scrollbar_size_vertical > 0
+            # The cursor stays in view at the bottom of the overflowing draft.
+            rel_y = text_area.cursor_location[0] - text_area.scroll_offset.y
+            assert 0 <= rel_y < text_area.size.height
+
+    async def test_settled_content_height_resolves_max_height(self) -> None:
+        """The flash-suppression bound resolves to `max-height` in content rows.
+
+        Guards the override silently disabling itself: if `max-height` stops
+        resolving to a fixed cell count, `_settled_content_height` returns
+        `None` and the flash returns.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            text_area = app.query_one(ChatInput).input_widget
+            assert text_area is not None
+            await pilot.pause()
+            # max-height: 8 with no border/padding -> 8 content rows.
+            assert text_area._settled_content_height() == 8
+
+
 class TestChatTextAreaKeybindings:
     """Regression tests for terminal key aliases in the chat input."""
 
@@ -250,6 +458,365 @@ class TestChatTextAreaKeybindings:
 
         assert "ctrl+backspace" in word_delete_keys
         assert "alt+backspace" in word_delete_keys
+
+
+class TestDiscardText:
+    """Tests for the undoable draft clear behind esc+esc and the `[ X ]` button."""
+
+    async def test_discard_text_clears_and_reports_cleared(self) -> None:
+        """`discard_text` empties the draft and returns True when text existed."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.insert("a draft I changed my mind about")
+            await pilot.pause()
+
+            assert chat_input.discard_text() is True
+            await pilot.pause()
+            assert chat_input.value == ""
+
+    async def test_discard_text_no_op_when_empty(self) -> None:
+        """`discard_text` returns False and leaves the media-skip counter alone."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            await pilot.pause()
+            before = chat_input._skip_media_sync_events
+            assert chat_input.discard_text() is False
+            # An empty no-op must not bump the skip counter: a stray increment
+            # would later swallow a legitimate media sync, desyncing placeholders.
+            assert chat_input._skip_media_sync_events == before
+
+    async def test_discard_text_is_undoable(self) -> None:
+        """The cleared draft is restorable via the TextArea undo (ctrl+z)."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.insert("restore me")
+            await pilot.pause()
+
+            assert chat_input.discard_text() is True
+            await pilot.pause()
+            assert chat_input.value == ""
+
+            text_area.undo()
+            await pilot.pause()
+            assert chat_input.value == "restore me"
+
+    async def test_discard_text_preserves_media_for_undo(self) -> None:
+        """Undoing a cleared media draft keeps placeholder media attached."""
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            placeholder = app.tracker.add_image(
+                ImageData(base64_data="abc", format="png", placeholder="")
+            )
+            text_area.insert(placeholder)
+            await pilot.pause()
+
+            assert len(app.tracker.get_images()) == 1
+            assert chat_input.discard_text() is True
+            await pilot.pause()
+            assert chat_input.value == ""
+            assert len(app.tracker.get_images()) == 1
+
+            text_area.undo()
+            await pilot.pause()
+            assert chat_input.value == placeholder
+            assert len(app.tracker.get_images()) == 1
+
+
+class TestInputActionButtons:
+    """Tests for the `[ X ]` clear and `[ COPY ]` buttons in the chat input."""
+
+    async def test_buttons_render_labels(self) -> None:
+        """The action button labels render as text, not Rich markup tags."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            # Buttons only appear once a draft exists.
+            text_area.insert("draft")
+            await pilot.pause()
+            rendered = html.unescape(app.export_screenshot()).replace("\xa0", " ")
+
+        assert "[ X ]" in rendered
+        assert "[ COPY ]" in rendered
+
+    async def test_buttons_render_on_input_border(self) -> None:
+        """Buttons sit on the box's top border line, above full-width text.
+
+        They render on the border row (not a content row), so the text area
+        keeps the full width and the draft is never overlapped. The top-right
+        corner stays visible, a first-row text click still reaches the text
+        area, and a button click hits the button.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test(size=(60, 24)) as pilot:
+            await pilot.pause()
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            # A long single line would wrap to the text area's full width.
+            text_area.insert("Z" * 200)
+            await pilot.pause()
+
+            box = chat_input.query_one("#input-box")
+            clear = chat_input.query_one("#clear-button", Static)
+            copy = chat_input.query_one("#copy-button", Static)
+
+            # Text area spans the full width inside the border.
+            assert text_area.region.right == box.content_region.right
+
+            # Buttons render on the top border row, above the first text row.
+            assert clear.region.y == box.region.y
+            assert copy.region.y == box.region.y
+            assert text_area.region.y > box.region.y
+
+            # The top-right corner stays visible (buttons stop short of the edge).
+            assert copy.region.right < box.region.right
+
+            # No overlap: a first-row click reaches the text area, and a click on
+            # a button hits the button.
+            left_widget, _ = app.screen.get_widget_at(
+                text_area.region.x + 1, text_area.region.y
+            )
+            assert left_widget is text_area
+            button_widget, _ = app.screen.get_widget_at(
+                copy.region.x + 1, copy.region.y
+            )
+            assert button_widget is copy
+
+    async def test_buttons_hidden_until_draft_entered(self) -> None:
+        """The buttons appear only while the draft has non-whitespace content."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            actions = chat_input.query_one("#input-actions")
+
+            # Empty draft: nothing to clear or copy, so the buttons stay hidden.
+            assert actions.display is False
+
+            # Whitespace-only input has nothing worth acting on: still hidden.
+            text_area.insert("  \n\n  ")
+            await pilot.pause()
+            assert actions.display is False
+
+            # Real content reveals them.
+            text_area.insert("draft")
+            await pilot.pause()
+            assert actions.display is True
+
+            # Clearing the draft hides them again.
+            chat_input.discard_text()
+            await pilot.pause()
+            assert actions.display is False
+
+    async def test_history_navigation_hides_buttons_in_same_frame(self) -> None:
+        """Emptying the draft via history/clear hides the buttons synchronously."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            actions = chat_input.query_one("#input-actions")
+
+            # Recalling content shows the buttons in the same frame (no pause).
+            text_area.set_text_from_history("recalled", cursor_at_end=True)
+            assert actions.display is True
+
+            # Tabbing forward to an empty draft hides them in the same frame,
+            # before the suppressed Changed event would otherwise process.
+            text_area.set_text_from_history("", cursor_at_end=True)
+            assert actions.display is False
+
+            # clear_text empties the draft and hides them synchronously too.
+            text_area.set_text_from_history("recalled", cursor_at_end=True)
+            assert actions.display is True
+            text_area.clear_text()
+            assert actions.display is False
+
+    async def test_copy_button_double_click_does_not_select_label(self) -> None:
+        """Double-clicking `[ COPY ]` should not trigger Textual word selection."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.insert("draft")  # buttons only render with a draft
+            await pilot.pause()
+
+            await pilot.double_click("#copy-button", offset=(3, 0))
+            await pilot.pause()
+
+            assert app.screen.get_selected_text() is None
+
+    async def test_clear_button_clears_input(self) -> None:
+        """Clicking `[ X ]` empties the draft."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.insert("clear me")
+            await pilot.pause()
+
+            await pilot.click("#clear-button")
+            await pilot.pause()
+            assert chat_input.value == ""
+
+    async def test_clear_button_is_undoable(self) -> None:
+        """A draft cleared via `[ X ]` can be restored with undo."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.insert("undo me")
+            await pilot.pause()
+
+            await pilot.click("#clear-button")
+            await pilot.pause()
+            assert chat_input.value == ""
+
+            text_area.undo()
+            await pilot.pause()
+            assert chat_input.value == "undo me"
+
+    async def test_clear_button_exits_command_mode(self) -> None:
+        """Clicking `[ X ]` should not leave a stale slash-command mode active."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+
+            text_area.insert("/")
+            await _pause_for_strip(pilot)
+            assert chat_input.mode == "command"
+            assert chat_input._current_suggestions
+
+            text_area.insert("help")
+            await pilot.pause()
+            await pilot.click("#clear-button")
+            await pilot.pause()
+
+            assert chat_input.mode == "normal"
+            assert chat_input.value == ""
+            assert chat_input._current_suggestions == []
+
+            text_area.insert("hello")
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == "hello"
+            assert app.submitted[0].mode == "normal"
+
+    async def test_copy_button_copies_input(self, monkeypatch) -> None:
+        """Clicking `[ COPY ]` sends the draft to the clipboard helper."""
+        import deepagents_code.clipboard as clipboard_module
+
+        copied: list[str] = []
+
+        def fake_copy(_app: object, text: str) -> tuple[bool, str | None]:
+            copied.append(text)
+            return True, None
+
+        monkeypatch.setattr(clipboard_module, "copy_text_to_clipboard", fake_copy)
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.insert("copy me")
+            await pilot.pause()
+
+            await pilot.click("#copy-button")
+            await pilot.pause()
+
+        assert copied == ["copy me"]
+
+    async def test_copy_button_failure_warns(self, monkeypatch) -> None:
+        """A failed `[ COPY ]` surfaces a warning toast instead of failing silently."""
+        import deepagents_code.clipboard as clipboard_module
+
+        def fake_copy(_app: object, _text: str) -> tuple[bool, str | None]:
+            return False, "boom"
+
+        monkeypatch.setattr(clipboard_module, "copy_text_to_clipboard", fake_copy)
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.insert("copy me")
+            await pilot.pause()
+
+            notifications: list[tuple[str, object]] = []
+            monkeypatch.setattr(
+                app,
+                "notify",
+                lambda message, **kwargs: notifications.append(
+                    (message, kwargs.get("severity"))
+                ),
+            )
+
+            await pilot.click("#copy-button")
+            await pilot.pause()
+
+        assert notifications == [("Failed to copy input: boom", "warning")]
+
+    async def test_clear_button_refocuses_input(self) -> None:
+        """Clicking `[ X ]` returns focus to the text area so typing can continue."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.insert("clear me")
+            await pilot.pause()
+
+            await pilot.click("#clear-button")
+            await pilot.pause()
+            assert text_area.has_focus
+
+    async def test_copy_button_refocuses_input(self, monkeypatch) -> None:
+        """`[ COPY ]` returns focus to the input (not the non-focusable button)."""
+        import deepagents_code.clipboard as clipboard_module
+
+        monkeypatch.setattr(
+            clipboard_module,
+            "copy_text_to_clipboard",
+            lambda _app, _text: (True, None),
+        )
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.insert("copy me")  # buttons only render with a draft
+            await pilot.pause()
+
+            await pilot.click("#copy-button")
+            await pilot.pause()
+            assert text_area.has_focus
 
 
 class _ImagePasteApp(App[None]):
@@ -322,8 +889,9 @@ class TestPromptIndicator:
             chat_input.mode = "shell_incognito"
             await pilot.pause()
 
+            input_box = chat_input.query_one("#input-box")
             assert _prompt_text(prompt) == "$"
-            assert chat_input.border_title == "incognito"
+            assert input_box.border_title == "incognito"
             assert chat_input.has_class("mode-shell-incognito")
 
     async def test_incognito_shell_to_shell_clears_incognito_styling(self) -> None:
@@ -336,14 +904,15 @@ class TestPromptIndicator:
         async with app.run_test() as pilot:
             chat_input = app.query_one(ChatInput)
 
+            input_box = chat_input.query_one("#input-box")
             chat_input.mode = "shell_incognito"
             await pilot.pause()
-            assert chat_input.border_title == "incognito"
+            assert input_box.border_title == "incognito"
             assert chat_input.has_class("mode-shell-incognito")
 
             chat_input.mode = "shell"
             await pilot.pause()
-            assert chat_input.border_title is None
+            assert input_box.border_title is None
             assert not chat_input.has_class("mode-shell-incognito")
             assert chat_input.has_class("mode-shell")
 
@@ -396,6 +965,62 @@ class TestPromptIndicator:
             chat_input.mode = "shell"
             await pilot.pause()
             assert any(m.mode == "shell" for m in messages)
+
+
+class TestModeSwitchNoJitter:
+    """Regression tests: mode glyph and completion popup update atomically.
+
+    Switching modes (e.g. `/` → `!` or `!` → `/`) must change the prompt glyph
+    and completion popup visibility in the same frame. A deferred ordering that
+    closes the popup one frame before the glyph changes (or vice versa) creates
+    visible jitter.
+    """
+
+    async def test_slash_to_bang_updates_glyph_and_popup_same_frame(self) -> None:
+        """Switching from command mode to shell mode atomically hides popup."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            prompt = chat.query_one("#prompt", Static)
+            popup = chat.query_one(CompletionPopup)
+            assert chat._text_area is not None
+
+            # Enter command mode — popup visible, glyph is "/"
+            await pilot.press("/")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+            assert _prompt_text(prompt) == "/"
+            assert popup.styles.display == "block"
+
+            # Switch to shell mode — popup hidden AND glyph is "$" after one pause
+            await pilot.press("!")
+            await pilot.pause()
+            assert chat.mode == "shell"
+            assert _prompt_text(prompt) == "$"
+            assert popup.styles.display == "none"
+
+    async def test_bang_to_slash_updates_glyph_and_popup_same_frame(self) -> None:
+        """Switching from shell mode to command mode atomically shows popup."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            prompt = chat.query_one("#prompt", Static)
+            popup = chat.query_one(CompletionPopup)
+            assert chat._text_area is not None
+
+            # Enter shell mode first — popup hidden, glyph is "$"
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell"
+            assert _prompt_text(prompt) == "$"
+            assert popup.styles.display == "none"
+
+            # Switch to command mode — popup visible AND glyph is "/" after one pause
+            await pilot.press("/")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+            assert _prompt_text(prompt) == "/"
+            assert popup.styles.display == "block"
 
 
 class TestHistoryNavigationFlag:
@@ -1118,6 +1743,166 @@ class TestModePrefixStripping:
             assert chat.mode == "command"
             assert chat._text_area.text == ""
 
+    async def test_handle_mode_prefix_keystroke_switches_without_text_change(
+        self,
+    ) -> None:
+        """A typed mode selector is consumed without inserting the character.
+
+        Regression guard for the `!`-flash: `handle_mode_prefix_keystroke`
+        consumes the keystroke and flips the mode directly when needed, so the
+        trigger is never inserted (and thus never flashes for a frame before
+        stripping).
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            assert chat.handle_mode_prefix_keystroke("!") is True
+            await pilot.pause()
+            assert chat.mode == "shell"
+            assert chat._text_area.text == ""
+
+            # Second bang promotes to incognito, still without inserted text.
+            assert chat.handle_mode_prefix_keystroke("!") is True
+            await pilot.pause()
+            assert chat.mode == "shell_incognito"
+            assert chat._text_area.text == ""
+
+            # A third bang in incognito is literal body text — not consumed.
+            assert chat.handle_mode_prefix_keystroke("!") is False
+            # Non-trigger characters are never consumed.
+            assert chat.handle_mode_prefix_keystroke("a") is False
+
+    async def test_redundant_typed_slash_keystroke_stays_command_mode(self) -> None:
+        """A redundant `/` at the command prompt is consumed as a mode selector."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("/")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+            assert chat._text_area.text == ""
+
+            await pilot.press("/")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+            assert chat._text_area.text == ""
+
+    async def test_typed_bang_keystroke_skips_strip_round_trip(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pressing `!` enters shell mode without an insert-then-strip round trip."""
+        strip_calls: list[int] = []
+        original = ChatInput._strip_mode_prefix
+
+        def _spy(self: ChatInput, length: int = 1) -> None:
+            strip_calls.append(length)
+            original(self, length)
+
+        monkeypatch.setattr(ChatInput, "_strip_mode_prefix", _spy)
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "shell"
+            assert chat._text_area.text == ""
+            assert strip_calls == []
+
+    async def test_typed_slash_keystroke_enters_command_mode_with_completions(
+        self,
+    ) -> None:
+        """Pressing `/` enters command mode and activates completions, no flash."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("/")
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "command"
+            assert chat._text_area.text == ""
+            assert chat._completion_manager is not None
+            assert chat._completion_manager._active is not None
+
+    async def test_typed_bang_not_at_start_is_literal(self) -> None:
+        """A `!` typed mid-text is body content, not a mode switch."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("ab")
+            await pilot.pause()
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == "ab!"
+
+    async def test_typed_trigger_at_cursor_zero_with_text_switches_mode(self) -> None:
+        """A trigger typed at start of existing text switches mode, keeps text.
+
+        Exercises the `cursor_location == (0, 0)` arm of the `_on_key` guard
+        with a non-empty input: the keystroke is consumed (no inserted `!`) and
+        the body text is preserved, matching the legacy insert-then-strip path.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("abc")
+            await pilot.pause()
+            chat._text_area.move_cursor((0, 0))
+            await pilot.pause()
+
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "shell"
+            assert chat._text_area.text == "abc"
+
+    async def test_typed_trigger_with_selection_is_not_intercepted(self) -> None:
+        """A trigger typed over a selection replaces it instead of switching.
+
+        A backward selection puts the cursor at `(0, 0)` while leaving the
+        selection non-empty, so only the `selection.is_empty` arm of the
+        `_on_key` guard keeps the keystroke from being intercepted. Removing
+        that arm would swallow the `/` and strand the selected text in the
+        input, which this test catches.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("ab")
+            await pilot.pause()
+            # Anchor at end, cursor at start: cursor_location is (0, 0) but the
+            # selection is non-empty.
+            chat._text_area.selection = Selection((0, 2), (0, 0))
+            await pilot.pause()
+            assert chat._text_area.cursor_location == (0, 0)
+            assert not chat._text_area.selection.is_empty
+
+            await pilot.press("/")
+            await _pause_for_strip(pilot)
+
+            # TextArea replaced the selected "ab" with "/", which the change
+            # handler then detected and stripped into command mode. The key
+            # point: the selected text did not survive as literal input.
+            assert chat._text_area.text == ""
+            assert chat.mode == "command"
+
     async def test_mode_stays_on_empty_text(self) -> None:
         """Clearing text after entering shell mode should stay in mode."""
         app = _ChatInputTestApp()
@@ -1157,6 +1942,24 @@ class TestModePrefixStripping:
             await pilot.pause()
             assert chat.mode == "normal"
 
+    async def test_backspace_on_empty_incognito_exits_to_normal(self) -> None:
+        """Backspace cancels incognito mode instead of demoting to shell mode."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("!")
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell_incognito"
+            assert chat._text_area.text == ""
+
+            await pilot.press("backspace")
+            await pilot.pause()
+            assert chat.mode == "normal"
+            assert chat._text_area.text == ""
+
     async def test_backspace_on_single_char_stays_in_mode(self) -> None:
         """Deleting last char in command mode should stay in mode, not exit."""
         app = _ChatInputTestApp()
@@ -1184,8 +1987,8 @@ class TestModePrefixStripping:
             await pilot.pause()
             assert chat.mode == "normal"
 
-    async def test_backspace_at_cursor_zero_with_text_exits_mode(self) -> None:
-        """Backspace at cursor position 0 with text after cursor exits mode."""
+    async def test_backspace_at_cursor_zero_with_text_stays_in_mode(self) -> None:
+        """Backspace only exits a mode prompt when the input is empty."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -1204,10 +2007,12 @@ class TestModePrefixStripping:
             chat._text_area.move_cursor((0, 0))
             await pilot.pause()
 
-            # Backspace at position 0 with text after cursor — should exit mode
+            # Backspace at position 0 with text after cursor is a text-editing
+            # no-op; it should not cancel the active mode.
             await pilot.press("backspace")
             await pilot.pause()
-            assert chat.mode == "normal"
+            assert chat.mode == "command"
+            assert chat._text_area.text == "help"
 
     async def test_backspace_exit_mode_dismisses_completion(self) -> None:
         """Exiting mode via backspace-on-empty should hide the completion popup."""
@@ -1463,6 +2268,39 @@ class TestModePrefixStripping:
 
 class TestExitModePreservesText:
     """Exiting shell/command mode should preserve typed text."""
+
+    async def test_exit_empty_shell_mode_does_not_restore_prefix(self) -> None:
+        """Escape cancels shell mode; it does not turn `!` back into text."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell"
+            assert chat._text_area.text == ""
+
+            assert chat.exit_mode() is True
+            assert chat.mode == "normal"
+            assert chat._text_area.text == ""
+
+    async def test_exit_empty_incognito_mode_does_not_restore_prefix(self) -> None:
+        """Escape cancels incognito mode; it does not turn `!!` back into text."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("!")
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell_incognito"
+            assert chat._text_area.text == ""
+
+            assert chat.exit_mode() is True
+            assert chat.mode == "normal"
+            assert chat._text_area.text == ""
 
     async def test_exit_shell_mode_keeps_text(self) -> None:
         """Pressing Escape in shell mode should switch to normal but keep text."""
@@ -3125,7 +3963,7 @@ class TestArgumentHints:
             assert app.submitted[0].value == "/remember"
 
     async def test_hint_cleared_when_backspace_exits_command_mode(self) -> None:
-        """Backspace mode exit clears ghost text without needing a text edit."""
+        """Backspace mode exit clears stale ghost text without a text edit."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -3133,19 +3971,17 @@ class TestArgumentHints:
 
             chat._text_area.insert("/")
             await _pause_for_strip(pilot)
-            chat._text_area.insert("remember ")
-            await pilot.pause()
-            assert chat._text_area.argument_hint == "[context]"
+            assert chat.mode == "command"
+            assert chat._text_area.text == ""
 
-            chat._text_area.move_cursor((0, 0))
-            await pilot.pause()
+            chat._text_area.argument_hint = "[context]"
             await pilot.press("backspace")
             await pilot.pause()
 
             assert chat.mode == "normal"
-            assert chat._text_area.text == "remember "
+            assert chat._text_area.text == ""
             assert chat._text_area.argument_hint == ""
-            assert _render_text_area_line(chat._text_area) == "remember"
+            assert _render_text_area_line(chat._text_area) == ""
 
     async def test_hint_not_shown_in_normal_mode(self) -> None:
         """Ghost text does not appear when not in command mode."""

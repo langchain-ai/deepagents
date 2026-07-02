@@ -18,35 +18,35 @@ classifiers = [
 ]
 dependencies = [
     # SDK — local editable in dev (see [tool.uv.sources]), versioned for published package
-    "deepagents>=0.6.8",
-    "langchain>=1.3.9,<2.0.0",
-    "deepagents-code>=0.1.11",
-    # Harbor runtime, with the built-in LangSmith sandbox env (`-e langsmith`, harbor>=0.13.2)
-    "harbor[langsmith]>=0.13.2,<0.14.0",
+    "deepagents>=0.6.12",
+    "langchain>=1.3.11,<2.0.0",
+    "deepagents-code>=0.1.27",
+    # Harbor runtime, with the built-in LangSmith sandbox env (`-e langsmith`, introduced in harbor 0.13.2)
+    "harbor[langsmith]>=0.16.1,<0.17.0",
     # LangSmith for observability
-    "langsmith>=0.8.11,<0.9.0",
+    "langsmith>=0.9.3,<0.10.0",
     # Sandbox runtimes
     "dockerfile-parse>=2.0.1",
     "modal>=1.4.3",
     # LangChain model providers (evals run against many providers)
-    "langchain-anthropic>=1.4.6,<1.5.0",
-    "langchain-baseten>=0.2.0,<0.3.0",
+    "langchain-anthropic>=1.4.7,<1.5.0",
+    "langchain-baseten>=0.2.1,<0.3.0",
     "langchain-deepseek>=1.1.0,<1.2.0",
-    "langchain-fireworks>=1.4.2,<1.5.0",
-    "langchain-google-genai>=4.2.4,<4.3.0",
+    "langchain-fireworks>=1.4.3,<1.5.0",
+    "langchain-google-genai>=4.2.6,<4.3.0",
     "langchain-groq>=1.1.3,<1.2.0",
     "langchain-mistralai>=1.1.5,<1.2.0",
-    "langchain-nvidia-ai-endpoints>=1.4.1,<1.5.0",
+    "langchain-nvidia-ai-endpoints>=1.4.2,<1.5.0",
     "langchain-ollama>=1.1.0,<1.2.0",
-    "langchain-openai>=1.3.0,<1.4.0",
-    "langchain-openrouter>=0.2.3,<0.3.0",
+    "langchain-openai>=1.3.3,<1.4.0",
+    "langchain-openrouter>=0.2.4,<0.3.0",
     "langchain-xai>=1.2.2,<1.3.0",
     # Eval-specific dependencies
     "datasets>=5.0.0",
     "nltk>=3.9.4",
     "openevals>=0.2.0",
     "tiktoken>=0.13.0",
-    "langchain-quickjs>=0.1.4",
+    "langchain-quickjs>=0.3.2,<0.4.0",
 ]
 
 [project.scripts]
@@ -54,20 +54,20 @@ deepagents-evals = "deepagents_evals.cli:main"
 
 [project.optional-dependencies]
 charts = [
-    "matplotlib>=3.10.9",
+    "matplotlib>=3.11.0",
 ]
 
 [dependency-groups]
 test = [
-    "pytest>=9.0.3",
+    "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-watcher>=0.6.3,<1.0.0",
-    "ruff>=0.15.16",
-    "ty>=0.0.46,<1.0.0",
+    "ruff>=0.15.20",
+    "ty>=0.0.54,<1.0.0",
     "python-dotenv>=1.2.2",
     "pytest-socket>=0.8.0",
     "pytest-cov>=7.1.0",
-    "matplotlib>=3.10.9",
+    "matplotlib>=3.11.0",
 ]
 
 [project.urls]
@@ -100,12 +100,12 @@ required-environments = [
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 override-dependencies = [
-    "openai>=2.41.0,<3.0.0",
+    "openai>=2.44.0,<3.0.0",
     "e2b==2.26.0",
     # CVE-2026-42561: DoS via unbounded multipart part headers in < 0.0.27
     "python-multipart>=0.0.32",
     # CVE-2026-0994: JSON recursion depth bypass DoS in <= 6.33.4
-    "protobuf>=7.35.0",
+    "protobuf>=7.35.1",
 ]
 
 [tool.uv.sources]
@@ -120,11 +120,16 @@ extra-paths = ["../deepagents", "../code"]
 # https://docs.astral.sh/ty/rules/
 division-by-zero = "error"
 
+[tool.ty.src]
+# clbench integration code targets the external benchmark's package layout
+# (src.interface / src.registry), not this project's — exclude it from type checks.
+exclude = ["deepagents_clbench"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
-# Vendored BFCL benchmark files — skip both lint and format
-exclude = ["tests/evals/data/bfcl_apis"]
+# Vendored BFCL benchmark files + external-benchmark integration code — skip lint and format
+exclude = ["tests/evals/data/bfcl_apis", "deepagents_clbench"]
 force-exclude = true
 
 [tool.ruff.format]

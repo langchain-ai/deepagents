@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 
+from deepagents_talon.channels.base import ASR_ELIGIBLE_MEDIA_TYPES
 from deepagents_talon.interfaces import ChannelMessage
 
 if TYPE_CHECKING:
@@ -186,7 +187,10 @@ async def transcribe_voice_message(
 
 
 def _is_voice_message(message: ChannelMessage) -> bool:
-    return message.metadata.get("media_type") == "voice" or "voice_path" in message.metadata
+    if "voice_path" in message.metadata:
+        return True
+    media_type = message.metadata.get("media_type")
+    return isinstance(media_type, str) and media_type in ASR_ELIGIBLE_MEDIA_TYPES
 
 
 def _voice_path(message: ChannelMessage) -> Path | None:
@@ -243,7 +247,7 @@ def _load_local_pipeline(model: str, device: str) -> _LocalSpeechPipeline:
         module = importlib.import_module("transformers")
     except ImportError as exc:
         msg = (
-            "Local voice transcription dependencies are missing. Install the `speech` "
+            "Local voice transcription dependencies are missing. Install the `media` "
             "extra and ensure ffmpeg is on PATH."
         )
         raise ImportError(msg) from exc

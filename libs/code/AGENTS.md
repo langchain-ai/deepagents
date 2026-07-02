@@ -2,7 +2,7 @@
 
 `deepagents-code` is the interactive coding agent — the Textual REPL, headless `-x` mode, MCP integration, skills, sandbox bootstrap, and slash-command surface. Forked from `deepagents-cli` at the 0.1.0 split.
 
-For monorepo-wide conventions (commit titles, lint, testing, docs, CI, benchmarks), see the root `AGENTS.md`.
+For monorepo-wide conventions (commit titles, lint, testing, docs, CI, benchmarks), see the root `AGENTS.md`. For a high-level map of the package (client/server processes, request lifecycle, module map), see `ARCHITECTURE.md`.
 
 ## Textual (terminal UI framework)
 
@@ -69,42 +69,9 @@ Casts are acceptable when the type violation is the point of the test (for examp
 
 ## SDK dependency pin
 
-`deepagents-code` pins an exact `deepagents==X.Y.Z` version in `pyproject.toml`. When developing features that depend on new SDK functionality, bump this pin as part of the same PR. A CI check verifies the pin matches the current SDK version at release time (unless bypassed with `dangerous-skip-sdk-pin-check`).
+`deepagents-code` pins an exact `deepagents==X.Y.Z` version in `pyproject.toml`. When developing features that depend on new SDK functionality, bump this pin as part of the same PR. A CI check verifies the pin is not older than the current SDK version at release time (unless bypassed with `dangerous-skip-sdk-pin-check`); pins ahead of the workspace SDK are allowed for intentional prerelease coordination.
 
-## Local dev installs
-
-Keep the released CLI and editable development CLI separate:
-
-- `dcode` / `deepagents-code` should point at the normal installed tool, typically managed by `uv tool install deepagents-code`.
-- `dcode-dev` should point at a dedicated editable venv under `~/.local/share/dcode-dev`, with a symlink in `~/.local/bin/dcode-dev`.
-
-This uses a manual `uv venv` + `uv pip install -e` rather than `uv sync` or `uv tool install --editable` on purpose: it builds an isolated venv outside the workspace's locked environment, so the dev binary can be re-resolved on demand without disturbing the released tool or the repo's `uv.lock`. `uv pip`/`uv venv` are first-class `uv` subcommands here, not bare `pip`.
-
-`~/.local/bin` must be on your `PATH` for the `dcode-dev` symlink to resolve (`uv tool install` adds its own shim directory automatically, but a hand-rolled symlink does not).
-
-Example setup. The `--python` value is illustrative — any interpreter satisfying the package's `requires-python` (currently `>=3.11`) works; omit the flag to let `uv` pick. Replace `<repo>` with your local checkout path.
-
-```bash
-uv venv ~/.local/share/dcode-dev --python 3.13
-uv pip install --python ~/.local/share/dcode-dev/bin/python -e <repo>/libs/code
-ln -sf ~/.local/share/dcode-dev/bin/dcode ~/.local/bin/dcode-dev
-```
-
-When dependency constraints change in `libs/code/pyproject.toml`, update the dev venv explicitly:
-
-```bash
-uv pip install --python ~/.local/share/dcode-dev/bin/python -e <repo>/libs/code --upgrade
-```
-
-Verify command resolution and editable imports (the `dcode` checks assume the released tool is installed separately, per above):
-
-```bash
-which dcode
-which dcode-dev
-dcode --version
-dcode-dev --version
-~/.local/share/dcode-dev/bin/python -c 'import deepagents_code; print(deepagents_code.__file__)'
-```
+For a persistent editable `dcode-dev` install that stays separate from a released install, see [Local dev installs](./DEVELOPMENT.md#local-dev-installs) in the development guide.
 
 ## Startup performance
 
@@ -124,7 +91,7 @@ Debug logging is configured **once**, on the `deepagents_code` package logger, b
 
 - Do **not** add per-module `configure_debug_logging(logger)` calls. They are redundant now that the package logger is configured at import, and they reintroduce the duplicate-handler problem the single-config approach solves.
 - Every module should create its logger with `logging.getLogger(__name__)` so it stays inside the `deepagents_code.*` hierarchy and inherits the package handler. Don't set `logger.propagate = False` or attach your own handlers.
-- The handler only attaches when `DEEPAGENTS_CODE_DEBUG` is truthy; the no-op path is a single env-var read, so it's safe on the startup hot path. See `DEV.md` for the `DEEPAGENTS_CODE_DEBUG` / `DEEPAGENTS_CODE_DEBUG_FILE` env vars.
+- The handler only attaches when `DEEPAGENTS_CODE_DEBUG` is truthy; the no-op path is a single env-var read, so it's safe on the startup hot path. See `DEVELOPMENT.md` for the `DEEPAGENTS_CODE_DEBUG` / `DEEPAGENTS_CODE_DEBUG_FILE` env vars.
 
 ## CLI help screen
 
@@ -138,7 +105,7 @@ When adding a user-facing CLI feature (new slash command, keybinding, workflow),
 
 Slash commands are defined as `SlashCommand` entries in the `COMMANDS` tuple in `deepagents_code/command_registry.py`. Each entry declares the command name, description, `bypass_tier` (queue-bypass classification), optional `hidden_keywords` for fuzzy matching, and optional `aliases`. Bypass-tier frozensets and the `SLASH_COMMANDS` autocomplete list are derived automatically — no other file should hard-code command metadata.
 
-To add a new slash command: (1) add a `SlashCommand` entry to `COMMANDS`, (2) set the appropriate `bypass_tier`, (3) add a handler branch in `_handle_command` in `app.py`, (4) run `make lint && make test` — the drift test will catch any mismatch.
+To add a new slash command: (1) add a `SlashCommand` entry to `COMMANDS`, (2) set the appropriate `bypass_tier`, (3) add a handler branch in `_handle_command` in `app.py`, (4) run `make commands-catalog` if you changed command names, aliases, descriptions, visibility, or hidden-command metadata, then (5) run `make lint && make test` — the drift test will catch any mismatch.
 
 ## Adding a new model provider
 

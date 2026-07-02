@@ -22,6 +22,7 @@ from deepagents_code._env_vars import (
     HIDE_LANGSMITH_TRACING,
     HIDE_SPLASH_TIPS,
     HIDE_SPLASH_VERSION,
+    SHOW_LANGSMITH_REPLICA_TRACING,
     is_env_truthy,
 )
 from deepagents_code._version import __version__
@@ -32,8 +33,11 @@ from deepagents_code.config import (
     get_banner,
     get_glyphs,
     get_langsmith_project_name,
+    get_langsmith_replica_project,
 )
 from deepagents_code.widgets._links import open_style_link
+
+_LANGSMITH_UTM_SOURCE = "deepagents-code"
 
 _TIPS: dict[str, int] = {
     "Use @ to reference files and / for commands": 3,
@@ -44,14 +48,16 @@ _TIPS: dict[str, int] = {
     "Use /mcp login <server> to authenticate MCP OAuth servers without leaving the TUI": 1,  # noqa: E501
     "Use /remember to save learnings from this conversation": 1,
     "Use /model to switch models mid-conversation": 2,
+    "Use /effort high to change the current model's reasoning effort": 1,
     "Press ctrl+x to compose prompts in your external editor": 1,
     "Press ctrl+u to delete to the start of the line in the chat input": 1,
     "Use /skill:<name> to invoke a skill directly": 1,
     "Type /update to check for and install updates": 1,
-    "Use /install <extra> to add optional dependencies (e.g. /install quickjs)": 1,
+    "Use /install <extra> to add optional dependencies (e.g. /install daytona)": 1,
     "Use /theme to customize the TUI's colors": 1,
     "In /theme, press N to toggle labels/keys, T to set for the current terminal": 1,
     "Use /skill-creator to build reusable agent skills": 1,
+    "Ask for a workflow to fan work out to subagents in parallel": 3,
     "Use /auto-update to toggle automatic updates": 1,
     "Use /timestamps to show or hide message timestamp footers": 1,
     "Use /agents to browse and switch between your available agents": 2,
@@ -77,6 +83,40 @@ def _pick_tip() -> str:
     tips = list(_TIPS.keys())
     weights = list(_TIPS.values())
     return random.choices(tips, weights=weights, k=1)[0]  # noqa: S311
+
+
+def _langsmith_project_link(project_url: str) -> str:
+    """Append the Deep Agents source tag to a LangSmith project URL.
+
+    Args:
+        project_url: LangSmith project URL.
+
+    Returns:
+        Project URL with the Deep Agents source tag.
+    """
+    return f"{project_url}?utm_source={_LANGSMITH_UTM_SOURCE}"
+
+
+def _langsmith_project_link_style(
+    project_url: str,
+    *,
+    ansi: bool,
+    colors: theme.ThemeColors,
+) -> TStyle:
+    """Build the clickable style for a LangSmith project name.
+
+    Args:
+        project_url: LangSmith project URL.
+        ansi: Whether the active theme is an ANSI terminal theme.
+        colors: Active Deep Agents theme colors.
+
+    Returns:
+        Link style for a LangSmith project name.
+    """
+    link = _langsmith_project_link(project_url)
+    if ansi:
+        return TStyle(bold=True, link=link)
+    return TStyle(foreground=TColor.parse(colors.primary), link=link)
 
 
 class WelcomeBanner(Static):
@@ -130,7 +170,17 @@ class WelcomeBanner(Static):
         self._project_name: str | None = (
             None if self._hide_langsmith_tracing else get_langsmith_project_name()
         )
-        self._project_url: str | None = None
+        show_replica_tracing = is_env_truthy(
+            SHOW_LANGSMITH_REPLICA_TRACING,
+            default=True,
+        )
+        replica_project = (
+            get_langsmith_replica_project()
+            if self._project_name and show_replica_tracing
+            else None
+        )
+        self._replica_projects: list[str] = [replica_project] if replica_project else []
+        self._project_urls: dict[str, str] = {}
         self._tip: str | None = None if self._hide_splash_tips else _pick_tip()
 
         super().__init__(self._build_banner(), **kwargs)
@@ -143,22 +193,27 @@ class WelcomeBanner(Static):
 
     def _on_theme_change(self) -> None:
         """Re-render the banner when the app theme changes."""
-        self.update(self._build_banner(self._project_url))
+        self.update(self._build_banner())
 
     async def _fetch_and_update(self) -> None:
         """Fetch the LangSmith URL in a thread and update the banner."""
         if not self._project_name:
             return
-        try:
-            project_url = await asyncio.wait_for(
-                asyncio.to_thread(fetch_langsmith_project_url, self._project_name),
-                timeout=2.0,
-            )
-        except (TimeoutError, OSError):
-            project_url = None
-        if project_url:
-            self._project_url = project_url
-            self.update(self._build_banner(project_url))
+        primary = self._project_name
+        project_urls: dict[str, str] = {}
+        projects = dict.fromkeys([primary, *self._replica_projects])
+        for project in projects:
+            try:
+                project_url = await asyncio.wait_for(
+                    asyncio.to_thread(fetch_langsmith_project_url, project),
+                    timeout=2.0,
+                )
+            except (TimeoutError, OSError):
+                project_url = None
+            if project_url:
+                project_urls[project] = project_url
+                self._project_urls = dict(project_urls)
+                self.update(self._build_banner())
 
     def update_thread_id(self, thread_id: str) -> None:
         """Update the displayed thread ID and re-render the banner.
@@ -167,7 +222,7 @@ class WelcomeBanner(Static):
             thread_id: The new thread ID to display.
         """
         self._cli_thread_id = thread_id
-        self.update(self._build_banner(self._project_url))
+        self.update(self._build_banner())
 
     def set_connected(
         self,
@@ -195,7 +250,7 @@ class WelcomeBanner(Static):
         self._mcp_unauthenticated = mcp_unauthenticated
         self._mcp_errored = mcp_errored
         self._mcp_awaiting_reconnect = mcp_awaiting_reconnect
-        self.update(self._build_banner(self._project_url))
+        self.update(self._build_banner())
 
     def set_connecting(self) -> None:
         """Render the regular banner footer during a reconnect.
@@ -204,7 +259,7 @@ class WelcomeBanner(Static):
         ensures the banner is no longer in the idle failure state.
         """
         self._idle = False
-        self.update(self._build_banner(self._project_url))
+        self.update(self._build_banner())
 
     def set_idle(self) -> None:
         """Transition to a neutral state with no footer.
@@ -216,7 +271,7 @@ class WelcomeBanner(Static):
         the chat error as the sole source of failure context.
         """
         self._idle = True
-        self.update(self._build_banner(self._project_url))
+        self.update(self._build_banner())
 
     def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
         """Open style-embedded hyperlinks on single click."""
@@ -234,20 +289,45 @@ class WelcomeBanner(Static):
         """Reset the pointer shape when the mouse leaves the banner."""
         self.styles.pointer = "default"
 
-    def _build_banner(self, project_url: str | None = None) -> Content:
-        """Build the banner content.
-
-        When a `project_url` is provided and a thread ID is set, the thread ID
-        is rendered as a clickable hyperlink to the LangSmith thread view.
+    def _primary_project_url(
+        self,
+        project_urls: dict[str, str] | None = None,
+    ) -> str | None:
+        """Get the resolved LangSmith URL for the primary tracing project.
 
         Args:
-            project_url: LangSmith project URL used for linking the project
-                name and thread ID. When `None`, text is rendered without links.
+            project_urls: Optional project URL mapping to use instead of cached
+                widget state.
+
+        Returns:
+            Primary project URL when resolved, otherwise `None`.
+        """
+        if not self._project_name:
+            return None
+        urls = self._project_urls if project_urls is None else project_urls
+        return urls.get(self._project_name)
+
+    def _build_banner(
+        self,
+        project_urls: dict[str, str] | None = None,
+    ) -> Content:
+        """Build the banner content.
+
+        When the primary project URL is resolved and a thread ID is set, the
+        thread ID is rendered as a clickable hyperlink to the LangSmith thread
+        view.
+
+        Args:
+            project_urls: LangSmith project URLs keyed by project name. Project
+                names with resolved URLs are rendered as links. When `None`,
+                cached widget state is used.
 
         Returns:
             Content object containing the formatted banner.
         """
         parts: list[str | tuple[str, str | TStyle] | Content] = []
+        project_urls = self._project_urls if project_urls is None else project_urls
+        project_url = self._primary_project_url(project_urls)
         colors = theme.get_theme_colors(self)
         ansi = self.app.theme in {"ansi-dark", "ansi-light"}
 
@@ -294,19 +374,44 @@ class WelcomeBanner(Static):
                 ]
             )
             if project_url:
-                link_style: str | TStyle
-                if ansi:
-                    url = f"{project_url}?utm_source=deepagents-code"
-                    link_style = TStyle(bold=True, link=url)
-                else:
-                    link_style = TStyle(
-                        foreground=TColor.parse(colors.primary),
-                        link=f"{project_url}?utm_source=deepagents-code",
+                parts.append(
+                    (
+                        f"'{self._project_name}'",
+                        _langsmith_project_link_style(
+                            project_url,
+                            ansi=ansi,
+                            colors=colors,
+                        ),
                     )
-                parts.append((f"'{self._project_name}'", link_style))
+                )
             else:
                 parts.append((f"'{self._project_name}'", accent))
             parts.append("\n")
+            if self._replica_projects:
+                # `_replica_projects` holds at most one entry today (the server
+                # mirrors to a single extra project), but the loop renders any
+                # number so the splash stays correct if that limit is lifted.
+                parts.append(("  Also tracing to: ", "dim"))
+                for idx, name in enumerate(self._replica_projects):
+                    if idx:
+                        parts.append((", ", "dim"))
+                    parts.append(("'", "dim"))
+                    replica_url = project_urls.get(name)
+                    if replica_url:
+                        parts.append(
+                            (
+                                name,
+                                _langsmith_project_link_style(
+                                    replica_url,
+                                    ansi=ansi,
+                                    colors=colors,
+                                ),
+                            )
+                        )
+                    else:
+                        parts.append((name, "dim"))
+                    parts.append(("'", "dim"))
+                parts.append("\n")
 
         if self._cli_thread_id and not self._hide_langsmith_tracing:
             if project_url:

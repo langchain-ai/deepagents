@@ -6,7 +6,7 @@ are worth flagging during code review:
 
 - Files missing a module docstring
 - Functions longer than 50 lines
-- Bare ``except:`` clauses
+- Bare `except:` clauses
 
 Usage::
 

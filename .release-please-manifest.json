@@ -1,7 +1,7 @@
 {
   "libs/cli": "0.2.2",
   "libs/deepagents": "0.6.12",
-  "libs/acp": "0.0.8",
+  "libs/acp": "0.0.9",
   "libs/code": "0.1.30",
   "libs/talon": "0.0.2",
   "libs/partners/daytona": "0.0.7",

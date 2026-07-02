@@ -3549,3 +3549,79 @@ class TestLiveToolGroupSummary:
             rendered = summary.render()
             assert isinstance(rendered, Content)
             assert "Read 1 file" in rendered.plain
+
+    async def test_rejected_member_is_evicted_on_close(self) -> None:
+        """A rejected tool stays visible, mirroring the errored-tool path."""
+        from deepagents_code.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            t1 = pilot.app.query_one("#t1", ToolCallMessage)
+            t2 = pilot.app.query_one("#t2", ToolCallMessage)
+
+            summary.add_member(t1)
+            summary.add_member(t2)
+            t1.set_rejected(reason="not now")
+            t2.set_success("ok")
+            summary.close()
+            await pilot.pause()
+
+            assert t1.display is True
+            assert not t1.has_class("-grouped")
+            assert t2.display is False
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Read 1 file" in rendered.plain
+
+    async def test_skipped_member_is_evicted_and_uncounted_on_close(self) -> None:
+        """A skipped tool stays visible and is left out of the summary count.
+
+        Regression: `skipped` once fell through `is_success`/`is_failed`/
+        `is_pending`, so a skipped tool stayed folded and inflated the count
+        (e.g. "Ran 1 shell command" for a command that never executed).
+        """
+        from deepagents_code.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            t1 = pilot.app.query_one("#t1", ToolCallMessage)  # execute
+            t2 = pilot.app.query_one("#t2", ToolCallMessage)  # read_file
+
+            summary.add_member(t1)
+            summary.add_member(t2)
+            t1.set_skipped()
+            t2.set_success("ok")
+            summary.close()
+            await pilot.pause()
+
+            # The skipped tool is un-folded and no longer part of the group.
+            assert t1.display is True
+            assert not t1.has_class("-grouped")
+            assert t2.display is False
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Read 1 file" in rendered.plain
+            # The skipped execute must not be summarized as if it had run.
+            assert "shell command" not in rendered.plain
+
+    async def test_all_failed_members_remove_summary_on_close(self) -> None:
+        """When every member fails, the empty summary removes itself."""
+        from deepagents_code.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            t1 = pilot.app.query_one("#t1", ToolCallMessage)
+            t2 = pilot.app.query_one("#t2", ToolCallMessage)
+
+            summary.add_member(t1)
+            summary.add_member(t2)
+            t1.set_error("boom")
+            t2.set_rejected(reason="no")
+            summary.close()
+            await pilot.pause()
+
+            # Nothing left to summarize: the summary detaches, both tools show.
+            assert not summary.is_attached
+            assert not pilot.app.query(ToolGroupSummary)
+            assert t1.display is True
+            assert t2.display is True

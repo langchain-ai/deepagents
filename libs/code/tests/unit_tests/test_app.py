@@ -21199,6 +21199,63 @@ class TestToolGroupCollapse:
             assert isinstance(rendered, Content)
             assert "Read 1 file, ran 1 shell command" in rendered.plain
 
+    async def test_regroup_treats_timestamp_footer_as_transparent(self) -> None:
+        """A timestamp footer between two tools does not split the run.
+
+        Production mounts a footer after every message, so a completed run
+        reaches regroup as (tool, footer, tool). The footer must be transparent
+        to grouping or every timestamped run would fragment into single-tool
+        summaries. `_mount_tools` mounts tools with no footers, so this shape is
+        otherwise never exercised.
+        """
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+        from deepagents_code.widgets.messages import (
+            ToolCallMessage,
+            ToolGroupSummary,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-footer")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+
+            t1 = ToolCallMessage("read_file", {"file_path": "a.py"})
+            t1.id = "f1"
+            t2 = ToolCallMessage("read_file", {"file_path": "b.py"})
+            t2.id = "f2"
+            # A USER footer is the simplest to build; only its footer CSS class
+            # matters to the transparency branch under test.
+            footer = app._build_message_timestamp_footer(
+                MessageData(
+                    type=MessageType.USER,
+                    content="",
+                    id="f1",
+                    timestamp=1_704_110_405.0,
+                ),
+                visible=True,
+            )
+            assert footer is not None
+            await messages.mount(t1)
+            await messages.mount(footer)
+            await messages.mount(t2)
+            await pilot.pause()
+            t1.set_success("ok")
+            t2.set_success("ok")
+            await pilot.pause()
+
+            await app._regroup_completed_tools()
+            await pilot.pause()
+
+            # Both tools fold into one summary despite the intervening footer.
+            summaries = list(app.query(ToolGroupSummary))
+            assert len(summaries) == 1
+            assert t1.display is False
+            assert t2.display is False
+            rendered = summaries[0].render()
+            assert isinstance(rendered, Content)
+            assert "Read 2 files" in rendered.plain
+
     async def test_regroup_is_idempotent(self) -> None:
         """Re-running regroup does not create duplicate summaries."""
         from deepagents_code.widgets.messages import ToolGroupSummary

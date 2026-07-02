@@ -10268,10 +10268,15 @@ class DeepAgentsApp(App):
                 turn_stats=turn_stats,
             )
             # Close the final step's group once the turn ends with no trailing
-            # assistant text to trigger the boundary path.
-            with suppress(Exception):
+            # assistant text to trigger the boundary path. Grouping is cosmetic,
+            # so a failure here must not abort the turn — but log it, since
+            # `_mount_tool_group_summary` already handles its own mount errors and
+            # anything reaching this point is unexpected.
+            try:
                 self._close_active_tool_group()
                 await self._regroup_completed_tools()
+            except Exception:
+                logger.exception("Failed to close/regroup tool group at turn end")
         except Exception as e:  # Resilient tool rendering
             logger.exception("Agent execution failed")
             try:
@@ -11091,16 +11096,26 @@ class DeepAgentsApp(App):
             # when something was actually pruned this pass.
             for summary in list(self.query(ToolGroupSummary)):
                 if not summary.has_attached_members:
-                    with suppress(Exception):
+                    try:
                         await summary.remove()
+                    except Exception:
+                        logger.debug(
+                            "Failed to remove orphaned tool group summary",
+                            exc_info=True,
+                        )
 
     def _close_active_tool_group(self) -> None:
         """Finalize the open tool group into its collapsed past-tense form."""
         group = self._active_tool_group
         self._active_tool_group = None
         if group is not None and group.is_attached:
-            with suppress(Exception):
+            try:
                 group.close()
+            except Exception:
+                # Also runs on the interrupt/cancel finally path, so never
+                # re-raise. Log so a broken eviction (e.g. a failed tool left
+                # folded and hidden) surfaces instead of being swallowed.
+                logger.exception("Failed to close active tool group")
 
     async def _regroup_completed_tools(self) -> None:
         """Fold runs of completed tool calls into collapsible group summaries.

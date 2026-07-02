@@ -867,6 +867,15 @@ class AssistantMessage(Vertical):
             await self._markdown.update(content)
 
 
+_ToolStatus = Literal["pending", "running", "success", "error", "rejected", "skipped"]
+"""The full set of lifecycle states a tool call can hold.
+
+Kept as a closed `Literal` so `ty` flags typos at the assignment sites and so
+the grouping predicates (`is_success`/`is_failed`/`is_pending`) partition a
+known universe.
+"""
+
+
 class ToolCallMessage(Vertical):
     """Widget displaying a tool call with collapsible output.
 
@@ -1003,7 +1012,7 @@ class ToolCallMessage(Vertical):
         super().__init__(**kwargs)
         self._tool_name = tool_name
         self._args = args or {}
-        self._status = "pending"  # Waiting for approval or auto-approve
+        self._status: _ToolStatus = "pending"  # Waiting for approval or auto-approve
         self._output: str = ""
         self._expanded: bool = False
         self._args_expanded: bool = False
@@ -1482,10 +1491,10 @@ class ToolCallMessage(Vertical):
         """Return whether search output is a terminal no-result message.
 
         These sentinels must match the empty-result strings the SDK emits
-        (`format_grep_matches` and `_format_file_paths` in
-        `deepagents.middleware.filesystem`). If those change, this silently
-        stops matching and empty searches revert to collapsing behind an expand
-        affordance rather than rendering inline.
+        (`format_grep_matches` in `deepagents.backends.utils` and
+        `_format_file_paths` in `deepagents.middleware.filesystem`). If those
+        change, this silently stops matching and empty searches revert to
+        collapsing behind an expand affordance rather than rendering inline.
         """
         if self._tool_name == "grep":
             return output.strip() == "No matches found"
@@ -2462,8 +2471,14 @@ class ToolCallMessage(Vertical):
 
     @property
     def is_failed(self) -> bool:
-        """Whether the tool errored or was rejected (should stay visible)."""
-        return self._status in {"error", "rejected"}
+        """Whether the tool did not succeed and should stay visible.
+
+        Covers errored, rejected, and skipped tools. `skipped` is included so a
+        reject-cascade (one tool rejected, the rest skipped) keeps the skipped
+        rows visible and out of the group's success count, matching how
+        `_regroup_completed_tools` treats a hydrated transcript.
+        """
+        return self._status in {"error", "rejected", "skipped"}
 
     @property
     def is_pending(self) -> bool:
@@ -2617,6 +2632,13 @@ _Tense = Literal["present", "past"]
 def _summary_segment(category: str, count: int, tool_name: str, tense: _Tense) -> str:
     """Phrase a single count segment, e.g. "Read 2 files" / "Reading 2 files".
 
+    Args:
+        category: The summary category the tools were bucketed into.
+        count: How many tools fell into this category.
+        tool_name: A representative raw tool name, used to phrase categories
+            that have no dedicated entry in `_TOOL_SUMMARY_PHRASES`.
+        tense: Whether to phrase the segment in the present or past tense.
+
     Returns:
         The phrased segment for this category, count, and tense.
     """
@@ -2642,6 +2664,10 @@ def summarize_tool_group(tool_names: list[str], *, tense: _Tense = "past") -> st
     Aggregates by category in first-appearance order and lowercases the lead
     word of every segment after the first, e.g.
     `["read_file", "read_file", "execute"]` -> "Read 2 files, ran 1 shell command".
+
+    Args:
+        tool_names: Raw tool names for the run, in call order.
+        tense: Whether to phrase the summary in the present or past tense.
 
     Returns:
         The aggregated one-line summary string in the requested tense.
@@ -2737,8 +2763,6 @@ class ToolGroupSummary(Static):
 
     def on_mount(self) -> None:
         """Apply initial visibility, render, and arm the spinner if live."""
-        if is_ascii_mode():
-            self.add_class("-ascii")
         self._apply_visibility()
         self._render_line()
         self._sync_timer()
@@ -2813,7 +2837,7 @@ class ToolGroupSummary(Static):
         return any(tool.is_pending for tool in self._tools)
 
     def _evict_failed(self) -> None:
-        """Un-fold errored/rejected tools so failures stay visible."""
+        """Un-fold errored/rejected/skipped tools so non-successes stay visible."""
         failed = [t for t in self._tools if t.is_failed]
         if not failed:
             return
@@ -2841,25 +2865,35 @@ class ToolGroupSummary(Static):
 
     def _tick(self) -> None:
         """Advance the spinner, eject failures, and flip to past tense when done."""
-        self._spinner_pos += 1
-        before = len(self._tools)
-        self._evict_failed()
-        evicted = len(self._tools) != before
-        if self._collapsed:
-            # Re-assert hidden state in case a member was shown externally
-            # (e.g. ToolCallMessage.clear_awaiting_approval after HITL).
-            self._apply_visibility()
-        if not self._tools:
+        try:
+            self._spinner_pos += 1
+            before = len(self._tools)
+            self._evict_failed()
+            evicted = len(self._tools) != before
+            if self._collapsed:
+                # Re-assert hidden state in case a member was shown externally
+                # (e.g. ToolCallMessage.clear_awaiting_approval after HITL).
+                self._apply_visibility()
+            if not self._tools:
+                self._stop_timer()
+                if self.is_attached:
+                    self.remove()
+                return
+            in_progress = self._in_progress()
+            if not in_progress:
+                self._stop_timer()
+            # A bare spinner advance keeps the line height; only relayout when
+            # membership changed (eviction) or the line flips to past tense.
+            self._render_line(
+                in_progress=in_progress, layout=evicted or not in_progress
+            )
+        except Exception:
+            # Fires ~10x/second, so an unhandled raise would propagate out of the
+            # interval callback and can crash the app repeatedly. The group is
+            # purely presentational; stop animating and log rather than take the
+            # transcript down.
+            logger.exception("ToolGroupSummary spinner tick failed; stopping timer")
             self._stop_timer()
-            if self.is_attached:
-                self.remove()
-            return
-        in_progress = self._in_progress()
-        if not in_progress:
-            self._stop_timer()
-        # A bare spinner advance keeps the line height; only relayout when
-        # membership changed (eviction) or the line flips to past tense.
-        self._render_line(in_progress=in_progress, layout=evicted or not in_progress)
 
     def _apply_visibility(self) -> None:
         """Show or hide every folded widget per the collapsed state."""

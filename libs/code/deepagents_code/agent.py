@@ -791,11 +791,11 @@ def build_model_identity_section(
 def _make_prompt_for(cli_prompt: str) -> Callable[[ModelResult], str | SystemMessage]:
     """Build a renderer for the full system prompt of a given model.
 
-    Assembles `cli_prompt -> SDK base -> model identity -> profile suffix` via
-    `render_system_prompt`, so a runtime `/model` switch re-renders the
-    model-specific tail from structured parts (identity built from the
-    `ModelResult` fields, suffix read off the harness profile) rather than
-    patching the rendered prompt.
+    Assembles `cli_prompt -> model identity -> profile suffix` via
+    `render_system_prompt` (the CLI prompt replaces the SDK default base), so a
+    runtime `/model` switch re-renders the model-specific tail from structured
+    parts (identity built from the `ModelResult` fields, suffix read off the
+    harness profile) rather than patching the rendered prompt.
 
     Returns:
         A callable that renders the system prompt for a resolved `ModelResult`.
@@ -811,7 +811,7 @@ def _make_prompt_for(cli_prompt: str) -> Callable[[ModelResult], str | SystemMes
         profile = _harness_profile_for_model(model_result.model, None)
         parts = (identity, profile.system_prompt_suffix)
         suffix = "\n\n".join(part for part in parts if part)
-        return render_system_prompt({"prefix": cli_prompt, "suffix": suffix})
+        return render_system_prompt({"base": cli_prompt, "suffix": suffix})
 
     return prompt_for
 
@@ -1573,10 +1573,11 @@ def create_cli_agent(
         }
         custom_subagents.append(general_purpose_subagent)
 
-    # Resolve the system prompt. When the caller didn't override it, build the
-    # model-agnostic base and carry the model identity in a `suffix` slot; the
-    # matching `prompt_for` lets ConfigurableModelMiddleware re-render both the
-    # identity and the profile suffix on a runtime `/model` switch.
+    # Resolve the system prompt. When the caller didn't override it, use the CLI
+    # prompt as the base (replacing the SDK's default base to avoid a duplicate
+    # preamble) and carry the model identity in a `suffix` slot; the matching
+    # `prompt_for` lets ConfigurableModelMiddleware re-render both the identity
+    # and the profile suffix on a runtime `/model` switch.
     resolved_system_prompt: str | SystemPromptConfig
     main_prompt_for: Callable[[ModelResult], str | SystemMessage] | None
     if system_prompt is None:
@@ -1587,7 +1588,7 @@ def create_cli_agent(
             cwd=effective_cwd,
         )
         resolved_system_prompt = {
-            "prefix": cli_prompt,
+            "base": cli_prompt,
             "suffix": build_model_identity_section(
                 settings.model_name,
                 provider=settings.model_provider,

@@ -266,6 +266,17 @@ class TestFindDeleteDenyPatterns:
             pytest.param("/work/**/secrets", "/work/app", ["/work/**/secrets"], id="globstar-wildcard-blocks-ancestor-target"),
             # Recursive glob with suffix: deleting /work/sub would remove /work/sub/a.log
             pytest.param("/work/**/*.log", "/work/sub", ["/work/**/*.log"], id="recursive-glob-blocks-descendant-that-contains-match"),
+            # --- glob that matches the target itself -> blocked --------------
+            # Guards the linchpin: the "allow non-matching sibling" path is only
+            # safe because a target that matches the glob is blocked first. If
+            # this direct-match check regresses, a denied file becomes deletable.
+            pytest.param("/work/*.log", "/work/app.log", ["/work/*.log"], id="file-glob-blocks-matching-target"),
+            pytest.param("/work/*", "/work/app", ["/work/*"], id="single-wildcard-blocks-matching-child"),
+            # Non-`*` wildcard classes (brace, char-class, `?`) are supported via
+            # BRACE|GLOBSTAR flags and the `_GLOB_WILDCARD_CHARS` frozenset.
+            pytest.param("/work/{secrets,keys}", "/work/secrets", ["/work/{secrets,keys}"], id="brace-glob-blocks-matching"),
+            pytest.param("/work/[ab].txt", "/work/a.txt", ["/work/[ab].txt"], id="charclass-glob-blocks-matching"),
+            pytest.param("/work/f?le.txt", "/work/other.txt", [], id="question-glob-non-matching-sibling-allowed"),
             # --- overlap in either direction -> blocked ----------------------
             pytest.param("/work/a.txt", "/work/a.txt", ["/work/a.txt"], id="exact-file"),
             pytest.param("/work", "/work", ["/work"], id="exact-dir-literal"),

@@ -1138,18 +1138,26 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         return EditResult(path=file_path, occurrences=data.get("count", 1))
 
     def delete(self, file_path: str) -> DeleteResult:
-        """Delete a file or directory from the sandbox via a server-side ``rm``.
+        """Delete a file or directory from the sandbox via a server-side `rm`.
 
-        Uses ``rm -rf``, so directories are removed recursively along with their
-        contents, and deleting a path that does not exist succeeds silently. A
-        non-zero exit (e.g. a permission error) is reported as a failure.
+        Runs `test -e || test -L` first: a path that does not exist (and is not
+        a broken symlink) returns a not-found error, matching the contract of
+        `FilesystemBackend` and `StateBackend`. Because a shell `test` has no
+        error channel, a non-zero probe conflates "absent" with "unstattable"
+        (e.g. an unsearchable parent directory); an unknown exit code is not
+        treated as absent and falls through to the delete.
+
+        Uses `rm -rf`, so directories are removed recursively along with their
+        contents. A recursive delete may remove some entries before failing
+        partway; a non-zero `rm` exit (e.g. a permission error) is reported as
+        a failure.
 
         Args:
             file_path: Absolute path to the file or directory to delete.
 
         Returns:
             `DeleteResult` with the deleted path on success, or an error if the
-                deletion command fails.
+                path does not exist or the deletion command fails.
         """
         # `shlex.quote` only neutralizes shell metacharacters so the path is
         # passed to `rm` as a single literal argument. It is NOT a security
@@ -1157,7 +1165,12 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         # block traversal. Whatever the sandbox shell can reach, this can delete.
         quoted = shlex.quote(file_path)
         exists = self.execute(f"test -e {quoted} || test -L {quoted}")
-        if exists.exit_code != 0:
+        # `exit_code` may be None when the backend cannot determine a status;
+        # only a definite non-zero means the path is absent. Treating None as
+        # not-found would fabricate a diagnosis and skip the delete, so fall
+        # through to `rm` on an unknown probe result (matches the `rm` check
+        # below and `_parse_grep_output`, which both guard `is not None`).
+        if exists.exit_code is not None and exists.exit_code != 0:
             return DeleteResult(error=f"Error: '{file_path}' not found")
         result = self.execute(f"rm -rf {quoted}")
 

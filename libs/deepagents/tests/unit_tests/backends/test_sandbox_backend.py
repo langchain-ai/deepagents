@@ -42,11 +42,13 @@ class MockSandbox(BaseSandbox):
 
     def __init__(self) -> None:
         self.last_command: str | None = None
+        self.commands: list[str] = []
         self._next_output: str = "1"
         self._next_exit_code: int = 0
         self._uploaded: list[tuple[str, bytes]] = []
         self._file_store: dict[str, bytes] = {}
-        self._responses: list[tuple[str, int]] = []
+        # exit_code is int | None (a backend may report an unknown status).
+        self._responses: list[tuple[str, int | None]] = []
 
     @property
     def id(self) -> str:
@@ -54,6 +56,7 @@ class MockSandbox(BaseSandbox):
 
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         self.last_command = command
+        self.commands.append(command)
         # Detect temp-file upload path: upload_files() stores .deepagents_edit_*
         # keys in _file_store before execute() is called.
         has_tmp = any(".deepagents_edit_" in k for k in self._file_store)
@@ -1559,7 +1562,7 @@ def test_parse_grep_output_non_integer_line_number_is_skipped() -> None:
 
 
 class TestSandboxDelete:
-    """BaseSandbox.delete maps the `rm -f` exit code onto DeleteResult."""
+    """BaseSandbox.delete probes existence then maps the `rm -rf` exit onto DeleteResult."""
 
     def test_delete_success(self) -> None:
         sandbox = MockSandbox()
@@ -1593,6 +1596,29 @@ class TestSandboxDelete:
         assert result.error is not None
         assert "not found" in result.error
 
+    def test_delete_probe_checks_broken_symlink(self) -> None:
+        # The existence probe must also `test -L` so a broken symlink (where
+        # `test -e` fails but the link exists) is still deleted, not reported
+        # missing. Guards the `|| test -L` clause, which the mock's single
+        # exit code cannot otherwise distinguish.
+        sandbox = MockSandbox()
+        sandbox._responses = [("", 0), ("", 0)]  # probe ok, rm ok
+        sandbox.delete("/link")
+        probe = sandbox.commands[0]
+        assert "test -e" in probe
+        assert "test -L" in probe
+
+    def test_delete_unknown_probe_exit_is_not_treated_as_missing(self) -> None:
+        # `exit_code` may be None when the backend cannot determine a status.
+        # An unknown probe result must NOT be reported as not-found; it falls
+        # through to `rm` instead of fabricating a diagnosis.
+        sandbox = MockSandbox()
+        sandbox._responses = [("", None), ("", 0)]  # probe unknown, rm ok
+        result = sandbox.delete("/file.txt")
+        assert result.error is None
+        assert result.path == "/file.txt"
+        assert len(sandbox.commands) == 2  # probe did not short-circuit
+
     def test_delete_failure_reports_output(self) -> None:
         # A non-zero exit from rm (e.g. a permission error) surfaces rm's stderr.
         sandbox = MockSandbox()
@@ -1624,3 +1650,12 @@ class TestSandboxDelete:
         result = await sandbox.adelete("/file.txt")
         assert result.error is None
         assert result.path == "/file.txt"
+
+    async def test_adelete_missing_returns_not_found(self) -> None:
+        # `adelete` delegates to `delete`, so the not-found contract holds async.
+        sandbox = MockSandbox()
+        sandbox._next_exit_code = 1  # test -e reports path absent
+        result = await sandbox.adelete("/missing.txt")
+        assert result.path is None
+        assert result.error is not None
+        assert "not found" in result.error

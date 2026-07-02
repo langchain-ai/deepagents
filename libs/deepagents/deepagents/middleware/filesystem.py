@@ -349,9 +349,20 @@ def _wildcard_delete_overlap(pattern: str, anchor: str, target: str) -> bool:
 def _find_delete_deny_patterns(rules: list[FilesystemPermission], target: str) -> list[str]:
     """Return deny-write patterns that block deleting `target`.
 
-    A recursive delete removes `target` and all descendants, so any overlapping
-    deny-write pattern prevents the operation. The check is based only on
-    permission rules and returns all matching patterns.
+    A recursive delete removes `target` and all descendants, so a deny-write
+    pattern blocks the operation when it could match `target` or anything in
+    its subtree. Sibling file globs that cannot match anything inside the
+    deleted subtree (e.g. deny `/work/*.log` when deleting `/work/notes.txt`)
+    do not block. The check is based only on permission rules and returns all
+    matching patterns.
+
+    Literal (wildcard-free) deny patterns use a subtree-overlap check: a deny
+    on a directory blocks deleting anything inside it and blocks deleting an
+    ancestor that contains it. Wildcard patterns are handled by
+    `_wildcard_delete_overlap`, which also blocks when the glob matches an
+    ancestor of `target` (deleting `/work/app/child` under a deny on `/work/*`
+    mutates the denied `/work/app`), while still allowing siblings that can
+    never contain a match (deny `/work/*.log` vs `/work/notes.txt`).
 
     Args:
         rules: Filesystem permission rules.

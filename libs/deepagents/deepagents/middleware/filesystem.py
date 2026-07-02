@@ -87,9 +87,13 @@ from deepagents.middleware._video import (
 )
 
 _FS_WCMATCH_FLAGS = wcglob.BRACE | wcglob.GLOBSTAR
+"""wcmatch flags enabling brace expansion and `**` globstar recursion."""
+
 _SYNC_GLOB_WORKERS = 4
+"""Thread-pool size for synchronous glob operations."""
 
 FilesystemOperation = Literal["read", "write"]
+"""Classification of filesystem tools as read-only or mutating."""
 
 _DEFAULT_FS_TOOL_OPS: dict[str, FilesystemOperation] = {
     "ls": "read",
@@ -100,9 +104,13 @@ _DEFAULT_FS_TOOL_OPS: dict[str, FilesystemOperation] = {
     "edit_file": "write",
     "delete": "write",
 }
+"""Default mapping from filesystem tool name to its operation category."""
 
 _READ_FILE_MEDIA_RESULT = "read_file_media_result"
+"""`additional_kwargs` key marking synthetic `HumanMessage` media from `read_file`."""
+
 _VIDEO_SAMPLING_RATE = 0.5
+"""Seconds between sampled frames when extracting stills from a video."""
 
 
 def _tool_error(name: str, tool_call_id: str | None, content: str) -> ToolMessage:

@@ -62,6 +62,7 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.sandbox import BaseSandbox
 from deepagents.backends.utils import (
+    _GLOB_WILDCARD_CHARS,
     _VIDEO_EXTRA_EXTENSIONS,
     MAX_VIDEO_INPUT_BYTES,
     FileType,
@@ -296,12 +297,72 @@ def _check_fs_permission(
     return "allow"
 
 
+def _wildcard_delete_overlap(pattern: str, anchor: str, target: str) -> bool:
+    """Check whether a wildcard deny pattern overlaps a recursive delete target.
+
+    Args:
+        pattern: The original glob pattern (e.g. ``/work/*.log``).
+        anchor: The longest wildcard-free prefix of ``pattern``.
+        target: The absolute path being recursively deleted.
+
+    Returns:
+        True if the pattern's matches intersect the delete subtree.
+    """
+    # Root anchor ("/**/x"): pattern can match anywhere, block all.
+    if anchor == "/":
+        return True
+    # Target directly matches the glob: block.
+    if wcglob.globmatch(target, pattern, flags=_FS_WCMATCH_FLAGS):
+        return True
+    # Anchor is inside the delete subtree: recursive delete would remove
+    # matching descendants — block.
+    if PurePosixPath(anchor).is_relative_to(PurePosixPath(target)):
+        return True
+    # Target is below the anchor: safe to allow ONLY when the pattern suffix
+    # is a single, non-** component (fixed depth) AND no ancestor of the
+    # target matches the glob. "/work/*.log" can never match anything under
+    # "/work/notes.txt". But "/work/*" matches "/work/app", so deleting
+    # "/work/app/child" mutates a denied path's contents and must be blocked.
+    # Patterns with directory wildcards ("/work/*/secrets") could match
+    # descendants of the target, so fail closed for those.
+    if not PurePosixPath(target).is_relative_to(PurePosixPath(anchor)):
+        return False
+    anchor_parts = PurePosixPath(anchor).parts
+    pattern_parts = PurePosixPath(pattern).parts
+    suffix = pattern_parts[len(anchor_parts) :]
+    if len(suffix) != 1 or "**" in suffix[0]:
+        return True
+    # Check whether any ancestor of the target (between anchor and target)
+    # matches the glob. If so, the target is inside a denied directory's
+    # subtree.
+    target_parts = PurePosixPath(target).parts
+    return any(
+        wcglob.globmatch(
+            str(PurePosixPath(*target_parts[:depth])),
+            pattern,
+            flags=_FS_WCMATCH_FLAGS,
+        )
+        for depth in range(len(anchor_parts), len(target_parts))
+    )
+
+
 def _find_delete_deny_patterns(rules: list[FilesystemPermission], target: str) -> list[str]:
     """Return deny-write patterns that block deleting `target`.
 
-    A recursive delete removes `target` and all descendants, so any overlapping
-    deny-write pattern prevents the operation. The check is based only on
-    permission rules and returns all matching patterns.
+    A recursive delete removes `target` and all descendants, so a deny-write
+    pattern blocks the operation when it could match `target` or anything in
+    its subtree. Sibling file globs that cannot match anything inside the
+    deleted subtree (e.g. deny `/work/*.log` when deleting `/work/notes.txt`)
+    do not block. The check is based only on permission rules and returns all
+    matching patterns.
+
+    Literal (wildcard-free) deny patterns use a subtree-overlap check: a deny
+    on a directory blocks deleting anything inside it and blocks deleting an
+    ancestor that contains it. Wildcard patterns are handled by
+    `_wildcard_delete_overlap`, which also blocks when the glob matches an
+    ancestor of `target` (deleting `/work/app/child` under a deny on `/work/*`
+    mutates the denied `/work/app`), while still allowing siblings that can
+    never contain a match (deny `/work/*.log` vs `/work/notes.txt`).
 
     Args:
         rules: Filesystem permission rules.
@@ -316,7 +377,16 @@ def _find_delete_deny_patterns(rules: list[FilesystemPermission], target: str) -
         if rule.mode != "deny" or "write" not in rule.operations:
             continue
         for pattern in rule.paths:
-            if pattern not in seen and _paths_overlap(target, _glob_anchor(pattern)):
+            if pattern in seen:
+                continue
+            anchor = _glob_anchor(pattern)
+            if any(c in _GLOB_WILDCARD_CHARS for c in pattern):
+                overlaps = _wildcard_delete_overlap(pattern, anchor, target)
+            else:
+                # Literal pattern (no wildcards): keep the original subtree-overlap
+                # check so that a deny on "/work" blocks deletes of "/work/sub".
+                overlaps = _paths_overlap(target, anchor)
+            if overlaps:
                 seen.add(pattern)
                 denying.append(pattern)
     return denying

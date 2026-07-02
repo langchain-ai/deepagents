@@ -1979,8 +1979,8 @@ def _text_message(text: str) -> SimpleNamespace:
 class TestExecuteTaskTextualParallelToolSpinner:
     """Regression tests for #1796: premature spinner with parallel tools."""
 
-    async def test_spinner_not_shown_until_all_parallel_tools_complete(self) -> None:
-        """With two parallel tools, Thinking appears only at start and after last."""
+    async def test_spinner_stays_up_across_parallel_tools(self) -> None:
+        """With two parallel tools, the spinner stays "Thinking" and is never hidden."""
         statuses: list[str | None] = []
 
         async def record_spinner(status: str | None) -> None:
@@ -2041,11 +2041,9 @@ class TestExecuteTaskTextualParallelToolSpinner:
         )
 
         assert statuses[0] == "Thinking"
-        thinking_count = sum(1 for s in statuses if s == "Thinking")
-        assert thinking_count == 2, (
-            "Expected exactly 2 Thinking calls (start + after last tool); "
-            f"got {thinking_count}: {statuses}"
-        )
+        assert statuses[-1] == "Thinking"
+        # Stable turn-level indicator: never hidden while parallel tools run.
+        assert None not in statuses
 
     async def test_on_tool_complete_fires_per_tool_message(self) -> None:
         """`on_tool_complete` should fire once per `ToolMessage`, even in parallel."""
@@ -2228,12 +2226,12 @@ class TestExecuteTaskTextualParallelToolSpinner:
         tool_msg = adapter._current_tool_messages["tool-1"]
         assert tool_msg._status == "running"
 
-    async def test_edit_file_does_not_get_per_tool_spinner_at_mount(self) -> None:
-        """`edit_file` relies on the global Thinking spinner, not a per-tool one.
+    async def test_edit_file_marks_running_at_mount(self) -> None:
+        """All tool rows are marked running at mount, including `edit_file`.
 
-        Negative counterpart to the auto-executed case: tools in
-        `_TOOL_CALLS_KEEP_THINKING_SPINNER` must NOT be flipped to "running" at
-        mount, or they would show a duplicate spinner alongside "Thinking".
+        The row is hidden inside its collapsed group, so "running" drives the
+        group's live progress state rather than showing a duplicate spinner
+        alongside the global "Thinking" indicator.
         """
         chunks = [
             (
@@ -2269,10 +2267,10 @@ class TestExecuteTaskTextualParallelToolSpinner:
         )
 
         tool_msg = adapter._current_tool_messages["tool-1"]
-        assert tool_msg._status != "running"
+        assert tool_msg._status == "running"
 
     async def test_spinner_with_three_parallel_tools_out_of_order(self) -> None:
-        """Three parallel tools completed out of order; Thinking after all."""
+        """Three parallel tools complete out of order; spinner stays up throughout."""
         statuses: list[str | None] = []
 
         async def record_spinner(status: str | None) -> None:
@@ -2335,11 +2333,9 @@ class TestExecuteTaskTextualParallelToolSpinner:
             adapter=adapter,
         )
 
-        thinking_count = sum(1 for s in statuses if s == "Thinking")
-        assert thinking_count == 2, (
-            "Expected exactly 2 Thinking calls (start + after last tool); "
-            f"got {thinking_count}: {statuses}"
-        )
+        assert statuses[-1] == "Thinking"
+        # Stable turn-level indicator: never hidden while parallel tools run.
+        assert None not in statuses
 
     async def test_spinner_recovers_with_untracked_tool_id(self) -> None:
         """Spinner still shows Thinking with an untracked tool_call_id."""
@@ -2444,24 +2440,14 @@ class TestExecuteTaskTextualTextThenToolSpinner:
                 adapter=adapter,
             )
 
-        # Expected sequence:
-        #   1. "Thinking" before astream
-        #   2. "Thinking" after mounting the streaming AssistantMessage
-        #      (re-anchor the spinner below the message so the user still
-        #      sees activity if the model pauses before the tool call)
-        #   3. None when the tool call mounts
-        #   4. "Thinking" after the tool result
+        # The spinner is a stable turn-level indicator: it shows "Thinking"
+        # before the stream, stays up while text streams and while the tool
+        # runs (the tool's own progress shows in its collapsed group row), and
+        # is never hidden mid-turn — so it no longer flickers off for each tool.
         assert statuses[0] == "Thinking"
-        assert statuses[1] == "Thinking"
-        assert None in statuses
         assert statuses[-1] == "Thinking"
-
-        # The spinner must never be hidden before the tool call arrives.
-        first_none = statuses.index(None)
-        text_thinking_seen = statuses[:first_none].count("Thinking") >= 2
-        assert text_thinking_seen, (
-            f"Spinner was hidden during text streaming before tool call: {statuses}"
-        )
+        assert None not in statuses, f"Spinner was hidden mid-turn: {statuses}"
+        assert all(s == "Thinking" for s in statuses)
 
     async def test_spinner_reanchors_for_text_after_tool_cycle(self) -> None:
         """Text -> tool_call -> tool_result -> text must re-anchor the spinner.
@@ -2516,14 +2502,13 @@ class TestExecuteTaskTextualTextThenToolSpinner:
             f"each text mount; got {thinking_count}: {statuses}"
         )
 
-    async def test_spinner_reanchor_skipped_while_tools_pending(self) -> None:
-        """The re-anchor must be gated on `not _current_tool_messages`.
+    async def test_spinner_stays_up_when_text_arrives_mid_tool(self) -> None:
+        """A text chunk arriving while a tool is in flight keeps the spinner up.
 
         Contrived sequence: a tool call mounts (populating
         `_current_tool_messages`), then a text chunk arrives before the tool
-        result. The new re-anchor logic must NOT call `_set_spinner("Thinking")`
-        in that window — the tool-call widget is the dominant progress
-        indicator.
+        result. The spinner stays "Thinking" throughout and is never hidden —
+        the text re-anchor stays gated on `not _current_tool_messages`.
         """
         statuses: list[str | None] = []
 
@@ -2557,15 +2542,11 @@ class TestExecuteTaskTextualTextThenToolSpinner:
                 adapter=adapter,
             )
 
-        # Thinking calls should be:
-        #   1. Before astream
-        #   2. After tool result (guard is back to empty)
-        # The re-anchor must NOT fire while the tool is in flight.
-        thinking_count = sum(1 for s in statuses if s == "Thinking")
-        assert thinking_count == 2, (
-            f"Expected 2 Thinking calls (start + after tool); got "
-            f"{thinking_count}: {statuses}"
-        )
+        # The spinner stays "Thinking" and is never hidden while the tool is in
+        # flight; the text re-anchor stays gated on no pending tools.
+        assert statuses[0] == "Thinking"
+        assert statuses[-1] == "Thinking"
+        assert None not in statuses
 
 
 class TestExecuteTaskTextualRubricRevisionStreaming:

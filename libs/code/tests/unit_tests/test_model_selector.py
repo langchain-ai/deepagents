@@ -1372,6 +1372,246 @@ class TestFilteredModelsWidgetSync:
         assert screen._filtered_models[1] != grouped[1]
 
 
+class TestAvailabilityOrdering:
+    """The default view floats usable providers above unavailable ones."""
+
+    @staticmethod
+    def _status(state: ProviderAuthState, provider: str) -> ProviderAuthStatus:
+        if state is ProviderAuthState.CONFIGURED:
+            return ProviderAuthStatus(
+                state=state, provider=provider, source=ProviderAuthSource.STORED
+            )
+        if state is ProviderAuthState.MISSING:
+            return ProviderAuthStatus(
+                state=state, provider=provider, env_var=f"{provider.upper()}_API_KEY"
+            )
+        return ProviderAuthStatus(state=state, provider=provider)
+
+    def test_provider_availability_rank_orders_states(self) -> None:
+        """Usable < unknown < missing < not-installed, regardless of auth."""
+        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen._install_extras = {"baseten": "baseten"}
+        rank = screen._provider_availability_rank
+
+        configured = rank(
+            "openai_codex", self._status(ProviderAuthState.CONFIGURED, "openai_codex")
+        )
+        not_required = rank(
+            "ollama", self._status(ProviderAuthState.NOT_REQUIRED, "ollama")
+        )
+        # Ambient/managed auth is just as usable as an explicit credential, so
+        # both must collapse into the available tier rather than falling
+        # through to the missing-credential rank.
+        implicit = rank("bedrock", self._status(ProviderAuthState.IMPLICIT, "bedrock"))
+        managed = rank(
+            "custom_cls", self._status(ProviderAuthState.MANAGED, "custom_cls")
+        )
+        unknown = rank("custom", self._status(ProviderAuthState.UNKNOWN, "custom"))
+        missing = rank("openai", self._status(ProviderAuthState.MISSING, "openai"))
+        # A configured but not-installed provider still sinks to the bottom.
+        uninstalled = rank(
+            "baseten", self._status(ProviderAuthState.CONFIGURED, "baseten")
+        )
+
+        assert configured == not_required == implicit == managed
+        assert configured < unknown < missing < uninstalled
+
+    async def test_available_provider_floats_to_top_in_default_view(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A configured provider listed last renders first when unfiltered."""
+        from deepagents_code.widgets import model_selector
+
+        def fake_auth(provider: str) -> ProviderAuthStatus:
+            state = (
+                ProviderAuthState.CONFIGURED
+                if provider == "openai_codex"
+                else ProviderAuthState.MISSING
+            )
+            return self._status(state, provider)
+
+        monkeypatch.setattr(model_selector, "get_provider_auth_status", fake_auth)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen._curated = False
+            screen._recommended_only = False
+            screen._filter_text = ""
+            screen._recent_specs = []
+            screen._install_extras = {}
+            # Codex (the only configured provider) is declared last.
+            models = [
+                ("anthropic:claude-opus-4-8", "anthropic"),
+                ("openai:gpt-5.5", "openai"),
+                ("openai_codex:gpt-5.5", "openai_codex"),
+            ]
+            screen._unfiltered_models = list(models)
+            screen._all_models = list(models)
+            screen._filtered_models = list(models)
+            screen._selected_index = 0
+
+            await screen._update_display()
+
+            providers = [provider for _, provider in screen._filtered_models]
+            assert providers[0] == "openai_codex"
+            assert providers.index("openai_codex") < providers.index("anthropic")
+            assert providers.index("openai_codex") < providers.index("openai")
+            # The reorder must carry the highlight with its model: anthropic
+            # was selected at index 0 and now sits at index 1, so the remapped
+            # selected index must still resolve to the anthropic entry.
+            assert screen._filtered_models[screen._selected_index] == (
+                "anthropic:claude-opus-4-8",
+                "anthropic",
+            )
+
+    async def test_search_view_keeps_score_order(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A filtered search ignores availability and keeps fuzzy-score order."""
+        from deepagents_code.widgets import model_selector
+
+        def fake_auth(provider: str) -> ProviderAuthStatus:
+            state = (
+                ProviderAuthState.CONFIGURED
+                if provider == "openai_codex"
+                else ProviderAuthState.MISSING
+            )
+            return self._status(state, provider)
+
+        monkeypatch.setattr(model_selector, "get_provider_auth_status", fake_auth)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen._curated = False
+            screen._recommended_only = False
+            screen._recent_specs = []
+            screen._install_extras = {}
+            screen._all_models = [
+                ("openai:gpt-5.5", "openai"),
+                ("openai_codex:gpt-5.5", "openai_codex"),
+            ]
+            # Simulate a score-sorted filtered list with the missing-credential
+            # provider ranked first; availability must not reorder it.
+            screen._filter_text = "gpt"
+            screen._filtered_models = [
+                ("openai:gpt-5.5", "openai"),
+                ("openai_codex:gpt-5.5", "openai_codex"),
+            ]
+            screen._selected_index = 0
+
+            await screen._update_display()
+
+            providers = [provider for _, provider in screen._filtered_models]
+            assert providers[0] == "openai"
+
+    async def test_equal_rank_providers_keep_declared_order(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same-rank providers keep their declared order (stable sort)."""
+        from deepagents_code.widgets import model_selector
+
+        def fake_auth(provider: str) -> ProviderAuthStatus:
+            state = (
+                ProviderAuthState.CONFIGURED
+                if provider == "openai_codex"
+                else ProviderAuthState.MISSING
+            )
+            return self._status(state, provider)
+
+        monkeypatch.setattr(model_selector, "get_provider_auth_status", fake_auth)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen._curated = False
+            screen._recommended_only = False
+            screen._filter_text = ""
+            screen._recent_specs = []
+            screen._install_extras = {}
+            # Two missing-credential providers declared non-alphabetically, plus
+            # a configured provider declared last. The configured one must float
+            # up (proving the sort actually ran), while the two missing ones keep
+            # their declared order rather than being alphabetized.
+            models = [
+                ("openai:gpt-5.5", "openai"),
+                ("anthropic:claude-opus-4-8", "anthropic"),
+                ("openai_codex:gpt-5.5", "openai_codex"),
+            ]
+            screen._unfiltered_models = list(models)
+            screen._all_models = list(models)
+            screen._filtered_models = list(models)
+            screen._selected_index = 0
+
+            await screen._update_display()
+
+            providers = [provider for _, provider in screen._filtered_models]
+            assert providers[0] == "openai_codex"
+            assert providers.index("openai") < providers.index("anthropic")
+
+    async def test_recent_stays_pinned_above_availability_sort(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A recent entry pins to the top even when its provider is unusable."""
+        from deepagents_code.widgets import model_selector
+
+        def fake_auth(provider: str) -> ProviderAuthStatus:
+            state = (
+                ProviderAuthState.CONFIGURED
+                if provider == "openai_codex"
+                else ProviderAuthState.MISSING
+            )
+            return self._status(state, provider)
+
+        monkeypatch.setattr(model_selector, "get_provider_auth_status", fake_auth)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen._curated = False
+            screen._recommended_only = False
+            screen._filter_text = ""
+            screen._install_extras = {}
+            # Anthropic is the user's recent pick but has no credential; the
+            # configured codex provider is usable. The recent section must still
+            # lead, and the availability sort must order the grouped section
+            # below it (codex above the missing-credential anthropic).
+            models = [
+                ("anthropic:claude-opus-4-8", "anthropic"),
+                ("openai_codex:gpt-5.5", "openai_codex"),
+            ]
+            screen._recent_specs = ["anthropic:claude-opus-4-8"]
+            screen._unfiltered_models = list(models)
+            screen._all_models = list(models)
+            screen._filtered_models = list(models)
+            screen._selected_index = 0
+
+            await screen._update_display()
+
+            providers = [provider for _, provider in screen._filtered_models]
+            # Recent entry pinned at the very top, ahead of the grouped section.
+            assert screen._filtered_models[0] == (
+                "anthropic:claude-opus-4-8",
+                "anthropic",
+            )
+            # The grouped section (everything after the pinned recent) is
+            # availability-sorted: the usable provider leads it.
+            assert providers[1] == "openai_codex"
+
+
 class TestCuratedModelSelection:
     """Tests for onboarding curated model selection."""
 
@@ -1406,7 +1646,7 @@ class TestCuratedModelSelection:
             ("openai:gpt-5.4", "openai"),
             ("anthropic:claude-opus-4-7", "anthropic"),
             ("google_genai:gemini-3.1-pro-preview", "google_genai"),
-            ("anthropic:claude-opus-4-6", "anthropic"),
+            ("anthropic:claude-opus-4-8", "anthropic"),
         ]
 
         curated = ModelSelectorScreen._curate_models(all_models)
@@ -1416,21 +1656,21 @@ class TestCuratedModelSelection:
             ("openai:gpt-5.4", "openai"),
             ("anthropic:claude-opus-4-7", "anthropic"),
             ("google_genai:gemini-3.1-pro-preview", "google_genai"),
-            ("anthropic:claude-opus-4-6", "anthropic"),
+            ("anthropic:claude-opus-4-8", "anthropic"),
         ]
 
     def test_curated_models_limit_to_frontier_subset(self) -> None:
         """Current/default models outside the frontier subset should stay hidden."""
         all_models = [
             ("openai:gpt-5.3-codex", "openai"),
-            ("anthropic:claude-opus-4-6", "anthropic"),
+            ("anthropic:claude-opus-4-8", "anthropic"),
             ("anthropic:claude-sonnet-4-5", "anthropic"),
         ]
 
         curated = ModelSelectorScreen._curate_models(all_models)
 
         assert curated == [
-            ("anthropic:claude-opus-4-6", "anthropic"),
+            ("anthropic:claude-opus-4-8", "anthropic"),
         ]
 
     def test_curated_models_fall_back_when_frontier_unavailable(self) -> None:

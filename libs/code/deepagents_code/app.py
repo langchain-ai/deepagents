@@ -83,10 +83,12 @@ from deepagents_code.widgets.message_store import (
 from deepagents_code.widgets.messages import (
     AppMessage,
     AssistantMessage,
+    DiffMessage,
     ErrorMessage,
     QueuedUserMessage,
     SkillMessage,
     ToolCallMessage,
+    ToolGroupSummary,
     UserMessage,
 )
 from deepagents_code.widgets.status import StatusBar
@@ -1353,6 +1355,9 @@ class _ThreadHistoryPayload:
     """Persisted `_model_spec` from the checkpoint, or `""` for legacy threads
     saved before model persistence existed."""
 
+    model_params: dict[str, Any] | None = None
+    """Persisted `_model_params` from the checkpoint, if any."""
+
     rubric: str | None = None
     """Legacy persisted rubric or graph rubric input, if any."""
 
@@ -2373,6 +2378,10 @@ class DeepAgentsApp(App):
         self._active_user_message: UserMessage | None = None
         """The `UserMessage` widget that started the in-flight turn, tracked so
         it can be dimmed if the turn is interrupted."""
+
+        self._active_tool_group: ToolGroupSummary | None = None
+        """Open tool-group summary for the current step. Tools are folded into
+        it as they stream and it is closed at the next step boundary."""
 
         self._shell_process: asyncio.subprocess.Process | None = None
         """Shell command process tracking for interruption (! commands)."""
@@ -3516,7 +3525,10 @@ class DeepAgentsApp(App):
         """Resolve a `-r` resume intent into a concrete thread ID.
 
         Consumes `self._resume_thread_intent` and resolves it into a concrete
-        thread ID. Mutates `self._lc_thread_id` and optionally
+        thread ID. When the intent resolves to an existing thread whose cwd
+        differs from the current one, the cwd-switch prompt is shown with an
+        extra "abort" option; choosing it starts a fresh thread instead of
+        resuming. Mutates `self._lc_thread_id` and optionally
         `self._assistant_id` / `self._server_kwargs`. Does NOT touch
         `self._default_assistant_id` — a one-off resume should not redefine
         the user's persisted default agent. Falls back to a fresh thread on
@@ -3530,7 +3542,6 @@ class DeepAgentsApp(App):
             thread_exists,
         )
 
-        resumed_thread_id: str | None = None
         try:
             resume = self._resume_thread_intent
             self._resume_thread_intent = None  # consumed
@@ -3540,80 +3551,117 @@ class DeepAgentsApp(App):
 
             default_agent = DEFAULT_ASSISTANT_ID
 
-            if resume == "__MOST_RECENT__":
+            # Resolve the candidate thread id before any agent/model mutation,
+            # so an abort only needs to reset the thread id (no rollback).
+            via_most_recent = resume == "__MOST_RECENT__"
+            if via_most_recent:
                 agent_filter = (
                     self._assistant_id if self._assistant_id != default_agent else None
                 )
-                thread_id = await get_most_recent(agent_filter)
-                if thread_id:
-                    agent_name = await get_thread_agent(thread_id)
-                    if agent_name:
-                        self._assistant_id = agent_name
-                        if self._server_kwargs:
-                            self._server_kwargs["assistant_id"] = agent_name
-                    self._lc_thread_id = thread_id
-                    resumed_thread_id = thread_id
-                    self._should_adopt_resumed_model = not self._model_explicitly_set
-                else:
+                candidate = await get_most_recent(agent_filter)
+                if not candidate:
                     self._lc_thread_id = generate_thread_id()
+                    self._resuming = False
+                    self._sync_status_connection()
                     if agent_filter:
                         msg = f"No previous threads for '{agent_filter}', starting new."
                     else:
                         msg = "No previous threads, starting new."
                     self.notify(msg, severity="warning", markup=False)
+                    return
             elif await thread_exists(resume):
-                self._lc_thread_id = resume
-                resumed_thread_id = resume
-                self._should_adopt_resumed_model = not self._model_explicitly_set
-                if self._assistant_id == default_agent:
-                    agent_name = await get_thread_agent(resume)
-                    if agent_name:
-                        self._assistant_id = agent_name
-                        if self._server_kwargs:
-                            self._server_kwargs["assistant_id"] = agent_name
+                candidate = resume
             else:
                 # Thread not found — notify + fall back to new thread
                 self._lc_thread_id = generate_thread_id()
+                self._resuming = False
+                self._sync_status_connection()
                 similar = await find_similar_threads(resume)
                 hint = f"Thread '{resume}' not found."
                 if similar:
                     hint += f" Did you mean: {', '.join(str(t) for t in similar)}?"
                 self.notify(hint, severity="warning", timeout=6, markup=False)
-            if resumed_thread_id is not None:
-                # The cwd-switch offer is a post-resolution convenience. Isolate
-                # its failures so they can't fall into the resume-resolution
-                # handler below, which would discard the already-resolved thread
-                # and misleadingly report "Could not look up thread history."
-                try:
-                    await self._offer_thread_cwd_switch(
-                        resumed_thread_id,
-                        restart_server=False,
-                    )
-                except Exception:
-                    logger.exception(
-                        "cwd switch offer failed for resumed thread %s",
-                        resumed_thread_id,
-                    )
-                    self.notify(
-                        "Resumed the thread, but could not check its working "
-                        "directory. Local context may be stale.",
-                        severity="warning",
-                        markup=False,
-                    )
+                return
+
+            # Commit the resolved thread before the cwd-switch offer so a
+            # failure in that offer leaves the thread resolved (see the
+            # isolation guard below) rather than falling through to the
+            # resume-resolution handler.
+            self._lc_thread_id = candidate
+
+            # The cwd-switch prompt doubles as the resume confirmation: at
+            # launch it carries an extra "abort" option that starts a fresh
+            # session instead of resuming. Isolate its failures so they can't
+            # fall into the resume-resolution handler below, which would
+            # discard the already-resolved thread and misleadingly report
+            # "Could not look up thread history."
+            try:
+                cwd_choice = await self._offer_thread_cwd_switch(
+                    candidate,
+                    restart_server=False,
+                    allow_abort=True,
+                )
+            except Exception:
+                logger.exception(
+                    "cwd switch offer failed for resumed thread %s",
+                    candidate,
+                )
+                self.notify(
+                    "Resumed the thread, but could not check its working "
+                    "directory. Local context may be stale.",
+                    severity="warning",
+                    markup=False,
+                )
+                cwd_choice = "continue"
+
+            if cwd_choice == "abort":
+                # User declined the resume: start a fresh session and skip the
+                # agent/model adoption below so it inherits the launch default.
+                self._lc_thread_id = generate_thread_id()
+                self._resuming = False
+                self._sync_status_connection()
+                self.notify(
+                    "Starting a new session.",
+                    severity="information",
+                    markup=False,
+                )
+                return
+
+            # Confirmed: adopt the thread's agent for this session — always when
+            # resuming the most recent thread (bare `-r`, even over an
+            # explicitly pinned `-a`), and for an explicit `-r <id>` only when
+            # the user hasn't pinned a non-default agent — plus its persisted
+            # model.
+            self._should_adopt_resumed_model = not self._model_explicitly_set
+            if via_most_recent or self._assistant_id == default_agent:
+                agent_name = await get_thread_agent(candidate)
+                if agent_name:
+                    self._assistant_id = agent_name
+                    if self._server_kwargs:
+                        self._server_kwargs["assistant_id"] = agent_name
         except Exception:
             logger.exception("Failed to resolve resume thread %r", resume)
             self._lc_thread_id = generate_thread_id()
+            self._resuming = False
+            self._sync_status_connection()
             self.notify(
                 "Could not look up thread history. Starting new session.",
                 severity="warning",
             )
         finally:
+            # Sync the resolved (or fresh) thread id into session state before
+            # signaling completion. This must run in `finally` so an early
+            # return — a fallback to a new thread, or the user aborting the
+            # resume — can't leave `session_state.thread_id` pointing at a
+            # thread that was never adopted. `_init_session_state` may run
+            # concurrently and capture a not-yet-final id mid-prompt; this
+            # reconciles it whenever session state already exists. If session
+            # state hasn't been assigned yet, correctness instead relies on
+            # `_init_session_state` reading the now-final `_lc_thread_id` when
+            # it constructs the state.
+            if self._session_state:
+                self._session_state.thread_id = self._lc_thread_id
             self._resume_thread_resolved_event.set()
-
-        # Update session state if ready (may still be initializing in a
-        # concurrent worker)
-        if self._session_state:
-            self._session_state.thread_id = self._lc_thread_id
 
     async def _start_server_background(self) -> None:
         """Background worker: resolve resume-thread intent, start server + MCP preload.
@@ -5611,13 +5659,19 @@ class DeepAgentsApp(App):
         added_height = hydrated_count * estimated_height_per_message
         chat.scroll_y = old_scroll_y + added_height
 
-    async def _mount_before_queued(self, container: Container, widget: Widget) -> None:
-        """Mount a widget in the messages container, before any queued widgets.
+        # Collapse any completed tool runs brought in above the window so
+        # hydrated history matches the live transcript.
+        await self._regroup_completed_tools()
 
-        Queued-message widgets must stay at the bottom of the container so
-        they remain visually anchored below the current agent response.
-        This helper inserts `widget` just before the first queued widget,
-        or appends at the end when the queue is empty.
+    async def _mount_before_queued(self, container: Container, widget: Widget) -> None:
+        """Mount a widget in the messages container, kept above the bottom anchors.
+
+        The loading spinner and queued-message widgets must stay pinned at the
+        bottom of the container. New content mounts just above them — before the
+        spinner if it is present (so it never needs repositioning as tools
+        stream, which flickered), otherwise before the first queued widget,
+        otherwise appended at the end. The spinner itself anchors only on the
+        queued widgets so it can mount at the bottom.
 
         Args:
             container: The `#messages` container to mount into.
@@ -5625,13 +5679,24 @@ class DeepAgentsApp(App):
         """
         if not container.is_attached:
             return
-        first_queued = self._queued_widgets[0] if self._queued_widgets else None
-        if first_queued is not None and first_queued.parent is container:
+        anchor: Widget | None = None
+        spinner = self._loading_widget
+        if (
+            widget is not spinner
+            and spinner is not None
+            and spinner.parent is container
+        ):
+            anchor = spinner
+        else:
+            first_queued = self._queued_widgets[0] if self._queued_widgets else None
+            if first_queued is not None and first_queued.parent is container:
+                anchor = first_queued
+        if anchor is not None:
             try:
-                await container.mount(widget, before=first_queued)
+                await container.mount(widget, before=anchor)
             except Exception:
                 logger.warning(
-                    "Stale queued-widget reference; appending at end",
+                    "Stale mount anchor reference; appending at end",
                     exc_info=True,
                 )
             else:
@@ -5755,8 +5820,7 @@ class DeepAgentsApp(App):
         )
 
         if status is None:
-            # Hide
-            if self._loading_widget:
+            if self._loading_widget is not None:
                 await self._loading_widget.remove()
                 self._loading_widget = None
             if self._terminal_progress_enabled:
@@ -5781,8 +5845,10 @@ class DeepAgentsApp(App):
             # silently so the streaming loop doesn't crash.
             return
 
-        if self._loading_widget is None:
-            # Create new
+        if self._loading_widget is None or not self._loading_widget.is_attached:
+            # Mount once per turn. `_mount_before_queued` keeps new messages
+            # *above* the spinner, so it stays pinned at the bottom and never
+            # needs repositioning (which flickered) as tools stream in.
             self._loading_widget = LoadingWidget(status)
             await self._mount_before_queued(messages, self._loading_widget)
         else:
@@ -5791,10 +5857,9 @@ class DeepAgentsApp(App):
             # abandoned without completing the resume callback. `resume()` is a
             # no-op when the spinner is not paused.
             self._loading_widget.resume()
-            # Update existing
             self._loading_widget.set_status(status)
-            # Reposition via move_child so elapsed-time and animation state
-            # carry through; remove + re-mount would reset both.
+            # Safety fallback: messages now mount above the spinner so it should
+            # already be in place, but reposition if something left it stranded.
             if not self._is_spinner_at_correct_position(messages):
                 self._reposition_spinner(messages)
         # NOTE: Don't call anchor() here - it would re-anchor and drag user back
@@ -7716,8 +7781,7 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 AppMessage(
                     "LangSmith tracing is not configured. "
-                    "Run `/auth` and select LangSmith to enable tracing, or set "
-                    "LANGSMITH_API_KEY and LANGSMITH_TRACING=true.",
+                    "Run `/auth` and select LangSmith to enable tracing.",
                 ),
             )
             return
@@ -7809,7 +7873,7 @@ class DeepAgentsApp(App):
         # returns True on errors so transient state failures suppress this warning
         # rather than showing a false empty-thread note.
         parts: list[str | Content | tuple[str, str | TStyle]] = [
-            f"Opening tracing project {project_name!r}:\n",
+            f"Opening tracing project {project_name!r} in default browser:\n",
             (url, TStyle(dim=True, italic=True, link=url)),
         ]
         if not await self._has_conversation_messages():
@@ -7959,6 +8023,7 @@ class DeepAgentsApp(App):
         messages: list[MessageData],
         context_tokens: int,
         model_spec: str,
+        model_params: dict[str, Any] | None = None,
     ) -> _ThreadHistoryPayload:
         """Build a thread payload from raw checkpoint channel values.
 
@@ -7971,6 +8036,7 @@ class DeepAgentsApp(App):
             messages: Converted message data (empty for metadata-only reads).
             context_tokens: Persisted context-token count.
             model_spec: Persisted model spec, or `""` for legacy threads.
+            model_params: Persisted model params, or `None` when absent.
 
         Returns:
             Payload with goal/rubric channels coerced to known types.
@@ -7984,6 +8050,7 @@ class DeepAgentsApp(App):
             messages,
             context_tokens,
             model_spec,
+            model_params,
             rubric=_as_str(state_values.get("rubric")),
             sticky_rubric=_as_str(state_values.get("_sticky_rubric")),
             sticky_rubric_recorded="_sticky_rubric" in state_values,
@@ -9079,8 +9146,10 @@ class DeepAgentsApp(App):
             self._server_kwargs["rubric_model"] = display
 
         if self._server_proc is not None:
+            env_key = f"{SERVER_ENV_PREFIX}RUBRIC_MODEL"
+            env_value = display or ""
             self._server_proc.update_env(
-                **{f"{SERVER_ENV_PREFIX}RUBRIC_MODEL": display or ""},
+                **{env_key: env_value},
             )
             restarted = await self._respawn_server(
                 log_message="Server restart failed while changing rubric model",
@@ -9098,9 +9167,10 @@ class DeepAgentsApp(App):
                 # `previous` so a later restart cannot resurrect the model this
                 # command just rolled back.
                 self._server_proc.update_env(
-                    **{f"{SERVER_ENV_PREFIX}RUBRIC_MODEL": previous or ""},
+                    **{env_key: previous or ""},
                 )
                 return
+            self._server_proc.persist_env(**{env_key: env_value})
 
         if display:
             await self._mount_message(
@@ -9325,7 +9395,8 @@ class DeepAgentsApp(App):
         elif cmd == "/remember" or cmd.startswith("/remember "):
             # Convenience alias for /skill:remember — shorter and discoverable
             # before skill loading completes.
-            if not await self._has_conversation_messages():
+            args = command.strip()[len("/remember") :].strip()
+            if not args and not await self._has_conversation_messages():
                 await self._mount_message(UserMessage(command))
                 await self._mount_message(
                     AppMessage(
@@ -9334,7 +9405,6 @@ class DeepAgentsApp(App):
                     ),
                 )
                 return
-            args = command.strip()[len("/remember") :].strip()
             rewritten = f"/skill:remember {args}" if args else "/skill:remember"
             await self._handle_skill_command(rewritten)
         elif cmd == "/skill-creator" or cmd.startswith("/skill-creator "):
@@ -10232,10 +10302,19 @@ class DeepAgentsApp(App):
                 context=CLIContext(
                     model=self._model_override,
                     model_params=self._model_params_override or {},
-                    effective_model=self._effective_model_spec(),
                 ),
                 turn_stats=turn_stats,
             )
+            # Close the final step's group once the turn ends with no trailing
+            # assistant text to trigger the boundary path. Grouping is cosmetic,
+            # so a failure here must not abort the turn — but log it, since
+            # `_mount_tool_group_summary` already handles its own mount errors and
+            # anything reaching this point is unexpected.
+            try:
+                self._close_active_tool_group()
+                await self._regroup_completed_tools()
+            except Exception:
+                logger.exception("Failed to close/regroup tool group at turn end")
         except Exception as e:  # Resilient tool rendering
             logger.exception("Agent execution failed")
             try:
@@ -10285,6 +10364,9 @@ class DeepAgentsApp(App):
             subagent_panel = self._get_subagent_panel()
             if subagent_panel is not None:
                 subagent_panel.finalize_running()
+            # Collapse the open tool group so an interrupted turn doesn't leave a
+            # summary spinning "Running…" forever (synchronous, cancel-safe).
+            self._close_active_tool_group()
             await self._cleanup_agent_task()
 
     async def _process_next_from_queue(self) -> None:
@@ -10523,6 +10605,8 @@ class DeepAgentsApp(App):
         )
         raw_spec = state_values.get("_model_spec")
         model_spec = raw_spec if isinstance(raw_spec, str) else ""
+        raw_params = state_values.get("_model_params")
+        model_params = dict(raw_params) if isinstance(raw_params, dict) else None
         if _warn_discarded_goal_channels(state_values):
             self.notify(
                 "Some saved goal/rubric state was corrupted and was not restored.",
@@ -10533,6 +10617,7 @@ class DeepAgentsApp(App):
             messages=[],
             context_tokens=context_tokens,
             model_spec=model_spec,
+            model_params=model_params,
         )
         messages = state_values.get("messages", [])
 
@@ -10554,27 +10639,33 @@ class DeepAgentsApp(App):
         self,
         *,
         model_spec: str | None = None,
+        model_params: dict[str, Any] | None = None,
         thread_id: str | None = None,
     ) -> None:
         """Adopt a resumed thread's persisted model for this session only.
 
         Args:
             model_spec: Already-fetched `_model_spec`, when available.
-            thread_id: Thread ID to fetch `_model_spec` from if needed.
+            model_params: Already-fetched `_model_params`, when available.
+            thread_id: Thread ID to fetch `_model_spec`/`_model_params` from if needed.
         """
         if not self._should_adopt_resumed_model:
             return
 
         self._should_adopt_resumed_model = False
         spec = model_spec
+        params = model_params
         if spec is None and thread_id:
             state_values = await self._get_thread_state_values(thread_id)
             raw_spec = state_values.get("_model_spec")
             spec = raw_spec if isinstance(raw_spec, str) else ""
+            raw_params = state_values.get("_model_params")
+            params = dict(raw_params) if isinstance(raw_params, dict) else None
 
         if spec:
             await self._switch_model(
                 spec,
+                extra_kwargs=params,
                 announce_unchanged=False,
                 persist=False,
                 from_resume=True,
@@ -10691,7 +10782,10 @@ class DeepAgentsApp(App):
             # consumed on this first load — otherwise a legacy thread (no
             # persisted spec) could leave it armed for a later in-session
             # `/threads` switch.
-            await self._adopt_resumed_model_if_needed(model_spec=payload.model_spec)
+            await self._adopt_resumed_model_if_needed(
+                model_spec=payload.model_spec,
+                model_params=payload.model_params,
+            )
             await self._remount_pending_goal_rubric_review()
 
             if not payload.messages:
@@ -10932,20 +11026,59 @@ class DeepAgentsApp(App):
                 pass
             return
 
+        # Eagerly fold tool calls into a single live summary so they are
+        # collapsed from the moment they start, rather than rendering verbose
+        # then snapping shut. A groupable tool joins (or opens) the current
+        # step's group; a diff folds into it; anything else is a step boundary
+        # that closes the group.
+        is_groupable_tool = (
+            isinstance(widget, ToolCallMessage) and widget.tool_name != "ask_user"
+        )
+        is_diff = isinstance(widget, DiffMessage)
+
         # Store message data for virtualization
         message_data = MessageData.from_widget(widget)
         if not widget.id:
             # Keep the widget DOM id == store id so pruning can locate a
             # mounted widget (and its timestamp footer) from its MessageData.
             widget.id = message_data.id
-        self._message_store.append(message_data)
         footer = self._build_message_timestamp_footer(
             message_data, visible=self._message_timestamps_visible
         )
 
-        await self._mount_before_queued(messages, widget)
-        if footer is not None:
-            await self._mount_before_queued(messages, footer)
+        # Coalesce the whole mount-and-fold sequence into a single repaint.
+        # Otherwise mounting a groupable tool paints it at full height, then
+        # folding it into the group hides it on the next frame — bouncing the
+        # bottom-anchored transcript on every tool call.
+        with self.batch_update():
+            if not (is_groupable_tool or is_diff):
+                self._close_active_tool_group()
+                # Re-derive groups for any tools mounted outside this path
+                # (resumed history), which carry no live group.
+                await self._regroup_completed_tools()
+            elif is_groupable_tool and (
+                self._active_tool_group is None
+                or not self._active_tool_group.is_attached
+            ):
+                self._active_tool_group = ToolGroupSummary(live=True)
+                await self._mount_before_queued(messages, self._active_tool_group)
+
+            self._message_store.append(message_data)
+
+            await self._mount_before_queued(messages, widget)
+            if footer is not None:
+                await self._mount_before_queued(messages, footer)
+
+            # Fold the freshly-mounted tool/diff into the open group so it hides
+            # immediately (must run after mount so display toggles take effect).
+            if (
+                self._active_tool_group is not None
+                and self._active_tool_group.is_attached
+            ):
+                if is_groupable_tool:
+                    self._active_tool_group.add_member(widget)
+                elif is_diff:
+                    self._active_tool_group.add_collapsible(widget)
 
         # Prune old widgets if window exceeded
         await self._prune_old_messages()
@@ -10996,6 +11129,113 @@ class DeepAgentsApp(App):
 
         if pruned_ids:
             self._message_store.mark_pruned(pruned_ids)
+            # Drop any group summaries whose members were all pruned away so a
+            # stray collapsed line never lingers above the window. Only reachable
+            # when something was actually pruned this pass.
+            for summary in list(self.query(ToolGroupSummary)):
+                if not summary.has_attached_members:
+                    try:
+                        await summary.remove()
+                    except Exception:
+                        logger.debug(
+                            "Failed to remove orphaned tool group summary",
+                            exc_info=True,
+                        )
+
+    def _close_active_tool_group(self) -> None:
+        """Finalize the open tool group into its collapsed past-tense form."""
+        group = self._active_tool_group
+        self._active_tool_group = None
+        if group is not None and group.is_attached:
+            try:
+                group.close()
+            except Exception:
+                # Also runs on the interrupt/cancel finally path, so never
+                # re-raise. Log so a broken eviction (e.g. a failed tool left
+                # folded and hidden) surfaces instead of being swallowed.
+                logger.exception("Failed to close active tool group")
+
+    async def _regroup_completed_tools(self) -> None:
+        """Fold runs of completed tool calls into collapsible group summaries.
+
+        Scans the messages container for maximal runs of consecutive,
+        successfully-completed tool calls (optionally interleaved with their
+        diff previews) and inserts a `ToolGroupSummary` that collapses each run
+        into a single dim line. Footers stay transparent to the scan so a
+        timestamp row between two tools does not split a run.
+
+        Idempotent: tools already folded carry the `-grouped` class and are
+        skipped, so it is safe to call on every stream boundary and on
+        hydration. A run is only collapsed once every tool in it succeeded;
+        a run containing an error/rejection/pending tool is left expanded.
+        """
+        try:
+            messages = self.query_one("#messages", Container)
+        except NoMatches:
+            return
+
+        run_tools: list[ToolCallMessage] = []
+        run_collapsible: list[Widget] = []
+        run_anchor: Widget | None = None
+
+        async def flush() -> None:
+            nonlocal run_tools, run_collapsible, run_anchor
+            if run_tools and run_anchor is not None:
+                await self._mount_tool_group_summary(
+                    messages, run_tools, run_collapsible, run_anchor
+                )
+            run_tools = []
+            run_collapsible = []
+            run_anchor = None
+
+        # One repaint for the whole regroup — a single hydration or boundary
+        # pass can fold several runs and hide many rows at once.
+        with self.batch_update():
+            for child in list(messages.children):
+                if child.has_class(_MESSAGE_TIMESTAMP_FOOTER_CLASS):
+                    continue  # footers are transparent to grouping
+                if isinstance(child, ToolCallMessage):
+                    groupable = (
+                        child.tool_name != "ask_user"
+                        and child.is_success
+                        and not child.has_class("-grouped")
+                    )
+                    if not groupable:
+                        await flush()
+                        continue
+                    if run_anchor is None:
+                        run_anchor = child
+                    run_tools.append(child)
+                    run_collapsible.append(child)
+                    continue
+                if isinstance(child, DiffMessage):
+                    # A diff belongs to the tool above it; never starts a run.
+                    if run_anchor is not None:
+                        run_collapsible.append(child)
+                    continue
+                # Assistant text, notices, an existing summary, etc. end the run.
+                await flush()
+            await flush()
+
+    @staticmethod
+    async def _mount_tool_group_summary(
+        messages: Container,
+        tools: list[ToolCallMessage],
+        collapsible: list[Widget],
+        anchor: Widget,
+    ) -> None:
+        """Insert a `ToolGroupSummary` before `anchor` and collapse the run."""
+        if not anchor.is_attached:
+            return
+        summary = ToolGroupSummary(tools=list(tools), collapsible=list(collapsible))
+        for widget in collapsible:
+            widget.add_class("-grouped")
+        try:
+            await messages.mount(summary, before=anchor)
+        except Exception:
+            logger.warning("Failed to mount tool group summary", exc_info=True)
+            for widget in collapsible:
+                widget.remove_class("-grouped")
 
     def _set_active_message(self, message_id: str | None) -> None:
         """Set the active streaming message (won't be pruned).
@@ -11028,6 +11268,11 @@ class DeepAgentsApp(App):
         self._pending_shell_messages.clear()
         # Clear the message store first
         self._message_store.clear()
+        # Drop the open tool group; its widget is about to leave the DOM.
+        self._active_tool_group = None
+        # Drop the stale spinner ref, since remove_children() below detaches
+        # the current spinner widget.
+        self._loading_widget = None
         # Drop the tracked in-flight prompt: its widget is about to leave the
         # DOM, so the pointer must not outlive it. Keeps the "cleared screen ⇒
         # nothing to dim" invariant self-enforcing regardless of caller timing.
@@ -11798,7 +12043,7 @@ class DeepAgentsApp(App):
                     )
 
     def action_toggle_tool_output(self) -> None:
-        """Toggle expand/collapse of the most recent tool output or skill body."""
+        """Toggle the most recent collapsible unit (group, skill, or tool)."""
         # Pending ask_user takes precedence so Ctrl+O toggles the question card.
         if self._pending_ask_user_widget is not None:
             try:
@@ -11810,31 +12055,31 @@ class DeepAgentsApp(App):
                     tool_msg.toggle_args()
                     return
 
-        # Try skill messages first (most recent collapsible content)
+        # Toggle whichever collapsible unit is most recent in DOM order — a tool
+        # group, a skill body, or a standalone tool row — so content mounted
+        # after a group stays reachable instead of always hitting the last group.
+        # Grouped tool rows are folded into their summary, so skip them here.
         try:
-            skill_messages = list(self.query(SkillMessage))
+            messages = self.query_one("#messages", Container)
         except NoMatches:
-            skill_messages = []
-        for skill_msg in reversed(skill_messages):
-            if skill_msg._stripped_body.strip():
-                skill_msg.toggle_body()
+            return
+        for child in reversed(list(messages.children)):
+            if isinstance(child, ToolGroupSummary):
+                child.toggle()
                 return
-
-        # Fall back to tool messages with output or expandable args
-        try:
-            tool_messages = list(self.query(ToolCallMessage))
-        except NoMatches:
-            tool_messages = []
-        for tool_msg in reversed(tool_messages):
-            if tool_msg.has_output and tool_msg.has_expandable_output:
-                tool_msg.toggle_output()
+            if isinstance(child, SkillMessage) and child._stripped_body.strip():
+                child.toggle_body()
                 return
-            if tool_msg.has_expandable_args:
-                tool_msg.toggle_args()
-                return
-            if tool_msg.has_output:
-                tool_msg.toggle_output()
-                return
+            if isinstance(child, ToolCallMessage) and not child.has_class("-grouped"):
+                if child.has_output and child.has_expandable_output:
+                    child.toggle_output()
+                    return
+                if child.has_expandable_args:
+                    child.toggle_args()
+                    return
+                if child.has_output:
+                    child.toggle_output()
+                    return
 
     # Approval menu action handlers (delegated from App-level bindings)
     # NOTE: These only activate when approval widget is pending
@@ -14152,11 +14397,14 @@ class DeepAgentsApp(App):
             )
             return
 
-        if selection.server_config.get("auth") != "oauth":
+        from deepagents_code.mcp_tools import _resolve_server_type
+
+        transport = _resolve_server_type(selection.server_config)
+        if transport not in {"http", "sse"}:
             await self._mount_message(
                 ErrorMessage(
-                    f"MCP server {server_name!r} does not use OAuth; "
-                    "nothing to log into.",
+                    f"MCP server {server_name!r} uses {transport!r} transport; "
+                    "OAuth login is only valid for http/sse.",
                 ),
             )
             return
@@ -15248,6 +15496,7 @@ class DeepAgentsApp(App):
         thread_id: str,
         *,
         restart_server: bool,
+        allow_abort: bool = False,
     ) -> Literal["continue", "abort"]:
         """Offer to switch to a resumed thread's cwd when it differs.
 
@@ -15257,11 +15506,16 @@ class DeepAgentsApp(App):
                 switch replaces the app-owned server so the backend runs in the
                 new cwd. When False (launch-time resume), the server has not
                 started yet, so only the process cwd is changed.
+            allow_abort: When True (launch-time `-r` resume), the prompt offers a
+                third "abort" option that declines the resume entirely.
 
         Returns:
-            `"continue"` when resume may proceed, or `"abort"` when a requested
-                switch was accepted but failed (the caller should stop
-                the resume).
+            `"continue"` when resume may proceed, or `"abort"` when the user
+                declined the resume or a requested switch was accepted but
+                failed (the caller should stop the resume). The two abort
+                sources are mode-exclusive: the user-declined abort fires only
+                when `allow_abort` is True, and the switch-failed abort only
+                when `restart_server` is True.
         """
         target = await self._thread_cwd_mismatch(thread_id)
         if target is None:
@@ -15277,8 +15531,11 @@ class DeepAgentsApp(App):
                 current_cwd=self._cwd,
                 thread_cwd=str(target),
                 project_settings_change_detected=project_settings_change_detected,
+                allow_abort=allow_abort,
             )
         )
+        if choice == "abort":
+            return "abort"
         if choice == "switch":
             if restart_server:
                 return await self._replace_server_after_cwd_switch(target)
@@ -15678,6 +15935,12 @@ class DeepAgentsApp(App):
             if provider and not parsed:
                 display = f"{provider}:{model_name}"
 
+            # Provider package imports (e.g. langchain_google_genai) can take a
+            # noticeable moment; show an animated busy indicator so it doesn't look
+            # frozen. The work itself already runs off the event loop via
+            # `asyncio.to_thread`, so the UI stays responsive meanwhile.
+            if self._status_bar:
+                self._status_bar.set_busy("Switching model")
             try:
                 result = await asyncio.to_thread(
                     _create_model_with_deepagents_import_lock,
@@ -15697,6 +15960,9 @@ class DeepAgentsApp(App):
                         ErrorMessage(_build_model_switch_error_body(exc)),
                     )
                 return
+            finally:
+                if self._status_bar:
+                    self._status_bar.set_busy("")
 
             # Set the model override for ConfigurableModelMiddleware.
             # The next stream call passes CLIContext via context= and the

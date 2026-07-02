@@ -1,3 +1,4 @@
+import base64
 import logging
 import shutil
 import subprocess
@@ -255,6 +256,49 @@ def test_filesystem_backend_read_non_utf8_file(tmp_path: Path):
     assert isinstance(result, ReadResult)
     assert result.error is not None
     assert "chinese.txt" in result.error
+
+
+def test_filesystem_backend_reads_mkv_as_binary(tmp_path: Path) -> None:
+    """Local `.mkv` reads must be routed as binary before UTF-8 decoding."""
+    target = tmp_path / "clip.mkv"
+    raw = b"\x80\x81mkv bytes"
+    target.write_bytes(raw)
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    result = be.read(str(target))
+
+    assert isinstance(result, ReadResult)
+    assert result.error is None
+    assert result.file_data == {
+        "content": base64.standard_b64encode(raw).decode("ascii"),
+        "encoding": "base64",
+    }
+
+
+def test_filesystem_backend_rejects_oversized_video_before_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Local video reads fail before loading oversized files into memory."""
+    target = tmp_path / "clip.mp4"
+    target.write_bytes(b"abcd")
+    monkeypatch.setattr(fs_module, "MAX_VIDEO_INPUT_BYTES", 3)
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    result = be.read(str(target))
+
+    assert isinstance(result, ReadResult)
+    assert result.error == "Video file exceeds maximum input size of 3 bytes"
+
+
+def test_filesystem_backend_rejects_oversized_mkv_before_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Local `.mkv` reads use the video size guard before loading bytes."""
+    target = tmp_path / "clip.mkv"
+    target.write_bytes(b"abcd")
+    monkeypatch.setattr(fs_module, "MAX_VIDEO_INPUT_BYTES", 3)
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    result = be.read(str(target))
+
+    assert isinstance(result, ReadResult)
+    assert result.error == "Video file exceeds maximum input size of 3 bytes"
 
 
 def test_filesystem_backend_intercept_large_tool_result(tmp_path: Path):
@@ -1390,6 +1434,51 @@ class TestGrepPythonFallbackTimeout:
         # Partial matches collected before the timeout are preserved.
         assert result.matches
         assert result.matches[0]["path"] == "/file.txt"
+
+
+class TestGrepPythonFallbackIncludeGlob:
+    """The Python grep fallback shares ripgrep-like include-glob semantics.
+
+    Stubbing `_ripgrep_search` to `None` forces the Python fallback regardless
+    of whether ripgrep is installed, so these lock the shared contract:
+
+    - A slashless pattern (`*.py`) matches the basename at any depth.
+    - A path-containing pattern (`src/**/*.py`) matches relative to the root.
+    """
+
+    def _setup(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FilesystemBackend:
+        (tmp_path / "src" / "app").mkdir(parents=True)
+        (tmp_path / "src" / "app" / "main.py").write_text("import os\n")
+        (tmp_path / "top.py").write_text("import sys\n")
+        (tmp_path / "README.md").write_text("import note\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        monkeypatch.setattr(be, "_ripgrep_search", lambda *_a, **_k: None)
+        return be
+
+    def _paths(self, be: FilesystemBackend, glob: str, path: str = "/") -> list[str]:
+        result = be.grep("import", path=path, glob=glob)
+        assert result.matches is not None
+        return sorted(m["path"] for m in result.matches)
+
+    def test_directory_glob_matches_nested(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        be = self._setup(tmp_path, monkeypatch)
+        assert self._paths(be, "src/**/*.py") == ["/src/app/main.py"]
+
+    def test_recursive_glob_matches_all_python(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        be = self._setup(tmp_path, monkeypatch)
+        assert self._paths(be, "**/*.py") == ["/src/app/main.py", "/top.py"]
+
+    def test_slashless_glob_matches_at_any_depth(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        be = self._setup(tmp_path, monkeypatch)
+        assert self._paths(be, "*.py") == ["/src/app/main.py", "/top.py"]
+
+    def test_negative_glob(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        be = self._setup(tmp_path, monkeypatch)
+        assert self._paths(be, "*.md") == ["/README.md"]
+
+    def test_glob_relative_to_search_root(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        be = self._setup(tmp_path, monkeypatch)
+        assert self._paths(be, "app/*.py", path="/src") == ["/src/app/main.py"]
 
 
 class TestEditCrlfNormalization:

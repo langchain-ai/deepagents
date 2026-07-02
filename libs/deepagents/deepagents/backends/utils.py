@@ -84,13 +84,24 @@ def compile_grep_include_glob(pattern: str) -> Callable[[str], bool]:
     """Compile a grep include-glob into a matcher with ripgrep-like semantics.
 
     Provides one shared include-glob behavior for every backend so the same
-    `grep(..., glob=...)` call matches the same files regardless of backend or
-    whether ripgrep is installed:
+    `grep(..., glob=...)` call closely mirrors ripgrep for common include
+    patterns, whether or not ripgrep is installed:
 
-    - Patterns without a `/` match the basename at any depth. Example: `*.py`
-      matches `src/app/main.py`.
+    - Patterns without a `/` match the basename at any depth.
+
+        Example: `*.py` matches `src/app/main.py`.
     - Patterns containing a `/` match the path relative to the grep search
-      root, with `**` support. Example: `src/**/*.py` matches `src/app/main.py`.
+        root, with `**` support.
+
+        Example: `src/**/*.py` matches `src/app/main.py`.
+    - A leading `/` anchors the pattern to the search root; it narrows the match
+        rather than widening it.
+
+        Example: `/*.py` matches `top.py` but not `src/app/main.py`.
+
+    Exclusion/negation patterns (a leading `!`) are not supported: the `!` is
+    treated literally rather than inverting the match, so results for such
+    patterns can diverge from `rg --glob '!...'`.
 
     Args:
         pattern: Glob include pattern.
@@ -100,9 +111,14 @@ def compile_grep_include_glob(pattern: str) -> Callable[[str], bool]:
         the path is included by `pattern`.
     """
     flags = wcglob.BRACE | wcglob.GLOBSTAR
-    compiled = wcglob.compile(pattern, flags=flags)
+    # A leading `/` anchors to the search root: strip it so it matches against
+    # the (slash-less) relative path, but decide anchoring from the original
+    # pattern so `/*.py` stays root-anchored instead of collapsing to a
+    # basename-at-any-depth match.
+    anchored = "/" in pattern
+    compiled = wcglob.compile(pattern.lstrip("/"), flags=flags)
 
-    if "/" in pattern:
+    if anchored:
 
         def matcher(rel_path: str) -> bool:
             return bool(compiled.match(rel_path))
@@ -667,6 +683,9 @@ def _relative_to_root(file_path: str, normalized_path: str) -> str:
 
     Returns:
         POSIX path relative to the search root (e.g. "src/app/main.py").
+
+            When `file_path` equals the search root (an exact-file search),
+            returns just the basename.
     """
     if normalized_path == "/":
         return file_path[1:]

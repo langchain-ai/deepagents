@@ -232,12 +232,20 @@ class TestGrepIncludeGlob:
     def test_slashless_glob_matches_at_any_depth(self, sample_files: dict[str, Any]) -> None:
         assert self._paths(sample_files, "*.py") == ["/src/app/main.py", "/top.py"]
 
-    def test_negative_glob(self, sample_files: dict[str, Any]) -> None:
+    def test_extension_glob_matches_only_that_extension(self, sample_files: dict[str, Any]) -> None:
         assert self._paths(sample_files, "*.md") == ["/README.md"]
 
     def test_glob_relative_to_search_root(self, sample_files: dict[str, Any]) -> None:
         """Path-containing patterns resolve relative to the supplied root."""
         assert self._paths(sample_files, "app/*.py", path="/src") == ["/src/app/main.py"]
+
+    def test_leading_slash_anchors_to_root(self, sample_files: dict[str, Any]) -> None:
+        """A leading `/` anchors to the root; it narrows rather than widens."""
+        assert self._paths(sample_files, "/*.py") == ["/top.py"]
+
+    def test_leading_slash_with_globstar(self, sample_files: dict[str, Any]) -> None:
+        """A leading `/` still supports `**` for anchored recursive matches."""
+        assert self._paths(sample_files, "/src/**/*.py") == ["/src/app/main.py"]
 
 
 _content_block_adapter = TypeAdapter(ContentBlock)

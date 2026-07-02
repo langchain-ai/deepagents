@@ -15936,8 +15936,8 @@ class DeepAgentsApp(App):
             if provider and not parsed:
                 display = f"{provider}:{model_name}"
 
-            # Provider package imports (e.g. google_genai) can take a noticeable
-            # moment; show an animated busy indicator so the switch doesn't look
+            # Provider package imports (e.g. langchain_google_genai) can take a
+            # noticeable moment; show an animated busy indicator so it doesn't look
             # frozen. The work itself already runs off the event loop via
             # `asyncio.to_thread`, so the UI stays responsive meanwhile.
             if self._status_bar:

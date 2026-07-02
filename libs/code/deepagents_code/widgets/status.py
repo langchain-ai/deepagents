@@ -498,7 +498,7 @@ class StatusBar(Horizontal):
         """Show or clear an animated busy indicator in the status-message slot.
 
         Reuses the shared status-bar spinner so heavier UI operations (e.g. a
-        model switch that imports a provider package) show progress instead of
+        model switch that imports a provider package) show activity instead of
         appearing to hang.
 
         Args:

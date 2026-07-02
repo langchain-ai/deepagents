@@ -636,7 +636,9 @@ class TestBusyIndicator:
             msg = pilot.app.query_one("#status-message", Static)
             rendered = str(msg.render())
             assert "Switching model" in rendered
-            assert get_glyphs().spinner_frames[0] in rendered
+            # A spinner frame prefixes the message. Don't pin frame[0]: the
+            # 0.1s timer may have ticked during the pause, so accept any frame.
+            assert any(frame in rendered for frame in get_glyphs().spinner_frames)
             assert bar._spinner_timer is not None
 
     async def test_set_busy_treats_bracket_text_as_literal(self) -> None:
@@ -696,6 +698,43 @@ class TestBusyIndicator:
             bar.set_busy("")
             await pilot.pause()
             assert bar._spinner_timer is not None
+
+    async def test_clear_busy_while_connecting_restores_message(self) -> None:
+        """Clearing busy mid-connection restores the message and keeps the spinner.
+
+        Exercises the combined state the shared-spinner refactor targets: the
+        busy slot and the independent connection indicator are both active, and
+        clearing busy must repaint the deferred message without stopping the
+        spinner that the still-active connection state owns.
+        """
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_connection("connecting")
+            bar.set_status_message("Thinking")
+            bar.set_busy("Switching model")
+            await pilot.pause()
+            msg = pilot.app.query_one("#status-message", Static)
+            conn = pilot.app.query_one("#connection-indicator", Static)
+            # Busy owns the message slot; the connection indicator is separate.
+            assert "Switching model" in str(msg.render())
+            assert "Connecting" in str(conn.render())
+            bar.set_busy("")
+            await pilot.pause()
+            # Deferred message reappears; spinner keeps ticking for the
+            # still-active connection state.
+            assert str(msg.render()) == "Thinking"
+            assert "Connecting" in str(conn.render())
+            assert bar._spinner_timer is not None
+
+    async def test_set_busy_before_mount_does_not_raise(self) -> None:
+        """`set_busy` on an unmounted bar is a safe no-op (no widgets, no timer)."""
+        bar = StatusBar()
+        bar.set_busy("Switching model")
+        assert bar._busy_message == "Switching model"
+        assert bar._spinner_timer is None
+        bar.set_busy("")
+        assert bar._busy_message == ""
+        assert bar._spinner_timer is None
 
 
 class TestQueuedCount:

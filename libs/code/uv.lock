@@ -1059,12 +1059,6 @@ dependencies = [
     { name = "wcmatch" },
 ]
 
-[package.optional-dependencies]
-video = [
-    { name = "av" },
-    { name = "pillow" },
-]
-
 [package.metadata]
 requires-dist = [
     { name = "av", marker = "extra == 'video'", specifier = ">=17.0.0,<18.0.0" },
@@ -1225,7 +1219,8 @@ litellm = [
     { name = "langchain-litellm" },
 ]
 media = [
-    { name = "deepagents", extra = ["video"] },
+    { name = "av" },
+    { name = "pillow" },
 ]
 mistralai = [
     { name = "langchain-mistralai" },
@@ -1290,8 +1285,8 @@ test = [
 requires-dist = [
     { name = "aiohttp", marker = "extra == 'nvidia'", specifier = ">=3.14.1,<3.15.0" },
     { name = "aiosqlite", specifier = ">=0.22.1,<1.0.0" },
+    { name = "av", marker = "extra == 'media'", specifier = ">=17.0.0,<18.0.0" },
     { name = "deepagents", editable = "../deepagents" },
-    { name = "deepagents", extras = ["video"], marker = "extra == 'media'", editable = "../deepagents" },
     { name = "deepagents-acp", specifier = ">=0.0.8,<1.0.0" },
     { name = "deepagents-code", extras = ["agentcore", "daytona", "modal", "runloop", "vercel"], marker = "extra == 'all-sandboxes'" },
     { name = "deepagents-code", extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "together", "vertex", "xai"], marker = "extra == 'all-providers'" },
@@ -1336,6 +1331,7 @@ requires-dist = [
     { name = "mcp", specifier = ">=1.9.2,<2.0.0" },
     { name = "packaging", specifier = ">=26.2" },
     { name = "pillow", specifier = ">=12.2.0,<13.0.0" },
+    { name = "pillow", marker = "extra == 'media'", specifier = ">=12.2.0,<13.0.0" },
     { name = "prompt-toolkit", specifier = ">=3.0.52,<4.0.0" },
     { name = "pydantic", specifier = ">=2.12.5,<2.14.0a0" },
     { name = "pyperclip", specifier = ">=1.11.0,<2.0.0" },

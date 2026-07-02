@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-code"
-version = "0.1.13"
+version = "0.1.30"
 description = "Terminal interface for Deep Agents - interactive AI agent with file operations, shell access, and sub-agent capabilities."
 readme = "README.md"
 license = { text = "MIT" }
@@ -26,20 +26,21 @@ classifiers = [
 ]
 dependencies = [
     # Framework
-    "deepagents==0.6.8",
-    "langchain>=1.3.4,<2.0.0",
+    "deepagents==0.7.0a3",
+    "langchain>=1.3.11,<2.0.0",
     "langgraph-checkpoint-sqlite>=3.1.0,<4.0.0",
 
     # Client-server architecture
     "langgraph-sdk>=0.4.2,<1.0.0",
-    "langgraph-cli[inmem]>=0.4.27,<1.0.0",
-    "langgraph-runtime-inmem>=0.29.0,<1.0.0",
+    "langgraph-cli[inmem]>=0.4.30,<1.0.0",
+    "langgraph-runtime-inmem>=0.30.0,<1.0.0",
     "httpx>=0.28.1,<1.0.0",
 
     # Core model providers - others are added as optional
-    "langchain-anthropic>=1.4.4,<2.0.0",
-    "langchain-google-genai>=4.2.4,<5.0.0",
-    "langchain-openai>=1.2.2,<2.0.0",
+    "langchain-anthropic>=1.4.7,<2.0.0",
+    "langchain-google-genai>=4.2.6,<5.0.0",
+    "langchain-openai>=1.3.3,<2.0.0",
+    "pydantic>=2.12.5,<2.14.0a0",
 
     # UI/Terminal
     # Workaround for Textualize/textual#6378 lives in `_textual_patches.py`.
@@ -53,10 +54,11 @@ dependencies = [
     "markdownify>=1.2.2,<2.0.0",
 
     # Sandbox integrations
-    "langsmith[sandbox]>=0.8.11",
+    "langsmith[sandbox]>=0.9.3",
 
     # Tools
-    "tavily-python>=0.7.25,<1.0.0",
+    "tavily-python>=0.7.26,<1.0.0",
+    "langchain-quickjs>=0.3.2,<0.4.0",
 
     # Clipboard
     "pyperclip>=1.11.0,<2.0.0",
@@ -65,7 +67,7 @@ dependencies = [
     "packaging>=26.2",
 
     # Utilities
-    "uuid-utils>=0.16.0,<1.0.0",
+    "uuid-utils>=0.16.2,<1.0.0",
     "python-dotenv>=1.2.2,<2.0.0",
     "requests>=2.34.2,<3.0.0",
     "pillow>=12.2.0,<13.0.0",
@@ -78,45 +80,50 @@ dependencies = [
 
     # ACP
     "deepagents-acp>=0.0.8,<1.0.0",
+    "mcp>=1.9.2,<2.0.0",
 ]
 
 [project.optional-dependencies]
 # Model providers
-anthropic = ["langchain-anthropic>=1.4.4,<2.0.0"]
-baseten = ["langchain-baseten>=0.2.0,<1.0.0"]
-bedrock = ["langchain-aws>=1.5.1,<2.0.0"]
+anthropic = ["langchain-anthropic>=1.4.7,<2.0.0"]
+baseten = ["langchain-baseten>=0.2.1,<1.0.0"]
+bedrock = ["langchain-aws>=1.6.1,<2.0.0"]
 cohere = ["langchain-cohere>=0.6.0,<1.0.0"]
 deepseek = ["langchain-deepseek>=1.1.0,<2.0.0"]
-fireworks = ["langchain-fireworks>=1.4.2,<2.0.0"]
-google-genai = ["langchain-google-genai>=4.2.4,<5.0.0"]
-groq = ["langchain-groq>=1.1.2,<2.0.0"]
+fireworks = ["langchain-fireworks>=1.4.3,<2.0.0"]
+google-genai = ["langchain-google-genai>=4.2.6,<5.0.0"]
+groq = ["langchain-groq>=1.1.3,<2.0.0"]
 huggingface = ["langchain-huggingface>=1.2.2,<2.0.0"]
 ibm = ["langchain-ibm>=1.1.0,<2.0.0"]
-litellm = ["langchain-litellm>=0.6.6,<2.0.0"]
-mistralai = ["langchain-mistralai>=1.1.4,<2.0.0"]
-nvidia = ["langchain-nvidia-ai-endpoints>=1.4.1,<2.0.0"]
+litellm = ["langchain-litellm>=0.7.0,<2.0.0"]
+mistralai = ["langchain-mistralai>=1.1.5,<2.0.0"]
+nvidia = [
+    "aiohttp>=3.14.1,<3.15.0",
+    "langchain-nvidia-ai-endpoints>=1.4.3,<2.0.0",
+]
 ollama = ["langchain-ollama>=1.1.0,<2.0.0"]
-openai = ["langchain-openai>=1.2.2,<2.0.0"]
-openrouter = ["langchain-openrouter>=0.2.3,<2.0.0"]
-perplexity = ["langchain-perplexity>=1.3.2,<2.0.0"]
+openai = ["langchain-openai>=1.3.3,<2.0.0"]
+openrouter = ["langchain-openrouter>=0.2.4,<2.0.0"]
+perplexity = ["langchain-perplexity>=1.4.0,<2.0.0"]
 together = ["langchain-together>=0.4.0,<2.0.0"]
-vertex = ["langchain-google-vertexai>=3.2.3,<4.0.0"]
+vertex = ["langchain-google-vertexai>=3.2.4,<4.0.0"]
 xai = ["langchain-xai>=1.2.2,<2.0.0"]
 all-providers = [
     "deepagents-code[anthropic,baseten,bedrock,cohere,deepseek,fireworks,google-genai,groq,huggingface,ibm,litellm,mistralai,nvidia,ollama,openai,openrouter,perplexity,together,vertex,xai]",
 ]
 
 # Sandbox providers
-agentcore = ["langchain-agentcore-codeinterpreter>=0.0.4,<1.0.0"]
+agentcore = ["langchain-agentcore-codeinterpreter>=0.0.5,<1.0.0"]
 daytona = ["langchain-daytona>=0.0.7"]
 modal = ["langchain-modal>=0.0.5"]
 runloop = ["langchain-runloop>=0.0.6"]
+vercel = ["langchain-vercel-sandbox>=0.0.1"]
 all-sandboxes = [
-    "deepagents-code[agentcore,daytona,modal,runloop]",
+    "deepagents-code[agentcore,daytona,modal,runloop,vercel]",
 ]
 
-# Standalone integrations (not part of any composite extra)
-quickjs = ["langchain-quickjs>=0.1.4,<0.2.0"]
+# Standalone integrations (kept for backwards-compatible install commands)
+quickjs = []
 
 
 [project.scripts]
@@ -137,10 +144,11 @@ Reddit = "https://www.reddit.com/r/LangChain/"
 test = [
     "textual-dev>=1.8.0,<2.0.0",
     "build>=1.5.0,<2.0.0",
-    "ruff>=0.15.16,<1.0.0",
-    "ty>=0.0.46,<1.0.0",
-    "langchain-quickjs>=0.1.4,<0.2.0",
-    "pytest>=9.0.3,<10.0.0",
+    # Build backend; imported by tests that exercise the `hatch_build.py` hook.
+    "hatchling>=1.30.1,<2.0.0",
+    "ruff>=0.15.20,<1.0.0",
+    "ty>=0.0.54,<1.0.0",
+    "pytest>=9.1.1,<10.0.0",
     "pytest-asyncio>=1.4.0,<2.0.0",
     "pytest-benchmark>=5.2.3,<6.0.0",
     "pytest-codspeed>=5.0.3,<6.0.0",
@@ -153,6 +161,10 @@ test = [
     "responses>=0.26.1,<1.0.0",
     "twine>=6.2.0,<7.0.0",
 ]
+
+[tool.hatch.build.hooks.custom]
+# Stamps deepagents_code/_build_info.py with the release commit when
+# DEEPAGENTS_CODE_BUILD_COMMIT is set (CI release builds). See hatch_build.py.
 
 [tool.hatch.build.targets.wheel]
 packages = ["deepagents_code"]
@@ -172,6 +184,7 @@ langchain-daytona = { path = "../partners/daytona", editable = true }
 langchain-modal = { path = "../partners/modal", editable = true }
 langchain-quickjs = { path = "../partners/quickjs", editable = true }
 langchain-runloop = { path = "../partners/runloop", editable = true }
+langchain-vercel-sandbox = { path = "../partners/vercel", editable = true }
 
 [tool.ty.environment]
 python-version = "3.11"
@@ -181,6 +194,7 @@ extra-paths = [
     "../partners/modal",
     "../partners/quickjs",
     "../partners/runloop",
+    "../partners/vercel",
 ]
 
 [tool.ty.rules]
@@ -250,6 +264,7 @@ ignore-var-parameters = true
     "PLR6301",  # Method could be a function — test class organization
     "PLW0108",  # Lambda may be unnecessary — fine in test mocks
     "RUF001",   # Ambiguous characters — fine in test strings
+    "RUF076",   # Autouse fixtures enforce suite-wide test isolation
     "S",        # Security warnings — not applicable to tests
     "SLF",      # Private member access — tests need access to internals
 ]
@@ -292,6 +307,9 @@ omit = ["tests/*"]
 timeout = 30  # Default timeout for all tests (can be overridden per-test)
 
 addopts = "--strict-markers --strict-config --durations=5"
-markers = ["benchmark: marks tests as benchmarks (select with '-m benchmark')"]
+markers = [
+    "benchmark: marks tests as benchmarks (select with '-m benchmark')",
+    "self_managed_update_check: tests that manage app-startup update-check setup themselves",
+]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

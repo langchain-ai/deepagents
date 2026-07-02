@@ -1,6 +1,6 @@
 import mimetypes
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain.agents import create_agent
@@ -9,16 +9,19 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import (
     AIMessage,
     HumanMessage,
+    RemoveMessage,
     SystemMessage,
     ToolCall,
     ToolMessage,
 )
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.store.memory import InMemoryStore
-from langgraph.types import Command, Overwrite
+from langgraph.types import Command
 
 import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.protocol import (
+    BackendProtocol,
     ExecuteResponse,
     GrepResult,
     ReadResult,
@@ -121,27 +124,27 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware()
         assert isinstance(middleware.backend, StateBackend)
         assert middleware._custom_system_prompt is None
-        assert len(middleware.tools) == 7  # All tools including execute
+        assert len(middleware.tools) == 8  # All tools including execute and delete
 
     def test_init_with_composite_backend(self):
         backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
         middleware = FilesystemMiddleware(backend=backend)
         assert isinstance(middleware.backend, CompositeBackend)
         assert middleware._custom_system_prompt is None
-        assert len(middleware.tools) == 7  # All tools including execute
+        assert len(middleware.tools) == 8  # All tools including execute and delete
 
     def test_init_custom_system_prompt_default(self):
         middleware = FilesystemMiddleware(system_prompt="Custom system prompt")
         assert isinstance(middleware.backend, StateBackend)
         assert middleware._custom_system_prompt == "Custom system prompt"
-        assert len(middleware.tools) == 7  # All tools including execute
+        assert len(middleware.tools) == 8  # All tools including execute and delete
 
     def test_init_custom_system_prompt_with_composite(self):
         backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
         middleware = FilesystemMiddleware(backend=backend, system_prompt="Custom system prompt")
         assert isinstance(middleware.backend, CompositeBackend)
         assert middleware._custom_system_prompt == "Custom system prompt"
-        assert len(middleware.tools) == 7  # All tools including execute
+        assert len(middleware.tools) == 8  # All tools including execute and delete
 
     def test_init_custom_tool_descriptions_default(self):
         middleware = FilesystemMiddleware(custom_tool_descriptions={"ls": "Custom ls tool description"})
@@ -176,6 +179,13 @@ class TestFilesystemMiddleware:
         ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
         result = ls_tool.invoke({"runtime": _runtime(), "path": "/"})
         assert result.content == str(["/test.txt", "/test2.txt"])
+
+    def test_ls_shortterm_no_files(self):
+        backend, _ = _make_backend({})
+        middleware = FilesystemMiddleware(backend=backend)
+        ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
+        result = ls_tool.invoke({"runtime": _runtime(), "path": "/"})
+        assert result.content == "No files found"
 
     def test_ls_shortterm_with_path(self):
         files = {
@@ -409,7 +419,7 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        assert result.content == str([])
+        assert result.content == "No files found"
 
     def test_glob_timeout_returns_error_message(self):
         backend, _ = _make_backend()
@@ -1136,6 +1146,162 @@ class TestFilesystemMiddleware:
         assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
         assert result.update["custom_key"] == "custom_value"
 
+    def test_intercept_command_with_remove_all_sentinel(self):
+        """Commands prefixed with a `REMOVE_ALL_MESSAGES` sentinel are handled."""
+        backend, mem_store = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
+
+        large_content = "y" * 5000
+        tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
+        command = Command(
+            update={
+                "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), tool_message],
+                "files": {},
+            }
+        )
+        result = middleware._intercept_large_tool_result(command, runtime)
+
+        assert isinstance(result, Command)
+        messages = result.update["messages"]
+        assert isinstance(messages, list)
+        assert isinstance(messages[0], RemoveMessage)
+        assert messages[0].id == REMOVE_ALL_MESSAGES
+        assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
+        assert "Tool result too large" in messages[1].content
+
+    async def test_aintercept_command_with_remove_all_sentinel(self):
+        """Async path handles `REMOVE_ALL_MESSAGES`-prefixed message lists."""
+        backend, mem_store = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
+
+        large_content = "y" * 5000
+        tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
+        command = Command(
+            update={
+                "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), tool_message],
+                "files": {},
+            }
+        )
+        result = await middleware._aintercept_large_tool_result(command, runtime)
+
+        assert isinstance(result, Command)
+        messages = result.update["messages"]
+        assert isinstance(messages, list)
+        assert isinstance(messages[0], RemoveMessage)
+        assert messages[0].id == REMOVE_ALL_MESSAGES
+        assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
+        assert "Tool result too large" in messages[1].content
+
+    def test_intercept_command_with_short_sentinel_messages(self):
+        """A small ToolMessage stays prefixed with the sentinel and unchanged."""
+        backend, mem_store = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
+
+        small_content = "x" * 1000
+        tool_message = ToolMessage(content=small_content, tool_call_id="test_123")
+        command = Command(
+            update={
+                "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), tool_message],
+                "files": {},
+                "custom_key": "custom_value",
+            }
+        )
+        result = middleware._intercept_large_tool_result(command, runtime)
+
+        assert isinstance(result, Command)
+        messages = result.update["messages"]
+        assert isinstance(messages, list)
+        assert isinstance(messages[0], RemoveMessage)
+        assert messages[0].id == REMOVE_ALL_MESSAGES
+        assert messages[1:] == [tool_message]
+        assert result.update["custom_key"] == "custom_value"
+        assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is None
+
+    def test_intercept_command_with_mixed_sentinel_messages(self):
+        """Non-tool messages in a sentinel-prefixed update survive in order."""
+        backend, mem_store = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
+
+        ai_message = AIMessage(content="Use a tool")
+        large_content = "y" * 5000
+        tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
+        final_message = AIMessage(content="Done")
+        command = Command(
+            update={
+                "messages": [
+                    RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                    ai_message,
+                    tool_message,
+                    final_message,
+                ],
+                "files": {},
+                "custom_key": "custom_value",
+            }
+        )
+        result = middleware._intercept_large_tool_result(command, runtime)
+
+        assert isinstance(result, Command)
+        messages = result.update["messages"]
+        assert isinstance(messages, list)
+        assert isinstance(messages[0], RemoveMessage)
+        assert messages[0].id == REMOVE_ALL_MESSAGES
+        assert messages[1] == ai_message
+        assert "Tool result too large" in messages[2].content
+        assert messages[3] == final_message
+        assert result.update["custom_key"] == "custom_value"
+        assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
+
+    async def test_aintercept_command_with_mixed_sentinel_messages(self):
+        """Async path preserves non-tool messages in sentinel-prefixed updates."""
+        backend, mem_store = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
+
+        ai_message = AIMessage(content="Use a tool")
+        large_content = "y" * 5000
+        tool_message = ToolMessage(content=large_content, tool_call_id="test_123")
+        command = Command(
+            update={
+                "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), ai_message, tool_message],
+            }
+        )
+        result = await middleware._aintercept_large_tool_result(command, runtime)
+
+        assert isinstance(result, Command)
+        messages = result.update["messages"]
+        assert isinstance(messages, list)
+        assert isinstance(messages[0], RemoveMessage)
+        assert messages[0].id == REMOVE_ALL_MESSAGES
+        assert messages[1] == ai_message
+        assert "Tool result too large" in messages[2].content
+        assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
+
+    def test_intercept_command_with_empty_sentinel_messages(self):
+        """A sentinel-only message list stays as just the sentinel."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        runtime = _runtime("test_123")
+
+        command = Command(
+            update={
+                "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES)],
+                "custom_key": "custom_value",
+            }
+        )
+        result = middleware._intercept_large_tool_result(command, runtime)
+
+        assert isinstance(result, Command)
+        messages = result.update["messages"]
+        assert isinstance(messages, list)
+        assert len(messages) == 1
+        assert isinstance(messages[0], RemoveMessage)
+        assert messages[0].id == REMOVE_ALL_MESSAGES
+        assert result.update["custom_key"] == "custom_value"
+
     def test_sanitize_tool_call_id(self):
         """Test that tool_call_id is sanitized to prevent path traversal."""
         assert sanitize_tool_call_id("call_123") == "call_123"
@@ -1588,6 +1754,61 @@ class TestFilesystemMiddleware:
         assert "Error: Execution not available" in result.content
         assert "does not support command execution" in result.content
 
+    def test_delete_filtered_when_backend_lacks_delete(self):
+        """Delete is removed from the request when the backend can't delete.
+
+        Mirrors how the execute tool is filtered out when the backend doesn't
+        support execution, rather than advertising a tool that fails at call time.
+        """
+
+        class _NoDeleteBackend(StateBackend):
+            # Opt out of delete support by inheriting the protocol's default.
+            delete = BackendProtocol.delete
+
+        middleware = FilesystemMiddleware(backend=_NoDeleteBackend(), system_prompt="")
+
+        ls_tool = MagicMock()
+        ls_tool.name = "ls"
+        delete_tool = MagicMock()
+        delete_tool.name = "delete"
+        request = MagicMock()
+        request.tools = [ls_tool, delete_tool]
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        request.override.assert_called_once()
+        filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
+        assert "delete" not in filtered_names
+        assert "ls" in filtered_names
+
+    def test_delete_kept_when_backend_supports_delete(self):
+        """Delete stays in the request when the backend supports deletion."""
+        middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")
+
+        ls_tool = MagicMock()
+        ls_tool.name = "ls"
+        delete_tool = MagicMock()
+        delete_tool.name = "delete"
+        request = MagicMock()
+        request.tools = [ls_tool, delete_tool]
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        # StateBackend supports delete (and no execute tool is present), so no
+        # tool filtering — and with an empty system prompt, no override at all.
+        request.override.assert_not_called()
+
+    def test_delete_invalid_path_returns_error(self):
+        """The sync delete tool rejects a traversal path before deleting."""
+        middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")
+        delete_tool = next(tool for tool in middleware.tools if tool.name == "delete")
+        result = delete_tool.invoke({"file_path": "../etc/passwd", "runtime": _runtime("d1")})
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "traversal" in result.content
+
     def test_execute_tool_output_formatting(self):
         """Test execute tool formats output correctly."""
 
@@ -1942,8 +2163,11 @@ class TestPatchToolCallsMiddleware:
         middleware = PatchToolCallsMiddleware()
         state_update = middleware.before_agent({"messages": input_messages}, None)
         assert state_update is not None
-        assert isinstance(state_update["messages"], Overwrite)
-        patched_messages = state_update["messages"].value
+        messages = state_update["messages"]
+        assert isinstance(messages, list)
+        assert isinstance(messages[0], RemoveMessage)
+        assert messages[0].id == REMOVE_ALL_MESSAGES
+        patched_messages = messages[1:]
         assert len(patched_messages) == 5
         assert patched_messages[0].type == "system"
         assert patched_messages[0].content == "You are a helpful assistant."
@@ -1996,8 +2220,11 @@ class TestPatchToolCallsMiddleware:
         middleware = PatchToolCallsMiddleware()
         state_update = middleware.before_agent({"messages": input_messages}, None)
         assert state_update is not None
-        assert isinstance(state_update["messages"], Overwrite)
-        patched_messages = state_update["messages"].value
+        messages = state_update["messages"]
+        assert isinstance(messages, list)
+        assert isinstance(messages[0], RemoveMessage)
+        assert messages[0].id == REMOVE_ALL_MESSAGES
+        patched_messages = messages[1:]
         assert len(patched_messages) == 8
         assert patched_messages[0].type == "system"
         assert patched_messages[0].content == "You are a helpful assistant."

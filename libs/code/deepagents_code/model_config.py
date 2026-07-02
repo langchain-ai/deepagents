@@ -234,7 +234,12 @@ class ProviderAuthSource(StrEnum):
     """Origin of a `CONFIGURED` credential, used to discriminate display."""
 
     STORED = "stored"
-    """Persisted via `/auth` in `~/.deepagents/.state/auth.json`."""
+    """Persisted in a local credential store under `~/.deepagents/.state`.
+
+    Usually the `/auth` API-key map (`auth.json`), but also covers the
+    file-backed ChatGPT OAuth token used by the codex provider
+    (`chatgpt-auth.json`).
+    """
 
     ENV = "env"
     """Resolved from an environment variable."""
@@ -425,6 +430,22 @@ class ProviderConfig(TypedDict, total=False):
     creation.
     """
 
+    display_name: str
+    """Human-readable provider name shown in auth UI.
+
+    Useful for arbitrary providers whose config key is optimized for machine use
+    (e.g., `my_gateway`) but whose UI label should include spaces or brand
+    capitalization.
+    """
+
+    api_key_url: str
+    """Provider page where users can create or manage API keys.
+
+    Used by `/auth` as an acquisition link before the API-key input. The value is
+    a URL, not a credential. Must use an `http` or `https` scheme to render as a
+    clickable link; values with other schemes are ignored with a warning.
+    """
+
     base_url: str
     """Custom base URL."""
 
@@ -526,6 +547,53 @@ Providers not listed here fall through to the config-file check or the langchain
 registry fallback.
 """
 
+LANGSMITH_SERVICE = "langsmith"
+"""Service name for LangSmith tracing in `SERVICE_API_KEY_ENV`.
+
+Storing a key for this service via `/auth` also enables tracing at startup
+(see `config._apply_stored_langsmith_tracing`) and can carry a custom project
+name, so it gets special handling beyond a plain key copy.
+"""
+
+SERVICE_API_KEY_ENV: dict[str, str] = {
+    LANGSMITH_SERVICE: "LANGSMITH_API_KEY",
+    "tavily": "TAVILY_API_KEY",
+}
+"""Non-model services configurable via `/auth`, mapped to their API-key env var.
+
+These are not LLM providers — they back features such as web search (Tavily) or
+agent tracing (LangSmith) — but their credentials follow the same store-on-disk
+model as model providers, so they appear in the `/auth` manager and can be
+entered directly in the TUI instead of being exported as environment variables
+before launch.
+"""
+
+CODEX_PROVIDER = "openai_codex"
+"""Provider name for `_ChatOpenAICodex` models authenticated via ChatGPT OAuth.
+
+Distinct from `"openai"` (which uses an `OPENAI_API_KEY`) because the auth
+source, model class, and request endpoint all differ. See
+`deepagents_code.integrations.openai_codex` for the OAuth flow.
+"""
+
+CODEX_MODELS: frozenset[str] = frozenset(
+    {
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.3-codex",
+        "gpt-5.2",
+    }
+)
+"""Curated allowlist of models the Codex (ChatGPT OAuth) backend serves.
+
+The provider mirrors `openai` profiles, but only models in this set are
+exposed under `openai_codex`. The Codex backend serves a narrower lineup than
+the full `openai` API, so mirroring every openai model would surface specs the
+backend rejects at call time.
+"""
+
+
 RETRY_PARAM_BY_PROVIDER: dict[str, str] = {
     "anthropic": "max_retries",
     "azure_openai": "max_retries",
@@ -568,6 +636,8 @@ PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
     #                 SDK reads ANTHROPIC_BASE_URL.
     #   azure_openai  AzureChatOpenAI and the openai SDK both read
     #                 AZURE_OPENAI_ENDPOINT.
+    #   baseten       ChatBaseten reads BASETEN_BASE_URL, then falls back to
+    #                 BASETEN_API_BASE.
     #   cohere        langchain_cohere passes base_url=None, so the cohere SDK's
     #                 CO_API_URL is what takes effect.
     #   deepseek      ChatDeepSeek reads DEEPSEEK_API_BASE (alias base_url).
@@ -594,16 +664,18 @@ PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
     # sit on the openai SDK, whose only base-URL env var is the shared
     # OPENAI_BASE_URL. That name is intentionally NOT listed under those
     # providers: writing or clearing it under another provider's name would
-    # clobber the user's real OpenAI endpoint. In practice the integration always
-    # passes base_url explicitly, so the shared fallback never fires.
+    # clobber the user's real OpenAI endpoint. Each is listed above under its own
+    # dedicated name(s) instead. In practice the integration always passes
+    # base_url explicitly, so the shared fallback never fires.
     #
-    # Omitted (no dedicated, provider-specific endpoint env var): baseten
-    # (hardcoded default + base_url arg), litellm (api_base arg, per-provider
-    # env), google_vertexai (endpoint derived from the region). A `/auth`
-    # endpoint for these still resolves through the stored-credential step of
-    # `get_base_url` and reaches the model as the `base_url` kwarg.
+    # Omitted (no dedicated, provider-specific endpoint env var): litellm
+    # (api_base arg, per-provider env), google_vertexai (endpoint derived from the
+    # region). A `/auth` endpoint for these still resolves through the
+    # stored-credential step of `get_base_url` and reaches the model as the
+    # `base_url` kwarg.
     "anthropic": ("ANTHROPIC_BASE_URL", "ANTHROPIC_API_URL"),
     "azure_openai": ("AZURE_OPENAI_ENDPOINT",),
+    "baseten": ("BASETEN_BASE_URL", "BASETEN_API_BASE"),
     "cohere": ("CO_API_URL",),
     "deepseek": ("DEEPSEEK_API_BASE",),
     "fireworks": ("FIREWORKS_BASE_URL", "FIREWORKS_API_BASE"),
@@ -621,13 +693,14 @@ PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
 }
 """Every base-URL env var a provider's SDK may read.
 
-Element `[0]` is the *canonical* name — the one we write a stored endpoint to,
-and the one `get_base_url` reads through `resolve_env_var` so `base_url` gets the
-same `DEEPAGENTS_CODE_*` > plain-var precedence as API keys. The remaining names
-are alternates the SDK might also honor; `apply_stored_credentials` clears them
-when applying or resetting an endpoint, so a stale value (e.g. an inherited
-gateway URL) can't leak through. Clearing every name is what lets the write path
-treat the canonical as authoritative regardless of which name the SDK prefers.
+Element `[0]` is the *canonical* name — the one we write a stored endpoint to.
+`get_base_url` reads each name in tuple order through `resolve_env_var`, so every
+base URL gets the same `DEEPAGENTS_CODE_*` > plain-var precedence as API keys.
+The remaining names are alternates the SDK might also honor;
+`apply_stored_credentials` clears them when applying or resetting an endpoint, so
+a stale value (e.g. an inherited gateway URL) can't leak through. Clearing every
+name is what lets the write path treat the canonical as authoritative regardless
+of which name the SDK prefers.
 
 The key and its endpoint are a coherent pair: a gateway key only works against
 the gateway URL, a provider-native key only against the provider's own endpoint,
@@ -668,6 +741,9 @@ OPTIONAL_AUTH_ENV: dict[str, str] = {"ollama": "OLLAMA_API_KEY"}
 
 PROVIDER_HOST_ENV: dict[str, str] = {"ollama": "OLLAMA_HOST"}
 """Provider-specific env vars that can point a local provider at a remote host."""
+
+PROVIDER_CUSTOM_HEADERS_ENV: dict[str, str] = {"anthropic": "ANTHROPIC_CUSTOM_HEADERS"}
+"""Provider SDK env vars that inject custom request headers (e.g. gateway auth)."""
 
 OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
 """Default endpoint assumed when no `base_url` or `OLLAMA_HOST` is configured."""
@@ -993,6 +1069,33 @@ def get_available_models() -> dict[str, list[str]]:
                 endpoint or OLLAMA_DEFAULT_BASE_URL,
             )
 
+    # Mirror the curated `CODEX_MODELS` subset of `openai` models under a
+    # dedicated `openai_codex` provider entry so the switcher offers them under
+    # their own ChatGPT-OAuth auth context. Eligibility is filtered by the
+    # allowlist because the Codex backend serves a narrower lineup than the
+    # full `openai` API and rejects unsupported models at call time.
+    if config.is_provider_enabled(CODEX_PROVIDER):
+        openai_models = available.get("openai")
+        if openai_models:
+            mirrored = [name for name in openai_models if name in CODEX_MODELS]
+            codex_models = list(
+                dict.fromkeys([*available.get(CODEX_PROVIDER, []), *mirrored])
+            )
+            # Place `openai_codex` directly after `openai` so the switcher
+            # keeps the two OpenAI-backed providers adjacent (codex before
+            # azure_openai etc.) instead of trailing it at the end of the
+            # dict. dict insertion order is the switcher's display order, so
+            # rebuild the dict, dropping any prior codex entry and re-inserting
+            # it right after `openai`.
+            reordered: dict[str, list[str]] = {}
+            for name, models in available.items():
+                if name == CODEX_PROVIDER:
+                    continue
+                reordered[name] = models
+                if name == "openai":
+                    reordered[CODEX_PROVIDER] = codex_models
+            available = reordered
+
     _available_models_cache = available
     return available
 
@@ -1099,6 +1202,23 @@ def get_model_profiles(
             seen_specs.add(spec)
             overrides = config.get_profile_overrides(provider, model_name=model_name)
             result[spec] = _build_entry(upstream_profile, overrides, cli_override)
+            # Mirror the curated `CODEX_MODELS` subset of openai profiles under
+            # the `openai_codex` provider so `/model openai_codex:<model>`
+            # resolves to the same upstream profile without duplicating data.
+            # Filtered by the allowlist — see the note in `get_available_models`.
+            if (
+                provider == "openai"
+                and model_name in CODEX_MODELS
+                and config.is_provider_enabled(CODEX_PROVIDER)
+            ):
+                codex_spec = f"{CODEX_PROVIDER}:{model_name}"
+                seen_specs.add(codex_spec)
+                codex_overrides = config.get_profile_overrides(
+                    CODEX_PROVIDER, model_name=model_name
+                )
+                result[codex_spec] = _build_entry(
+                    upstream_profile, codex_overrides, cli_override
+                )
 
     # Add config-only models and class_path provider profiles.
     for provider_name, provider_config in config.providers.items():
@@ -1630,6 +1750,52 @@ def _resolve_configured(provider: str, env_var: str) -> ProviderAuthStatus | Non
     return None
 
 
+def _get_codex_auth_status() -> ProviderAuthStatus:
+    """Translate the ChatGPT OAuth on-disk state into a `ProviderAuthStatus`.
+
+    The codex provider uses a file-backed OAuth token store rather than
+    `auth_store`'s API-key map, so it gets its own branch in
+    `get_provider_auth_status`. The `STORED` source is reused only to satisfy
+    the `ProviderAuthStatus` "CONFIGURED implies a source" invariant; it is
+    cosmetic here, since `format_auth_badge` routes the codex provider to its
+    own `[chatgpt]` / `[sign in to chatgpt]` badge before the source is ever
+    consulted.
+
+    Returns:
+        `CONFIGURED` / `STORED` when a token bundle sits at the upstream
+            default store path; `MISSING` otherwise. Expired access tokens
+            are still reported as configured because the file-backed model
+            provider can refresh them with the saved refresh token when the
+            model is constructed.
+    """
+    from deepagents_code.integrations import openai_codex
+
+    status = openai_codex.get_status()
+    if status.unreadable_reason:
+        return ProviderAuthStatus(
+            state=ProviderAuthState.MISSING,
+            provider=CODEX_PROVIDER,
+            detail=f"token store unreadable: {status.unreadable_reason}",
+        )
+    if not status.logged_in:
+        return ProviderAuthStatus(
+            state=ProviderAuthState.MISSING,
+            provider=CODEX_PROVIDER,
+            detail="not signed in to ChatGPT",
+        )
+    detail = "signed in to ChatGPT"
+    if status.plan_type:
+        detail = f"signed in to ChatGPT ({status.plan_type})"
+    if status.is_expired:
+        detail = f"{detail}; access token will refresh on use"
+    return ProviderAuthStatus(
+        state=ProviderAuthState.CONFIGURED,
+        provider=CODEX_PROVIDER,
+        source=ProviderAuthSource.STORED,
+        detail=detail,
+    )
+
+
 def get_provider_auth_status(provider: str) -> ProviderAuthStatus:
     """Return credential readiness details for a provider.
 
@@ -1668,6 +1834,14 @@ def get_provider_auth_status(provider: str) -> ProviderAuthStatus:
         Provider auth status for selectors, startup checks, and compatibility
             wrappers.
     """
+    # ChatGPT-OAuth-backed codex provider has no env var and stores tokens
+    # in its own on-disk JSON; route it through a dedicated helper before
+    # the standard config / env-var lookup so callers get the codex-specific
+    # `[chatgpt]` / `[sign in to chatgpt]` badge and a "signed in as <plan>"
+    # detail.
+    if provider == CODEX_PROVIDER:
+        return _get_codex_auth_status()
+
     # Config-file providers take priority when api_key_env is specified.
     config = ModelConfig.load()
     provider_config = config.providers.get(provider)
@@ -1802,6 +1976,26 @@ def get_credential_env_var(provider: str) -> str | None:
     return PROVIDER_API_KEY_ENV.get(provider)
 
 
+def get_base_url_env_vars(provider: str) -> tuple[str, ...]:
+    """Return base-URL env var names for a provider in resolution order.
+
+    Checks the config file's `base_url_env` first (user override), then falls
+    back to the hardcoded `PROVIDER_BASE_URL_ENV` map.
+
+    Args:
+        provider: Provider name.
+
+    Returns:
+        Environment variable names, or an empty tuple if the provider has no
+        base-URL env var (config-declared or built-in).
+    """
+    config = ModelConfig.load()
+    config_env = config.get_base_url_env(provider)
+    if config_env:
+        return (config_env,)
+    return PROVIDER_BASE_URL_ENV.get(provider, ())
+
+
 def get_base_url_env_var(provider: str) -> str | None:
     """Return the canonical base-URL env var name for a provider.
 
@@ -1816,11 +2010,8 @@ def get_base_url_env_var(provider: str) -> str | None:
         Environment variable name, or None if the provider has no base-URL env
         var (config-declared or built-in).
     """
-    config = ModelConfig.load()
-    config_env = config.get_base_url_env(provider)
-    if config_env:
-        return config_env
-    return _canonical_base_url_env(provider)
+    env_vars = get_base_url_env_vars(provider)
+    return env_vars[0] if env_vars else None
 
 
 def get_default_base_url_env(provider: str) -> str | None:
@@ -1844,11 +2035,80 @@ def get_default_base_url_env(provider: str) -> str | None:
         The `DEEPAGENTS_CODE_`-prefixed env var name still in effect after a
         blank save, or `None`.
     """
-    env_var = get_base_url_env_var(provider)
-    if not env_var:
-        return None
-    prefixed = f"{_ENV_PREFIX}{env_var}"
-    return prefixed if os.environ.get(prefixed) else None
+    for env_var in get_base_url_env_vars(provider):
+        prefixed = f"{_ENV_PREFIX}{env_var}"
+        if os.environ.get(prefixed):
+            return prefixed
+    return None
+
+
+def is_service(name: str) -> bool:
+    """Return whether `name` is a non-model service configurable via `/auth`."""
+    return name in SERVICE_API_KEY_ENV
+
+
+def is_langsmith(name: str) -> bool:
+    """Return whether `name` is the LangSmith tracing service.
+
+    Centralizes the identity check so the LangSmith-specific branches (project
+    field instead of a base URL, tracing auto-enable) share one definition
+    rather than scattering `== LANGSMITH_SERVICE` comparisons.
+    """
+    return name == LANGSMITH_SERVICE
+
+
+def get_service_auth_status(service: str) -> ProviderAuthStatus:
+    """Return credential readiness for a non-model service (e.g. `"tavily"`).
+
+    Mirrors `get_provider_auth_status` but is scoped to `SERVICE_API_KEY_ENV`,
+    so a stored key beats the env var and the `/auth` manager can render the
+    same `[stored]` / `[env: ...]` / `[missing]` badges.
+
+    Args:
+        service: Service name (e.g. `"tavily"`).
+
+    Returns:
+        `CONFIGURED` when a stored or env credential is set, else `MISSING`.
+    """
+    env_var = SERVICE_API_KEY_ENV[service]
+    configured = _resolve_configured(service, env_var)
+    if configured:
+        return configured
+    return ProviderAuthStatus(
+        state=ProviderAuthState.MISSING,
+        provider=service,
+        env_var=env_var,
+        detail=f"{env_var} is not set or is empty",
+    )
+
+
+def apply_stored_service_credentials() -> None:
+    """Export every stored service key into `os.environ`.
+
+    Services (e.g. web search via Tavily) have no base URL to reconcile, so
+    this is a plain key copy onto the canonical env var name the underlying
+    SDK reads. A stored key takes precedence over an existing plain env var,
+    matching `apply_stored_credentials`; a `DEEPAGENTS_CODE_`-prefixed override
+    is left authoritative because the app already treats it as the top-priority
+    per-session credential.
+    """
+    for service, env_var in SERVICE_API_KEY_ENV.items():
+        try:
+            stored = auth_store.get_stored_key(service)
+        except RuntimeError:
+            logger.warning(
+                "Could not read stored credentials for service %s; the credential "
+                "file may be corrupt. Re-add the key via /auth.",
+                service,
+            )
+            continue
+        if not stored:
+            continue
+        prefixed = f"{_ENV_PREFIX}{env_var}"
+        if prefixed in os.environ:
+            continue
+        if os.environ.get(env_var) != stored:
+            os.environ[env_var] = stored
 
 
 def apply_stored_credentials(provider: str) -> bool:
@@ -1913,6 +2173,10 @@ def _apply_stored_base_url(provider: str, base_url: str | None) -> None:
     clears every name when `base_url` is `None` (reset to the provider
     default). See `apply_stored_credentials` for the pairing rationale.
 
+    When switching to a provider-native key (no `base_url`), also clears the
+    provider's custom-headers env var (e.g. `ANTHROPIC_CUSTOM_HEADERS`) so a
+    gateway-provisioned auth header isn't sent to the native endpoint.
+
     Args:
         provider: Provider name.
         base_url: The stored endpoint, or `None` to reset to the default.
@@ -1926,11 +2190,55 @@ def _apply_stored_base_url(provider: str, base_url: str | None) -> None:
         names.add(canonical)
     if not names:
         return
+    configured_base_url_survives = _configured_base_url_survives_env_clear(provider)
     for name in names:
         if base_url and name == canonical:
             os.environ[name] = base_url
         else:
             os.environ.pop(name, None)
+
+    # A provider SDK's custom-header env var (e.g. `ANTHROPIC_CUSTOM_HEADERS`)
+    # injects headers into every request. A gateway-provisioned environment
+    # often sets it to `X-Api-Key: <gateway-key>`, which overrides the SDK's
+    # own `api_key`-derived header. When switching to a provider-native key
+    # (no stored `base_url`), that header must also be cleared — otherwise the
+    # gateway key is sent to the native endpoint and rejected.
+    custom_headers_env = PROVIDER_CUSTOM_HEADERS_ENV.get(provider)
+    if custom_headers_env and not base_url:
+        if not configured_base_url_survives:
+            if os.environ.pop(custom_headers_env, None) is not None:
+                # Log the env var name only — never its value, which carries
+                # auth headers. Surfaces the removal for the user who set a
+                # header deliberately for the native endpoint and later wonders
+                # where it went.
+                logger.info(
+                    "Cleared %s while applying a provider-native %s key",
+                    custom_headers_env,
+                    provider,
+                )
+        elif os.environ.get(custom_headers_env) is not None:
+            # A provider base URL still routes (config or a prefixed env var),
+            # so the custom-header env is deliberately kept. Log the name only —
+            # never the value — so the retention is observable when a user later
+            # wonders why a gateway header is still in effect after applying a
+            # native key.
+            logger.debug(
+                "Kept %s: a %s base URL is still configured",
+                custom_headers_env,
+                provider,
+            )
+
+
+def _configured_base_url_survives_env_clear(provider: str) -> bool:
+    """Return whether endpoint config still routes after plain env cleanup."""
+    config = ModelConfig.load()
+    provider_cfg = config.providers.get(provider)
+    if provider_cfg and provider_cfg.get("base_url"):
+        return True
+    for env_var in get_base_url_env_vars(provider):
+        if os.environ.get(f"{_ENV_PREFIX}{env_var}"):
+            return True
+    return False
 
 
 def warn_on_split_credential_source(provider: str) -> None:
@@ -2110,6 +2418,27 @@ class ModelConfig:
                     enabled,
                 )
 
+            # `display_name`/`api_key_url` also originate from untyped TOML; cast
+            # to `object` so the runtime non-string checks stay reachable (the
+            # TypedDict types them as `str`).
+            display_name = cast("object", provider.get("display_name"))
+            if display_name is not None and not isinstance(display_name, str):
+                logger.warning(
+                    "Provider '%s' has non-string 'display_name' value %r "
+                    "(expected a string). Falling back to the default label.",
+                    name,
+                    display_name,
+                )
+
+            api_key_url = cast("object", provider.get("api_key_url"))
+            if api_key_url is not None and not isinstance(api_key_url, str):
+                logger.warning(
+                    "Provider '%s' has non-string 'api_key_url' value %r "
+                    "(expected a string). Ignoring it.",
+                    name,
+                    api_key_url,
+                )
+
             class_path = provider.get("class_path")
             if class_path and ":" not in class_path:
                 logger.warning(
@@ -2212,16 +2541,17 @@ class ModelConfig:
         Resolution order (first match wins):
 
         1. `base_url` in the provider's `config.toml` section.
-        2. The provider's base-URL env var via `resolve_env_var`, so
-            `DEEPAGENTS_CODE_{VAR}` beats the plain `{VAR}` — mirroring how API
-            keys resolve. This also surfaces the value `apply_stored_credentials`
-            bridged in from a `/auth` credential, and the gateway-provisioned
-            URL in the default (no-override) case.
+        2. The provider's base-URL env vars via `resolve_env_var`, in provider
+            precedence order, so `DEEPAGENTS_CODE_{VAR}` beats the plain `{VAR}`
+            for each name — mirroring how API keys resolve. This also surfaces
+            the value `apply_stored_credentials` bridged in from a `/auth`
+            credential, and the gateway-provisioned URL in the default
+            (no-override) case.
         3. The endpoint stored with a `/auth` credential. This is the source
             for providers that have no base-URL env var (e.g. an OpenAI-
-            compatible provider like OpenRouter, Groq, or Baseten): step 2 has
-            no name to read, so the stored endpoint is taken directly. It then
-            reaches the model as the `base_url` constructor kwarg via
+            compatible provider like Litellm): step 2 has no name to read, so
+            the stored endpoint is taken directly. It then reaches the model as
+            the `base_url` constructor kwarg via
             `_get_provider_kwargs`, the same path a `config.toml` literal uses.
             For providers that *do* have an env var, the stored endpoint already
             arrives via step 2 (it was bridged onto the env var), so this step
@@ -2248,12 +2578,16 @@ class ModelConfig:
         config_url = provider.get("base_url") if provider else None
         if config_url:
             return config_url
-        env_var = (provider.get("base_url_env") if provider else None) or (
-            _canonical_base_url_env(provider_name)
+        config_env = provider.get("base_url_env") if provider else None
+        env_vars = (
+            (config_env,)
+            if config_env
+            else PROVIDER_BASE_URL_ENV.get(provider_name, ())
         )
-        resolved = resolve_env_var(env_var) if env_var else None
-        if resolved:
-            return resolved
+        for env_var in env_vars:
+            resolved = resolve_env_var(env_var)
+            if resolved:
+                return resolved
         try:
             return auth_store.get_stored_base_url(provider_name)
         except RuntimeError:
@@ -2270,6 +2604,32 @@ class ModelConfig:
         """
         provider = self.providers.get(provider_name)
         return provider.get("api_key_env") if provider else None
+
+    def get_provider_display_name(self, provider_name: str) -> str | None:
+        """Get the configured display name for a provider.
+
+        Args:
+            provider_name: The provider to look up.
+
+        Returns:
+            Human-readable display name if configured, None otherwise.
+        """
+        provider = self.providers.get(provider_name)
+        name = provider.get("display_name") if provider else None
+        return name if isinstance(name, str) else None
+
+    def get_provider_api_key_url(self, provider_name: str) -> str | None:
+        """Get the configured API-key management URL for a provider.
+
+        Args:
+            provider_name: The provider to look up.
+
+        Returns:
+            API-key management URL if configured, None otherwise.
+        """
+        provider = self.providers.get(provider_name)
+        url = provider.get("api_key_url") if provider else None
+        return url if isinstance(url, str) else None
 
     def get_base_url_env(self, provider_name: str) -> str | None:
         """Get the environment variable name for a provider's base URL.

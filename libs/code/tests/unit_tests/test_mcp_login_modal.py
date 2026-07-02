@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from textual.app import App, ComposeResult
@@ -366,3 +367,43 @@ class TestMCPLoginScreenEdgeCases:
             # Second call must not raise and must not change the outcome.
             screen.finish(success=False, message="Should be ignored.")
             assert screen._outcome == "success"
+
+
+class TestMCPLoginPointer:
+    """Pointer affordance over links and the manual-URL disclosure row."""
+
+    def test_hover_over_link_uses_pointer(self) -> None:
+        """Hovering an inline authorize link sets a pointer cursor."""
+        screen = MCPLoginScreen("notion")
+        event = SimpleNamespace(
+            style=SimpleNamespace(link="https://example.test/auth"), widget=None
+        )
+        screen.on_mouse_move(event)  # ty: ignore[invalid-argument-type]
+        assert screen.styles.pointer == "pointer"
+
+    def test_hover_over_disclosure_row_uses_pointer(self) -> None:
+        """Hovering the manual-URL disclosure row sets a pointer cursor."""
+        screen = MCPLoginScreen("notion")
+        row = Static("Show manual authorization URL")
+        screen._link_widget = row
+        event = SimpleNamespace(style=SimpleNamespace(link=None), widget=row)
+        screen.on_mouse_move(event)  # ty: ignore[invalid-argument-type]
+        assert screen.styles.pointer == "pointer"
+
+    def test_hover_elsewhere_uses_default(self) -> None:
+        """Hovering neither a link nor the disclosure row keeps the default cursor."""
+        screen = MCPLoginScreen("notion")
+        screen._link_widget = Static("x")
+        event = SimpleNamespace(style=SimpleNamespace(link=None), widget=None)
+        screen.on_mouse_move(event)  # ty: ignore[invalid-argument-type]
+        assert screen.styles.pointer == "default"
+
+    def test_leave_resets_pointer(self) -> None:
+        """Leaving the modal resets the cursor to default."""
+        screen = MCPLoginScreen("notion")
+        link_event = SimpleNamespace(
+            style=SimpleNamespace(link="https://example.test/auth"), widget=None
+        )
+        screen.on_mouse_move(link_event)  # ty: ignore[invalid-argument-type]
+        screen.on_leave()
+        assert screen.styles.pointer == "default"

@@ -31,22 +31,85 @@ jobs:
     name: Block empty commits on main
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          fetch-depth: 2
+          fetch-depth: 0
       - name: Reject empty commits
         run: |
           if [ "$(git rev-list --count HEAD)" -lt 2 ]; then
             echo "Single-commit history; skipping empty-commit guard."
             exit 0
           fi
-          CHANGED=$(git diff-tree --no-commit-id --name-only -r HEAD)
+          COMMIT_MSG=$(git log -1 --format=%s HEAD)
+          SHA=$(git rev-parse HEAD)
+          PARENT_COUNT=$(git show --no-patch --format=%P HEAD | wc -w | tr -d ' ')
+          if [ "$PARENT_COUNT" -gt 2 ]; then
+            echo "::error::Octopus merge detected on main: $SHA \"$COMMIT_MSG\""
+            echo "::error::The empty-commit guard only supports one- or two-parent commits. Recreate this as a normal two-parent merge."
+            exit 1
+          fi
+
+          # `git diff-tree` reports no paths for merge commits unless given -m.
+          # Compare merges to their first parent so non-empty merges pass before
+          # the repo-hotfix history-repair exception below.
+          if [ "$PARENT_COUNT" -eq 2 ]; then
+            CHANGED=$(git diff --name-only HEAD^1 HEAD)
+          else
+            CHANGED=$(git diff-tree --no-commit-id --name-only -r HEAD)
+          fi
           if [ -n "$CHANGED" ]; then
             echo "HEAD touches files; proceeding."
             exit 0
           fi
-          COMMIT_MSG=$(git log -1 --format=%s HEAD)
-          SHA=$(git rev-parse HEAD)
+
+          if [ "$PARENT_COUNT" -eq 2 ]; then
+            case "$COMMIT_MSG" in
+              "hotfix(repo):"*) ;;
+              *)
+                echo "::error::Empty merge commit detected on main: $SHA \"$COMMIT_MSG\""
+                echo "::error::Only repo-scoped hotfix merge commits may use the history-repair exception."
+                echo "::error::See .github/RELEASING.md -> \"Empty commit fan-out\"."
+                exit 1
+                ;;
+            esac
+
+            MERGED_COMMITS=$(git rev-list HEAD^1..HEAD^2)
+            if [ -z "$MERGED_COMMITS" ]; then
+              echo "::error::Empty merge commit detected on main: $SHA \"$COMMIT_MSG\""
+              echo "::error::The merge commit does not introduce any second-parent commits."
+              echo "::error::See .github/RELEASING.md -> \"Empty commit fan-out\"."
+              exit 1
+            fi
+
+            EMPTY_MERGED_COMMITS=""
+            for COMMIT in $MERGED_COMMITS; do
+              COMMIT_PARENT_COUNT=$(git show --no-patch --format=%P "$COMMIT" | wc -w | tr -d ' ')
+              if [ "$COMMIT_PARENT_COUNT" -gt 2 ]; then
+                echo "::error::Octopus merge detected in merged branch: $COMMIT"
+                echo "::error::The empty-commit guard only supports one- or two-parent commits. Recreate this as normal two-parent merges."
+                exit 1
+              fi
+              if [ "$COMMIT_PARENT_COUNT" -eq 2 ]; then
+                COMMIT_CHANGED=$(git diff --name-only "$COMMIT^1" "$COMMIT")
+              else
+                COMMIT_CHANGED=$(git diff-tree --no-commit-id --name-only -r "$COMMIT")
+              fi
+              if [ -z "$COMMIT_CHANGED" ]; then
+                EMPTY_MERGED_COMMITS="$EMPTY_MERGED_COMMITS $COMMIT"
+              fi
+            done
+            if [ -z "$EMPTY_MERGED_COMMITS" ]; then
+              echo "Empty repo hotfix merge commit detected, but every commit merged from the second parent touches files; proceeding."
+              git log --oneline HEAD^1..HEAD^2
+              exit 0
+            fi
+            echo "::error::Empty merge commit detected on main: $SHA \"$COMMIT_MSG\""
+            echo "::error::The merged branch contains empty commits:$EMPTY_MERGED_COMMITS"
+            echo "::error::Every commit in a history-repair branch must touch files so release-please can scope it."
+            echo "::error::See .github/RELEASING.md -> \"Empty commit fan-out\"."
+            exit 1
+          fi
+
           echo "::error::Empty commit detected on main: $SHA \"$COMMIT_MSG\""
           echo "::error::release-please scopes commits to packages by changed file paths. An empty commit has none, so every package gets bumped."
           echo "::error::Recovery: revert this commit on main, then push a non-empty commit scoped to a single package directory. See .github/RELEASING.md -> \"Empty commit fan-out\"."
@@ -69,10 +132,11 @@ jobs:
       daytona-release: ${{ steps.check-releases.outputs.daytona-release }}
       modal-release: ${{ steps.check-releases.outputs.modal-release }}
       runloop-release: ${{ steps.check-releases.outputs.runloop-release }}
+      vercel-release: ${{ steps.check-releases.outputs.vercel-release }}
       quickjs-release: ${{ steps.check-releases.outputs.quickjs-release }}
       release-version: ${{ steps.check-releases.outputs.release-version }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 2
 
@@ -176,6 +240,13 @@ jobs:
             echo "runloop-release=false" >> "$GITHUB_OUTPUT"
           fi
 
+          if echo "$CHANGED" | grep -q "^libs/partners/vercel/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-vercel-sandbox\):"; then
+            echo "vercel-release=true" >> "$GITHUB_OUTPUT"
+            echo "Vercel release detected: $COMMIT_MSG"
+          else
+            echo "vercel-release=false" >> "$GITHUB_OUTPUT"
+          fi
+
           if echo "$CHANGED" | grep -q "^libs/partners/quickjs/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-quickjs\):"; then
             echo "quickjs-release=true" >> "$GITHUB_OUTPUT"
             echo "QuickJS release detected: $COMMIT_MSG"
@@ -208,17 +279,20 @@ jobs:
   # Release commits bypass this wait entirely: their run must reach
   # `trigger-releases` to dispatch the publish.
   #
-  # Two fallbacks if the wait can't resolve cleanly:
+  # Three fallbacks if the wait can't resolve cleanly:
   #   * Publish genuinely *stuck* past MAX_WAIT (label never flips, but GitHub is
   #     answering): skip=true, deferring to the next push, so a hung publish
   #     outside this run's control never paints main red.
+  #   * The matching release run already failed/cancelled/timed out: fail the job
+  #     loudly (exit 1), because the pending label now means operator action is
+  #     needed rather than an in-flight publish.
   #   * GitHub itself unreadable (gh keeps erroring so we can't tell whether a
   #     publish is in flight): fail the job loudly (exit 1). release-please is
   #     then skipped via `needs`, and a red guard is the honest signal — better
   #     than silently guessing "in flight" for 45 min and stranding commits.
   guard-pending-release:
     needs: [guard-empty-commit, detect-release-commit]
-    name: Wait while a publish is in flight
+    name: Check for in-flight publish
     if: needs.detect-release-commit.outputs.release-commit != 'true'
     runs-on: ubuntu-latest
     # Backstops the poll loop at the job level (covers checkout + every `gh`
@@ -229,12 +303,13 @@ jobs:
     # an unset value, blocking release-please until the next push.
     timeout-minutes: 55
     permissions:
+      actions: read
       contents: read
       pull-requests: read
     outputs:
       skip: ${{ steps.check.outputs.skip }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 1
       - name: Wait for in-flight releases
@@ -255,31 +330,129 @@ jobs:
           # --limit is explicit and generous: the default (30) could drop a
           # genuinely stuck pending PR past the window precisely in the backlog
           # scenario this guard exists to catch, silently reporting "none".
-          list_pending() {
+          list_pending_json() {
             gh pr list --repo "$REPO" --state merged \
-              --label "autorelease: pending" --limit 100 --json number,title \
-              --jq '[.[] | "#\(.number) \(.title)"] | join("; ")'
+              --label "autorelease: pending" --limit 100 --json number,title
           }
 
-          # poll_pending sets PENDING from list_pending and tracks consecutive
-          # failures in QUERY_FAILS. Called directly (never in a subshell) so the
-          # counter persists across iterations. On a `gh` error we set PENDING to
-          # a non-empty sentinel so the caller keeps waiting rather than proceed
-          # on unverified state — but a *sustained* failure means we genuinely
+          format_pending() {
+            jq -r '[.[] | "#\(.number) \(.title)"] | join("; ")'
+          }
+
+          # Echoes a line per merged pending PR whose matching release.yml run has
+          # already finished unsuccessfully; empty output means none failed.
+          # Returns non-zero only when GitHub is unreadable, so the caller can
+          # distinguish "no failures" from "couldn't tell".
+          #
+          # Matching is `release.yml` run displayTitle == release PR title. That
+          # holds only because two independently-maintained templates render
+          # byte-identically: release-please-config.json's
+          # `pull-request-title-pattern` ("release(${component}): ${version}") and
+          # release.yml's `run-name` ("release(<package>): <version>"), with
+          # component == the dispatched package. This is the same run-name
+          # coupling that `find_run_url` (in the trigger-releases job) reconstructs
+          # from parts and warns about — see its lock-step comment. If either
+          # template drifts, or a `package-override` whose value differs from the
+          # component is ever dispatched, the match silently always-misses: this
+          # guard then finds nothing and the job degrades to the normal wait/skip
+          # path rather than misfiring. Fail-open by design — a missed match never
+          # blocks a release, it only forgoes the early loud failure.
+          #
+          # --event workflow_dispatch mirrors find_run_url: release.yml only ever
+          # runs via dispatch, and the filter keeps an unrelated run that happens
+          # to share a title from being mistaken for the release publish.
+          describe_failed_pending_releases() {
+            local pending_json="$1"
+            local runs_json
+            if ! runs_json=$(gh run list --repo "$REPO" --workflow release.yml \
+              --event workflow_dispatch \
+              --limit 100 --json displayTitle,status,conclusion,url,createdAt); then
+              return 1
+            fi
+            # action_required is included deliberately: a *completed* run carrying
+            # it means the publish needs a human (e.g. an environment approval that
+            # resolved to this conclusion), which warrants the same loud failure as
+            # an outright error. Runs merely *awaiting* approval have status !=
+            # "completed" and are excluded by the status check below.
+            #
+            # Any single failed pending release makes this emit a line, and the
+            # caller fails the whole guard closed — even if a sibling PR's publish
+            # is still legitimately in flight. That is intentional: once a human
+            # must intervene, release-please must not run against half-updated
+            # state regardless of what else is mid-publish.
+            jq -r --argjson prs "$pending_json" '
+              def failed_conclusion:
+                . == "failure" or . == "cancelled" or . == "timed_out" or
+                . == "action_required" or . == "startup_failure";
+              $prs[] as $pr
+              | ([.[] | select(.displayTitle == $pr.title)] | sort_by(.createdAt) | reverse | .[0]) as $run
+              | select($run != null and $run.status == "completed" and ($run.conclusion | failed_conclusion))
+              | "#\($pr.number) \($pr.title) -> \($run.conclusion): \($run.url)"
+            ' <<< "$runs_json"
+          }
+
+          fail_failed_releases() {
+            echo "::error::Merged release PR(s) are still labeled 'autorelease: pending', but their matching package release run did not finish successfully:"
+            printf '%s\n' "$FAILED_RELEASES" | while IFS= read -r line; do
+              [ -n "$line" ] && echo "::error::$line"
+            done
+            echo "::error::Fix or rerun the failed package release before running release-please again. Only update labels manually if the tag and GitHub release were created."
+            {
+              echo "## release-please blocked by failed release"
+              echo ""
+              echo "The following merged release PR(s) are still labeled \`autorelease: pending\`, but their matching \`release.yml\` run has already completed unsuccessfully:"
+              echo ""
+              printf '%s\n' "$FAILED_RELEASES"
+              echo ""
+              echo "Fix or rerun the failed package release before running release-please again. Only update labels manually if the tag and GitHub release were created."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          # poll_pending sets PENDING from list_pending_json, FAILED_RELEASES
+          # from matching `release.yml` runs, and tracks consecutive failures in
+          # QUERY_FAILS. Called directly (never in a subshell) so the counter
+          # persists across iterations. On a `gh` error we set PENDING to a
+          # non-empty sentinel so the caller keeps waiting rather than proceed on
+          # unverified state — but a *sustained* failure means we genuinely
           # cannot read release state, which we must surface loudly (see the
           # MAX_QUERY_FAILS bail-out below) rather than mislabel as "in flight".
           QUERY_FAILS=0
           poll_pending() {
-            if PENDING=$(list_pending); then
-              QUERY_FAILS=0
-            else
+            local next_failed
+            local next_pending
+            local next_pending_json
+
+            if ! next_pending_json=$(list_pending_json); then
               QUERY_FAILS=$((QUERY_FAILS + 1))
               PENDING="(failed to query GitHub)"
+              FAILED_RELEASES=""
               echo "::warning::Failed to query GitHub for release state (${QUERY_FAILS} consecutive)."
+              return
             fi
+
+            next_pending=$(printf '%s\n' "$next_pending_json" | format_pending)
+            if [ -n "$next_pending" ]; then
+              if ! next_failed=$(describe_failed_pending_releases "$next_pending_json"); then
+                QUERY_FAILS=$((QUERY_FAILS + 1))
+                PENDING="$next_pending"
+                FAILED_RELEASES=""
+                echo "::warning::Failed to query GitHub for release workflow state (${QUERY_FAILS} consecutive)."
+                return
+              fi
+            else
+              next_failed=""
+            fi
+
+            QUERY_FAILS=0
+            PENDING="$next_pending"
+            FAILED_RELEASES="$next_failed"
           }
 
           poll_pending
+          if [ -n "$FAILED_RELEASES" ]; then
+            fail_failed_releases
+          fi
           if [ -z "$PENDING" ]; then
             echo "No in-flight releases; proceeding."
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -305,6 +478,9 @@ jobs:
             sleep "$POLL_INTERVAL"
             WAITED=$((WAITED + POLL_INTERVAL))
             poll_pending
+            if [ -n "$FAILED_RELEASES" ]; then
+              fail_failed_releases
+            fi
             echo "Waited ${WAITED}s; pending: ${PENDING:-<cleared>}"
           done
 
@@ -365,7 +541,7 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       # release-please uses GITHUB_TOKEN, so its PR events don't trigger
       # pull_request_target (GitHub's infinite-loop prevention). Reuse the
@@ -417,7 +593,7 @@ jobs:
         pr: ${{ fromJson(needs.release-please.outputs.prs) }}
     steps:
       - name: Checkout release branch
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ matrix.pr.headBranchName }}
 
@@ -536,14 +712,18 @@ jobs:
       needs.detect-release-commit.outputs.daytona-release == 'true' ||
       needs.detect-release-commit.outputs.modal-release == 'true' ||
       needs.detect-release-commit.outputs.runloop-release == 'true' ||
+      needs.detect-release-commit.outputs.vercel-release == 'true' ||
       needs.detect-release-commit.outputs.quickjs-release == 'true'
     runs-on: ubuntu-latest
     permissions:
       actions: write # required for `gh workflow run` to dispatch release.yml
+      issues: read # read release PR labels for opt-in release bypasses
+      pull-requests: read # resolve the release PR associated with the merge commit
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       VERSION: ${{ needs.detect-release-commit.outputs.release-version }}
       RELEASE_SHA: ${{ github.sha }}
+      SDK_PIN_BYPASS_LABEL: "release: skip sdk pin check"
       RELEASE_WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository
         }}/actions/workflows/release.yml
       CLI_RELEASE: ${{ needs.detect-release-commit.outputs.cli-release }}
@@ -554,6 +734,7 @@ jobs:
       DAYTONA_RELEASE: ${{ needs.detect-release-commit.outputs.daytona-release }}
       MODAL_RELEASE: ${{ needs.detect-release-commit.outputs.modal-release }}
       RUNLOOP_RELEASE: ${{ needs.detect-release-commit.outputs.runloop-release }}
+      VERCEL_RELEASE: ${{ needs.detect-release-commit.outputs.vercel-release }}
       QUICKJS_RELEASE: ${{ needs.detect-release-commit.outputs.quickjs-release }}
     steps:
       - name: Dispatch release workflows
@@ -573,6 +754,11 @@ jobs:
 
           DISPATCHED=()
           FAILED=()
+          # Maps package -> the URL of the release.yml run this job kicked off.
+          # Populated best-effort by the second-pass poll below; a package left
+          # unset just means we couldn't correlate its run in time (it still
+          # dispatched).
+          declare -A RUN_URLS=()
 
           # release.yml's `version` input is required and the API silently accepts
           # an empty string, so guard here. release-please.yml's extraction step
@@ -596,23 +782,115 @@ jobs:
             esac
           }
 
+          # Recover the URL of a dispatched run. The workflow_dispatch API does
+          # not return the created run's id, so we correlate on release.yml's
+          # `run-name`, which renders as "release(<package>): <version>". This
+          # string MUST stay in lock-step with release.yml's `run-name`: if that
+          # template changes, the jq $title below stops matching and correlation
+          # silently always-misses (the best-effort warning fires, nothing else
+          # breaks). The title is unique per package per *version* — re-dispatches
+          # of the same version share a title, so `--created ">=$started"`
+          # (backdated for clock skew) bounds the window and `sort_by | last`
+          # takes the most recent match. package/VERSION go to jq via --arg —
+          # never interpolated into the filter program — so they stay data, not
+          # code. Echoes the URL on stdout, or nothing on no match.
+          find_run_url() {
+            local package="$1" started="$2"
+            gh run list \
+              --repo "$GITHUB_REPOSITORY" \
+              --workflow release.yml \
+              --event workflow_dispatch \
+              --created ">=$started" \
+              --limit 50 \
+              --json displayTitle,url,createdAt 2>/dev/null \
+            | jq -r --arg title "release(${package}): ${VERSION}" \
+                'map(select(.displayTitle == $title)) | sort_by(.createdAt) | last | .url // empty' \
+              2>/dev/null || true
+          }
+
+          # Fail-closed: a non-zero return means "do NOT skip the SDK pin check".
+          # Every error path (PR unresolved, label-read API failure) returns
+          # non-zero, so a transient API blip can never flip the dangerous bypass
+          # on — it only ever turns on for a positively-matched label.
+          release_pr_has_label() {
+            local label="$1" pr_number="" labels="" rc=0
+            # `/commits/{sha}/pulls` lists every PR associated with the commit;
+            # filter to the merged one so a non-release PR sharing this SHA can't
+            # be mistaken for the release PR (which produced RELEASE_SHA on main).
+            pr_number=$(gh api \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/${GITHUB_REPOSITORY}/commits/${RELEASE_SHA}/pulls" \
+              --jq 'map(select(.merged_at != null)) | .[0].number // empty' 2>/dev/null || true)
+            if [ -z "$pr_number" ]; then
+              echo "::warning::Could not resolve release PR for $RELEASE_SHA; SDK pin check will be ENFORCED for deepagents-code (bypass label '$label' not read)."
+              return 1
+            fi
+            # Capture the label read separately so an API failure is distinguishable
+            # from "label genuinely absent" and can be surfaced. `local` is declared
+            # above so it doesn't clobber the captured `$?` here.
+            labels=$(gh api "/repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels" \
+              --jq '.[].name' 2>/dev/null) || rc=$?
+            if [ "$rc" -ne 0 ]; then
+              echo "::warning::Could not read labels for PR #$pr_number (gh api exit $rc); SDK pin check will be ENFORCED for deepagents-code (bypass label '$label' treated as absent)."
+              return 1
+            fi
+            printf '%s\n' "$labels" | grep -Fxq "$label"
+          }
+
+          # True only for the one package whose release honors the SDK-pin bypass.
+          # Reads the job-global AUTO_SKIP_SDK_PIN_CHECK at call time (set below),
+          # keeping the deepagents-code-only guard in a single place.
+          skip_applies_to() {
+            [ "$1" = "deepagents-code" ] && [ "$AUTO_SKIP_SDK_PIN_CHECK" = "true" ]
+          }
+
           dispatch() {
             local package="$1"
-            echo "Dispatching release for $package (version=$VERSION, sha=$RELEASE_SHA)"
+            local cmd=(
+              gh workflow run release.yml
+              --repo "$GITHUB_REPOSITORY"
+              --ref main
+              -f package="$package"
+              -f version="$VERSION"
+              -f release-sha="$RELEASE_SHA"
+            )
+            if skip_applies_to "$package"; then
+              cmd+=(-f dangerous-skip-sdk-pin-check=true)
+              echo "Dispatching release for $package (version=$VERSION, sha=$RELEASE_SHA, dangerous-skip-sdk-pin-check=true)"
+            else
+              echo "Dispatching release for $package (version=$VERSION, sha=$RELEASE_SHA)"
+            fi
             # `--repo` is required: this job has no `actions/checkout` step, so
             # `gh` cannot discover the target repo from a local `.git/` and
             # would otherwise fail with `fatal: not a git repository`.
-            if gh workflow run release.yml \
-              --repo "$GITHUB_REPOSITORY" \
-              --ref main \
-              -f package="$package" \
-              -f version="$VERSION" \
-              -f release-sha="$RELEASE_SHA"; then
+            if "${cmd[@]}"; then
               DISPATCHED+=("$package")
             else
               echo "::error::Failed to dispatch release.yml for $package"
               FAILED+=("$package")
             fi
+          }
+
+          # Second pass, run AFTER every dispatch (see call site below): poll for
+          # a dispatched run's URL and record it in RUN_URLS. Kept separate from
+          # dispatch() on purpose — polling here can never delay, or (if the job
+          # hits its timeout mid-poll) starve, the dispatch of later packages.
+          # Best-effort and bounded: run creation is usually 1-5s; we wait up to
+          # max_poll before giving up. A miss leaves the package out of RUN_URLS
+          # (summary falls back to the workflow-page link) and never fails the job.
+          locate_run() {
+            local package="$1" poll_interval=5 max_poll=90 waited=0 url=""
+            while [ "$waited" -lt "$max_poll" ]; do
+              url=$(find_run_url "$package" "$DISPATCH_STARTED")
+              if [ -n "$url" ]; then
+                echo "Located run for $package: $url"
+                RUN_URLS["$package"]="$url"
+                return
+              fi
+              sleep "$poll_interval"
+              waited=$((waited + poll_interval))
+            done
+            echo "::warning::Dispatched $package but could not locate its release.yml run within ${max_poll}s; summary will link the workflow page instead."
           }
 
           # ${VAR:-false} guards against an output ever being unset/empty. assert_bool
@@ -625,7 +903,14 @@ jobs:
           DAYTONA_RELEASE="${DAYTONA_RELEASE:-false}"; assert_bool DAYTONA_RELEASE "$DAYTONA_RELEASE"
           MODAL_RELEASE="${MODAL_RELEASE:-false}";     assert_bool MODAL_RELEASE   "$MODAL_RELEASE"
           RUNLOOP_RELEASE="${RUNLOOP_RELEASE:-false}"; assert_bool RUNLOOP_RELEASE "$RUNLOOP_RELEASE"
+          VERCEL_RELEASE="${VERCEL_RELEASE:-false}";   assert_bool VERCEL_RELEASE  "$VERCEL_RELEASE"
           QUICKJS_RELEASE="${QUICKJS_RELEASE:-false}"; assert_bool QUICKJS_RELEASE "$QUICKJS_RELEASE"
+
+          AUTO_SKIP_SDK_PIN_CHECK=false
+          if [ "$CODE_RELEASE" = "true" ] && release_pr_has_label "$SDK_PIN_BYPASS_LABEL"; then
+            AUTO_SKIP_SDK_PIN_CHECK=true
+            echo "Release PR has '$SDK_PIN_BYPASS_LABEL'; dispatching deepagents-code with dangerous-skip-sdk-pin-check=true."
+          fi
 
           # Banner: log + step summary. The step summary renders at the top of the
           # run page, so operators see the link before scrolling through step logs.
@@ -646,6 +931,15 @@ jobs:
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"
 
+          # Backdate the correlation window by 60s to absorb runner/GitHub clock
+          # skew, so `--created` doesn't filter out runs we're about to create.
+          # Captured once before any dispatch, then shared by every locate_run
+          # call below — all dispatches happen within seconds of this point.
+          # `date -d` is GNU coreutils (ubuntu-latest); on a BSD/macOS runner it
+          # would fail and leave DISPATCH_STARTED empty, degrading every poll to
+          # a graceful miss (still best-effort — no job failure).
+          DISPATCH_STARTED=$(date -u -d '-60 seconds' +%Y-%m-%dT%H:%M:%SZ)
+
           if [ "$CLI_RELEASE" = "true" ];     then dispatch deepagents-cli;      fi
           if [ "$SDK_RELEASE" = "true" ];     then dispatch deepagents;          fi
           if [ "$ACP_RELEASE" = "true" ];     then dispatch deepagents-acp;      fi
@@ -654,13 +948,35 @@ jobs:
           if [ "$DAYTONA_RELEASE" = "true" ]; then dispatch langchain-daytona;   fi
           if [ "$MODAL_RELEASE" = "true" ];   then dispatch langchain-modal;     fi
           if [ "$RUNLOOP_RELEASE" = "true" ]; then dispatch langchain-runloop;   fi
+          if [ "$VERCEL_RELEASE" = "true" ];   then dispatch langchain-vercel-sandbox; fi
           if [ "$QUICKJS_RELEASE" = "true" ]; then dispatch langchain-quickjs;   fi
+
+          # Now that every package has been dispatched, correlate each one to its
+          # run URL for the summary. Done as a second pass so a slow/missed
+          # correlation can't hold up any dispatch.
+          if [ "${#DISPATCHED[@]}" -gt 0 ]; then
+            for p in "${DISPATCHED[@]}"; do
+              locate_run "$p"
+            done
+          fi
+
           # Append per-package status to the step summary so operators see at a
           # glance which packages were queued vs. which need a manual retry.
           {
             echo "### Dispatched (${#DISPATCHED[@]})"
             if [ "${#DISPATCHED[@]}" -gt 0 ]; then
-              for p in "${DISPATCHED[@]}"; do echo "- \`$p\` @ \`$VERSION\`"; done
+              for p in "${DISPATCHED[@]}"; do
+                suffix=""
+                if skip_applies_to "$p"; then
+                  suffix=" _(SDK pin check skipped from release PR label)_"
+                fi
+                url="${RUN_URLS[$p]:-}"
+                if [ -n "$url" ]; then
+                  echo "- [\`$p\` @ \`$VERSION\`]($url)$suffix"
+                else
+                  echo "- \`$p\` @ \`$VERSION\` _(run link unavailable — see workflow page above)_$suffix"
+                fi
+              done
             else
               echo "_none_"
             fi
@@ -673,7 +989,11 @@ jobs:
               echo ""
               echo '```'
               for p in "${FAILED[@]}"; do
-                echo "gh workflow run release.yml -f package=$p -f version=$VERSION -f release-sha=$RELEASE_SHA"
+                if skip_applies_to "$p"; then
+                  echo "gh workflow run release.yml -f package=$p -f version=$VERSION -f release-sha=$RELEASE_SHA -f dangerous-skip-sdk-pin-check=true"
+                else
+                  echo "gh workflow run release.yml -f package=$p -f version=$VERSION -f release-sha=$RELEASE_SHA"
+                fi
               done
               echo '```'
             fi

@@ -15,9 +15,9 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
-from deepagents_code._env_vars import OFFLINE, is_env_truthy
+from deepagents_code._env_vars import OFFLINE, RIPGREP_INSTALLER, is_env_truthy
 
 if TYPE_CHECKING:
     import tarfile
@@ -110,6 +110,49 @@ def is_offline() -> bool:
     return is_env_truthy(OFFLINE)
 
 
+RipgrepInstaller = Literal["managed", "system"]
+"""The two recognized ripgrep installer modes."""
+
+INSTALLER_MANAGED: RipgrepInstaller = "managed"
+"""Default installer mode: fetch the pinned, checksummed upstream binary."""
+
+INSTALLER_SYSTEM: RipgrepInstaller = "system"
+"""Installer mode that defers ripgrep to the system package manager / `PATH`."""
+
+
+def ripgrep_installer() -> RipgrepInstaller:
+    """Return the configured ripgrep installer mode.
+
+    Reads `RIPGREP_INSTALLER` and normalizes it to `INSTALLER_MANAGED` or
+    `INSTALLER_SYSTEM`, falling back to `INSTALLER_MANAGED` for unset or
+    unrecognized values. The `strip().lower()` normalization must stay in
+    sync with the `case` block in `scripts/install.sh` so both layers agree
+    on the parsed mode.
+    """
+    raw = os.environ.get(RIPGREP_INSTALLER, "").strip().lower()
+    if raw == INSTALLER_SYSTEM:
+        return INSTALLER_SYSTEM
+    if raw and raw != INSTALLER_MANAGED:
+        logger.warning(
+            "Unrecognized %s=%r; expected %r or %r. Defaulting to %r.",
+            RIPGREP_INSTALLER,
+            raw,
+            INSTALLER_MANAGED,
+            INSTALLER_SYSTEM,
+            INSTALLER_MANAGED,
+        )
+    return INSTALLER_MANAGED
+
+
+def prefers_system_ripgrep() -> bool:
+    """Return whether the user opted into the `system` ripgrep installer.
+
+    In `system` mode ripgrep is provisioned by the OS package manager or an
+    existing `PATH` entry rather than the managed download.
+    """
+    return ripgrep_installer() == INSTALLER_SYSTEM
+
+
 def prepend_managed_bin_to_path() -> None:
     """Idempotently prepend `BIN_DIR` to `os.environ["PATH"]`.
 
@@ -124,6 +167,21 @@ def prepend_managed_bin_to_path() -> None:
         return
     parts = [bin_str, *(p for p in parts if p != bin_str)]
     os.environ["PATH"] = os.pathsep.join(parts)
+
+
+def _path_without_managed_bin() -> str | None:
+    """Return `PATH` with `BIN_DIR` removed."""
+    current = os.environ.get("PATH")
+    if not current:
+        return None
+
+    managed_dir = BIN_DIR.resolve()
+    parts = [
+        part
+        for part in current.split(os.pathsep)
+        if not part or Path(part).resolve() != managed_dir
+    ]
+    return os.pathsep.join(parts)
 
 
 def _managed_binary_is_current(binary: Path) -> bool:
@@ -369,17 +427,19 @@ async def ensure_ripgrep() -> Path | None:
 
     Resolution order:
 
-    1. If a managed `rg` exists *and* matches `RIPGREP_VERSION`, return it.
-    2. Otherwise, if a system `rg` is on `PATH` and no managed binary
+    1. If the `system` installer is selected, return a non-managed `rg`
+        found on `PATH`, or `None` when only the managed binary is present.
+    2. If a managed `rg` exists *and* matches `RIPGREP_VERSION`, return it.
+    3. Otherwise, if a system `rg` is on `PATH` and no managed binary
         exists, return its resolved path. This is gated on the *absence*
         of a managed binary: once a managed `rg` exists, the pinned
         version always wins, so a stale managed binary is re-fetched
         rather than deferring to a system `rg` and the resolved version
         stays deterministic.
-    3. If offline, on an unsupported platform, or no asset matches the
+    4. If offline, on an unsupported platform, or no asset matches the
         platform/arch, return `None` so callers fall back to the existing
         notification + slow path.
-    4. Otherwise download → SHA-256 verify → extract → install →
+    5. Otherwise download → SHA-256 verify → extract → install →
         prepend `BIN_DIR` to `PATH` → return the installed path. On a
         checksum mismatch, raises `ChecksumMismatchError` so callers can
         surface a loud notice; other failures log and return `None`.
@@ -402,6 +462,17 @@ async def ensure_ripgrep() -> Path | None:
 
     managed = managed_rg_path()
     managed_exists = managed.exists()
+    if prefers_system_ripgrep():
+        system_rg = shutil.which("rg", path=_path_without_managed_bin())
+        if system_rg is not None:
+            return Path(system_rg)
+        logger.debug(
+            "Skipping managed ripgrep download: %s=%s",
+            RIPGREP_INSTALLER,
+            INSTALLER_SYSTEM,
+        )
+        return None
+
     if managed_exists and _managed_binary_is_current(managed):
         return managed
 

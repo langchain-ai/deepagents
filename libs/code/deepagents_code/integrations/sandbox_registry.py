@@ -68,6 +68,14 @@ BUILTIN_METADATA: dict[str, SandboxProviderMetadata] = {
         supports_snapshot_name=True,
         backend_module="langchain_runloop",
     ),
+    "vercel": SandboxProviderMetadata(
+        name="vercel",
+        working_dir="/vercel/sandbox",
+        install=SandboxInstallHint(kind="extra", name="vercel"),
+        supports_sandbox_id=True,
+        supports_snapshot_name=False,
+        backend_module="langchain_vercel_sandbox",
+    ),
 }
 """Metadata for curated built-in providers, keyed by provider name."""
 
@@ -337,5 +345,6 @@ def _create_builtin_provider(name: str) -> SandboxProvider:
         "langsmith": sandbox_factory._LangSmithProvider,
         "modal": sandbox_factory._ModalProvider,
         "runloop": sandbox_factory._RunloopProvider,
+        "vercel": sandbox_factory._VercelProvider,
     }
     return builders[name]()

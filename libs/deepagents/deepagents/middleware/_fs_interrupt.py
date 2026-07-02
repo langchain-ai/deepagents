@@ -40,6 +40,7 @@ _FS_TOOL_PATH_ARGS: dict[str, tuple[FilesystemOperation, str, ToolScope, str | N
     "read_file": ("read", "file_path", "exact", None),
     "write_file": ("write", "file_path", "exact", None),
     "edit_file": ("write", "file_path", "exact", None),
+    "delete": ("write", "file_path", "bulk", None),
     "glob": ("read", "path", "bulk", "pattern"),
     "grep": ("read", "path", "bulk", None),
 }
@@ -57,15 +58,15 @@ def _make_fs_when_predicate(
     The predicate's behavior depends on the tool's `ToolScope`:
 
     - `"exact"`: fire iff the call's path matches an interrupt-mode rule
-      with normal first-match precedence. A preceding `deny` rule wins and
-      the interrupt does not fire — the tool returns a permission-denied
-      error instead.
+        with normal first-match precedence. A preceding `deny` rule wins and
+        the interrupt does not fire — the tool returns a permission-denied
+        error instead.
     - `"bulk"`: fire iff the call's search subtree could intersect an
-      interrupt-mode rule. With no path argument (e.g. `grep(path=None)`)
-      we cannot localize the call, so we fire unconditionally for any
-      interrupt-mode rule on the operation. `pattern_arg_name` (set for
-      `glob`) additionally gates the call's `pattern`, which can redirect
-      the search root independently of `path`.
+        interrupt-mode rule. With no path argument (e.g. `grep(path=None)`)
+        we cannot localize the call, so we fire unconditionally for any
+        interrupt-mode rule on the operation. `pattern_arg_name` (set for
+        `glob`) additionally gates the call's `pattern`, which can redirect
+        the search root independently of `path`.
     """
     if scope == "exact":
         return _make_exact_when_predicate(rules, operation, path_arg_name)

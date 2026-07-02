@@ -14,6 +14,7 @@ from deepagents_code import model_config
 from deepagents_code.auth_display import format_auth_badge, format_auth_indicator
 from deepagents_code.config import get_glyphs
 from deepagents_code.model_config import (
+    CODEX_PROVIDER,
     ProviderAuthSource,
     ProviderAuthState,
     ProviderAuthStatus,
@@ -45,7 +46,7 @@ _AUTH_STATUS_CASES = [
             env_var="ANTHROPIC_API_KEY",
             source=ProviderAuthSource.ENV,
         ),
-        "[env: ANTHROPIC_API_KEY]",
+        "[env set: ANTHROPIC_API_KEY]",
         "",
     ),
     (
@@ -55,7 +56,7 @@ _AUTH_STATUS_CASES = [
             env_var="ANTHROPIC_API_KEY",
         ),
         "[missing]",
-        f"{get_glyphs().warning} missing ANTHROPIC_API_KEY",
+        f"{get_glyphs().warning} missing credentials",
     ),
     (
         ProviderAuthStatus(
@@ -146,7 +147,9 @@ def test_auth_badge_uses_resolved_env_var_name(monkeypatch: pytest.MonkeyPatch) 
         source=ProviderAuthSource.ENV,
     )
 
-    assert format_auth_badge(status).plain == "[env: DEEPAGENTS_CODE_OPENAI_API_KEY]"
+    assert (
+        format_auth_badge(status).plain == "[env set: DEEPAGENTS_CODE_OPENAI_API_KEY]"
+    )
 
 
 def _badge_styles(status: ProviderAuthStatus) -> str:
@@ -190,3 +193,46 @@ def test_vertex_adc_path_renders_implicit_not_missing(
     assert status.env_var == "GOOGLE_CLOUD_PROJECT"
     assert format_auth_badge(status).plain == "[implicit auth]"
     assert format_auth_indicator(status, get_glyphs()) == "implicit auth"
+
+
+def test_codex_badge_configured_with_plan() -> None:
+    """A signed-in codex status renders the plan parsed from the detail."""
+    status = ProviderAuthStatus(
+        state=ProviderAuthState.CONFIGURED,
+        provider=CODEX_PROVIDER,
+        source=ProviderAuthSource.STORED,
+        detail="signed in to ChatGPT (pro)",
+    )
+    assert format_auth_badge(status).plain == "[chatgpt: pro]"
+
+
+def test_codex_badge_configured_with_expired_token_refresh_detail() -> None:
+    """The codex badge plan parser ignores refresh details after the plan."""
+    status = ProviderAuthStatus(
+        state=ProviderAuthState.CONFIGURED,
+        provider=CODEX_PROVIDER,
+        source=ProviderAuthSource.STORED,
+        detail="signed in to ChatGPT (pro); access token will refresh on use",
+    )
+    assert format_auth_badge(status).plain == "[chatgpt: pro]"
+
+
+def test_codex_badge_configured_without_plan() -> None:
+    """A signed-in codex status with no plan in the detail renders bare."""
+    status = ProviderAuthStatus(
+        state=ProviderAuthState.CONFIGURED,
+        provider=CODEX_PROVIDER,
+        source=ProviderAuthSource.STORED,
+        detail="signed in to ChatGPT",
+    )
+    assert format_auth_badge(status).plain == "[chatgpt]"
+
+
+def test_codex_badge_missing_prompts_sign_in() -> None:
+    """A missing codex credential renders the sign-in prompt, not `[missing]`."""
+    status = ProviderAuthStatus(
+        state=ProviderAuthState.MISSING,
+        provider=CODEX_PROVIDER,
+        detail="not signed in to ChatGPT",
+    )
+    assert format_auth_badge(status).plain == "[sign in to chatgpt]"

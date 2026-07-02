@@ -1,0 +1,204 @@
+# Pre-merge check for new release-please-managed packages.
+#
+# Why this exists:
+#   .release-please-manifest.json stores the latest released version baseline,
+#   not the desired first release version. If a new package is added there as
+#   0.0.1, release-please treats 0.0.1 as already released and opens the first
+#   release PR for 0.0.2. This check blocks that before merge.
+#
+# Limitations:
+#   - Runs under `pull_request` (not `pull_request_target`), so fork PRs get a
+#     read-only token and the comment may fall back to the job summary. No PR-
+#     author-controlled code runs with elevated permissions.
+
+name: "🔍 Release-please initial baseline check"
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  initial-baseline-check:
+    name: "flag bad initial manifest baselines"
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+        with:
+          persist-credentials: false
+
+      - name: "🐍 Setup Python 3.11"
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+
+      - name: "Fetch base release metadata"
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const baseSha = context.payload.pull_request.base.sha;
+
+            // A 404 means the file does not exist on the base branch yet (e.g.
+            // the PR that first introduces release-please, or a branch cut
+            // before these files existed). Treat that as an empty baseline so
+            // the detector still runs and every head package is evaluated as
+            // new. Any other status (403, 5xx) rethrows and fails the job
+            // closed, so a transient API error can never be mistaken for an
+            // empty baseline.
+            async function readRepoFile(path, ref, fallback) {
+              const hasFallback = arguments.length === 3;
+              try {
+                const { data } = await github.rest.repos.getContent({
+                  ...context.repo,
+                  path,
+                  ref,
+                });
+                if (Array.isArray(data) || data.type !== 'file') {
+                  throw new Error(`${path} at ${ref} is not a file`);
+                }
+                // getContent only inlines base64 content for files up to 1 MB.
+                // A larger file returns encoding 'none' with empty content;
+                // decoding that would silently yield an empty baseline, so fail
+                // closed here with an accurate message rather than three layers
+                // downstream in the Python detector.
+                if (data.encoding !== 'base64') {
+                  throw new Error(`${path} at ${ref} has unexpected encoding '${data.encoding}' (too large to inline?)`);
+                }
+                return Buffer.from(data.content, data.encoding).toString('utf8');
+              } catch (err) {
+                if (err.status === 404 && hasFallback) {
+                  core.info(`${path} not found at ${ref}; treating as empty baseline.`);
+                  return fallback;
+                }
+                throw err;
+              }
+            }
+
+            fs.writeFileSync(
+              'base-release-please-config.json',
+              await readRepoFile('release-please-config.json', baseSha, '{"packages":{}}'),
+            );
+            fs.writeFileSync(
+              'base-release-please-manifest.json',
+              await readRepoFile('.release-please-manifest.json', baseSha, '{}'),
+            );
+            fs.writeFileSync(
+              'base-check-initial-release-baseline.py',
+              await readRepoFile('.github/scripts/check_initial_release_baseline.py', baseSha),
+            );
+
+      - name: "Detect bad initial manifest baseline"
+        id: detect
+        run: |
+          set -euo pipefail
+          offenders=$(python base-check-initial-release-baseline.py \
+            base-release-please-config.json \
+            base-release-please-manifest.json \
+            release-please-config.json \
+            .release-please-manifest.json)
+          {
+            echo "offenders<<__INITIAL_RELEASE_EOF__"
+            echo "$offenders"
+            echo "__INITIAL_RELEASE_EOF__"
+          } >> "$GITHUB_OUTPUT"
+          echo "Detector offenders: $offenders"
+
+      - name: "Comment on bad initial manifest baseline"
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          OFFENDERS: ${{ steps.detect.outputs.offenders }}
+        with:
+          script: |
+            const STICKY_MARKER = '<!-- release-please-initial-baseline-check -->';
+            const BAD_BASELINE = '0.0.1';
+            const RECOMMENDED_BASELINE = '0.0.0';
+            const { number } = context.payload.pull_request;
+
+            const raw = process.env.OFFENDERS;
+            if (raw === undefined || raw.trim() === '') {
+              core.setFailed('Detector produced no output; cannot determine initial manifest baseline status. Failing closed.');
+              return;
+            }
+            let offenders;
+            try {
+              offenders = JSON.parse(raw);
+            } catch (parseErr) {
+              core.setFailed(`Detector output was not valid JSON: ${JSON.stringify(raw)} (${parseErr.message})`);
+              return;
+            }
+            if (!Array.isArray(offenders)) {
+              core.setFailed(`Detector output was not a JSON array: ${JSON.stringify(raw)}`);
+              return;
+            }
+
+            async function findStickyComment() {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                ...context.repo,
+                issue_number: number,
+                per_page: 100,
+              });
+              return comments.find(c => c.body && c.body.startsWith(STICKY_MARKER));
+            }
+
+            async function deleteSticky() {
+              const existing = await findStickyComment();
+              if (existing) {
+                await github.rest.issues.deleteComment({ ...context.repo, comment_id: existing.id });
+              }
+            }
+
+            async function upsertSticky(body) {
+              try {
+                const existing = await findStickyComment();
+                if (existing) {
+                  await github.rest.issues.updateComment({ ...context.repo, comment_id: existing.id, body });
+                } else {
+                  await github.rest.issues.createComment({ ...context.repo, issue_number: number, body });
+                }
+              } catch (commentErr) {
+                core.warning(`Could not post sticky comment (fork PR token, rate limit, or transient API error) [status=${commentErr.status ?? 'n/a'}]: ${commentErr.message}`);
+                try {
+                  await core.summary
+                    .addHeading('Bad initial release-please manifest baseline')
+                    .addRaw(body)
+                    .write();
+                } catch (summaryErr) {
+                  core.warning(`Could not write job summary fallback [status=${summaryErr.status ?? 'n/a'}]: ${summaryErr.message}`);
+                }
+              }
+            }
+
+            if (offenders.length === 0) {
+              try {
+                await deleteSticky();
+              } catch (cleanupErr) {
+                core.warning(`Could not clean up prior initial-baseline-check comment (stale comment may persist on a now-passing PR) [status=${cleanupErr.status ?? 'n/a'}]: ${cleanupErr.message}`);
+              }
+              core.info('No new release-please packages use a 0.0.1 manifest baseline.');
+              return;
+            }
+
+            const list = offenders.map(c => `\`${c}\``).join(', ');
+            const body = [
+              STICKY_MARKER,
+              '⛔ **This PR adds a release-please-managed package with manifest baseline `0.0.1`.**',
+              '',
+              `Affected: ${list}`,
+              '',
+              '`.release-please-manifest.json` stores the latest released version, not the desired first release version. A new package entered as `0.0.1` will be treated as already released at `0.0.1`, so release-please will open the first release PR for `0.0.2`.',
+              '',
+              '### To resolve',
+              '',
+              `Set the new package manifest entry to \`${RECOMMENDED_BASELINE}\` instead of \`${BAD_BASELINE}\`. Keep the package's own \`pyproject.toml\` and \`_version.py\` at \`0.0.1\` so the first release PR publishes \`0.0.1\`.`,
+              '',
+              '📖 [Adding a release-please-managed package](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#adding-a-release-please-managed-package)',
+            ].join('\n');
+
+            await upsertSticky(body);
+            core.setFailed(`New release-please package(s) use ${BAD_BASELINE} as the manifest baseline: ${offenders.join(', ')}`);

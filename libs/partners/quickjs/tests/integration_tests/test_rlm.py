@@ -1,21 +1,21 @@
 """Integration tests for PTC against real deepagents middlewares.
 
-Uses a real model and a real ``SubAgentMiddleware``-provided
-``task`` tool. The assertion is coarse — "the subagent actually ran" —
+Uses a real model and a real `SubAgentMiddleware`-provided
+`task` tool. The assertion is coarse — "the subagent actually ran" —
 because the model's phrasing is not deterministic, but the wiring
-between PTC, ``task``, and a spawned subagent graph is covered
+between PTC, `task`, and a spawned subagent graph is covered
 end-to-end.
 
 Both invocation paths are exercised:
 
-- ``agent.invoke`` (sync path)
-- ``agent.ainvoke`` (async path)
+- `agent.invoke` (sync path)
+- `agent.ainvoke` (async path)
 
-``CodeInterpreterMiddleware`` routes both paths through async QuickJS eval under
+`CodeInterpreterMiddleware` routes both paths through async QuickJS eval under
 the hood so PTC host-function bridges work consistently in either mode.
 
-Requires ``ANTHROPIC_API_KEY`` in the environment. Run with
-``make integration_tests``.
+Requires `ANTHROPIC_API_KEY` in the environment. Run with
+`make integration_tests`.
 """
 
 from __future__ import annotations
@@ -84,9 +84,9 @@ async def test_ptc_spawns_subagent_through_eval(invoke_mode: InvokeMode) -> None
 
     We assert on graph-observable effects, not on the model's phrasing:
 
-    - A ``ToolMessage`` from the outer ``eval`` call exists.
+    - A `ToolMessage` from the outer `eval` call exists.
     - Its content mentions the topic we asked about, which can only
-      happen if PTC ran ``tools.task`` and the subagent's response
+      happen if PTC ran `tools.task` and the subagent's response
       round-tripped back through the REPL.
     """
     agent = create_agent(

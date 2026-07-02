@@ -7,7 +7,9 @@ PACKAGE_DIRS := $(sort $(LIB_PACKAGE_DIRS) $(EXAMPLE_PACKAGE_DIRS))
 # acp requires 3.14, everything else uses 3.12
 python_version = $(if $(filter acp,$1),3.14,3.12)
 
-.PHONY: help lock lock-bump lock-check lint format build-frontends bench-all
+.PHONY: help lock no-cache lock-bump lock-check lint format build-frontends bench-all
+
+LOCK_ARGS := $(if $(filter no-cache,$(MAKECMDGOALS)),--no-cache,)
 
 FRONTEND_SRC := cli/frontend
 FRONTEND_DEST := cli/deepagents_cli/deploy/frontend_dist
@@ -21,13 +23,16 @@ help: ## Show this help message
 	@echo "Targets:"
 	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z_-]+:.*##/ {printf "  %-20s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-lock: ## Update all lockfiles
+lock: ## Update all lockfiles (append 'no-cache' to bypass uv's cache)
 	@set -e; \
 	$(foreach pkg,$(PACKAGE_DIRS), \
 		echo "🔒 Locking $(pkg)"; \
-		uv lock --directory '$(pkg)' --python '$(call python_version,$(pkg))'; \
+		uv lock --directory '$(pkg)' --python '$(call python_version,$(pkg))' $(LOCK_ARGS); \
 	)
 	@echo "✅ All lockfiles updated!"
+
+no-cache:
+	@:
 
 lock-bump: ## Bump a dependency across all lockfiles (usage: make lock-bump DEP=requests)
 	@if [ -z "$(DEP)" ]; then \

@@ -13,7 +13,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable
+    from collections.abc import AsyncIterator, Callable, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,7 @@ how many runs are active.
 """
 
 
-def _require_thread_id(config: dict[str, Any] | None) -> str:
+def _require_thread_id(config: Mapping[str, Any] | None) -> str:
     """Extract and validate that `thread_id` is present in config.
 
     Args:
@@ -193,12 +193,28 @@ class RemoteAgent:
         config = _prepare_config(config)
         dropped_count = 0
 
+        # Mirror this server-side run to an extra LangSmith project when
+        # configured. The server (`langgraph_api`) reads the SDK's
+        # `langsmith_tracing` field and replicates the run to that project plus
+        # its primary project. This is the only channel that reaches the run:
+        # it executes in the server process, and reserved `configurable` keys
+        # like `__langsmith_project__` are stripped from client input
+        # server-side, so they cannot be set directly here. (Server internals
+        # verified against `langgraph-api` 0.10.0 and subject to change.)
+        from deepagents_code.config import get_langsmith_replica_project
+
+        extra_stream_kwargs: dict[str, Any] = {}
+        replica_project = get_langsmith_replica_project()
+        if replica_project:
+            extra_stream_kwargs["langsmith_tracing"] = {"project_name": replica_project}
+
         async for ns, mode, data in graph.astream(
             input,
             stream_mode=stream_mode or ["messages", "updates"],
             subgraphs=subgraphs,
             config=config,
             context=context,
+            **extra_stream_kwargs,
         ):
             logger.debug("RemoteGraph event mode=%s ns=%s", mode, ns)
 
@@ -294,10 +310,28 @@ class RemoteAgent:
             )
             raise
 
+    async def acancel_active_runs(self, config: dict[str, Any]) -> None:
+        """Cancel pending/running runs on the configured thread.
+
+        Best-effort: per-run cancellation failures are swallowed by
+        `_cancel_active_runs`. Intended for proactive cancellation on
+        interrupt, before recovery-state writes.
+
+        Args:
+            config: Config with `configurable.thread_id`.
+
+        Raises:
+            ValueError: If `thread_id` is not present in `config`.
+        """  # noqa: DOC502 — raised by _require_thread_id
+        thread_id = _require_thread_id(config)
+        await _cancel_active_runs(self._get_graph(), thread_id)
+
     async def aupdate_state(
         self,
-        config: dict[str, Any],
+        config: Mapping[str, Any],
         values: dict[str, Any],
+        *,
+        as_node: str | None = None,
     ) -> None:
         """Update the state of a thread.
 
@@ -317,6 +351,7 @@ class RemoteAgent:
         Args:
             config: Config with `configurable.thread_id`.
             values: State values to update.
+            as_node: Optional graph node to attribute the state update to.
 
         Raises:
             ValueError: If `thread_id` is not present in `config`.
@@ -328,9 +363,13 @@ class RemoteAgent:
         graph = self._get_graph()
 
         try:
-            await graph.aupdate_state(prepared, values)
+            await graph.aupdate_state(prepared, values, as_node=as_node)
         except ConflictError:
-            pass
+            logger.debug(
+                "update_state conflict for thread %s; cancelling active runs "
+                "and retrying",
+                thread_id,
+            )
         except Exception:
             logger.debug(
                 "Failed to update state for thread %s", thread_id, exc_info=True
@@ -342,13 +381,49 @@ class RemoteAgent:
         await _cancel_active_runs(graph, thread_id)
 
         try:
-            await graph.aupdate_state(prepared, values)
+            await graph.aupdate_state(prepared, values, as_node=as_node)
         except Exception:
             logger.debug(
                 "Retry of update_state still failed for thread %s",
                 thread_id,
                 exc_info=True,
             )
+            raise
+
+    async def aput_store_item(
+        self,
+        namespace: tuple[str, ...],
+        key: str,
+        value: dict[str, Any],
+    ) -> None:
+        """Write an item to the server-side LangGraph Store.
+
+        Args:
+            namespace: Store namespace.
+            key: Item key within `namespace`.
+            value: JSON-serializable item value.
+
+        Notes:
+            A failed write is logged at debug and re-raised. The re-raise is
+            load-bearing: callers (`awrite_approval_mode` and its callers)
+            depend on the failure propagating so they can fail closed — drop
+            the live approval-mode key and interrupt rather than keep
+            auto-approving. Removing the `raise` would turn the debug log into
+            a silent-failure hole, so the higher-severity logging is left to
+            those callers, which re-log at warning with `exc_info`.
+        """
+        graph = self._get_graph()
+        try:
+            client = graph._validate_client()
+            await client.store.put_item(namespace, key, value, index=False)
+        except Exception:
+            logger.debug(
+                "Failed to write store item %s/%s",
+                ".".join(namespace),
+                key,
+                exc_info=True,
+            )
+            # Load-bearing: see Notes. Callers fail closed on this propagation.
             raise
 
     async def aensure_thread(self, config: dict[str, Any]) -> None:
@@ -498,7 +573,7 @@ async def _cancel_active_runs(graph: Any, thread_id: str) -> None:  # noqa: ANN4
 # ---------------------------------------------------------------------------
 
 
-def _prepare_config(config: dict[str, Any] | None) -> dict[str, Any]:
+def _prepare_config(config: Mapping[str, Any] | None) -> dict[str, Any]:
     """Shallow-copy config so callers' dicts are not mutated.
 
     Args:

@@ -31,7 +31,8 @@ import os
 # ---------------------------------------------------------------------------
 
 AUTO_UPDATE = "DEEPAGENTS_CODE_AUTO_UPDATE"
-"""Enable automatic app updates ('1', 'true', or 'yes')."""
+"""Toggle automatic app updates. Enabled by default; set to a falsy value
+('0', 'false', 'no', 'off', or empty) to opt out."""
 
 DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER = (
     "DEEPAGENTS_CODE_DANGEROUSLY_OVERRIDE_STARTUP_SUBHEADER"
@@ -121,6 +122,21 @@ KITTY_KEYBOARD = "DEEPAGENTS_CODE_KITTY_KEYBOARD"
 LANGSMITH_PROJECT = "DEEPAGENTS_CODE_LANGSMITH_PROJECT"
 """Override LangSmith project name for agent traces."""
 
+LANGSMITH_REDACT = "DEEPAGENTS_CODE_LANGSMITH_REDACT"
+"""Toggle LangSmith secret redaction for agent traces (defaults to on)."""
+
+LANGSMITH_REPLICA_PROJECTS = "DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS"
+"""Comma-separated LangSmith project names to *also* write agent traces to.
+
+When set (and tracing is active), each agent run is dual-written to the primary
+deepagents-code project *and* one extra project via LangSmith write replicas.
+
+Only the first listed project is used: the LangGraph server mirrors a run to a
+single extra project, so any additional entries are dropped (with a warning).
+The value is comma-separated for forward-compatibility, not because multiple
+destinations are written today.
+"""
+
 NO_TERMINAL_ESCAPE = "DEEPAGENTS_CODE_NO_TERMINAL_ESCAPE"
 """Disable all terminal escape/control sequence output when enabled."""
 
@@ -145,6 +161,15 @@ and `/api/show`. See `_ollama_discovery_enabled` for accepted truthy/falsy
 values.
 """
 
+ONBOARDING_INTEGRATIONS_SCREEN = "DEEPAGENTS_CODE_ONBOARDING_INTEGRATIONS_SCREEN"
+"""Show the "Installed Integrations" summary screen during first-run onboarding.
+
+Off by default: onboarding goes straight from the name prompt to the model
+selector, which already surfaces (and installs) uninstalled model providers.
+Set to a truthy value to bring the standalone integrations screen back into the
+flow. Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
+"""
+
 RESTARTED_AFTER_UPDATE = "DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE"
 """Internal sentinel recording the target version immediately before the
 startup auto-update re-execs the process.
@@ -155,6 +180,16 @@ version), skips auto-updating to break out of an otherwise endless
 upgrade/restart loop. Set and read internally across `os.execv`.
 """
 
+RIPGREP_INSTALLER = "DEEPAGENTS_CODE_RIPGREP_INSTALLER"
+"""Select how ripgrep is provisioned: `managed` (default) or `system`.
+
+`managed` downloads the pinned, SHA-256-verified upstream binary into
+`~/.deepagents/bin` (no sudo). `system` skips that download so power users can
+rely on their distro package / existing toolchain instead; the install script's
+`system` mode keeps the brew/apt/cargo path. A system `rg` already on `PATH` is
+reused under either setting. Unrecognized values fall back to `managed`. See
+`managed_tools.ripgrep_installer`."""
+
 SERVER_ENV_PREFIX = "DEEPAGENTS_CODE_SERVER_"
 """Environment variable prefix used to pass CLI config to the server subprocess."""
 
@@ -164,12 +199,37 @@ SHELL_ALLOW_LIST = "DEEPAGENTS_CODE_SHELL_ALLOW_LIST"
 SHOW_HEADER = "DEEPAGENTS_CODE_SHOW_HEADER"
 """Show Textual's native header bar at the top of the TUI when enabled."""
 
+SHOW_LANGSMITH_REPLICA_TRACING = "DEEPAGENTS_CODE_SHOW_LANGSMITH_REPLICA_TRACING"
+"""Show LangSmith replica project info in the startup splash when enabled.
+
+Defaults to enabled; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
+to hide replica tracing details from the splash while leaving tracing active.
+"""
+
+SHOW_SCROLLBAR = "DEEPAGENTS_CODE_SHOW_SCROLLBAR"
+"""Show the vertical scrollbar in the chat area when enabled.
+
+Off by default; use the `/scrollbar` slash command or `[ui].show_scrollbar` in
+config.toml to toggle. Parsed by `classify_env_bool` (an unrecognized or empty
+value falls through to the config value rather than forcing the default).
+
+When set, this env var takes precedence over the persisted `[ui].show_scrollbar`
+config value on launch, so a `/scrollbar` toggle will not appear to "stick"
+across restarts while the env var remains set.
+"""
+
+SHOW_URL_OPEN_TOAST = "DEEPAGENTS_CODE_SHOW_URL_OPEN_TOAST"
+"""Show a confirmation toast after clicking a URL that opens in a browser.
+
+Defaults to enabled; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
+to suppress the success toast while still opening URLs normally.
+"""
+
 THEME = "DEEPAGENTS_CODE_THEME"
 """Force the CLI to launch with this theme name when set."""
 
 USER_ID = "DEEPAGENTS_CODE_USER_ID"
 """Attach a user identifier to LangSmith trace metadata."""
-
 
 _TRUTHY_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSY_VALUES = frozenset({"0", "false", "no", "off", ""})

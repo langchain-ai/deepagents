@@ -7,7 +7,6 @@ for slash commands (/) and file mentions (@).
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import shutil
 
@@ -398,10 +397,13 @@ def _get_project_files(root: Path) -> list[str]:
     git_path = _get_git_executable()
     if git_path:
         tracked_ok, tracked = _run_git_ls_files(git_path, root, [])
-        untracked_ok, untracked = _run_git_ls_files(
-            git_path, root, ["--others", "--exclude-standard"]
-        )
-        if tracked_ok and untracked_ok:
+        if tracked_ok:
+            # The untracked scan is optional; if it fails or times out, keep the
+            # already-successful tracked list rather than dropping to the glob
+            # fallback (which only walks a few levels deep).
+            _, untracked = _run_git_ls_files(
+                git_path, root, ["--others", "--exclude-standard"]
+            )
             seen: set[str] = set()
             files: list[str] = []
             for f in (*tracked, *untracked):
@@ -615,7 +617,7 @@ class FuzzyFileController:
         self._file_cache = None
         self.reset()
 
-    async def warm_cache(self) -> None:
+    async def warm_cache(self, *, force: bool = False) -> None:
         """Pre-populate the file cache off the event loop.
 
         Also resolves a project root deferred by `set_cwd`, so the blocking
@@ -628,6 +630,12 @@ class FuzzyFileController:
         belonging to a newer generation. (Snapshotting again before the second
         await would defeat the guard: it would match the post-supersession
         generation and let a stale-root file walk win.)
+
+        Args:
+            force: Re-walk and swap in a fresh file list even when the cache is
+                already populated. Used by the periodic background refresh so
+                files created or deleted mid-session surface in `@` completion.
+                The existing cache stays visible until the new walk completes.
         """
         cwd = self._cwd
         generation = self._cache_generation
@@ -643,14 +651,20 @@ class FuzzyFileController:
                 self._file_cache = None
             self._project_root = resolved
             self._project_root_pending = False
-        if self._file_cache is not None:
+        if not force and self._file_cache is not None:
             return
         project_root = self._project_root
-        # Best-effort; _get_files() falls back to sync on failure.
-        with contextlib.suppress(Exception):
+        # Best-effort: on failure the existing cache (if any) stays in place. A
+        # cold cache (`_file_cache is None`) is later filled synchronously by
+        # `_get_files()`; a force refresh that fails simply leaves the prior
+        # list visible. Log at debug so a recurring background refresh failure
+        # (the 30s timer) is diagnosable rather than silently stale.
+        try:
             files = await asyncio.to_thread(_get_project_files, project_root)
             if generation == self._cache_generation:
                 self._file_cache = _scope_files_to_cwd(files, project_root, cwd)
+        except Exception:  # best-effort refresh; prior cache is the fallback
+            logger.debug("File-cache warm failed for %s", project_root, exc_info=True)
 
     @staticmethod
     def can_handle(text: str, cursor_index: int) -> bool:

@@ -790,6 +790,69 @@ class TestFuzzyFileControllerWarmCacheRace:
         assert controller._project_root_pending is False
         assert controller._file_cache == ["a/new.py"]
 
+    async def test_force_warmer_does_not_overwrite_newer_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A force refresh superseded mid-walk must not clobber a newer cwd.
+
+        `force=True` is a new way to reach the file-walk-and-swap block on an
+        already-populated cache (a populated cache otherwise short-circuits), so
+        a background refresh racing a `set_cwd` is a genuinely new scenario.
+        """
+        sub_a = tmp_path / "a"
+        sub_a.mkdir()
+        sub_b = tmp_path / "b"
+        sub_b.mkdir()
+
+        entered_force = threading.Event()
+        release_force = threading.Event()
+        lock = threading.Lock()
+        a_calls = 0
+
+        def fake_files(root: Path) -> list[str]:
+            nonlocal a_calls
+
+            if root == sub_a:
+                with lock:
+                    a_calls += 1
+                    call = a_calls
+                if call == 1:
+                    # Initial warm populates the cache and returns immediately.
+                    return ["a/file.py"]
+                # The forced background refresh; block it mid-walk so a newer
+                # cwd switch can supersede it.
+                entered_force.set()
+                release_force.wait(timeout=5)
+                return ["a/stale.py"]
+            return ["b/file.py"]
+
+        monkeypatch.setattr(autocomplete_module, "find_project_root", lambda _: None)
+        monkeypatch.setattr(autocomplete_module, "_get_project_files", fake_files)
+
+        controller = FuzzyFileController(MagicMock(), cwd=tmp_path)
+        controller.set_cwd(sub_a)
+        await controller.warm_cache()
+        assert controller._file_cache == ["a/file.py"]
+
+        force_task = asyncio.create_task(controller.warm_cache(force=True))
+        await asyncio.to_thread(entered_force.wait, 5)
+
+        # The prior cache stays visible while the forced walk is in flight.
+        assert controller._file_cache == ["a/file.py"]
+
+        # A newer cwd switch supersedes the in-flight forced refresh.
+        controller.set_cwd(sub_b)
+        await controller.warm_cache()
+        assert controller._file_cache == ["b/file.py"]
+
+        release_force.set()
+        await force_task
+
+        # The stale forced walk finished last but dropped its result.
+        assert controller._project_root == sub_b
+        assert controller._project_root_pending is False
+        assert controller._file_cache == ["b/file.py"]
+
 
 class TestGetProjectFiles:
     """Tests for _get_project_files."""
@@ -925,6 +988,45 @@ class TestGetProjectFiles:
 
         assert files.count("conflict.py") == 1
 
+    def test_untracked_failure_keeps_tracked_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed untracked scan must not discard the tracked list.
+
+        When the optional `--others --exclude-standard` call fails or times
+        out, the already-successful tracked listing stays authoritative instead
+        of falling back to the shallow glob walk.
+        """
+        self._init_repo(tmp_path)
+        nested = tmp_path / "a" / "b" / "c" / "d" / "e"
+        nested.mkdir(parents=True)
+        deep = nested / "deep.py"
+        deep.write_text("x = 1\n")
+        subprocess.run(
+            ["git", "add", "a"], cwd=tmp_path, check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "init"],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+
+        real_run = autocomplete_module._run_git_ls_files
+
+        def fake_run(
+            git_path: str, root: Path, extra_args: list[str]
+        ) -> tuple[bool, list[str]]:
+            if "--others" in extra_args:
+                return False, []
+            return real_run(git_path, root, extra_args)
+
+        monkeypatch.setattr(autocomplete_module, "_run_git_ls_files", fake_run)
+
+        files = _get_project_files(tmp_path)
+
+        assert "a/b/c/d/e/deep.py" in files
+
     def test_glob_fallback_when_git_unavailable(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1041,6 +1143,29 @@ class TestFuzzyFileControllerScope:
         await controller.warm_cache()
 
         assert controller._file_cache == ["main.py"]
+
+    async def test_warm_cache_force_refreshes_populated_cache(
+        self, mock_view, monkeypatch, tmp_path
+    ):
+        """warm_cache(force=True) re-walks and swaps in a fresh list."""
+        project_root = tmp_path
+        (project_root / ".git").mkdir()
+
+        files = ["main.py"]
+        monkeypatch.setattr(
+            autocomplete_module, "_get_project_files", lambda _root: list(files)
+        )
+
+        controller = FuzzyFileController(mock_view, cwd=project_root)
+        await controller.warm_cache()
+        assert controller._file_cache == ["main.py"]
+
+        files.append("added.py")
+        await controller.warm_cache()
+        assert controller._file_cache == ["main.py"]
+
+        await controller.warm_cache(force=True)
+        assert controller._file_cache == ["main.py", "added.py"]
 
     def test_excludes_sibling_with_shared_prefix(
         self, mock_view, monkeypatch, tmp_path

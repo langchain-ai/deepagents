@@ -149,3 +149,8 @@ server = AgentServerACP(agent=build_agent, models=models)
 ```
 
 You can see a full example [here](./examples/demo_agent.py) with LangChain's model profile feature.
+
+## Resources
+
+- [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
+- [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards

@@ -17,7 +17,9 @@ which are interpreted as seconds for video reads.
 """
 
 import base64
+import importlib.util
 import io
+import logging
 import math
 import time
 from typing import TYPE_CHECKING, Any, Final
@@ -27,9 +29,32 @@ if TYPE_CHECKING:
 else:
     ContentBlock = dict  # only used at runtime by the agent runtime
 
+logger = logging.getLogger(__name__)
+
 
 MISSING_VIDEO_HINT = "Reading video files requires the optional video dependencies. Install them with `uv add 'deepagents[video]'`."
 """User-facing message shown when a video read is attempted without the `[video]` extra installed."""
+
+
+def video_dependencies_available() -> bool:
+    """Return whether the optional video dependencies appear to be installed.
+
+    Uses `importlib.util.find_spec`, which checks that `av` and Pillow are
+    *discoverable* rather than performing a full import. A discoverable but
+    broken install (e.g. a compiled extension that fails to load) is reported as
+    available here and surfaces later, at actual extraction time, as a
+    `VideoExtractionError` carrying `MISSING_VIDEO_HINT`.
+    """
+    try:
+        return importlib.util.find_spec("av") is not None and importlib.util.find_spec("PIL.Image") is not None
+    except (ImportError, ValueError):
+        # `find_spec` returns None (not raises) for a simply-absent top-level
+        # module, so a raised error means the deps are present but unimportable.
+        # Treat the extra as unavailable, but log it so a broken [video] install
+        # is debuggable rather than silently disabled.
+        logger.warning("Video dependency probe failed; treating the [video] extra as unavailable.", exc_info=True)
+        return False
+
 
 MAX_VIDEO_SAMPLED_FRAMES: Final = 64
 """Upper bound on the number of frames emitted per video read."""

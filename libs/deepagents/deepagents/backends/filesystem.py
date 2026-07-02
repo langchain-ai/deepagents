@@ -38,7 +38,7 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.utils import (
     MAX_VIDEO_INPUT_BYTES,
-    _get_file_type,
+    _get_backend_read_file_type,
     check_empty_content,
     perform_string_replacement,
 )
@@ -436,7 +436,7 @@ class FilesystemBackend(BackendProtocol):
 
             fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
             try:
-                file_type = _get_file_type(file_path)
+                file_type = _get_backend_read_file_type(file_path)
                 if file_type != "text":
                     if file_type == "video" and os.fstat(fd).st_size > MAX_VIDEO_INPUT_BYTES:
                         return ReadResult(error=f"Video file exceeds maximum input size of {MAX_VIDEO_INPUT_BYTES} bytes")

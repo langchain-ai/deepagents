@@ -14,6 +14,12 @@ from deepagents.backends.protocol import ReadResult
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemState
 
 
+@pytest.fixture(autouse=True)
+def _enable_video_extra(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise frame-extraction routing independently of the local test env."""
+    monkeypatch.setattr(filesystem_middleware, "video_dependencies_available", lambda: True)
+
+
 def test_read_file_video_routes_to_frame_extractor(monkeypatch: pytest.MonkeyPatch) -> None:
     """Video reads route through the frame extractor, not generic base64 media."""
     raw_bytes = b"\x00\x01\x02 fake video bytes"
@@ -190,6 +196,69 @@ def test_read_file_video_extraction_error_surfaces_as_error_message(monkeypatch:
     assert isinstance(result, ToolMessage)
     assert result.status == "error"
     assert "av not installed" in result.content
+
+
+def test_read_file_without_video_extra_keeps_generic_video_block(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Missing optional deps preserve the previous generic video read behavior."""
+    monkeypatch.setattr(filesystem_middleware, "video_dependencies_available", lambda: False)
+    monkeypatch.setattr(
+        filesystem_middleware,
+        "extract_video_frames",
+        lambda *_args, **_kwargs: pytest.fail("video extraction should be gated"),
+    )
+    middleware = FilesystemMiddleware(backend=_video_backend(b"video bytes"))
+    state = FilesystemState(messages=[], files={})
+    runtime = _build_runtime(state, "video-read-no-extra")
+    read_file_tool = next(t for t in middleware.tools if t.name == "read_file")
+
+    result = read_file_tool.invoke({"file_path": "/c.mp4", "runtime": runtime})
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "success"
+    assert isinstance(result.content, list)
+    assert result.content[0]["type"] == "video"
+    assert result.content[0]["base64"] == base64.b64encode(b"video bytes").decode("ascii")
+
+
+def test_read_file_without_video_extra_keeps_mkv_generic(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The new `.mkv` classification only applies with the video extra."""
+    monkeypatch.setattr(filesystem_middleware, "video_dependencies_available", lambda: False)
+    middleware = FilesystemMiddleware(backend=_video_backend(b"mkv bytes"))
+    state = FilesystemState(messages=[], files={})
+    runtime = _build_runtime(state, "mkv-read-no-extra")
+    read_file_tool = next(t for t in middleware.tools if t.name == "read_file")
+
+    result = read_file_tool.invoke({"file_path": "/c.mkv", "runtime": runtime})
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "success"
+    assert isinstance(result.content, list)
+    assert result.content[0]["type"] == "file"
+    assert result.content[0]["base64"] == base64.b64encode(b"mkv bytes").decode("ascii")
+
+
+def test_read_file_without_video_extra_uses_text_schema_and_description(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Video-specific read guidance is hidden when frame extraction is unavailable."""
+    monkeypatch.setattr(filesystem_middleware, "video_dependencies_available", lambda: False)
+    middleware = FilesystemMiddleware(backend=StateBackend())
+    read_file_tool = next(t for t in middleware.tools if t.name == "read_file")
+
+    assert "For videos" not in read_file_tool.description
+    schema = read_file_tool.args_schema.model_json_schema()
+    assert "For videos" not in schema["properties"]["offset"]["description"]
+    assert "For videos" not in schema["properties"]["limit"]["description"]
+
+
+def test_read_file_with_video_extra_uses_video_schema_and_description() -> None:
+    """Video-specific read guidance is exposed when frame extraction is available."""
+    # The autouse `_enable_video_extra` fixture forces the extra on for this test.
+    middleware = FilesystemMiddleware(backend=StateBackend())
+    read_file_tool = next(t for t in middleware.tools if t.name == "read_file")
+
+    assert "For videos" in read_file_tool.description
+    schema = read_file_tool.args_schema.model_json_schema()
+    assert "For videos" in schema["properties"]["offset"]["description"]
+    assert "For videos" in schema["properties"]["limit"]["description"]
 
 
 def test_read_file_video_unexpected_value_error_is_not_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:

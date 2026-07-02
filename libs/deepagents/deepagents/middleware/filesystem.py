@@ -62,7 +62,9 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.sandbox import BaseSandbox
 from deepagents.backends.utils import (
+    _VIDEO_EXTRA_EXTENSIONS,
     MAX_VIDEO_INPUT_BYTES,
+    FileType,
     _get_file_type,
     _glob_anchor,
     _paths_overlap,
@@ -84,6 +86,7 @@ from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware._video import (
     VideoExtractionError,
     extract_video_frames,
+    video_dependencies_available,
 )
 
 _FS_WCMATCH_FLAGS = wcglob.BRACE | wcglob.GLOBSTAR
@@ -233,6 +236,14 @@ def _video_window_header(path: str, offset_seconds: float, duration_seconds: flo
     if offset_seconds <= 0.0:
         return f"Reading first {int(duration_seconds)}s of {path} at {rate} fps."
     return f"Reading [{offset_seconds:.3f}s, {end:.3f}s) of {path} at {rate} fps."
+
+
+def _get_read_file_type(path: str, *, video_enabled: bool) -> FileType:
+    """Classify a file for `read_file`, gating optional video extensions."""
+    file_type = _get_file_type(path)
+    if video_enabled and PurePosixPath(path).suffix.lower() in _VIDEO_EXTRA_EXTENSIONS:
+        return "video"
+    return file_type
 
 
 @dataclass
@@ -530,6 +541,24 @@ class ReadFileSchema(BaseModel):
 
     offset: int = Field(
         default=DEFAULT_READ_OFFSET,
+        description="Line number to start reading from (0-indexed). Use for pagination of large files.",
+    )
+
+    limit: int = Field(
+        default=DEFAULT_READ_LIMIT,
+        description="Maximum number of lines to read. Use for pagination of large files.",
+    )
+
+
+class ReadVideoFileSchema(ReadFileSchema):
+    """Input schema for `read_file` when the optional video frame extraction is available.
+
+    Identical to `ReadFileSchema`; only the `offset`/`limit` descriptions differ
+    to document their video semantics (interpreted as seconds for video reads).
+    """
+
+    offset: int = Field(
+        default=DEFAULT_READ_OFFSET,
         description="Line number to start reading from for text files (0-indexed). For videos, seconds into the source to start sampling.",
     )
 
@@ -607,12 +636,12 @@ LIST_FILES_TOOL_DESCRIPTION = """Lists all files in a directory.
 This is useful for exploring the filesystem and finding the right file to read or edit.
 You should almost ALWAYS use this tool before using the read_file or edit_file tools."""
 
-READ_FILE_TOOL_DESCRIPTION = """Reads a file from the filesystem.
+_READ_FILE_TOOL_DESCRIPTION_TEMPLATE = """Reads a file from the filesystem.
 
 Assume this tool is able to read all files. If the User provides a path to a file assume that path is valid. It is okay to read a file that does not exist; an error will be returned.
 
 Usage:
-- For text files, by default it reads up to 100 lines starting from the beginning of the file
+- {first_line}
 - **IMPORTANT for large files and codebase exploration**: Use pagination with offset and limit parameters to avoid context overflow
     - First scan: read_file(file_path="...", limit=100) to see file structure
     - Read more sections: read_file(file_path="...", offset=100, limit=200) for next 200 lines
@@ -626,11 +655,32 @@ Usage:
 
 For multimodal reads (image, audio, video, PDF, etc.):
 - Use `read_file(file_path=...)`
-- For images and PDFs, pagination via `offset`/`limit` is text-only - supply `file_path` only
-- For videos, `offset`/`limit` are interpreted as seconds (default window 100 s; sampled at a fixed rate). Use smaller windows when you need more temporal detail.
+{multimodal_bullets}
 - If file details were compacted from history, call `read_file` again on the same path
 
 - You should ALWAYS make sure a file has been read before editing it."""
+"""Shared `read_file` description body for the text-only and video-aware variants.
+
+The two variants differ only in the `{first_line}` and `{multimodal_bullets}`
+fields, kept in a single template so the common guidance cannot drift between
+them.
+"""
+
+_IMAGE_PDF_PAGINATION_BULLET = "- For images and PDFs, pagination via `offset`/`limit` is text-only - supply `file_path` only"
+"""Multimodal bullet shared by both `read_file` descriptions (images/PDFs are not paginated)."""
+
+READ_FILE_TOOL_DESCRIPTION = _READ_FILE_TOOL_DESCRIPTION_TEMPLATE.format(
+    first_line="By default, it reads up to 100 lines starting from the beginning of the file",
+    multimodal_bullets=_IMAGE_PDF_PAGINATION_BULLET,
+)
+
+READ_FILE_VIDEO_TOOL_DESCRIPTION = _READ_FILE_TOOL_DESCRIPTION_TEMPLATE.format(
+    first_line="For text files, by default it reads up to 100 lines starting from the beginning of the file",
+    multimodal_bullets=(
+        f"{_IMAGE_PDF_PAGINATION_BULLET}\n"
+        "- For videos, `offset`/`limit` are interpreted as seconds (default window 100 s; sampled at a fixed rate). Use smaller windows when you need more temporal detail."
+    ),
+)
 
 EDIT_FILE_TOOL_DESCRIPTION = """Performs exact string replacements in files.
 
@@ -1247,7 +1297,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
     def _create_read_file_tool(self) -> BaseTool:  # noqa: C901
         """Create the read_file tool."""
-        tool_description = self._custom_tool_descriptions.get("read_file") or READ_FILE_TOOL_DESCRIPTION
+        video_enabled = video_dependencies_available()
+        default_description = READ_FILE_VIDEO_TOOL_DESCRIPTION if video_enabled else READ_FILE_TOOL_DESCRIPTION
+        tool_description = self._custom_tool_descriptions.get("read_file") or default_description
+        args_schema = ReadVideoFileSchema if video_enabled else ReadFileSchema
         token_limit = self._tool_token_limit_before_evict
 
         def _truncate(content: str, file_path: str, *, line_limit: int | None = None) -> str:
@@ -1305,7 +1358,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            file_type = _get_file_type(validated_path)
+            file_type = _get_read_file_type(validated_path, video_enabled=video_enabled)
             encoding = read_result.file_data.get("encoding", "utf-8")
             content = read_result.file_data["content"]
 
@@ -1324,7 +1377,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # Video reads must be sliced into a sampled frame window before the
             # generic base64 branch runs; otherwise raw video bytes would reach
             # the model.
-            if file_type == "video":
+            if video_enabled and file_type == "video":
                 return _handle_video_read(
                     content,
                     validated_path,
@@ -1420,7 +1473,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             func=sync_read_file,
             coroutine=async_read_file,
             infer_schema=False,
-            args_schema=ReadFileSchema,
+            args_schema=args_schema,
         )
 
     def _create_write_file_tool(self) -> BaseTool:

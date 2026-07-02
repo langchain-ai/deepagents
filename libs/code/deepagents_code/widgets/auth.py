@@ -31,7 +31,7 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.style import Style as TStyle
 from textual.widgets import Input, OptionList, Static
-from textual.widgets.option_list import Option
+from textual.widgets.option_list import Option, OptionDoesNotExist
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -41,7 +41,11 @@ if TYPE_CHECKING:
 
 from deepagents_code import auth_store, theme
 from deepagents_code.auth_display import format_auth_badge
-from deepagents_code.config import get_glyphs, is_ascii_mode
+from deepagents_code.config import (
+    apply_stored_langsmith_auth,
+    get_glyphs,
+    is_ascii_mode,
+)
 from deepagents_code.model_config import (
     CODEX_PROVIDER,
     PROVIDER_API_KEY_ENV,
@@ -54,10 +58,12 @@ from deepagents_code.model_config import (
     clear_caches,
     get_available_models,
     get_base_url_env_var,
+    get_base_url_env_vars,
     get_credential_env_var,
     get_default_base_url_env,
     get_provider_auth_status,
     get_service_auth_status,
+    is_langsmith,
     is_service,
     resolved_env_var_name,
 )
@@ -83,6 +89,7 @@ PROVIDER_DISPLAY_NAMES: dict[str, str] = {
     "groq": "Groq",
     "huggingface": "Hugging Face",
     "ibm": "IBM watsonx",
+    "langsmith": "LangSmith (tracing)",
     "litellm": "LiteLLM",
     "mistralai": "Mistral AI",
     "nvidia": "NVIDIA",
@@ -105,6 +112,7 @@ PROVIDER_API_KEY_URLS: dict[str, str] = {
     "groq": "https://console.groq.com/keys",
     "huggingface": "https://huggingface.co/login?next=%2Fsettings%2Ftokens",
     "ibm": "https://cloud.ibm.com/iam/apikeys",
+    "langsmith": "https://smith.langchain.com/settings",
     "litellm": "https://docs.litellm.ai/docs/proxy/virtual_keys",
     "mistralai": "https://console.mistral.ai/api-keys",
     "nvidia": "https://build.nvidia.com/settings/api-keys",
@@ -150,6 +158,25 @@ def _provider_display_name(provider: str, config: ModelConfig | None = None) -> 
     return model_config.get_provider_display_name(
         provider
     ) or PROVIDER_DISPLAY_NAMES.get(provider, provider.replace("_", " ").title())
+
+
+def _auth_status_for(provider: str) -> ProviderAuthStatus:
+    """Resolve the credential readiness of a provider or non-model service.
+
+    Routes services (e.g. Tavily) and model providers to their respective
+    status helpers. Each call reads the credential file, so callers that need
+    the status more than once should resolve it here a single time and reuse
+    the result.
+
+    Args:
+        provider: Provider or service config key.
+
+    Returns:
+        The auth status used for both ordering and badge rendering.
+    """
+    if is_service(provider):
+        return get_service_auth_status(provider)
+    return get_provider_auth_status(provider)
 
 
 class AuthResult(StrEnum):
@@ -220,7 +247,7 @@ class AuthConfirmScreen(ModalScreen[bool]):
     }
 
     AuthConfirmScreen .auth-confirm-help {
-        height: 1;
+        height: auto;
         color: $text-muted;
         text-style: italic;
         text-align: center;
@@ -448,7 +475,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
     }
 
     AuthPromptScreen .auth-prompt-help {
-        height: 1;
+        height: auto;
         color: $text-muted;
         text-style: italic;
         text-align: center;
@@ -461,6 +488,9 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         env_var: str | None,
         *,
         reason: str | None = None,
+        allow_empty_submit: bool = False,
+        input_placeholder: str | None = None,
+        submit_label: str | None = None,
     ) -> None:
         """Initialize the prompt for `provider`.
 
@@ -469,13 +499,24 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             env_var: Canonical env var the SDK reads, shown as helper text.
                 May be `None` for providers that don't use one of the
                 hardcoded env-var bindings (rare; the prompt still works).
-            reason: Optional one-line context, e.g.,
-                `"Required to use anthropic:claude-opus-4-7"`.
+            reason: Optional context, e.g.,
+                `"Required to use anthropic:claude-opus-4-8"`.
+            allow_empty_submit: Whether pressing Enter on an empty key dismisses
+                with `AuthResult.CANCELLED` instead of showing a validation error.
+            input_placeholder: Optional placeholder override for the key input.
+            submit_label: Optional help-label override for the Enter action.
         """
         super().__init__()
         self._provider = provider
         self._env_var = env_var
         self._reason = reason
+        self._allow_empty_submit = allow_empty_submit
+        self._input_placeholder = input_placeholder
+        self._submit_label = submit_label
+        # LangSmith is configured as a tracing service: it has no base-URL
+        # override but does carry an optional project name, and saving a key
+        # turns tracing on.
+        self._is_langsmith = is_langsmith(provider)
         # Resolve the current credential source and probe the store, but never
         # let a corrupt `auth.json`/config crash the screen at construction
         # time — Textual would propagate the exception before the modal mounts.
@@ -486,14 +527,13 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         # cached instance instead of reloading outside this crash-safety guard.
         try:
             self._config = ModelConfig.load()
-            self._auth_status = (
-                get_service_auth_status(provider)
-                if is_service(provider)
-                else get_provider_auth_status(provider)
-            )
+            self._auth_status = _auth_status_for(provider)
             self._has_existing = auth_store.get_stored_key(provider) is not None
             self._existing_base_url = auth_store.get_stored_base_url(provider) or ""
-            self._advanced_visible = bool(self._existing_base_url)
+            self._existing_project = auth_store.get_stored_project(provider) or ""
+            self._advanced_visible = bool(
+                self._existing_base_url or self._existing_project
+            )
             self._store_warning: str | None = None
         except RuntimeError as exc:
             logger.warning(
@@ -505,6 +545,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             )
             self._has_existing = False
             self._existing_base_url = ""
+            self._existing_project = ""
             self._advanced_visible = False
             self._store_warning = (
                 f"Credential file is unreadable ({exc}). Saving here will overwrite it."
@@ -606,7 +647,8 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                     classes="auth-prompt-error",
                 )
             yield Input(
-                placeholder=(
+                placeholder=self._input_placeholder
+                or (
                     "Paste a new key to replace the stored one"
                     if self._has_existing
                     else "Paste your API key"
@@ -614,15 +656,30 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                 password=True,
                 id="auth-prompt-input",
             )
-            yield Static(
-                Content.from_markup(
+            storage_note: Content | None
+            if self._is_langsmith:
+                storage_note = Content.from_markup(
+                    "Deep Agents Code stores the above key locally and turns on "
+                    "LangSmith tracing. To pause tracing without removing the key, "
+                    "set [bold]DEEPAGENTS_CODE_LANGSMITH_TRACING=false[/bold]."
+                )
+            elif is_service(self._provider):
+                # Services (e.g. Tavily) skip the storage note: the title and
+                # reason copy already say what the key is for, so it only adds
+                # redundant copy here.
+                storage_note = None
+            else:
+                storage_note = Content.from_markup(
                     "Deep Agents Code stores the above key locally and uses it "
                     "when you select [bold]$provider[/bold] models.",
                     provider=provider_label,
-                ),
-                classes="auth-prompt-meta",
-                id="auth-prompt-storage-note",
-            )
+                )
+            if storage_note is not None:
+                yield Static(
+                    storage_note,
+                    classes="auth-prompt-meta",
+                    id="auth-prompt-storage-note",
+                )
             yield Static(
                 self._build_advanced_toggle_label(),
                 classes="auth-prompt-advanced-toggle",
@@ -650,29 +707,57 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                 )
                 key_meta.display = self._advanced_visible
                 yield key_meta
-            base_url_label = Static(
-                Content.from_markup("[bold]Base URL override[/bold]"),
-                classes="auth-prompt-meta",
-                id="auth-prompt-base-url-label",
-            )
-            base_url_label.display = self._advanced_visible
-            yield base_url_label
-            base_url_input = Input(
-                value=self._existing_base_url,
-                placeholder="Base URL",
-                id="auth-prompt-base-url",
-            )
-            base_url_input.display = self._advanced_visible
-            yield base_url_input
-            base_url_hint_widget = Static(
-                self._build_base_url_hint(),
-                classes="auth-prompt-meta",
-                id="auth-prompt-base-url-hint",
-            )
-            base_url_hint_widget.display = self._advanced_visible
-            yield base_url_hint_widget
+            if self._is_langsmith:
+                project_label = Static(
+                    Content.from_markup("[bold]Project name[/bold]"),
+                    classes="auth-prompt-meta",
+                    id="auth-prompt-project-label",
+                )
+                project_label.display = self._advanced_visible
+                yield project_label
+                project_input = Input(
+                    value=self._existing_project,
+                    placeholder="LANGSMITH_PROJECT (default: deepagents-code)",
+                    id="auth-prompt-project",
+                )
+                project_input.display = self._advanced_visible
+                yield project_input
+                project_hint_widget = Static(
+                    Content.from_markup(
+                        "Route agent traces to this LangSmith project. "
+                        "Leave blank to use the default [bold]deepagents-code[/bold]."
+                    ),
+                    classes="auth-prompt-meta",
+                    id="auth-prompt-project-hint",
+                )
+                project_hint_widget.display = self._advanced_visible
+                yield project_hint_widget
+            else:
+                base_url_label = Static(
+                    Content.from_markup("[bold]Base URL override[/bold]"),
+                    classes="auth-prompt-meta",
+                    id="auth-prompt-base-url-label",
+                )
+                base_url_label.display = self._advanced_visible
+                yield base_url_label
+                base_url_input = Input(
+                    value=self._existing_base_url,
+                    placeholder="Base URL",
+                    id="auth-prompt-base-url",
+                )
+                base_url_input.display = self._advanced_visible
+                yield base_url_input
+                base_url_hint_widget = Static(
+                    self._build_base_url_hint(),
+                    classes="auth-prompt-meta",
+                    id="auth-prompt-base-url-hint",
+                )
+                base_url_hint_widget.display = self._advanced_visible
+                yield base_url_hint_widget
             yield Static("", classes="auth-prompt-error", id="auth-prompt-error")
-            save_label = "Enter replace" if self._has_existing else "Enter save"
+            save_label = self._submit_label or (
+                "Enter replace" if self._has_existing else "Enter save"
+            )
             help_parts = [f"{save_label} {glyphs.bullet} Esc cancel", "F2 advanced"]
             if self._has_existing:
                 help_parts.append("Ctrl+D delete stored")
@@ -699,9 +784,10 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         """Build provider-specific API-key acquisition guidance.
 
         Returns:
-            Content shown before the API-key input. Appends a muted notice when
-                a user-configured `api_key_url` was rejected for using an
-                unsupported URL scheme.
+            Content shown before the API-key input. May append muted notices: a
+                provider-specific caveat (e.g. Anthropic subscription plans are
+                unsupported) and/or a warning that a user-configured `api_key_url`
+                was rejected for using an unsupported URL scheme.
         """
         config = self._config
         configured_url = config.get_provider_api_key_url(self._provider)
@@ -715,12 +801,12 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         url = configured_url or PROVIDER_API_KEY_URLS.get(
             self._provider, _PROVIDERS_DOCS_URL
         )
-        label = (
-            "Provider key page"
-            if configured_url or self._provider in PROVIDER_API_KEY_URLS
-            else "Provider setup docs"
-        )
         provider = _provider_display_name(self._provider, config)
+        label = (
+            f"{provider} key page"
+            if configured_url or self._provider in PROVIDER_API_KEY_URLS
+            else f"{provider} setup docs"
+        )
         if self._provider == "azure_openai":
             instructions = Content.assemble(
                 "Find your key in your Azure OpenAI resource's "
@@ -735,6 +821,21 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
                 "(/v1/responses). For older models, you may also need "
                 "Request access to Chat completions (/v1/chat/completions). ",
                 (label, self._link_style(url)),
+            )
+        elif self._provider == "anthropic":
+            instructions = Content.assemble(
+                f"Sign in to {provider}, create or copy an API key, "
+                "then paste it below. ",
+                (label, self._link_style(url)),
+                "\n",
+                (
+                    (
+                        "Subscription plans (Claude Pro/Max, Claude Code) cannot "
+                        "be used for Anthropic calls in Deep Agents Code. Only a "
+                        "standard API key with pay-as-you-go billing works here."
+                    ),
+                    "italic $text-muted",
+                ),
             )
         else:
             instructions = Content.assemble(
@@ -775,22 +876,25 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             Content describing blank behavior and env-var precedence.
         """
         surviving_base_url_env = get_default_base_url_env(self._provider)
-        endpoint_env = get_base_url_env_var(self._provider)
-        if surviving_base_url_env and endpoint_env:
+        endpoint_envs = get_base_url_env_vars(self._provider)
+        env_order = ", then ".join(
+            item for env in endpoint_envs for item in (f"DEEPAGENTS_CODE_{env}", env)
+        )
+        if surviving_base_url_env and env_order:
             return Content.from_markup(
                 "Override the provider endpoint for this stored key. "
                 "Leave blank to use [bold]$prefixed[/bold].\n"
-                "Env override order: [bold]$prefixed[/bold], then [bold]$plain[/bold].",
+                "Env override order: [bold]$order[/bold].",
                 prefixed=surviving_base_url_env,
-                plain=endpoint_env,
+                order=env_order,
             )
-        if endpoint_env:
+        endpoint_env = get_base_url_env_var(self._provider)
+        if endpoint_env and env_order:
             return Content.from_markup(
                 "Override the provider endpoint for this stored key. "
                 "Leave blank to use the provider default.\n"
-                "Env override order: [bold]$prefixed[/bold], then [bold]$plain[/bold].",
-                prefixed=f"DEEPAGENTS_CODE_{endpoint_env}",
-                plain=endpoint_env,
+                "Env override order: [bold]$order[/bold].",
+                order=env_order,
             )
         return Content.from_markup(
             "Override the provider endpoint for this stored key. "
@@ -809,6 +913,9 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             "#auth-prompt-base-url-label",
             "#auth-prompt-base-url",
             "#auth-prompt-base-url-hint",
+            "#auth-prompt-project-label",
+            "#auth-prompt-project",
+            "#auth-prompt-project-hint",
         ):
             for widget in self.query(selector):
                 widget.display = self._advanced_visible
@@ -856,17 +963,36 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         """Validate, persist, and dismiss.
 
         Reads both fields regardless of which one was submitted, so pressing
-        Enter in either the key or the base-URL input saves the pair.
+        Enter in either the key or the secondary input (base URL, or the
+        LangSmith project name) saves the pair.
         """
         event.stop()
         cleaned = self.query_one("#auth-prompt-input", Input).value.strip()
-        base_url = self.query_one("#auth-prompt-base-url", Input).value.strip()
+        if self._is_langsmith:
+            base_url = ""
+            project = self.query_one("#auth-prompt-project", Input).value.strip()
+        else:
+            base_url = self.query_one("#auth-prompt-base-url", Input).value.strip()
+            project = ""
         if not cleaned:
+            if self._allow_empty_submit:
+                # Optional prompts (e.g. the Tavily onboarding step) treat an
+                # empty submit as an intentional skip. We deliberately reuse
+                # `CANCELLED` rather than add a `SKIPPED` outcome: every caller
+                # that allows empty submit wants identical "did not save"
+                # handling for skip and Escape, so the distinction would be
+                # dead weight. Revisit if a caller ever needs to tell a
+                # deliberate decline from an accidental dismissal.
+                self.dismiss(AuthResult.CANCELLED)
+                return
             self._show_error("API key cannot be empty.")
             return
         try:
             outcome = auth_store.set_stored_key(
-                self._provider, cleaned, base_url=base_url or None
+                self._provider,
+                cleaned,
+                base_url=base_url or None,
+                project=project or None,
             )
         except (ValueError, RuntimeError, OSError) as exc:
             # `auth_store` exception messages never include the secret value,
@@ -882,6 +1008,8 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             # chmod failures are security regressions the user must see —
             # `logger.warning` alone is invisible inside a Textual session.
             self.app.notify(warning, severity="warning", markup=False)
+        if self._is_langsmith:
+            apply_stored_langsmith_auth(replace_project=True)
         clear_caches()
         self.dismiss(AuthResult.SAVED)
 
@@ -1012,7 +1140,7 @@ class AuthManagerScreen(ModalScreen[None]):
     }
 
     AuthManagerScreen .auth-manager-help {
-        height: 1;
+        height: auto;
         color: $text-muted;
         text-style: italic;
         text-align: center;
@@ -1020,16 +1148,26 @@ class AuthManagerScreen(ModalScreen[None]):
     }
     """
 
-    def __init__(self) -> None:
-        """Initialize the manager with an empty install-on-select registry."""
+    def __init__(self, *, initial_provider: str | None = None) -> None:
+        """Initialize the manager with an empty install-on-select registry.
+
+        Args:
+            initial_provider: Provider whose row should start highlighted —
+                set when reopening after an install-on-select so the cursor
+                lands on the just-installed provider ready for a key, rather
+                than resetting to the top of the list.
+        """
         super().__init__()
         # Uninstalled known providers mapped to the extra that installs them,
         # populated each time the option list is built. Selecting one routes
         # to the install confirmation instead of the key prompt.
         self._install_extras: dict[str, str] = {}
         # Set when the user confirms installing a provider's extra; the app
-        # reads this off the screen after dismissal to install then reopen.
+        # reads these off the screen after dismissal to install then reopen
+        # the manager with the just-installed provider highlighted.
         self.pending_install_extra: str | None = None
+        self.pending_install_provider: str | None = None
+        self._initial_provider = initial_provider
 
     def compose(self) -> ComposeResult:
         """Compose the manager.
@@ -1085,11 +1223,29 @@ class AuthManagerScreen(ModalScreen[None]):
         )
 
     def on_mount(self) -> None:
-        """Apply ASCII border when needed."""
+        """Apply ASCII border and highlight the initial provider when set."""
         if is_ascii_mode():
             container = self.query_one(Vertical)
             colors = theme.get_theme_colors(self)
             container.styles.border = ("ascii", colors.success)
+        self._highlight_initial_provider()
+
+    def _highlight_initial_provider(self) -> None:
+        """Move the cursor to `initial_provider`'s row if it is listed.
+
+        Used when the manager reopens after an install-on-select so the cursor
+        lands on the just-installed provider (ready for a key) instead of
+        resetting to the top of the list.
+        """
+        if self._initial_provider is None:
+            return
+        option_list = self.query_one("#auth-manager-options", OptionList)
+        try:
+            index = option_list.get_option_index(self._initial_provider)
+        except OptionDoesNotExist:
+            return
+        option_list.highlighted = index
+        option_list.scroll_to_highlight()
 
     def on_click(self, event: Click) -> None:  # noqa: PLR6301 - Textual handler
         """Open style-embedded hyperlinks (the title `Docs` link)."""
@@ -1157,11 +1313,13 @@ class AuthManagerScreen(ModalScreen[None]):
         def _on_confirm(proceed: bool | None) -> None:
             if proceed:
                 self.pending_install_extra = extra
+                self.pending_install_provider = provider
                 self.dismiss(None)
             else:
-                # Declined or dismissed: clear any pending extra so a reused
+                # Declined or dismissed: clear any pending request so a reused
                 # screen never carries a stale install request, and stay put.
                 self.pending_install_extra = None
+                self.pending_install_provider = None
 
         self.app.push_screen(
             InstallProviderConfirmScreen(provider, extra),
@@ -1294,23 +1452,32 @@ class AuthManagerScreen(ModalScreen[None]):
         # ones already shown above are skipped.
         self._install_extras = self._uninstalled_known_providers(config, shown)
 
-        providers = sorted(shown | set(self._install_extras))
+        # Resolve each manageable entry's auth status once and reuse it for
+        # both ordering and badge rendering. `_auth_status_for` reads the
+        # credential file, so resolving it separately in the sort key and in
+        # `_format_label` would read `auth.json` twice per row (and, on a
+        # corrupt store, log the same warning twice). A single pass halves both.
+        services = set(SERVICE_API_KEY_ENV) - shown - set(self._install_extras)
+        status_by_key = {key: _auth_status_for(key) for key in shown | services}
+
+        # Float entries that already have a credential configured to the top so
+        # the keys a user is actively using are easiest to find; everything else
+        # keeps alphabetical order (the `key` tiebreaker). Uninstalled
+        # install-on-select entries are listed afterwards (alphabetically) since
+        # selecting them installs a package rather than managing a key.
+        def sort_key(key: str) -> tuple[int, str]:
+            configured = status_by_key[key].state is ProviderAuthState.CONFIGURED
+            return (0 if configured else 1, key)
+
+        manageable = sorted(status_by_key, key=sort_key)
+        extra_providers = sorted(self._install_extras)
         options = [
-            Option(
-                self._format_label(
-                    provider, installed=provider not in self._install_extras
-                ),
-                id=provider,
-            )
-            for provider in providers
+            Option(self._format_label(key, status=status_by_key[key]), id=key)
+            for key in manageable
         ]
-        # Append non-model services (e.g. Tavily web search) after the model
-        # providers. These are always shown — their key is configurable here
-        # regardless of whether the backing package is installed — so users can
-        # enter it the same way they enter a model-provider key.
         options.extend(
-            Option(self._format_label(service), id=service)
-            for service in sorted(set(SERVICE_API_KEY_ENV) - set(providers))
+            Option(self._format_label(provider, installed=False), id=provider)
+            for provider in extra_providers
         )
         return options, warning
 
@@ -1344,7 +1511,12 @@ class AuthManagerScreen(ModalScreen[None]):
         return uninstalled
 
     @staticmethod
-    def _format_label(provider: str, *, installed: bool = True) -> Content:
+    def _format_label(
+        provider: str,
+        *,
+        installed: bool = True,
+        status: ProviderAuthStatus | None = None,
+    ) -> Content:
         """Build a `Content` label for `provider` showing its credential source.
 
         Args:
@@ -1352,6 +1524,10 @@ class AuthManagerScreen(ModalScreen[None]):
             installed: Whether the provider's integration package is installed.
                 Uninstalled providers render dimmed with a `[not installed]`
                 marker since selecting them prompts an install, not a key.
+            status: Precomputed auth status to render. Pass this when the
+                caller already resolved it to avoid a duplicate credential-file
+                read; resolved on demand when omitted. Ignored for uninstalled
+                providers, which render no badge.
 
         Returns:
             A composed `Content` with the provider label and a status badge.
@@ -1363,11 +1539,8 @@ class AuthManagerScreen(ModalScreen[None]):
                 "  ",
                 Content.styled("[not installed]", "dim"),
             )
-        status = (
-            get_service_auth_status(provider)
-            if is_service(provider)
-            else get_provider_auth_status(provider)
-        )
+        if status is None:
+            status = _auth_status_for(provider)
         badge = format_auth_badge(status)
         return Content.assemble(
             Content.from_markup("$provider", provider=name),

@@ -105,10 +105,10 @@ check: lint check_imports test
 	@echo "🔍 Verifying pyproject.toml and _version.py agree..."
 	uv run --all-groups python "$(REPO_ROOT)/.github/scripts/check_version_equality.py"
 	@echo "🔒 Verifying uv.lock is up-to-date..."
-	uv lock --check
+	UV_FROZEN=false uv lock --check
 	@echo "🔗 Checking SDK pin against workspace SDK (advisory)..."
 	@uv run --all-groups python "$(REPO_ROOT)/.github/scripts/check_sdk_pin.py" || \
-		{ rc=$$?; [ $$rc -eq 1 ] && echo "⚠️  SDK pin drift (advisory, non-fatal)." || exit $$rc; }
+		{ rc=$$?; [ $$rc -eq 1 ] && echo "⚠️  Stale SDK pin (advisory, non-fatal)." || exit $$rc; }
 	@echo "✅ All local CI checks passed!"
 
 ######################

@@ -1,9 +1,9 @@
 # Advisory check: posts a comment on Code release PRs when the deepagents
-# SDK pin drifts from the actual SDK version. Does not block merge — the
+# SDK pin is older than the actual SDK version. Does not block merge — the
 # release workflow enforces the pin at publish time. Removes the comment
 # once resolved.
-# See also: release.yml "Verify package pins latest SDK version" step (hard
-# gate).
+# See also: release.yml "Verify package pins SDK at or ahead of workspace
+# version" step (hard gate).
 
 name: "🔗 Check SDK Pin"
 
@@ -27,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Resolve target package from release-please branch
         id: pkg
@@ -49,31 +49,49 @@ jobs:
 
       - name: Compare SDK version to package pin
         id: check
-        env:
-          PKG_PYPROJECT: ${{ steps.pkg.outputs.pyproject }}
         run: |
-          SDK_VERSION=$(sed -nE 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' libs/deepagents/pyproject.toml | head -1)
-          if [[ -z "$SDK_VERSION" ]]; then
-            echo "::error file=libs/deepagents/pyproject.toml::Failed to extract SDK version. Expected a line matching: version = \"X.Y.Z\""
-            exit 1
-          fi
+          # stdout is redirected to GITHUB_OUTPUT, so diagnostics go to stderr.
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import importlib.util
+          import sys
+          from pathlib import Path
 
-          PKG_SDK_PIN=$(sed -nE 's/.*deepagents==([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' "$PKG_PYPROJECT" | head -1)
-          if [[ -z "$PKG_SDK_PIN" ]]; then
-            echo "::error file=${PKG_PYPROJECT}::Failed to extract SDK pin. Expected a dependency matching: deepagents==X.Y.Z"
-            exit 1
-          fi
+          root = Path.cwd()
+          script = root / ".github" / "scripts" / "check_sdk_pin.py"
+          spec = importlib.util.spec_from_file_location("check_sdk_pin", script)
+          if spec is None or spec.loader is None:
+              print(f"::error::Could not load {script}", file=sys.stderr)
+              raise SystemExit(1)
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
 
-          echo "sdk_version=$SDK_VERSION" >> "$GITHUB_OUTPUT"
-          echo "pkg_pin=$PKG_SDK_PIN" >> "$GITHUB_OUTPUT"
-          echo "match=$( [ "$SDK_VERSION" = "$PKG_SDK_PIN" ] && echo true || echo false )" >> "$GITHUB_OUTPUT"
+          try:
+              sdk_version = module._sdk_version(root)
+              pkg_pin = module._code_pin(root)
+              stale = module.compare_versions(pkg_pin, sdk_version) < 0
+              prerelease = module.is_prerelease(pkg_pin)
+          except ValueError as e:
+              print(
+                  "::error file=.github/scripts/check_sdk_pin.py::"
+                  f"Could not determine SDK pin status: {e}",
+                  file=sys.stderr,
+              )
+              raise SystemExit(1) from None
+
+          print(f"sdk_version={sdk_version}")
+          print(f"pkg_pin={pkg_pin}")
+          print(f"stale={'true' if stale else 'false'}")
+          print(f"prerelease={'true' if prerelease else 'false'}")
+          PY
 
       - name: Manage PR comment
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
+          SDK_PIN_BYPASS_LABEL: "release: skip sdk pin check"
           SDK_VERSION: ${{ steps.check.outputs.sdk_version }}
           PKG_PIN: ${{ steps.check.outputs.pkg_pin }}
-          PIN_MATCH: ${{ steps.check.outputs.match }}
+          PIN_STALE: ${{ steps.check.outputs.stale }}
+          PIN_PRERELEASE: ${{ steps.check.outputs.prerelease }}
           PKG_NAME: ${{ steps.pkg.outputs.name }}
           PKG_LABEL: ${{ steps.pkg.outputs.label }}
           PKG_PYPROJECT: ${{ steps.pkg.outputs.pyproject }}
@@ -87,6 +105,7 @@ jobs:
             const pkgLabel = process.env.PKG_LABEL;
             const pkgPyproject = process.env.PKG_PYPROJECT;
             const pkgLockdir = process.env.PKG_LOCKDIR;
+            const sdkPinBypassLabel = process.env.SDK_PIN_BYPASS_LABEL;
             const marker = `<!-- sdk-pin-check:${pkgName} -->`;
             const { owner, repo } = context.repo;
             const prNumber = context.payload.pull_request.number;
@@ -97,9 +116,12 @@ jobs:
             );
             const existing = comments.find(c => (c.body ?? '').includes(marker));
 
-            const match = process.env.PIN_MATCH === 'true';
+            const stale = process.env.PIN_STALE === 'true';
+            const prerelease = process.env.PIN_PRERELEASE === 'true';
             const sdkVersion = process.env.SDK_VERSION;
             const pkgPin = process.env.PKG_PIN;
+            const pkgPinReleaseUrl = `https://github.com/${owner}/${repo}/releases/tag/${encodeURIComponent(`deepagents==${pkgPin}`)}`;
+            const pkgPinLink = `[deepagents==${pkgPin}](${pkgPinReleaseUrl})`;
 
             if (!sdkVersion || !pkgPin) {
               core.setFailed(
@@ -109,13 +131,44 @@ jobs:
               return;
             }
 
-            if (match && existing) {
+            let body = null;
+            let warning = null;
+            if (stale) {
+              body = [
+                marker,
+                '> [!WARNING]',
+                `> **Stale SDK pin** — the ${pkgLabel} release workflow will fail at the "Verify package pins SDK at or ahead of workspace version" step until this is resolved.`,
+                '>',
+                '> | | Version |',
+                '> |---|---|',
+                `> | SDK (\`libs/deepagents/pyproject.toml\`) | \`${sdkVersion}\` |`,
+                `> | ${pkgLabel} pin (\`${pkgPyproject}\`) | ${pkgPinLink} |`,
+                '>',
+                `> **To fix:** update \`${pkgPyproject}\` to pin \`deepagents==${sdkVersion}\`, then run \`cd ${pkgLockdir} && uv lock\` and commit the lockfile update.`,
+                '>',
+                `> **To bypass:** if you intentionally need to pin an older SDK version, add the \`${sdkPinBypassLabel}\` label before merging so the auto-dispatched release skips this check, or re-run the release workflow with \`dangerous-skip-sdk-pin-check\` enabled after a failure. Ensure the ${pkgLabel} package does not contain any code that depends on functionality introduced after ${pkgPinLink} — otherwise the published package will fail at runtime.`,
+                '>',
+                '> See [`.github/RELEASING.md`](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#release-failed-code-sdk-pin-is-older-than-sdk) for the full recovery procedure.',
+              ].join('\n');
+              warning = `${pkgLabel} has a stale SDK pin: deepagents==${pkgPin} but SDK is ${sdkVersion}`;
+            } else if (prerelease) {
+              body = [
+                marker,
+                '> [!WARNING]',
+                `> **Prerelease SDK pin** — ${pkgLabel} currently pins ${pkgPinLink}, which is a prerelease.`,
+                '>',
+                '> This is allowed and does not block the release workflow as long as the pin is not older than the workspace SDK. Please verify this prerelease pin is intentional before merging.',
+              ].join('\n');
+              warning = `${pkgLabel} pins prerelease SDK deepagents==${pkgPin}; verify this is intentional.`;
+            }
+
+            if (body === null && existing) {
               try {
                 await github.rest.issues.deleteComment({
                   owner, repo,
                   comment_id: existing.id,
                 });
-                core.info('Pin matches — removed stale warning comment.');
+                core.info('Pin needs no warning — removed existing warning comment.');
               } catch (error) {
                 // 404 = comment was already deleted (concurrent run or manual removal)
                 if (error.status === 404) {
@@ -127,26 +180,9 @@ jobs:
                   );
                 }
               }
-            } else if (match) {
-              core.info(`SDK pin matches: deepagents==${sdkVersion}. No action needed.`);
+            } else if (body === null) {
+              core.info(`${pkgLabel} SDK pin is stable and at or ahead of workspace SDK (${pkgPin} >= ${sdkVersion}). No action needed.`);
             } else {
-              const body = [
-                marker,
-                '> [!WARNING]',
-                `> **SDK pin mismatch** — the ${pkgLabel} release workflow will fail at the "Verify package pins latest SDK version" step until this is resolved.`,
-                '>',
-                '> | | Version |',
-                '> |---|---|',
-                `> | SDK (\`libs/deepagents/pyproject.toml\`) | \`${sdkVersion}\` |`,
-                `> | ${pkgLabel} pin (\`${pkgPyproject}\`) | \`${pkgPin}\` |`,
-                '>',
-                `> **To fix:** update \`${pkgPyproject}\` to pin \`deepagents==${sdkVersion}\`, then run \`cd ${pkgLockdir} && uv lock\` and commit the lockfile update.`,
-                '>',
-                `> **To bypass:** if you intentionally need to pin an older SDK version, re-run the release workflow with \`dangerous-skip-sdk-pin-check\` enabled. Ensure the ${pkgLabel} does not contain any code that depends on functionality introduced in the newer SDK version — otherwise the published package will fail at runtime.`,
-                '>',
-                '> See [`.github/RELEASING.md`](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#release-failed-code-sdk-pin-mismatch) for the full recovery procedure.',
-              ].join('\n');
-
               try {
                 // Update silently (no workflow annotation) to avoid repeated warnings on re-pushes.
                 if (existing) {
@@ -166,9 +202,9 @@ jobs:
               } catch (error) {
                 core.warning(
                   `Could not post/update PR comment (status ${error.status}): ${error.message}. ` +
-                  `The mismatch still exists: ${pkgLabel} pins deepagents==${pkgPin} but SDK is ${sdkVersion}.`
+                  warning
                 );
               }
               // Always emit annotation regardless of comment success.
-              core.warning(`${pkgLabel} pins deepagents==${pkgPin} but SDK is ${sdkVersion}`);
+              core.warning(warning);
             }

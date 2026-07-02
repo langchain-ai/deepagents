@@ -22,6 +22,7 @@ from deepagents.backends.protocol import (
     IS_DIRECTORY,
     PERMISSION_DENIED,
     BackendProtocol,
+    DeleteResult,
     EditResult,
     FileData,
     FileDownloadResponse,
@@ -468,15 +469,14 @@ class FilesystemBackend(BackendProtocol):
         file_path: str,
         content: str,
     ) -> WriteResult:
-        """Create a new file with content.
+        """Write content to a file, creating it or overwriting it if it already exists.
 
         Args:
-            file_path: Path where the new file will be created.
+            file_path: Path where the file will be written.
             content: Text content to write to the file.
 
         Returns:
-            `WriteResult` with path on success, or error message if the file
-                already exists or write fails.
+            `WriteResult` with path on success, or error message on write failure.
         """
         try:
             resolved_path = self._resolve_path(file_path)
@@ -484,10 +484,6 @@ class FilesystemBackend(BackendProtocol):
             return WriteResult(error=f"Error writing file '{file_path}': {e}")
 
         try:
-            if resolved_path.exists():
-                msg = f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path."
-                return WriteResult(error=msg)
-
             # Create parent directories if needed
             resolved_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -566,6 +562,40 @@ class FilesystemBackend(BackendProtocol):
             return EditResult(path=file_path, occurrences=int(occurrences))
         except (OSError, UnicodeDecodeError, UnicodeEncodeError) as e:
             return EditResult(error=f"Error editing file '{file_path}': {e}")
+
+    def delete(self, file_path: str) -> DeleteResult:
+        """Delete a file or directory from the filesystem.
+
+        Files are unlinked. Directories are removed recursively along with all
+        of their contents. Symlinks are removed as links and never followed into
+        their target (so deleting a symlink to a directory removes only the link).
+
+        Args:
+            file_path: Path to the file or directory to delete.
+
+        Returns:
+            `DeleteResult` with the deleted path on success, or an error if the
+                path does not exist or removal fails. A recursive directory
+                removal may delete some entries before failing partway (for
+                example when a nested entry is not writable).
+        """
+        try:
+            resolved_path = self._resolve_path(file_path)
+        except (OSError, RuntimeError) as e:
+            return DeleteResult(error=f"Error deleting '{file_path}': {e}")
+
+        try:
+            if not resolved_path.exists() and not resolved_path.is_symlink():
+                return DeleteResult(error=f"Error: '{file_path}' not found")
+            if resolved_path.is_symlink():
+                resolved_path.unlink()
+            elif resolved_path.is_dir():
+                shutil.rmtree(resolved_path)
+            else:
+                resolved_path.unlink()
+            return DeleteResult(path=file_path)
+        except (OSError, RuntimeError) as e:
+            return DeleteResult(error=f"Error deleting '{file_path}': {e}")
 
     def grep(
         self,

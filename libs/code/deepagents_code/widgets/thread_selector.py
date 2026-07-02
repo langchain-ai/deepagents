@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, cast
 
 from rich.cells import cell_len
+from rich.text import Text
 from textual.binding import Binding, BindingType
 from textual.color import Color as TColor
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -22,7 +23,12 @@ from textual.style import Style as TStyle
 from textual.widgets import Checkbox, Input, Select, Static
 
 # Specialize focused Select overlay key handling; no public re-export available.
-from textual.widgets._select import SelectCurrent, SelectOverlay  # noqa: PLC2701
+from textual.widgets._select import (  # noqa: PLC2701
+    NoSelection,
+    Option,
+    SelectCurrent,
+    SelectOverlay,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -108,11 +114,13 @@ _COLUMN_TOGGLE_LABELS = {
 # Reserved for future right-aligned columns (e.g., message counts).
 _RIGHT_ALIGNED_COLUMNS: set[str] = set()
 _SWITCH_ID_PREFIX = "thread-column-"
-_SORT_SWITCH_ID = "thread-sort-toggle"
 _RELATIVE_TIME_SWITCH_ID = "thread-relative-time"
 _SCOPE_SELECT_ID = "thread-scope-select"
 _SCOPE_VALUE_CWD = "cwd"
 _SCOPE_VALUE_ALL = "all"
+_SORT_SELECT_ID = "thread-sort-select"
+_SORT_VALUE_CREATED = "created_at"
+_SORT_VALUE_UPDATED = "updated_at"
 _AGENT_SELECT_ID = "thread-agent-select"
 _AGENT_VALUE_ALL = "__all__"
 _AGENT_VALUE_LOADING = "__loading__"
@@ -129,6 +137,7 @@ _AGENT_LABEL_LOADING = "Loading..."
 # predicate so all three read identically. The parentheses distinguish the
 # synthetic "missing agent" bucket from an agent literally named "unknown".
 _UNKNOWN_AGENT_LABEL = "(unknown)"
+_OPTION_SELECT_IDS = (_SCOPE_SELECT_ID, _SORT_SELECT_ID, _AGENT_SELECT_ID)
 _CONTROLS_SCROLL_ID = "thread-controls-scroll"
 _CONTROLS_OVERFLOW_ID = "thread-controls-overflow"
 _CELL_PADDING_RIGHT = 1
@@ -531,13 +540,13 @@ class DeleteThreadConfirmScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
-_SCOPE_OVERLAY_CONSUMED_KEYS = frozenset(
+_OPTION_OVERLAY_CONSUMED_KEYS = frozenset(
     {"tab", "shift+tab", "up", "down", "pageup", "pagedown", "home", "end"}
 )
 
 
-class ThreadScopeSelectOverlay(SelectOverlay):
-    """Scope dropdown overlay that consumes option navigation while focused."""
+class ContainedSelectOverlay(SelectOverlay):
+    """Options dropdown overlay that consumes option navigation while focused."""
 
     def key_tab(self, event: Key) -> None:
         """Move to the next option without leaving the dropdown."""
@@ -561,19 +570,19 @@ class ThreadScopeSelectOverlay(SelectOverlay):
         Returns:
             `True` when the overlay consumes the key.
         """
-        if key in _SCOPE_OVERLAY_CONSUMED_KEYS:
+        if key in _OPTION_OVERLAY_CONSUMED_KEYS:
             return True
         return super().check_consume_key(key, character)
 
 
-class ThreadScopeSelect(Select[str]):
-    """Scope dropdown that keeps focus contained while its menu is open."""
+class ContainedSelect(Select[str]):
+    """Options dropdown that keeps focus contained while its menu is open."""
 
     def action_show_overlay(self) -> None:
         """Show the overlay when it has finished mounting."""
         try:
             select_current = self.query_one(SelectCurrent)
-            select_overlay = self.query_one(ThreadScopeSelectOverlay)
+            select_overlay = self.query_one(ContainedSelectOverlay)
         except NoMatches:
             return
 
@@ -583,15 +592,54 @@ class ThreadScopeSelect(Select[str]):
             select_overlay.action_first()
 
     def compose(self) -> ComposeResult:
-        """Compose the select with a scope-specific overlay.
+        """Compose the select with a containment-aware overlay.
 
         Yields:
             Current value display and dropdown overlay widgets.
         """
         yield SelectCurrent(self.prompt)
-        yield ThreadScopeSelectOverlay(type_to_search=self._type_to_search).data_bind(
+        yield ContainedSelectOverlay(type_to_search=self._type_to_search).data_bind(
             compact=Select.compact
         )
+
+    def _setup_options_renderables(self) -> None:
+        """Populate the custom overlay when options change."""
+        options = [
+            Option(Text(self.prompt, style="dim"))
+            if value == self.NULL
+            else Option(prompt)
+            for prompt, value in self._options
+        ]
+
+        try:
+            option_list = self.query_one(ContainedSelectOverlay)
+        except NoMatches:
+            if self.is_attached:
+                self.call_after_refresh(self._setup_options_renderables)
+            return
+
+        option_list.clear_options()
+        option_list.add_options(options)
+
+    def _watch_value(self, value: str | NoSelection) -> None:
+        """Update the current value while using the custom overlay widget."""
+        self._value = value
+        try:
+            select_current = self.query_one(SelectCurrent)
+        except NoMatches:
+            return
+
+        if value == self.NULL:
+            select_current.update(self.NULL)
+        else:
+            for index, (prompt, option_value) in enumerate(self._options):
+                if option_value == value:
+                    with contextlib.suppress(NoMatches):
+                        select_overlay = self.query_one(ContainedSelectOverlay)
+                        select_overlay.highlighted = index
+                    select_current.update(prompt)
+                    break
+        self.post_message(self.Changed(self, value))
 
     def key_tab(self, event: Key) -> None:
         """Prevent focus traversal while the dropdown menu is open."""
@@ -650,10 +698,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     Arrows move the cursor, Page Up/Down jump by a visual page, Enter
     selects the highlighted thread, Ctrl+D opens the delete-confirmation
-    overlay, Tab/Shift+Tab rotate focus through the filter input and
-    column toggle checkboxes, and Esc dismisses. All bindings use
+    overlay, Tab/Shift+Tab rotate focus through the filter input, the
+    scope/sort/agent dropdowns, and the relative-timestamp and
+    column-visibility checkboxes, and Esc dismisses. All bindings use
     `priority=True` so they take precedence over the embedded filter
-    `Input` and checkbox widgets; vim-style `j`/`k` bindings are
+    `Input`, `Select`, and checkbox widgets; vim-style `j`/`k` bindings are
     deliberately omitted because they would prevent typing those letters
     into the always-focused filter input.
     """
@@ -729,7 +778,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         margin-top: 0;
     }
 
-    ThreadSelectorScreen .thread-scope-select,
+    ThreadSelectorScreen .thread-option-select,
     ThreadSelectorScreen .thread-agent-select {
         width: 1fr;
         height: auto;
@@ -1015,11 +1064,6 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
         return get_thread_limit()
 
-    def _format_sort_toggle_label(self) -> str:
-        """Return the control-panel sort label for the toggle switch."""
-        label = "Updated At" if self._sort_by_updated else "Created At"
-        return f"Sort by {label}"
-
     def _get_filter_input(self) -> Input:
         """Return the cached search input widget."""
         if self._filter_input is None:
@@ -1031,8 +1075,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         if self._filter_controls is None:
             filter_input = self._get_filter_input()
             scope_select = self.query_one(f"#{_SCOPE_SELECT_ID}", Select)
+            sort_select = self.query_one(f"#{_SORT_SELECT_ID}", Select)
             agent_select = self.query_one(f"#{_AGENT_SELECT_ID}", Select)
-            sort_switch = self.query_one(f"#{_SORT_SWITCH_ID}", Checkbox)
             relative_switch = self.query_one(f"#{_RELATIVE_TIME_SWITCH_ID}", Checkbox)
             column_switches = [
                 self.query_one(f"#{self._switch_id(key)}", Checkbox)
@@ -1041,8 +1085,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             self._filter_controls = [
                 filter_input,
                 scope_select,
+                sort_select,
                 agent_select,
-                sort_switch,
                 relative_switch,
                 *column_switches,
             ]
@@ -1137,7 +1181,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     def _expanded_select_id(self) -> str | None:
         """Return the ID for the currently open Options panel dropdown."""
-        for select_id in (_SCOPE_SELECT_ID, _AGENT_SELECT_ID):
+        for select_id in _OPTION_SELECT_IDS:
             try:
                 if self._get_select(select_id).expanded:
                     return select_id
@@ -1157,7 +1201,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             return
         select.expanded = True
         with contextlib.suppress(NoMatches):
-            select.query_one(ThreadScopeSelectOverlay).focus()
+            select.query_one(ContainedSelectOverlay).focus()
             return
         select.focus()
 
@@ -1185,9 +1229,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             `True` when a dropdown was focused and opened.
         """
         try:
-            selects = (
-                self._get_select(_SCOPE_SELECT_ID),
-                self._get_select(_AGENT_SELECT_ID),
+            selects = tuple(
+                self._get_select(select_id) for select_id in _OPTION_SELECT_IDS
             )
         except NoMatches:
             return False
@@ -1243,7 +1286,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                     yield Static("Options", classes="thread-controls-title")
                     yield Static(
                         (
-                            "Tab through sort and column toggles. "
+                            "Tab through scope, sort, agent, and column options. "
                             "Column visibility persists between sessions."
                         ),
                         classes="thread-controls-help",
@@ -1254,7 +1297,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                         classes="thread-controls-label",
                         markup=False,
                     )
-                    yield ThreadScopeSelect(
+                    yield ContainedSelect(
                         [
                             ("Current directory", _SCOPE_VALUE_CWD),
                             ("All directories", _SCOPE_VALUE_ALL),
@@ -1267,7 +1310,27 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                         allow_blank=False,
                         compact=True,
                         id=_SCOPE_SELECT_ID,
-                        classes="thread-scope-select",
+                        classes="thread-option-select",
+                    )
+                    yield Static(
+                        "Sort threads by:",
+                        classes="thread-controls-label",
+                        markup=False,
+                    )
+                    yield ContainedSelect(
+                        [
+                            ("Created At", _SORT_VALUE_CREATED),
+                            ("Updated At", _SORT_VALUE_UPDATED),
+                        ],
+                        value=(
+                            _SORT_VALUE_UPDATED
+                            if self._sort_by_updated
+                            else _SORT_VALUE_CREATED
+                        ),
+                        allow_blank=False,
+                        compact=True,
+                        id=_SORT_SELECT_ID,
+                        classes="thread-option-select",
                     )
                     yield Static(
                         "Show agent:",
@@ -1280,7 +1343,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                         if agent_options[0][1] == _AGENT_VALUE_LOADING
                         else _AGENT_VALUE_ALL
                     )
-                    yield ThreadScopeSelect(
+                    yield ContainedSelect(
                         agent_options,
                         value=agent_value,
                         allow_blank=False,
@@ -1291,13 +1354,6 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
                     with ThreadControlsScroll(
                         id=_CONTROLS_SCROLL_ID, classes="thread-controls-scroll"
                     ):
-                        yield Checkbox(
-                            self._format_sort_toggle_label(),
-                            self._sort_by_updated,
-                            id=_SORT_SWITCH_ID,
-                            classes="thread-column-toggle",
-                            compact=True,
-                        )
                         yield Checkbox(
                             "Relative Timestamps",
                             self._relative_time,
@@ -1427,23 +1483,11 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         )
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
-        """Route sort, relative-time, and column-visibility checkbox changes.
+        """Route relative-time and column-visibility checkbox changes.
 
         Args:
             event: The checkbox change event.
         """
-        if event.checkbox.id == _SORT_SWITCH_ID:
-            if self._sort_by_updated == event.value:
-                return
-            self._sort_by_updated = event.value
-            self._apply_sort()
-            self._sync_selected_index()
-            self._update_help_widgets()
-            self._schedule_list_rebuild()
-
-            self._persist_sort_order("updated_at" if event.value else "created_at")
-            return
-
         if event.checkbox.id == _RELATIVE_TIME_SWITCH_ID:
             if self._relative_time == event.value:
                 return
@@ -2132,12 +2176,6 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         except NoMatches:
             logger.debug("Help widget #thread-help not found during update")
 
-        with contextlib.suppress(NoMatches):
-            sort_checkbox = self.query_one(f"#{_SORT_SWITCH_ID}", Checkbox)
-            sort_checkbox.label = self._format_sort_toggle_label()
-            if sort_checkbox.value != self._sort_by_updated:
-                sort_checkbox.value = self._sort_by_updated
-
     def _update_controls_overflow_hint(self) -> None:
         """Show an ellipsis when the options pane has hidden rows below."""
         try:
@@ -2305,22 +2343,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         index = controls.index(cast("Input | Checkbox | Select[str]", focused))
         controls[(index - 1) % len(controls)].focus()
 
-    def action_toggle_sort(self) -> None:
-        """Toggle sort between updated_at and created_at."""
-        if self._confirming_delete:
-            return
-        self._sort_by_updated = not self._sort_by_updated
-        self._apply_sort()
-        self._sync_selected_index()
-        self._update_help_widgets()
-        self._schedule_list_rebuild()
-
-        self._persist_sort_order(
-            "updated_at" if self._sort_by_updated else "created_at"
-        )
-
     def on_select_changed(self, event: Select.Changed) -> None:
-        """Handle the scope and agent `Select` dropdowns in the Options panel.
+        """Handle the scope, sort, and agent `Select` dropdowns in the Options panel.
 
         The agent branch updates the in-memory `_filter_agent` and re-filters
         the loaded threads without re-querying the database; selecting the
@@ -2345,9 +2369,12 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             self._schedule_filter_and_rebuild()
             return
 
-        if event.select.id != _SCOPE_SELECT_ID:
-            return
         if self._confirming_delete:
+            return
+        if event.select.id == _SORT_SELECT_ID:
+            self._apply_sort_selection(event.value == _SORT_VALUE_UPDATED)
+            return
+        if event.select.id != _SCOPE_SELECT_ID:
             return
 
         if event.value == _SCOPE_VALUE_CWD:
@@ -2372,6 +2399,23 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self._update_help_widgets()
         self.run_worker(
             self._load_threads, exclusive=True, group="thread-selector-load"
+        )
+
+    def _apply_sort_selection(self, sort_by_updated: bool) -> None:
+        """Re-sort the picker when the sort dropdown selection changes.
+
+        Args:
+            sort_by_updated: Sort by `updated_at` when `True`, else `created_at`.
+        """
+        if self._sort_by_updated == sort_by_updated:
+            return
+        self._sort_by_updated = sort_by_updated
+        self._apply_sort()
+        self._sync_selected_index()
+        self._update_help_widgets()
+        self._schedule_list_rebuild()
+        self._persist_sort_order(
+            _SORT_VALUE_UPDATED if sort_by_updated else _SORT_VALUE_CREATED
         )
 
     def _persist_scope(self, scope: str) -> None:

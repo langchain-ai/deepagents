@@ -14,7 +14,7 @@ from deepagents.profiles.harness.harness_profiles import (
 _SYSTEM_PROMPT_SUFFIX = """\
 <media_file_handling>
 This model profile does not support direct image input through `read_file`.
-Do not call `read_file` on image or video files. When image or video files are
+Never call `read_file` on image or video files. When image or video files are
 relevant to the task, inspect them with shell commands or scripts in the
 sandbox using the file path, for example Python image-processing, OCR,
 metadata, or frame-extraction utilities, rather than asking the chat model to

@@ -32,6 +32,7 @@ from deepagents_code.config import (
 from deepagents_code.formatting import format_duration
 from deepagents_code.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
 from deepagents_code.tool_display import (
+    EXECUTE_HEADER_MAX_LENGTH,
     JS_EVAL_HEADER_MAX_LENGTH,
     format_tool_display,
 )
@@ -1020,6 +1021,7 @@ class ToolCallMessage(Vertical):
         self._reject_reason: str | None = None
         # Widget references (set in on_mount)
         self._status_widget: Static | None = None
+        self._header_widget: Static | None = None
         self._args_widget: Static | None = None
         self._args_hint_widget: Static | None = None
         self._preview_widget: Static | None = None
@@ -1048,7 +1050,7 @@ class ToolCallMessage(Vertical):
             Widgets for header, arguments, status, and output display.
         """
         tool_label = format_tool_display(self._tool_name, self._args)
-        yield Static(tool_label, markup=False, classes="tool-header")
+        yield Static(tool_label, markup=False, classes="tool-header", id="tool-header")
         # Task: dedicated description line (dim, truncated)
         if self._tool_name == "task":
             desc = self._args.get("description", "")
@@ -1105,6 +1107,7 @@ class ToolCallMessage(Vertical):
             self.add_class("-ascii")
 
         self._status_widget = self.query_one("#status", Static)
+        self._header_widget = self.query_one("#tool-header", Static)
         self._args_widget = self.query_one("#args-full", Static)
         self._args_hint_widget = self.query_one("#args-hint", Static)
         self._preview_widget = self.query_one("#output-preview", Static)
@@ -1420,17 +1423,44 @@ class ToolCallMessage(Vertical):
     def on_click(self, event: Click) -> None:
         """Toggle output/argument expansion.
 
-        Prefer toggling output, but only when the output can actually
-        expand/collapse. Otherwise fall through to the collapsible args/code
-        block — `js_eval` commonly has a short, unexpandable result sitting
+        A click on the header/args region (the truncated command or code line
+        and its hint) toggles the collapsible args/code block directly, so an
+        `execute` command or `js_eval` program can be expanded even when the
+        output below it is *also* expandable. Otherwise prefer toggling output,
+        falling through to the args/code block only when the output can't
+        expand — `js_eval` commonly has a short, unexpandable result sitting
         below a multi-line, collapsible code block, and the old
         "output wins whenever it exists" rule left that code block stuck.
         """
         event.stop()  # Prevent click from bubbling up and scrolling
-        if self._output and self.has_expandable_output:
+        if self.has_expandable_args and self._click_targets_args_region(event.widget):
+            self.toggle_args()
+        elif self._output and self.has_expandable_output:
             self.toggle_output()
         elif self.has_expandable_args:
             self.toggle_args()
+
+    def _click_targets_args_region(self, widget: object) -> bool:
+        """Whether a click landed on the header/args block (not the output).
+
+        Walks up from the clicked widget to `self`, matching the cached
+        header, collapsed-args, and args-hint widgets. The walk is bounded so a
+        mock or detached node (which never reaches `self` via `.parent`) returns
+        `False` instead of looping, preserving the generic "prefer output"
+        routing for those cases.
+
+        Returns:
+            `True` if the click landed on the header/args region.
+        """
+        targets = (self._header_widget, self._args_widget, self._args_hint_widget)
+        node = widget
+        for _ in range(8):
+            if node is None or node is self:
+                return False
+            if any(node is target for target in targets if target is not None):
+                return True
+            node = getattr(node, "parent", None)
+        return False
 
     def _format_output(
         self, output: str, *, is_preview: bool = False
@@ -2508,6 +2538,9 @@ class ToolCallMessage(Vertical):
             `JS_EVAL_HEADER_MAX_LENGTH`), so the full program is offered as a
             collapsible block whenever it spans more than one non-blank line *or*
             a single line is long enough to be truncated in the header.
+        - `execute`: the header truncates the shell command at
+            `EXECUTE_HEADER_MAX_LENGTH`, so the full command is offered as a
+            collapsible block whenever it would be clipped there.
         """
         if self._tool_name == "ask_user":
             return bool(self._args)
@@ -2516,6 +2549,10 @@ class ToolCallMessage(Vertical):
             if isinstance(code, str) and code.strip():
                 non_blank = sum(1 for line in code.splitlines() if line.strip())
                 return non_blank > 1 or len(code.strip()) > JS_EVAL_HEADER_MAX_LENGTH
+        if self._tool_name == "execute":
+            command = self._args.get("command")
+            if isinstance(command, str) and command.strip():
+                return len(command.strip()) > EXECUTE_HEADER_MAX_LENGTH
         return False
 
     def _format_code_detail(self) -> Content:
@@ -2537,6 +2574,22 @@ class ToolCallMessage(Vertical):
         # Blank lines of top/bottom padding separate the block from the header
         # line above and the "show/hide code" hint below.
         return Content("\n").join((Content(""), Content(code_str), Content("")))
+
+    def _format_command_detail(self) -> Content:
+        """Render the full `execute` command for the collapsible block.
+
+        The command is shown verbatim and left-aligned, as plain uncolored
+        `Content`, mirroring `_format_code_detail`. Hidden/deceptive Unicode is
+        rendered as visible markers so a truncated header can't conceal it.
+
+        Returns:
+            A plain `Content` renderable with a blank line of padding on
+                top and bottom.
+        """
+        command = self._args.get("command")
+        command_str = command.strip("\n") if isinstance(command, str) else str(command)
+        command_str = render_with_unicode_markers(command_str)
+        return Content("\n").join((Content(""), Content(command_str), Content("")))
 
     def _format_args_detail(self) -> Content:
         """Render tool arguments as an indented `Content` block.
@@ -2574,13 +2627,14 @@ class ToolCallMessage(Vertical):
             self._args_hint_widget.display = False
             return
 
-        is_code = self._tool_name == "js_eval"
-        noun = "code" if is_code else "arguments"
+        if self._tool_name == "js_eval":
+            noun, detail_fn = "code", self._format_code_detail
+        elif self._tool_name == "execute":
+            noun, detail_fn = "command", self._format_command_detail
+        else:
+            noun, detail_fn = "arguments", self._format_args_detail
         if self._args_expanded:
-            detail = (
-                self._format_code_detail() if is_code else self._format_args_detail()
-            )
-            self._args_widget.update(detail)
+            self._args_widget.update(detail_fn())
             self._args_widget.display = True
             self._args_hint_widget.update(
                 Content.styled(f"click or Ctrl+O to hide {noun}", "dim italic")

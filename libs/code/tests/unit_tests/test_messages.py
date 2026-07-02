@@ -14,7 +14,10 @@ from textual.widgets import Markdown
 from deepagents_code import theme
 from deepagents_code.formatting import format_duration
 from deepagents_code.input import INPUT_HIGHLIGHT_PATTERN
-from deepagents_code.tool_display import JS_EVAL_HEADER_MAX_LENGTH
+from deepagents_code.tool_display import (
+    EXECUTE_HEADER_MAX_LENGTH,
+    JS_EVAL_HEADER_MAX_LENGTH,
+)
 from deepagents_code.widgets.messages import (
     AppMessage,
     AssistantMessage,
@@ -1906,6 +1909,106 @@ class TestToolCallMessageExpandableArgs:
             assert msg.has_expandable_output is True
 
             event = MagicMock()
+            msg.on_click(event)
+            await pilot.pause()
+            assert msg._expanded is True
+            assert msg._args_expanded is False
+
+
+class TestToolCallMessageExecuteCommandExpand:
+    """Tests for the collapsible full-command block on `execute` tool calls."""
+
+    def test_long_command_is_expandable(self) -> None:
+        """A command too long for the header offers a collapsible block."""
+        long_cmd = "echo " + "x" * EXECUTE_HEADER_MAX_LENGTH
+        msg = ToolCallMessage("execute", {"command": long_cmd})
+        assert msg.has_expandable_args is True
+
+    def test_short_command_not_expandable(self) -> None:
+        """A command that fits in the header has nothing to expand."""
+        short_cmd = "x" * (EXECUTE_HEADER_MAX_LENGTH - 1)
+        msg = ToolCallMessage("execute", {"command": short_cmd})
+        assert msg.has_expandable_args is False
+
+    def test_missing_command_not_expandable(self) -> None:
+        """An execute call without a command string is not expandable."""
+        assert ToolCallMessage("execute", {}).has_expandable_args is False
+
+    def test_command_detail_is_plain_and_left_aligned(self) -> None:
+        """The command is plain `Content`, left-aligned, with blank padding."""
+        command = "cd /tmp && \\\n  make build\nmake test"
+        msg = ToolCallMessage("execute", {"command": command})
+        detail = msg._format_command_detail()
+
+        assert isinstance(detail, Content)
+        assert not detail.spans
+        assert detail.plain.split("\n") == [
+            "",
+            "cd /tmp && \\",
+            "  make build",
+            "make test",
+            "",
+        ]
+
+    def test_command_detail_marks_hidden_unicode(self) -> None:
+        """Hidden controls in the expanded command render as visible markers."""
+        msg = ToolCallMessage("execute", {"command": "echo safe\n#\u202e hidden"})
+        detail = msg._format_command_detail()
+
+        assert "\u202e" not in detail.plain
+        assert "<U+202E RIGHT-TO-LEFT OVERRIDE>" in detail.plain
+
+    async def test_click_on_header_toggles_command(self) -> None:
+        """Clicking the command header expands the collapsible command block."""
+        long_cmd = "echo " + "x" * EXECUTE_HEADER_MAX_LENGTH
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("execute", {"command": long_cmd})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            # Long stdout makes the output expandable too, so a generic click
+            # would prefer output; a header click must still reach the command.
+            msg.set_success("\n".join(str(i) for i in range(50)))
+            await pilot.pause()
+            assert msg.has_expandable_output is True
+
+            event = MagicMock()
+            event.widget = msg._header_widget
+            msg.on_click(event)
+            await pilot.pause()
+            event.stop.assert_called_once()
+            assert msg._args_expanded is True
+            assert msg._expanded is False
+
+    async def test_generic_click_still_prefers_output(self) -> None:
+        """A click outside the header region toggles output, not the command."""
+        long_cmd = "echo " + "x" * EXECUTE_HEADER_MAX_LENGTH
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("execute", {"command": long_cmd})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            msg.set_success("\n".join(str(i) for i in range(50)))
+            await pilot.pause()
+            assert msg.has_expandable_output is True
+
+            event = MagicMock()  # mock widget is outside the args region
             msg.on_click(event)
             await pilot.pause()
             assert msg._expanded is True

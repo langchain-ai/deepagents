@@ -31,7 +31,7 @@ r"""File storage format version.
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_GREP_TIMEOUT: Final = 30
+DEFAULT_GREP_TIMEOUT: Final = 15
 """Default timeout in seconds for one sync grep phase."""
 
 ASYNC_GREP_TIMEOUT: Final = (2 * DEFAULT_GREP_TIMEOUT) + 5

@@ -600,6 +600,27 @@ class TestFilesystemMiddlewareAsync:
         )
         assert result.content == "No matches found"
 
+    async def test_agrep_regex_pattern_no_matches_adds_hint(self):
+        """A no-match pattern that looks like regex gets a literal-search hint (async path)."""
+        files = {
+            "/test.py": FileData(
+                content=["def hello():"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        result = await grep_search_tool.ainvoke(
+            {
+                "pattern": "def hello|def world",
+                "runtime": _runtime(),
+            }
+        )
+        assert result.content.startswith("No matches found")
+        assert "literal text, not regex" in result.content
+
     async def test_agrep_search_shortterm_invalid_regex(self):
         """Test async grep with special characters (literal search, not regex)."""
         files = {

@@ -774,7 +774,7 @@ Note: This tool is only available if the backend supports execution (SandboxBack
 If execution is not supported, the tool will return an error message."""
 
 FsToolName = Literal["ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"]
-"""Names of the built-in filesystem tools that can be passed to ``FilesystemMiddleware(tools=...)``."""
+"""Names of the built-in filesystem tools that can be passed to `FilesystemMiddleware(tools=...)`."""
 
 _FS_TOOL_ORDER: tuple[str, ...] = ("ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep")
 _ALL_FS_TOOL_NAMES: frozenset[str] = frozenset(_FS_TOOL_ORDER) | {"execute"}
@@ -1101,7 +1101,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_token_limit_before_evict: int | None = 20000,
         human_message_token_limit_before_evict: int | None = 50000,
         max_execute_timeout: int = 3600,
-        tools: list[FsToolName] | Literal["all"] | None = None,
+        tools: list[FsToolName] | Literal["all"] = "all",
         _permissions: list[FilesystemPermission] | None = None,
     ) -> None:
         """Initialize the filesystem middleware.
@@ -1119,14 +1119,15 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
                 Defaults to 3600 seconds (1 hour). Any per-command timeout
                 exceeding this value will be rejected with an error message.
-            tools: Allowlist of `FsToolName` values to expose to the
-                model. `None` (the default) and `"all"` both enable every
-                tool; `None` signals "user did not specify" while `"all"`
-                is an explicit opt-in. Pass a list to restrict the model to
-                only those tools; all others are hidden. `read_file` must be
-                included in any list. Backend capability checks for `execute`
-                and `delete` still apply; listing them when the backend does
-                not support them is a no-op.
+            tools: Allowlist of tool names to expose to the model.
+                Defaults to `"all"` (every tool enabled). Pass a list
+                containing any of `"ls"`, `"read_file"`, `"write_file"`,
+                `"edit_file"`, `"delete"`, `"glob"`, `"grep"`,
+                `"execute"` to restrict the model to only those tools; all
+                others are hidden. `read_file` must be included in any list.
+                Backend capability checks for `execute` and `delete` still
+                apply; listing them when the backend does not support them is
+                a no-op.
             _permissions: Optional filesystem permission rules enforced directly
                 by this middleware's tool implementations.
 

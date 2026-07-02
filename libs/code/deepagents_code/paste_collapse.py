@@ -19,9 +19,7 @@ PASTE_THRESHOLD_CHARS = 800
 PASTE_THRESHOLD_LINES = 2
 """Minimum line count (newline-separated) for a paste to be collapsed."""
 
-_PASTE_REF_RE = re.compile(
-    r"\[Pasted text #(\d+)(?: \+(\d+) lines)?\]"
-)
+_PASTE_REF_RE = re.compile(r"\[Pasted text #(\d+)(?: \+(\d+) lines)?\]")
 """Regex matching ``[Pasted text #N]`` or ``[Pasted text #N +M lines]``."""
 
 
@@ -63,8 +61,7 @@ def should_collapse_paste(text: str) -> bool:
         ``True`` if the paste should be collapsed.
     """
     return (
-        len(text) > PASTE_THRESHOLD_CHARS
-        or count_lines(text) > PASTE_THRESHOLD_LINES
+        len(text) > PASTE_THRESHOLD_CHARS or count_lines(text) > PASTE_THRESHOLD_LINES
     )
 
 
@@ -101,9 +98,7 @@ def parse_paste_refs(text: str) -> list[tuple[int, str, int, int]]:
     return results
 
 
-def expand_paste_refs(
-    text: str, pasted_contents: dict[int, PastedContent]
-) -> str:
+def expand_paste_refs(text: str, pasted_contents: dict[int, PastedContent]) -> str:
     """Replace all paste placeholders in *text* with their full content.
 
     Placeholders whose IDs are not in *pasted_contents* are left unchanged.

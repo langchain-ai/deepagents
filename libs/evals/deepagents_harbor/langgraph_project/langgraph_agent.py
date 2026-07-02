@@ -178,14 +178,9 @@ _SPEC_INIT_DEFAULTS: dict[str, dict[str, Any]] = {
         "max_tokens": 32000,
         "model_kwargs": {"top_p": 0.95},
     },
-    # Fireworks dedicated deployment. Temperature raised to 1.0 (from the cookbook
-    # 0.6) as a deliberate exploration-diversity experiment: several remaining
-    # failures are flaky (the task is solvable but lost a coin-flip at low n), and
-    # higher sampling diversity may realize more of that pass@k. Trade-off: 1.0 is
-    # the Fireworks default that previously drove exploratory rambling /
-    # non-convergence on long agentic tasks, so watch for that regressing.
+    # Same Nemotron 3 Ultra cookbook sampling for the Fireworks dedicated deployment.
     "fireworks:accounts/langchain-fireworks/deployments/nemotron-tb-test": {
-        "temperature": 1.0,
+        "temperature": 0.6,
         "max_tokens": 32000,
         "model_kwargs": {"top_p": 0.95},
     },

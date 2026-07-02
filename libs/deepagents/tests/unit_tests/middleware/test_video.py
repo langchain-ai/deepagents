@@ -3,7 +3,7 @@
 The tests exercise the real PyAV decoder against a synthetic 3-second clip so
 the offset/limit -> seconds reinterpretation, frame sampling, validation, and
 error mapping all run end-to-end. They are skipped automatically when the
-``av`` (PyAV) extra is not installed, which keeps the default unit suite
+`av` (PyAV) extra is not installed, which keeps the default unit suite
 lightweight.
 """
 

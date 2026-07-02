@@ -124,7 +124,7 @@ all-sandboxes = [
 
 # Standalone integrations (kept for backwards-compatible install commands)
 quickjs = []
-video = ["deepagents[video]==0.7.0a2"]
+video = ["deepagents[video]==0.7.0a3"]
 
 
 [project.scripts]

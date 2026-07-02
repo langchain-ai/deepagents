@@ -2,11 +2,11 @@
 
 This module is the boundary between Deep Agents middleware and the optional
 video backend (PyAV). It imports PyAV lazily so a `deepagents` install without
-the ``[video]`` extra stays lightweight; the import only fires when the agent
+the `[video]` extra stays lightweight; the import only fires when the agent
 actually tries to read or transform a video.
 
 For each video read the module decodes a contiguous slice of the source
-(``offset``-seconds skip, ``limit``-seconds window) and emits sampled
+(`offset`-seconds skip, `limit`-seconds window) and emits sampled
 frames at the configured sampling rate. The output is a list of interleaved
 text+image content blocks so the model sees per-frame timestamps alongside
 the JPEGs.

@@ -44,11 +44,11 @@ def _import_models() -> types.ModuleType:
 def _provider_heading(preset_name: str, registry: tuple) -> str:
     """Render the provider-section heading, prefixing the human label when distinct.
 
-    Returns ``Anthropic (anthropic)`` when at least one registered model has a
+    Returns `Anthropic (anthropic)` when at least one registered model has a
     `provider_label` that differs case-insensitively from the preset name (the
-    raw provider prefix), and ``anthropic`` otherwise. The check looks at the
+    raw provider prefix), and `anthropic` otherwise. The check looks at the
     registry rather than a fixed mapping so a future provider whose label
-    happens to lowercase to its prefix (e.g. ``Ollama`` → ``ollama``) keeps
+    happens to lowercase to its prefix (e.g. `Ollama` → `ollama`) keeps
     the compact form automatically.
     """
     tag = f"eval:{preset_name}"

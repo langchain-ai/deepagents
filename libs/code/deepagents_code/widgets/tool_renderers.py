@@ -5,6 +5,7 @@ from __future__ import annotations
 import difflib
 from typing import TYPE_CHECKING, Any
 
+from deepagents_code.file_ops import build_approval_preview, format_display_path
 from deepagents_code.widgets.tool_widgets import (
     EditFileApprovalWidget,
     GenericApprovalWidget,
@@ -27,11 +28,13 @@ class ToolRenderer:
     @staticmethod
     def get_approval_widget(
         tool_args: dict[str, Any],
+        assistant_id: str | None = None,  # noqa: ARG004
     ) -> tuple[type[ToolApprovalWidget], dict[str, Any]]:
         """Get the approval widget class and data for this tool.
 
         Args:
-            tool_args: The tool arguments from action_request
+            tool_args: The tool arguments from action_request.
+            assistant_id: Optional assistant identifier for resolving virtual paths.
 
         Returns:
             Tuple of (widget_class, data_dict)
@@ -45,6 +48,7 @@ class WriteFileRenderer(ToolRenderer):
     @staticmethod
     def get_approval_widget(  # noqa: D102  # Protocol method — docstring on base class
         tool_args: dict[str, Any],
+        assistant_id: str | None = None,  # noqa: ARG004
     ) -> tuple[type[ToolApprovalWidget], dict[str, Any]]:
         # Extract file extension for syntax highlighting
         file_path = tool_args.get("file_path", "")
@@ -69,8 +73,43 @@ class TaskRenderer(ToolRenderer):
     @staticmethod
     def get_approval_widget(  # noqa: D102  # Protocol method — docstring on base class
         tool_args: dict[str, Any],  # noqa: ARG004  # Unused; interrupt description already formats task args
+        assistant_id: str | None = None,  # noqa: ARG004
     ) -> tuple[type[ToolApprovalWidget], dict[str, Any]]:
         return GenericApprovalWidget, {}
+
+
+class DeleteFileRenderer(ToolRenderer):
+    """Renderer for delete tool - shows removed file content when available."""
+
+    @staticmethod
+    def get_approval_widget(  # noqa: D102  # Protocol method — docstring on base class
+        tool_args: dict[str, Any],
+        assistant_id: str | None = None,
+    ) -> tuple[type[ToolApprovalWidget], dict[str, Any]]:
+        path = str(tool_args.get("file_path") or tool_args.get("path") or "")
+        preview = build_approval_preview(
+            "delete", {"file_path": path}, assistant_id=assistant_id
+        )
+        if preview is None:
+            # `build_approval_preview` always returns a preview for "delete";
+            # this guards its `ApprovalPreview | None` contract defensively.
+            return GenericApprovalWidget, tool_args
+        if preview.diff:
+            return EditFileApprovalWidget, {
+                "file_path": format_display_path(path),
+                "diff_lines": preview.diff.splitlines(),
+                "old_string": "",
+                "new_string": "",
+            }
+        data: dict[str, Any] = {"file_path": format_display_path(path)}
+        details = [
+            detail for detail in preview.details if not detail.startswith("File:")
+        ]
+        if details:
+            data["details"] = "\n".join(details)
+        if preview.error:
+            data["error"] = preview.error
+        return GenericApprovalWidget, data
 
 
 class EditFileRenderer(ToolRenderer):
@@ -79,6 +118,7 @@ class EditFileRenderer(ToolRenderer):
     @staticmethod
     def get_approval_widget(  # noqa: D102  # Protocol method — docstring on base class
         tool_args: dict[str, Any],
+        assistant_id: str | None = None,  # noqa: ARG004
     ) -> tuple[type[ToolApprovalWidget], dict[str, Any]]:
         file_path = tool_args.get("file_path", "")
         old_string = tool_args.get("old_string", "")
@@ -127,6 +167,7 @@ _RENDERER_REGISTRY: dict[str, type[ToolRenderer]] = {
     "task": TaskRenderer,
     "write_file": WriteFileRenderer,
     "edit_file": EditFileRenderer,
+    "delete": DeleteFileRenderer,
 }
 """Registry mapping tool names to renderers
 

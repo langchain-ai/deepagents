@@ -133,13 +133,13 @@ async def test_repl_snapshot_persists_state_between_turns(
     ["invoke", "ainvoke"],
     ids=["sync_invoke", "async_ainvoke"],
 )
-async def test_repl_without_snapshots_resets_state_between_turns(
+async def test_repl_mode_turn_resets_state_between_turns(
     invoke_mode: InvokeMode,
 ) -> None:
-    """When snapshots are disabled, turn-2 eval starts with a fresh context."""
+    """In turn mode, turn-2 eval starts with a fresh context."""
     agent = create_deep_agent(
         model=FakeChatModel(messages=iter(_script_two_turns_without_snapshots())),
-        middleware=[CodeInterpreterMiddleware(snapshot_between_turns=False)],
+        middleware=[CodeInterpreterMiddleware(mode="turn")],
         checkpointer=InMemorySaver(),
     )
     config = {"configurable": {"thread_id": "quickjs-no-snapshot-thread"}}
@@ -174,13 +174,13 @@ async def test_repl_snapshot_persists_top_level_await_binding_between_turns(
 ) -> None:
     """Top-level-await bindings persist after cross-turn snapshot restore.
 
-    Historically, ``quickjs-rs`` dropped lexical bindings created in an eval
-    that used top-level ``await``. The first turn could read ``story``, but
-    after ``after_agent`` snapshot + ``before_agent`` restore, turn 2 raised
-    ``ReferenceError: story is not defined``.
+    Historically, `quickjs-rs` dropped lexical bindings created in an eval
+    that used top-level `await`. The first turn could read `story`, but
+    after `after_agent` snapshot + `before_agent` restore, turn 2 raised
+    `ReferenceError: story is not defined`.
 
     This regression test locks in the fixed behavior: once the first turn
-    declares ``story`` via top-level ``await``, the second turn can still read it.
+    declares `story` via top-level `await`, the second turn can still read it.
     """
     script = [
         AIMessage(
@@ -233,3 +233,72 @@ async def test_repl_snapshot_persists_top_level_await_binding_between_turns(
     second_eval = _eval_tool_message(second)
     assert "<error" not in second_eval.content, second_eval.content
     assert "<result>hi</result>" in second_eval.content, second_eval.content
+
+
+@pytest.mark.parametrize(
+    "invoke_mode",
+    ["invoke", "ainvoke"],
+    ids=["sync_invoke", "async_ainvoke"],
+)
+async def test_repl_top_level_const_let_persist_across_evals_same_turn(
+    invoke_mode: InvokeMode,
+) -> None:
+    """Top-level ``const``/``let`` bindings persist between evals.
+
+    The runtime is configured with
+    ``SourceTransform.TOP_LEVEL_CONST_TO_VAR`` so top-level lexical
+    declarations are rewritten to ``var`` and survive on the global object.
+    Without it, a second eval on the same live context would raise
+    ``ReferenceError`` because lexical bindings are dropped between evals.
+
+    This exercises the in-turn path (two evals, one context, no snapshot
+    round-trip in between), which is what the bare-``const`` REPL
+    persistence model promises.
+    """
+    script = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "eval",
+                    "args": {"code": "const greeting = 'hello'; let count = 41;"},
+                    "id": "call_1",
+                    "type": "tool_call",
+                },
+            ],
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "eval",
+                    "args": {"code": "greeting + (count + 1)"},
+                    "id": "call_2",
+                    "type": "tool_call",
+                },
+            ],
+        ),
+        AIMessage(content="done"),
+    ]
+    agent = create_deep_agent(
+        model=FakeChatModel(messages=iter(script)),
+        middleware=[CodeInterpreterMiddleware()],
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "quickjs-const-let-thread"}}
+
+    result = await _invoke_agent(
+        agent,
+        {"messages": [HumanMessage(content="declare then read const/let")]},
+        config,
+        invoke_mode,
+    )
+    eval_messages = [
+        m for m in result["messages"] if isinstance(m, ToolMessage) and m.name == "eval"
+    ]
+    assert len(eval_messages) == 2, eval_messages
+    for msg in eval_messages:
+        assert "<error" not in msg.content, msg.content
+    assert "<result>hello42</result>" in eval_messages[-1].content, eval_messages[
+        -1
+    ].content

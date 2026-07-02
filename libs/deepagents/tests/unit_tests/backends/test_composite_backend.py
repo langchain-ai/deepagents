@@ -8,6 +8,7 @@ from langgraph.store.memory import InMemoryStore
 from deepagents.backends.composite import CompositeBackend, _route_for_path
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import (
+    BackendProtocol,
     ExecuteResponse,
     GlobResult,
     GrepResult,
@@ -1424,3 +1425,115 @@ def test_edit_result_path_restored_to_full_routed_path():
 
     assert res.error is None
     assert res.path == "/memories/notes.md"  # not "/notes.md"
+
+
+def test_composite_delete_routes_to_correct_backend() -> None:
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
+    )
+
+    be.write("/file.txt", "alpha")
+    be.write("/memories/note.txt", "beta")
+
+    # delete default-routed file; path is remapped back to the original
+    res_default = be.delete("/file.txt")
+    assert res_default.error is None
+    assert res_default.path == "/file.txt"
+    assert be.read("/file.txt").error is not None
+
+    # delete route-routed file
+    res_route = be.delete("/memories/note.txt")
+    assert res_route.error is None
+    assert res_route.path == "/memories/note.txt"
+    assert be.read("/memories/note.txt").error is not None
+
+
+def test_composite_delete_directory_recurses_within_route() -> None:
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
+    )
+
+    be.write("/memories/proj/a.txt", "a")
+    be.write("/memories/proj/sub/b.txt", "b")
+    be.write("/memories/keep.txt", "k")
+
+    # Deleting a directory inside a route removes the whole subtree there,
+    # remapped back to the original path, while siblings survive.
+    res = be.delete("/memories/proj")
+    assert res.error is None
+    assert res.path == "/memories/proj"
+    assert be.read("/memories/proj/a.txt").error is not None
+    assert be.read("/memories/proj/sub/b.txt").error is not None
+    assert be.read("/memories/keep.txt").error is None
+
+
+def test_composite_delete_missing_returns_error() -> None:
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
+    )
+    result = be.delete("/memories/ghost.txt")
+    assert result.path is None
+    assert result.error is not None and "not found" in result.error
+
+
+async def test_composite_adelete_routes_to_correct_backend() -> None:
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
+    )
+    await be.awrite("/memories/note.txt", "beta")
+    res = await be.adelete("/memories/note.txt")
+    assert res.error is None
+    assert res.path == "/memories/note.txt"
+    assert (await be.aread("/memories/note.txt")).error is not None
+
+
+async def test_composite_adelete_missing_returns_error() -> None:
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
+    )
+    result = await be.adelete("/memories/ghost.txt")
+    assert result.path is None
+    assert result.error is not None and "not found" in result.error
+
+
+class _NoDeleteStore(StoreBackend):
+    """StoreBackend variant that opts out of delete (inherits protocol default)."""
+
+    delete = BackendProtocol.delete
+    adelete = BackendProtocol.adelete
+
+
+def test_composite_delete_unsupported_route_returns_error() -> None:
+    """A route to a backend without delete yields an error, not a raise."""
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/nodelete/": _NoDeleteStore(store=mem_store, namespace=lambda _rt: ("nodelete",))},
+    )
+    result = be.delete("/nodelete/x.txt")
+    assert result.path is None
+    assert result.error is not None
+    assert "not supported" in result.error
+
+
+async def test_composite_adelete_unsupported_route_returns_error() -> None:
+    """The async route to a backend without delete yields an error, not a raise."""
+    mem_store = InMemoryStore()
+    be = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/nodelete/": _NoDeleteStore(store=mem_store, namespace=lambda _rt: ("nodelete",))},
+    )
+    result = await be.adelete("/nodelete/x.txt")
+    assert result.path is None
+    assert result.error is not None
+    assert "not supported" in result.error

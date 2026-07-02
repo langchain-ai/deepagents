@@ -149,6 +149,7 @@ class TestStartServerAndGetAgent:
 
         mock_server = MagicMock()
         mock_server.start = AsyncMock()
+        mock_server.wait_for_graph_ready = AsyncMock()
         mock_server.url = "http://127.0.0.1:2024"
         mock_agent = object()
 
@@ -175,9 +176,10 @@ class TestStartServerAndGetAgent:
         assert agent is mock_agent
         assert server is mock_server
         assert manager is None
+        mock_server.wait_for_graph_ready.assert_awaited_once_with("agent")
 
         kwargs = mock_generate_langgraph_json.call_args.kwargs
-        assert kwargs["graph_ref"] == "./server_graph.py:graph"
+        assert kwargs["graph_ref"] == "./server_graph.py:make_graph"
         assert kwargs["checkpointer_path"] == "./checkpointer.py:create_checkpointer"
 
     async def test_passes_scaffold_hook_to_server_process(
@@ -193,6 +195,7 @@ class TestStartServerAndGetAgent:
 
         mock_server = MagicMock()
         mock_server.start = AsyncMock()
+        mock_server.wait_for_graph_ready = AsyncMock()
         mock_server.url = "http://127.0.0.1:2024"
 
         with (
@@ -216,6 +219,48 @@ class TestStartServerAndGetAgent:
 
         assert mock_server_process.call_args.kwargs["scaffold"] is mock_scaffold
 
+    async def test_stops_server_when_graph_readiness_fails(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Lazy graph initialization failures should fail startup before return."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        monkeypatch.chdir(project_root)
+
+        work_dir = tmp_path / "runtime"
+        work_dir.mkdir()
+
+        mock_server = MagicMock()
+        mock_server.start = AsyncMock()
+        mock_server.wait_for_graph_ready = AsyncMock(
+            side_effect=RuntimeError("graph failed")
+        )
+        mock_server.stop = MagicMock()
+        mock_server.url = "http://127.0.0.1:2024"
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch(
+                "deepagents_code.server_manager.tempfile.mkdtemp",
+                return_value=str(work_dir),
+            ),
+            patch("deepagents_code.server_manager.shutil.copy2"),
+            patch("deepagents_code.server_manager._write_checkpointer"),
+            patch("deepagents_code.server_manager._write_pyproject"),
+            patch("deepagents_code.server.ServerProcess", return_value=mock_server),
+            patch("deepagents_code.remote_client.RemoteAgent") as mock_agent,
+            pytest.raises(RuntimeError, match="graph failed"),
+        ):
+            await start_server_and_get_agent(
+                assistant_id="agent",
+                mcp_config_path=None,
+            )
+
+        mock_server.start.assert_awaited_once()
+        mock_server.wait_for_graph_ready.assert_awaited_once_with("agent")
+        mock_server.stop.assert_called_once()
+        mock_agent.assert_not_called()
+
     def test_relative_paths_written_verbatim_to_langgraph_json(
         self, tmp_path: Path
     ) -> None:
@@ -226,11 +271,11 @@ class TestStartServerAndGetAgent:
 
         generate_langgraph_json(
             tmp_path,
-            graph_ref="./server_graph.py:graph",
+            graph_ref="./server_graph.py:make_graph",
             checkpointer_path="./checkpointer.py:create_checkpointer",
         )
         config = json.loads((tmp_path / "langgraph.json").read_text())
-        assert config["graphs"]["agent"] == "./server_graph.py:graph"
+        assert config["graphs"]["agent"] == "./server_graph.py:make_graph"
         assert config["checkpointer"]["path"] == "./checkpointer.py:create_checkpointer"
 
 

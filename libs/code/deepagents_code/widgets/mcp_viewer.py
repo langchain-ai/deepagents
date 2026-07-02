@@ -996,6 +996,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
                     self._move_to(idx)
                     self._reveal_selection(widget, direction=1)
                     break
+        self._focus_filter_input()
 
     async def apply_server_disable_toggle(
         self,
@@ -1204,6 +1205,34 @@ class MCPViewerScreen(ModalScreen[str | None]):
         container.mount(
             Static(self._build_help_text(glyphs), classes="mcp-viewer-help")
         )
+
+    def _focus_filter_input(self) -> None:
+        """Refocus the filter `Input` after an in-place body rebuild.
+
+        `refresh_server_info` clears the body via `remove_children`, which
+        blurs the screen (Textual resets focus to `None` when the focused
+        widget is pruned). The newly mounted filter `Input` is not
+        auto-focused on a re-mount — Textual auto-focuses only on the first
+        mount — so a viewer opened while the server is still connecting
+        would leave the rebuilt input unfocused once tools load, and
+        keystrokes would never reach it. Restore focus explicitly here,
+        deferred via `call_after_refresh` because `_mount_body` mounts
+        without awaiting.
+
+        The `Input` exists only when there are servers to filter (see
+        `_mount_body`); when the list is empty there is nothing to focus, so
+        return early. Gating on `_server_info` rather than swallowing a
+        missing-widget error keeps a genuinely-absent input (id drift, a
+        failed mount) visible instead of silently re-introducing the
+        keystroke-swallow this method exists to prevent.
+        """
+
+        def _focus() -> None:
+            if not self._server_info:
+                return
+            self.query_one("#mcp-filter", Input).focus()
+
+        self.call_after_refresh(_focus)
 
     def _build_help_text(self, glyphs: Glyphs) -> str:
         """Compose the help-footer string from the current `_pending_reconnect`.

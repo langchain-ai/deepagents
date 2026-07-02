@@ -18,8 +18,8 @@ from langgraph.store.memory import InMemoryStore
 from deepagents.backends.protocol import ReadResult
 from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import (
-    _compile_glob,
     _to_legacy_file_data,
+    compile_grep_include_glob,
     create_file_data,
     file_data_to_string,
     grep_matches_from_files,
@@ -300,14 +300,14 @@ def test_grep_glob_matches_nothing():
 
 
 def test_compile_glob_is_cached():
-    """`_compile_glob` returns the identical matcher object for a repeated pattern.
+    """`compile_grep_include_glob` returns the identical matcher for a repeated pattern.
 
     This is the optimization the change exists to provide: the compiled matcher
     is reused across calls rather than recompiled per candidate file.
     """
-    assert _compile_glob("*.py") is _compile_glob("*.py")
+    assert compile_grep_include_glob("*.py") is compile_grep_include_glob("*.py")
     # A distinct pattern produces a distinct matcher.
-    assert _compile_glob("*.py") is not _compile_glob("*.md")
+    assert compile_grep_include_glob("*.py") is not compile_grep_include_glob("*.md")
 
 
 def test_grep_glob_repeated_pattern_stays_correct():

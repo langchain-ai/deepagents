@@ -8,7 +8,7 @@ Regenerate this file with `make commands-catalog` after changing command names,
 aliases, descriptions, visibility, or hidden-command metadata.
 
 
-## Public (30)
+## Public (32)
 
 | Command | Aliases | Description |
 | --- | --- | --- |
@@ -20,6 +20,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/copy` |  | Copy the latest assistant message to clipboard |
 | `/docs` |  | Open the docs |
 | `/editor` |  | Open prompt in an external editor ($EDITOR) |
+| `/effort` |  | Set reasoning effort for the current model |
 | `/feedback` |  | Send feedback or report an issue |
 | `/force-clear` |  | Stop active work, clear the chat, and start a new thread |
 | `/goal` |  | Set a persistent objective by drafting acceptance criteria |
@@ -34,6 +35,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/remember` |  | Save useful context to memory or skills |
 | `/restart` |  | Restart the agent server |
 | `/rubric` | `/criteria` | Set explicit acceptance criteria for rubric grading |
+| `/scrollbar` |  | Show or hide the chat scrollbar |
 | `/skill-creator` |  | Create or refine agent skills |
 | `/theme` |  | Change color theme |
 | `/threads` |  | Browse and resume past threads |

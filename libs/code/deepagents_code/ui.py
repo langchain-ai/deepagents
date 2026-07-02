@@ -198,7 +198,7 @@ def show_help() -> None:
         "(defaults to main model)"
     )
     console.print(
-        "  --rubric-max-iterations N  Grader iterations per rubric attempt (default 3)"
+        "  --rubric-max-iterations N  Override grader iterations per rubric attempt"
     )
     console.print(
         "  --timeout SECONDS          Hard wall-clock limit; exits 124 on expiry"

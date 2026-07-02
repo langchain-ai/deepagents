@@ -30,6 +30,7 @@ from deepagents.backends.sandbox import (
     _READ_COMMAND_TEMPLATE,
     _WRITE_CHECK_TEMPLATE,
     BaseSandbox,
+    _build_read_cmd,
     _check_preflight_result,
     _map_edit_error,
     _parse_grep_output,
@@ -41,10 +42,13 @@ class MockSandbox(BaseSandbox):
 
     def __init__(self) -> None:
         self.last_command: str | None = None
+        self.commands: list[str] = []
         self._next_output: str = "1"
         self._next_exit_code: int = 0
         self._uploaded: list[tuple[str, bytes]] = []
         self._file_store: dict[str, bytes] = {}
+        # exit_code is int | None (a backend may report an unknown status).
+        self._responses: list[tuple[str, int | None]] = []
 
     @property
     def id(self) -> str:
@@ -52,15 +56,19 @@ class MockSandbox(BaseSandbox):
 
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         self.last_command = command
+        self.commands.append(command)
         # Detect temp-file upload path: upload_files() stores .deepagents_edit_*
         # keys in _file_store before execute() is called.
         has_tmp = any(".deepagents_edit_" in k for k in self._file_store)
         if "old_path = base64.b64decode(" in command and has_tmp:
             return self._simulate_edit_tmpfile(command)
-        output = self._next_output
-        exit_code = self._next_exit_code
-        self._next_output = "1"
-        self._next_exit_code = 0
+        if self._responses:
+            output, exit_code = self._responses.pop(0)
+        else:
+            output = self._next_output
+            exit_code = self._next_exit_code
+            self._next_output = "1"
+            self._next_exit_code = 0
         return ExecuteResponse(output=output, exit_code=exit_code, truncated=False)
 
     def _simulate_edit_tmpfile(self, command: str) -> ExecuteResponse:
@@ -1143,6 +1151,13 @@ def test_read_script_genuine_binary_returns_base64(tmp_path: Path) -> None:
     assert result["encoding"] == "base64"
 
 
+def test_build_read_cmd_classifies_mkv_as_video() -> None:
+    """`.mkv` reads must run the binary path, not the text path, in the sandbox."""
+    assert "file_type = 'video'" in _build_read_cmd("/clips/a.mkv", 0, 100)
+    # Sanity: a plain text file still classifies as text.
+    assert "file_type = 'text'" in _build_read_cmd("/notes.txt", 0, 100)
+
+
 def test_read_script_mid_buffer_invalid_utf8_returns_base64(tmp_path: Path) -> None:
     """Corruption inside the prefix must still route to base64 (not swallowed)."""
     target = tmp_path / "midbad.dat"
@@ -1547,7 +1562,7 @@ def test_parse_grep_output_non_integer_line_number_is_skipped() -> None:
 
 
 class TestSandboxDelete:
-    """BaseSandbox.delete maps the `rm -f` exit code onto DeleteResult."""
+    """BaseSandbox.delete probes existence then maps the `rm -rf` exit onto DeleteResult."""
 
     def test_delete_success(self) -> None:
         sandbox = MockSandbox()
@@ -1572,20 +1587,46 @@ class TestSandboxDelete:
         assert "rm -rf" in sandbox.last_command
         assert "/some/dir" in sandbox.last_command
 
-    def test_delete_missing_is_noop_success(self) -> None:
-        # `rm -f` ignores a missing path: exit 0, so delete reports success.
+    def test_delete_missing_returns_not_found(self) -> None:
+        # `test -e` exits 1 for a missing path; delete must return a not-found error.
         sandbox = MockSandbox()
-        sandbox._next_output = ""
-        sandbox._next_exit_code = 0
+        sandbox._next_exit_code = 1  # test -e reports path absent
         result = sandbox.delete("/missing.txt")
+        assert result.path is None
+        assert result.error is not None
+        assert "not found" in result.error
+
+    def test_delete_probe_checks_broken_symlink(self) -> None:
+        # The existence probe must also `test -L` so a broken symlink (where
+        # `test -e` fails but the link exists) is still deleted, not reported
+        # missing. Guards the `|| test -L` clause, which the mock's single
+        # exit code cannot otherwise distinguish.
+        sandbox = MockSandbox()
+        sandbox._responses = [("", 0), ("", 0)]  # probe ok, rm ok
+        sandbox.delete("/link")
+        probe = sandbox.commands[0]
+        assert "test -e" in probe
+        assert "test -L" in probe
+
+    def test_delete_unknown_probe_exit_is_not_treated_as_missing(self) -> None:
+        # `exit_code` may be None when the backend cannot determine a status.
+        # An unknown probe result must NOT be reported as not-found; it falls
+        # through to `rm` instead of fabricating a diagnosis.
+        sandbox = MockSandbox()
+        sandbox._responses = [("", None), ("", 0)]  # probe unknown, rm ok
+        result = sandbox.delete("/file.txt")
         assert result.error is None
-        assert result.path == "/missing.txt"
+        assert result.path == "/file.txt"
+        assert len(sandbox.commands) == 2  # probe did not short-circuit
 
     def test_delete_failure_reports_output(self) -> None:
-        # A non-zero exit (e.g. a permission error) surfaces rm's stderr.
+        # A non-zero exit from rm (e.g. a permission error) surfaces rm's stderr.
         sandbox = MockSandbox()
-        sandbox._next_output = "rm: cannot remove '/some/dir': Is a directory"
-        sandbox._next_exit_code = 1
+        # Queue: test -e succeeds (file exists), then rm -rf fails with output.
+        sandbox._responses = [
+            ("", 0),
+            ("rm: cannot remove '/some/dir': Is a directory", 1),
+        ]
         result = sandbox.delete("/some/dir")
         assert result.path is None
         assert result.error is not None
@@ -1593,10 +1634,10 @@ class TestSandboxDelete:
         assert "Is a directory" in result.error
 
     def test_delete_failure_unknown_error(self) -> None:
-        # Non-zero exit with no output falls back to a generic message.
+        # Non-zero exit from rm with no output falls back to a generic message.
         sandbox = MockSandbox()
-        sandbox._next_output = ""
-        sandbox._next_exit_code = 1
+        # Queue: test -e succeeds (file exists), then rm -rf fails silently.
+        sandbox._responses = [("", 0), ("", 1)]
         result = sandbox.delete("/file.txt")
         assert result.path is None
         assert result.error is not None
@@ -1609,3 +1650,12 @@ class TestSandboxDelete:
         result = await sandbox.adelete("/file.txt")
         assert result.error is None
         assert result.path == "/file.txt"
+
+    async def test_adelete_missing_returns_not_found(self) -> None:
+        # `adelete` delegates to `delete`, so the not-found contract holds async.
+        sandbox = MockSandbox()
+        sandbox._next_exit_code = 1  # test -e reports path absent
+        result = await sandbox.adelete("/missing.txt")
+        assert result.path is None
+        assert result.error is not None
+        assert "not found" in result.error

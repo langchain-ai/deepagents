@@ -4,9 +4,16 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.widgets import Static
 
-from deepagents_code.widgets.cwd_switch import CwdSwitchPromptScreen
+from deepagents_code.widgets.cwd_switch import CwdSwitchChoice, CwdSwitchPromptScreen
+
+
+class _CwdSwitchTestApp(App[None]):
+    def compose(self) -> ComposeResult:
+        yield Static("base")
 
 
 class TestCwdSwitchPromptScreen:
@@ -83,3 +90,64 @@ class TestCwdSwitchPromptScreen:
         screen, dismiss = self._screen()
         screen.action_cancel()
         dismiss.assert_called_once_with("stay")
+
+
+class TestCwdSwitchAbortOption:
+    """The launch-time `-r` resume prompt adds a third `abort` option."""
+
+    def test_abort_binding_present(self) -> None:
+        """The modal binds `a` to the abort action."""
+        bindings = [b for b in CwdSwitchPromptScreen.BINDINGS if isinstance(b, Binding)]
+        bindings_by_key = {b.key: b for b in bindings}
+
+        assert bindings_by_key["a"].action == "abort"
+
+    def test_help_and_body_mention_abort_only_when_allowed(self) -> None:
+        """The abort affordance is described only when `allow_abort` is set."""
+        without = CwdSwitchPromptScreen(current_cwd="/a", thread_cwd="/b")
+        with_abort = CwdSwitchPromptScreen(
+            current_cwd="/a", thread_cwd="/b", allow_abort=True
+        )
+
+        assert "new session" not in without._body_text()
+        assert "new session" in with_abort._body_text()
+
+    def test_action_abort_dismisses_abort_when_allowed(self) -> None:
+        """Abort resolves the prompt to `abort` when offered."""
+        screen = CwdSwitchPromptScreen(
+            current_cwd="/a", thread_cwd="/b", allow_abort=True
+        )
+        dismiss = MagicMock()
+        screen.dismiss = dismiss  # ty: ignore[invalid-assignment]
+
+        screen.action_abort()
+
+        dismiss.assert_called_once_with("abort")
+
+    def test_action_abort_is_noop_when_not_allowed(self) -> None:
+        """Abort does nothing when the prompt was not opened with `allow_abort`."""
+        screen = CwdSwitchPromptScreen(current_cwd="/a", thread_cwd="/b")
+        dismiss = MagicMock()
+        screen.dismiss = dismiss  # ty: ignore[invalid-assignment]
+
+        screen.action_abort()
+
+        dismiss.assert_not_called()
+
+    async def test_pressing_a_aborts_when_allowed(self) -> None:
+        """Pressing `a` resolves the prompt to `abort` when offered."""
+        app = _CwdSwitchTestApp()
+        async with app.run_test() as pilot:
+            outcomes: list[CwdSwitchChoice | None] = []
+            app.push_screen(
+                CwdSwitchPromptScreen(
+                    current_cwd="/a", thread_cwd="/b", allow_abort=True
+                ),
+                outcomes.append,
+            )
+            await pilot.pause()
+
+            await pilot.press("a")
+            await pilot.pause()
+
+            assert outcomes == ["abort"]

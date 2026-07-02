@@ -8,10 +8,10 @@ enable composition without fragile string parsing.
 import functools
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
-from pathlib import Path, PurePosixPath
-from typing import Any, Literal, overload
+from pathlib import PurePosixPath
+from typing import Any, Final, Literal, overload
 
 import wcmatch.glob as wcglob
 
@@ -19,6 +19,8 @@ from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMatch as _GrepMatch, GrepResult, ReadResult
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
+MAX_VIDEO_INPUT_BYTES: Final = 1024 * 1024 * 1024
+"""Maximum raw video payload size accepted by `read_file` frame extraction."""
 
 FileType = Literal["text", "image", "audio", "video", "file"]
 """Classification of a file by extension."""
@@ -56,6 +58,10 @@ _EXTENSION_TO_FILE_TYPE: dict[str, FileType] = {
 }
 """Extension-to-type mapping for non-text files.
 
+Optional features may layer on additional classifications at the use site. For
+example, `read_file` treats `.mkv` as video only when the optional video
+dependencies are installed.
+
 Derived from Google's multimodal API supported formats:
 
 - Images: https://ai.google.dev/gemini-api/docs/image-understanding
@@ -74,9 +80,86 @@ GrepMatch = _GrepMatch
 
 
 @functools.lru_cache(maxsize=256)
-def _compile_glob(pattern: str) -> wcglob.WcMatcher:
-    """Compile a glob pattern once and cache it (BRACE flag)."""
-    return wcglob.compile(pattern, flags=wcglob.BRACE)
+def compile_grep_include_glob(pattern: str) -> Callable[[str], bool]:
+    """Compile a grep include-glob into a matcher with ripgrep-like semantics.
+
+    Provides one shared include-glob behavior for every backend so the same
+    `grep(..., glob=...)` call closely mirrors ripgrep for common include
+    patterns, whether or not ripgrep is installed:
+
+    - Patterns without a `/` match the basename at any depth.
+
+        Example: `*.py` matches `src/app/main.py`.
+    - Patterns containing a `/` match the path relative to the grep search
+        root, with `**` support.
+
+        Example: `src/**/*.py` matches `src/app/main.py`.
+    - A leading `/` anchors the pattern to the search root; it narrows the match
+        rather than widening it.
+
+        Example: `/*.py` matches `top.py` but not `src/app/main.py`.
+
+    Exclusion/negation patterns (a leading `!`) are not supported: the `!` is
+    treated literally rather than inverting the match, so results for such
+    patterns can diverge from `rg --glob '!...'`.
+
+    Args:
+        pattern: Glob include pattern.
+
+    Returns:
+        Predicate accepting a search-root-relative POSIX path; returns True when
+        the path is included by `pattern`.
+    """
+    flags = wcglob.BRACE | wcglob.GLOBSTAR
+    # A leading `/` anchors to the search root: strip it so it matches against
+    # the (slash-less) relative path, but decide anchoring from the original
+    # pattern so `/*.py` stays root-anchored instead of collapsing to a
+    # basename-at-any-depth match.
+    anchored = "/" in pattern
+    compiled = wcglob.compile(pattern.lstrip("/"), flags=flags)
+
+    if anchored:
+
+        def matcher(rel_path: str) -> bool:
+            return bool(compiled.match(rel_path))
+    else:
+
+        def matcher(rel_path: str) -> bool:
+            return bool(compiled.match(PurePosixPath(rel_path).name))
+
+    return matcher
+
+
+def compile_recursive_glob(pattern: str) -> Callable[[str], bool]:
+    """Compile a `glob` pattern into a per-entry matcher for a recursive walk.
+
+    `Path.rglob(pattern)` is equivalent to `Path.glob("**/" + pattern)`, so the
+    pattern matches at any depth (e.g. `*.py` matches `src/app/main.py`). Prefix
+    the pattern with `**/` and compile it with globstar support so a matcher can
+    be applied to each visited entry while walking the tree, letting the caller
+    enforce a deadline on every entry instead of only on matched paths.
+
+    Depth (`GLOBSTAR`) and dotfile matching (`DOTMATCH`) mirror `Path.rglob`:
+    `DOTMATCH` is required because `wcmatch` excludes dotfiles by default whereas
+    stdlib `rglob` includes them. Brace expansion (`BRACE`) is an intentional
+    *divergence* from `rglob` — `{a,b}.py` expands here but `Path.rglob` treats
+    the braces literally — chosen so `glob` matches the include-glob semantics of
+    `compile_grep_include_glob`.
+
+    Args:
+        pattern: Glob pattern (a leading `/` is stripped).
+
+    Returns:
+        Predicate accepting a search-root-relative POSIX path; returns True when
+        the path matches `pattern` under recursive-glob semantics.
+    """
+    flags = wcglob.BRACE | wcglob.GLOBSTAR | wcglob.DOTMATCH
+    compiled = wcglob.compile("**/" + pattern.lstrip("/"), flags=flags)
+
+    def matcher(rel_path: str) -> bool:
+        return bool(compiled.match(rel_path))
+
+    return matcher
 
 
 def _normalize_content(file_data: FileData) -> str:
@@ -189,6 +272,38 @@ def _get_file_type(path: str) -> FileType:
             Defaults to `"text"` for unrecognized extensions.
     """
     return _EXTENSION_TO_FILE_TYPE.get(PurePosixPath(path).suffix.lower(), "text")
+
+
+_VIDEO_EXTRA_EXTENSIONS: frozenset[str] = frozenset({".mkv"})
+"""Video container extensions handled outside the Google-derived multimodal map.
+
+These are intentionally absent from `_EXTENSION_TO_FILE_TYPE`, so a `read_file`
+without the optional `[video]` extra returns them as a generic file block rather
+than a native video block. Backends must still read them as binary — never
+text-decode them — and `read_file` layers frame extraction on top only when the
+`[video]` dependencies are installed.
+"""
+
+
+def _get_backend_read_file_type(path: str) -> FileType:
+    """Classify a file for backend reads, forcing known video containers to binary.
+
+    Backends decide binary-vs-text on `_get_file_type(...) != "text"`. Extensions
+    in `_VIDEO_EXTRA_EXTENSIONS` are absent from `_EXTENSION_TO_FILE_TYPE`, so
+    `_get_file_type` alone would treat them as text and corrupt the bytes (a raw
+    UTF-8 decode of a video, or line-slicing a base64 blob). Classify them as
+    `"video"` here so the binary read path runs on every backend.
+
+    Args:
+        path: File path to classify.
+
+    Returns:
+        `"video"` for `_VIDEO_EXTRA_EXTENSIONS`; otherwise the shared
+            `_get_file_type` classification.
+    """
+    if PurePosixPath(path).suffix.lower() in _VIDEO_EXTRA_EXTENSIONS:
+        return "video"
+    return _get_file_type(path)
 
 
 def _to_legacy_file_data(file_data: FileData) -> dict[str, Any]:
@@ -591,6 +706,26 @@ def _filter_files_by_path(files: dict[str, Any], normalized_path: str) -> dict[s
     return {fp: fd for fp, fd in files.items() if fp.startswith(dir_prefix)}
 
 
+def _relative_to_root(file_path: str, normalized_path: str) -> str:
+    """Return `file_path` relative to a normalized grep/glob search root.
+
+    Args:
+        file_path: Absolute file path (e.g. "/src/app/main.py").
+        normalized_path: Normalized search root from `_normalize_path`.
+
+    Returns:
+        POSIX path relative to the search root (e.g. "src/app/main.py").
+
+            When `file_path` equals the search root (an exact-file search),
+            returns just the basename.
+    """
+    if normalized_path == "/":
+        return file_path[1:]
+    if file_path == normalized_path:
+        return file_path.rsplit("/", maxsplit=1)[-1]
+    return file_path[len(normalized_path) + 1 :]
+
+
 def _glob_search_files(
     files: dict[str, Any],
     pattern: str,
@@ -709,8 +844,8 @@ def grep_matches_from_files(
     filtered = _filter_files_by_path(files, normalized_path)
 
     if glob:
-        matcher = _compile_glob(glob)
-        filtered = {fp: fd for fp, fd in filtered.items() if matcher.match(Path(fp).name)}
+        matcher = compile_grep_include_glob(glob)
+        filtered = {fp: fd for fp, fd in filtered.items() if matcher(_relative_to_root(fp, normalized_path))}
 
     matches: list[GrepMatch] = []
     for file_path, file_data in filtered.items():

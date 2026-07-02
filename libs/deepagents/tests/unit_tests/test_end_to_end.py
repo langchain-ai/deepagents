@@ -26,13 +26,14 @@ from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
 from pydantic import Field
 
+import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import CompositeBackend, FilesystemBackend
 from deepagents.backends.protocol import BackendProtocol, ExecuteResponse, SandboxBackendProtocol
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, create_file_data
 from deepagents.graph import create_deep_agent
-from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN, FilesystemPermission
+from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN, FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.rubric import RUBRIC_GRADER_MESSAGE_SOURCE, RubricMiddleware
 from deepagents.middleware.subagents import SubAgent  # noqa: TC001
 from deepagents.middleware.summarization import create_summarization_tool_middleware
@@ -3948,6 +3949,57 @@ def test_tool_command_parent_handoff_preserved() -> None:
     assert visited == ["agent_b"]
 
 
+def test_read_file_video_frames_attached_after_tool_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Video frame media is sent as input after the required tool result."""
+    monkeypatch.setattr(
+        filesystem_middleware,
+        "extract_video_frames",
+        lambda *_args, **_kwargs: [
+            {"type": "text", "text": "Frame at t=00:00:00.000"},
+            {"type": "image", "base64": "AAAA", "mime_type": "image/jpeg"},
+        ],
+    )
+    fake_model = FakeChatModelWithHistory(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "call_video",
+                            "name": "read_file",
+                            "args": {"file_path": "/clip.mp4"},
+                        }
+                    ],
+                ),
+                AIMessage(content="saw frame"),
+            ]
+        )
+    )
+    fake_model.call_history.clear()
+    video = base64.b64encode(b"video bytes").decode("ascii")
+    agent = create_deep_agent(model=fake_model, backend=StateBackend())
+
+    result = agent.invoke(
+        {
+            "messages": [HumanMessage(content="Read the video")],
+            "files": {"/clip.mp4": {**create_file_data(video, encoding="base64")}},
+        }
+    )
+
+    assert result["messages"][-1].content == "saw frame"
+    second_call = fake_model.call_history[1]["messages"]
+    tool_index = next(i for i, message in enumerate(second_call) if isinstance(message, ToolMessage))
+    media_message = second_call[tool_index + 1]
+    assert isinstance(media_message, HumanMessage)
+    assert media_message.additional_kwargs["read_file_media_result"] is True
+    assert media_message.content == [
+        {"type": "text", "text": "Reading first 100s of /clip.mp4 at 0.5 fps."},
+        {"type": "text", "text": "Frame at t=00:00:00.000"},
+        {"type": "image", "base64": "AAAA", "mime_type": "image/jpeg"},
+    ]
+
+
 def test_invalid_tool_call_patched_on_next_turn() -> None:
     # Turn 1: model truncates and emits an invalid tool call (no matching ToolMessage
     # will be produced because agents only route on `tool_calls`).
@@ -4350,7 +4402,8 @@ class TestRubricMiddlewareEndToEnd:
         assert state["_rubric_status"] == "max_iterations_reached"
         assert state["_rubric_iterations"] == 2
         assert len(state["_rubric_evaluations"]) == 2
-        assert all(e["result"] == "needs_revision" for e in state["_rubric_evaluations"])
+        results = [e["result"] for e in state["_rubric_evaluations"]]
+        assert results == ["needs_revision", "max_iterations_reached"]
 
     def test_no_rubric_is_noop(self) -> None:
         """Without a rubric on invocation state the middleware does not call the grader."""
@@ -4448,3 +4501,61 @@ class TestRubricMiddlewareEndToEnd:
         # The custom prompt must reach the grader model as the system message.
         assert captured_grader_prompts, "expected the grader model to receive at least one system prompt"
         assert "CUSTOM_GRADER_MARKER" in captured_grader_prompts[0]
+
+
+class TestFilesystemMiddlewareToolsAllowlist:
+    """End-to-end tests for FilesystemMiddleware(tools=[...]) allowlist."""
+
+    def _make_spy_middleware(self) -> tuple[AgentMiddleware, list[set[str]]]:
+        """Return a middleware that records tool names seen on each model request."""
+        captured: list[set[str]] = []
+
+        class _ToolSpyMiddleware(AgentMiddleware):
+            def wrap_model_call(
+                self,
+                request: ModelRequest,
+                handler: Callable[[ModelRequest], ModelResponse],
+            ) -> ModelResponse:
+                captured.append({t.name if hasattr(t, "name") else t.get("name") for t in request.tools})
+                return handler(request)
+
+        return _ToolSpyMiddleware(), captured
+
+    def test_allowlist_removes_tools_from_request_and_system_prompt(self) -> None:
+        """tools=[...] on FilesystemMiddleware restricts both request.tools and the system prompt."""
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="done")]))
+        spy, captured_tool_sets = self._make_spy_middleware()
+        capturing = SystemMessageCapturingMiddleware()
+
+        agent = create_deep_agent(
+            model=model,
+            middleware=[
+                FilesystemMiddleware(
+                    backend=StateBackend(),
+                    tools=["read_file", "ls"],
+                ),
+                spy,
+                capturing,
+            ],
+        )
+
+        agent.invoke({"messages": [HumanMessage(content="hi")]})
+
+        # --- tools on the wire ---
+        assert captured_tool_sets, "spy must have seen at least one model request"
+        tool_names = captured_tool_sets[0]
+        assert "read_file" in tool_names
+        assert "ls" in tool_names
+        for disabled in ("write_file", "edit_file", "delete", "glob", "grep", "execute"):
+            assert disabled not in tool_names, f"{disabled!r} should have been filtered out"
+
+        # --- system prompt tool header only lists allowed tools ---
+        # Check backtick-wrapped names as they appear in the tool header/description section.
+        # (Some tool names may appear in static template text; backtick-wrapped ones are
+        # the tool listing that changes based on the allowlist.)
+        assert capturing.captured_system_messages, "system message must have been set"
+        prompt = str(capturing.captured_system_messages[0].content)
+        assert "`read_file`" in prompt
+        assert "`ls`" in prompt
+        for disabled in ("write_file", "edit_file", "delete", "glob"):
+            assert f"`{disabled}`" not in prompt, f"`{disabled}` should not appear in system prompt tool list"

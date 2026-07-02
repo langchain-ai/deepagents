@@ -5,7 +5,6 @@ import sys
 from asyncio import Future
 from collections.abc import AsyncIterator, Awaitable, Callable, Generator
 from datetime import datetime
-from importlib.metadata import PackageNotFoundError
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -804,12 +803,35 @@ class TestBuildStreamConfig:
         """CLI version should always be present in metadata.lc_versions."""
         from deepagents_code._version import __version__
 
-        config = build_stream_config("t-ver", assistant_id=None)
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch("deepagents_code.config._get_deepagents_version", return_value=None),
+        ):
+            config = build_stream_config("t-ver", assistant_id=None)
         assert config["metadata"]["lc_versions"] == {"deepagents-code": __version__}
+
+    def test_versions_marks_editable_cli_version(self) -> None:
+        """Editable dcode installs should be visible in metadata.lc_versions."""
+        from deepagents_code._version import __version__
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=True),
+            patch("deepagents_code.config._get_deepagents_version", return_value=None),
+        ):
+            config = build_stream_config("t-editable", assistant_id=None)
+        assert config["metadata"]["lc_versions"] == {
+            "deepagents-code": f"{__version__} (editable)"
+        }
 
     def test_dcode_client_deepagents_version_is_diagnostic_metadata(self) -> None:
         """Client-side SDK version should not be reported as graph instrumentation."""
-        with patch("deepagents_code.config.version", return_value="1.2.3"):
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.extras_info.resolve_sdk_version",
+                return_value=("1.2.3", "resolved"),
+            ),
+        ):
             config = build_stream_config("t-sdk", assistant_id=None)
         assert config["metadata"]["dcode_client_deepagents_version"] == "1.2.3"
         assert "deepagents" not in config["metadata"]["lc_versions"]
@@ -818,9 +840,12 @@ class TestBuildStreamConfig:
         self,
     ) -> None:
         """Missing SDK metadata should not prevent stream config construction."""
-        with patch(
-            "deepagents_code.config.version",
-            side_effect=PackageNotFoundError("deepagents"),
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.extras_info.resolve_sdk_version",
+                return_value=(None, "not_installed"),
+            ),
         ):
             config = build_stream_config("t-missing-sdk", assistant_id=None)
 
@@ -835,13 +860,51 @@ class TestBuildStreamConfig:
             if module == "deepagents" or module.startswith("deepagents."):
                 monkeypatch.delitem(sys.modules, module, raising=False)
 
-        with patch("deepagents_code.config.version", return_value="1.2.3"):
+        with patch("deepagents_code.config._is_editable_install", return_value=False):
             build_stream_config("t-no-sdk-import", assistant_id=None)
 
         assert not any(
             module == "deepagents" or module.startswith("deepagents.")
             for module in sys.modules
         )
+
+    def test_get_deepagents_version_maps_status_to_value(self) -> None:
+        """Only a `resolved` status yields a version; other statuses map to None.
+
+        The guard keys on `status`, not on the version string, so a non-resolved
+        status must drop even a non-`None` version the resolver flagged as
+        untrustworthy.
+        """
+        from deepagents_code.config import _get_deepagents_version
+
+        with patch(
+            "deepagents_code.extras_info.resolve_sdk_version",
+            return_value=("1.2.3", "error"),
+        ):
+            assert _get_deepagents_version() is None
+
+        with patch(
+            "deepagents_code.extras_info.resolve_sdk_version",
+            return_value=("1.2.3", "resolved"),
+        ):
+            assert _get_deepagents_version() == "1.2.3"
+
+    def test_versions_editable_with_resolved_sdk_version(self) -> None:
+        """Editable suffix and SDK diagnostic version are populated independently."""
+        from deepagents_code._version import __version__
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=True),
+            patch(
+                "deepagents_code.extras_info.resolve_sdk_version",
+                return_value=("1.2.3", "resolved"),
+            ),
+        ):
+            config = build_stream_config("t-editable-sdk", assistant_id=None)
+        assert config["metadata"]["lc_versions"] == {
+            "deepagents-code": f"{__version__} (editable)"
+        }
+        assert config["metadata"]["dcode_client_deepagents_version"] == "1.2.3"
 
     def test_user_id_included_when_set(self) -> None:
         """DEEPAGENTS_CODE_USER_ID should appear in metadata when set."""
@@ -983,13 +1046,26 @@ class TestFormatRubricEvent:
         ):
             yield
 
-    def test_start_event_mentions_iteration(self) -> None:
-        """Start events should surface visible grading state."""
+    def test_start_event_omits_iteration_by_default(self) -> None:
+        """Start events should avoid noisy iteration numbers by default."""
         assert (
             _format_rubric_event(
                 {"type": "rubric_evaluation_start", "iteration": 1},
             )
-            == "⏳ Grading against rubric (iteration 2)…"
+            == "⏳ Checking acceptance criteria…"
+        )
+
+    def test_start_event_mentions_explicit_iteration(self) -> None:
+        """Explicit iteration display should surface the 1-based count."""
+        assert (
+            _format_rubric_event(
+                {
+                    "type": "rubric_evaluation_start",
+                    "iteration": 1,
+                    "show_iteration": True,
+                },
+            )
+            == "⏳ Checking acceptance criteria (iteration 2)…"
         )
 
     def test_needs_revision_includes_failed_criteria(self) -> None:
@@ -1006,7 +1082,7 @@ class TestFormatRubricEvent:
                     ],
                 },
             )
-            == "↻ Rubric needs revision: missing coverage\n  ✗ tests pass — not run"
+            == "↻ Changes need revision: missing coverage\n  ✗ tests pass — not run"
         )
 
     def test_satisfied_event(self) -> None:
@@ -1015,7 +1091,7 @@ class TestFormatRubricEvent:
             _format_rubric_event(
                 {"type": "rubric_evaluation_end", "result": "satisfied"},
             )
-            == "✓ Rubric satisfied"
+            == "✓ Acceptance criteria satisfied"
         )
 
     def test_start_event_without_int_iteration_omits_number(self) -> None:
@@ -1024,7 +1100,7 @@ class TestFormatRubricEvent:
             _format_rubric_event(
                 {"type": "rubric_evaluation_start", "iteration": None},
             )
-            == "⏳ Grading against rubric…"
+            == "⏳ Checking acceptance criteria…"
         )
 
     def test_max_iterations_reached_event(self) -> None:
@@ -1033,7 +1109,7 @@ class TestFormatRubricEvent:
             _format_rubric_event(
                 {"type": "rubric_evaluation_end", "result": "max_iterations_reached"},
             )
-            == "⚠ Rubric not satisfied (max iterations reached)"
+            == "⚠ Acceptance criteria not satisfied (iteration limit reached)"
         )
 
     def test_grader_failure_results_render_warning(self) -> None:
@@ -1096,14 +1172,12 @@ class TestFormatRubricEvent:
             failed = _format_rubric_event(
                 {"type": "rubric_evaluation_end", "result": "failed"},
             )
-        assert (
-            start == f"{ASCII_GLYPHS.hourglass} Grading against rubric (iteration 1)..."
-        )
+        assert start == f"{ASCII_GLYPHS.hourglass} Checking acceptance criteria..."
         assert revision == (
-            f"{ASCII_GLYPHS.retry} Rubric needs revision\n"
+            f"{ASCII_GLYPHS.retry} Changes need revision\n"
             f"  {ASCII_GLYPHS.error} tests pass — not run"
         )
-        assert satisfied == f"{ASCII_GLYPHS.checkmark} Rubric satisfied"
+        assert satisfied == f"{ASCII_GLYPHS.checkmark} Acceptance criteria satisfied"
         assert failed == f"{ASCII_GLYPHS.warning} Rubric grader failed"
 
 
@@ -1905,8 +1979,8 @@ def _text_message(text: str) -> SimpleNamespace:
 class TestExecuteTaskTextualParallelToolSpinner:
     """Regression tests for #1796: premature spinner with parallel tools."""
 
-    async def test_spinner_not_shown_until_all_parallel_tools_complete(self) -> None:
-        """With two parallel tools, Thinking appears only at start and after last."""
+    async def test_spinner_stays_up_across_parallel_tools(self) -> None:
+        """With two parallel tools, the spinner stays "Thinking" and is never hidden."""
         statuses: list[str | None] = []
 
         async def record_spinner(status: str | None) -> None:
@@ -1967,11 +2041,9 @@ class TestExecuteTaskTextualParallelToolSpinner:
         )
 
         assert statuses[0] == "Thinking"
-        thinking_count = sum(1 for s in statuses if s == "Thinking")
-        assert thinking_count == 2, (
-            "Expected exactly 2 Thinking calls (start + after last tool); "
-            f"got {thinking_count}: {statuses}"
-        )
+        assert statuses[-1] == "Thinking"
+        # Stable turn-level indicator: never hidden while parallel tools run.
+        assert None not in statuses
 
     async def test_on_tool_complete_fires_per_tool_message(self) -> None:
         """`on_tool_complete` should fire once per `ToolMessage`, even in parallel."""
@@ -2154,12 +2226,12 @@ class TestExecuteTaskTextualParallelToolSpinner:
         tool_msg = adapter._current_tool_messages["tool-1"]
         assert tool_msg._status == "running"
 
-    async def test_edit_file_does_not_get_per_tool_spinner_at_mount(self) -> None:
-        """`edit_file` relies on the global Thinking spinner, not a per-tool one.
+    async def test_edit_file_marks_running_at_mount(self) -> None:
+        """All tool rows are marked running at mount, including `edit_file`.
 
-        Negative counterpart to the auto-executed case: tools in
-        `_TOOL_CALLS_KEEP_THINKING_SPINNER` must NOT be flipped to "running" at
-        mount, or they would show a duplicate spinner alongside "Thinking".
+        The row is hidden inside its collapsed group, so "running" drives the
+        group's live progress state rather than showing a duplicate spinner
+        alongside the global "Thinking" indicator.
         """
         chunks = [
             (
@@ -2195,10 +2267,10 @@ class TestExecuteTaskTextualParallelToolSpinner:
         )
 
         tool_msg = adapter._current_tool_messages["tool-1"]
-        assert tool_msg._status != "running"
+        assert tool_msg._status == "running"
 
     async def test_spinner_with_three_parallel_tools_out_of_order(self) -> None:
-        """Three parallel tools completed out of order; Thinking after all."""
+        """Three parallel tools complete out of order; spinner stays up throughout."""
         statuses: list[str | None] = []
 
         async def record_spinner(status: str | None) -> None:
@@ -2261,11 +2333,9 @@ class TestExecuteTaskTextualParallelToolSpinner:
             adapter=adapter,
         )
 
-        thinking_count = sum(1 for s in statuses if s == "Thinking")
-        assert thinking_count == 2, (
-            "Expected exactly 2 Thinking calls (start + after last tool); "
-            f"got {thinking_count}: {statuses}"
-        )
+        assert statuses[-1] == "Thinking"
+        # Stable turn-level indicator: never hidden while parallel tools run.
+        assert None not in statuses
 
     async def test_spinner_recovers_with_untracked_tool_id(self) -> None:
         """Spinner still shows Thinking with an untracked tool_call_id."""
@@ -2370,24 +2440,14 @@ class TestExecuteTaskTextualTextThenToolSpinner:
                 adapter=adapter,
             )
 
-        # Expected sequence:
-        #   1. "Thinking" before astream
-        #   2. "Thinking" after mounting the streaming AssistantMessage
-        #      (re-anchor the spinner below the message so the user still
-        #      sees activity if the model pauses before the tool call)
-        #   3. None when the tool call mounts
-        #   4. "Thinking" after the tool result
+        # The spinner is a stable turn-level indicator: it shows "Thinking"
+        # before the stream, stays up while text streams and while the tool
+        # runs (the tool's own progress shows in its collapsed group row), and
+        # is never hidden mid-turn — so it no longer flickers off for each tool.
         assert statuses[0] == "Thinking"
-        assert statuses[1] == "Thinking"
-        assert None in statuses
         assert statuses[-1] == "Thinking"
-
-        # The spinner must never be hidden before the tool call arrives.
-        first_none = statuses.index(None)
-        text_thinking_seen = statuses[:first_none].count("Thinking") >= 2
-        assert text_thinking_seen, (
-            f"Spinner was hidden during text streaming before tool call: {statuses}"
-        )
+        assert None not in statuses, f"Spinner was hidden mid-turn: {statuses}"
+        assert all(s == "Thinking" for s in statuses)
 
     async def test_spinner_reanchors_for_text_after_tool_cycle(self) -> None:
         """Text -> tool_call -> tool_result -> text must re-anchor the spinner.
@@ -2442,14 +2502,13 @@ class TestExecuteTaskTextualTextThenToolSpinner:
             f"each text mount; got {thinking_count}: {statuses}"
         )
 
-    async def test_spinner_reanchor_skipped_while_tools_pending(self) -> None:
-        """The re-anchor must be gated on `not _current_tool_messages`.
+    async def test_spinner_stays_up_when_text_arrives_mid_tool(self) -> None:
+        """A text chunk arriving while a tool is in flight keeps the spinner up.
 
         Contrived sequence: a tool call mounts (populating
         `_current_tool_messages`), then a text chunk arrives before the tool
-        result. The new re-anchor logic must NOT call `_set_spinner("Thinking")`
-        in that window — the tool-call widget is the dominant progress
-        indicator.
+        result. The spinner stays "Thinking" throughout and is never hidden —
+        the text re-anchor stays gated on `not _current_tool_messages`.
         """
         statuses: list[str | None] = []
 
@@ -2483,15 +2542,11 @@ class TestExecuteTaskTextualTextThenToolSpinner:
                 adapter=adapter,
             )
 
-        # Thinking calls should be:
-        #   1. Before astream
-        #   2. After tool result (guard is back to empty)
-        # The re-anchor must NOT fire while the tool is in flight.
-        thinking_count = sum(1 for s in statuses if s == "Thinking")
-        assert thinking_count == 2, (
-            f"Expected 2 Thinking calls (start + after tool); got "
-            f"{thinking_count}: {statuses}"
-        )
+        # The spinner stays "Thinking" and is never hidden while the tool is in
+        # flight; the text re-anchor stays gated on no pending tools.
+        assert statuses[0] == "Thinking"
+        assert statuses[-1] == "Thinking"
+        assert None not in statuses
 
 
 class TestExecuteTaskTextualRubricRevisionStreaming:
@@ -2586,10 +2641,10 @@ class TestExecuteTaskTextualRubricRevisionStreaming:
         app_text = [str(widget._content) for widget in app_messages]
         assert app_text == [
             (
-                f"{UNICODE_GLYPHS.hourglass} Grading against rubric (iteration 1)"
+                f"{UNICODE_GLYPHS.hourglass} Checking acceptance criteria"
                 f"{UNICODE_GLYPHS.ellipsis}"
             ),
-            f"{UNICODE_GLYPHS.retry} Rubric needs revision: say yellow",
+            f"{UNICODE_GLYPHS.retry} Changes need revision: say yellow",
         ]
 
 
@@ -3938,7 +3993,8 @@ class TestExecuteTaskTextualRubricEvents:
         rubric_msgs = [
             m
             for m in mounted
-            if isinstance(m, AppMessage) and "Rubric satisfied" in str(m._content)
+            if isinstance(m, AppMessage)
+            and "Acceptance criteria satisfied" in str(m._content)
         ]
         assert len(rubric_msgs) == 1
 

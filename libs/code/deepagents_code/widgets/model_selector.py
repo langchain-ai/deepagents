@@ -65,22 +65,17 @@ from the per-provider sections below.
 
 _RECOMMENDED_MODELS: frozenset[str] = frozenset(
     {
-        "anthropic:claude-opus-4-6",
         "anthropic:claude-opus-4-7",
         "anthropic:claude-opus-4-8",
-        "anthropic:claude-sonnet-4-6",
+        "anthropic:claude-sonnet-5",
         "baseten:deepseek-ai/DeepSeek-V4-Pro",
         "baseten:moonshotai/Kimi-K2.7-Code",
         "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
         "baseten:zai-org/GLM-5.2",
         "fireworks:accounts/fireworks/models/deepseek-v4-pro",
-        "fireworks:accounts/fireworks/models/glm-5p1",
         "fireworks:accounts/fireworks/models/glm-5p2",
-        "fireworks:accounts/fireworks/models/kimi-k2p6",
         "fireworks:accounts/fireworks/models/kimi-k2p7-code",
-        "fireworks:accounts/fireworks/models/minimax-m2p7",
         "fireworks:accounts/fireworks/models/minimax-m3",
-        "fireworks:accounts/fireworks/models/qwen3p6-plus",
         "fireworks:accounts/fireworks/models/qwen3p7-plus",
         "google_genai:gemini-3.5-flash",
         "google_genai:gemini-3.1-pro-preview",
@@ -103,14 +98,14 @@ _RECOMMENDED_MODELS: frozenset[str] = frozenset(
         "openrouter:anthropic/claude-opus-4.7",
         "openrouter:anthropic/claude-opus-4.7-fast",
         "openrouter:anthropic/claude-opus-4.8",
-        "openrouter:anthropic/claude-sonnet-4.6",
+        "openrouter:anthropic/claude-sonnet-5",
         "openrouter:deepseek/deepseek-v4-flash",
         "openrouter:deepseek/deepseek-v4-flash:free",
         "openrouter:deepseek/deepseek-v4-pro",
         "openrouter:google/gemini-3.5-flash",
         "openrouter:google/gemini-3.1-pro-preview",
-        "openrouter:minimax/minimax-m2.7",
         "openrouter:moonshotai/kimi-k2.7-code",
+        "openrouter:nvidia/nemotron-3-ultra-550b-a55b",
         "openrouter:openai/gpt-5.4",
         "openrouter:openai/gpt-5.4-mini",
         "openrouter:openai/gpt-5.4-pro",
@@ -914,6 +909,46 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 return i
         return first_match or 0
 
+    # Lower ranks render first: providers the user can use right now lead,
+    # then providers whose readiness is unknown, then providers needing a
+    # missing credential, then ones that aren't even installed. A missing
+    # credential sits above not-installed since fixing it is just an auth
+    # prompt away.
+    _PROVIDER_AVAILABLE_RANK = 0
+    _PROVIDER_UNKNOWN_RANK = 1
+    _PROVIDER_MISSING_RANK = 2
+    _PROVIDER_UNINSTALLED_RANK = 3
+
+    def _provider_availability_rank(
+        self,
+        provider: str,
+        auth_status: ProviderAuthStatus,
+    ) -> int:
+        """Return a sort rank that floats usable providers to the top.
+
+        Args:
+            provider: Provider name being ranked.
+            auth_status: The provider's resolved auth/readiness status.
+
+        Returns:
+            A rank where lower values sort earlier: ready-to-use providers
+                first, then unknown, then missing-credential, then
+                not-installed providers.
+        """
+        if provider in self._install_extras:
+            return self._PROVIDER_UNINSTALLED_RANK
+        state = auth_status.state
+        if state in {
+            ProviderAuthState.CONFIGURED,
+            ProviderAuthState.NOT_REQUIRED,
+            ProviderAuthState.IMPLICIT,
+            ProviderAuthState.MANAGED,
+        }:
+            return self._PROVIDER_AVAILABLE_RANK
+        if state is ProviderAuthState.UNKNOWN:
+            return self._PROVIDER_UNKNOWN_RANK
+        return self._PROVIDER_MISSING_RANK
+
     async def _update_display(self) -> None:
         """Render the model list grouped by provider.
 
@@ -981,6 +1016,22 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         for model_spec, provider in source_models:
             by_provider.setdefault(provider, []).append((model_spec, provider))
 
+        # Resolve provider auth upfront so it can both drive the
+        # availability-first ordering below and feed the widget-building loop.
+        auth_statuses = {p: get_provider_auth_status(p) for p in by_provider}
+
+        # In the default (unfiltered) view, float providers the user can
+        # actually use to the top so a usable model is reachable without
+        # scrolling or searching. Providers needing missing credentials or a
+        # package install sink to the bottom. A search already orders by match
+        # score (installed providers first), so leave that ordering untouched.
+        if not has_filter:
+            ordered_providers = sorted(
+                by_provider,
+                key=lambda p: self._provider_availability_rank(p, auth_statuses[p]),
+            )
+            by_provider = {p: by_provider[p] for p in ordered_providers}
+
         # Rebuild _filtered_models to match the rendered order (recents first,
         # then provider-grouped). Without this, _filtered_models stays in
         # score-sorted order while _option_widgets follow rendered order,
@@ -1010,11 +1061,6 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         current_spec = None
         if self._current_model and self._current_provider:
             current_spec = f"{self._current_provider}:{self._current_model}"
-
-        # Resolve provider auth upfront so the widget-building loop
-        # stays focused on layout
-        auth_providers = {provider for _, provider in self._filtered_models}
-        auth_statuses = {p: get_provider_auth_status(p) for p in auth_providers}
 
         # Collect all widgets first, then batch-mount once to avoid
         # individual DOM mutations per widget

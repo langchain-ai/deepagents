@@ -346,7 +346,7 @@ class TestFilesystem:
         assert isinstance(content, str), f"Expected str content, got {type(content)}"
         assert "fiery" in content or "Fiery" in content
 
-    def test_write_file_fail_already_exists_in_local(self):
+    def test_write_file_overwrites_existing_in_local(self):
         checkpointer = MemorySaver()
         store = InMemoryStore()
         agent = create_agent(
@@ -376,7 +376,8 @@ class TestFilesystem:
         messages = response["messages"]
         write_file_message = next(message for message in messages if message.type == "tool" and message.name == "write_file")
         assert write_file_message is not None
-        assert "Cannot write" in write_file_message.content
+        assert write_file_message.status == "success"
+        assert "fiery" in response["files"]["/charmander.txt"]["content"].lower() or "Fiery" in response["files"]["/charmander.txt"]["content"]
 
     def test_edit_file_longterm(self):
         checkpointer = MemorySaver()

@@ -14,7 +14,7 @@ import sys
 import threading
 from dataclasses import dataclass, field as dataclass_field
 from enum import StrEnum
-from importlib.metadata import PackageNotFoundError, distribution, version
+from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import unquote, urlparse
@@ -87,9 +87,14 @@ re-applied only to the approval-gated shell backend's `execute` subprocesses by
 
 _DOTENV_DENIED_ENV_KEYS = frozenset(
     {
+        "BASH_ENV",
+        "BASHOPTS",
+        "CDPATH",
         "DYLD_INSERT_LIBRARIES",
         "DYLD_LIBRARY_PATH",
+        "ENV",
         "GIT_ASKPASS",
+        "GLOBIGNORE",
         "LD_AUDIT",
         "LD_LIBRARY_PATH",
         "LD_PRELOAD",
@@ -99,15 +104,42 @@ _DOTENV_DENIED_ENV_KEYS = frozenset(
         "PYTHONHOME",
         "PYTHONPATH",
         "PYTHONSTARTUP",
+        "SHELLOPTS",
         "SSH_ASKPASS",
         _INHERITED_PYTHONPATH_ENV,
     }
 )
 """Environment keys that project `.env` files must not inject.
 
+A project `.env` is untrusted (it travels with a cloned repo), so it must not be
+able to set variables that turn loading the `.env` into code execution in the
+subprocesses Deep Agents Code spawns. The set spans four threat categories;
+every entry is here for one of these reasons, so do not remove one without
+checking which category it belongs to:
+
+- Dynamic-linker preload/audit (`DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`,
+    `LD_AUDIT`, `LD_LIBRARY_PATH`, `LD_PRELOAD`): force a loader to map an
+    attacker-supplied shared object into every spawned binary.
+- Interpreter startup/path (`NODE_OPTIONS`, `PATH`, `PYTHONEXECUTABLE`,
+    `PYTHONHOME`, `PYTHONPATH`, `PYTHONSTARTUP`, `_INHERITED_PYTHONPATH_ENV`):
+    hijack which interpreter/binary runs or what it imports at startup.
+- Shell startup hooks (`BASH_ENV`, `ENV`, `BASHOPTS`, `SHELLOPTS`, `CDPATH`,
+    `GLOBIGNORE`): `BASH_ENV`/`ENV` source a file on every non-interactive shell;
+    `SHELLOPTS`/`BASHOPTS` can force `xtrace`/alias expansion; `CDPATH`/
+    `GLOBIGNORE` alter path/glob resolution. The agent runs detection and
+    `execute` commands through non-interactive shells, so these are live vectors.
+- Askpass hijack (`GIT_ASKPASS`, `SSH_ASKPASS`): point credential prompts at an
+    attacker-controlled binary.
+
 `_INHERITED_PYTHONPATH_ENV` is denied so a project `.env` cannot smuggle a
 `PYTHONPATH` into agent `execute` commands through the carrier var; the carrier
-is only meant to relay a value the user set in their launch environment."""
+is only meant to relay a value the user set in their launch environment.
+
+Matching is exact and case-sensitive: the protected consumers (the dynamic
+linker, bash, CPython) read these names only in their canonical case, so a
+lowercase `bash_env` injected into the environment is inert. Any future entry
+that some consumer reads case-insensitively would need a different check.
+"""
 
 
 def _find_dotenv_from_start_path(start_path: Path) -> Path | None:
@@ -169,8 +201,13 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
             )
             return
         for key, value in values.items():
-            if value is not None and key not in env:
-                env[key] = value
+            if value is None or key in env:
+                continue
+            if key in _DOTENV_DENIED_ENV_KEYS:
+                # Log the key only — the value is attacker-controlled.
+                logger.debug("Ignoring denied env key %r from %s", key, dotenv_path)
+                continue
+            env[key] = value
 
     project_dotenv: Path | None = None
     try:
@@ -265,7 +302,11 @@ def _load_dotenv(
         values = dotenv.dotenv_values(dotenv_path=dotenv_path)
         applied = False
         for key, value in values.items():
-            if value is None or key in os.environ or key in _DOTENV_DENIED_ENV_KEYS:
+            if value is None or key in os.environ:
+                continue
+            if key in _DOTENV_DENIED_ENV_KEYS:
+                # Log the key only — the value is attacker-controlled.
+                logger.debug("Ignoring denied env key %r from %s", key, dotenv_path)
                 continue
             os.environ[key] = value
             _dotenv_loaded_values[key] = value
@@ -323,6 +364,12 @@ _TRACING_API_KEY_ENV_VARS = ("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY")
 
 _TRACING_ENDPOINT_ENV_VARS = ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT")
 """Env vars that point tracing at a non-default (self-hosted/proxied) endpoint."""
+
+_TRACING_RUNS_ENDPOINTS_ENV_VARS = (
+    "LANGSMITH_RUNS_ENDPOINTS",
+    "LANGCHAIN_RUNS_ENDPOINTS",
+)
+"""Env vars the LangSmith SDK parses into replica trace ingestion targets."""
 
 
 class _LangSmithProfileConfig(Protocol):
@@ -481,21 +528,26 @@ def _disable_orphaned_tracing() -> None:
     resolvable, unset the flags so tracing never starts.
 
     A custom endpoint (`LANGSMITH_ENDPOINT`/`LANGCHAIN_ENDPOINT`, or a profile
-    `api_url`) signals a self-hosted or proxied LangSmith that may ingest without
-    an API key, so an explicitly configured endpoint is trusted and left alone
-    rather than risk disabling a working keyless setup. The SDK loggers are
-    quieted separately by `_quiet_sdk_tracing_logging`, so any residual ingest
-    errors stay off the TUI.
+    `api_url`) or replica endpoints (`LANGSMITH_RUNS_ENDPOINTS`/
+    `LANGCHAIN_RUNS_ENDPOINTS`) signal tracing can upload without a top-level
+    API key, so those explicitly configured targets are trusted and left alone.
+    The SDK loggers are quieted separately by `_quiet_sdk_tracing_logging`, so
+    any residual ingest errors stay off the TUI.
     """
     global _orphaned_tracing_disabled_notice  # noqa: PLW0603
 
     if not _tracing_enabled():
         return
 
+    env = dict(os.environ)
     has_custom_endpoint = any(
-        (os.environ.get(var) or "").strip() for var in _TRACING_ENDPOINT_ENV_VARS
+        (env.get(var) or "").strip() for var in _TRACING_ENDPOINT_ENV_VARS
     )
-    if has_custom_endpoint or _has_langsmith_profile_custom_endpoint():
+    if (
+        has_custom_endpoint
+        or _has_langsmith_profile_custom_endpoint()
+        or _has_langsmith_runs_endpoints_from(env)
+    ):
         return
 
     has_key = any(
@@ -535,7 +587,7 @@ def _apply_default_langsmith_project() -> None:
 
 
 def apply_stored_langsmith_auth(*, replace_project: bool = False) -> None:
-    """Apply a `/auth`-stored LangSmith key and tracing settings now.
+    """Apply a `/auth`-stored LangSmith key, tracing, and redaction now.
 
     Args:
         replace_project: Whether the stored LangSmith project should replace
@@ -550,6 +602,7 @@ def apply_stored_langsmith_auth(*, replace_project: bool = False) -> None:
     _apply_stored_langsmith_tracing(replace_project=replace_project)
     _disable_orphaned_tracing()
     _apply_default_langsmith_project()
+    configure_langsmith_secret_redaction()
 
 
 def _apply_stored_langsmith_tracing(*, replace_project: bool = False) -> None:
@@ -737,6 +790,8 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
     from rich.console import Console
 
+    from deepagents_code._git import RepositoryMetadata
+
     # Static type stubs for lazy module attributes resolved by __getattr__.
     # At runtime these are created on first access by _get_settings() /
     # _get_console() and cached in globals().
@@ -824,6 +879,8 @@ class Glyphs:
     newline: str  # ⏎ vs \\n
     warning: str  # ⚠ vs [!]
     question: str  # ? vs [?]
+    hourglass: str  # ⏳ vs [~]
+    retry: str  # ↻ vs [R]
     arrow_up: str  # up arrow vs ^
     arrow_down: str  # down arrow vs v
     bullet: str  # bullet vs -
@@ -856,6 +913,8 @@ UNICODE_GLYPHS = Glyphs(
     newline="⏎",
     warning="⚠",
     question="?",
+    hourglass="⏳",
+    retry="↻",
     arrow_up="↑",
     arrow_down="↓",
     bullet="•",
@@ -884,6 +943,8 @@ ASCII_GLYPHS = Glyphs(
     newline="\\n",
     warning="[!]",
     question="[?]",
+    hourglass="[~]",
+    retry="[R]",
     arrow_up="^",
     arrow_down="v",
     bullet="-",
@@ -919,20 +980,43 @@ Kept short so tracing metadata can never stall app flows.
 
 
 def _get_deepagents_version() -> str | None:
-    """Read the installed Deep Agents SDK version from package metadata.
+    """Resolve the installed Deep Agents SDK version for diagnostics.
 
-    This intentionally calls `importlib.metadata.version` directly instead of
-    `resolve_sdk_version`: `config` is on the startup hot path, while
-    `resolve_sdk_version` lives in `extras_info` and imports `packaging`.
+    Editable installs can leave package metadata behind the source checkout, so
+    this uses the shared resolver that prefers the editable source version and
+    falls back to metadata when needed.
 
     Returns:
-        The installed Deep Agents SDK version, or `None` when package metadata
-            is unavailable.
+        The resolved Deep Agents SDK version, or `None` when unavailable.
     """
+    # Imported lazily on purpose: `extras_info` pulls in `packaging`, which we
+    # keep off `config`'s module-import path (the startup hot path). Do not
+    # hoist this to the top of the module. The import is also guarded so a
+    # broken/absent `packaging` can never crash best-effort diagnostic metadata.
     try:
-        return version("deepagents")
-    except PackageNotFoundError:
+        from deepagents_code.extras_info import resolve_sdk_version
+
+        sdk_version, status = resolve_sdk_version()
+    except ImportError:
+        logger.warning(
+            "Could not import resolve_sdk_version for SDK version metadata",
+            exc_info=True,
+        )
         return None
+    return sdk_version if status == "resolved" else None
+
+
+def _format_lc_version(base_version: str, *, editable: bool) -> str:
+    """Format an `lc_versions` value with editable-install context.
+
+    Args:
+        base_version: The base version string.
+        editable: Whether the distribution is installed in editable mode.
+
+    Returns:
+        The version string, suffixed with ` (editable)` when `editable`.
+    """
+    return f"{base_version} (editable)" if editable else base_version
 
 
 def _resolve_editable_info() -> tuple[bool, str | None]:
@@ -1185,33 +1269,201 @@ def _get_git_branch() -> str | None:
     return branch
 
 
+_repo_metadata_cache: dict[str, RepositoryMetadata | None] = {}
+"""Per-cwd cache of resolved repository metadata."""
+
+
+def _get_git_commit_sha() -> str | None:
+    """Return the current `HEAD` commit SHA, or `None` if unavailable.
+
+    Resolved fresh on every call (unlike the branch/repo lookups): `HEAD` moves
+    whenever the agent or user commits, checks out, or resets within a session,
+    and each turn's trace must record the commit that was current for that turn.
+    """
+    from deepagents_code._git import resolve_git_commit_sha
+
+    try:
+        cwd = str(Path.cwd())
+    except OSError:
+        logger.debug("Could not determine cwd for git commit lookup", exc_info=True)
+        return None
+
+    try:
+        return resolve_git_commit_sha(cwd) or None
+    except OSError:
+        logger.debug("Could not determine git commit", exc_info=True)
+        return None
+
+
+def _get_repository_metadata() -> RepositoryMetadata | None:
+    """Return parsed `origin` repository metadata, or `None`."""
+    from deepagents_code._git import parse_repository_metadata, resolve_git_remote_url
+
+    try:
+        cwd = str(Path.cwd())
+    except OSError:
+        logger.debug("Could not determine cwd for git remote lookup", exc_info=True)
+        return None
+    if cwd in _repo_metadata_cache:
+        return _repo_metadata_cache[cwd]
+
+    repo: RepositoryMetadata | None = None
+    try:
+        remote_url = resolve_git_remote_url(cwd)
+        if remote_url:
+            repo = parse_repository_metadata(remote_url)
+    except OSError:
+        logger.debug("Could not determine git remote", exc_info=True)
+
+    _repo_metadata_cache[cwd] = repo
+    return repo
+
+
+# coding-agent-v1 contract literals (LSEN-277). See `build_coding_agent_metadata`.
+CODING_AGENT_KIND = "coding_agent"
+"""Fixed `ls_agent_kind` literal identifying the coding-agent trace class."""
+
+CODING_AGENT_INTEGRATION = "deepagents-code"
+"""Stable `ls_integration` id for this plugin (unchanged for backward-compat)."""
+
+CODING_AGENT_RUNTIME = "Deep Agents Code"
+"""User-facing `ls_agent_runtime` name."""
+
+CODING_AGENT_TRACE_SCHEMA_VERSION = "coding-agent-v1"
+"""Version of the coding-agent trace-metadata contract this build emits."""
+
+
+def build_coding_agent_metadata(
+    *,
+    thread_id: str,
+    turn_id: str | None,
+    turn_number: int | None,
+    cwd: str,
+    git_branch: str | None,
+    sandbox_type: str | None,
+    user_id: str | None,
+) -> dict[str, Any]:
+    """Build the shared coding-agent-v1 trace-metadata block.
+
+    Implements the `coding-agent-v1` contract (LSEN-277) for Deep Agents Code:
+    one helper that stamps the identity block, plugin/runtime versions, turn
+    markers, and repo/git/cwd attribution. The seven identity/version keys and
+    `thread_id` are always present; the optional keys whose value is unknown are
+    omitted (per the contract), so callers can pass `None` for any of them.
+
+    Because Deep Agents Code is itself the runtime — there is no separate CLI
+    package — `ls_integration_version` and `ls_agent_runtime_version` both come
+    from the `deepagents-code` package version (`__version__`). The underlying
+    `deepagents` SDK version is surfaced separately as
+    `dcode_client_deepagents_version` by `build_stream_config`.
+
+    Scope-restricted contract keys are intentionally NOT produced here:
+    `approval_policy` (root/interrupted only) and `ls_subagent_id` /
+    `ls_subagent_type` (subagent only). This metadata propagates trace-wide
+    through the LangGraph stream config (and, for subagents, the per-key config
+    merge of langgraph#7926 / deepagents#3634), so any key placed here lands on
+    every descendant run. Emitting a run-type-scoped key would therefore leak it
+    onto run types outside its contract `appliesTo` set — a hard validator
+    failure — and the LangGraph runtime exposes no clean per-run-type metadata
+    seam to scope them. See `build_stream_config` for the full rationale.
+
+    Args:
+        thread_id: Stable conversation id; also set as top-level `thread_id`.
+        turn_id: Per-turn id (uuid4 / message id), or `None`.
+        turn_number: 1-based per-thread turn index, or `None`.
+        cwd: Current working directory, or empty string when unavailable.
+        git_branch: Current branch name, or `None`.
+        sandbox_type: Sandbox provider name, or `None`/`"none"` when inactive.
+        user_id: Stable pseudonymous user id, or `None`.
+
+    Returns:
+        The contract metadata dict with unknown keys omitted.
+    """
+    metadata: dict[str, Any] = {
+        "ls_agent_kind": CODING_AGENT_KIND,
+        "ls_integration": CODING_AGENT_INTEGRATION,
+        "ls_agent_runtime": CODING_AGENT_RUNTIME,
+        "thread_id": thread_id,
+        "ls_trace_schema_version": CODING_AGENT_TRACE_SCHEMA_VERSION,
+        "ls_integration_version": __version__,
+        "ls_agent_runtime_version": __version__,
+    }
+
+    if turn_id:
+        metadata["turn_id"] = turn_id
+    if turn_number is not None:
+        metadata["turn_number"] = turn_number
+
+    repo = _get_repository_metadata()
+    if repo is not None:
+        repository_url, repository_provider, repository_name = repo
+        metadata["repository_url"] = repository_url
+        metadata["repository_provider"] = repository_provider
+        metadata["repository_name"] = repository_name
+
+    if git_branch:
+        metadata["git_branch"] = git_branch
+    commit_sha = _get_git_commit_sha()
+    if commit_sha:
+        metadata["git_commit_sha"] = commit_sha
+    if cwd:
+        metadata["cwd"] = cwd
+
+    if user_id:
+        metadata["user_id"] = user_id
+    if sandbox_type and sandbox_type != "none":
+        metadata["sandbox_type"] = sandbox_type
+
+    return metadata
+
+
 def build_stream_config(
     thread_id: str,
     assistant_id: str | None,
     *,
     sandbox_type: str | None = None,
+    turn_id: str | None = None,
+    turn_number: int | None = None,
 ) -> RunnableConfig:
     """Build the LangGraph stream config dict.
 
-    Injects the dcode version into `metadata["lc_versions"]` so LangSmith traces
-    can be correlated with specific releases. `create_deep_agent` supplies the
-    SDK version through the compiled graph config, and LangChain merges nested
-    metadata dictionaries so both versions survive at stream time.
+    Stamps the shared `coding-agent-v1` trace-metadata contract (LSEN-277) via
+    `build_coding_agent_metadata` — identity block, plugin/runtime versions,
+    turn markers, and repo/git/cwd attribution — onto `metadata`. Metadata set
+    here propagates trace-wide to every run in the graph (root, llm, tool, and
+    subagent subgraphs), which is exactly what the contract's "always" and
+    "where-known" keys require, so the helper output is stamped once here.
+
+    Scope-restricted contract keys are deliberately not emitted. `approval_policy`
+    (root/interrupted only) and `ls_subagent_id` / `ls_subagent_type` (subagent
+    only) cannot live in this trace-wide metadata: LangGraph propagates each key
+    to all descendant runs (per-key config merge, langgraph#7926 /
+    deepagents#3634), so they would leak onto run types outside their contract
+    `appliesTo` set and fail validation. This runtime exposes no clean
+    per-run-type metadata seam to scope them, so they are omitted by design
+    rather than leaked. (Subagent runs still inherit the parent/root `thread_id`
+    and all required keys, satisfying the contract's grouping rule.)
+
+    Also injects the dcode version into `metadata["lc_versions"]` so LangSmith
+    traces can be correlated with specific releases. `create_deep_agent` supplies
+    the SDK version through the compiled graph config, and LangChain merges
+    nested metadata dictionaries so both versions survive at stream time.
 
     Also records `dcode_client_deepagents_version` as a dcode-client diagnostic.
     This describes the Deep Agents package installed alongside the TUI, which
     can differ from a remote graph's Deep Agents runtime version.
 
-    Includes `ls_integration` metadata so LangSmith traces originating from
-    the app are distinguishable from bare SDK usage.
-
     Args:
-        thread_id: The app session thread identifier.
+        thread_id: The app session thread identifier. Set both on
+            `configurable.thread_id` and as the top-level `metadata.thread_id`
+            used by the contract for grouping turns.
         assistant_id: The dcode agent identifier, if any. When set, it is
             surfaced in trace metadata under `dcode_agent_name` and
             `agent_name`.
         sandbox_type: Sandbox provider name for trace metadata, or `None` if no
             sandbox is active.
+        turn_id: Stable per-turn id for the current user prompt, or `None`.
+        turn_number: 1-based per-thread turn index, or `None`.
 
     Returns:
         Config dict with `configurable` and `metadata` keys.
@@ -1224,21 +1476,28 @@ def build_stream_config(
         logger.warning("Could not determine working directory", exc_info=True)
         cwd = ""
 
-    metadata: dict[str, Any] = {
-        "lc_versions": {"deepagents-code": __version__},
-        "ls_integration": "deepagents-code",
+    from deepagents_code._env_vars import USER_ID
+
+    metadata: dict[str, Any] = build_coding_agent_metadata(
+        thread_id=thread_id,
+        turn_id=turn_id,
+        turn_number=turn_number,
+        cwd=cwd,
+        git_branch=_get_git_branch(),
+        sandbox_type=sandbox_type,
+        user_id=os.environ.get(USER_ID) or None,
+    )
+
+    # Legacy / diagnostic keys preserved for backward-compatibility during the
+    # coding-agent-v1 rollout (not part of the contract).
+    metadata["lc_versions"] = {
+        "deepagents-code": _format_lc_version(
+            __version__, editable=_is_editable_install()
+        )
     }
     deepagents_version = _get_deepagents_version()
     if deepagents_version is not None:
         metadata["dcode_client_deepagents_version"] = deepagents_version
-
-    from deepagents_code._env_vars import USER_ID
-
-    user_id = os.environ.get(USER_ID)
-    if user_id:
-        metadata["user_id"] = user_id
-    if cwd:
-        metadata["cwd"] = cwd
     if assistant_id:
         metadata.update(
             {
@@ -1247,11 +1506,7 @@ def build_stream_config(
                 "updated_at": datetime.now(UTC).isoformat(),
             }
         )
-    branch = _get_git_branch()
-    if branch:
-        metadata["git_branch"] = branch
-    if sandbox_type and sandbox_type != "none":
-        metadata["sandbox_type"] = sandbox_type
+
     return {
         "configurable": {"thread_id": thread_id},
         "metadata": metadata,
@@ -2580,6 +2835,119 @@ def get_langsmith_project_name() -> str | None:
     )
 
 
+def is_langsmith_redaction_enabled() -> bool:
+    """Return whether LangSmith secret redaction is enabled for agent traces."""
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("tracing.langsmith_redact")
+    if option is None:
+        return True
+    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    return bool(value)
+
+
+def configure_langsmith_secret_redaction() -> bool:
+    """Install the LangSmith SDK secret anonymizer for active agent tracing.
+
+    This is a fail-closed security control: when redaction is requested but the
+    redacting client cannot be installed, tracing is disabled rather than risk
+    uploading unredacted secrets to LangSmith.
+
+    Returns:
+        `True` when a redacting LangSmith client was configured, `False` when
+        tracing is inactive, has no upload target, redaction is disabled, or the
+        redacting client could not be installed (tracing is then disabled).
+    """
+    from deepagents_code._env_vars import LANGSMITH_REDACT
+
+    env = dict(os.environ)
+    # Cheap env-var checks first so the common (tracing-off) startup path skips
+    # the TOML read in `is_langsmith_redaction_enabled`. These are plain env
+    # reads with no failure mode of their own, so they stay outside the
+    # fail-closed boundary: if there is no upload target, there is nothing to
+    # protect.
+    if not (_tracing_enabled_from(env) and _tracing_can_upload_from(env)):
+        return False
+
+    # Everything from here on runs inside the fail-closed boundary: any
+    # unexpected exception (including from the redaction-toggle lookup) disables
+    # tracing rather than escaping and leaving tracing live but unredacted.
+    try:
+        if not is_langsmith_redaction_enabled():
+            logger.warning(
+                "LangSmith tracing is active but secret redaction is disabled "
+                "via %s; secrets may be uploaded to traces unredacted.",
+                LANGSMITH_REDACT,
+            )
+            return False
+
+        from langsmith import Client, configure
+        from langsmith.anonymizer import create_secret_anonymizer
+
+        api_key = _resolve_env_var_from(
+            env,
+            "LANGSMITH_API_KEY",
+        ) or _resolve_env_var_from(env, "LANGCHAIN_API_KEY")
+        api_url = _tracing_endpoint_from(env)
+        kwargs: dict[str, Any] = {"anonymizer": create_secret_anonymizer()}
+        if api_key:
+            kwargs["api_key"] = api_key
+        if api_url:
+            kwargs["api_url"] = api_url
+        # Reinstall the redacting client on every call rather than caching it:
+        # callers such as `/auth` re-authentication may rotate credentials, and
+        # a cached client could leave a stale or non-redacting client in place —
+        # a fail-open risk this control exists to prevent.
+        configure(client=Client(**kwargs))
+    except Exception:
+        logger.exception(
+            "Failed to install LangSmith secret redaction; disabling tracing so "
+            "unredacted secrets are not uploaded.",
+        )
+        _fail_closed_disable_tracing()
+        return False
+
+    logger.info("LangSmith secret redaction enabled for agent traces.")
+    return True
+
+
+def _fail_closed_disable_tracing() -> None:
+    """Best-effort disable LangSmith tracing after a redaction setup failure.
+
+    The SDK's global tracing switch (`configure(enabled=False)`) is the primary,
+    load-bearing control and is tried first. Clearing the canonical
+    tracing-enable env vars (and their `DEEPAGENTS_CODE_`-prefixed forms) is only
+    a last-resort fallback for the case where even that call fails (e.g. the
+    `langsmith` import is broken): the LangChain tracer checks the global switch
+    first but falls back to these env vars, so removing them helps prevent a
+    newly created tracer from starting an unredacted upload. (It only helps —
+    the SDK's env-var lookup is `lru_cache`d, so a value already read this
+    process may still be served from cache; the global switch is the reliable
+    stop.)
+    """
+    try:
+        from langsmith import configure
+
+        configure(enabled=False)
+    except Exception:
+        logger.exception(
+            "Failed to disable LangSmith tracing via the SDK after a redaction "
+            "setup failure; clearing tracing env vars as a fallback.",
+        )
+    else:
+        return
+
+    from deepagents_code.model_config import _ENV_PREFIX
+
+    for var in _TRACING_ENABLE_ENV_VARS:
+        os.environ.pop(var, None)
+        os.environ.pop(f"{_ENV_PREFIX}{var}", None)
+
+
 def get_langsmith_replica_projects() -> list[str]:
     """Extra LangSmith project names to dual-write agent traces to.
 
@@ -2690,6 +3058,47 @@ def _tracing_enabled_from(env: dict[str, str]) -> bool:
     )
 
 
+def _tracing_explicitly_disabled_from(env: dict[str, str]) -> bool:
+    """Return whether a tracing flag is explicitly set to a recognized off value.
+
+    True only when tracing is not enabled and at least one tracing-enable flag
+    carries a falsy token (`0`/`false`/`no`/`off`). An empty flag usually reads
+    as "not configured" rather than "disabled", except when an empty prefixed
+    bridged flag shadows a canonical truthy flag and therefore disables tracing.
+
+    Args:
+        env: Environment mapping to read.
+    """
+    from deepagents_code._env_vars import classify_env_bool
+    from deepagents_code.model_config import _ENV_PREFIX
+
+    if _tracing_enabled_from(env):
+        return False
+
+    def _is_off(raw: str | None) -> bool:
+        if raw is None or not raw.strip():
+            return False
+        return classify_env_bool(raw) is False
+
+    def _empty_prefixed_shadow_disables(var: str) -> bool:
+        prefixed = f"{_ENV_PREFIX}{var}"
+        if prefixed not in env or env[prefixed].strip():
+            return False
+        canonical = env.get(var)
+        return canonical is not None and classify_env_bool(canonical) is True
+
+    for var in _TRACING_BRIDGED_ENABLE_ENV_VARS:
+        if _is_off(_resolve_env_var_from(env, var)) or _empty_prefixed_shadow_disables(
+            var
+        ):
+            return True
+    return any(
+        _is_off(env.get(var))
+        for var in _TRACING_ENABLE_ENV_VARS
+        if var not in _TRACING_BRIDGED_ENABLE_ENV_VARS
+    )
+
+
 def _tracing_enabled() -> bool:
     """Return whether tracing is (or will be) enabled, prefix-aware."""
     return _tracing_enabled_from(dict(os.environ))
@@ -2706,6 +3115,68 @@ def _tracing_has_credentials_from(env: dict[str, str]) -> bool:
     """
     has_key = any(_resolve_env_var_from(env, var) for var in _TRACING_API_KEY_ENV_VARS)
     return has_key or _has_langsmith_profile_credentials(env)
+
+
+def _has_langsmith_runs_endpoints_from(env: dict[str, str]) -> bool:
+    """Return whether replica trace ingestion targets are configured.
+
+    Mirrors the LangSmith SDK's accepted `LANGSMITH_RUNS_ENDPOINTS` shapes: a
+    JSON list of `{"api_url": "...", "api_key": "..."}` objects, or a JSON
+    object mapping URL to API key. Invalid entries are ignored because the SDK
+    ignores them too.
+
+    Args:
+        env: Environment mapping to read.
+
+    Returns:
+        `True` when a valid runs-endpoints configuration is present.
+    """
+    raw = next(
+        (
+            env[var]
+            for var in _TRACING_RUNS_ENDPOINTS_ENV_VARS
+            if (env.get(var) or "").strip()
+        ),
+        None,
+    )
+    if raw is None:
+        return False
+
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return False
+
+    if isinstance(parsed, list):
+        return any(
+            isinstance(item, dict)
+            and isinstance(item.get("api_url"), str)
+            and isinstance(item.get("api_key"), str)
+            for item in parsed
+        )
+    if isinstance(parsed, dict):
+        return any(isinstance(value, str) for value in parsed.values())
+    return False
+
+
+def _tracing_can_upload_from(env: dict[str, str]) -> bool:
+    """Return whether tracing has credentials or an ingestion endpoint.
+
+    Custom and replica endpoints are supported as keyless ingestion targets, so
+    redaction must be configured whenever tracing could still upload without an
+    API key.
+
+    Args:
+        env: Environment mapping to read.
+
+    Returns:
+        `True` when tracing has credentials or any ingestion endpoint set.
+    """
+    return (
+        _tracing_has_credentials_from(env)
+        or _tracing_endpoint_from(env) is not None
+        or _has_langsmith_runs_endpoints_from(env)
+    )
 
 
 def _tracing_endpoint_from(env: dict[str, str]) -> str | None:
@@ -2730,7 +3201,7 @@ def _tracing_endpoint_from(env: dict[str, str]) -> str | None:
     return None
 
 
-def _resolve_tracing_project_from(env: dict[str, str]) -> str:
+def _resolve_tracing_project_from(env: dict[str, str]) -> tuple[str, bool]:
     """Resolve the project agent traces would route to, without bootstrap.
 
     The reported project matches the `tracing.langsmith_project` manifest
@@ -2743,7 +3214,8 @@ def _resolve_tracing_project_from(env: dict[str, str]) -> str:
         env: Environment mapping to read.
 
     Returns:
-        The resolved project name, or the default when none is configured.
+        The resolved project name and whether it fell back to the default
+            because no project was explicitly configured.
     """
     from deepagents_code._env_vars import LANGSMITH_PROJECT
     from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
@@ -2751,8 +3223,8 @@ def _resolve_tracing_project_from(env: dict[str, str]) -> str:
     for name in (LANGSMITH_PROJECT, "LANGSMITH_PROJECT"):
         value = env.get(name)
         if value:
-            return value
-    return LANGSMITH_PROJECT_DEFAULT
+            return value, False
+    return LANGSMITH_PROJECT_DEFAULT, True
 
 
 def _tracing_diagnostic_env() -> dict[str, str]:
@@ -2768,7 +3240,7 @@ def _tracing_diagnostic_env() -> dict[str, str]:
     return _preview_dotenv_environ(start_path=ctx.user_cwd if ctx else None)
 
 
-@dataclass
+@dataclass(frozen=True)
 class TracingStatus:
     """Offline snapshot of LangSmith tracing configuration for diagnostics.
 
@@ -2779,6 +3251,9 @@ class TracingStatus:
     enabled: bool
     """Whether a tracing flag is truthy in the environment."""
 
+    explicitly_disabled: bool
+    """Whether a tracing flag is explicitly set to a falsy value (vs. unset)."""
+
     has_credentials: bool
     """Whether an API key or profile credential is resolvable."""
 
@@ -2788,8 +3263,26 @@ class TracingStatus:
     project: str | None
     """Resolved configured project name, independent of active trace ingestion."""
 
+    project_is_default: bool
+    """Whether `project` is the built-in default rather than an explicit setting."""
+
     replica_project: str | None
     """Extra project agent runs are mirrored to, if configured."""
+
+    def __post_init__(self) -> None:
+        """Reject the contradictory enabled/explicitly-disabled pair.
+
+        `enabled` and `explicitly_disabled` model a tri-state (enabled /
+        explicitly disabled / not configured), so both being true is
+        meaningless. Fail loud at construction rather than letting the illegal
+        state flow through to the `dcode doctor` renderer.
+
+        Raises:
+            ValueError: If both `enabled` and `explicitly_disabled` are true.
+        """
+        if self.enabled and self.explicitly_disabled:
+            msg = "tracing cannot be both enabled and explicitly disabled"
+            raise ValueError(msg)
 
 
 def get_tracing_status() -> TracingStatus:
@@ -2807,11 +3300,14 @@ def get_tracing_status() -> TracingStatus:
     enabled = _tracing_enabled_from(env)
     has_credentials = _tracing_has_credentials_from(env)
     endpoint = _tracing_endpoint_from(env)
+    project, project_is_default = _resolve_tracing_project_from(env)
     return TracingStatus(
         enabled=enabled,
+        explicitly_disabled=_tracing_explicitly_disabled_from(env),
         has_credentials=has_credentials,
         endpoint=endpoint,
-        project=_resolve_tracing_project_from(env),
+        project=project,
+        project_is_default=project_is_default,
         replica_project=_get_first_langsmith_replica_project(
             _get_langsmith_replica_projects_from(env)
         ),

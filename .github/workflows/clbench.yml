@@ -89,7 +89,7 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
       - name: "📋 Checkout Code"
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: "🐍 Compute clbench matrix"
         id: set-matrix
@@ -125,7 +125,8 @@ jobs:
       # agent trajectories when these are set. clbench itself has no LangSmith
       # experiment integration, so scores/gain stay in clbench's own artifacts.
       # Tracing turns on only when the secret is present (no warnings when absent).
-      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+      # LANGSMITH_API_KEY is injected at the run step only (not job-wide), so it is
+      # absent while the third-party clbench deps are cloned/synced/installed.
       LANGSMITH_TRACING: ${{ secrets.LANGSMITH_API_KEY != '' && 'true' || 'false' }}
     steps:
       - name: "🔑 Verify model credentials"
@@ -166,7 +167,7 @@ jobs:
           echo "Credentials present for $CLBENCH_MODEL"
 
       - name: "📋 Checkout Code"
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
@@ -175,42 +176,18 @@ jobs:
           cache-suffix: clbench
           working-directory: libs/evals
 
-      - name: "🧠 Run continual-learning-bench with the Deep Agents system"
-        env:
-          ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
-          BASETEN_API_KEY: ${{ startsWith(matrix.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
-          FIREWORKS_API_KEY: ${{ startsWith(matrix.model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}
-          GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
-          GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
-          NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
-          OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
-          OPENAI_API_KEY: ${{ startsWith(matrix.model, 'openai:') && secrets.OPENAI_API_KEY || '' }}
-          OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
-          XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
+      - name: "📦 Set up clbench (clone + install — no model keys)"
+        # Deliberately has NO model/provider API keys (and no LANGSMITH_API_KEY) in
+        # its environment. The third-party clone, `uv sync --all-extras`, and the
+        # provider-package install run here, so install-time / build-backend code from
+        # clbench's dependency tree cannot read the secrets. The keys are injected only
+        # into the later `uv run clbench ...` step, after everything is installed.
         run: |
           set -euo pipefail
 
           # Validate the pinned ref is a full commit SHA (no moving refs).
           if ! [[ "$CLBENCH_REF" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::CLBENCH_REF must be a full 40-char commit SHA"; exit 1
-          fi
-          # Validate per-task parallelism is a positive integer.
-          if ! [[ "$CLBENCH_PER_TASK_PARALLELISM" =~ ^[1-9][0-9]*$ ]]; then
-            echo "::error::Invalid concurrency (per-task-parallelism): $CLBENCH_PER_TASK_PARALLELISM"; exit 1
-          fi
-          # Validate the schedule name (used in a file path + the command).
-          if ! [[ "$CLBENCH_SCHEDULE" =~ ^[A-Za-z0-9_]+$ ]]; then
-            echo "::error::Invalid clbench schedule: $CLBENCH_SCHEDULE"; exit 1
-          fi
-          # Validate + collect requested task names (alphanumeric + underscore only).
-          req_tasks=()
-          if [ -n "$CLBENCH_INCLUDE_TASKS" ]; then
-            read -r -a req_tasks <<< "$CLBENCH_INCLUDE_TASKS"
-            for t in "${req_tasks[@]}"; do
-              if ! [[ "$t" =~ ^[A-Za-z0-9_]+$ ]]; then
-                echo "::error::Invalid clbench task name: $t"; exit 1
-              fi
-            done
           fi
 
           # Clone clbench pinned to a specific commit.
@@ -243,10 +220,52 @@ jobs:
           # Deploy the Deep Agents system into this clbench checkout.
           "$GITHUB_WORKSPACE/libs/evals/deepagents_clbench/sync_to_clbench.sh" "$GITHUB_WORKSPACE/clbench-src"
 
-          # Best-effort dataset setup for tasks that need it (non-fatal).
+          # Best-effort dataset setup for tasks that need it (non-fatal). Dataset setup
+          # needs no model keys, so it runs here — keeping the third-party code it
+          # executes away from the provider secrets too.
           ( cd clbench-src && uv run clbench setup --all ) \
             || echo "::warning::'clbench setup --all' reported errors; tasks needing that data may be skipped."
 
+      - name: "🧠 Run continual-learning-bench with the Deep Agents system"
+        env:
+          ANTHROPIC_API_KEY: ${{ startsWith(matrix.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
+          BASETEN_API_KEY: ${{ startsWith(matrix.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
+          FIREWORKS_API_KEY: ${{ startsWith(matrix.model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}
+          GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
+          GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
+          NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
+          OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ startsWith(matrix.model, 'openai:') && secrets.OPENAI_API_KEY || '' }}
+          OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
+          XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
+          # Trajectory tracing secret — injected here, not job-wide, so it is absent
+          # during the clone/sync/install step above. Tracing stays off when unset.
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          # Validate per-task parallelism is a positive integer.
+          if ! [[ "$CLBENCH_PER_TASK_PARALLELISM" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Invalid concurrency (per-task-parallelism): $CLBENCH_PER_TASK_PARALLELISM"; exit 1
+          fi
+          # Validate the schedule name (used in a file path + the command).
+          if ! [[ "$CLBENCH_SCHEDULE" =~ ^[A-Za-z0-9_]+$ ]]; then
+            echo "::error::Invalid clbench schedule: $CLBENCH_SCHEDULE"; exit 1
+          fi
+          # Validate + collect requested task names (alphanumeric + underscore only).
+          req_tasks=()
+          if [ -n "$CLBENCH_INCLUDE_TASKS" ]; then
+            read -r -a req_tasks <<< "$CLBENCH_INCLUDE_TASKS"
+            for t in "${req_tasks[@]}"; do
+              if ! [[ "$t" =~ ^[A-Za-z0-9_]+$ ]]; then
+                echo "::error::Invalid clbench task name: $t"; exit 1
+              fi
+            done
+          fi
+
+          # clbench was cloned, `uv sync`'d, the provider package installed, and
+          # `clbench setup` run in the preceding setup step — all without model keys
+          # in the environment. clbench-src persists on the runner across steps.
           model_slug=$(printf '%s' "$CLBENCH_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
           run_name="deepagents-${model_slug}-${GITHUB_RUN_ID}"
 

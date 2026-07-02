@@ -154,7 +154,7 @@ jobs:
       # SHA (resolve-sha validates that ${WORKING_DIR}/pyproject.toml at the
       # input SHA declares the version being released). All downstream jobs
       # check out the resolved SHA so wheel bytes and tag tree agree.
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
 
@@ -257,7 +257,7 @@ jobs:
       # Build from the validated release commit (not dispatch HEAD) so the wheel
       # bytes match the GitHub release tag's tree. See RELEASING.md > Hotfix
       # Protocol for the integrity invariant this enforces.
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 
@@ -375,7 +375,7 @@ jobs:
       release-body: ${{ steps.generate-release-body.outputs.release-body }}
       tag: ${{ steps.check-tags.outputs.tag }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
           fetch-depth: 0
@@ -787,7 +787,7 @@ jobs:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
 
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 
@@ -823,7 +823,7 @@ jobs:
     env:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 
@@ -909,7 +909,12 @@ jobs:
         # Install directly from the locally-built wheel (no index resolution needed)
         run: |
           uv venv
-          VIRTUAL_ENV=.venv uv pip install dist/*.whl
+          INSTALL_ARGS=(dist/*.whl)
+          # Talon transitively requires a prerelease deepagents pin via deepagents-code.
+          if [ "$PKG_NAME" = "deepagents-talon" ]; then
+            INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")
+          fi
+          VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"
 
           # Replace all dashes in the package name with underscores,
           # since that's how Python imports packages with dashes in the name.
@@ -934,7 +939,12 @@ jobs:
           PKG_NAME: ${{ needs.build.outputs.pkg-name }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
-          VIRTUAL_ENV=.venv uv pip install dist/*.whl
+          INSTALL_ARGS=(dist/*.whl)
+          # Talon transitively requires a prerelease deepagents pin via deepagents-code.
+          if [ "$PKG_NAME" = "deepagents-talon" ]; then
+            INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")
+          fi
+          VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"
 
       - name: Run unit tests
         run: make test COV_ARGS= PYTEST_EXTRA="--no-cov -v"
@@ -997,7 +1007,7 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 
@@ -1048,7 +1058,7 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 

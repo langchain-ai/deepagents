@@ -31,22 +31,85 @@ jobs:
     name: Block empty commits on main
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          fetch-depth: 2
+          fetch-depth: 0
       - name: Reject empty commits
         run: |
           if [ "$(git rev-list --count HEAD)" -lt 2 ]; then
             echo "Single-commit history; skipping empty-commit guard."
             exit 0
           fi
-          CHANGED=$(git diff-tree --no-commit-id --name-only -r HEAD)
+          COMMIT_MSG=$(git log -1 --format=%s HEAD)
+          SHA=$(git rev-parse HEAD)
+          PARENT_COUNT=$(git show --no-patch --format=%P HEAD | wc -w | tr -d ' ')
+          if [ "$PARENT_COUNT" -gt 2 ]; then
+            echo "::error::Octopus merge detected on main: $SHA \"$COMMIT_MSG\""
+            echo "::error::The empty-commit guard only supports one- or two-parent commits. Recreate this as a normal two-parent merge."
+            exit 1
+          fi
+
+          # `git diff-tree` reports no paths for merge commits unless given -m.
+          # Compare merges to their first parent so non-empty merges pass before
+          # the repo-hotfix history-repair exception below.
+          if [ "$PARENT_COUNT" -eq 2 ]; then
+            CHANGED=$(git diff --name-only HEAD^1 HEAD)
+          else
+            CHANGED=$(git diff-tree --no-commit-id --name-only -r HEAD)
+          fi
           if [ -n "$CHANGED" ]; then
             echo "HEAD touches files; proceeding."
             exit 0
           fi
-          COMMIT_MSG=$(git log -1 --format=%s HEAD)
-          SHA=$(git rev-parse HEAD)
+
+          if [ "$PARENT_COUNT" -eq 2 ]; then
+            case "$COMMIT_MSG" in
+              "hotfix(repo):"*) ;;
+              *)
+                echo "::error::Empty merge commit detected on main: $SHA \"$COMMIT_MSG\""
+                echo "::error::Only repo-scoped hotfix merge commits may use the history-repair exception."
+                echo "::error::See .github/RELEASING.md -> \"Empty commit fan-out\"."
+                exit 1
+                ;;
+            esac
+
+            MERGED_COMMITS=$(git rev-list HEAD^1..HEAD^2)
+            if [ -z "$MERGED_COMMITS" ]; then
+              echo "::error::Empty merge commit detected on main: $SHA \"$COMMIT_MSG\""
+              echo "::error::The merge commit does not introduce any second-parent commits."
+              echo "::error::See .github/RELEASING.md -> \"Empty commit fan-out\"."
+              exit 1
+            fi
+
+            EMPTY_MERGED_COMMITS=""
+            for COMMIT in $MERGED_COMMITS; do
+              COMMIT_PARENT_COUNT=$(git show --no-patch --format=%P "$COMMIT" | wc -w | tr -d ' ')
+              if [ "$COMMIT_PARENT_COUNT" -gt 2 ]; then
+                echo "::error::Octopus merge detected in merged branch: $COMMIT"
+                echo "::error::The empty-commit guard only supports one- or two-parent commits. Recreate this as normal two-parent merges."
+                exit 1
+              fi
+              if [ "$COMMIT_PARENT_COUNT" -eq 2 ]; then
+                COMMIT_CHANGED=$(git diff --name-only "$COMMIT^1" "$COMMIT")
+              else
+                COMMIT_CHANGED=$(git diff-tree --no-commit-id --name-only -r "$COMMIT")
+              fi
+              if [ -z "$COMMIT_CHANGED" ]; then
+                EMPTY_MERGED_COMMITS="$EMPTY_MERGED_COMMITS $COMMIT"
+              fi
+            done
+            if [ -z "$EMPTY_MERGED_COMMITS" ]; then
+              echo "Empty repo hotfix merge commit detected, but every commit merged from the second parent touches files; proceeding."
+              git log --oneline HEAD^1..HEAD^2
+              exit 0
+            fi
+            echo "::error::Empty merge commit detected on main: $SHA \"$COMMIT_MSG\""
+            echo "::error::The merged branch contains empty commits:$EMPTY_MERGED_COMMITS"
+            echo "::error::Every commit in a history-repair branch must touch files so release-please can scope it."
+            echo "::error::See .github/RELEASING.md -> \"Empty commit fan-out\"."
+            exit 1
+          fi
+
           echo "::error::Empty commit detected on main: $SHA \"$COMMIT_MSG\""
           echo "::error::release-please scopes commits to packages by changed file paths. An empty commit has none, so every package gets bumped."
           echo "::error::Recovery: revert this commit on main, then push a non-empty commit scoped to a single package directory. See .github/RELEASING.md -> \"Empty commit fan-out\"."
@@ -73,7 +136,7 @@ jobs:
       quickjs-release: ${{ steps.check-releases.outputs.quickjs-release }}
       release-version: ${{ steps.check-releases.outputs.release-version }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 2
 
@@ -229,7 +292,7 @@ jobs:
   #     than silently guessing "in flight" for 45 min and stranding commits.
   guard-pending-release:
     needs: [guard-empty-commit, detect-release-commit]
-    name: Wait while a publish is in flight
+    name: Check for in-flight publish
     if: needs.detect-release-commit.outputs.release-commit != 'true'
     runs-on: ubuntu-latest
     # Backstops the poll loop at the job level (covers checkout + every `gh`
@@ -246,7 +309,7 @@ jobs:
     outputs:
       skip: ${{ steps.check.outputs.skip }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 1
       - name: Wait for in-flight releases
@@ -478,7 +541,7 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       # release-please uses GITHUB_TOKEN, so its PR events don't trigger
       # pull_request_target (GitHub's infinite-loop prevention). Reuse the
@@ -530,7 +593,7 @@ jobs:
         pr: ${{ fromJson(needs.release-please.outputs.prs) }}
     steps:
       - name: Checkout release branch
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ matrix.pr.headBranchName }}
 

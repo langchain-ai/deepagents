@@ -1,6 +1,6 @@
 import mimetypes
 import time
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain.agents import create_agent
@@ -21,6 +21,7 @@ from langgraph.types import Command
 import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from deepagents.backends.protocol import (
+    BackendProtocol,
     ExecuteResponse,
     GrepResult,
     ReadResult,
@@ -123,27 +124,27 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware()
         assert isinstance(middleware.backend, StateBackend)
         assert middleware._custom_system_prompt is None
-        assert len(middleware.tools) == 7  # All tools including execute
+        assert len(middleware.tools) == 8  # All tools including execute and delete
 
     def test_init_with_composite_backend(self):
         backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
         middleware = FilesystemMiddleware(backend=backend)
         assert isinstance(middleware.backend, CompositeBackend)
         assert middleware._custom_system_prompt is None
-        assert len(middleware.tools) == 7  # All tools including execute
+        assert len(middleware.tools) == 8  # All tools including execute and delete
 
     def test_init_custom_system_prompt_default(self):
         middleware = FilesystemMiddleware(system_prompt="Custom system prompt")
         assert isinstance(middleware.backend, StateBackend)
         assert middleware._custom_system_prompt == "Custom system prompt"
-        assert len(middleware.tools) == 7  # All tools including execute
+        assert len(middleware.tools) == 8  # All tools including execute and delete
 
     def test_init_custom_system_prompt_with_composite(self):
         backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend()})
         middleware = FilesystemMiddleware(backend=backend, system_prompt="Custom system prompt")
         assert isinstance(middleware.backend, CompositeBackend)
         assert middleware._custom_system_prompt == "Custom system prompt"
-        assert len(middleware.tools) == 7  # All tools including execute
+        assert len(middleware.tools) == 8  # All tools including execute and delete
 
     def test_init_custom_tool_descriptions_default(self):
         middleware = FilesystemMiddleware(custom_tool_descriptions={"ls": "Custom ls tool description"})
@@ -178,6 +179,13 @@ class TestFilesystemMiddleware:
         ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
         result = ls_tool.invoke({"runtime": _runtime(), "path": "/"})
         assert result.content == str(["/test.txt", "/test2.txt"])
+
+    def test_ls_shortterm_no_files(self):
+        backend, _ = _make_backend({})
+        middleware = FilesystemMiddleware(backend=backend)
+        ls_tool = next(tool for tool in middleware.tools if tool.name == "ls")
+        result = ls_tool.invoke({"runtime": _runtime(), "path": "/"})
+        assert result.content == "No files found"
 
     def test_ls_shortterm_with_path(self):
         files = {
@@ -411,7 +419,7 @@ class TestFilesystemMiddleware:
                 "runtime": _runtime(),
             }
         )
-        assert result.content == str([])
+        assert result.content == "No files found"
 
     def test_glob_timeout_returns_error_message(self):
         backend, _ = _make_backend()
@@ -1745,6 +1753,61 @@ class TestFilesystemMiddleware:
         assert isinstance(result, ToolMessage)
         assert "Error: Execution not available" in result.content
         assert "does not support command execution" in result.content
+
+    def test_delete_filtered_when_backend_lacks_delete(self):
+        """Delete is removed from the request when the backend can't delete.
+
+        Mirrors how the execute tool is filtered out when the backend doesn't
+        support execution, rather than advertising a tool that fails at call time.
+        """
+
+        class _NoDeleteBackend(StateBackend):
+            # Opt out of delete support by inheriting the protocol's default.
+            delete = BackendProtocol.delete
+
+        middleware = FilesystemMiddleware(backend=_NoDeleteBackend(), system_prompt="")
+
+        ls_tool = MagicMock()
+        ls_tool.name = "ls"
+        delete_tool = MagicMock()
+        delete_tool.name = "delete"
+        request = MagicMock()
+        request.tools = [ls_tool, delete_tool]
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        request.override.assert_called_once()
+        filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
+        assert "delete" not in filtered_names
+        assert "ls" in filtered_names
+
+    def test_delete_kept_when_backend_supports_delete(self):
+        """Delete stays in the request when the backend supports deletion."""
+        middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")
+
+        ls_tool = MagicMock()
+        ls_tool.name = "ls"
+        delete_tool = MagicMock()
+        delete_tool.name = "delete"
+        request = MagicMock()
+        request.tools = [ls_tool, delete_tool]
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        # StateBackend supports delete (and no execute tool is present), so no
+        # tool filtering — and with an empty system prompt, no override at all.
+        request.override.assert_not_called()
+
+    def test_delete_invalid_path_returns_error(self):
+        """The sync delete tool rejects a traversal path before deleting."""
+        middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")
+        delete_tool = next(tool for tool in middleware.tools if tool.name == "delete")
+        result = delete_tool.invoke({"file_path": "../etc/passwd", "runtime": _runtime("d1")})
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "traversal" in result.content
 
     def test_execute_tool_output_formatting(self):
         """Test execute tool formats output correctly."""

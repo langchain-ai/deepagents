@@ -290,7 +290,11 @@ When these disagree, the same version can behave differently for different users
 
 ## Alpha / Beta / Pre-release Versions
 
-release-please is SemVer-only internally. Its `prerelease` versioning strategy produces versions like `0.0.35-alpha.1`, which is **not valid [PEP 440](https://peps.python.org/pep-0440/)**. Python/PyPI requires `0.0.35a1` (no hyphen, no dot). The Python file updaters write the SemVer string verbatim and their regexes cannot round-trip PEP 440 versions, so bumping version files on `main` to a PEP 440 pre-release would break subsequent release-please runs.
+release-please can maintain normal Python versions for us, but it cannot safely maintain Python pre-release versions on long-lived branches.
+
+The problem is the difference between SemVer and Python's [PEP 440](https://peps.python.org/pep-0440/) version syntax. release-please's built-in prerelease strategy produces SemVer versions like `0.0.35-alpha.1`, but PyPI requires the PEP 440 form `0.0.35a1`. If we manually commit that PEP 440 version to `main` or a long-lived `vX.Y` branch, a later release-please PR may not be able to move every version file back to the final GA version. In particular, the `_version.py` updater only matches stable-looking `X.Y.Z` / `X.Y.Z-suffix` values, not values like `0.0.35a1` or `0.0.35rc1`. The next GA release PR could update `pyproject.toml` to `0.0.35` while leaving `_version.py` stuck at `0.0.35a1`.
+
+For that reason, never commit PEP 440 pre-release version bumps to `main` or a long-lived `vX.Y` version branch. Keep those branches in the stable-version shape release-please can maintain, and use the throwaway branch flow below for alpha, beta, RC, or `.dev` artifacts.
 
 ### How to publish a pre-release
 
@@ -400,7 +404,7 @@ Both `main` and `v[0-9].*` require a CI-passing PR (no direct pushes). The only 
 
 1. **Branch:** create `v0.7` from `main`.
 2. **Build `0.7`:** land net-new work via **squash PRs into `v0.7`** (same flow as `main`).
-3. **Keep `v0.7` current with `main`:** default to a PR with **base `v0.7`, head `main`** and merge it with **"Create a merge commit"** (not squash!). CI runs on the merged result; `main`'s commits arrive as shared history, so the cutover stays clean. If the staging branch is being actively maintained by a DRI with branch-rule bypass privileges who can safely rewrite it, rebasing `v0.7` onto `main` and force-pushing with lease is also acceptable; verify `git rev-list --left-right --count main...v0.7` reports `0 N` and that `git log --oneline --no-merges main..v0.7` lists only the intended version-line commits. Cherry-pick instead only if `v0.7` deliberately diverges from `main` (e.g. `v0.7` deleted or rewrote a module that `main` is still bug-fixing, so a full merge would keep dragging the old code back and re-conflict on every sync — cherry-pick just the fixes you still want).
+3. **Keep `v0.7` current with `main`:** default to a PR with **base `v0.7`, head `main`** and merge it with **"Create a merge commit"** (not squash!). Use a PR title like `chore(repo): sync main into v0.7`; do not use `release` as the scope because PR title lint reserves `release` for the type and disallows it as a scope. CI runs on the merged result; `main`'s commits arrive as shared history, so the cutover stays clean. If the staging branch is being actively maintained by a DRI with branch-rule bypass privileges who can safely rewrite it, rebasing `v0.7` onto `main` and force-pushing with lease is also acceptable; verify `git rev-list --left-right --count main...v0.7` reports `0 N` and that `git log --oneline --no-merges main..v0.7` lists only the intended version-line commits. Cherry-pick instead only if `v0.7` deliberately diverges from `main` (e.g. `v0.7` deleted or rewrote a module that `main` is still bug-fixing, so a full merge would keep dragging the old code back and re-conflict on every sync — cherry-pick just the fixes you still want).
 4. **Cutover:** an admin merges `v0.7` onto `main` with `git merge --no-ff` under admin bypass. See [Cutover](#cutover-main-adopts-the-new-line).
 
 ### Staging branch (`main` stays on the current line)
@@ -476,6 +480,8 @@ After `main` adopts the new line, cut a `vX.Y` branch from the **last release co
 This most commonly bites when someone tries to "fix up" a merged PR's changelog entry by pushing an empty commit with a corrected conventional-commit subject (e.g., adding a missing `!` for a breaking change). The corrected subject does land in `git log`, but release-please reads file paths, not commit subjects, when deciding scope.
 
 The `guard-empty-commit` job in [`release-please.yml`](https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/release-please.yml) blocks this at CI time: any push to `main` whose `HEAD` commit changes zero files fails fast with a clear error before the release-please action runs.
+
+There is one narrow exception for history repair: an empty merge commit titled `hotfix(repo): ...` may pass if each commit introduced by the merged branch touches files. This covers cases where the final file tree is intentionally unchanged, but preserving the individual commits matters. For example, release-please reads commit history to decide package scope, version bumps, and changelog entries, so restoring a lost `feat(sdk)!` commit with a `BREAKING CHANGE:` footer can be necessary even when the files already match `main`.
 
 **If you need to amend a release note for a commit that already merged**, see [Overriding a Merged Commit's Changelog Entry](#overriding-a-merged-commits-changelog-entry) below. Do not push empty commits to `main`.
 

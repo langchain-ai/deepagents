@@ -122,6 +122,9 @@ KITTY_KEYBOARD = "DEEPAGENTS_CODE_KITTY_KEYBOARD"
 LANGSMITH_PROJECT = "DEEPAGENTS_CODE_LANGSMITH_PROJECT"
 """Override LangSmith project name for agent traces."""
 
+LANGSMITH_REDACT = "DEEPAGENTS_CODE_LANGSMITH_REDACT"
+"""Toggle LangSmith secret redaction for agent traces (defaults to on)."""
+
 LANGSMITH_REPLICA_PROJECTS = "DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS"
 """Comma-separated LangSmith project names to *also* write agent traces to.
 
@@ -201,6 +204,25 @@ SHOW_LANGSMITH_REPLICA_TRACING = "DEEPAGENTS_CODE_SHOW_LANGSMITH_REPLICA_TRACING
 
 Defaults to enabled; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
 to hide replica tracing details from the splash while leaving tracing active.
+"""
+
+SHOW_SCROLLBAR = "DEEPAGENTS_CODE_SHOW_SCROLLBAR"
+"""Show the vertical scrollbar in the chat area when enabled.
+
+Off by default; use the `/scrollbar` slash command or `[ui].show_scrollbar` in
+config.toml to toggle. Parsed by `classify_env_bool` (an unrecognized or empty
+value falls through to the config value rather than forcing the default).
+
+When set, this env var takes precedence over the persisted `[ui].show_scrollbar`
+config value on launch, so a `/scrollbar` toggle will not appear to "stick"
+across restarts while the env var remains set.
+"""
+
+SHOW_URL_OPEN_TOAST = "DEEPAGENTS_CODE_SHOW_URL_OPEN_TOAST"
+"""Show a confirmation toast after clicking a URL that opens in a browser.
+
+Defaults to enabled; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
+to suppress the success toast while still opening URLs normally.
 """
 
 THEME = "DEEPAGENTS_CODE_THEME"

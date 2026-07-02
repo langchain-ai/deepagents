@@ -1,0 +1,20 @@
+libs/deepagents/deepagents/profiles/harness/_nvidia_nemotron_3_ultra.py
+  s_b525ff6365a718::t_2c1d83f5b793e2 892-905
+  s_b525ff6365a718::t_a8cb5ac7b21337 941-945
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.9",
+  "base_commit_sha": "a10a7157c0fceb8979277891294aad26d3ec75a4",
+  "prompts": {},
+  "sessions": {
+    "s_b525ff6365a718": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d6e8e752-8729-40f4-a330-b209f0da9174",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nick Hollon <nick.hollon@langchain.dev>"
+    }
+  }
+}

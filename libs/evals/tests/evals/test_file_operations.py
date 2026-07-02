@@ -19,8 +19,10 @@ if TYPE_CHECKING:
 
 from tests.evals.utils import (
     TrajectoryScorer,
+    file_absent,
     file_contains,
     file_equals,
+    file_excludes,
     final_text_contains,
     final_text_excludes,
     run_agent,
@@ -45,6 +47,89 @@ def test_read_file_seeded_state_backend_file(model: BaseChatModel) -> None:
         scorer=TrajectoryScorer()
         .expect(agent_steps=2, tool_call_requests=1)
         .success(final_text_contains("three", case_insensitive=True)),
+    )
+
+
+@pytest.mark.eval_tier("baseline")
+@pytest.mark.eval_category("file_operations")
+@pytest.mark.langsmith
+def test_write_file_overwrites_existing(model: BaseChatModel) -> None:
+    """Overwrites an existing file without reading it first."""
+    agent = create_deep_agent(model=model)
+    run_agent(
+        agent,
+        model=model,
+        initial_files={"/note.md": "old content\n"},
+        query='Rewrite /note.md so it contains only "new content". Reply with DONE only.',
+        # 1st step: write_file to /note.md (no read needed).
+        # 2nd step: reply DONE.
+        # 1 tool call request: write_file.
+        scorer=TrajectoryScorer()
+        .expect(
+            agent_steps=2,
+            tool_call_requests=1,
+            tool_calls=[
+                tool_call(name="write_file", step=1, args_contains={"file_path": "/note.md"}),
+            ],
+        )
+        .success(
+            final_text_contains("DONE"),
+            file_equals("/note.md", "new content"),
+        ),
+    )
+
+
+@pytest.mark.eval_tier("baseline")
+@pytest.mark.eval_category("file_operations")
+@pytest.mark.langsmith
+def test_write_file_overwrite_drops_old_content(model: BaseChatModel) -> None:
+    """Overwriting a file replaces it entirely, no trace of old content should remain."""
+    agent = create_deep_agent(model=model)
+    run_agent(
+        agent,
+        model=model,
+        initial_files={"/log.txt": "stale line\n"},
+        query='Write "fresh line" to /log.txt. Reply with DONE only.',
+        # 1st step: write_file to /log.txt.
+        # 2nd step: reply DONE.
+        # 1 tool call request: write_file.
+        scorer=TrajectoryScorer()
+        .expect(agent_steps=2, tool_call_requests=1)
+        .success(
+            final_text_contains("DONE"),
+            file_contains("/log.txt", "fresh line"),
+            file_excludes("/log.txt", "stale"),
+        ),
+    )
+
+
+@pytest.mark.eval_tier("baseline")
+@pytest.mark.eval_category("file_operations")
+@pytest.mark.langsmith
+def test_write_file_prefers_edit_for_targeted_change(model: BaseChatModel) -> None:
+    """Uses edit_file (not write_file) when only a targeted in-place change is needed."""
+    agent = create_deep_agent(model=model)
+    run_agent(
+        agent,
+        model=model,
+        initial_files={"/note.md": "cat dog bird\n"},
+        query="In /note.md, replace 'cat' with 'lion'. Reply with DONE only.",
+        # 1st step: edit_file on /note.md (targeted change, rest of file preserved).
+        # 2nd step: reply DONE.
+        # 1 tool call request: edit_file.
+        scorer=TrajectoryScorer()
+        .expect(
+            agent_steps=2,
+            tool_call_requests=1,
+            tool_calls=[
+                tool_call(name="edit_file", step=1, args_contains={"file_path": "/note.md"}),
+            ],
+        )
+        .success(
+            final_text_contains("DONE"),
+            file_contains("/note.md", "lion"),
+            file_excludes("/note.md", "cat"),
+        ),
     )
 
 
@@ -607,4 +692,159 @@ def test_read_file_empty_file_reports_empty(model: BaseChatModel) -> None:
         scorer=TrajectoryScorer()
         .expect(agent_steps=2, tool_call_requests=1)
         .success(final_text_contains("EMPTY")),
+    )
+
+
+@pytest.mark.eval_tier("baseline")
+@pytest.mark.eval_category("file_operations")
+@pytest.mark.langsmith
+def test_delete_simple(model: BaseChatModel) -> None:
+    """Deletes a seeded file and confirms it is gone."""
+    agent = create_deep_agent(model=model)
+    run_agent(
+        agent,
+        model=model,
+        initial_files={"/foo.md": "delete me\n"},
+        query="Delete the file /foo.md, then reply with DONE only.",
+        # 1st step: request a delete tool call for /foo.md.
+        # 2nd step: reply DONE.
+        # 1 tool call request: delete.
+        scorer=TrajectoryScorer()
+        .expect(
+            agent_steps=2,
+            tool_call_requests=1,
+            tool_calls=[
+                tool_call(name="delete", step=1, args_contains={"file_path": "/foo.md"}),
+            ],
+        )
+        .success(
+            final_text_contains("DONE"),
+            file_absent("/foo.md"),
+        ),
+    )
+
+
+@pytest.mark.eval_tier("baseline")
+@pytest.mark.eval_category("file_operations")
+@pytest.mark.langsmith
+def test_delete_one_of_several_files(model: BaseChatModel) -> None:
+    """Deletes a single target file, leaving the others untouched."""
+    agent = create_deep_agent(model=model)
+    run_agent(
+        agent,
+        model=model,
+        initial_files={
+            "/a.md": "a",
+            "/b.md": "b",
+            "/c.md": "c",
+        },
+        query="Delete /b.md only. Leave the other files untouched. Reply with DONE only.",
+        # 1st step: request a delete tool call for /b.md.
+        # 2nd step: reply DONE.
+        # 1 tool call request: delete.
+        scorer=TrajectoryScorer()
+        .expect(
+            agent_steps=2,
+            tool_call_requests=1,
+            tool_calls=[
+                tool_call(name="delete", step=1, args_contains={"file_path": "/b.md"}),
+            ],
+        )
+        .success(
+            final_text_contains("DONE"),
+            file_absent("/b.md"),
+            file_equals("/a.md", "a"),
+            file_equals("/c.md", "c"),
+        ),
+    )
+
+
+@pytest.mark.eval_tier("baseline")
+@pytest.mark.eval_category("file_operations")
+@pytest.mark.langsmith
+def test_deletes_in_parallel(model: BaseChatModel) -> None:
+    """Deletes two files in parallel without extra tool calls."""
+    agent = create_deep_agent(model=model)
+    run_agent(
+        agent,
+        model=model,
+        initial_files={"/a.md": "a", "/b.md": "b"},
+        query=(
+            "Delete /a.md and /b.md. Do the deletes in parallel. Do NOT read any files afterward. Reply with DONE only."
+        ),
+        # 1st step: request 2 delete tool calls in parallel.
+        # 2nd step: reply DONE.
+        # 2 tool call requests: delete /a.md and delete /b.md.
+        scorer=TrajectoryScorer()
+        .expect(
+            agent_steps=2,
+            tool_call_requests=2,
+            tool_calls=[
+                tool_call(name="delete", step=1, args_contains={"file_path": "/a.md"}),
+                tool_call(name="delete", step=1, args_contains={"file_path": "/b.md"}),
+            ],
+        )
+        .success(
+            final_text_contains("DONE"),
+            file_absent("/a.md"),
+            file_absent("/b.md"),
+        ),
+    )
+
+
+@pytest.mark.eval_tier("baseline")
+@pytest.mark.eval_category("file_operations")
+@pytest.mark.langsmith
+def test_write_then_delete_same_file(model: BaseChatModel) -> None:
+    """Writes a file and then deletes it, leaving no trace."""
+    agent = create_deep_agent(model=model)
+    run_agent(
+        agent,
+        model=model,
+        query=('Write "scratch" to /tmp.md, then delete /tmp.md. Reply with DONE only.'),
+        # 1st step: request a write_file tool call for /tmp.md.
+        # 2nd step: request a delete tool call for /tmp.md.
+        # 3rd step: reply DONE.
+        # 2 tool call requests: write_file then delete.
+        scorer=TrajectoryScorer()
+        .expect(
+            agent_steps=3,
+            tool_call_requests=2,
+            tool_calls=[
+                tool_call(name="write_file", step=1, args_contains={"file_path": "/tmp.md"}),
+                tool_call(name="delete", step=2, args_contains={"file_path": "/tmp.md"}),
+            ],
+        )
+        .success(
+            final_text_contains("DONE"),
+            file_absent("/tmp.md"),
+        ),
+    )
+
+
+@pytest.mark.eval_tier("baseline")
+@pytest.mark.eval_category("file_operations")
+@pytest.mark.langsmith
+def test_delete_missing_file_reports_absence(model: BaseChatModel) -> None:
+    """A delete of a nonexistent file is reported, not faked.
+
+    The `delete` tool returns a "File ... not found" error for a path
+    that does not exist. The agent should surface that the file is missing
+    rather than claim a successful deletion, and must leave the real file
+    untouched. Tool-call shape is intentionally not enforced: a model may
+    list/read first, or attempt the delete and recover from the error.
+    """
+    agent = create_deep_agent(model=model)
+    run_agent(
+        agent,
+        model=model,
+        initial_files={"/exists.md": "still here\n"},
+        query=(
+            "Delete the file /missing.md. If it does not exist, reply with exactly: NOT_FOUND. "
+            "Otherwise reply with exactly: DONE."
+        ),
+        scorer=TrajectoryScorer().success(
+            final_text_contains("NOT_FOUND"),
+            file_equals("/exists.md", "still here\n"),
+        ),
     )

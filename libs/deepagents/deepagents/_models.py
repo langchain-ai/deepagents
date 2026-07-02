@@ -12,12 +12,24 @@ from deepagents.profiles.provider.provider_profiles import apply_provider_profil
 
 logger = logging.getLogger(__name__)
 
-# LangChain specs and LangSmith params use different provider names for some
-# integrations. Canonicalize only known aliases before comparing providers.
 _PROVIDER_ALIASES = {
     "azure_openai": "azure",
     "mistralai": "mistral",
 }
+"""Known provider aliases between LangChain specs and LangSmith params.
+
+LangChain specs and LangSmith params use different provider names for some
+integrations. Canonicalize only known aliases before comparing providers.
+"""
+
+_BEDROCK_PROVIDERS = frozenset({"amazon_bedrock", "anthropic_bedrock", "aws", "bedrock", "bedrock_converse"})
+"""Normalized provider names that identify AWS Bedrock chat models."""
+
+_BEDROCK_MODEL_CLASSES = frozenset({"ChatAnthropicBedrock", "ChatBedrock", "ChatBedrockConverse", "ChatBedrockNovaSonic"})
+"""`langchain-aws` chat model class names that identify AWS Bedrock models."""
+
+_BEDROCK_REGIONAL_PREFIXES = ("apac.", "amer.", "au.", "eu.", "global.", "jp.", "sa.", "us.", "us-gov.")
+"""Regional inference profile prefixes stripped from Bedrock model identifiers."""
 
 
 def resolve_model(model: str | BaseChatModel) -> BaseChatModel:
@@ -104,6 +116,30 @@ def get_model_provider(model: BaseChatModel) -> str | None:
     if isinstance(provider, str) and provider:
         return provider
     return None
+
+
+def is_bedrock_model(model: str | BaseChatModel) -> bool:
+    """Check whether a model targets AWS Bedrock."""
+    if isinstance(model, str):
+        if _is_bedrock_nova_model_id(model):
+            return True
+        provider, separator, _ = model.partition(":")
+        return bool(separator) and _normalize_provider(provider) in _BEDROCK_PROVIDERS
+
+    provider = get_model_provider(model)
+    if provider is not None and _normalize_provider(provider) in _BEDROCK_PROVIDERS:
+        return True
+    return type(model).__name__ in _BEDROCK_MODEL_CLASSES
+
+
+def _is_bedrock_nova_model_id(model: str) -> bool:
+    """Check for cache-capable Bedrock Nova model identifiers."""
+    identifier = model
+    for prefix in _BEDROCK_REGIONAL_PREFIXES:
+        if identifier.startswith(prefix):
+            identifier = identifier.removeprefix(prefix)
+            break
+    return identifier.startswith("amazon.nova-")
 
 
 def model_matches_spec(model: BaseChatModel, spec: str) -> bool:

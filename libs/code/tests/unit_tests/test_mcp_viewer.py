@@ -127,6 +127,38 @@ class TestMCPViewerScreen:
             empty = screen.query_one(".mcp-empty", Static)
             assert "--mcp-config" in _widget_text(empty)
 
+    async def test_refresh_focuses_filter_input(self) -> None:
+        """Refreshing after server-ready must refocus the filter input.
+
+        Regression: a viewer opened while the server is still connecting
+        shows a placeholder with no filter input. When tools load,
+        `refresh_server_info` rebuilds the body and mounts the filter
+        `Input`, but Textual only auto-focuses on the first mount — so the
+        input was left unfocused and keystrokes never reached it. The final
+        `press` + `value` assertion verifies the typed text actually lands
+        in the input, not just that focus was restored.
+        """
+        from textual.widgets import Input
+
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=[], connecting=True)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            # No filter input exists during the connecting placeholder.
+            assert not screen.query("#mcp-filter")
+
+            await screen.refresh_server_info(_sample_info())
+            await pilot.pause()
+
+            filter_input = screen.query_one("#mcp-filter", Input)
+            assert app.focused is filter_input
+
+            await pilot.press("r", "e", "a", "d")
+            await pilot.pause()
+            assert filter_input.value == "read"
+
     async def test_reconnect_hint_hidden_when_no_pending(self) -> None:
         """Footer hint omits the `Ctrl+R` chip when nothing is queued."""
         app = MCPViewerTestApp()
@@ -420,8 +452,13 @@ class TestMCPViewerScreen:
         Guards the `new_server is None` branch in
         `apply_server_disable_toggle` — a regression that skipped the
         fallback would leave the viewer showing stale rows for the
-        missing server.
+        missing server. Also pins focus: the fallback routes through
+        `refresh_server_info`, which must refocus the filter `Input` (this
+        is a second live caller of `_focus_filter_input` alongside the
+        server-ready path).
         """
+        from textual.widgets import Input
+
         app = MCPViewerTestApp()
         async with app.run_test() as pilot:
 
@@ -450,6 +487,9 @@ class TestMCPViewerScreen:
             remaining = screen._row_widgets[0]
             assert isinstance(remaining, MCPServerHeaderItem)
             assert remaining.server.name == "remote-api"
+
+            # Fallback re-mounts the body; focus must land on the filter input.
+            assert app.focused is screen.query_one("#mcp-filter", Input)
 
     async def test_f2_renumbers_indices_so_clicks_resolve_correctly(self) -> None:
         """Every widget's `index` matches its `_row_widgets` position post-F2.
@@ -1086,14 +1126,13 @@ class TestMCPViewerScreen:
             assert screen._selected_index == 1
             assert scroll.scroll_offset.y > initial_offset
 
-            # Many Downs eventually expose the bottom and the next press jumps.
-            for _ in range(60):
-                if screen._selected_index == 2:
-                    break
-                await pilot.press("down")
-                await pilot.pause()
+            # Put the bottom edge in view, then the next Down should jump.
+            scroll.scroll_relative(y=1000, animate=False)
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.pause()
             assert screen._selected_index == 2, (
-                "expected to eventually jump to next tool"
+                "expected to jump to next tool once the bottom is visible"
             )
 
     async def test_arrow_up_scrolls_inside_tall_tool_then_jumps(self) -> None:
@@ -1136,13 +1175,11 @@ class TestMCPViewerScreen:
             assert screen._selected_index == 2
             assert scroll.scroll_offset.y < offset_before
 
-            # Many Ups eventually re-expose the top and the next press jumps
-            # to "prev" (row 1). Cap the loop so a regression can't hang.
-            for _ in range(60):
-                if screen._selected_index == 1:
-                    break
-                await pilot.press("up")
-                await pilot.pause()
+            # Put the top edge in view, then the next Up should jump to "prev".
+            scroll.scroll_relative(y=-1000, animate=False)
+            await pilot.pause()
+            await pilot.press("up")
+            await pilot.pause()
             assert screen._selected_index == 1
 
     async def test_up_jump_pins_previous_tool_to_viewport_bottom(self) -> None:
@@ -1175,17 +1212,15 @@ class TestMCPViewerScreen:
             await pilot.press("down")
             await pilot.press("enter")
             await pilot.pause()
-            # Scroll all the way down through "big" until we jump to "next"
-            # (row 2).
-            for _ in range(80):
-                await pilot.press("down")
-                await pilot.pause()
-                if screen._selected_index == 2:
-                    break
-            assert screen._selected_index == 2
-
             scroll = screen.query_one(".mcp-list", VerticalScroll)
             big = screen._tool_widgets[0]
+
+            # Put the bottom edge in view, then press Down to jump to "next" (row 2).
+            scroll.scroll_relative(y=1000, animate=False)
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.pause()
+            assert screen._selected_index == 2
 
             # Press Up — should jump back to "big" (row 1) and pin its
             # bottom near the viewport bottom (within 1 row, allowing for

@@ -2,33 +2,46 @@
 
 import logging
 import time
+import warnings
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import Mock, patch
 
 import pytest
 
 from deepagents_code import _git as git_module, model_config
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
+from deepagents_code._version import __version__
 from deepagents_code.config import (
     CLI_MAX_RETRIES_KEY,
     RECOMMENDED_SAFE_SHELL_COMMANDS,
     SHELL_ALLOW_ALL,
+    LangSmithApiError,
+    LangSmithProjectNotFoundError,
     ModelResult,
     Settings,
+    _apply_default_langsmith_project,
+    _apply_stored_langsmith_tracing,
     _create_model_from_class,
     _create_model_via_init,
+    _disable_orphaned_tracing,
     _get_provider_kwargs,
+    _quiet_sdk_tracing_logging,
     _read_config_toml_retries,
     _resolve_retry_kwargs,
     _resolve_retry_param_name,
+    apply_stored_langsmith_auth,
     build_langsmith_thread_url,
+    configure_langsmith_secret_redaction,
+    consume_orphaned_tracing_disabled_notice,
     create_model,
     detect_mode_prefix,
     detect_provider,
     fetch_langsmith_project_url,
+    fetch_langsmith_project_url_or_raise,
     get_langsmith_project_name,
+    is_langsmith_redaction_enabled,
     newline_shortcut,
     parse_shell_allow_list,
     reset_langsmith_url_cache,
@@ -91,6 +104,56 @@ class TestRuntimeDotenvReload:
             assert os.environ["DEEPAGENTS_CODE_ANTHROPIC_API_KEY"] == "sk-shell"
             assert "openai_api_key: set -> set" in changes
         finally:
+            config_mod._dotenv_loaded_values.clear()
+
+    def test_reload_redefaults_project_when_override_cleared_and_tracing_on(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Clearing the agent project on reload re-applies the default.
+
+        Regression: when a cwd switch unsets `DEEPAGENTS_CODE_LANGSMITH_PROJECT`
+        and the user has no original `LANGSMITH_PROJECT`, the reload must fall
+        back to `deepagents-code` (not leave the var unset) so trace ingestion
+        keeps matching the name `get_langsmith_project_name` displays.
+        """
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        config_mod._dotenv_loaded_values.clear()
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+
+        try:
+            # User never set LANGSMITH_PROJECT; tracing is active with a key.
+            config_mod._bootstrap_state.original_langsmith_project = None
+            monkeypatch.setenv("LANGSMITH_TRACING", "true")
+            monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_test")
+            monkeypatch.delenv("LANGSMITH_PROJECT", raising=False)
+            # Agent-project override is active before the reload, cleared after.
+            monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", "agent-project")
+
+            runtime = Settings.from_environment(start_path=current)
+            assert runtime.deepagents_langchain_project == "agent-project"
+
+            monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
+            runtime.reload_from_environment(start_path=target)
+
+            assert os.environ["LANGSMITH_PROJECT"] == LANGSMITH_PROJECT_DEFAULT
+        finally:
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
             config_mod._dotenv_loaded_values.clear()
 
 
@@ -1782,7 +1845,9 @@ class TestGetLangsmithProjectName:
             assert get_langsmith_project_name() == "env-project"
 
     def test_falls_back_to_default(self) -> None:
-        """Should fall back to 'deepagents-code' when no project name configured."""
+        """Should fall back to the default project when none is configured."""
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
         env = {
             "LANGSMITH_API_KEY": "lsv2_test",
             "LANGSMITH_TRACING": "true",
@@ -1792,10 +1857,12 @@ class TestGetLangsmithProjectName:
             patch("deepagents_code.config.settings") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
-            assert get_langsmith_project_name() == "deepagents-code"
+            assert get_langsmith_project_name() == LANGSMITH_PROJECT_DEFAULT
 
     def test_accepts_langchain_api_key(self) -> None:
         """Should accept LANGCHAIN_API_KEY as alternative to LANGSMITH_API_KEY."""
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
         env = {
             "LANGSMITH_API_KEY": "",
             "LANGCHAIN_API_KEY": "lsv2_test",
@@ -1806,7 +1873,1171 @@ class TestGetLangsmithProjectName:
             patch("deepagents_code.config.settings") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
-            assert get_langsmith_project_name() == "deepagents-code"
+            assert get_langsmith_project_name() == LANGSMITH_PROJECT_DEFAULT
+
+    def test_agrees_with_config_manifest_resolution(self) -> None:
+        """`get_langsmith_project_name` and `resolve_scalar` agree on the project.
+
+        The `fallback_env_vars` mechanism exists so `config show`/`get` report
+        the project agent traces actually route to. This pins that parity for
+        the bare-env and unset cases, catching future drift between the two
+        resolution paths.
+        """
+        from deepagents_code.config_manifest import (
+            LANGSMITH_PROJECT_DEFAULT,
+            get_option,
+            resolve_scalar,
+        )
+
+        opt = get_option("tracing.langsmith_project")
+        assert opt is not None
+
+        # Bare `LANGSMITH_PROJECT` set, no prefixed override, no settings value.
+        bare_env = {
+            "LANGSMITH_API_KEY": "lsv2_test",
+            "LANGSMITH_TRACING": "true",
+            "LANGSMITH_PROJECT": "parity-bare",
+            "DEEPAGENTS_CODE_LANGSMITH_PROJECT": "",
+        }
+        with (
+            patch.dict("os.environ", bare_env, clear=False),
+            patch("deepagents_code.config.settings") as mock_settings,
+        ):
+            mock_settings.deepagents_langchain_project = None
+            manifest_value, _ = resolve_scalar(opt, toml_data={})
+            assert get_langsmith_project_name() == manifest_value == "parity-bare"
+
+        # Nothing configured: both fall back to the shared default.
+        default_env = {
+            "LANGSMITH_API_KEY": "lsv2_test",
+            "LANGSMITH_TRACING": "true",
+            "LANGSMITH_PROJECT": "",
+            "DEEPAGENTS_CODE_LANGSMITH_PROJECT": "",
+        }
+        with (
+            patch.dict("os.environ", default_env, clear=False),
+            patch("deepagents_code.config.settings") as mock_settings,
+        ):
+            mock_settings.deepagents_langchain_project = None
+            manifest_value, _ = resolve_scalar(opt, toml_data={})
+            assert (
+                get_langsmith_project_name()
+                == manifest_value
+                == LANGSMITH_PROJECT_DEFAULT
+            )
+
+
+class TestLangsmithSecretRedaction:
+    """Tests for LangSmith trace secret redaction configuration."""
+
+    def test_redaction_enabled_by_default(self) -> None:
+        """LangSmith trace redaction defaults to enabled."""
+        with patch("deepagents_code.config_manifest.load_config_toml", return_value={}):
+            assert is_langsmith_redaction_enabled() is True
+
+    def test_redaction_can_be_disabled_by_env(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The redaction env var can opt out for local debugging."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "false")
+        with patch("deepagents_code.config_manifest.load_config_toml", return_value={}):
+            assert is_langsmith_redaction_enabled() is False
+
+    def test_configures_langsmith_client_with_secret_anonymizer(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Active tracing installs a client whose anonymizer scrubs secrets."""
+        client = object()
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_test")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+
+        # Exercise the real `create_secret_anonymizer` (network-free) so the test
+        # fails if the installed anonymizer does not actually redact secrets.
+        with (
+            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
+            patch("langsmith.Client", return_value=client) as client_cls,
+            patch("langsmith.configure") as configure,
+        ):
+            assert configure_langsmith_secret_redaction() is True
+
+        configure.assert_called_once_with(client=client)
+        _, kwargs = client_cls.call_args
+        assert kwargs["api_key"] == "lsv2_test"
+        assert "api_url" not in kwargs
+        secret = "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghijkl"
+        redacted = str(kwargs["anonymizer"]([{"text": f"key={secret}"}]))
+        assert secret not in redacted
+        assert "[SECRET_DETECTED]" in redacted
+
+    def test_skips_client_configuration_when_redaction_disabled(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Opting out leaves the LangSmith client untouched."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_test")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "false")
+
+        with (
+            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
+            patch("langsmith.Client") as client_cls,
+            patch("langsmith.configure") as configure,
+        ):
+            assert configure_langsmith_secret_redaction() is False
+
+        client_cls.assert_not_called()
+        configure.assert_not_called()
+
+    def test_skips_when_tracing_disabled(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Redaction is skipped when tracing is inactive, even if credentialed."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_test")
+
+        with (
+            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
+            patch("langsmith.Client") as client_cls,
+            patch("langsmith.configure") as configure,
+        ):
+            assert configure_langsmith_secret_redaction() is False
+
+        client_cls.assert_not_called()
+        configure.assert_not_called()
+
+    def test_skips_when_no_credentials(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Redaction is skipped when tracing is active but uncredentialed."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+
+        with (
+            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
+            # No env key is set; ignore any LangSmith profile on the dev machine
+            # so the no-credentials branch is exercised hermetically.
+            patch(
+                "deepagents_code.config._has_langsmith_profile_credentials",
+                return_value=False,
+            ),
+            patch("langsmith.Client") as client_cls,
+            patch("langsmith.configure") as configure,
+        ):
+            assert configure_langsmith_secret_redaction() is False
+
+        client_cls.assert_not_called()
+        configure.assert_not_called()
+
+    def test_falls_back_to_langchain_api_key(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The legacy LANGCHAIN_API_KEY is used when LANGSMITH_API_KEY is absent."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGCHAIN_API_KEY", "lsv2_legacy")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+
+        with (
+            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
+            patch("langsmith.Client", return_value=object()) as client_cls,
+            patch("langsmith.configure"),
+        ):
+            assert configure_langsmith_secret_redaction() is True
+
+        _, kwargs = client_cls.call_args
+        assert kwargs["api_key"] == "lsv2_legacy"
+
+    def test_forwards_custom_endpoint_as_api_url(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A custom tracing endpoint is forwarded to the client as `api_url`."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_test")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+        monkeypatch.setenv("LANGSMITH_ENDPOINT", "https://eu.smith.example.com")
+
+        with (
+            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
+            patch("langsmith.Client", return_value=object()) as client_cls,
+            patch("langsmith.configure"),
+        ):
+            assert configure_langsmith_secret_redaction() is True
+
+        _, kwargs = client_cls.call_args
+        assert kwargs["api_url"] == "https://eu.smith.example.com"
+
+    def test_configures_client_for_keyless_custom_endpoint(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Keyless custom endpoints still get the secret anonymizer installed."""
+        client = object()
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+        monkeypatch.setenv("LANGSMITH_ENDPOINT", "http://localhost:1984")
+
+        with (
+            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
+            patch(
+                "deepagents_code.config._has_langsmith_profile_credentials",
+                return_value=False,
+            ),
+            patch("langsmith.Client", return_value=client) as client_cls,
+            patch("langsmith.configure") as configure,
+        ):
+            assert configure_langsmith_secret_redaction() is True
+
+        configure.assert_called_once_with(client=client)
+        _, kwargs = client_cls.call_args
+        assert "api_key" not in kwargs
+        assert kwargs["api_url"] == "http://localhost:1984"
+        assert "anonymizer" in kwargs
+
+    def test_configures_client_for_runs_endpoints(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Replica trace endpoints still get the secret anonymizer installed."""
+        client = object()
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+        monkeypatch.setenv(
+            "LANGSMITH_RUNS_ENDPOINTS",
+            '[{"api_url":"https://replica.example.com","api_key":"lsv2_replica"}]',
+        )
+
+        with (
+            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
+            patch(
+                "deepagents_code.config._has_langsmith_profile_credentials",
+                return_value=False,
+            ),
+            patch("langsmith.Client", return_value=client) as client_cls,
+            patch("langsmith.configure") as configure,
+        ):
+            assert configure_langsmith_secret_redaction() is True
+
+        configure.assert_called_once_with(client=client)
+        _, kwargs = client_cls.call_args
+        assert "api_key" not in kwargs
+        assert "api_url" not in kwargs
+        assert "anonymizer" in kwargs
+
+    @pytest.mark.parametrize(
+        "value",
+        ["[]", '[{"api_url":"https://replica.example.com"}]', "not json"],
+    )
+    def test_skips_invalid_runs_endpoints(
+        self,
+        value: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Only valid replica endpoint configs count as upload targets."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+        monkeypatch.setenv("LANGSMITH_RUNS_ENDPOINTS", value)
+
+        with (
+            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
+            patch(
+                "deepagents_code.config._has_langsmith_profile_credentials",
+                return_value=False,
+            ),
+            patch("langsmith.Client") as client_cls,
+            patch("langsmith.configure") as configure,
+        ):
+            assert configure_langsmith_secret_redaction() is False
+
+        client_cls.assert_not_called()
+        configure.assert_not_called()
+
+    def test_fails_closed_by_disabling_tracing_on_setup_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A redaction setup failure disables tracing to avoid leaking secrets."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_test")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+
+        with (
+            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
+            patch("langsmith.Client", side_effect=RuntimeError("boom")),
+            patch("langsmith.configure") as configure,
+        ):
+            assert configure_langsmith_secret_redaction() is False
+
+        configure.assert_called_once_with(enabled=False)
+
+    def test_configures_client_with_profile_only_credentials(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Profile-only credentials (no env key) still install the anonymizer."""
+        client = object()
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+
+        with (
+            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
+            # Credentials come only from an active LangSmith profile, not the env.
+            # No endpoint either, so the profile credentials are the sole reason
+            # the upload gate passes. The SDK client self-resolves that profile
+            # auth when no key is forwarded.
+            patch(
+                "deepagents_code.config._has_langsmith_profile_credentials",
+                return_value=True,
+            ),
+            patch("deepagents_code.config._tracing_endpoint_from", return_value=None),
+            patch("langsmith.Client", return_value=client) as client_cls,
+            patch("langsmith.configure") as configure,
+        ):
+            assert configure_langsmith_secret_redaction() is True
+
+        configure.assert_called_once_with(client=client)
+        _, kwargs = client_cls.call_args
+        assert "api_key" not in kwargs
+        assert "anonymizer" in kwargs
+
+    def test_redaction_can_be_disabled_by_toml(self) -> None:
+        """A `[tracing] langsmith_redact = false` in config.toml opts out."""
+        with patch(
+            "deepagents_code.config_manifest.load_config_toml",
+            return_value={"tracing": {"langsmith_redact": False}},
+        ):
+            assert is_langsmith_redaction_enabled() is False
+
+    def test_env_redaction_toggle_overrides_toml(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The redaction env var takes precedence over a conflicting config.toml."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_REDACT", "true")
+        with patch(
+            "deepagents_code.config_manifest.load_config_toml",
+            return_value={"tracing": {"langsmith_redact": False}},
+        ):
+            assert is_langsmith_redaction_enabled() is True
+
+    def test_fail_closed_clears_env_when_sdk_disable_also_fails(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When the SDK cannot disable tracing, all enable env vars are cleared.
+
+        This is the worst-case fail-closed path: redaction setup raised and the
+        SDK's `configure(enabled=False)` raised too, so the only remaining
+        barrier is removing every env var the LangChain tracer falls back to —
+        both the canonical names and their `DEEPAGENTS_CODE_`-prefixed forms.
+        """
+        import os
+
+        from deepagents_code.config import _TRACING_ENABLE_ENV_VARS
+        from deepagents_code.model_config import _ENV_PREFIX
+
+        monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_test")
+        enable_vars = [
+            *_TRACING_ENABLE_ENV_VARS,
+            *(f"{_ENV_PREFIX}{var}" for var in _TRACING_ENABLE_ENV_VARS),
+        ]
+        for var in enable_vars:
+            monkeypatch.setenv(var, "true")
+
+        with (
+            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
+            patch("langsmith.Client", side_effect=RuntimeError("boom")),
+            patch("langsmith.configure", side_effect=RuntimeError("nope")),
+        ):
+            assert configure_langsmith_secret_redaction() is False
+
+        for var in enable_vars:
+            assert var not in os.environ, f"{var} should have been cleared"
+
+    def test_fails_closed_when_redaction_toggle_lookup_raises(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An unexpected error from the redaction-toggle lookup fails closed.
+
+        `is_langsmith_redaction_enabled()` runs inside the fail-closed boundary,
+        so even an unexpected exception there disables tracing rather than
+        escaping the function and leaving tracing live but unredacted.
+        """
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_test")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+
+        with (
+            patch(
+                "deepagents_code.config.is_langsmith_redaction_enabled",
+                side_effect=RuntimeError("boom"),
+            ),
+            patch("langsmith.configure") as configure,
+        ):
+            assert configure_langsmith_secret_redaction() is False
+
+        configure.assert_called_once_with(enabled=False)
+
+    def test_reconfigures_on_each_call(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Each call reinstalls the redacting client (no fail-open caching)."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_test")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+
+        with (
+            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
+            patch("langsmith.Client", return_value=object()),
+            patch("langsmith.configure") as configure,
+        ):
+            assert configure_langsmith_secret_redaction() is True
+            assert configure_langsmith_secret_redaction() is True
+
+        assert configure.call_count == 2
+
+
+class TestDisableOrphanedTracing:
+    """Tests for _disable_orphaned_tracing()."""
+
+    _ALL_TRACING_VARS = (
+        "LANGSMITH_TRACING_V2",
+        "LANGCHAIN_TRACING_V2",
+        "LANGSMITH_TRACING",
+        "LANGCHAIN_TRACING",
+        "LANGSMITH_API_KEY",
+        "LANGCHAIN_API_KEY",
+        "LANGSMITH_ENDPOINT",
+        "LANGCHAIN_ENDPOINT",
+        "LANGSMITH_RUNS_ENDPOINTS",
+        "LANGCHAIN_RUNS_ENDPOINTS",
+        "LANGSMITH_CONFIG_FILE",
+        "LANGSMITH_PROFILE",
+    )
+
+    def _clean_env(self) -> dict[str, str]:
+        consume_orphaned_tracing_disabled_notice()
+        env = dict.fromkeys(self._ALL_TRACING_VARS, "")
+        env["LANGSMITH_CONFIG_FILE"] = "/__deepagents_missing_langsmith_config__.json"
+        return env
+
+    def test_disables_tracing_when_no_key(self) -> None:
+        """Tracing flag on with empty key should be turned off."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
+            assert consume_orphaned_tracing_disabled_notice() is not None
+            # One-shot: the notice clears on read, so a second read is empty.
+            assert consume_orphaned_tracing_disabled_notice() is None
+
+    def test_notice_mentions_langsmith_auth_login_when_cli_available(self) -> None:
+        """The startup notice gives the CLI login command only when available."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("deepagents_code.config.shutil.which", return_value="/bin/langsmith"),
+        ):
+            _disable_orphaned_tracing()
+
+        notice = consume_orphaned_tracing_disabled_notice()
+        assert notice is not None
+        assert "langsmith auth login" in notice
+
+    def test_notice_omits_langsmith_auth_login_when_cli_unavailable(self) -> None:
+        """The startup notice avoids unavailable CLI commands."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        with (
+            patch.dict("os.environ", env, clear=False),
+            patch("deepagents_code.config.shutil.which", return_value=None),
+        ):
+            _disable_orphaned_tracing()
+
+        notice = consume_orphaned_tracing_disabled_notice()
+        assert notice is not None
+        assert "langsmith auth login" not in notice
+        assert "LANGSMITH_API_KEY" in notice
+
+    def test_preserves_tracing_when_custom_endpoint_set(self) -> None:
+        """A custom endpoint (self-hosted/proxied) is trusted even without a key.
+
+        Keyless ingestion is valid against a self-hosted LangSmith, so an
+        explicitly configured endpoint must not trip the orphaned-tracing guard.
+        """
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_ENDPOINT"] = "http://localhost:1984"
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
+            # Nothing was disabled, so no startup notice should be staged.
+            assert consume_orphaned_tracing_disabled_notice() is None
+
+    def test_preserves_tracing_when_runs_endpoints_set(self) -> None:
+        """Replica endpoints are trusted upload targets even without a top-level key."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_RUNS_ENDPOINTS"] = (
+            '[{"api_url":"https://replica.example.com","api_key":"lsv2_replica"}]'
+        )
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
+            assert consume_orphaned_tracing_disabled_notice() is None
+
+    def test_preserves_tracing_when_profile_custom_endpoint_set(
+        self, tmp_path: Path
+    ) -> None:
+        """Profile api_url is a custom endpoint and is trusted without a key."""
+        config = tmp_path / "config.json"
+        config.write_text(
+            "{"
+            '"current_profile":"default",'
+            '"profiles":{"default":{"api_url":"http://localhost:1984"}}'
+            "}",
+            encoding="utf-8",
+        )
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_CONFIG_FILE"] = str(config)
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
+            # Nothing was disabled, so no startup notice should be staged.
+            assert consume_orphaned_tracing_disabled_notice() is None
+
+    def test_preserves_tracing_when_key_present(self) -> None:
+        """Tracing stays enabled when a usable API key is set."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_API_KEY"] = "lsv2_test"
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
+            # No tracing was disabled, so no startup notice should be staged.
+            assert consume_orphaned_tracing_disabled_notice() is None
+
+    def test_accepts_langchain_api_key(self) -> None:
+        """LANGCHAIN_API_KEY also counts as a usable key."""
+        env = self._clean_env()
+        env["LANGSMITH_TRACING"] = "true"
+        env["LANGCHAIN_API_KEY"] = "lsv2_test"
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGSMITH_TRACING"] == "true"
+
+    def test_preserves_tracing_when_profile_api_key_present(
+        self, tmp_path: Path
+    ) -> None:
+        """LangSmith profile API keys count as usable credentials."""
+        config = tmp_path / "config.json"
+        config.write_text(
+            '{"current_profile":"default","profiles":{"default":{"api_key":"lsv2_profile"}}}',
+            encoding="utf-8",
+        )
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_CONFIG_FILE"] = str(config)
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
+
+    def test_preserves_tracing_when_profile_oauth_present(self, tmp_path: Path) -> None:
+        """LangSmith profile OAuth credentials count as usable credentials."""
+        config = tmp_path / "config.json"
+        config.write_text(
+            "{"
+            '"current_profile":"default",'
+            '"profiles":{"default":{"oauth":{"refresh_token":"refresh"}}}'
+            "}",
+            encoding="utf-8",
+        )
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_CONFIG_FILE"] = str(config)
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
+
+    def test_noop_when_tracing_disabled(self) -> None:
+        """Does nothing when no tracing flag is enabled."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "false"
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
+
+    def test_disables_all_set_tracing_flags(self) -> None:
+        """Every set tracing flag is turned off, not just one."""
+        env = self._clean_env()
+        env["LANGCHAIN_TRACING_V2"] = "true"
+        env["LANGSMITH_TRACING"] = "1"
+        with patch.dict("os.environ", env, clear=False):
+            _disable_orphaned_tracing()
+            import os
+
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
+            assert os.environ["LANGSMITH_TRACING"] == "false"
+
+
+class TestApplyStoredLangSmithTracing:
+    """Tests for _apply_stored_langsmith_tracing()."""
+
+    @pytest.fixture
+    def fake_state_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        """Redirect the credential store into a temp directory."""
+        state = tmp_path / ".state"
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_STATE_DIR", state)
+        return state
+
+    def test_noop_without_stored_key(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No stored key leaves the environment untouched (no auto-enable)."""
+        import os
+
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        _apply_stored_langsmith_tracing()
+        assert "LANGSMITH_TRACING" not in os.environ
+
+    def test_enables_tracing_when_key_stored(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored LangSmith key turns tracing on by default."""
+        import os
+
+        from deepagents_code import auth_store
+
+        for var in ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2"):
+            monkeypatch.delenv(var, raising=False)
+        auth_store.set_stored_key("langsmith", "lsv2_test")
+        _apply_stored_langsmith_tracing()
+        assert os.environ["LANGSMITH_TRACING"] == "true"
+
+    def test_respects_explicit_opt_out(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An explicit falsy tracing flag is honored as a temporary opt-out."""
+        import os
+
+        from deepagents_code import auth_store
+
+        monkeypatch.setenv("LANGSMITH_TRACING", "false")
+        auth_store.set_stored_key("langsmith", "lsv2_test")
+        _apply_stored_langsmith_tracing()
+        assert os.environ["LANGSMITH_TRACING"] == "false"
+
+    def test_scoped_opt_out_disables_sibling_tracing_flags(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The documented scoped opt-out wins over other truthy tracing flags."""
+        import os
+
+        from deepagents_code import auth_store
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "false")
+        monkeypatch.setenv("LANGSMITH_TRACING", "false")
+        monkeypatch.setenv("LANGCHAIN_TRACING_V2", "true")
+        auth_store.set_stored_key("langsmith", "lsv2_test")
+        _apply_stored_langsmith_tracing()
+        assert os.environ["LANGSMITH_TRACING"] == "false"
+        assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
+
+    def test_leaves_explicit_enable_untouched(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An already-truthy tracing flag is left as-is."""
+        import os
+
+        from deepagents_code import auth_store
+
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        monkeypatch.setenv("LANGCHAIN_TRACING_V2", "true")
+        auth_store.set_stored_key("langsmith", "lsv2_test")
+        _apply_stored_langsmith_tracing()
+        assert os.environ["LANGCHAIN_TRACING_V2"] == "true"
+        assert "LANGSMITH_TRACING" not in os.environ
+
+    def test_applies_stored_custom_project(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored custom project is applied when none is already set."""
+        import os
+
+        from deepagents_code import auth_store
+
+        for var in ("LANGSMITH_TRACING", "LANGSMITH_PROJECT"):
+            monkeypatch.delenv(var, raising=False)
+        auth_store.set_stored_key("langsmith", "lsv2_test", project="my-app")
+        _apply_stored_langsmith_tracing()
+        assert os.environ["LANGSMITH_PROJECT"] == "my-app"
+
+    def test_stored_project_does_not_override_env(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An explicit LANGSMITH_PROJECT wins over the stored project."""
+        import os
+
+        from deepagents_code import auth_store
+
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        monkeypatch.setenv("LANGSMITH_PROJECT", "from-env")
+        auth_store.set_stored_key("langsmith", "lsv2_test", project="my-app")
+        _apply_stored_langsmith_tracing()
+        assert os.environ["LANGSMITH_PROJECT"] == "from-env"
+
+    def test_replace_project_applies_stored_project_over_existing_env(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Immediate `/auth` save applies the latest stored project."""
+        import os
+
+        from deepagents_code import auth_store
+
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        monkeypatch.setenv("LANGSMITH_PROJECT", "old-project")
+        auth_store.set_stored_key("langsmith", "lsv2_test", project="my-app")
+        _apply_stored_langsmith_tracing(replace_project=True)
+        assert os.environ["LANGSMITH_PROJECT"] == "my-app"
+
+    def test_replace_project_clears_existing_env_when_project_removed(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Immediate `/auth` save clears the old project when the field is blank."""
+        import os
+
+        from deepagents_code import auth_store
+
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        monkeypatch.setenv("LANGSMITH_PROJECT", "old-project")
+        auth_store.set_stored_key("langsmith", "lsv2_test")
+        _apply_stored_langsmith_tracing(replace_project=True)
+        assert "LANGSMITH_PROJECT" not in os.environ
+
+    def test_immediate_auth_clear_restores_default_project(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Clearing `/auth` project updates the active traced session."""
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+        redaction_env: list[dict[str, str]] = []
+
+        def capture_redaction_env() -> bool:
+            redaction_env.append(dict(os.environ))
+            return True
+
+        monkeypatch.setenv("LANGSMITH_PROJECT", "old-project")
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        auth_store.set_stored_key("langsmith", "lsv2_test")
+        with patch(
+            "deepagents_code.config.configure_langsmith_secret_redaction",
+            side_effect=capture_redaction_env,
+        ) as configure_redaction:
+            apply_stored_langsmith_auth(replace_project=True)
+        assert os.environ["LANGSMITH_PROJECT"] == LANGSMITH_PROJECT_DEFAULT
+        assert os.environ["LANGSMITH_TRACING"] == "true"
+        configure_redaction.assert_called_once_with()
+        assert redaction_env[0]["LANGSMITH_PROJECT"] == LANGSMITH_PROJECT_DEFAULT
+        assert redaction_env[0]["LANGSMITH_TRACING"] == "true"
+
+    def test_corrupt_store_warns_and_leaves_env_untouched(
+        self,
+        fake_state_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A corrupt credential file is logged and tracing is left untouched."""
+        import os
+
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        fake_state_dir.mkdir(parents=True, exist_ok=True)
+        (fake_state_dir / "auth.json").write_text("{ not json", encoding="utf-8")
+        with caplog.at_level("WARNING", logger="deepagents_code.config"):
+            _apply_stored_langsmith_tracing()
+        assert "LANGSMITH_TRACING" not in os.environ
+        assert any("may be corrupt" in r.getMessage() for r in caplog.records)
+
+
+class TestGetTracingStatus:
+    """Tests for get_tracing_status()."""
+
+    _CLEAN: ClassVar[dict[str, str]] = {
+        "LANGSMITH_TRACING_V2": "",
+        "LANGCHAIN_TRACING_V2": "",
+        "LANGSMITH_TRACING": "",
+        "LANGCHAIN_TRACING": "",
+        "LANGSMITH_API_KEY": "",
+        "LANGCHAIN_API_KEY": "",
+        "LANGSMITH_ENDPOINT": "",
+        "LANGCHAIN_ENDPOINT": "",
+        "LANGSMITH_PROJECT": "",
+        "DEEPAGENTS_CODE_LANGSMITH_PROJECT": "",
+        "DEEPAGENTS_CODE_LANGSMITH_TRACING": "",
+        "DEEPAGENTS_CODE_LANGCHAIN_TRACING_V2": "",
+        "DEEPAGENTS_CODE_LANGSMITH_API_KEY": "",
+        "DEEPAGENTS_CODE_LANGCHAIN_API_KEY": "",
+        "LANGSMITH_REPLICA_PROJECTS": "",
+        "DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS": "",
+        "LANGSMITH_PROFILE": "",
+        "LANGSMITH_CONFIG_FILE": "/__deepagents_missing_langsmith_config__.json",
+    }
+
+    def test_disabled_when_no_flags(self) -> None:
+        """A clean environment reports tracing off with configured project metadata."""
+        from deepagents_code.config import get_tracing_status
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+        with patch.dict("os.environ", self._CLEAN, clear=False):
+            status = get_tracing_status()
+        assert status.enabled is False
+        assert status.explicitly_disabled is False
+        assert status.has_credentials is False
+        assert status.endpoint is None
+        assert status.project == LANGSMITH_PROJECT_DEFAULT
+        assert status.project_is_default is True
+        assert status.replica_project is None
+
+    @pytest.mark.parametrize(
+        ("var", "token", "expected_enabled", "expected_disabled"),
+        [
+            # Non-bridged flags (bare `env.get` path) set to each falsy token.
+            ("LANGSMITH_TRACING_V2", "false", False, True),
+            ("LANGSMITH_TRACING_V2", "0", False, True),
+            ("LANGSMITH_TRACING_V2", "no", False, True),
+            ("LANGSMITH_TRACING_V2", "off", False, True),
+            ("LANGCHAIN_TRACING", "false", False, True),
+            # Prefixed bridged falsy flag — exercises the prefix-aware
+            # `_resolve_env_var_from` off path; doctor runs pre-bootstrap.
+            ("DEEPAGENTS_CODE_LANGSMITH_TRACING", "false", False, True),
+            # An empty flag reads as not configured, not an explicit opt-out.
+            ("LANGSMITH_TRACING_V2", "", False, False),
+            # An unrecognized token is neither enabled nor an explicit opt-out.
+            ("LANGSMITH_TRACING_V2", "maybe", False, False),
+            # A truthy flag is enabled and never reported as explicitly disabled.
+            ("LANGSMITH_TRACING_V2", "true", True, False),
+        ],
+    )
+    def test_explicit_disable_matrix(
+        self,
+        var: str,
+        token: str,
+        expected_enabled: bool,
+        expected_disabled: bool,
+    ) -> None:
+        """Each flag/token combination resolves to the right tri-state.
+
+        Exercises both the bare-`env.get` path (non-bridged vars) and the
+        prefix-aware `_resolve_env_var_from` path (the prefixed bridged flag),
+        across every recognized falsy token plus the empty and unrecognized
+        cases.
+        """
+        from deepagents_code.config import get_tracing_status
+
+        env = dict(self._CLEAN)
+        env[var] = token
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.enabled is expected_enabled
+        assert status.explicitly_disabled is expected_disabled
+
+    def test_prefixed_flag_and_key_are_detected(self) -> None:
+        """`DEEPAGENTS_CODE_`-prefixed tracing/key vars resolve like the runtime.
+
+        `dcode doctor` runs before bootstrap bridges these to canonical names,
+        so a user with only the supported prefixed vars must still read as
+        enabled/configured with the prefixed project resolved.
+        """
+        from deepagents_code.config import get_tracing_status
+
+        env = dict(self._CLEAN)
+        env["DEEPAGENTS_CODE_LANGSMITH_TRACING"] = "true"
+        env["DEEPAGENTS_CODE_LANGSMITH_API_KEY"] = "lsv2_test"
+        env["DEEPAGENTS_CODE_LANGSMITH_PROJECT"] = "prefixed-proj"
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.enabled is True
+        assert status.has_credentials is True
+        assert status.project == "prefixed-proj"
+        assert status.project_is_default is False
+
+    def test_explicit_default_name_is_not_marked_default(self) -> None:
+        """Explicitly setting the default name still counts as configured.
+
+        `project_is_default` tracks provenance (was anything set), not a string
+        match against the default. A user who sets the project to the same name
+        as the built-in default must not get the `(default)` marker.
+        """
+        from deepagents_code.config import get_tracing_status
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+        env = dict(self._CLEAN)
+        env["DEEPAGENTS_CODE_LANGSMITH_PROJECT"] = LANGSMITH_PROJECT_DEFAULT
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.project == LANGSMITH_PROJECT_DEFAULT
+        assert status.project_is_default is False
+
+    def test_dotenv_values_are_detected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Doctor tracing status sees the same dotenv values as bootstrap."""
+        import deepagents_code.config as config_mod
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text(
+            "DEEPAGENTS_CODE_LANGSMITH_TRACING=true\n"
+            "DEEPAGENTS_CODE_LANGSMITH_API_KEY=lsv2_dotenv\n"
+            "DEEPAGENTS_CODE_LANGSMITH_PROJECT=dotenv-proj\n"
+            "DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS=replica\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(project)
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        config_mod._dotenv_loaded_values.clear()
+
+        with patch.dict("os.environ", {}, clear=True):
+            status = config_mod.get_tracing_status()
+
+        assert status.enabled is True
+        assert status.has_credentials is True
+        assert status.project == "dotenv-proj"
+        assert status.replica_project == "replica"
+
+    def test_dotenv_profile_credentials_are_detected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Doctor tracing status uses dotenv profile selectors for credentials."""
+        import deepagents_code.config as config_mod
+
+        langsmith = tmp_path / "langsmith.json"
+        langsmith.write_text(
+            "{"
+            '"current_profile":"default",'
+            '"profiles":{'
+            '"default":{},'
+            '"dotenv":{"api_key":"lsv2_profile","api_url":"http://localhost:1984"}'
+            "}"
+            "}",
+            encoding="utf-8",
+        )
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text(
+            "DEEPAGENTS_CODE_LANGSMITH_TRACING=true\n"
+            f"LANGSMITH_CONFIG_FILE={langsmith}\n"
+            "LANGSMITH_PROFILE=dotenv\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(project)
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        config_mod._dotenv_loaded_values.clear()
+
+        with patch.dict("os.environ", {}, clear=True):
+            status = config_mod.get_tracing_status()
+
+        assert status.enabled is True
+        assert status.has_credentials is True
+        assert status.endpoint == "http://localhost:1984"
+
+    def test_empty_prefixed_flag_shadows_canonical(self) -> None:
+        """An empty `DEEPAGENTS_CODE_` flag suppresses the canonical one.
+
+        Mirrors `resolve_env_var`/bootstrap: a present-but-empty prefixed var
+        disables tracing even when the canonical flag is truthy.
+        """
+        from deepagents_code.config import get_tracing_status
+
+        env = dict(self._CLEAN)
+        env["DEEPAGENTS_CODE_LANGSMITH_TRACING"] = ""
+        env["LANGSMITH_TRACING"] = "true"
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.enabled is False
+        assert status.explicitly_disabled is True
+
+    def test_canonical_non_bridged_flag_enables(self) -> None:
+        """A canonical, non-bridged flag (`LANGSMITH_TRACING_V2`) enables tracing."""
+        from deepagents_code.config import get_tracing_status
+
+        env = dict(self._CLEAN)
+        env["LANGSMITH_TRACING_V2"] = "true"
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.enabled is True
+
+    def test_keyless_custom_endpoint_resolves_project(self) -> None:
+        """A keyless custom endpoint counts as active and resolves the project."""
+        from deepagents_code.config import get_tracing_status
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+        env = dict(self._CLEAN)
+        env["DEEPAGENTS_CODE_LANGSMITH_TRACING"] = "true"
+        env["LANGSMITH_ENDPOINT"] = "http://localhost:1984"
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.enabled is True
+        assert status.has_credentials is False
+        assert status.endpoint == "http://localhost:1984"
+        assert status.project == LANGSMITH_PROJECT_DEFAULT
+
+    def test_profile_credentials_are_detected(self, tmp_path: Path) -> None:
+        """A LangSmith profile API key counts as credentials (no env key needed)."""
+        from deepagents_code.config import get_tracing_status
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+        config = tmp_path / "config.json"
+        config.write_text(
+            '{"current_profile":"default","profiles":{"default":{"api_key":"lsv2_profile"}}}',
+            encoding="utf-8",
+        )
+        env = dict(self._CLEAN)
+        env["DEEPAGENTS_CODE_LANGSMITH_TRACING"] = "true"
+        env["LANGSMITH_CONFIG_FILE"] = str(config)
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.enabled is True
+        assert status.has_credentials is True
+        assert status.project == LANGSMITH_PROJECT_DEFAULT
+
+    def test_project_resolved_when_enabled_without_auth(self) -> None:
+        """Tracing auth state does not hide configured project metadata."""
+        from deepagents_code.config import get_tracing_status
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+        env = dict(self._CLEAN)
+        env["DEEPAGENTS_CODE_LANGSMITH_TRACING"] = "true"
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.enabled is True
+        assert status.has_credentials is False
+        assert status.project == LANGSMITH_PROJECT_DEFAULT
+
+    def test_empty_prefixed_project_falls_through_to_canonical(self) -> None:
+        """An empty prefixed project must not shadow a real `LANGSMITH_PROJECT`.
+
+        Mirrors the manifest/runtime contract: `resolve_scalar` skips an empty
+        `DEEPAGENTS_CODE_LANGSMITH_PROJECT` and uses bare `LANGSMITH_PROJECT`,
+        unlike `resolve_env_var`, which would shadow it and report the default.
+        """
+        from deepagents_code.config import get_tracing_status
+
+        env = dict(self._CLEAN)
+        env["DEEPAGENTS_CODE_LANGSMITH_TRACING"] = "true"
+        env["DEEPAGENTS_CODE_LANGSMITH_API_KEY"] = "lsv2_test"
+        env["DEEPAGENTS_CODE_LANGSMITH_PROJECT"] = ""
+        env["LANGSMITH_PROJECT"] = "prod"
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.project == "prod"
+        assert status.project_is_default is False
+
+    def test_reports_first_replica_project(self) -> None:
+        """Only the first replica project is reported (server mirrors one)."""
+        from deepagents_code.config import get_tracing_status
+
+        env = dict(self._CLEAN)
+        env["DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS"] = "replica-a, replica-b"
+        with patch.dict("os.environ", env, clear=False):
+            status = get_tracing_status()
+        assert status.replica_project == "replica-a"
+
+    def test_enabled_and_explicitly_disabled_is_rejected(self) -> None:
+        """The contradictory enabled/disabled pair fails loud at construction."""
+        from deepagents_code.config import TracingStatus
+
+        with pytest.raises(ValueError, match="both enabled and explicitly disabled"):
+            TracingStatus(
+                enabled=True,
+                explicitly_disabled=True,
+                has_credentials=False,
+                endpoint=None,
+                project=None,
+                project_is_default=False,
+                replica_project=None,
+            )
+
+
+class TestQuietSdkTracingLogging:
+    """Tests for _quiet_sdk_tracing_logging()."""
+
+    def test_attaches_null_handler_without_debug(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without debug, SDK loggers get a NullHandler so logs stay off stderr."""
+        from deepagents_code._env_vars import DEBUG
+
+        monkeypatch.delenv(DEBUG, raising=False)
+        for name in ("langsmith", "langchain"):
+            logging.getLogger(name).handlers.clear()
+
+        _quiet_sdk_tracing_logging()
+
+        for name in ("langsmith", "langchain"):
+            handlers = logging.getLogger(name).handlers
+            assert any(isinstance(h, logging.NullHandler) for h in handlers)
+
+    def test_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Repeated calls do not stack duplicate handlers."""
+        from deepagents_code._env_vars import DEBUG
+
+        monkeypatch.delenv(DEBUG, raising=False)
+        for name in ("langsmith", "langchain"):
+            logging.getLogger(name).handlers.clear()
+
+        _quiet_sdk_tracing_logging()
+        _quiet_sdk_tracing_logging()
+
+        for name in ("langsmith", "langchain"):
+            handlers = logging.getLogger(name).handlers
+            assert len(handlers) == 1
 
 
 class TestFetchLangsmithProjectUrl:
@@ -1947,6 +3178,25 @@ class TestFetchLangsmithProjectUrl:
         assert first == "https://smith.langchain.com/o/org/projects/p/a"
         assert second == "https://smith.langchain.com/o/org/projects/p/b"
         assert mock_client_cls.return_value.read_project.call_count == 2
+
+    def test_or_raise_raises_project_not_found(self) -> None:
+        """A 404 from read_project raises LangSmithProjectNotFoundError."""
+        from langsmith.utils import LangSmithNotFoundError
+
+        with patch("langsmith.Client") as mock_client_cls:
+            mock_client_cls.return_value.read_project.side_effect = (
+                LangSmithNotFoundError("Project deepagents-code not found")
+            )
+            with pytest.raises(LangSmithProjectNotFoundError):
+                fetch_langsmith_project_url_or_raise("deepagents-code")
+
+    def test_or_raise_raises_api_error_on_other_failure(self) -> None:
+        """A non-404 SDK error raises the generic LangSmithApiError."""
+        with patch("langsmith.Client") as mock_client_cls:
+            mock_client_cls.return_value.read_project.side_effect = OSError("boom")
+            with pytest.raises(LangSmithApiError) as exc_info:
+                fetch_langsmith_project_url_or_raise("my-project")
+        assert not isinstance(exc_info.value, LangSmithProjectNotFoundError)
 
 
 class TestBuildLangsmithThreadUrl:
@@ -3132,8 +4382,20 @@ class TestCreateModelViaInitImportError:
             _create_model_via_init("nemotron", "nvidia", {})
 
     @patch("langchain.chat_models.init_chat_model")
-    def test_unknown_provider_fallback_package_name(self, mock_init: Mock) -> None:
-        """Unknown provider falls back to langchain-{provider} package name."""
+    def test_unknown_provider_fallback_package_name(
+        self, mock_init: Mock, tmp_path, monkeypatch
+    ) -> None:
+        """Unknown provider falls back to langchain-{provider} package name.
+
+        `install_package_command` reads the uv tool receipt, so it is isolated to
+        a temporary tool root here; otherwise the hint degrades to the manual
+        fallback (see the sibling unreadable-receipt test).
+        """
+        tmp_path.joinpath("uv-receipt.toml").write_text(
+            '[tool]\nrequirements = [{ name = "deepagents-code" }]\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
         mock_init.side_effect = ImportError("no module")
         with (
             patch("importlib.util.find_spec", return_value=None),
@@ -3144,9 +4406,37 @@ class TestCreateModelViaInitImportError:
             pytest.raises(
                 ModelConfigError,
                 match=(
-                    "Install with: uv tool install -U deepagents-code "
-                    "--with langchain-custom_provider"
+                    "Install with: uv tool install --reinstall -U "
+                    f"deepagents-code=={__version__} "
+                    "--with langchain-custom_provider --prerelease allow"
                 ),
+            ),
+        ):
+            _create_model_via_init("some-model", "custom_provider", {})
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_unknown_provider_receipt_failure_falls_back_to_manual(
+        self, mock_init: Mock, tmp_path, monkeypatch
+    ) -> None:
+        """An unreadable uv receipt degrades to the manual-install hint.
+
+        Exercises the `ToolRequirementIntrospectionError` arm of the fallback:
+        `install_package_command` reads the uv tool receipt, and a missing
+        receipt must surface an actionable message instead of letting the error
+        leak out of hint construction.
+        """
+        # tmp_path has no uv-receipt.toml, so the receipt read raises.
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        mock_init.side_effect = ImportError("no module")
+        with (
+            patch("importlib.util.find_spec", return_value=None),
+            patch(
+                "deepagents_code.extras_info.installed_extra_names",
+                return_value=set(),
+            ),
+            pytest.raises(
+                ModelConfigError,
+                match="Install the 'langchain-custom_provider' package manually",
             ),
         ):
             _create_model_via_init("some-model", "custom_provider", {})
@@ -3346,8 +4636,8 @@ class TestLazyModuleAttributes:
         from deepagents_code.config import _ensure_bootstrap
 
         # Reset flag so bootstrap will re-enter
-        original = config_mod._bootstrap_done
-        config_mod._bootstrap_done = False
+        original = config_mod._bootstrap_state.done
+        config_mod._bootstrap_state.done = False
 
         try:
             with patch(
@@ -3356,9 +4646,9 @@ class TestLazyModuleAttributes:
                 _ensure_bootstrap()  # should warn, not raise
 
             # Flag must be set even after failure
-            assert config_mod._bootstrap_done is True
+            assert config_mod._bootstrap_state.done is True
         finally:
-            config_mod._bootstrap_done = original
+            config_mod._bootstrap_state.done = original
 
     def test_get_settings_returns_same_instance(self) -> None:
         """_get_settings caches in globals — two calls return the same object."""
@@ -3375,9 +4665,9 @@ class TestLazyModuleAttributes:
         import deepagents_code.config as config_mod
         from deepagents_code.config import _ensure_bootstrap
 
-        original_done = config_mod._bootstrap_done
-        original_ls = config_mod._original_langsmith_project
-        config_mod._bootstrap_done = False
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        config_mod._bootstrap_state.done = False
 
         try:
             monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", "my-agent-project")
@@ -3392,13 +4682,13 @@ class TestLazyModuleAttributes:
             ):
                 _ensure_bootstrap()
 
-            assert config_mod._original_langsmith_project is None
+            assert config_mod._bootstrap_state.original_langsmith_project is None
             import os
 
             assert os.environ["LANGSMITH_PROJECT"] == "my-agent-project"
         finally:
-            config_mod._bootstrap_done = original_done
-            config_mod._original_langsmith_project = original_ls
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
 
     def test_ensure_bootstrap_preserves_original_langsmith(
         self, monkeypatch: pytest.MonkeyPatch
@@ -3407,9 +4697,9 @@ class TestLazyModuleAttributes:
         import deepagents_code.config as config_mod
         from deepagents_code.config import _ensure_bootstrap
 
-        original_done = config_mod._bootstrap_done
-        original_ls = config_mod._original_langsmith_project
-        config_mod._bootstrap_done = False
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        config_mod._bootstrap_state.done = False
 
         try:
             monkeypatch.setenv("LANGSMITH_PROJECT", "user-project")
@@ -3424,13 +4714,15 @@ class TestLazyModuleAttributes:
             ):
                 _ensure_bootstrap()
 
-            assert config_mod._original_langsmith_project == "user-project"
+            assert (
+                config_mod._bootstrap_state.original_langsmith_project == "user-project"
+            )
             import os
 
             assert os.environ["LANGSMITH_PROJECT"] == "agent-project"
         finally:
-            config_mod._bootstrap_done = original_done
-            config_mod._original_langsmith_project = original_ls
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
 
     def test_bootstrap_propagates_prefixed_langsmith_vars(
         self, monkeypatch: pytest.MonkeyPatch
@@ -3439,9 +4731,9 @@ class TestLazyModuleAttributes:
         import deepagents_code.config as config_mod
         from deepagents_code.config import _ensure_bootstrap
 
-        original_done = config_mod._bootstrap_done
-        original_ls = config_mod._original_langsmith_project
-        config_mod._bootstrap_done = False
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        config_mod._bootstrap_state.done = False
 
         try:
             monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_test")
@@ -3464,8 +4756,8 @@ class TestLazyModuleAttributes:
             assert os.environ["LANGSMITH_API_KEY"] == "lsv2_test"
             assert os.environ["LANGSMITH_TRACING"] == "true"
         finally:
-            config_mod._bootstrap_done = original_done
-            config_mod._original_langsmith_project = original_ls
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
 
     def test_bootstrap_overrides_canonical_with_prefixed_value(
         self, monkeypatch: pytest.MonkeyPatch
@@ -3474,9 +4766,9 @@ class TestLazyModuleAttributes:
         import deepagents_code.config as config_mod
         from deepagents_code.config import _ensure_bootstrap
 
-        original_done = config_mod._bootstrap_done
-        original_ls = config_mod._original_langsmith_project
-        config_mod._bootstrap_done = False
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        config_mod._bootstrap_state.done = False
 
         try:
             monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_original")
@@ -3497,8 +4789,8 @@ class TestLazyModuleAttributes:
             # Prefixed value wins — canonical is overwritten.
             assert os.environ["LANGSMITH_API_KEY"] == "lsv2_override"
         finally:
-            config_mod._bootstrap_done = original_done
-            config_mod._original_langsmith_project = original_ls
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
 
     def test_bootstrap_propagates_empty_string(
         self, monkeypatch: pytest.MonkeyPatch
@@ -3507,9 +4799,9 @@ class TestLazyModuleAttributes:
         import deepagents_code.config as config_mod
         from deepagents_code.config import _ensure_bootstrap
 
-        original_done = config_mod._bootstrap_done
-        original_ls = config_mod._original_langsmith_project
-        config_mod._bootstrap_done = False
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        config_mod._bootstrap_state.done = False
 
         try:
             monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "")
@@ -3530,8 +4822,301 @@ class TestLazyModuleAttributes:
             # Empty string propagated — lets user explicitly disable tracing.
             assert os.environ["LANGSMITH_TRACING"] == ""
         finally:
-            config_mod._bootstrap_done = original_done
-            config_mod._original_langsmith_project = original_ls
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
+
+    def test_bootstrap_defaults_project_when_tracing_and_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Tracing on with a key but no project defaults to deepagents-code.
+
+        Exercises `_apply_default_langsmith_project` wired into the real
+        `_ensure_bootstrap` flow (after the override and orphaned-tracing
+        steps) — coverage the helper-level tests cannot provide.
+        """
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code.config import _ensure_bootstrap
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        config_mod._bootstrap_state.done = False
+
+        try:
+            monkeypatch.setenv("LANGSMITH_TRACING", "true")
+            monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_test")
+            monkeypatch.delenv("LANGSMITH_PROJECT", raising=False)
+            monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
+
+            with (
+                patch("deepagents_code.config._load_dotenv"),
+                patch(
+                    "deepagents_code.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            assert os.environ["LANGSMITH_PROJECT"] == LANGSMITH_PROJECT_DEFAULT
+        finally:
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
+
+    def test_bootstrap_keyless_tracing_leaves_project_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Keyless tracing is disabled first, so no default project is applied.
+
+        Regression guard for the ordering between `_disable_orphaned_tracing`
+        and `_apply_default_langsmith_project`: a tracing flag with no
+        resolvable key must be flipped off *before* the default runs, so
+        `LANGSMITH_PROJECT` is left unset (tracing never starts) rather than
+        pointed at `deepagents-code`.
+        """
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code.config import _ensure_bootstrap
+
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        config_mod._bootstrap_state.done = False
+
+        try:
+            monkeypatch.setenv("LANGSMITH_TRACING", "true")
+            monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+            monkeypatch.delenv("LANGCHAIN_API_KEY", raising=False)
+            monkeypatch.delenv("LANGSMITH_ENDPOINT", raising=False)
+            monkeypatch.delenv("LANGCHAIN_ENDPOINT", raising=False)
+            monkeypatch.delenv("LANGSMITH_PROJECT", raising=False)
+            monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
+
+            with (
+                patch("deepagents_code.config._load_dotenv"),
+                patch(
+                    "deepagents_code.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+                patch(
+                    "deepagents_code.config._has_langsmith_profile_credentials",
+                    return_value=False,
+                ),
+                patch(
+                    "deepagents_code.config._has_langsmith_profile_custom_endpoint",
+                    return_value=False,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            assert "LANGSMITH_PROJECT" not in os.environ
+            assert os.environ["LANGSMITH_TRACING"] == "false"
+        finally:
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
+
+    def test_bootstrap_stored_langsmith_key_keeps_tracing_enabled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `/auth`-stored LangSmith key survives `_disable_orphaned_tracing`.
+
+        End-to-end regression guard for the bootstrap ordering: a key stored via
+        `/auth` (never exported to the env) must be bridged onto
+        `LANGSMITH_API_KEY` and auto-enable tracing *before*
+        `_disable_orphaned_tracing` runs, so the orphan guard sees the key and
+        leaves tracing on. The helper-level `_apply_stored_langsmith_tracing`
+        tests cannot catch a regression that reorders the two bootstrap steps.
+        """
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code import auth_store
+        from deepagents_code.config import _ensure_bootstrap
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
+        config_mod._bootstrap_state.done = False
+
+        try:
+            for var in (
+                "LANGSMITH_TRACING",
+                "LANGCHAIN_TRACING_V2",
+                "LANGSMITH_API_KEY",
+                "LANGCHAIN_API_KEY",
+                "LANGSMITH_PROJECT",
+                "DEEPAGENTS_CODE_LANGSMITH_TRACING",
+                "DEEPAGENTS_CODE_LANGSMITH_PROJECT",
+            ):
+                monkeypatch.delenv(var, raising=False)
+            auth_store.set_stored_key("langsmith", "lsv2_stored")
+
+            with (
+                patch("deepagents_code.config._load_dotenv"),
+                patch(
+                    "deepagents_code.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+                patch(
+                    "deepagents_code.config._has_langsmith_profile_credentials",
+                    return_value=False,
+                ),
+                patch(
+                    "deepagents_code.config._has_langsmith_profile_custom_endpoint",
+                    return_value=False,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            # The stored key was bridged onto the canonical env var, and tracing
+            # stayed on instead of being disabled as orphaned.
+            assert os.environ["LANGSMITH_API_KEY"] == "lsv2_stored"
+            assert os.environ["LANGSMITH_TRACING"] == "true"
+        finally:
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
+            config_mod._bootstrap_state.original_tracing_env = original_tracing
+
+    def test_bootstrap_prefixed_langsmith_key_wins_over_stored_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A session-scoped LangSmith key remains authoritative at bootstrap."""
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code import auth_store
+        from deepagents_code.config import _ensure_bootstrap
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
+        config_mod._bootstrap_state.done = False
+
+        try:
+            monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_prefixed")
+            monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+            monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+            monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+            monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
+            auth_store.set_stored_key("langsmith", "lsv2_stored")
+
+            with (
+                patch("deepagents_code.config._load_dotenv"),
+                patch(
+                    "deepagents_code.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            assert os.environ["LANGSMITH_API_KEY"] == "lsv2_prefixed"
+            assert os.environ["LANGSMITH_TRACING"] == "true"
+        finally:
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
+            config_mod._bootstrap_state.original_tracing_env = original_tracing
+
+    def test_scoped_tracing_opt_out_restores_user_tracing_for_shell_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Deep Agents Code opt-out does not leak into child command envs."""
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code import auth_store
+        from deepagents_code.config import _ensure_bootstrap, restore_user_tracing_env
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
+        config_mod._bootstrap_state.done = False
+
+        try:
+            monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "false")
+            monkeypatch.setenv("LANGCHAIN_TRACING_V2", "true")
+            monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+            monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+            monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
+            auth_store.set_stored_key("langsmith", "lsv2_stored")
+
+            with (
+                patch("deepagents_code.config._load_dotenv"),
+                patch(
+                    "deepagents_code.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            assert os.environ["LANGSMITH_TRACING"] == "false"
+            assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
+
+            shell_env = os.environ.copy()
+            restore_user_tracing_env(shell_env)
+
+            assert "LANGSMITH_TRACING" not in shell_env
+            assert shell_env["LANGCHAIN_TRACING_V2"] == "true"
+        finally:
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
+            config_mod._bootstrap_state.original_tracing_env = original_tracing
+
+
+class TestApplyDefaultLangsmithProject:
+    """Tests for _apply_default_langsmith_project()."""
+
+    def test_defaults_when_tracing_on_and_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Tracing on with no project set routes to the default project."""
+        import os
+
+        from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
+
+        monkeypatch.setenv("LANGSMITH_TRACING", "true")
+        monkeypatch.delenv("LANGSMITH_PROJECT", raising=False)
+
+        _apply_default_langsmith_project()
+
+        assert os.environ["LANGSMITH_PROJECT"] == LANGSMITH_PROJECT_DEFAULT
+
+    def test_noop_when_project_already_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An existing LANGSMITH_PROJECT is never overwritten."""
+        import os
+
+        monkeypatch.setenv("LANGSMITH_TRACING", "true")
+        monkeypatch.setenv("LANGSMITH_PROJECT", "user-project")
+
+        _apply_default_langsmith_project()
+
+        assert os.environ["LANGSMITH_PROJECT"] == "user-project"
+
+    def test_noop_when_tracing_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No default is applied when tracing is not enabled."""
+        import os
+
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        monkeypatch.delenv("LANGCHAIN_TRACING_V2", raising=False)
+        monkeypatch.delenv("LANGSMITH_PROJECT", raising=False)
+
+        _apply_default_langsmith_project()
+
+        assert "LANGSMITH_PROJECT" not in os.environ
 
 
 class TestFindDotenvFromStartPath:
@@ -3638,12 +5223,12 @@ class TestInterpreterSettings:
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
             settings_obj = Settings.from_environment(start_path=tmp_path)
 
-        assert settings_obj.enable_interpreter is False
+        assert settings_obj.enable_interpreter is True
         assert settings_obj.interpreter_timeout_seconds == pytest.approx(5.0)
         assert settings_obj.interpreter_memory_limit_mb == 64
         assert settings_obj.interpreter_max_ptc_calls == 256
         assert settings_obj.interpreter_max_result_chars == 4000
-        assert settings_obj.interpreter_ptc is False
+        assert settings_obj.interpreter_ptc == "safe"
         assert settings_obj.interpreter_ptc_acknowledge_unsafe is False
 
     def test_round_trip_through_toml(self, tmp_path: Path) -> None:
@@ -3695,7 +5280,7 @@ ptc = [""]
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
             settings_obj = Settings.from_environment(start_path=tmp_path)
 
-        assert settings_obj.interpreter_ptc is False
+        assert settings_obj.interpreter_ptc == "safe"
 
     def test_ptc_list_with_safe_preset_round_trip(self, tmp_path: Path) -> None:
         """`"safe"` is preserved as a list entry until agent-build expansion."""
@@ -3723,7 +5308,7 @@ ptc = ["all", "task"]
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
             settings_obj = Settings.from_environment(start_path=tmp_path)
 
-        assert settings_obj.interpreter_ptc is False
+        assert settings_obj.interpreter_ptc == "safe"
 
 
 class TestCreateModelCodex:
@@ -3785,7 +5370,16 @@ class TestCreateModelCodex:
         self._plant_token(path)
         monkeypatch.setattr(openai_codex, "default_store_path", lambda: path)
         clear_caches()
-        result = create_model("openai_codex:gpt-5.2-codex")
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="`_ChatOpenAICodex` is experimental",
+                category=UserWarning,
+            )
+            result = create_model(
+                "openai_codex:gpt-5.2-codex",
+                extra_kwargs={"http_socket_options": []},
+            )
         assert isinstance(result.model, _ChatOpenAICodex)
         assert result.provider == "openai_codex"
         assert result.model_name == "gpt-5.2-codex"
@@ -3814,10 +5408,19 @@ class TestCreateModelCodex:
 
         monkeypatch.setattr(codex_mod, "build_chat_model", _capture)
         clear_caches()
-        create_model(
-            "openai_codex:gpt-5.2-codex",
-            extra_kwargs={"api_key": "sk-should-be-stripped"},
-        )
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="`_ChatOpenAICodex` is experimental",
+                category=UserWarning,
+            )
+            create_model(
+                "openai_codex:gpt-5.2-codex",
+                extra_kwargs={
+                    "api_key": "sk-should-be-stripped",
+                    "http_socket_options": [],
+                },
+            )
         assert "api_key" not in captured
 
     def test_expired_session_routes_to_auth(

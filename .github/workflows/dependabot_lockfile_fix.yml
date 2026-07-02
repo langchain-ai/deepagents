@@ -1,0 +1,282 @@
+# Regenerate uv.lock files on Dependabot PRs when Dependabot's textual
+# lockfile update leaves sibling editable/path package metadata out of sync.
+
+name: "🤖 Dependabot Lockfile Fix"
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  fix-lockfiles:
+    # These guards are the trust gate for the contents:write App token minted
+    # below. They also break the self-trigger loop: the fix commit is pushed
+    # with the App installation token, and App-token pushes DO dispatch
+    # workflows, so the push fires a fresh pull_request_target:synchronize.
+    # On that run github.actor is the App's bot identity -- not
+    # dependabot[bot] -- so the actor guard skips it. Do not loosen the actor
+    # check without adding an explicit loop breaker.
+    #
+    # The head.ref prefix is deliberately scoped to 'dependabot/uv/': this job
+    # only regenerates uv lockfiles, so other ecosystems (e.g. github-actions,
+    # whose branches are 'dependabot/github_actions/...') have nothing to fix
+    # and would only hit the changed-file guard and fail. Do not re-widen this
+    # to 'dependabot/' -- the narrow scope keeps the contents:write token path
+    # reachable only by uv Dependabot PRs.
+    if: >
+      github.actor == 'dependabot[bot]' &&
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.event.pull_request.user.type == 'Bot' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'dependabot/uv/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Checkout trusted base code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ env.BASE_SHA }}
+          path: trusted-source
+          persist-credentials: false
+
+      - name: Set up Python and uv from trusted action
+        uses: ./trusted-source/.github/actions/uv_setup
+        with:
+          python-version: "3.14"
+          # Disable the uv cache in this pull_request_target job: a cache
+          # populated by an earlier PR-context run could be restored here and
+          # influence dependency resolution or builds (cache poisoning).
+          enable-cache: "false"
+
+      - name: Checkout PR head read-only for preflight
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          path: pr-preflight
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify Dependabot changed only uv package manifests and lockfiles
+        working-directory: pr-preflight
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          # Three-dot diff = changes introduced on the PR head relative to the
+          # merge base, i.e. exactly what this PR changed. Under `set -e` a
+          # failure to compute it (e.g. an unreachable merge base) aborts the
+          # step loudly rather than silently yielding an empty/wrong file set.
+          git diff --name-only "$BASE_SHA...HEAD" > "$RUNNER_TEMP/changed-files.txt"
+          python - <<'PY'
+          from __future__ import annotations
+
+          import os
+          import sys
+          from pathlib import Path
+
+          repo = Path.cwd().parent / "trusted-source"
+          changed_path = Path(os.environ["RUNNER_TEMP"]) / "changed-files.txt"
+          changed = [
+              line.strip()
+              for line in changed_path.read_text().splitlines()
+              if line.strip()
+          ]
+          changed_path.write_text("\n".join(changed) + ("\n" if changed else ""))
+
+          dependabot_config = repo / ".github" / "dependabot.yml"
+          uv_dirs: set[str] = set()
+          in_uv_update = False
+          in_directories = False
+          for line in dependabot_config.read_text().splitlines():
+              stripped = line.strip()
+              if line.startswith("  - package-ecosystem:"):
+                  in_uv_update = '"uv"' in stripped or "'uv'" in stripped or stripped.endswith(": uv")
+                  in_directories = False
+                  continue
+              if not in_uv_update:
+                  continue
+              if stripped == "directories:":
+                  in_directories = True
+                  continue
+              if in_directories and line.startswith("      - "):
+                  value = stripped.removeprefix("- ").strip().strip('"').strip("'")
+                  uv_dirs.add(value.removeprefix("/"))
+                  continue
+              if in_directories and stripped and not line.startswith("      "):
+                  in_directories = False
+
+          # Fail closed: an empty parse (e.g. dependabot.yml reformatted into a
+          # shape this hand-rolled reader does not recognize) must never
+          # silently widen or skip the gate that guards write credentials.
+          if not uv_dirs:
+              print("::error title=No uv directories parsed::Refusing to run: parsed zero uv package directories from dependabot.yml.")
+              sys.exit(1)
+
+          # Fail closed: an empty changed set would make _packages_for_paths
+          # regenerate EVERY package rather than acting as a no-op.
+          if not changed:
+              print("::error title=Empty changed-file set::Refusing to run: preflight produced no changed files (would otherwise lock every package).")
+              sys.exit(1)
+
+          # Path-scope guard ONLY. This validates WHICH files changed, not WHAT
+          # changed inside them -- a malicious pyproject.toml edit still passes
+          # here. Content is never trusted: lockfile regeneration runs in the
+          # no-credential checkout below, before the write token is minted.
+          # Require the file to sit directly in a Dependabot uv directory (exact
+          # parent match, not a prefix) so a stray nested path cannot slip in.
+          allowed_names = {"pyproject.toml", "uv.lock"}
+          rejected = [
+              path
+              for path in changed
+              if Path(path).parent.as_posix() not in uv_dirs
+              or Path(path).name not in allowed_names
+          ]
+          if rejected:
+              print("::error title=Unexpected Dependabot changes::Refusing to run with write credentials because this PR changes files outside Dependabot uv package pyproject.toml/uv.lock files.")
+              for path in rejected:
+                  print(f"Rejected path: {path}")
+              sys.exit(1)
+
+          print("Changed files:")
+          for path in changed:
+              print(f"- {path}")
+          PY
+
+      - name: Regenerate affected lockfiles without credentials
+        working-directory: pr-preflight
+        run: |
+          set -euo pipefail
+          # Runs in the no-credential checkout BEFORE the App token is minted,
+          # so attacker-influenced code that `uv lock` may execute (PEP 517
+          # build backends, [tool.uv.sources] git deps, dynamic metadata) can
+          # never read a write token from this working tree's git config.
+          python - <<'PY'
+          from __future__ import annotations
+
+          import importlib.util
+          import os
+          import shlex
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          repo = Path.cwd()
+          runner_temp = Path(os.environ["RUNNER_TEMP"])
+          script = repo.parent / "trusted-source" / ".github" / "scripts" / "check_lockfiles_pre_commit.py"
+          spec = importlib.util.spec_from_file_location("lockfile_check", script)
+          if spec is None or spec.loader is None:
+              raise RuntimeError(f"Unable to load {script}")
+          lockfile_check = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(lockfile_check)
+
+          lockfile_check.REPO_ROOT = repo
+          lockfile_check.LIBS_ROOT = repo / "libs"
+          lockfile_check.EXAMPLES_ROOT = repo / "examples"
+
+          changed = [
+              line.strip()
+              for line in (runner_temp / "changed-files.txt").read_text().splitlines()
+              if line.strip()
+          ]
+          lockfiles_path = runner_temp / "lockfiles-to-stage.txt"
+          packages = lockfile_check._packages_for_paths(changed)
+          if not packages:
+              lockfiles_path.write_text("")
+              print("No package lockfiles need regenerating.")
+              sys.exit(0)
+
+          lockfiles = []
+          for package in packages:
+              command = lockfile_check._lock_command(package, check=False)
+              print(f"Regenerating {lockfile_check._repo_path(package)} with {shlex.join(command)}")
+              subprocess.run(command, cwd=repo, check=True)
+              lockfiles.append(lockfile_check._repo_path(package / "uv.lock"))
+
+          lockfiles_path.write_text("\n".join(lockfiles) + "\n")
+          PY
+
+      - name: Checkout PR head for commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ env.HEAD_REF }}
+          path: pr
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify checked-out commit
+        working-directory: pr
+        run: |
+          set -euo pipefail
+          actual_sha=$(git rev-parse HEAD)
+          if [ "$actual_sha" != "$HEAD_SHA" ]; then
+            echo "::error::Expected HEAD_SHA=$HEAD_SHA but checked out $actual_sha"
+            exit 1
+          fi
+
+      - name: Commit regenerated lockfiles
+        id: commit_lockfiles
+        working-directory: pr
+        run: |
+          set -euo pipefail
+          echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          # Copy the lockfiles regenerated in the no-credential checkout into
+          # this checkout, then commit. No PR-head code executes in this step,
+          # and no write token has been minted or persisted yet.
+          missing=0
+          while IFS= read -r lockfile; do
+            [ -n "$lockfile" ] || continue
+            if [ -f "../pr-preflight/$lockfile" ]; then
+              cp -- "../pr-preflight/$lockfile" "$lockfile"
+              git add -- "$lockfile"
+            else
+              echo "::error::Regenerated lockfile listed but not found: $lockfile"
+              missing=$((missing + 1))
+            fi
+          done < "$RUNNER_TEMP/lockfiles-to-stage.txt"
+
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::$missing expected lockfile(s) missing; refusing to push a partial fix."
+            exit 1
+          fi
+
+          if git diff --cached --quiet; then
+            echo "No lockfile changes to commit."
+            exit 0
+          fi
+
+          git diff --cached --stat
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: update Dependabot lockfiles"
+          echo "has_changes=true" >> "$GITHUB_OUTPUT"
+
+      - name: Generate GitHub App token
+        id: app-token
+        if: steps.commit_lockfiles.outputs.has_changes == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ secrets.ORG_MEMBERSHIP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      - name: Push regenerated lockfiles
+        if: steps.commit_lockfiles.outputs.has_changes == 'true'
+        working-directory: pr
+        env:
+          GH_APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          git push "https://x-access-token:${GH_APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:$HEAD_REF"

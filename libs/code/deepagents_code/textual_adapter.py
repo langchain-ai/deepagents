@@ -47,14 +47,16 @@ if TYPE_CHECKING:
 
 
 from deepagents_code._ask_user_types import AskUserRequest
-from deepagents_code._cli_context import CLIContext  # noqa: TC001
+from deepagents_code._cli_context import CLIContext
+from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
 from deepagents_code._session_stats import (
     ModelStats as ModelStats,
+    ModelStatsKey as ModelStatsKey,
     SessionStats as SessionStats,
     SpinnerStatus as SpinnerStatus,
     format_token_count as format_token_count,
 )
-from deepagents_code.config import build_stream_config
+from deepagents_code.config import build_stream_config, get_glyphs
 from deepagents_code.file_ops import FileOpTracker
 from deepagents_code.formatting import format_duration
 from deepagents_code.hooks import dispatch_hook
@@ -75,9 +77,6 @@ _hitl_adapter_cache: TypeAdapter | None = None
 """Lazy singleton for the HITL request validator."""
 
 _ASK_USER_UNSUPPORTED_ERROR = "ask_user not supported by this UI"
-
-_TOOL_CALLS_KEEP_THINKING_SPINNER = frozenset({"edit_file"})
-"""Tool calls whose argument/approval phase can be long enough to need feedback."""
 
 
 def _get_hitl_request_adapter(hitl_request_type: type) -> TypeAdapter:
@@ -107,8 +106,9 @@ def print_usage_table(
 ) -> None:
     """Print a model-usage stats table to a Rich console.
 
-    When the session spans multiple models each gets its own row with a
-    totals row appended; single-model sessions show one row.
+    Each row shows the serving provider alongside the model name. When the
+    session spans multiple models each gets its own row with a totals row
+    appended; single-model sessions show one row.
 
     Args:
         stats: Cumulative session stats.
@@ -131,29 +131,33 @@ def print_usage_table(
             padding=(0, 2, 0, 0),
             show_edge=False,
         )
+        table.add_column("Provider", style="dim")
         table.add_column("Model", style="dim")
         table.add_column("Reqs", justify="right", style="dim")
         table.add_column("InputTok", justify="right", style="dim")
         table.add_column("OutputTok", justify="right", style="dim")
 
         if multi_model:
-            for model_name, ms in stats.per_model.items():
+            for ms in stats.per_model.values():
                 table.add_row(
-                    model_name,
+                    ms.provider,
+                    ms.model_name,
                     str(ms.request_count),
                     format_token_count(ms.input_tokens),
                     format_token_count(ms.output_tokens),
                 )
             table.add_row(
+                "",
                 "Total",
                 str(stats.request_count),
                 format_token_count(stats.input_tokens),
                 format_token_count(stats.output_tokens),
             )
         else:
-            model_label = next(iter(stats.per_model))
+            ms = next(iter(stats.per_model.values()))
             table.add_row(
-                model_label,
+                ms.provider,
+                ms.model_name,
                 str(stats.request_count),
                 format_token_count(stats.input_tokens),
                 format_token_count(stats.output_tokens),
@@ -208,6 +212,66 @@ def _is_summarization_chunk(metadata: dict | None) -> bool:
     return metadata.get("lc_source") == "summarization"
 
 
+def _format_rubric_event(data: dict[str, Any]) -> str | None:
+    """Format a rubric custom-stream event for the chat transcript.
+
+    Returns:
+        A user-visible message for rubric events, or `None` for custom-stream
+        events that are not rubric events.
+    """
+    glyphs = get_glyphs()
+    event_type = data.get("type")
+    if event_type == "rubric_evaluation_start":
+        iteration = data.get("iteration", 0)
+        show_iteration = data.get("show_iteration") is True
+        label = (
+            f" (iteration {iteration + 1})"
+            if show_iteration and isinstance(iteration, int)
+            else ""
+        )
+        return (
+            f"{glyphs.hourglass} Checking acceptance criteria{label}{glyphs.ellipsis}"
+        )
+    if event_type != "rubric_evaluation_end":
+        return None
+
+    result = data.get("result")
+    explanation = str(data.get("explanation") or "").strip()
+    if result is None:
+        return None
+    if result == "satisfied":
+        return f"{glyphs.checkmark} Acceptance criteria satisfied"
+    if result == "needs_revision":
+        lines = [
+            f"{glyphs.retry} Changes need revision"
+            + (f": {explanation}" if explanation else ""),
+        ]
+        for criterion in data.get("criteria", []):
+            if isinstance(criterion, dict) and criterion.get("passed") is False:
+                name = str(criterion.get("name", "criterion"))
+                gap = str(criterion.get("gap", "")).strip()
+                lines.append(f"  {glyphs.error} {name}" + (f" — {gap}" if gap else ""))
+        return "\n".join(lines)
+    if result == "max_iterations_reached":
+        return (
+            f"{glyphs.warning} Acceptance criteria not satisfied "
+            "(iteration limit reached)"
+        )
+    if result in {"failed", "grader_error"}:
+        label = "grader failed" if result == "failed" else "grader error"
+        return (
+            f"{glyphs.warning} Rubric "
+            + label
+            + (f": {explanation}" if explanation else "")
+        )
+    # A `rubric_evaluation_end` with an unrecognized result is still a terminal
+    # grading event; surface it rather than silently dropping it (e.g. if the
+    # SDK adds a new verdict the chat would otherwise go quiet mid-turn).
+    return f"{glyphs.warning} Rubric grading ended" + (
+        f": {explanation}" if explanation else ""
+    )
+
+
 class TextualUIAdapter:
     """Adapter for rendering agent output to Textual widgets.
 
@@ -220,7 +284,7 @@ class TextualUIAdapter:
         mount_message: Callable[..., Awaitable[None]],
         update_status: Callable[[str], None],
         request_approval: Callable[..., Awaitable[Any]],
-        on_auto_approve_enabled: Callable[[], None] | None = None,
+        on_auto_approve_enabled: Callable[[], Awaitable[None] | None] | None = None,
         set_spinner: Callable[[SpinnerStatus], Awaitable[None]] | None = None,
         set_active_message: Callable[[str | None], None] | None = None,
         sync_message_content: Callable[[str, str], None] | None = None,
@@ -232,6 +296,7 @@ class TextualUIAdapter:
             | None
         ) = None,
         on_tool_complete: Callable[[], None] | None = None,
+        on_subagent_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         """Initialize the adapter."""
         self._mount_message = mount_message
@@ -272,6 +337,14 @@ class TextualUIAdapter:
         The app uses this to refresh the footer's git branch as soon as an
         agent-executed tool (e.g. `git checkout`) returns, instead of waiting
         for the full turn to finish.
+        """
+
+        self._on_subagent_event = on_subagent_event
+        """Sync callback fired for each validated `subagent` custom-stream event.
+
+        Drives the live subagent fan-out panel. Events originate from the
+        QuickJS `task()` bridge during a `js_eval` call; payload strings are
+        LLM/JS-authored and treated as untrusted by the panel renderer.
         """
 
         # State tracking
@@ -364,7 +437,24 @@ def _read_mentioned_file(file_path: Path, max_embed_bytes: int) -> str:
             "use read_file tool to view)"
         )
     content = file_path.read_text(encoding="utf-8")
-    return f"\n### {file_path.name}\nPath: `{file_path}`\n```\n{content}\n```"
+    return f"\n### {file_path.name}\nPath: `{file_path}`\n```text\n{content}\n```"
+
+
+def _is_renderable_subagent_event(data: Any, *, is_main_agent: bool) -> bool:  # noqa: ANN401  # custom-stream payload is dynamic
+    """Whether a `custom` payload is a subagent event this UI can render.
+
+    Guards the live panel against unrelated/malformed custom events and against
+    nested (subagent-to-subagent) emissions.
+
+    Args:
+        data: The `custom` stream payload.
+        is_main_agent: Whether the event came from the main agent's namespace
+            (the empty namespace). Nested emissions are ignored.
+
+    Returns:
+        True only for a well-formed subagent event from the main agent.
+    """
+    return is_main_agent and isinstance(data, dict) and data.get("type") == "subagent"
 
 
 async def execute_task_textual(
@@ -379,6 +469,8 @@ async def execute_task_textual(
     *,
     sandbox_type: str | None = None,
     message_kwargs: dict[str, Any] | None = None,
+    rubric: str | None = None,
+    blocked_goal_retry_context: str | None = None,
     turn_stats: SessionStats | None = None,
 ) -> SessionStats:
     """Execute a task with output directed to Textual UI.
@@ -394,13 +486,21 @@ async def execute_task_textual(
         adapter: The TextualUIAdapter for UI operations
         backend: Optional backend for file operations
         image_tracker: Optional tracker for images
-        context: Optional `CLIContext` with model override and params, passed
-            to the graph via `context=`.
+        context: Optional `CLIContext` with model override and params. The
+            current approval mode (`session_state.auto_approve`) is written
+            into `context["auto_approve"]` on every stream iteration before it
+            is passed to the graph via `context=`, so the `interrupt_on` `when`
+            predicate can suppress interrupts at the source.
         sandbox_type: Sandbox provider name for trace metadata, or `None`
             if no sandbox is active.
         message_kwargs: Extra fields merged into the stream input message
             dict (e.g., `additional_kwargs` for persisting skill metadata
             in the checkpoint).
+        rubric: Acceptance criteria supplied to `RubricMiddleware` via graph
+            input state.
+        blocked_goal_retry_context: One-turn model context for retrying a
+            previously blocked goal. This is carried via runtime context so it
+            is not parsed for file mentions or checkpointed as human input.
         turn_stats: Pre-created `SessionStats` to accumulate into.
 
             When the caller holds a reference to the same object, stats are
@@ -423,6 +523,8 @@ async def execute_task_textual(
     from langchain_core.messages import HumanMessage, ToolMessage
     from langgraph.types import Command
     from pydantic import ValidationError
+
+    from deepagents_code.approval_mode import awrite_approval_mode
 
     hitl_request_adapter = _get_hitl_request_adapter(HITLRequest)
     ask_user_adapter = _get_ask_user_adapter()
@@ -466,7 +568,27 @@ async def execute_task_textual(
         message_content = final_input
 
     thread_id = session_state.thread_id
-    config = build_stream_config(thread_id, assistant_id, sandbox_type=sandbox_type)
+    # Advance the per-thread turn markers (coding-agent-v1 turn_id/turn_number)
+    # once per user prompt, before building the stream config. `session_state`
+    # is duck-typed (`Any`): the production `TextualSessionState` always has
+    # `advance_turn`, but lightweight callers/test doubles may not, so probe for
+    # it and degrade to no turn markers rather than raising.
+    advance_turn = getattr(session_state, "advance_turn", None)
+    if callable(advance_turn):
+        turn_id, turn_number = advance_turn()
+    else:
+        turn_id, turn_number = None, None
+    # `build_stream_config` does blocking git filesystem reads and may shell out
+    # to `git`; offload it so the Textual event loop stays responsive. Advancing
+    # the turn markers above is pure/cheap and stays on the loop.
+    config = await asyncio.to_thread(
+        build_stream_config,
+        thread_id,
+        assistant_id,
+        sandbox_type=sandbox_type,
+        turn_id=turn_id,
+        turn_number=turn_number,
+    )
 
     await dispatch_hook("session.start", {"thread_id": thread_id})
 
@@ -512,7 +634,13 @@ async def execute_task_textual(
     user_msg: dict[str, Any] = {"role": "user", "content": message_content}
     if message_kwargs:
         user_msg.update(message_kwargs)
+    # Auto-approve is carried via run context (set per stream iteration below),
+    # not graph state — so the initial input is a plain dict. A first-turn
+    # `Command(update=...)` would be rebuilt with `goto=None` by the LangGraph
+    # API server and crash `_control_branch` on a fresh thread.
     stream_input: dict | Command = {"messages": [user_msg]}
+    if rubric:
+        stream_input["rubric"] = rubric
 
     # Track summarization lifecycle so spinner status and notification stay in sync.
     summarization_in_progress = False
@@ -524,6 +652,43 @@ async def execute_task_textual(
             pending_interrupts: dict[str, HITLRequest] = {}
             pending_ask_user: dict[str, AskUserRequest] = {}
 
+            # Carry the current approval mode into run context so the
+            # `interrupt_on` `when` predicate can suppress interrupts at the
+            # source. Also write the live store item that the server-side
+            # predicate re-reads on each tool call, so toggling approval mode
+            # mid-stream (either direction) takes effect before the current
+            # stream returns. Turning auto-approve off is the safety-critical
+            # direction, but the same store write also propagates turning it on.
+            if context is None:
+                context = CLIContext()
+            context["thread_id"] = thread_id
+            if blocked_goal_retry_context is not None:
+                context["blocked_goal_retry_context"] = blocked_goal_retry_context
+            else:
+                context.pop("blocked_goal_retry_context", None)
+            auto_approve = bool(session_state.auto_approve)
+            context["auto_approve"] = auto_approve
+            try:
+                live_key = await awrite_approval_mode(
+                    agent,
+                    thread_id,
+                    auto_approve=auto_approve,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to write live approval mode; interrupting for safety",
+                    exc_info=True,
+                )
+                context["auto_approve"] = False
+                context.pop("approval_mode_key", None)
+                session_state.approval_mode_key = None
+            else:
+                if live_key is None:
+                    context.pop("approval_mode_key", None)
+                else:
+                    context["approval_mode_key"] = live_key
+                session_state.approval_mode_key = live_key
+
             # Show the Thinking spinner before each astream iteration so
             # both the first turn and HITL/ask_user resumes surface feedback
             # while the model processes input. Skip when
@@ -534,7 +699,7 @@ async def execute_task_textual(
 
             async for chunk in agent.astream(
                 stream_input,
-                stream_mode=["messages", "updates"],
+                stream_mode=["messages", "updates", "custom"],
                 subgraphs=True,
                 config=config,
                 context=context,
@@ -553,6 +718,40 @@ async def execute_task_textual(
                 # namespace). Subagents run via Task tool and should only
                 # report back to the main agent
                 is_main_agent = ns_key == ()
+
+                # Handle CUSTOM stream - live subagent fan-out events emitted by
+                # the QuickJS task() bridge during a js_eval call. Validate at
+                # this boundary before forwarding so unrelated/malformed or
+                # nested custom events never reach the panel; forwarding must
+                # never raise into the stream loop.
+                if current_stream_mode == "custom":
+                    rubric_message = data if isinstance(data, dict) else None
+                    formatted_rubric_event = (
+                        _format_rubric_event(rubric_message) if rubric_message else None
+                    )
+                    if formatted_rubric_event is not None and is_main_agent:
+                        await adapter._mount_message(AppMessage(formatted_rubric_event))
+                        continue
+                    if formatted_rubric_event is not None:
+                        # Rubric events come from the main agent today; a
+                        # non-main namespace would be dropped by the gate above,
+                        # so leave a breadcrumb if that ever changes.
+                        logger.debug(
+                            "Dropping rubric event from non-main namespace %r",
+                            ns_key,
+                        )
+                    if (
+                        adapter._on_subagent_event is not None
+                        and _is_renderable_subagent_event(
+                            data, is_main_agent=is_main_agent
+                        )
+                    ):
+                        try:
+                            adapter._on_subagent_event(data)
+                        except Exception:
+                            # Panel rendering must never crash the stream loop.
+                            logger.exception("subagent panel event handler failed")
+                    continue
 
                 # Handle UPDATES stream - for interrupts and todos
                 if current_stream_mode == "updates":
@@ -690,6 +889,13 @@ async def execute_task_textual(
                                 assistant_message_by_namespace,
                             )
                             pending_text_by_namespace[ns_key] = ""
+                            # Drop the cached assistant bubble too, not just the
+                            # pending text: a mid-turn HumanMessage (e.g. the
+                            # rubric revision loop re-prompting the agent) means
+                            # the next assistant text is a fresh response and
+                            # must start a new bubble rather than appending to
+                            # the pre-revision one.
+                            assistant_message_by_namespace.pop(ns_key, None)
                         continue
 
                     if isinstance(message, ToolMessage):
@@ -768,17 +974,23 @@ async def execute_task_textual(
                             from deepagents_code.config import settings
 
                             active_model = settings.model_name or ""
+                            active_provider = settings.model_provider or ""
                             if input_toks or output_toks:
                                 # Model gives split counts — preferred path
                                 turn_stats.record_request(
-                                    active_model, input_toks, output_toks
+                                    active_model,
+                                    input_toks,
+                                    output_toks,
+                                    active_provider,
                                 )
                                 captured_input_tokens = max(
                                     captured_input_tokens, input_toks + output_toks
                                 )
                             elif total_toks:
                                 # Fallback: model gives only total (no split)
-                                turn_stats.record_request(active_model, total_toks, 0)
+                                turn_stats.record_request(
+                                    active_model, total_toks, 0, active_provider
+                                )
                                 captured_input_tokens = max(
                                     captured_input_tokens, total_toks
                                 )
@@ -955,17 +1167,15 @@ async def execute_task_textual(
                                     buffer_name, parsed_args, buffer_id
                                 )
 
-                                keep_thinking_spinner = (
-                                    buffer_name in _TOOL_CALLS_KEEP_THINKING_SPINNER
-                                )
-
-                                # Hide spinner before showing most tool calls.
-                                # `edit_file` can spend noticeable time between
-                                # argument streaming, HITL interrupt delivery, and
-                                # approval handling, so re-anchor Thinking below
-                                # the row instead of leaving the UI visually idle.
-                                if adapter._set_spinner and not keep_thinking_spinner:
-                                    await adapter._set_spinner(None)
+                                # Keep the global "Thinking" spinner visible
+                                # across tool calls rather than hiding it per
+                                # tool: it's a stable turn-level indicator, and
+                                # the tool's own progress now shows in its
+                                # collapsed group row. Re-assert it so it stays
+                                # pinned at the bottom as the new row mounts
+                                # above it.
+                                if adapter._set_spinner:
+                                    await adapter._set_spinner("Thinking")
 
                                 # Mount tool call message
                                 logger.debug(
@@ -976,20 +1186,11 @@ async def execute_task_textual(
                                 tool_msg = ToolCallMessage(buffer_name, parsed_args)
                                 await adapter._mount_message(tool_msg)
                                 adapter._current_tool_messages[buffer_id] = tool_msg
-                                if keep_thinking_spinner:
-                                    # The argument/approval phase uses the global
-                                    # "Thinking" spinner instead of a per-tool one.
-                                    if adapter._set_spinner:
-                                        await adapter._set_spinner("Thinking")
-                                else:
-                                    # Show a per-tool running spinner immediately so
-                                    # auto-executed tools such as grep, glob,
-                                    # read_file, and ls display activity instead of
-                                    # sitting idle until their result arrives. Every
-                                    # tool outside the frozenset hits this branch;
-                                    # those that go on to interrupt for approval are
-                                    # paused again below.
-                                    tool_msg.set_running()
+                                # Mark running so the group row reflects live
+                                # progress; the row itself is hidden inside the
+                                # group, so this drives state, not a visible
+                                # per-tool spinner.
+                                tool_msg.set_running()
 
                             tool_call_buffers.pop(buffer_key, None)
 
@@ -1240,8 +1441,16 @@ async def execute_task_textual(
 
                             if decision_type == "auto_approve_all":
                                 session_state.auto_approve = True
+                                # The resuming stream re-reads
+                                # `session_state.auto_approve` into run context
+                                # at the top of the loop, so the `interrupt_on`
+                                # `when` predicate suppresses interrupts on the
+                                # remaining tool calls in this turn — keeping it
+                                # a single run instead of resuming after each.
                                 if adapter._on_auto_approve_enabled:
-                                    adapter._on_auto_approve_enabled()
+                                    callback_result = adapter._on_auto_approve_enabled()
+                                    if callback_result is not None:
+                                        await callback_result
                                 decisions = [
                                     ApproveDecision(type="approve")
                                     for _ in action_requests
@@ -1256,6 +1465,7 @@ async def execute_task_textual(
                                     if tool_name in {
                                         "write_file",
                                         "edit_file",
+                                        "delete",
                                     }:
                                         args = action_request.get("args", {})
                                         if isinstance(args, dict):
@@ -1278,6 +1488,7 @@ async def execute_task_textual(
                                     if tool_name in {
                                         "write_file",
                                         "edit_file",
+                                        "delete",
                                     }:
                                         args = action_request.get("args", {})
                                         if isinstance(args, dict):
@@ -1460,6 +1671,11 @@ async def _handle_interrupt_cleanup(
         captured_output_tokens: Output tokens captured before interrupt.
         turn_stats: Stats for the current turn.
         start_time: Monotonic timestamp when the turn began.
+
+    Raises:
+        ValueError: If proactive remote-run cancellation is attempted without a
+            `thread_id` in `config` (a contract violation rather than a
+            transient remote failure).
     """
     from langchain_core.messages import HumanMessage
 
@@ -1477,6 +1693,29 @@ async def _handle_interrupt_cleanup(
     await _stop_assistant_streams(adapter, assistant_message_by_namespace)
 
     await adapter._mount_message(AppMessage("Interrupted by user"))
+
+    # Proactively cancel server-side runs before persisting recovery state, so
+    # the aupdate_state writes below don't 409 against a still-busy thread. This
+    # is defense-in-depth layered on top of aupdate_state's own 409 -> cancel ->
+    # retry path (see RemoteAgent.aupdate_state); a failure here is not fatal.
+    # Absent on local agents, so this is a no-op for them.
+    cancel_active_runs = getattr(agent, "acancel_active_runs", None)
+    if cancel_active_runs is not None:
+        try:
+            await cancel_active_runs(config)
+        except ValueError:
+            # A missing thread_id is a contract violation (a bug), not a
+            # transient remote failure — surface it rather than downgrading it
+            # to a warning alongside the swallowed network errors below.
+            raise
+        except Exception:
+            # Remote cancel is best-effort defense-in-depth; transient remote
+            # failures here are recovered by aupdate_state's 409 retry below.
+            logger.warning(
+                "Failed to cancel active remote runs for thread %s",
+                config.get("configurable", {}).get("thread_id"),
+                exc_info=True,
+            )
 
     interrupted_msg = _build_interrupted_ai_message(
         pending_text_by_namespace,
@@ -1499,7 +1738,7 @@ async def _handle_interrupt_cleanup(
                 await agent.aupdate_state(config, {"messages": [interrupted_msg]})
 
             cancellation_msg = HumanMessage(
-                content="[SYSTEM] Task interrupted by user. "
+                content=f"{SYSTEM_MESSAGE_PREFIX} Task interrupted by user. "
                 "Previous operation was cancelled."
             )
             cancellation_values: dict[str, Any] = {"messages": [cancellation_msg]}

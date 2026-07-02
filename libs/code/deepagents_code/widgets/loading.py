@@ -27,7 +27,7 @@ class Spinner:
 
     @property
     def frames(self) -> tuple[str, ...]:
-        """Get spinner frames from glyphs config."""
+        """Spinner frames from glyphs config."""
         return get_glyphs().spinner_frames
 
     def next_frame(self) -> str:

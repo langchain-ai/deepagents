@@ -91,9 +91,8 @@ repos:
       - id: extras-sync
         name: check extras sync with required deps
         language: system
-        entry: python3 .github/scripts/check_extras_sync.py libs/cli/pyproject.toml
-        files: ^libs/cli/pyproject\.toml$
-        pass_filenames: false
+        entry: python3 .github/scripts/check_extras_sync.py
+        files: ^libs/.*/pyproject\.toml$
       - id: version-equality
         name: check pyproject.toml and _version.py match
         language: system

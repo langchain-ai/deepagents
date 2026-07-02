@@ -44,6 +44,21 @@ def test_factory_uses_fallback_defaults_without_profile() -> None:
     assert middleware._truncate_args_keep == ("messages", 20)
 
 
+def test_factory_default_prompt_explains_media_references() -> None:
+    """Explains preserved media tags in the default summary prompt."""
+    model = _make_model(with_profile_limit=None)
+    middleware = create_summarization_middleware(model, cast("Any", MagicMock()))
+
+    # The prompt is consumed via str.format(messages=...), so the example's
+    # braces must be escaped in the template and survive formatting. Assert
+    # against the rendered result -- this also guards against the literal
+    # `{hash}` regression that made format() raise KeyError.
+    rendered = middleware._lc_helper.summary_prompt.format(messages="<conversation>")
+    assert '<image url="/conversation_history/media/{hash}.png" />' in rendered
+    assert "preserve the media reference in your summary" in rendered
+    assert "call `read_file` on the referenced path" in rendered
+
+
 def test_factory_surfaces_summarization_knobs() -> None:
     """Passes explicit summarization settings through to the middleware."""
     model = _make_model(with_profile_limit=120_000)

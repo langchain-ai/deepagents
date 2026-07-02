@@ -1,6 +1,6 @@
 """Thread-keyed QuickJS REPL registry, console bridge, and result formatter.
 
-Kept separate from ``middleware.py`` so the REPL mechanics stay testable
+Kept separate from `middleware.py` so the REPL mechanics stay testable
 without constructing an agent or wiring up LangGraph state.
 """
 
@@ -27,6 +27,7 @@ from quickjs_rs import (
     MemoryLimitError,
     Runtime,
     Snapshot,
+    SourceTransform,
     ThreadWorker,
 )
 from quickjs_rs import (
@@ -60,7 +61,7 @@ def _clear_exception_references(exc: BaseException) -> None:
     """Drop traceback links to avoid cross-thread GC finalizing QJS handles.
 
     quickjs_rs exceptions may keep traceback frames that hold temporary
-    ``QjsHandle`` objects. If those cycles are collected on a different
+    `QjsHandle` objects. If those cycles are collected on a different
     thread, quickjs_rs raises "unsendable ... dropped on another thread".
     """
     exc.__traceback__ = None
@@ -72,8 +73,8 @@ def _clear_exception_references(exc: BaseException) -> None:
 class EvalOutcome:
     """Normalized result of a single REPL eval.
 
-    Exactly one of ``result`` / ``error`` is meaningful per call; ``stdout``
-    is collected from ``console.*`` regardless.
+    Exactly one of `result` / `error` is meaningful per call; `stdout`
+    is collected from `console.*` regardless.
     """
 
     stdout: str = ""
@@ -142,7 +143,7 @@ class _PTCState:
 
 
 class _ConsoleBuffer:
-    """Accumulates ``console.*`` output between evals.
+    """Accumulates `console.*` output between evals.
 
     Shared by the three host functions we install on each context. We don't
     bother distinguishing log/warn/error in the output format — the model
@@ -177,30 +178,63 @@ class _ConsoleBuffer:
         return out, dropped
 
 
+_UNDEFINED_TYPE = type(UNDEFINED)
+
+
+def _is_undefined(value: Any) -> bool:
+    """Return whether ``value`` is a QuickJS ``undefined`` marshal result.
+
+    Marshaling produces fresh ``Undefined`` instances rather than the
+    ``UNDEFINED`` singleton, so identity comparison is unreliable.
+    """
+    return isinstance(value, _UNDEFINED_TYPE)
+
+
+def _strip_undefined(value: Any) -> Any:
+    """Recursively drop ``undefined`` object properties so defaults apply.
+
+    JS ``undefined`` means "absent", so a dict key whose value is
+    ``undefined`` is omitted, letting the tool's schema defaults take over.
+    Array entries are converted to ``None`` (JS ``null``) instead of being
+    dropped, since dropping would shift indices and corrupt the array.
+    """
+    if isinstance(value, dict):
+        return {
+            key: _strip_undefined(val)
+            for key, val in value.items()
+            if not _is_undefined(val)
+        }
+    if isinstance(value, list):
+        return [
+            None if _is_undefined(item) else _strip_undefined(item) for item in value
+        ]
+    return value
+
+
 def _normalize_tool_input(raw: Any) -> dict[str, Any]:
-    """Coerce whatever JS passed into ``tools.X(...)`` to a dict.
+    """Coerce whatever JS passed into `tools.X(...)` to a dict.
 
     LangChain tools accept a dict. QuickJS marshals JS objects to dicts
-    already; we just want to guard against the model passing ``null``,
-    ``undefined``, a bare string, or a number (none of which a well-
+    already; we just want to guard against the model passing `null`,
+    `undefined`, a bare string, or a number (none of which a well-
     formed tool call should produce, but the model is the model).
     """
-    if raw is None or raw is UNDEFINED:
+    if raw is None or _is_undefined(raw):
         return {}
     if isinstance(raw, dict):
-        return raw
+        return _strip_undefined(raw)
     # Bare scalar / list — wrap under a conventional key so the tool's
     # schema validation produces an informative error rather than a
     # silent miss.
-    return {"input": raw}
+    return {"input": _strip_undefined(raw)}
 
 
 def _synth_tool_call_id(tool_name: str) -> str:
     """Mint a synthetic tool_call_id for a PTC-driven tool invocation.
 
-    Tools like ``task`` require a non-empty ``tool_call_id`` to stamp
-    into their emitted ``ToolMessage``. The real call_id lives on the
-    outer ``eval`` tool call; we synthesise a child id so downstream
+    Tools like `task` require a non-empty `tool_call_id` to stamp
+    into their emitted `ToolMessage`. The real call_id lives on the
+    outer `eval` tool call; we synthesise a child id so downstream
     state (checkpointer, tracing) can correlate the PTC sub-call back
     to the REPL cell that issued it.
     """
@@ -213,15 +247,15 @@ def _inject_tool_args_for_ptc(
     outer_runtime: Any,
     tool_call_id: str,
 ) -> dict[str, Any]:
-    """Mirror LangGraph's ``ToolNode._inject_tool_args`` for PTC calls.
+    """Mirror LangGraph's `ToolNode._inject_tool_args` for PTC calls.
 
-    LangChain tools that declare ``ToolRuntime`` / ``InjectedState`` /
-    ``InjectedStore`` only see those values when a real ``ToolNode`` wires
+    LangChain tools that declare `ToolRuntime` / `InjectedState` /
+    `InjectedStore` only see those values when a real `ToolNode` wires
     them in. PTC calls bypass it, so we replicate the detection logic here.
-    The outer runtime (captured from the active ``eval`` tool invocation)
-    provides state/store/context/config; ``tool_call_id`` is freshly minted
-    per sub-call. ``InjectedToolCallId`` is handled separately via
-    ``BaseTool.arun(..., tool_call_id=...)`` at the bridge site.
+    The outer runtime (captured from the active `eval` tool invocation)
+    provides state/store/context/config; `tool_call_id` is freshly minted
+    per sub-call. `InjectedToolCallId` is handled separately via
+    `BaseTool.arun(..., tool_call_id=...)` at the bridge site.
     """
     enriched = dict(payload)
 
@@ -237,7 +271,7 @@ def _inject_tool_args_for_ptc(
         return enriched
 
     # Build a ToolRuntime matching the outer one but with a fresh
-    # tool_call_id. ``type(outer_runtime)`` rather than a literal import
+    # tool_call_id. `type(outer_runtime)` rather than a literal import
     # so the shape stays in lockstep with whatever langgraph ships.
     derived = type(outer_runtime)(
         state=outer_runtime.state,
@@ -270,19 +304,19 @@ def _inject_tool_args_for_ptc(
 
 
 def _tool_uses_injected_tool_call_id(tool: Any) -> bool:
-    """Return whether *tool* declares an ``InjectedToolCallId`` parameter.
+    """Return whether *tool* declares an `InjectedToolCallId` parameter.
 
-    PTC invokes tools with an args dict via ``BaseTool.arun``. Tools that
-    declare ``InjectedToolCallId`` need ``tool_call_id`` passed as a kwarg
-    so ``BaseTool._parse_input``'s built-in injection runs. Detect via the
-    same combination of schema annotations and ``get_type_hints`` that
-    langgraph's ``_get_all_injected_args`` uses.
+    PTC invokes tools with an args dict via `BaseTool.arun`. Tools that
+    declare `InjectedToolCallId` need `tool_call_id` passed as a kwarg
+    so `BaseTool._parse_input`'s built-in injection runs. Detect via the
+    same combination of schema annotations and `get_type_hints` that
+    langgraph's `_get_all_injected_args` uses.
 
-    Trade-off: passing ``tool_call_id`` as a kwarg makes
-    ``BaseTool._format_output`` wrap the result in a ``ToolMessage`` with
-    string-coerced ``.content`` (unless the tool returns a ``ToolOutputMixin``
-    such as ``Command``). For tools without this annotation we pass
-    ``tool_call_id=None`` and recover the native return value.
+    Trade-off: passing `tool_call_id` as a kwarg makes
+    `BaseTool._format_output` wrap the result in a `ToolMessage` with
+    string-coerced `.content` (unless the tool returns a `ToolOutputMixin`
+    such as `Command`). For tools without this annotation we pass
+    `tool_call_id=None` and recover the native return value.
     """
     try:
         from typing import get_type_hints  # noqa: PLC0415
@@ -329,7 +363,7 @@ def _bridge_symbol_name(tool_name: str) -> str:
 
 
 def _render_tools_namespace_assignment(bridges: dict[str, str]) -> str:
-    """Return JS that atomically rebuilds ``globalThis.tools`` from bridges."""
+    """Return JS that atomically rebuilds `globalThis.tools` from bridges."""
     statements = ["globalThis.tools = {};"]
     for tool_name, bridge_symbol in sorted(bridges.items()):
         quoted_tool_name = json.dumps(tool_name)
@@ -345,8 +379,8 @@ def _render_tools_namespace_assignment(bridges: dict[str, str]) -> str:
 class _ThreadREPL:
     """One QuickJS context + console buffer, per LangGraph thread.
 
-    All ``ctx.*`` operations are marshalled onto the worker's dedicated
-    thread because ``quickjs_rs`` objects are ``!Send``. The public
+    All `ctx.*` operations are marshalled onto the worker's dedicated
+    thread because `quickjs_rs` objects are `!Send`. The public
     methods are safe to call from any thread/loop.
     """
 
@@ -363,31 +397,31 @@ class _ThreadREPL:
     ) -> None:
         self._worker = worker
         self._runtime = runtime
-        # The Context-level ``timeout`` is used as the cumulative budget
-        # for sync evals. Async evals pass ``timeout=`` per call so each
+        # The Context-level `timeout` is used as the cumulative budget
+        # for sync evals. Async evals pass `timeout=` per call so each
         # call gets a fresh budget — matches what a REPL user expects,
         # and what we describe in the system prompt.
         self._per_call_timeout = timeout
         self._capture_console = capture_console
-        # Static budget config; mutable counters live in ``_ptc_state``.
+        # Static budget config; mutable counters live in `_ptc_state`.
         self._max_ptc_calls = max_ptc_calls
         self._subagents_enabled = subagents_enabled
         self._console = _ConsoleBuffer(max_stdout_chars)
         self._ctx: Context | None = None
-        # PTC state. ``_registered_tools`` tracks which camel-case names
+        # PTC state. `_registered_tools` tracks which camel-case names
         # have already had their host-function bridge installed on the
         # QuickJS context. Host functions cannot be un-registered, so we
         # never remove entries from here — changes to the exposed set
-        # are reflected by rewriting ``globalThis.tools`` (see
+        # are reflected by rewriting `globalThis.tools` (see
         # install_tools) to include only the currently-active subset.
         self._registered_tools: dict[str, BaseTool] = {}
         self._bridge_symbols: dict[str, str] = {}
         self._active_tool_names: frozenset[str] = frozenset()
-        # Tracks whether ``globalThis.tools`` has been assigned at least
-        # once. Distinct from ``_active_tool_names`` so the first call
-        # with an empty tool set still installs ``tools = {}`` (otherwise
-        # ``typeof tools.X`` throws ReferenceError instead of returning
-        # ``"undefined"``).
+        # Tracks whether `globalThis.tools` has been assigned at least
+        # once. Distinct from `_active_tool_names` so the first call
+        # with an empty tool set still installs `tools = {}` (otherwise
+        # `typeof tools.X` throws ReferenceError instead of returning
+        # `"undefined"`).
         self._tools_installed: bool = False
         # Mutable per-eval PTC state. Tracks call budget plus outer
         # runtime/loop dispatch context for bridge invocations. Allocated
@@ -433,7 +467,7 @@ class _ThreadREPL:
 
         # Install the JS-level console object. We do this via a separate
         # eval because register_host_function only puts the callable on the
-        # global object under its given name; ``globalThis.console`` needs
+        # global object under its given name; `globalThis.console` needs
         # to exist as a normal object for idiomatic JS. Trailing primitive
         # keeps the eval's result marshalable — assigning an object would
         # bubble a MarshalError we'd have to special-case.
@@ -446,12 +480,12 @@ class _ThreadREPL:
         )
 
     def install_tools(self, tools: Sequence[BaseTool]) -> None:
-        """Expose ``tools`` as ``globalThis.tools.<camelCase>`` in the REPL.
+        """Expose `tools` as `globalThis.tools.<camelCase>` in the REPL.
 
         Idempotent per (camelName, tool identity). Safe to call on every
         model-call turn; we diff against the current active set and only
         (a) register new host-function bridges for tools we haven't seen
-        before and (b) rewrite ``globalThis.tools`` when the active-name
+        before and (b) rewrite `globalThis.tools` when the active-name
         set changes. Hot path cost when nothing changes: one frozenset
         equality check.
         """
@@ -474,9 +508,9 @@ class _ThreadREPL:
         if target_names == self._active_tool_names and self._tools_installed:
             # Fast path: stable toolset, nothing to do. Keep the bridge's
             # dispatch target pointer current in case tool objects rotate
-            # while keeping the same names. Guard with ``_tools_installed``
+            # while keeping the same names. Guard with `_tools_installed`
             # so the empty → empty transition on first call still installs
-            # a ``tools = {}`` global — otherwise ``typeof tools.x`` hits a
+            # a `tools = {}` global — otherwise `typeof tools.x` hits a
             # ReferenceError instead of returning "undefined".
             self._registered_tools.update(name_to_tool)
             return
@@ -490,12 +524,47 @@ class _ThreadREPL:
         # Rewrite globalThis.tools. Building the object inside a single
         # eval keeps assignments atomic from the model's point of view —
         # there's no moment where tools is half-populated. The trailing
-        # ``undefined`` sidesteps the MarshalError on object returns
+        # `undefined` sidesteps the MarshalError on object returns
         # (same trick as the console install).
         bridges = {camel: self._bridge_symbols[camel] for camel in target_names}
         ctx.eval(_render_tools_namespace_assignment(bridges))
         self._active_tool_names = target_names
         self._tools_installed = True
+
+    @staticmethod
+    def _validate_task_payload(
+        payload: dict[str, Any],
+    ) -> tuple[str, str, str | None, dict[str, Any] | None]:
+        """Validate JS `task()` input and return its typed fields.
+
+        JS callers pass camelCase keys (`subagentType`, `responseSchema`) as
+        documented in the system prompt; the returned tuple is snake_case for
+        the Python dispatch path.
+        """
+        description = payload.get("description")
+        if not isinstance(description, str) or not description:
+            msg = "task() requires non-empty string field `description`"
+            raise ValueError(msg)
+
+        subagent_type = payload.get("subagentType")
+        if not isinstance(subagent_type, str) or not subagent_type:
+            msg = "task() requires non-empty string field `subagentType`"
+            raise ValueError(msg)
+
+        raw_label = payload.get("label")
+        if raw_label is not None and not isinstance(raw_label, str):
+            msg = "task() field `label` must be a string when provided"
+            raise ValueError(msg)
+        label = raw_label.strip() if isinstance(raw_label, str) else None
+        if label == "":
+            label = None
+
+        response_schema = payload.get("responseSchema")
+        if response_schema is not None and not isinstance(response_schema, dict):
+            msg = "task() field `responseSchema` must be an object when provided"
+            raise ValueError(msg)
+
+        return description, subagent_type, label, response_schema
 
     async def _ainvoke_task_on_outer_loop(
         self,
@@ -509,20 +578,8 @@ class _ThreadREPL:
         should execute on the parent LangGraph loop when one exists so callbacks,
         context, and async loop affinity match normal tool execution.
         """
-        description = payload.get("description")
-        if not isinstance(description, str) or not description:
-            msg = "task() requires non-empty string field `description`"
-            raise ValueError(msg)
-
-        subagent_type = payload.get("subagent_type")
-        if not isinstance(subagent_type, str) or not subagent_type:
-            msg = "task() requires non-empty string field `subagent_type`"
-            raise ValueError(msg)
-
-        response_schema = payload.get("response_schema")
-        if response_schema is not None and not isinstance(response_schema, dict):
-            msg = "task() field `response_schema` must be an object when provided"
-            raise ValueError(msg)
+        validated = self._validate_task_payload(payload)
+        description, subagent_type, label, response_schema = validated
 
         async def _call() -> Any:
             runtime = state.outer_runtime
@@ -539,6 +596,7 @@ class _ThreadREPL:
                 subagent_type=subagent_type,
                 response_schema=response_schema,
                 runtime=runtime,
+                label=label,
             )
 
         outer_loop = state.outer_loop
@@ -555,7 +613,7 @@ class _ThreadREPL:
             raise
 
     def _register_task_bridge(self) -> None:
-        """Install the async host function backing top-level ``task()``."""
+        """Install the async host function backing top-level `task()`."""
         ctx = self._require_ctx()
 
         async def _bridge(raw_input: Any = None) -> Any:
@@ -601,11 +659,11 @@ class _ThreadREPL:
     ) -> Any:
         """Run the tool on the outer runtime's loop when available.
 
-        Uses ``BaseTool.arun(args, tool_call_id=...)`` rather than
-        ``ainvoke(envelope)`` so the result is the tool's native return
-        value rather than a string-coerced ``ToolMessage``. We only pass
-        ``tool_call_id`` when the tool declares ``InjectedToolCallId`` —
-        otherwise ``_format_output`` would wrap the result anyway.
+        Uses `BaseTool.arun(args, tool_call_id=...)` rather than
+        `ainvoke(envelope)` so the result is the tool's native return
+        value rather than a string-coerced `ToolMessage`. We only pass
+        `tool_call_id` when the tool declares `InjectedToolCallId` —
+        otherwise `_format_output` would wrap the result anyway.
         """
         args = tool_call["args"]
         tool_call_id = (
@@ -630,10 +688,10 @@ class _ThreadREPL:
     def _register_tool_bridge(self, camel: str) -> str:
         """Install a host-function bridge for one camel-cased tool name.
 
-        The bridge is async so ``eval_async``'s driving loop can await
-        ``tool.ainvoke`` without blocking the event loop. We look the
-        tool up through ``self._registered_tools`` on every call so a
-        later ``install_tools`` that swaps the underlying object (same
+        The bridge is async so `eval_async`'s driving loop can await
+        `tool.ainvoke` without blocking the event loop. We look the
+        tool up through `self._registered_tools` on every call so a
+        later `install_tools` that swaps the underlying object (same
         name, different instance) is picked up without re-registration.
         """
         ctx = self._require_ctx()
@@ -642,7 +700,7 @@ class _ThreadREPL:
         async def _bridge(raw_input: Any = None) -> Any:
             tool = registered.get(camel)
             if tool is None:
-                # Shouldn't happen — we only rewrite ``globalThis.tools``
+                # Shouldn't happen — we only rewrite `globalThis.tools`
                 # with names currently in the map — but if a race causes
                 # it, fail loud.
                 msg = f"tool '{camel}' not registered"
@@ -657,11 +715,11 @@ class _ThreadREPL:
             self._ptc_state = state
             payload = _normalize_tool_input(raw_input)
             call_id = _synth_tool_call_id(tool.name)
-            # Inject runtime/state/store ourselves; ``InjectedToolCallId``
-            # is handled inside ``_ainvoke_tool_on_outer_loop`` via
-            # ``tool.arun(..., tool_call_id=...)``. The bridge intentionally
+            # Inject runtime/state/store ourselves; `InjectedToolCallId`
+            # is handled inside `_ainvoke_tool_on_outer_loop` via
+            # `tool.arun(..., tool_call_id=...)`. The bridge intentionally
             # avoids the tool-call envelope path because it wraps the
-            # result in a ``ToolMessage`` and string-coerces ``.content``,
+            # result in a `ToolMessage` and string-coerces `.content`,
             # destroying native return types (lists, dicts, numbers).
             args = _inject_tool_args_for_ptc(
                 tool, payload, state.outer_runtime, call_id
@@ -714,7 +772,7 @@ class _ThreadREPL:
         return self._worker.run_sync(self._acreate_snapshot())
 
     async def acreate_snapshot(self) -> bytes:
-        """Async variant of ``create_snapshot``."""
+        """Async variant of `create_snapshot`."""
         return await self._worker.run_async(self._acreate_snapshot())
 
     async def _acreate_snapshot(self) -> bytes:
@@ -731,7 +789,7 @@ class _ThreadREPL:
     async def arestore_snapshot(
         self, payload: bytes, *, inject_globals: bool = True
     ) -> None:
-        """Async variant of ``restore_snapshot``."""
+        """Async variant of `restore_snapshot`."""
         await self._worker.run_async(
             self._arestore_snapshot(payload, inject_globals=inject_globals)
         )
@@ -752,10 +810,10 @@ class _ThreadREPL:
         outer_runtime: ToolRuntime | None = None,
         outer_loop: asyncio.AbstractEventLoop | None = None,
     ) -> EvalOutcome:
-        """Uses ``ctx.eval_async`` directly.
+        """Uses `ctx.eval_async` directly.
 
         Overlapping evals on the same context surface as
-        ``ConcurrentEvalError`` (recorded in ``EvalOutcome.error_type``).
+        `ConcurrentEvalError` (recorded in `EvalOutcome.error_type`).
         We intentionally do not queue: a model dispatching overlapping
         evals against shared state is almost always a prompting bug,
         and a loud failure is a better signal than silent serialisation.
@@ -775,7 +833,7 @@ class _ThreadREPL:
             # Drive any final-expression Promise (e.g. a bare async
             # IIFE) to its resolved value before marshaling. Without
             # this the Promise object itself fails to marshal and
-            # the result surfaces as ``[object]`` rather than the
+            # the result surfaces as `[object]` rather than the
             # awaited value.
             handle = await ctx.eval_handle_async(code, timeout=self._per_call_timeout)
             try:
@@ -823,7 +881,7 @@ class _ThreadREPL:
         except HostCancellationError:
             # JS declined to catch a cancellation — re-raise as
             # CancelledError so asyncio unwinds the caller's task.
-            # Do not record anything in ``outcome``; the call is dead.
+            # Do not record anything in `outcome`; the call is dead.
             raise asyncio.CancelledError from None
         except JSError as e:
             self._record_js_error(outcome, e)
@@ -866,7 +924,7 @@ class _ThreadREPL:
 class _Slot:
     """One LangGraph thread's private QuickJS stack: worker + Runtime + REPL.
 
-    Each slot owns an OS thread (via ``ThreadWorker``) and a Runtime. This
+    Each slot owns an OS thread (via `ThreadWorker`) and a Runtime. This
     keeps per-conversation JS execution on its own event loop so one
     user's slow computation can't block others.
     """
@@ -880,9 +938,9 @@ class _Slot:
 class _Registry:
     """Per-thread Runtime registry.
 
-    Each LangGraph ``thread_id`` gets its own ``_Slot`` (worker + Runtime
-    + Context). Eviction is driven externally via ``evict(thread_id)`` —
-    typically from the middleware's ``after_agent`` hook.
+    Each LangGraph `thread_id` gets its own `_Slot` (worker + Runtime
+    + Context). Eviction is driven externally via `evict(thread_id)` —
+    typically from the middleware's `after_agent` hook.
     """
 
     memory_limit: int
@@ -903,20 +961,20 @@ class _Registry:
             return slot.repl
 
     def get_if_exists(self, thread_id: str) -> _ThreadREPL | None:
-        """Return existing REPL for ``thread_id`` without creating a new slot."""
+        """Return existing REPL for `thread_id` without creating a new slot."""
         with self._lock:
             slot = self._slots.get(thread_id)
             return slot.repl if slot is not None else None
 
     def evict(self, thread_id: str) -> None:
-        """Close and remove the slot for ``thread_id``. No-op if absent."""
+        """Close and remove the slot for `thread_id`. No-op if absent."""
         with self._lock:
             slot = self._slots.pop(thread_id, None)
         if slot is not None:
             self._close_slot(slot)
 
     async def aevict(self, thread_id: str) -> None:
-        """Async variant of ``evict``: closes the runtime via the worker loop."""
+        """Async variant of `evict`: closes the runtime via the worker loop."""
         with self._lock:
             slot = self._slots.pop(thread_id, None)
         if slot is not None:
@@ -984,7 +1042,10 @@ class _Registry:
         slot.worker.close()
 
     async def _acreate_runtime(self) -> Runtime:
-        return Runtime(memory_limit=self.memory_limit)
+        return Runtime(
+            memory_limit=self.memory_limit,
+            transform_flags=SourceTransform.TOP_LEVEL_CONST_TO_VAR,
+        )
 
     def close(self) -> None:
         with self._lock:

@@ -162,19 +162,6 @@ class MediaTracker:
         """
         return self.add_media(video_data, "video")
 
-    def get_media(self, kind: MediaKind) -> list[ImageData] | list[VideoData]:
-        """Get all tracked media of a given type.
-
-        Args:
-            kind: Media type key.
-
-        Returns:
-            Copy of the list of tracked media items.
-        """
-        if kind == "image":
-            return list(self.images)
-        return list(self.videos)
-
     def get_images(self) -> list[ImageData]:
         """Get all tracked images.
 

@@ -17,9 +17,8 @@ pytest_plugins = ["tests.evals.pytest_reporter"]
 
 def _parse_openrouter_providers(value: str) -> list[str]:
     """Split a comma-separated provider spec into OpenRouter's `only` list."""
-    # Keep this local instead of importing from `deepagents_harbor.deepagents_wrapper`.
-    # Pytest imports conftest during collection, and the wrapper import path pulls
-    # in Harbor/LangSmith integration modules that are not needed for model setup.
+    # Keep this local so eval model setup does not import Harbor/LangSmith helpers
+    # during pytest collection.
     parts = [part.strip() for part in value.split(",")]
     providers = [part for part in parts if part]
     if not providers:

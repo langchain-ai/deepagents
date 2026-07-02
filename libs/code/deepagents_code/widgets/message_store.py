@@ -515,19 +515,6 @@ class MessageStore:
         """
         return self._index.get(message_id)
 
-    def get_message_at_index(self, index: int) -> MessageData | None:
-        """Get a message by its index.
-
-        Args:
-            index: The index of the message.
-
-        Returns:
-            The message data, or None if index is out of bounds.
-        """
-        if 0 <= index < len(self._messages):
-            return self._messages[index]
-        return None
-
     def update_message(self, message_id: str, **updates: Any) -> bool:
         """Update a message's data.
 

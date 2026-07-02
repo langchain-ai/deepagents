@@ -26,6 +26,9 @@ class ActionId(StrEnum):
     OPEN_WEBSITE = "open_website"
     """Open the associated URL in the user's browser."""
 
+    ENTER_API_KEY = "enter_api_key"
+    """Open the `/auth` manager so the user can store an API key."""
+
     INSTALL = "install"
     """Run the upgrade command via `perform_upgrade`."""
 

@@ -1,9 +1,9 @@
 """Unit tests for agent formatting functions."""
 
 import warnings
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import fields
+from dataclasses import dataclass, fields
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -24,12 +24,15 @@ from deepagents_code.agent import (
     DEFAULT_AGENT_NAME,
     _add_interrupt_on,
     _apply_inherited_pythonpath,
+    _create_rubric_grader_tools,
+    _format_delete_description,
     _format_edit_file_description,
     _format_execute_description,
     _format_fetch_url_description,
     _format_task_description,
     _format_web_search_description,
     _format_write_file_description,
+    _reserved_agent_dir_names,
     _sanitize_agent_message_name,
     _should_interrupt_tool_call,
     build_model_identity_section,
@@ -40,7 +43,29 @@ from deepagents_code.agent import (
     load_async_subagents,
 )
 from deepagents_code.config import Settings, get_glyphs
+from deepagents_code.managed_tools import BIN_DIR
 from deepagents_code.project_utils import ProjectContext
+
+
+@dataclass
+class _StoreItem:
+    value: dict[str, Any]
+
+
+class _FakeStore:
+    def __init__(self) -> None:
+        self.items: dict[tuple[tuple[str, ...], str], _StoreItem] = {}
+
+    def put(
+        self,
+        namespace: tuple[str, ...],
+        key: str,
+        value: Mapping[str, Any],
+    ) -> None:
+        self.items[namespace, key] = _StoreItem(dict(value))
+
+    def get(self, namespace: tuple[str, ...], key: str) -> _StoreItem | None:
+        return self.items.get((namespace, key))
 
 
 def _make_fake_chat_model() -> GenericFakeChatModel:
@@ -79,10 +104,14 @@ def test_add_interrupt_on_attaches_auto_approve_predicate() -> None:
         assert config.get("when") is _should_interrupt_tool_call
 
 
-def _request_with_context(context: object) -> "ToolCallRequest":
+def _request_with_context(
+    context: object,
+    *,
+    store: object | None = None,
+) -> "ToolCallRequest":
     return cast(
         "ToolCallRequest",
-        SimpleNamespace(runtime=SimpleNamespace(context=context)),
+        SimpleNamespace(runtime=SimpleNamespace(context=context, store=store)),
     )
 
 
@@ -99,6 +128,130 @@ def test_should_interrupt_tool_call_respects_auto_approve_context() -> None:
     assert _should_interrupt_tool_call(_request_with_context({"auto_approve": False}))
     assert not _should_interrupt_tool_call(
         _request_with_context({"auto_approve": True})
+    )
+
+
+def test_should_interrupt_tool_call_prefers_live_approval_mode() -> None:
+    """A live manual toggle overrides an auto-approve run-context snapshot."""
+    from deepagents_code.approval_mode import (
+        APPROVAL_MODE_NAMESPACE,
+        approval_mode_key,
+        approval_mode_payload,
+    )
+
+    store = _FakeStore()
+    key = approval_mode_key("thread-1")
+    store.put(
+        APPROVAL_MODE_NAMESPACE,
+        key,
+        approval_mode_payload(auto_approve=False),
+    )
+    assert _should_interrupt_tool_call(
+        _request_with_context(
+            {"auto_approve": True, "approval_mode_key": key},
+            store=store,
+        )
+    )
+    assert _should_interrupt_tool_call(
+        _request_with_context(
+            CLIContextSchema(auto_approve=True, approval_mode_key=key),
+            store=store,
+        )
+    )
+
+    store.put(
+        APPROVAL_MODE_NAMESPACE,
+        key,
+        approval_mode_payload(auto_approve=True),
+    )
+    assert not _should_interrupt_tool_call(
+        _request_with_context(
+            {"auto_approve": False, "approval_mode_key": key},
+            store=store,
+        )
+    )
+
+
+async def test_live_approval_round_trip_flips_interrupt_decision() -> None:
+    """A mode written via `awrite_approval_mode` is read back by the predicate.
+
+    Exercises the full writer -> store -> reader contract across the shared
+    `approval_mode_key` seam. The isolated write- and read-side tests would both
+    stay green even if the two ever derived the key differently; only crossing
+    the seam catches that — a key mismatch would surface here as an unexpected
+    fail-closed interrupt.
+    """
+    from deepagents_code.approval_mode import approval_mode_key, awrite_approval_mode
+
+    store = _FakeStore()
+
+    class _StoreWriter:
+        """Agent double whose store writer feeds the same store the reader uses."""
+
+        async def aput_store_item(
+            self,
+            namespace: tuple[str, ...],
+            key: str,
+            value: Mapping[str, Any],
+        ) -> None:
+            store.put(namespace, key, value)
+
+    agent = _StoreWriter()
+    key = approval_mode_key("thread-1")
+
+    written = await awrite_approval_mode(agent, "thread-1", auto_approve=True)
+    assert written == key
+    # Live auto-approve suppresses the interrupt even though the context
+    # snapshot still says manual.
+    assert not _should_interrupt_tool_call(
+        _request_with_context(
+            {"auto_approve": False, "approval_mode_key": key},
+            store=store,
+        )
+    )
+
+    await awrite_approval_mode(agent, "thread-1", auto_approve=False)
+    # Flipping the stored mode to manual interrupts despite an auto context.
+    assert _should_interrupt_tool_call(
+        _request_with_context(
+            {"auto_approve": True, "approval_mode_key": key},
+            store=store,
+        )
+    )
+
+
+def test_cli_context_schema_fields_mirror_typed_dict() -> None:
+    """`CLIContextSchema` and `CLIContext` must stay structurally identical.
+
+    The two shapes carry the same payload across the API boundary (dataclass
+    in-process, dict over RemoteGraph). A field added to one but not the other
+    would silently drop across that boundary; this pins the documented mirror.
+    """
+    from deepagents_code._cli_context import CLIContext
+
+    assert {f.name for f in fields(CLIContextSchema)} == set(CLIContext.__annotations__)
+
+
+def test_should_interrupt_tool_call_fails_closed_when_live_mode_missing() -> None:
+    """A configured but missing live mode should interrupt for safety."""
+    from deepagents_code.approval_mode import approval_mode_key
+
+    assert _should_interrupt_tool_call(
+        _request_with_context(
+            {"auto_approve": True, "approval_mode_key": approval_mode_key("thread-1")},
+            store=_FakeStore(),
+        )
+    )
+
+
+def test_should_interrupt_tool_call_fails_closed_without_live_mode_store() -> None:
+    """A configured live-mode key with no runtime store should interrupt."""
+    from deepagents_code.approval_mode import approval_mode_key
+
+    assert _should_interrupt_tool_call(
+        _request_with_context(
+            {"auto_approve": True, "approval_mode_key": approval_mode_key("thread-1")}
+        )
     )
 
 
@@ -266,6 +419,30 @@ def test_format_edit_file_description_all_occurrences():
 
     assert "Action: Replace text (all occurrences)" in description
     assert "File:" not in description
+
+
+def test_format_delete_description() -> None:
+    """Test delete description for approval prompts."""
+    tool_call = cast(
+        "ToolCall",
+        {"name": "delete", "args": {"file_path": "/path/to/file.py"}, "id": "call-5"},
+    )
+
+    description = _format_delete_description(
+        tool_call, cast("AgentState[Any]", None), cast("Runtime[Any]", None)
+    )
+
+    assert "Action: Delete file or directory" in description
+
+
+def test_add_interrupt_on_gates_delete() -> None:
+    """The destructive delete tool is approval-gated like other write tools."""
+    interrupt_map = _add_interrupt_on()
+
+    assert "delete" in interrupt_map
+    assert interrupt_map["delete"]["allowed_decisions"] == ["approve", "reject"]
+    assert interrupt_map["delete"]["description"] is _format_delete_description
+    assert interrupt_map["delete"]["when"] is _should_interrupt_tool_call
 
 
 def test_format_web_search_description():
@@ -2933,6 +3110,25 @@ class TestGetAvailableAgentNames:
         with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
             assert get_available_agent_names() == ["agent"]
 
+    def test_ignores_reserved_bin_dir(self, tmp_path: Path) -> None:
+        """The managed-binary install dir is excluded from the agent list.
+
+        The reserved dir name is derived from `BIN_DIR.name` rather than the
+        literal `bin` so a future rename of `BIN_DIR` keeps this test exercising
+        the actual reserved name instead of a stale string.
+        """
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "agent").mkdir()
+        (agents_dir / BIN_DIR.name).mkdir()
+
+        with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
+            assert get_available_agent_names() == ["agent"]
+
+    def test_reserved_agent_dir_names_includes_bin_dir(self) -> None:
+        """The reserved-name set is sourced from `BIN_DIR.name` (single source)."""
+        assert _reserved_agent_dir_names() == frozenset({BIN_DIR.name})
+
     def test_permission_error_returns_empty(self, tmp_path: Path) -> None:
         """PermissionError on iterdir → logged + empty list, not raised."""
         agents_dir = tmp_path / "agents"
@@ -2984,6 +3180,114 @@ class TestCreateCliAgentInterpreterWiring:
         mock_settings.interpreter_ptc = False
         mock_settings.interpreter_ptc_acknowledge_unsafe = False
         return mock_settings
+
+    def test_appends_rubric_middleware(self, tmp_path: Path) -> None:
+        from deepagents.middleware.rubric import RubricMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                rubric_model="custom-grader-model",
+                rubric_max_iterations=5,
+            )
+
+        _, kwargs = mock_create.call_args
+        rubrics = [
+            mw for mw in kwargs["middleware"] if isinstance(mw, RubricMiddleware)
+        ]
+        assert len(rubrics) == 1
+        assert rubrics[0]._model == "custom-grader-model"
+        assert rubrics[0].max_iterations == 5
+        assert "use the `read_file` tool" in rubrics[0]._system_prompt
+        assert [tool.name for tool in rubrics[0]._tools] == ["read_file"]
+
+    def test_omits_default_rubric_max_iterations(self, tmp_path: Path) -> None:
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.SkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch("deepagents_code.agent.RubricMiddleware") as mock_rubric,
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+            )
+
+        _, kwargs = mock_rubric.call_args
+        assert "max_iterations" not in kwargs
+
+    def test_rubric_grader_read_tool_only_reads_large_results(
+        self, tmp_path: Path
+    ) -> None:
+        from deepagents.backends import CompositeBackend
+        from deepagents.backends.filesystem import FilesystemBackend
+
+        large_results = FilesystemBackend(
+            root_dir=tmp_path / "large",
+            virtual_mode=True,
+        )
+        project = FilesystemBackend(
+            root_dir=tmp_path / "project",
+            virtual_mode=False,
+        )
+        backend = CompositeBackend(
+            default=project,
+            routes={"/large_tool_results/": large_results},
+        )
+        backend.upload_files(
+            [("/large_tool_results/tool-call-id", b"first\nsecond\nthird")]
+        )
+        read_tool = cast("Any", _create_rubric_grader_tools(backend)[0])
+
+        runtime = SimpleNamespace(tool_call_id="grader-read")
+        allowed = read_tool.func(
+            file_path="/large_tool_results/tool-call-id",
+            runtime=runtime,
+            limit=2,
+        )
+        denied = read_tool.func(
+            file_path="/Users/mason/.ssh/id_rsa",
+            runtime=runtime,
+        )
+
+        assert "1\tfirst" in allowed.content
+        assert "2\tsecond" in allowed.content
+        assert "can only read" in denied
 
     def test_appends_interpreter_middleware_when_enabled(self, tmp_path: Path) -> None:
         from langchain_quickjs import CodeInterpreterMiddleware
@@ -3243,11 +3547,16 @@ class TestResolvePtcOption:
             return ""
 
         @tool
+        def delete(path: str) -> str:  # noqa: ARG001
+            """Delete."""
+            return ""
+
+        @tool
         def grep(pattern: str) -> str:  # noqa: ARG001
             """Search."""
             return ""
 
-        return [read_file, write_file, grep]
+        return [read_file, write_file, delete, grep]
 
     def test_false_returns_none(self) -> None:
         from deepagents_code.agent import _resolve_ptc_option
@@ -3304,7 +3613,7 @@ class TestResolvePtcOption:
         assert result is not None
         # `all` enumerates only the tools passed to `create_cli_agent`; SDK
         # runtime built-ins are injected later and are not enumerable here.
-        assert sorted(result) == ["grep", "read_file", "write_file"]
+        assert sorted(result) == ["delete", "grep", "read_file", "write_file"]
 
     @staticmethod
     def _tools_with_task() -> list:

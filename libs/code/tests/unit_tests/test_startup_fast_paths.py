@@ -58,10 +58,13 @@ def _run_cli_main(argv: list[str]) -> subprocess.CompletedProcess[str]:
                 name for name in sys.modules if name.startswith(prefixes)
             )
             config_module = sys.modules.get("deepagents_code.config")
-            bootstrap_done = (
-                getattr(config_module, "_bootstrap_done", None)
+            bootstrap_state = (
+                getattr(config_module, "_bootstrap_state", None)
                 if config_module is not None
                 else None
+            )
+            bootstrap_done = (
+                bootstrap_state.done if bootstrap_state is not None else None
             )
             print("LOADED_MODULES=" + json.dumps(loaded), file=sys.stderr)
             print("BOOTSTRAP_DONE=" + json.dumps(bootstrap_done), file=sys.stderr)
@@ -99,6 +102,7 @@ def _read_marker(stderr: str, prefix: str) -> object:
         (["mcp"], "dcode mcp <command>"),
         (["config"], "dcode config <command>"),
         (["auth"], "dcode auth <command>"),
+        (["tools"], "dcode tools <command>"),
     ],
 )
 def test_help_only_commands_skip_runtime_imports(
@@ -163,6 +167,7 @@ def test_auth_credential_resolution_commands_run_settings_bootstrap() -> None:
         ["mcp", "login", "example.com"],
         ["config", "show"],
         ["auth", "list"],
+        ["tools", "install"],
     ],
 )
 def test_subcommands_bypass_fast_path(argv: list[str]) -> None:

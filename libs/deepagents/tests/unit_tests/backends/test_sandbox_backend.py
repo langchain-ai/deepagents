@@ -30,6 +30,7 @@ from deepagents.backends.sandbox import (
     _READ_COMMAND_TEMPLATE,
     _WRITE_CHECK_TEMPLATE,
     BaseSandbox,
+    _build_read_cmd,
     _check_preflight_result,
     _map_edit_error,
     _parse_grep_output,
@@ -540,17 +541,31 @@ def test_sandbox_write_with_special_content() -> None:
     assert sandbox._uploaded[0][1] == content.encode("utf-8")
 
 
-def test_sandbox_write_returns_error_on_existing_file() -> None:
-    """Test that write() returns an error when the check command fails."""
+def test_sandbox_write_overwrites_existing_file() -> None:
+    """Test that write() replaces an existing file without error."""
+    sandbox = MockSandbox()
+
+    result = sandbox.write("/test/file.txt", "original content")
+    assert result.error is None
+
+    result = sandbox.write("/test/file.txt", "new content")
+    assert result.error is None
+
+    assert len(sandbox._uploaded) == 2
+    assert sandbox._uploaded[-1] == ("/test/file.txt", b"new content")
+
+
+def test_sandbox_write_returns_error_on_preflight_failure() -> None:
+    """Test that write() returns an error and skips upload when the preflight fails."""
     sandbox = MockSandbox()
 
     def fail_execute(command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ARG001
         sandbox.last_command = command
-        return ExecuteResponse(output="Error: File already exists", exit_code=1)
+        return ExecuteResponse(output="Error: Permission denied", exit_code=1)
 
     sandbox.execute = fail_execute
 
-    result = sandbox.write("/test/existing.txt", "content")
+    result = sandbox.write("/test/protected.txt", "content")
     assert result.error is not None
     assert "Error:" in result.error
     assert len(sandbox._uploaded) == 0  # upload should not have been called
@@ -1129,6 +1144,13 @@ def test_read_script_genuine_binary_returns_base64(tmp_path: Path) -> None:
     assert result["encoding"] == "base64"
 
 
+def test_build_read_cmd_classifies_mkv_as_video() -> None:
+    """`.mkv` reads must run the binary path, not the text path, in the sandbox."""
+    assert "file_type = 'video'" in _build_read_cmd("/clips/a.mkv", 0, 100)
+    # Sanity: a plain text file still classifies as text.
+    assert "file_type = 'text'" in _build_read_cmd("/notes.txt", 0, 100)
+
+
 def test_read_script_mid_buffer_invalid_utf8_returns_base64(tmp_path: Path) -> None:
     """Corruption inside the prefix must still route to base64 (not swallowed)."""
     target = tmp_path / "midbad.dat"
@@ -1530,3 +1552,68 @@ def test_parse_grep_output_non_integer_line_number_is_skipped() -> None:
     # The only line has a bad line number; no valid matches → error is set.
     assert result.matches is None or result.matches == []
     assert result.error is not None
+
+
+class TestSandboxDelete:
+    """BaseSandbox.delete maps the `rm -f` exit code onto DeleteResult."""
+
+    def test_delete_success(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._next_output = ""
+        sandbox._next_exit_code = 0
+        result = sandbox.delete("/file.txt")
+        assert result.error is None
+        assert result.path == "/file.txt"
+        # The shell command quotes the path and uses rm -rf (recursive)
+        assert sandbox.last_command is not None
+        assert "rm -rf" in sandbox.last_command
+        assert "/file.txt" in sandbox.last_command
+
+    def test_delete_directory_uses_recursive_rm(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._next_output = ""
+        sandbox._next_exit_code = 0
+        result = sandbox.delete("/some/dir")
+        assert result.error is None
+        assert result.path == "/some/dir"
+        assert sandbox.last_command is not None
+        assert "rm -rf" in sandbox.last_command
+        assert "/some/dir" in sandbox.last_command
+
+    def test_delete_missing_is_noop_success(self) -> None:
+        # `rm -f` ignores a missing path: exit 0, so delete reports success.
+        sandbox = MockSandbox()
+        sandbox._next_output = ""
+        sandbox._next_exit_code = 0
+        result = sandbox.delete("/missing.txt")
+        assert result.error is None
+        assert result.path == "/missing.txt"
+
+    def test_delete_failure_reports_output(self) -> None:
+        # A non-zero exit (e.g. a permission error) surfaces rm's stderr.
+        sandbox = MockSandbox()
+        sandbox._next_output = "rm: cannot remove '/some/dir': Is a directory"
+        sandbox._next_exit_code = 1
+        result = sandbox.delete("/some/dir")
+        assert result.path is None
+        assert result.error is not None
+        assert "Error deleting file" in result.error
+        assert "Is a directory" in result.error
+
+    def test_delete_failure_unknown_error(self) -> None:
+        # Non-zero exit with no output falls back to a generic message.
+        sandbox = MockSandbox()
+        sandbox._next_output = ""
+        sandbox._next_exit_code = 1
+        result = sandbox.delete("/file.txt")
+        assert result.path is None
+        assert result.error is not None
+        assert "unknown error" in result.error
+
+    async def test_adelete_success(self) -> None:
+        sandbox = MockSandbox()
+        sandbox._next_output = ""
+        sandbox._next_exit_code = 0
+        result = await sandbox.adelete("/file.txt")
+        assert result.error is None
+        assert result.path == "/file.txt"

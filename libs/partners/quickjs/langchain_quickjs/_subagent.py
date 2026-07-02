@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
 import uuid
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final, Literal, NotRequired, TypedDict
 
 from langchain.agents.structured_output import AutoStrategy
 
@@ -22,10 +24,141 @@ if TYPE_CHECKING:
 
     from langchain_core.tools import BaseTool
 
+logger = logging.getLogger(__name__)
+
+SUBAGENT_STREAM_EVENT_TYPE: Final = "subagent"
+"""Discriminator value for subagent events on the custom stream."""
+
 _SCHEMA_MAX_BYTES = 4096
+"""Maximum serialized size of an accepted `response_schema`."""
+
 _SCHEMA_MAX_DEPTH = 5
+"""Maximum nesting depth allowed in a `response_schema`."""
+
 _SCHEMA_MAX_PROPERTIES = 32
+"""Maximum total property count allowed across a `response_schema`."""
+
 _SUBAGENT_TASK_TOOL_FIELDS = frozenset({"description", "subagent_type"})
+"""Input field names that identify the Deep Agents task tool."""
+
+_EVENT_DESCRIPTION_MAX_CHARS = 200
+"""Character cap on the `description` carried in a start event."""
+
+_EVENT_LABEL_MAX_CHARS = 120
+"""Character cap on an explicit `label` carried in a start event."""
+
+_EVENT_LABEL_FALLBACK_MAX_CHARS = 60
+"""Character cap on a label derived from the description fallback."""
+
+
+class SubagentStartEvent(TypedDict):
+    """A subagent began running inside a `js_eval` call."""
+
+    id: str
+    """Per-dispatch id, stable across this subagent's start/complete/error."""
+
+    type: Literal["subagent"]
+    """Stream event discriminator; always `subagent`."""
+
+    phase: Literal["start"]
+    """Lifecycle phase for this event."""
+
+    eval_id: NotRequired[str]
+    """Parent `js_eval` tool-call id, used to group a fan-out by batch.
+
+    Omitted when the runtime exposes no `tool_call_id`.
+    """
+
+    subagent_type: str
+    """The dispatched subagent type (the `subagentType` argument)."""
+
+    label: str
+    """Short row label; falls back to a compact description when unset."""
+
+    description: str
+    """The task description, truncated for display."""
+
+
+class SubagentCompleteEvent(TypedDict):
+    """A subagent finished successfully inside a `js_eval` call."""
+
+    id: str
+    """Per-dispatch id, matching the corresponding `start` event."""
+
+    type: Literal["subagent"]
+    """Stream event discriminator; always `subagent`."""
+
+    phase: Literal["complete"]
+    """Lifecycle phase for this event."""
+
+    eval_id: NotRequired[str]
+    """Parent `js_eval` tool-call id; omitted when the runtime exposes none."""
+
+    duration_ms: int
+    """Wall-clock duration of the subagent, in milliseconds."""
+
+
+class SubagentErrorEvent(TypedDict):
+    """A subagent raised before returning inside a `js_eval` call."""
+
+    id: str
+    """Per-dispatch id, matching the corresponding `start` event."""
+
+    type: Literal["subagent"]
+    """Stream event discriminator; always `subagent`."""
+
+    phase: Literal["error"]
+    """Lifecycle phase for this event."""
+
+    eval_id: NotRequired[str]
+    """Parent `js_eval` tool-call id; omitted when the runtime exposes none."""
+
+    duration_ms: int
+    """Wall-clock duration before the failure, in milliseconds."""
+
+    error: str
+    """The failure string (`str(exc)` of the raised exception)."""
+
+
+SubagentStreamEvent = SubagentStartEvent | SubagentCompleteEvent | SubagentErrorEvent
+"""One lifecycle event for a subagent dispatched from inside `js_eval`.
+
+Emitted on LangGraph's `custom` stream so UIs can render a live fan-out panel.
+A `phase`-discriminated union: `start` carries the descriptive fields,
+`complete`/`error` carry the measured `duration_ms`, and `error` carries the
+failure string. `type`/`phase`/`id` are always present.
+
+Consumers should tolerate unrecognized `phase` values rather than assume the
+union is closed, so a future phase can be added without breaking them.
+"""
+
+
+def _emit_subagent_event(stream_writer: Any, event: SubagentStreamEvent) -> None:
+    """Emit a subagent lifecycle event on the custom stream.
+
+    Any failure is swallowed so observability never breaks dispatch.
+    """
+    if stream_writer is None:
+        return
+    try:
+        stream_writer(event)
+    except Exception:  # noqa: BLE001 — observability must not break dispatch
+        # Use `.get` rather than subscripting: this handler must never raise,
+        # regardless of how well-formed the event that reached it was.
+        logger.debug(
+            "Failed to emit subagent stream event (id=%s, phase=%s)",
+            event.get("id"),
+            event.get("phase"),
+            exc_info=True,
+        )
+
+
+def _event_label(label: str | None, description: str) -> str:
+    """Return the explicit label or a compact description fallback."""
+    explicit = " ".join(label.split()) if label else ""
+    if explicit:
+        return explicit[:_EVENT_LABEL_MAX_CHARS]
+    return " ".join(description.split())[:_EVENT_LABEL_FALLBACK_MAX_CHARS]
 
 
 def find_subagent_task_tool(tools: Sequence[BaseTool]) -> BaseTool | None:
@@ -61,8 +194,13 @@ async def call_subagent_task_tool(
     subagent_type: str,
     response_schema: dict[str, Any] | None,
     runtime: Any,
+    label: str | None = None,
 ) -> Any:
-    """Call the Deep Agents task tool and return a JavaScript-friendly value."""
+    """Call the Deep Agents task tool and return a JavaScript-friendly value.
+
+    This also emits `start` then `complete`/`error` subagent lifecycle
+    events on the custom stream.
+    """
     if runtime is None:
         msg = "task() requires an active ToolRuntime"
         raise RuntimeError(msg)
@@ -73,18 +211,60 @@ async def call_subagent_task_tool(
         response_schema = _ensure_schema_title(response_schema)
         runtime = _runtime_with_response_format(runtime, response_schema)
 
-    runtime = _runtime_with_tool_call_id(
-        runtime,
-        f"ptc_{task_tool.name}_{uuid.uuid4().hex[:8]}",
-    )
-    result = await task_tool.arun(
-        {
-            "description": description,
-            "subagent_type": subagent_type,
-            "runtime": runtime,
+    eval_id = getattr(runtime, "tool_call_id", None)
+    stream_writer = getattr(runtime, "stream_writer", None)
+    subagent_id = f"ptc_{task_tool.name}_{uuid.uuid4().hex[:8]}"
+
+    runtime = _runtime_with_tool_call_id(runtime, subagent_id)
+
+    start_event: SubagentStartEvent = {
+        "type": SUBAGENT_STREAM_EVENT_TYPE,
+        "phase": "start",
+        "id": subagent_id,
+        "subagent_type": subagent_type,
+        "label": _event_label(label, description),
+        "description": description[:_EVENT_DESCRIPTION_MAX_CHARS],
+    }
+    # Only carry `eval_id` when the runtime exposes a parent tool-call id;
+    # omitting it (rather than sending None) keeps the wire type tight and lets
+    # consumers distinguish "no parent batch" from a real id.
+    if eval_id is not None:
+        start_event["eval_id"] = eval_id
+    _emit_subagent_event(stream_writer, start_event)
+
+    started_at = time.monotonic()
+    try:
+        result = await task_tool.arun(
+            {
+                "description": description,
+                "subagent_type": subagent_type,
+                "runtime": runtime,
+            }
+        )
+    except Exception as e:
+        error_event: SubagentErrorEvent = {
+            "type": SUBAGENT_STREAM_EVENT_TYPE,
+            "phase": "error",
+            "id": subagent_id,
+            "duration_ms": int((time.monotonic() - started_at) * 1000),
+            "error": str(e),
         }
-    )
-    return _extract_task_tool_output(result, parse_json_output=parse_json_output)
+        if eval_id is not None:
+            error_event["eval_id"] = eval_id
+        _emit_subagent_event(stream_writer, error_event)
+        raise
+
+    output = _extract_task_tool_output(result, parse_json_output=parse_json_output)
+    complete_event: SubagentCompleteEvent = {
+        "type": SUBAGENT_STREAM_EVENT_TYPE,
+        "phase": "complete",
+        "id": subagent_id,
+        "duration_ms": int((time.monotonic() - started_at) * 1000),
+    }
+    if eval_id is not None:
+        complete_event["eval_id"] = eval_id
+    _emit_subagent_event(stream_writer, complete_event)
+    return output
 
 
 def _validate_response_schema(schema: dict[str, Any]) -> None:

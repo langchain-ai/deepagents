@@ -22,8 +22,8 @@ classifiers = [
 version = "0.0.1"
 requires-python = ">=3.11,<4.0"
 dependencies = [
-    "deepagents>=0.6.8,<0.7.0",
-    "vercel>=0.5.6,<0.6",
+    "deepagents>=0.6.12,<0.7.0",
+    "vercel>=0.5.9,<0.6",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -36,14 +36,14 @@ Documentation = "https://github.com/langchain-ai/deepagents/tree/main/libs/partn
 
 [dependency-groups]
 test = [
-    "pytest>=9.0.3,<10.0.0",
+    "pytest>=9.1.1,<10.0.0",
     "pytest-cov",
     "pytest-socket",
     "pytest-xdist",
     "pytest-timeout>=2.4.0,<3.0.0",
     "pytest-asyncio>=1.4.0",
-    "ruff>=0.15.16,<1.0.0",
-    "ty>=0.0.46,<1.0.0",
+    "ruff>=0.15.20,<1.0.0",
+    "ty>=0.0.54,<1.0.0",
     "langchain-tests>=1.1.9",
 ]
 
@@ -51,7 +51,7 @@ test = [
 deepagents = { path = "../../deepagents", editable = true }
 
 [tool.uv]
-constraint-dependencies = ["urllib3>=2.6.3"]
+constraint-dependencies = ["urllib3>=2.7.0"]
 
 [tool.ty.environment]
 python-version = "3.11"

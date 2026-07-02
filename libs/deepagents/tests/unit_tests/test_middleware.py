@@ -2223,6 +2223,87 @@ class TestFilesystemMiddleware:
         assert "execute" not in filtered_names
         assert "ls" in filtered_names
 
+    def test_grep_description_omits_execute_fallback_when_backend_lacks_execution(self):
+        """Default grep docs must not advertise hidden execute tooling."""
+        middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")
+        request = MagicMock()
+        request.tools = middleware.tools
+        request.runtime = _runtime()
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        tools_override = [c.kwargs["tools"] for c in request.override.call_args_list if "tools" in c.kwargs][-1]
+        grep_tool = next(tool for tool in tools_override if tool.name == "grep")
+        assert "execute tool" not in grep_tool.description
+        assert "rg '<regex>'" not in grep_tool.description
+        assert next(tool for tool in middleware.tools if tool.name == "grep").description != grep_tool.description
+
+    def test_grep_description_omits_execute_fallback_when_execute_unlisted(self):
+        """Default grep docs follow the tools allowlist even if the backend can execute."""
+
+        class _SandboxBackend(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                return ExecuteResponse(output="", exit_code=0)
+
+        middleware = FilesystemMiddleware(
+            backend=_SandboxBackend(),
+            system_prompt="",
+            tools=["read_file", "ls", "grep"],
+        )
+        request = MagicMock()
+        request.tools = middleware.tools
+        request.runtime = _runtime()
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        tools_override = [c.kwargs["tools"] for c in request.override.call_args_list if "tools" in c.kwargs][-1]
+        grep_tool = next(tool for tool in tools_override if tool.name == "grep")
+        assert "execute" not in {tool.name for tool in tools_override}
+        assert "execute tool" not in grep_tool.description
+        assert "rg '<regex>'" not in grep_tool.description
+
+    def test_grep_description_keeps_execute_fallback_when_execution_visible(self):
+        """Default grep docs can recommend execute only when execute is available."""
+
+        class _SandboxBackend(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                return ExecuteResponse(output="", exit_code=0)
+
+        middleware = FilesystemMiddleware(backend=_SandboxBackend(), system_prompt="")
+        request = MagicMock()
+        request.tools = middleware.tools
+        request.runtime = _runtime()
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        tools_overrides = [c for c in request.override.call_args_list if "tools" in c.kwargs]
+        grep_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        assert tools_overrides == []
+        assert "execute tool" in grep_tool.description
+        assert "rg '<regex>'" in grep_tool.description
+
+    def test_custom_grep_description_is_not_rewritten_when_execute_hidden(self):
+        """User-provided grep docs remain authoritative."""
+        custom_description = "Custom literal search guidance."
+        middleware = FilesystemMiddleware(
+            backend=StateBackend(),
+            system_prompt="",
+            custom_tool_descriptions={"grep": custom_description},
+        )
+        request = MagicMock()
+        request.tools = middleware.tools
+        request.runtime = _runtime()
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        tools_override = [c.kwargs["tools"] for c in request.override.call_args_list if "tools" in c.kwargs][-1]
+        grep_tool = next(tool for tool in tools_override if tool.name == "grep")
+        assert grep_tool.description == custom_description
+
     def test_enabled_tools_system_prompt_lists_only_enabled_tools(self):
         """Dynamic system prompt only mentions the tools that survived filtering."""
         middleware = FilesystemMiddleware(

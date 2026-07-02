@@ -837,7 +837,9 @@ Examples:
 - `*.txt` - Find all text files in the backend's default root
 - `/subdir/**/*.md` - Find all markdown files under /subdir"""
 
-GREP_TOOL_DESCRIPTION = """Search for a LITERAL text pattern across files (NOT regex).
+_GREP_REGEX_EXECUTE_FALLBACK = "- If you genuinely need regex, use the execute tool with `rg '<regex>'` instead."
+
+_GREP_TOOL_DESCRIPTION_TEMPLATE = """Search for a LITERAL text pattern across files (NOT regex).
 
 Returns matching files or content based on output_mode. The pattern is matched
 verbatim: regex metacharacters are treated as ordinary characters, NOT operators.
@@ -846,13 +848,19 @@ Do NOT pass a regex. In particular:
 - To match any of several strings, run a SEPARATE grep for each one. There is no
   `|` alternation: `grep(pattern="foo|bar")` looks for the literal text "foo|bar".
 - Do not use wildcards (`.*`) or escapes (`\\.`); they match those characters literally.
-- If you genuinely need regex, use the execute tool with `rg '<regex>'` instead.
+{execute_fallback}
 
 Examples:
 - Search all files: `grep(pattern="TODO")`
 - Search Python files only: `grep(pattern="import", glob="*.py")`
 - Show matching lines: `grep(pattern="error", output_mode="content")`
 - Literal special chars are fine: `grep(pattern="def __init__(self):")`"""
+
+GREP_TOOL_DESCRIPTION = _GREP_TOOL_DESCRIPTION_TEMPLATE.format(execute_fallback=_GREP_REGEX_EXECUTE_FALLBACK)
+_GREP_TOOL_DESCRIPTION_WITHOUT_EXECUTE = _GREP_TOOL_DESCRIPTION_TEMPLATE.format(execute_fallback="").replace(
+    "\n\nExamples:",
+    "\nExamples:",
+)
 
 EXECUTE_TOOL_DESCRIPTION = """Executes a shell command in an isolated sandbox environment.
 
@@ -2104,7 +2112,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
     def _create_grep_tool(self) -> BaseTool:
         """Create the grep tool."""
-        tool_description = self._custom_tool_descriptions.get("grep") or GREP_TOOL_DESCRIPTION
+        tool_description = self._grep_tool_description(include_execution=True)
 
         def sync_grep(
             pattern: str,
@@ -2200,6 +2208,94 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             infer_schema=False,
             args_schema=GrepSchema,
         )
+
+    def _grep_tool_description(self, *, include_execution: bool) -> str:
+        """Return the grep description for the current execution visibility."""
+        return self._custom_tool_descriptions.get("grep") or (GREP_TOOL_DESCRIPTION if include_execution else _GREP_TOOL_DESCRIPTION_WITHOUT_EXECUTE)
+
+    def _with_filtered_grep_description(
+        self,
+        tools: list[BaseTool | dict[str, Any]],
+        *,
+        include_execution: bool,
+    ) -> list[BaseTool | dict[str, Any]]:
+        """Copy default grep tools when their execution-specific guidance changes."""
+        if self._custom_tool_descriptions.get("grep"):
+            return tools
+
+        target_description = self._grep_tool_description(include_execution=include_execution)
+        default_descriptions = {GREP_TOOL_DESCRIPTION, _GREP_TOOL_DESCRIPTION_WITHOUT_EXECUTE}
+        rewritten: list[BaseTool | dict[str, Any]] = []
+        changed = False
+
+        for tool in tools:
+            tool_name = self._tool_name(tool)
+            if tool_name != "grep":
+                rewritten.append(tool)
+                continue
+
+            if isinstance(tool, BaseTool):
+                if tool.description in default_descriptions and tool.description != target_description:
+                    rewritten.append(tool.model_copy(update={"description": target_description}))
+                    changed = True
+                else:
+                    rewritten.append(tool)
+                continue
+
+            if not isinstance(tool, dict):
+                rewritten.append(cast("BaseTool | dict[str, Any]", tool))
+                continue
+
+            if tool.get("description") in default_descriptions and tool.get("description") != target_description:
+                copied_tool = tool.copy()
+                copied_tool["description"] = target_description
+                rewritten.append(copied_tool)
+                changed = True
+            else:
+                rewritten.append(tool)
+
+        return rewritten if changed else tools
+
+    @staticmethod
+    def _tool_name(tool: object) -> str | None:
+        """Extract a request tool name from `BaseTool`, dict, or test doubles."""
+        if isinstance(tool, BaseTool):
+            return tool.name
+        if isinstance(tool, dict):
+            return cast("str | None", cast("dict[str, Any]", tool).get("name"))
+        if hasattr(tool, "name"):
+            return cast("str | None", tool.name)
+        get = getattr(tool, "get", None)
+        if callable(get):
+            return cast("str | None", get("name"))
+        return None
+
+    def _unsupported_tools_and_execution_state(
+        self,
+        tool_names: set[str | None],
+        runtime: Runtime[ContextT],
+    ) -> tuple[set[str | None], bool, BackendProtocol | None]:
+        """Return unsupported filesystem tools and whether execute remains active."""
+        unsupported: set[str | None] = (
+            {name for name in tool_names if name in _ALL_FS_TOOL_NAMES and name not in self._enabled_tools}
+            if self._enabled_tools is not None
+            else set()
+        )
+        execution_active = False
+        backend = None
+        has_execute_tool = "execute" in tool_names
+        has_delete_tool = "delete" in tool_names
+        if not has_delete_tool and not has_execute_tool:
+            return unsupported, execution_active, backend
+
+        backend = self._get_backend(runtime)  # ty: ignore[invalid-argument-type]
+        if has_execute_tool and "execute" not in unsupported:
+            execution_active = supports_execution(backend)
+            if not execution_active:
+                unsupported.add("execute")
+        if has_delete_tool and "delete" not in unsupported and not _supports_delete(backend):
+            unsupported.add("delete")
+        return unsupported, execution_active, backend
 
     def _resolve_capture(self, resolved_backend: BackendProtocol, tool_call_id: str | None) -> tuple[BaseSandbox, str] | None:
         """Resolve the executing sandbox and offload path for capture-at-source.
@@ -2469,34 +2565,15 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         Returns the request with unsupported tools removed and the filesystem
         system prompt appended.
         """
-        tool_names: set[str | None] = cast(
-            "set[str | None]",
-            {(tool.name if hasattr(tool, "name") else tool.get("name")) for tool in request.tools},
-        )
-        has_execute_tool = "execute" in tool_names
-        has_delete_tool = "delete" in tool_names
-
-        # Tools excluded by the tools allowlist (empty when no allowlist is set).
-        # Only filesystem tools are subject to the allowlist — user-provided tools always pass through.
-        # `execute` and `delete` are also filtered when the backend can't serve them.
-        unsupported: set[str | None] = (
-            {name for name in tool_names if name in _ALL_FS_TOOL_NAMES and name not in self._enabled_tools}
-            if self._enabled_tools is not None
-            else set()
-        )
-        execution_active = False  # tracks whether execute should get system-prompt instructions
-        backend = None
-        if has_delete_tool or has_execute_tool:
-            backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
-            if has_execute_tool and "execute" not in unsupported:
-                execution_active = supports_execution(backend)
-                if not execution_active:
-                    unsupported.add("execute")
-            if has_delete_tool and "delete" not in unsupported and not _supports_delete(backend):
-                unsupported.add("delete")
+        tool_names: set[str | None] = {self._tool_name(tool) for tool in request.tools}
+        unsupported, execution_active, backend = self._unsupported_tools_and_execution_state(tool_names, request.runtime)
+        visible_tools = [tool for tool in request.tools if self._tool_name(tool) not in unsupported]
         if unsupported:
-            filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) not in unsupported]
-            request = request.override(tools=filtered_tools)
+            request = request.override(tools=visible_tools)
+
+        described_tools = self._with_filtered_grep_description(visible_tools, include_execution=execution_active)
+        if described_tools is not visible_tools:
+            request = request.override(tools=described_tools)
 
         # Use custom system prompt if provided, otherwise generate dynamically
         if self._custom_system_prompt is not None:

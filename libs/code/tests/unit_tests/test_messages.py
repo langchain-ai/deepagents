@@ -1107,8 +1107,13 @@ class TestToolCallMessageSuccessStatus:
 class TestToolCallMessageExpandHint:
     """Tests for the preview/expand hint on collapsed tool output."""
 
-    async def test_long_single_line_search_output_truncates_and_expands(self) -> None:
-        """Long single-line grep/glob output should use the shared char cap."""
+    async def test_long_single_line_search_output_collapses_and_expands(self) -> None:
+        """Long single-line grep/glob output collapses by default and expands.
+
+        grep/glob collapse their body entirely (the header names the pattern),
+        so even long output shows a count-free expand hint instead of a
+        truncated preview; expanding reveals the full untruncated content.
+        """
         from textual.app import App, ComposeResult
 
         output = "Invalid glob pattern: " + "a" * ToolCallMessage._PREVIEW_CHARS
@@ -1132,8 +1137,12 @@ class TestToolCallMessageExpandHint:
             assert app.msg._hint_widget is not None
             assert app.msg._hint_widget.display is True
             assert app.msg._has_expandable_output() is True
-            preview = app.msg._preview_widget._Static__content  # ty: ignore[unresolved-attribute]
-            assert len(preview.plain) == ToolCallMessage._PREVIEW_CHARS
+            # Preview is collapsed away; a count-free expand affordance is shown.
+            assert app.msg._preview_row is not None
+            assert app.msg._preview_row.display is False
+            hint = app.msg._hint_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert "expand" in hint.plain
+            assert "more" not in hint.plain
 
             app.msg.toggle_output()
             await pilot.pause()
@@ -1143,28 +1152,27 @@ class TestToolCallMessageExpandHint:
             full = app.msg._full_widget._Static__content  # ty: ignore[unresolved-attribute]
             assert full.plain == output
 
-    async def test_short_error_force_expanded_has_no_collapse_hint(self) -> None:
+    @pytest.mark.parametrize(
+        ("tool", "error"),
+        [
+            ("glob", "Error: glob timed out after 20.0s. Try a narrower path."),
+            ("grep", "Error: invalid regex: unterminated character class."),
+        ],
+    )
+    async def test_short_error_force_expanded_has_no_collapse_hint(
+        self, tool: str, error: str
+    ) -> None:
         """A short force-expanded error must not show a collapse affordance.
 
         `set_error` force-expands so the full error is always visible. When the
         error is short enough that the collapsed form would be identical, there
-        is nothing to collapse — so no hint, and toggling is a no-op.
+        is nothing to collapse — so no hint, and toggling is a no-op. grep and
+        glob share the collapse-by-default branch, so both must honor this.
         """
-        from textual.app import App, ComposeResult
-
-        error = "Error: glob timed out after 20.0s. Try a narrower path."
         assert "\n" not in error
         assert len(error) < ToolCallMessage._PREVIEW_CHARS
 
-        class _Harness(App[None]):
-            def __init__(self) -> None:
-                super().__init__()
-                self.msg = ToolCallMessage("glob", {"pattern": "**/*.py"})
-
-            def compose(self) -> ComposeResult:
-                yield self.msg
-
-        app = _Harness()
+        app = _tool_msg_app(tool, {"pattern": "**/*.py"})
         async with app.run_test() as pilot:
             await pilot.pause()
             app.msg.set_error(error)
@@ -1213,8 +1221,8 @@ class TestToolCallMessageExpandHint:
             collapsed = app.msg._hint_widget._Static__content
             assert "expand" in collapsed.plain
 
-    async def test_long_grep_output_truncates_and_expands(self) -> None:
-        """A multi-line grep result should preview-truncate then expand on toggle."""
+    async def test_long_grep_output_collapses_and_expands(self) -> None:
+        """A multi-line grep result collapses its preview then expands on toggle."""
         output = "\n".join(f"file.py:{index}:hit {index}" for index in range(8))
         assert output.count("\n") + 1 > ToolCallMessage._PREVIEW_LINES
 
@@ -1226,15 +1234,14 @@ class TestToolCallMessageExpandHint:
 
             assert app.msg._expanded is False
             assert app.msg._has_expandable_output() is True
-            assert app.msg._preview_widget is not None
+            assert app.msg._preview_row is not None
             assert app.msg._full_widget is not None
             assert app.msg._hint_widget is not None
             assert app.msg._hint_widget.display is True
             hint = app.msg._hint_widget._Static__content  # ty: ignore
             assert "expand" in hint.plain
-            # The preview hides the trailing lines.
-            preview = app.msg._preview_widget._Static__content  # ty: ignore
-            assert "hit 7" not in preview.plain
+            # The preview is collapsed away entirely rather than truncated.
+            assert app.msg._preview_row.display is False
 
             app.msg.toggle_output()
             await pilot.pause()
@@ -1419,6 +1426,114 @@ class TestToolCallMessageExpandHint:
             assert app.msg._hint_widget.display is False
             assert app.msg._full_row.display is True
 
+    @pytest.mark.parametrize(
+        ("tool", "output", "expected"),
+        [
+            ("grep", "file.py:1:hit one\nfile.py:2:hit two", "hit one"),
+            ("glob", "['a.py', 'b.py']", "a.py"),
+        ],
+    )
+    async def test_search_collapses_preview_by_default(
+        self, tool: str, output: str, expected: str
+    ) -> None:
+        """`grep`/`glob` hide their result preview by default but stay expandable.
+
+        The search pattern is already shown in the header, so echoing the matches
+        inline is noise. The collapsed view shows an expand hint instead of the
+        preview, and expanding reveals the full content.
+        """
+        app = _tool_msg_app(tool, {"pattern": "x"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._expanded is False
+            assert app.msg._preview_row is not None
+            assert app.msg._hint_widget is not None
+            # Preview is collapsed away; an expand affordance is shown instead.
+            assert app.msg._preview_row.display is False
+            assert app.msg._has_expandable_output() is True
+            assert app.msg._hint_widget.display is True
+            hint = app.msg._hint_widget._Static__content  # ty: ignore
+            assert "expand" in hint.plain
+
+            # Expanding reveals the full content.
+            app.msg.toggle_output()
+            await pilot.pause()
+            assert app.msg._expanded is True
+            assert app.msg._full_row is not None
+            assert app.msg._full_row.display is True
+            assert app.msg._full_widget is not None
+            full = app.msg._full_widget._Static__content  # ty: ignore
+            assert expected in full.plain
+
+    @pytest.mark.parametrize(
+        "tool",
+        ["grep", "glob"],
+    )
+    async def test_large_search_collapses_preview_regardless_of_size(
+        self, tool: str
+    ) -> None:
+        """Large `grep`/`glob` output collapses with a count-free hint.
+
+        Output well over `_PREVIEW_LINES` would normally render a truncated
+        preview with an "N more lines/files" hint. grep/glob instead hide the
+        preview entirely and show a count-free expand affordance.
+        """
+        line_count = ToolCallMessage._PREVIEW_LINES * 5
+        if tool == "glob":
+            output = repr([f"/tmp/result_{index}.py" for index in range(line_count)])
+        else:
+            output = "\n".join(f"file.py:{index}:hit" for index in range(line_count))
+
+        app = _tool_msg_app(tool, {"pattern": "x"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._expanded is False
+            assert app.msg._preview_row is not None
+            assert app.msg._hint_widget is not None
+            # Preview stays hidden even though the size would normally truncate.
+            assert app.msg._preview_row.display is False
+            assert app.msg._has_expandable_output() is True
+            assert app.msg._hint_widget.display is True
+            # The hint is count-free — no "N more" prefix other tools show.
+            hint = app.msg._hint_widget._Static__content  # ty: ignore
+            assert "expand" in hint.plain
+            assert "more" not in hint.plain
+
+            # Expanding reveals the full content and offers a collapse affordance.
+            app.msg.toggle_output()
+            await pilot.pause()
+            assert app.msg._expanded is True
+            assert app.msg._full_widget is not None
+            full = app.msg._full_widget._Static__content  # ty: ignore
+            assert f"{line_count - 1}" in full.plain
+            collapse_hint = app.msg._hint_widget._Static__content  # ty: ignore
+            assert "collapse" in collapse_hint.plain
+
+    async def test_search_click_toggles_output(self) -> None:
+        """Clicking a collapsed `grep` expands it via `has_expandable_output`."""
+        output = "file.py:1:hit one\nfile.py:2:hit two"
+
+        app = _tool_msg_app("grep", {"pattern": "x"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg.has_expandable_output is True
+            assert app.msg._expanded is False
+
+            event = MagicMock()
+            app.msg.on_click(event)
+            await pilot.pause()
+            event.stop.assert_called_once()
+            assert app.msg._expanded is True
+
 
 class TestToolCallMessageEmptyResult:
     """Empty file-op results render nothing instead of an empty box."""
@@ -1440,14 +1555,18 @@ class TestToolCallMessageEmptyResult:
     async def test_empty_serialized_result_hides_output(
         self, tool: str, output: str
     ) -> None:
-        """A non-empty literal that formats to nothing must not render a box.
+        """A non-empty raw string that formats to nothing must not render a box.
 
-        Tools like glob/grep/ls serialize an empty successful result as the
-        literal "[]", which formats to no visible content. The raw output is
-        truthy, so the early empty guard doesn't fire — without the formatted
-        emptiness check the preview row renders as an empty box with a
-        misleading expand affordance. The whitespace-only case ("   ") exercises
-        the same check now that the collapsed branch's own empty guard is gone.
+        `[]` is a synthetic stand-in for output that is a non-empty raw string
+        yet formats to no visible content. It is not what the tools actually
+        emit for an empty result — real grep/glob return "No matches found" /
+        "No files found" (non-empty), which render inline (see
+        `test_search_no_result_message_renders_without_expand_hint`). The raw
+        output here is truthy, so the early empty guard doesn't fire; without the
+        formatted-emptiness check the preview row would render as an empty box
+        with a misleading expand affordance. The whitespace-only case ("   ")
+        exercises the same check now that the collapsed branch's own empty guard
+        is gone.
         """
         app = _tool_msg_app(tool)
         async with app.run_test() as pilot:
@@ -1463,19 +1582,57 @@ class TestToolCallMessageEmptyResult:
             assert app.msg._hint_widget.display is False
             assert app.msg._has_expandable_output() is False
 
+    @pytest.mark.parametrize(
+        ("tool", "output"),
+        [
+            ("grep", "No matches found"),
+            ("glob", "No files found"),
+        ],
+    )
+    async def test_search_no_result_message_renders_without_expand_hint(
+        self, tool: str, output: str
+    ) -> None:
+        """Search no-result messages stay visible and are not expandable."""
+        app = _tool_msg_app(tool)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._preview_row is not None
+            assert app.msg._preview_widget is not None
+            assert app.msg._full_row is not None
+            assert app.msg._hint_widget is not None
+            assert app.msg._preview_row.display is True
+            assert app.msg._full_row.display is False
+            assert app.msg._hint_widget.display is False
+            assert app.msg._has_expandable_output() is False
+            preview = app.msg._preview_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert preview.plain == output
+
     async def test_non_empty_serialized_result_still_renders(self) -> None:
-        """A populated result must still render — the guard can't false-positive."""
+        """A populated result must still render — the guard can't false-positive.
+
+        glob collapses its body by default, so "renders" here means it stays
+        expandable (not hidden by the empty guard) and the content is reachable
+        once expanded, rather than shown inline.
+        """
         app = _tool_msg_app("glob")
         async with app.run_test() as pilot:
             await pilot.pause()
             app.msg.set_success("['a.py', 'b.py']")
             await pilot.pause()
 
-            assert app.msg._preview_row is not None
-            assert app.msg._preview_row.display is True
-            assert app.msg._preview_widget is not None
-            preview = app.msg._preview_widget._Static__content  # ty: ignore[unresolved-attribute]
-            assert "a.py" in preview.plain
+            assert app.msg._has_expandable_output() is True
+            assert app.msg._hint_widget is not None
+            assert app.msg._hint_widget.display is True
+
+            app.msg.toggle_output()
+            await pilot.pause()
+            assert app.msg._expanded is True
+            assert app.msg._full_widget is not None
+            full = app.msg._full_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert "a.py" in full.plain
 
     async def test_error_body_is_not_hidden(self) -> None:
         """A real (non-empty) error body must stay visible.

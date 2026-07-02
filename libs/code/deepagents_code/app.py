@@ -7781,8 +7781,7 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 AppMessage(
                     "LangSmith tracing is not configured. "
-                    "Run `/auth` and select LangSmith to enable tracing, or set "
-                    "LANGSMITH_API_KEY and LANGSMITH_TRACING=true.",
+                    "Run `/auth` and select LangSmith to enable tracing.",
                 ),
             )
             return

@@ -1801,16 +1801,16 @@ class TestFilesystemMiddleware:
         request.override.assert_not_called()
 
     def test_enabled_tools_raises_when_read_file_excluded(self):
-        """read_file must be in enabled_tools when a non-empty allowlist is given."""
-        with pytest.raises(ValueError, match="read_file must be included in enabled_tools"):
-            FilesystemMiddleware(backend=StateBackend(), enabled_tools=frozenset({"write_file"}))
+        """read_file must be in tools when a non-empty allowlist is given."""
+        with pytest.raises(ValueError, match="read_file must be included in tools"):
+            FilesystemMiddleware(backend=StateBackend(), tools=["write_file"])
 
     def test_enabled_tools_filters_unlisted_tool(self):
-        """A tool not in enabled_tools is filtered out of the model request."""
+        """A tool not in tools is filtered out of the model request."""
         middleware = FilesystemMiddleware(
             backend=StateBackend(),
             system_prompt="",
-            enabled_tools=frozenset({"read_file", "ls"}),
+            tools=["read_file", "ls"],
         )
         write_tool = MagicMock()
         write_tool.name = "write_file"
@@ -1827,11 +1827,11 @@ class TestFilesystemMiddleware:
         assert "ls" in filtered_names
 
     def test_enabled_tools_filters_multiple_unlisted(self):
-        """Only tools in enabled_tools survive; the rest are filtered."""
+        """Only tools in the allowlist survive; the rest are filtered."""
         middleware = FilesystemMiddleware(
             backend=StateBackend(),
             system_prompt="",
-            enabled_tools=frozenset({"read_file", "ls", "grep"}),
+            tools=["read_file", "ls", "grep"],
         )
         tools = [MagicMock(name=n) for n in ("ls", "write_file", "delete", "grep")]
         for t in tools:
@@ -1853,7 +1853,7 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware(
             backend=StateBackend(),
             system_prompt="",
-            enabled_tools=frozenset({"read_file", "ls"}),
+            tools=["read_file", "ls"],
         )
         ls_tool = MagicMock()
         ls_tool.name = "ls"
@@ -1873,11 +1873,11 @@ class TestFilesystemMiddleware:
         assert "write_file" not in filtered_names  # FS tool not in allowlist
 
     def test_enabled_tools_passes_listed_tools_through(self):
-        """Tools in enabled_tools survive; an unlisted tool is dropped."""
+        """Tools in the allowlist survive; an unlisted tool is dropped."""
         middleware = FilesystemMiddleware(
             backend=StateBackend(),
             system_prompt="",
-            enabled_tools=frozenset({"read_file", "ls", "grep"}),
+            tools=["read_file", "ls", "grep"],
         )
         ls_tool = MagicMock()
         ls_tool.name = "ls"
@@ -1897,12 +1897,12 @@ class TestFilesystemMiddleware:
         assert "edit_file" not in filtered_names
 
     def test_enabled_tools_read_file_only_filters_everything_else(self):
-        """enabled_tools={"read_file"} hides all other tools."""
+        """tools=["read_file"] hides all other tools."""
         all_other_tools = {"ls", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
         middleware = FilesystemMiddleware(
             backend=StateBackend(),
             system_prompt="",
-            enabled_tools=frozenset({"read_file"}),
+            tools=["read_file"],
         )
         tools = [MagicMock() for _ in range(len(all_other_tools) + 1)]
         for t, name in zip(tools, [*all_other_tools, "read_file"], strict=True):
@@ -1918,7 +1918,7 @@ class TestFilesystemMiddleware:
         assert filtered_names == {"read_file"}
 
     def test_enabled_tools_none_default_passes_all_tools(self):
-        """enabled_tools=None (default) does not filter any tools."""
+        """tools=None (default) does not filter any tools."""
         middleware = FilesystemMiddleware(
             backend=StateBackend(),
             system_prompt="",
@@ -1937,11 +1937,11 @@ class TestFilesystemMiddleware:
         assert tools_overrides == []
 
     def test_enabled_tools_execute_listed_but_backend_unsupported_is_noop(self):
-        """Execute in enabled_tools is still filtered when the backend doesn't support execution."""
+        """Execute in tools list is still filtered when the backend doesn't support execution."""
         middleware = FilesystemMiddleware(
             backend=StateBackend(),  # StateBackend has no execution support
             system_prompt="",
-            enabled_tools=frozenset({"read_file", "ls", "execute"}),
+            tools=["read_file", "ls", "execute"],
         )
         ls_tool = MagicMock()
         ls_tool.name = "ls"
@@ -1962,7 +1962,7 @@ class TestFilesystemMiddleware:
         """Dynamic system prompt only mentions the tools that survived filtering."""
         middleware = FilesystemMiddleware(
             backend=StateBackend(),
-            enabled_tools=frozenset({"read_file", "ls"}),
+            tools=["read_file", "ls"],
         )
         ls_tool = MagicMock()
         ls_tool.name = "ls"

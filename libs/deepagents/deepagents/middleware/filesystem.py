@@ -8,7 +8,7 @@ import contextvars
 import mimetypes
 import threading
 import uuid
-from collections.abc import Awaitable, Callable, Collection, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
@@ -583,7 +583,7 @@ Note: This tool is only available if the backend supports execution (SandboxBack
 If execution is not supported, the tool will return an error message."""
 
 FsToolName = Literal["ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"]
-"""Names of the built-in filesystem tools that can be passed to ``enabled_tools``."""
+"""Names of the built-in filesystem tools that can be passed to ``FilesystemMiddleware(tools=...)``."""
 
 _FS_TOOL_ORDER: tuple[str, ...] = ("ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep")
 _ALL_FS_TOOL_NAMES: frozenset[str] = frozenset(_FS_TOOL_ORDER) | {"execute"}
@@ -910,7 +910,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_token_limit_before_evict: int | None = 20000,
         human_message_token_limit_before_evict: int | None = 50000,
         max_execute_timeout: int = 3600,
-        enabled_tools: Collection[FsToolName] | None = None,
+        tools: list[FsToolName] | Literal["all"] | None = None,
         _permissions: list[FilesystemPermission] | None = None,
     ) -> None:
         """Initialize the filesystem middleware.
@@ -928,13 +928,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
                 Defaults to 3600 seconds (1 hour). Any per-command timeout
                 exceeding this value will be rejected with an error message.
-            enabled_tools: Allowlist of `FsToolName` values to expose
-                to the model. `None` (the default) enables all tools. When a
-                collection is provided, only the listed tools are included in
-                the model request; all others are hidden. `read_file` must be
-                included in any non-`None` allowlist. Backend capability
-                checks for `execute` and `delete` still apply; listing them
-                here when the backend does not support them is a no-op.
+            tools: Allowlist of `FsToolName` values to expose to the
+                model. `None` (the default) and `"all"` both enable every
+                tool; `None` signals "user did not specify" while `"all"`
+                is an explicit opt-in. Pass a list to restrict the model to
+                only those tools; all others are hidden. `read_file` must be
+                included in any list. Backend capability checks for `execute`
+                and `delete` still apply; listing them when the backend does
+                not support them is a no-op.
             _permissions: Optional filesystem permission rules enforced directly
                 by this middleware's tool implementations.
 
@@ -942,8 +943,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 implementation detail and may move to the backend layer in a
                 future change.
         """
-        if enabled_tools is not None and "read_file" not in enabled_tools:
-            msg = "read_file must be included in enabled_tools; it is required by FilesystemMiddleware"
+        if isinstance(tools, list) and "read_file" not in tools:
+            msg = "read_file must be included in tools; it is required by FilesystemMiddleware"
             raise ValueError(msg)
         if max_execute_timeout <= 0:
             msg = f"max_execute_timeout must be positive, got {max_execute_timeout}"
@@ -980,7 +981,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._tool_token_limit_before_evict = tool_token_limit_before_evict
         self._human_message_token_limit_before_evict = human_message_token_limit_before_evict
         self._max_execute_timeout = max_execute_timeout
-        self._enabled_tools: frozenset[str] | None = frozenset(enabled_tools) if enabled_tools is not None else None
+        self._enabled_tools: frozenset[str] | None = frozenset(tools) if isinstance(tools, list) else None
         self._permissions = list(_permissions or [])
 
         # Shared executor for enforcing GLOB_TIMEOUT on the sync glob tool.
@@ -2145,7 +2146,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         has_execute_tool = "execute" in tool_names
         has_delete_tool = "delete" in tool_names
 
-        # Tools excluded by the enabled_tools allowlist (empty when no allowlist is set).
+        # Tools excluded by the tools allowlist (empty when no allowlist is set).
         # Only filesystem tools are subject to the allowlist — user-provided tools always pass through.
         # `execute` and `delete` are also filtered when the backend can't serve them.
         unsupported: set[str | None] = (

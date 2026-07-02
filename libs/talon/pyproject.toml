@@ -30,16 +30,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-speech = [
+media = [
+    "deepagents-code[media]>=0.1.29,<1.0.0",
     "librosa>=0.11.0,<1.0.0",
     "numpy>=2.4.6,<3.0.0",
     "phonemizer>=3.3.0,<4.0.0",
     "torch>=2.12.1,<2.13.0",
     "torchaudio>=2.11.0,<2.12.0",
     "transformers>=5.12.1,<6.0.0",
-]
-video = [
-    "deepagents[video]>=0.7.0a3",
 ]
 
 [project.scripts]

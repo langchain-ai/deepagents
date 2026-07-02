@@ -19,6 +19,12 @@ from deepagents_talon.config import TalonConfig
 from deepagents_talon.cron import CronJobStore, PersistentCronScheduler
 from deepagents_talon.data_lifecycle import cleanup_sensitive_state
 from deepagents_talon.fleet import FleetAgentComponents, load_fleet_agent_components
+from deepagents_talon.fleet_channel_selection import (
+    ChannelCandidate,
+    ChannelSelectionResolution,
+    ChannelSelectionStatus,
+    resolve_fleet_channel_selection,
+)
 from deepagents_talon.fleet_manifest import ChannelSelection, refresh_fleet_run_manifest
 from deepagents_talon.host import TalonHost
 from deepagents_talon.mcp import load_mcp_tools, print_mcp_config_paths
@@ -57,6 +63,12 @@ def main() -> None:
         action="store_true",
         help="Attach the Telegram channel adapter.",
     )
+    parser.add_argument(
+        "--channel",
+        choices=("telegram", "whatsapp"),
+        default=None,
+        help="Select the channel for a Fleet-backed direct run.",
+    )
     subparsers = parser.add_subparsers(dest="command")
     _add_mcp_parsers(subparsers)
     args = parser.parse_args()
@@ -72,8 +84,23 @@ def main() -> None:
     config.ensure_home()
     cleanup_sensitive_state(config=config, cron_store=cron_store)
 
-    channel_selection = _channel_selection(config, whatsapp=args.whatsapp, telegram=args.telegram)
-    channels = _channels(config, whatsapp=args.whatsapp, telegram=args.telegram)
+    channel_resolution = _channel_selection(
+        config,
+        channel=args.channel,
+        whatsapp=args.whatsapp,
+        telegram=args.telegram,
+    )
+    if not channel_resolution.ready:
+        print(channel_resolution.message, file=sys.stderr)  # noqa: T201
+        sys.exit(2)
+    channel_selection = channel_resolution.selected_channel
+    selected_provider = channel_selection.provider if channel_selection is not None else None
+    channels = _channels(
+        config,
+        whatsapp=args.whatsapp,
+        telegram=args.telegram,
+        selected_provider=selected_provider,
+    )
     host = TalonHost(
         config=config,
         agent=asyncio.run(_agent_runtime(config, cron_store, selected_channel=channel_selection)),
@@ -207,11 +234,20 @@ def _channels(
     *,
     whatsapp: bool = False,
     telegram: bool = False,
+    selected_provider: str | None = None,
 ) -> tuple[ChannelAdapter, ...]:
     channels: list[ChannelAdapter] = []
-    if whatsapp or _env_enabled(config.env, "DEEPAGENTS_TALON_WHATSAPP_ENABLED"):
+    if selected_provider is not None:
+        whatsapp = selected_provider == "whatsapp"
+        telegram = selected_provider == "telegram"
+
+    if whatsapp or (
+        selected_provider is None and _env_enabled(config.env, "DEEPAGENTS_TALON_WHATSAPP_ENABLED")
+    ):
         channels.append(WhatsAppChannel(WhatsAppChannelConfig.from_talon_config(config)))
-    if telegram or _env_enabled(config.env, "DEEPAGENTS_TALON_TELEGRAM_ENABLED"):
+    if telegram or (
+        selected_provider is None and _env_enabled(config.env, "DEEPAGENTS_TALON_TELEGRAM_ENABLED")
+    ):
         channels.append(TelegramChannel(TelegramChannelConfig.from_talon_config(config)))
     return tuple(channels)
 
@@ -219,34 +255,18 @@ def _channels(
 def _channel_selection(
     config: TalonConfig,
     *,
+    channel: str | None = None,
     whatsapp: bool = False,
     telegram: bool = False,
-) -> ChannelSelection | None:
-    selections: list[tuple[str, str]] = []
-    if whatsapp:
-        selections.append(("whatsapp", "cli"))
-    elif _env_enabled(config.env, "DEEPAGENTS_TALON_WHATSAPP_ENABLED"):
-        selections.append(("whatsapp", "environment"))
-
-    if telegram:
-        selections.append(("telegram", "cli"))
-    elif _env_enabled(config.env, "DEEPAGENTS_TALON_TELEGRAM_ENABLED"):
-        selections.append(("telegram", "environment"))
-
-    if not selections:
-        return None
-
-    if len(selections) == 1:
-        provider, source = selections[0]
-        return ChannelSelection(provider=provider, source=source)
-
-    return ChannelSelection(
-        provider="multiple",
-        source="mixed",
-        metadata={
-            "providers": ",".join(provider for provider, _source in selections),
-            "sources": ",".join(source for _provider, source in selections),
-        },
+) -> ChannelSelectionResolution:
+    if config.fleet_dir is None and channel is None:
+        return ChannelSelectionResolution(selected_channel=None, status="ready")
+    return resolve_fleet_channel_selection(
+        config.env,
+        explicit_channel=channel,
+        channel_flags={"telegram": telegram, "whatsapp": whatsapp},
+        interactive=sys.stdin.isatty(),
+        prompt=_prompt_channel,
     )
 
 
@@ -261,6 +281,23 @@ def _env_enabled(env: Mapping[str, str], key: str) -> bool:
         `True` when the value is one of ``1``, ``true``, or ``yes``.
     """
     return env.get(key, "").lower() in {"1", "true", "yes"}
+
+
+def _prompt_channel(
+    status: ChannelSelectionStatus,
+    candidates: Sequence[ChannelCandidate],
+) -> str:
+    options = ("telegram", "whatsapp")
+    if status == "ambiguous":
+        configured = ", ".join(candidate.provider for candidate in candidates)
+        print(f"Multiple Talon channels are configured ({configured}).", file=sys.stderr)  # noqa: T201
+    else:
+        print("No Talon channel is configured for this Fleet run.", file=sys.stderr)  # noqa: T201
+    while True:
+        value = input("Select channel [telegram/whatsapp]: ").strip().lower()
+        if value in options:
+            return value
+        print("Enter telegram or whatsapp.", file=sys.stderr)  # noqa: T201
 
 
 def _runtime_env(config: TalonConfig) -> dict[str, str]:

@@ -40,12 +40,14 @@ class ChannelSelection:
 
     Args:
         provider: Selected channel provider, such as `whatsapp` or `telegram`.
-        source: How the channel was selected, such as `cli` or `environment`.
+        source: How the channel was selected.
+        status: Selection readiness status.
         metadata: Non-secret selection metadata useful to follow-up setup agents.
     """
 
     provider: str
     source: str
+    status: str = "ready"
     metadata: Mapping[str, str] = field(default_factory=dict)
 
 
@@ -403,6 +405,7 @@ def _channel_to_dict(channel: ChannelSelection | None) -> dict[str, object] | No
         "metadata": dict(sorted(channel.metadata.items())),
         "provider": channel.provider,
         "source": channel.source,
+        "status": channel.status,
     }
 
 
@@ -474,6 +477,7 @@ def _optional_channel(value: object, *, path: Path) -> ChannelSelection | None:
     return ChannelSelection(
         provider=_required_str(data, "provider", path=path),
         source=_required_str(data, "source", path=path),
+        status=_optional_str(data.get("status"), path=path) or "ready",
         metadata={str(key): _string_value(item, path=path) for key, item in metadata.items()},
     )
 

@@ -35,6 +35,8 @@ class TestLooksLikeRegex:
             "\\bword\\b",
             "\\d+",
             "\\w",
+            "\\s+",
+            "foo\\(bar\\)",
         ],
     )
     def test_detects_regex(self, pattern: str) -> None:

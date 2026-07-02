@@ -461,6 +461,8 @@ def _format_grep_tool_result(
     result: GrepResult,
     output_mode: Literal["files_with_matches", "content", "count"],
     pattern: str,
+    *,
+    backend_had_matches: bool,
 ) -> tuple[str, Literal["success", "error"]]:
     """Format a backend grep result for the tool boundary.
 
@@ -468,6 +470,11 @@ def _format_grep_tool_result(
     appended, so a trailing `SEARCH_TRUNCATION_NOTE` survives instead of being
     sliced off by an outer `truncate_if_too_long` at the call site. Callers
     should use the returned content as-is rather than re-truncating it.
+
+    `backend_had_matches` reports whether the backend found anything *before*
+    permission filtering, so the regex hint fires only on a genuine no-match —
+    not when matches existed but were all redacted by read permissions (a
+    redaction miss has nothing to do with regex syntax).
     """
     matches = result.matches or []
     if result.error and not matches:
@@ -481,10 +488,10 @@ def _format_grep_tool_result(
         # "Partial matches:" section past the token limit and cut it off.
         error = truncate_if_too_long(result.error)
         return f"{error}\n\nPartial matches:\n{formatted}", "error"
-    notes = []
+    notes: list[str] = []
     if result.truncated:
         notes.append(SEARCH_TRUNCATION_NOTE)
-    if not matches and (hint := regex_literal_hint(pattern)):
+    if not matches and not backend_had_matches and (hint := regex_literal_hint(pattern)):
         notes.append(hint)
     if notes:
         formatted_notes = "\n\n".join(notes)
@@ -632,11 +639,12 @@ class FilesystemState(AgentState):
 
 
 GREP_GLOB_DESCRIPTION = (
-    "Glob pattern (NOT regex) limiting which files are searched, matched against "
-    "the file name (e.g. '*.py', '*.ts'). This is an in-tool file filter, "
-    "not a call to the separate glob tool. Brace expansion (e.g. '*.{ts,tsx}') "
-    "is not supported on all backends; run a separate search per extension for "
-    "reliable results."
+    "Glob pattern (NOT regex) limiting which files are searched (e.g. '*.py', "
+    "'*.ts'). A pattern without '/' matches the file name at any depth; a pattern "
+    "containing '/' matches the search-root-relative path (e.g. 'src/**/*.py'). "
+    "This is an in-tool file filter, not a call to the separate glob tool. Brace "
+    "expansion (e.g. '*.{ts,tsx}') is not supported on all backends; run a "
+    "separate search per extension for reliable results."
 )
 
 GREP_OUTPUT_MODE_DESCRIPTION = (
@@ -2147,6 +2155,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 GrepResult(error=grep_result.error, matches=filtered_matches, truncated=grep_result.truncated),
                 output_mode,
                 pattern,
+                backend_had_matches=bool(matches),
             )
             return ToolMessage(
                 # `formatted` is already size-truncated inside
@@ -2190,6 +2199,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 GrepResult(error=grep_result.error, matches=filtered_matches, truncated=grep_result.truncated),
                 output_mode,
                 pattern,
+                backend_had_matches=bool(matches),
             )
             return ToolMessage(
                 # `formatted` is already size-truncated inside

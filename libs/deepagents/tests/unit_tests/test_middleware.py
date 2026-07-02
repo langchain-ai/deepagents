@@ -49,6 +49,7 @@ from deepagents.middleware.filesystem import (
     SEARCH_TRUNCATION_NOTE,
     FileData,
     FilesystemMiddleware,
+    FilesystemPermission,
     FilesystemState,
     supports_execution,
 )
@@ -1053,6 +1054,57 @@ class TestFilesystemMiddleware:
             }
         )
         assert "a = b|c" in result.content
+        assert "literal text, not regex" not in result.content
+
+    def test_grep_regex_pattern_all_matches_permission_filtered_omits_hint(self):
+        """A miss caused by permission redaction, not regex syntax, shows no hint.
+
+        The backend matches the literal `b|c` in `/secret.py`, but a deny rule
+        strips that match. The empty result then reads "No matches found" for a
+        redaction reason, so the regex hint would misattribute the cause.
+        """
+        files = {
+            "/secret.py": FileData(
+                content=["a = b|c"],
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(
+            backend=backend,
+            _permissions=[FilesystemPermission(operations=["read"], paths=["/secret.py"], mode="deny")],
+        )
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        result = grep_search_tool.invoke(
+            {
+                "pattern": "b|c",
+                "runtime": _runtime(),
+            }
+        )
+        assert result.content == "No matches found"
+        assert "literal text, not regex" not in result.content
+
+    def test_grep_error_regex_pattern_omits_hint(self):
+        """A backend error result never gets the regex hint appended."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        error_result = GrepResult(error="boom: backend exploded", matches=[])
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "grep", return_value=error_result),
+        ):
+            result = grep_search_tool.invoke(
+                {
+                    "pattern": "def hello|def world",
+                    "runtime": _runtime(),
+                }
+            )
+
+        assert result.status == "error"
         assert "literal text, not regex" not in result.content
 
     def test_search_store_paginated_empty(self):

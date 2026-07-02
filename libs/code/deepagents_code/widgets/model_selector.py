@@ -65,7 +65,6 @@ from the per-provider sections below.
 
 _RECOMMENDED_MODELS: frozenset[str] = frozenset(
     {
-        "anthropic:claude-opus-4-6",
         "anthropic:claude-opus-4-7",
         "anthropic:claude-opus-4-8",
         "anthropic:claude-sonnet-5",
@@ -74,13 +73,9 @@ _RECOMMENDED_MODELS: frozenset[str] = frozenset(
         "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
         "baseten:zai-org/GLM-5.2",
         "fireworks:accounts/fireworks/models/deepseek-v4-pro",
-        "fireworks:accounts/fireworks/models/glm-5p1",
         "fireworks:accounts/fireworks/models/glm-5p2",
-        "fireworks:accounts/fireworks/models/kimi-k2p6",
         "fireworks:accounts/fireworks/models/kimi-k2p7-code",
-        "fireworks:accounts/fireworks/models/minimax-m2p7",
         "fireworks:accounts/fireworks/models/minimax-m3",
-        "fireworks:accounts/fireworks/models/qwen3p6-plus",
         "fireworks:accounts/fireworks/models/qwen3p7-plus",
         "google_genai:gemini-3.5-flash",
         "google_genai:gemini-3.1-pro-preview",
@@ -109,8 +104,8 @@ _RECOMMENDED_MODELS: frozenset[str] = frozenset(
         "openrouter:deepseek/deepseek-v4-pro",
         "openrouter:google/gemini-3.5-flash",
         "openrouter:google/gemini-3.1-pro-preview",
-        "openrouter:minimax/minimax-m2.7",
         "openrouter:moonshotai/kimi-k2.7-code",
+        "openrouter:nvidia/nemotron-3-ultra-550b-a55b",
         "openrouter:openai/gpt-5.4",
         "openrouter:openai/gpt-5.4-mini",
         "openrouter:openai/gpt-5.4-pro",

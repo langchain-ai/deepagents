@@ -43,6 +43,18 @@ uv run deepagents-talon --once
 
 In Fleet mode, Talon uses the model from `fleet/config.json` unless `DEEPAGENTS_TALON_MODEL` or `AGENT_MODEL` is set. The Fleet loader resolves MCP registry references through LangSmith, so provide the required `LANGSMITH_API_KEY`, `LANGSMITH_TENANT_ID`, `LANGSMITH_ORGANIZATION_ID`, and when needed `LANGSMITH_USER_ID`, `BUILTIN_MCP_URL`, `LANGSMITH_HOST_URL`, and `HOST_LANGCHAIN_API_URL`. Locally-authored agents without `DEEPAGENTS_TALON_FLEET_DIR` continue to load from the assistant manifest directory and Talon's plain MCP config discovery.
 
+To persist the Fleet directory and selected local channel in the assistant manifest, import the export once and run it by assistant id:
+
+```bash
+uv run deepagents-talon import-fleet ./fleet \
+  --assistant-id fleet-local \
+  --channel telegram
+
+uv run deepagents-talon run-fleet --assistant-id fleet-local --once
+```
+
+`run-fleet` activates the imported channel without requiring `DEEPAGENTS_TALON_<CHANNEL>_ENABLED`. Existing channel flags such as `--whatsapp` and `--telegram` can still be passed to attach additional adapters for the same run.
+
 OAuth-backed Fleet MCP tools must be authorized once from an interactive shell before starting a headless host. Run the host in `--once` mode with the same Fleet directory and LangSmith environment you will use in production, complete the browser authorization if prompted, then start the long-running host:
 
 ```bash

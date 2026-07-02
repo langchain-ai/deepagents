@@ -1478,7 +1478,14 @@ class ToolCallMessage(Vertical):
         return self._has_expandable_output()
 
     def _is_search_no_result_output(self, output: str) -> bool:
-        """Return whether search output is a terminal no-result message."""
+        """Return whether search output is a terminal no-result message.
+
+        These sentinels must match the empty-result strings the SDK emits
+        (`format_grep_matches` and `_format_file_paths` in
+        `deepagents.middleware.filesystem`). If those change, this silently
+        stops matching and empty searches revert to collapsing behind an expand
+        affordance rather than rendering inline.
+        """
         if self._tool_name == "grep":
             return output.strip() == "No matches found"
         if self._tool_name == "glob":
@@ -1494,14 +1501,18 @@ class ToolCallMessage(Vertical):
         # Tools in `_COLLAPSE_OUTPUT_BY_DEFAULT` (read_file, grep, glob) collapse
         # their body entirely by default (the header already carries the file
         # path / search pattern), so any result with something to show is
-        # expandable regardless of size. `read_file`'s formatter never drops body
-        # text, but grep/glob serialize an empty match set as `[]`, which formats
-        # to nothing — so confirm the formatted output is non-empty rather than
-        # trusting the raw string. Successful `edit_file` similarly hides its
-        # redundant success line in the collapsed view while keeping the raw
-        # output expandable. This mirrors the empty-output guard in
-        # `_update_output_display`, which suppresses any body that would render
-        # blank before the collapse branch is reached — the two must move
+        # expandable regardless of size. The exception is a search that finds
+        # nothing: grep/glob return the terminal "No matches found" / "No files
+        # found" message, caught by `_is_search_no_result_output` above so it
+        # renders inline (see `_update_output_display`) instead of hiding a
+        # "nothing found" result behind an expand click. Beyond that, confirm the
+        # formatted output is non-empty rather than trusting the raw string —
+        # output that formats to blank (all whitespace, or a serialized empty
+        # collection like `[]`) has nothing to reveal. Successful `edit_file`
+        # similarly hides its redundant success line in the collapsed view while
+        # keeping the raw output expandable. This mirrors the empty-output guard
+        # in `_update_output_display`, which suppresses any body that would
+        # render blank before the collapse branch is reached — the two must move
         # together if that assumption changes. Errors are excluded because
         # `set_error` force-expands every error; treating a short error as
         # always-expandable would offer a collapse that hides it entirely.
@@ -2341,13 +2352,16 @@ class ToolCallMessage(Vertical):
             total_lines > self._PREVIEW_LINES or total_chars > self._PREVIEW_CHARS
         )
 
-        # Some tools serialize an empty successful result as a non-empty literal
-        # (e.g. glob "[]") that formats to no visible content. The raw `_output`
-        # is truthy, so the early-return guard at the top of this method doesn't
-        # catch it, but rendering it would show an empty box with a misleading
-        # expand affordance. Treat it like empty output and render nothing. This
-        # also subsumes the all-whitespace case (formats to empty), so the
-        # collapsed branch below no longer needs its own empty guard.
+        # Some output is a non-empty raw string that the formatter renders as no
+        # visible content — all whitespace, or a serialized empty collection like
+        # `[]`. The raw `_output` is truthy, so the early-return guard at the top
+        # of this method doesn't catch it, but rendering it would show an empty
+        # box with a misleading expand affordance. Treat it like empty output and
+        # render nothing. (A search that found nothing is not this case: grep/glob
+        # return a human-readable "No matches found" / "No files found" that
+        # formats non-empty and renders inline; see the collapse branch below.)
+        # This also subsumes the all-whitespace case, so the collapsed branch
+        # below no longer needs its own empty guard.
         #
         # This fires for errors too, but never hides one: a real error body is
         # human-readable text that formats non-empty (and execute errors keep
@@ -2384,6 +2398,9 @@ class ToolCallMessage(Vertical):
             # success output repeats the status/diff — so the body is noise by
             # default. Collapse it entirely (no preview) while keeping the
             # original output expandable for when the user does want to see it.
+            # A grep/glob that found nothing is excluded: its terminal "No
+            # matches/files found" message is the whole result, so it renders
+            # inline rather than hiding behind an expand click.
             if not self._is_search_no_result_output(self._output) and (
                 self._tool_name in _COLLAPSE_OUTPUT_BY_DEFAULT
                 or (self._tool_name == "edit_file" and self._status == "success")

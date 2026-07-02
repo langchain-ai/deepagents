@@ -1152,28 +1152,27 @@ class TestToolCallMessageExpandHint:
             full = app.msg._full_widget._Static__content  # ty: ignore[unresolved-attribute]
             assert full.plain == output
 
-    async def test_short_error_force_expanded_has_no_collapse_hint(self) -> None:
+    @pytest.mark.parametrize(
+        ("tool", "error"),
+        [
+            ("glob", "Error: glob timed out after 20.0s. Try a narrower path."),
+            ("grep", "Error: invalid regex: unterminated character class."),
+        ],
+    )
+    async def test_short_error_force_expanded_has_no_collapse_hint(
+        self, tool: str, error: str
+    ) -> None:
         """A short force-expanded error must not show a collapse affordance.
 
         `set_error` force-expands so the full error is always visible. When the
         error is short enough that the collapsed form would be identical, there
-        is nothing to collapse — so no hint, and toggling is a no-op.
+        is nothing to collapse — so no hint, and toggling is a no-op. grep and
+        glob share the collapse-by-default branch, so both must honor this.
         """
-        from textual.app import App, ComposeResult
-
-        error = "Error: glob timed out after 20.0s. Try a narrower path."
         assert "\n" not in error
         assert len(error) < ToolCallMessage._PREVIEW_CHARS
 
-        class _Harness(App[None]):
-            def __init__(self) -> None:
-                super().__init__()
-                self.msg = ToolCallMessage("glob", {"pattern": "**/*.py"})
-
-            def compose(self) -> ComposeResult:
-                yield self.msg
-
-        app = _Harness()
+        app = _tool_msg_app(tool, {"pattern": "**/*.py"})
         async with app.run_test() as pilot:
             await pilot.pause()
             app.msg.set_error(error)
@@ -1222,7 +1221,7 @@ class TestToolCallMessageExpandHint:
             collapsed = app.msg._hint_widget._Static__content
             assert "expand" in collapsed.plain
 
-    async def test_long_grep_output_truncates_and_expands(self) -> None:
+    async def test_long_grep_output_collapses_and_expands(self) -> None:
         """A multi-line grep result collapses its preview then expands on toggle."""
         output = "\n".join(f"file.py:{index}:hit {index}" for index in range(8))
         assert output.count("\n") + 1 > ToolCallMessage._PREVIEW_LINES
@@ -1556,14 +1555,18 @@ class TestToolCallMessageEmptyResult:
     async def test_empty_serialized_result_hides_output(
         self, tool: str, output: str
     ) -> None:
-        """A non-empty literal that formats to nothing must not render a box.
+        """A non-empty raw string that formats to nothing must not render a box.
 
-        Tools like glob/grep/ls serialize an empty successful result as the
-        literal "[]", which formats to no visible content. The raw output is
-        truthy, so the early empty guard doesn't fire — without the formatted
-        emptiness check the preview row renders as an empty box with a
-        misleading expand affordance. The whitespace-only case ("   ") exercises
-        the same check now that the collapsed branch's own empty guard is gone.
+        `[]` is a synthetic stand-in for output that is a non-empty raw string
+        yet formats to no visible content. It is not what the tools actually
+        emit for an empty result — real grep/glob return "No matches found" /
+        "No files found" (non-empty), which render inline (see
+        `test_search_no_result_message_renders_without_expand_hint`). The raw
+        output here is truthy, so the early empty guard doesn't fire; without the
+        formatted-emptiness check the preview row would render as an empty box
+        with a misleading expand affordance. The whitespace-only case ("   ")
+        exercises the same check now that the collapsed branch's own empty guard
+        is gone.
         """
         app = _tool_msg_app(tool)
         async with app.run_test() as pilot:

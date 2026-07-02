@@ -35,7 +35,10 @@ class EchoAgent:
 
 
 def test_channels_factory_selects_configured_channels(tmp_path: Path) -> None:
-    cases: tuple[tuple[dict[str, str], bool, bool, tuple[type[object], ...]], ...] = (
+    cases: tuple[
+        tuple[dict[str, str], bool, bool, str | None, tuple[type[object], ...]],
+        ...,
+    ] = (
         (
             {
                 "DEEPAGENTS_TALON_WHATSAPP_ENABLED": "1",
@@ -45,6 +48,7 @@ def test_channels_factory_selects_configured_channels(tmp_path: Path) -> None:
             },
             False,
             False,
+            None,
             (WhatsAppChannel, TelegramChannel),
         ),
         (
@@ -55,10 +59,28 @@ def test_channels_factory_selects_configured_channels(tmp_path: Path) -> None:
             },
             False,
             False,
+            None,
             (TelegramChannel,),
         ),
-        ({"DEEPAGENTS_TALON_WHATSAPP_ENABLED": "1"}, False, False, (WhatsAppChannel,)),
-        ({}, False, False, ()),
+        (
+            {"DEEPAGENTS_TALON_WHATSAPP_ENABLED": "1"},
+            False,
+            False,
+            None,
+            (WhatsAppChannel,),
+        ),
+        ({}, False, False, None, ()),
+        (
+            {
+                "DEEPAGENTS_TALON_TELEGRAM_BOT_TOKEN": "test-token",
+                "DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID": "999",
+            },
+            False,
+            False,
+            "telegram",
+            (TelegramChannel,),
+        ),
+        ({}, False, False, "whatsapp", (WhatsAppChannel,)),
         (
             {
                 "DEEPAGENTS_TALON_TELEGRAM_BOT_TOKEN": "test-token",
@@ -66,17 +88,23 @@ def test_channels_factory_selects_configured_channels(tmp_path: Path) -> None:
             },
             True,
             True,
+            None,
             (WhatsAppChannel, TelegramChannel),
         ),
     )
 
-    for env, whatsapp, telegram, expected_types in cases:
+    for env, whatsapp, telegram, selected_channel, expected_types in cases:
         config = TalonConfig.from_env(
             {"AGENT_ASSISTANT_ID": "assistant", **env},
             base_home=tmp_path,
         )
 
-        channels = _channels(config, whatsapp=whatsapp, telegram=telegram)
+        channels = _channels(
+            config,
+            whatsapp=whatsapp,
+            telegram=telegram,
+            selected_channel=selected_channel,
+        )
 
         assert tuple(type(channel) for channel in channels) == expected_types
 

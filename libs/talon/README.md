@@ -101,6 +101,18 @@ tokens into the manifest, README examples, or command history. Locally-authored
 agents without `DEEPAGENTS_TALON_FLEET_DIR` continue to load from the assistant
 manifest directory and Talon's plain MCP config discovery.
 
+To persist the Fleet directory and selected local channel in the assistant manifest, import the export once and run it by assistant id:
+
+```bash
+uv run deepagents-talon import-fleet ./fleet \
+  --assistant-id fleet-local \
+  --channel telegram
+
+uv run deepagents-talon run-fleet --assistant-id fleet-local --once
+```
+
+`run-fleet` activates the imported channel without requiring `DEEPAGENTS_TALON_<CHANNEL>_ENABLED`. Existing channel flags such as `--whatsapp` and `--telegram` can still be passed to attach additional adapters for the same run.
+
 OAuth-backed Fleet MCP tools must be authorized once from an interactive shell before starting a headless host. Run the host in `--once` mode with the same Fleet directory and LangSmith environment you will use in production, complete the browser authorization if prompted, then start the long-running host:
 
 ```bash

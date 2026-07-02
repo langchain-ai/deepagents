@@ -9,13 +9,11 @@ import json
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
-from typing import TYPE_CHECKING, Literal, cast
+from pathlib import Path
+from typing import Literal, cast
 from urllib.parse import urlsplit, urlunsplit
 
 from deepagents_talon.config import TalonConfig
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 ChannelName = Literal["telegram", "whatsapp"]
 
@@ -81,6 +79,25 @@ class FleetImportSummary:
     mcp_config_target: Path
     manifest_path: Path
     model_source: Literal["fleet_config", "local_override"]
+
+
+@dataclass(frozen=True, slots=True)
+class FleetRunManifest:
+    """Assistant-scoped Fleet run intent persisted by `import-fleet`.
+
+    Args:
+        channel: Selected channel provider to activate when running the manifest.
+        fleet_dir: Validated Fleet export directory.
+        assistant_id: Assistant id used to namespace Talon state.
+        manifest_path: Manifest file that supplied the run intent.
+        replacement_tool_count: Number of Fleet-requested tools requiring local replacement.
+    """
+
+    channel: ChannelName
+    fleet_dir: Path
+    assistant_id: str
+    manifest_path: Path
+    replacement_tool_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +174,77 @@ def import_fleet_manifest(
         mcp_config_target=target,
         manifest_path=target,
         model_source=model_source,
+    )
+
+
+def load_fleet_run_manifest(
+    *,
+    assistant_id: str,
+    env: Mapping[str, str] | None = None,
+) -> FleetRunManifest:
+    """Load and validate the assistant's Fleet run manifest.
+
+    Args:
+        assistant_id: Talon assistant id whose manifest should be loaded.
+        env: Environment mapping used to resolve the assistant home.
+
+    Returns:
+        Validated Fleet run manifest.
+
+    Raises:
+        FleetImportError: If the manifest is missing, malformed, or points at a
+            stale Fleet export directory.
+    """
+    values = dict(os.environ if env is None else env)
+    values["DEEPAGENTS_TALON_ASSISTANT_ID"] = assistant_id
+    config = TalonConfig.from_env(values)
+    path = config.manifest_dir / "tools.json"
+    if not path.is_file():
+        msg = (
+            f"Fleet run manifest not found for assistant {config.assistant_id!r}. "
+            "Run `deepagents-talon import-fleet` first."
+        )
+        raise FleetImportError(msg)
+
+    data = _read_json_object(path, label="Fleet run manifest")
+    raw = data.get("manifest")
+    if not isinstance(raw, Mapping):
+        msg = "Malformed Fleet run manifest: missing manifest object"
+        raise FleetImportError(msg)
+    manifest = cast("Mapping[str, object]", raw)
+    if manifest.get("source") != "fleet":
+        msg = "Manifest is not a Fleet run manifest"
+        raise FleetImportError(msg)
+
+    manifest_assistant_id = manifest.get("assistant_id")
+    if manifest_assistant_id != config.assistant_id:
+        msg = (
+            "Fleet run manifest assistant id does not match requested assistant "
+            f"{config.assistant_id!r}"
+        )
+        raise FleetImportError(msg)
+
+    channel = manifest.get("channel")
+    if channel not in {"telegram", "whatsapp"}:
+        msg = "Malformed Fleet run manifest: channel must be telegram or whatsapp"
+        raise FleetImportError(msg)
+
+    fleet_dir = manifest.get("fleet_dir")
+    if not isinstance(fleet_dir, str) or not fleet_dir:
+        msg = "Malformed Fleet run manifest: fleet_dir is required"
+        raise FleetImportError(msg)
+
+    replacements = manifest.get("replacement_tools", ())
+    if not isinstance(replacements, Sequence) or isinstance(replacements, (str, bytes, bytearray)):
+        msg = "Malformed Fleet run manifest: replacement_tools must be an array"
+        raise FleetImportError(msg)
+
+    return FleetRunManifest(
+        channel=cast("ChannelName", channel),
+        fleet_dir=_validate_fleet_dir(Path(fleet_dir)),
+        assistant_id=config.assistant_id,
+        manifest_path=path,
+        replacement_tool_count=len(replacements),
     )
 
 

@@ -7,10 +7,16 @@ from typing import TYPE_CHECKING
 import pytest
 
 from deepagents_talon.__main__ import (
+    _config_from_fleet_run_manifest,
     _resolve_import_channel,
+    _run_fleet_command,
     _run_import_fleet_command,
 )
-from deepagents_talon.import_fleet import FleetImportError, import_fleet_manifest
+from deepagents_talon.import_fleet import (
+    FleetImportError,
+    import_fleet_manifest,
+    load_fleet_run_manifest,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -169,6 +175,192 @@ def test_import_fleet_command_prints_secret_free_summary(
     assert "local_mcp_config:" in output
     assert "raw-secret" not in output
     assert "header-secret" not in output
+
+
+def test_load_fleet_run_manifest_fails_when_manifest_is_missing(tmp_path: Path) -> None:
+    with pytest.raises(FleetImportError, match="Fleet run manifest not found"):
+        load_fleet_run_manifest(
+            assistant_id="agent-1",
+            env={"DEEPAGENTS_TALON_HOME": str(tmp_path / "home")},
+        )
+
+
+def test_load_fleet_run_manifest_fails_when_fleet_dir_is_stale(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    target = home / "agent-1" / "agent" / "tools.json"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        json.dumps(
+            {
+                "manifest": {
+                    "source": "fleet",
+                    "assistant_id": "agent-1",
+                    "channel": "telegram",
+                    "fleet_dir": str(tmp_path / "missing-fleet"),
+                    "replacement_tools": [],
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FleetImportError, match="Fleet directory does not exist"):
+        load_fleet_run_manifest(
+            assistant_id="agent-1",
+            env={"DEEPAGENTS_TALON_HOME": str(home)},
+        )
+
+
+def test_run_fleet_command_starts_selected_telegram_manifest(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fleet = _fleet_export(tmp_path)
+    home = tmp_path / "home"
+    import_fleet_manifest(
+        fleet,
+        assistant_id="agent-1",
+        channel="telegram",
+        env={"DEEPAGENTS_TALON_HOME": str(home)},
+    )
+    monkeypatch.setenv("DEEPAGENTS_TALON_HOME", str(home))
+    captured: dict[str, object] = {}
+
+    def run_host(config: object, **kwargs: object) -> None:
+        captured["config"] = config
+        captured.update(kwargs)
+
+    monkeypatch.setattr("deepagents_talon.__main__._run_host", run_host)
+
+    caplog.set_level("INFO", logger="deepagents_talon.__main__")
+    code = _run_fleet_command(_run_fleet_args("agent-1"))
+
+    config = captured["config"]
+    assert code == 0
+    assert captured["selected_channel"] == "telegram"
+    assert captured["whatsapp"] is False
+    assert captured["telegram"] is False
+    assert config.assistant_id == "agent-1"
+    assert config.fleet_dir == fleet.resolve()
+    event = _talon_events(caplog, event="fleet.run_startup")[0]
+    assert event["assistant_id"] == "agent-1"
+    assert event["channel"] == "telegram"
+    assert event["fleet_dir"] == str(fleet.resolve())
+    assert event["replacement_tool_count"] == 4
+    assert "raw-secret" not in caplog.text
+
+
+def test_run_fleet_command_starts_selected_whatsapp_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fleet = _fleet_export(tmp_path)
+    home = tmp_path / "home"
+    import_fleet_manifest(
+        fleet,
+        assistant_id="agent-1",
+        channel="whatsapp",
+        env={"DEEPAGENTS_TALON_HOME": str(home)},
+    )
+    monkeypatch.setenv("DEEPAGENTS_TALON_HOME", str(home))
+    captured: dict[str, object] = {}
+
+    def run_host(config: object, **kwargs: object) -> None:
+        captured["config"] = config
+        captured.update(kwargs)
+
+    monkeypatch.setattr("deepagents_talon.__main__._run_host", run_host)
+
+    code = _run_fleet_command(_run_fleet_args("agent-1", telegram=True))
+
+    assert code == 0
+    assert captured["selected_channel"] == "whatsapp"
+    assert captured["telegram"] is True
+
+
+def test_run_fleet_config_keeps_environment_model_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fleet = _fleet_export(tmp_path)
+    home = tmp_path / "home"
+    import_fleet_manifest(
+        fleet,
+        assistant_id="agent-1",
+        channel="telegram",
+        env={"DEEPAGENTS_TALON_HOME": str(home)},
+    )
+    manifest = load_fleet_run_manifest(
+        assistant_id="agent-1",
+        env={"DEEPAGENTS_TALON_HOME": str(home)},
+    )
+    monkeypatch.setenv("AGENT_MODEL", "override:model")
+
+    config = _config_from_fleet_run_manifest(
+        manifest,
+        env={"DEEPAGENTS_TALON_HOME": str(home), "AGENT_MODEL": "override:model"},
+    )
+
+    assert config.model == "override:model"
+    assert config.fleet_dir == fleet.resolve()
+
+
+def test_run_fleet_command_passes_once_to_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fleet = _fleet_export(tmp_path)
+    home = tmp_path / "home"
+    import_fleet_manifest(
+        fleet,
+        assistant_id="agent-1",
+        channel="telegram",
+        env={"DEEPAGENTS_TALON_HOME": str(home)},
+    )
+    monkeypatch.setenv("DEEPAGENTS_TALON_HOME", str(home))
+    captured: dict[str, object] = {}
+
+    def run_host(config: object, **kwargs: object) -> None:
+        captured["config"] = config
+        captured.update(kwargs)
+
+    monkeypatch.setattr("deepagents_talon.__main__._run_host", run_host)
+
+    code = _run_fleet_command(_run_fleet_args("agent-1", once=True))
+
+    assert code == 0
+    assert captured["once"] is True
+
+
+def _run_fleet_args(
+    assistant_id: str,
+    *,
+    once: bool = False,
+    whatsapp: bool = False,
+    telegram: bool = False,
+) -> Namespace:
+    return Namespace(
+        assistant_id=assistant_id,
+        once=once,
+        whatsapp=whatsapp,
+        telegram=telegram,
+    )
+
+
+def _talon_events(
+    caplog: pytest.LogCaptureFixture,
+    *,
+    event: str,
+) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    for message in caplog.messages:
+        if not message.startswith("talon_event "):
+            continue
+        payload = json.loads(message.removeprefix("talon_event "))
+        if payload.get("event") == event:
+            events.append(payload)
+    return events
 
 
 def _fleet_export(tmp_path: Path) -> Path:

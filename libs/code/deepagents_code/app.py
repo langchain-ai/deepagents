@@ -3627,9 +3627,11 @@ class DeepAgentsApp(App):
                 )
                 return
 
-            # Confirmed: adopt the thread's agent for this session (always for
-            # `-r`, and for an explicit id only when the user hasn't pinned a
-            # non-default agent), plus its persisted model.
+            # Confirmed: adopt the thread's agent for this session — always when
+            # resuming the most recent thread (bare `-r`, even over an
+            # explicitly pinned `-a`), and for an explicit `-r <id>` only when
+            # the user hasn't pinned a non-default agent — plus its persisted
+            # model.
             self._should_adopt_resumed_model = not self._model_explicitly_set
             if via_most_recent or self._assistant_id == default_agent:
                 agent_name = await get_thread_agent(candidate)
@@ -3652,8 +3654,11 @@ class DeepAgentsApp(App):
             # return — a fallback to a new thread, or the user aborting the
             # resume — can't leave `session_state.thread_id` pointing at a
             # thread that was never adopted. `_init_session_state` may run
-            # concurrently and capture a not-yet-final id mid-prompt; this is
-            # the authoritative final write.
+            # concurrently and capture a not-yet-final id mid-prompt; this
+            # reconciles it whenever session state already exists. If session
+            # state hasn't been assigned yet, correctness instead relies on
+            # `_init_session_state` reading the now-final `_lc_thread_id` when
+            # it constructs the state.
             if self._session_state:
                 self._session_state.thread_id = self._lc_thread_id
             self._resume_thread_resolved_event.set()
@@ -15508,7 +15513,10 @@ class DeepAgentsApp(App):
         Returns:
             `"continue"` when resume may proceed, or `"abort"` when the user
                 declined the resume or a requested switch was accepted but
-                failed (the caller should stop the resume).
+                failed (the caller should stop the resume). The two abort
+                sources are mode-exclusive: the user-declined abort fires only
+                when `allow_abort` is True, and the switch-failed abort only
+                when `restart_server` is True.
         """
         target = await self._thread_cwd_mismatch(thread_id)
         if target is None:

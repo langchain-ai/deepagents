@@ -14245,6 +14245,64 @@ class TestResolveResumeThread:
             assert app._status_bar is not None
             assert app._status_bar.connection_state == "connecting"
 
+    async def test_offer_failure_still_resumes_and_adopts(self) -> None:
+        """A raising cwd-switch offer must not abandon the resolved thread.
+
+        Locks the central invariant of the resolve refactor: the candidate is
+        committed to `_lc_thread_id` *before* the offer, and a failure in the
+        offer is isolated to `"continue"` so agent + model adoption still run.
+        The failure must not fall through to the outer handler (which would
+        discard the thread and start a fresh session).
+        """
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._resume_thread_intent = "some-thread"
+            app._offer_thread_cwd_switch = AsyncMock(  # ty: ignore[invalid-assignment]
+                side_effect=RuntimeError("cwd probe failed")
+            )
+            with (
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value="coder"),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._lc_thread_id == "some-thread"
+            assert app._assistant_id == "coder"
+            assert app._should_adopt_resumed_model is True
+
+    async def test_fallback_syncs_session_state_to_fresh_thread(self) -> None:
+        """A non-abort fallback early return still syncs session state.
+
+        Mirrors `test_abort_syncs_session_state_to_fresh_thread` for the
+        "no previous threads" fallback: the `finally`-block sync is the only
+        thing that stops `session_state.thread_id` from being left pointing at
+        a stale id after the early return.
+        """
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            # Simulate session state having captured a stale id before resolve.
+            app._session_state.thread_id = "stale-thread"
+            app._resume_thread_intent = "__MOST_RECENT__"
+            with patch(
+                "deepagents_code.sessions.get_most_recent",
+                AsyncMock(return_value=None),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._lc_thread_id != "stale-thread"
+            assert app._session_state.thread_id == app._lc_thread_id
+
 
 def _missing_dep_entry(
     tool: str = "ripgrep",

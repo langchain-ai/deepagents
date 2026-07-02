@@ -153,6 +153,25 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
         """Focus the modal so screen bindings work after nested modal flows."""
         self.focus()
 
+    def check_action(
+        self,
+        action: str,
+        parameters: tuple[object, ...],  # noqa: ARG002  # required by Textual's DOMNode.check_action override signature
+    ) -> bool | None:
+        """Disable the `abort` binding unless the prompt was opened for it.
+
+        Makes the disabled state first-class: when `allow_abort` is False the
+        `a` key is not bound to anything (it passes through) rather than firing
+        a no-op action.
+
+        Returns:
+            `self._allow_abort` for the `abort` action so the binding is only
+                active when abort was offered; `True` for every other action.
+        """
+        if action == "abort":
+            return self._allow_abort
+        return True
+
     def action_switch(self) -> None:
         """Dismiss with `switch`."""
         self.dismiss("switch")

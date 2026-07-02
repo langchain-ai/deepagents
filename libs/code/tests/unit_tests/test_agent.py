@@ -739,7 +739,7 @@ class TestGetSystemPromptModelIdentity:
         from deepagents_code.agent import _make_prompt_for
         from deepagents_code.config import ModelResult
 
-        model = ChatAnthropic(model_name="claude-sonnet-4-6", anthropic_api_key="x")
+        model = ChatAnthropic(model_name="claude-sonnet-4-6")
         model_result = ModelResult(
             model=model,
             model_name="claude-sonnet-4-6",
@@ -763,7 +763,7 @@ class TestGetSystemPromptModelIdentity:
         from deepagents_code.agent import _make_prompt_for
         from deepagents_code.config import ModelResult
 
-        model = ChatAnthropic(model_name="claude-sonnet-4-6", anthropic_api_key="x")
+        model = ChatAnthropic(model_name="claude-sonnet-4-6")
         model_result = ModelResult(
             model=model, model_name="claude-sonnet-4-6", provider="anthropic"
         )

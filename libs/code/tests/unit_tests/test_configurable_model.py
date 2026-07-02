@@ -891,9 +891,7 @@ class TestModelIdentityReRender:
             system_prompt="original",
         )
         captured: list[ModelRequest] = []
-        mw.wrap_model_call(
-            request, lambda r: (captured.append(r), _make_response())[1]
-        )
+        mw.wrap_model_call(request, lambda r: (captured.append(r), _make_response())[1])
 
         prompt_for.assert_not_called()
         assert captured[0].system_prompt == "original"

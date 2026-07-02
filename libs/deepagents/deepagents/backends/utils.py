@@ -872,3 +872,46 @@ def format_grep_matches(
     if not matches:
         return "No matches found"
     return _format_grep_results(build_grep_results_dict(matches), output_mode)
+
+
+_REGEX_SIGNAL_RE = re.compile(
+    r"\|"  # alternation
+    r"|\.\*"  # `.*` wildcard
+    r"|\.\+"  # `.+` wildcard
+    r"|\\[.wWdDsSbB(){}\[\]|+*?^$]"  # escaped regex metacharacters / classes
+)
+"""Strong signals that a pattern was written as a regex rather than literal text.
+
+Deliberately conservative: bare `.`, `(`, `)`, `[`, `]`, `?`, `^`, `$` are
+omitted because they appear routinely in literal code searches (e.g.
+`self.tools`, `def __init__(self):`, `arr[0]`), which would cause false hints.
+"""
+
+
+def _looks_like_regex(pattern: str) -> bool:
+    """Heuristically detect regex syntax in a pattern meant for literal grep."""
+    return bool(_REGEX_SIGNAL_RE.search(pattern))
+
+
+def regex_literal_hint(pattern: str) -> str | None:
+    """Return a hint when a pattern looks like an (unsupported) regex.
+
+    `grep` matches literal text, so regex metacharacters are searched verbatim
+    and silently miss. Callers gate this on a no-match result; the function
+    itself only inspects the pattern.
+
+    Args:
+        pattern: The literal grep pattern to inspect for regex signals.
+
+    Returns:
+        A one-line hint steering the caller toward literal search, or `None`
+            when the pattern has no regex signals.
+    """
+    if not _looks_like_regex(pattern):
+        return None
+    return (
+        "Note: grep matches literal text, not regex, so characters like "
+        "`|`, `.*`, and `\\.` are searched verbatim. Search for the literal "
+        "text you need instead; for `|` alternation, run a separate search "
+        "per alternative."
+    )

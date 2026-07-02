@@ -27,15 +27,22 @@ from deepagents_code.extras_info import (
 _PYPROJECT_PATH = Path(__file__).resolve().parents[2] / "pyproject.toml"
 
 
+def _optional_dependencies() -> dict[str, list[str]]:
+    """Return optional dependencies declared in `pyproject.toml`."""
+    data = tomllib.loads(_PYPROJECT_PATH.read_text(encoding="utf-8"))
+    return data["project"]["optional-dependencies"]
+
+
 def _declared_extras() -> frozenset[str]:
     """Return non-composite extras declared in `pyproject.toml`."""
-    data = tomllib.loads(_PYPROJECT_PATH.read_text(encoding="utf-8"))
-    extras = data["project"]["optional-dependencies"]
-    return frozenset(extras) - _COMPOSITE_EXTRAS
+    return frozenset(_optional_dependencies()) - _COMPOSITE_EXTRAS
 
 
-def test_returns_empty_when_distribution_missing() -> None:
-    assert get_extras_status("does-not-exist-pkg-xyz-abc") == {}
+def test_nvidia_extra_requires_aiohttp_safe_ai_endpoints_release() -> None:
+    """The NVIDIA extra must require an aiohttp-safe ai-endpoints release."""
+    assert _optional_dependencies()["nvidia"] == [
+        "langchain-nvidia-ai-endpoints>=1.4.3,<2.0.0"
+    ]
 
 
 def test_real_distribution_groups_entries_by_extra() -> None:

@@ -190,7 +190,7 @@ class WelcomeBanner(Static):
 
         parts: list[str | tuple[str, str | TStyle]] = [
             (f"{get_glyphs().cursor} ", title_style),
-            ("Deep Agents", "bold"),
+            ("dcode", "bold"),
         ]
         if not self._hide_version:
             parts.append((f"  v{__version__}", "dim"))

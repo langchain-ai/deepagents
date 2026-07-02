@@ -16,7 +16,6 @@ from deepagents_talon.cron.time import (
 
 LA = "America/Los_Angeles"
 LA_ZONE = ZoneInfo(LA)
-NY = "America/New_York"
 
 
 def _utc(year: int, month: int, day: int, hour: int, minute: int = 0) -> datetime:
@@ -47,7 +46,7 @@ def test_parse_local_time_accepts_grammar_forms(text: str, expected: tuple[int, 
 
 @pytest.mark.parametrize(
     "text",
-    ["", "  ", "25:00", "8:60pm", "abc", "13pm", "-1:00", "8:00 xm"],
+    ["", "  ", "25:00", "8:60pm", "abc", "13pm", "-1:00", "8:00 xm", "0am", "0pm"],
 )
 def test_parse_local_time_rejects_malformed(text: str) -> None:
     with pytest.raises(CronTimeError):
@@ -56,7 +55,7 @@ def test_parse_local_time_rejects_malformed(text: str) -> None:
 
 def test_local_time_of_day_str_and_validation() -> None:
     assert str(LocalTimeOfDay(8, 30)) == "08:30"
-    assert LocalTimeOfDay(8, 30).to_timedelta() == timedelta(hours=8, minutes=30)
+    assert LocalTimeOfDay(12, 0).total_minutes == 720
     with pytest.raises(CronTimeError):
         LocalTimeOfDay(24, 0)
     with pytest.raises(CronTimeError):
@@ -99,6 +98,25 @@ def test_next_wall_clock_run_unknown_timezone() -> None:
             now=_utc(2026, 7, 2, 15, 0),
             timezone="Mars/Olympus",
             time=LocalTimeOfDay(8, 0),
+        )
+
+
+def test_next_wall_clock_run_rejects_naive_now() -> None:
+    with pytest.raises(CronTimeError):
+        next_wall_clock_run(
+            now=datetime(2026, 7, 2, 15, 0),  # noqa: DTZ001  # naive by design
+            timezone=LA,
+            time=LocalTimeOfDay(12, 0),
+        )
+
+
+def test_next_interval_run_rejects_naive_previous() -> None:
+    with pytest.raises(CronTimeError):
+        next_interval_run(
+            previous=datetime(2026, 7, 2, 12, 0),  # noqa: DTZ001  # naive by design
+            now=_utc(2026, 7, 2, 12, 5),
+            minutes=15,
+            active_window=None,
         )
 
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from functools import total_ordering
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 __all__ = [
@@ -32,6 +33,7 @@ class CronTimeError(ValueError):
     """Raised when a cron time request is invalid or impossible."""
 
 
+@total_ordering
 @dataclass(frozen=True, slots=True)
 class LocalTimeOfDay:
     """Local clock time with minute precision.
@@ -53,14 +55,6 @@ class LocalTimeOfDay:
             msg = f"minute must be 0-59, got {self.minute}"
             raise CronTimeError(msg)
 
-    def to_timedelta(self) -> timedelta:
-        """Return this clock time as a `timedelta` since midnight.
-
-        Returns:
-            Duration since midnight.
-        """
-        return timedelta(hours=self.hour, minutes=self.minute)
-
     @property
     def total_minutes(self) -> int:
         """Minutes since midnight."""
@@ -69,18 +63,6 @@ class LocalTimeOfDay:
     def __lt__(self, other: LocalTimeOfDay) -> bool:
         """Compare ordering by minutes since midnight."""
         return self.total_minutes < other.total_minutes
-
-    def __le__(self, other: LocalTimeOfDay) -> bool:
-        """Compare ordering by minutes since midnight."""
-        return self.total_minutes <= other.total_minutes
-
-    def __gt__(self, other: LocalTimeOfDay) -> bool:
-        """Compare ordering by minutes since midnight."""
-        return self.total_minutes > other.total_minutes
-
-    def __ge__(self, other: LocalTimeOfDay) -> bool:
-        """Compare ordering by minutes since midnight."""
-        return self.total_minutes >= other.total_minutes
 
     def __str__(self) -> str:
         """Return a `HH:MM` string.
@@ -177,7 +159,7 @@ def parse_local_time(value: str) -> LocalTimeOfDay:
     if m:
         hour = int(m.group("hour"))
         minute = int(m.group("minute") or "0")
-        if not 0 <= hour <= _AMPM_HOUR_BOUND:
+        if not 1 <= hour <= _AMPM_HOUR_BOUND:
             msg = f"12-hour clock hour out of range: {value!r}"
             raise CronTimeError(msg)
         if hour == _AMPM_HOUR_BOUND:
@@ -203,17 +185,7 @@ def parse_local_time(value: str) -> LocalTimeOfDay:
 
 
 def _resolve_zone(timezone: str) -> ZoneInfo:
-    """Resolve an IANA zone name, re-raising unknown zones as `CronTimeError`.
-
-    Args:
-        timezone: IANA time zone name.
-
-    Returns:
-        Resolved `ZoneInfo`.
-
-    Raises:
-        CronTimeError: If the time zone is unknown.
-    """
+    """Resolve an IANA zone name, re-raising unknown zones as `CronTimeError`."""
     try:
         return ZoneInfo(timezone)
     except ZoneInfoNotFoundError as exc:
@@ -222,26 +194,15 @@ def _resolve_zone(timezone: str) -> ZoneInfo:
 
 
 def _as_utc(dt: datetime) -> datetime:
-    """Return `dt` converted to UTC.
-
-    Args:
-        dt: A timezone-aware datetime.
-
-    Returns:
-        The same instant as a UTC datetime.
-    """
+    """Return `dt` converted to UTC, rejecting naive datetimes."""
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        msg = "datetime must be timezone-aware"
+        raise CronTimeError(msg)
     return dt.astimezone(UTC)
 
 
 def _local_time_of(dt: datetime) -> LocalTimeOfDay:
-    """Return the local clock-time components of `dt`.
-
-    Args:
-        dt: A timezone-aware datetime.
-
-    Returns:
-        Local-time-of-day at `dt`.
-    """
+    """Return the local clock-time components of `dt`."""
     return LocalTimeOfDay(hour=dt.hour, minute=dt.minute)
 
 
@@ -301,21 +262,8 @@ def next_wall_clock_run(
 def _build_local(zone: ZoneInfo, target_date: date, time: LocalTimeOfDay, *, fold: int) -> datetime:
     """Construct a local datetime at `time` on `target_date` in `zone`.
 
-    Detects nonexistent spring-forward local times by constructing the
-    datetime and verifying the round-trip wall clock matches the request.
-
-    Args:
-        zone: Target time zone.
-        target_date: Local calendar date.
-        time: Local clock time.
-        fold: `fold` value to disambiguate repeated fall-back wall times.
-
-    Returns:
-        Timezone-aware datetime in `zone`.
-
-    Raises:
-        CronTimeError: If the local time does not exist on `target_date` in
-            `zone` (spring-forward gap).
+    Detects nonexistent spring-forward local times by verifying the
+    round-trip wall clock matches the request.
     """
     naive = datetime(  # noqa: DTZ001  # naive constructed intentionally; tzinfo attached next line
         target_date.year,
@@ -326,8 +274,8 @@ def _build_local(zone: ZoneInfo, target_date: date, time: LocalTimeOfDay, *, fol
         fold=fold,
     )
     aware = naive.replace(tzinfo=zone)
-    roundtrip = aware.astimezone(UTC).astimezone(zone)
-    if roundtrip.hour != time.hour or roundtrip.minute != time.minute:
+    roundtrip = _local_time_of(aware.astimezone(UTC).astimezone(zone))
+    if roundtrip != time:
         msg = (
             f"local time {time} does not exist on {target_date.isoformat()} "
             f"in {zone!s} (spring-forward gap)"
@@ -387,21 +335,7 @@ def _advance_into_window(
     candidate: datetime,
     window: ActiveWindow,
 ) -> datetime:
-    """Fast-forward `candidate` to the next window-start when it is outside `window`.
-
-    The interval step itself was already applied by the caller. When the
-    stepped candidate lands inside the window, it is returned unchanged;
-    otherwise the function jumps to the next in-zone window-start that is
-    strictly later than the candidate. This avoids looping and guarantees
-    a single deterministic fast-forward.
-
-    Args:
-        candidate: UTC candidate run instant (after the interval step).
-        window: Active window to satisfy.
-
-    Returns:
-        The next in-window run instant as a UTC datetime.
-    """
+    """Fast-forward `candidate` to the next window-start when it is outside `window`."""
     zone = window.zone()
     local = candidate.astimezone(zone)
     local_time = _local_time_of(local)

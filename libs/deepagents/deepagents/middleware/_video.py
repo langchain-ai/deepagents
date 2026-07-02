@@ -22,6 +22,7 @@ import io
 import logging
 import math
 import time
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
@@ -36,6 +37,7 @@ MISSING_VIDEO_HINT = "Reading video files requires the optional video dependenci
 """User-facing message shown when a video read is attempted without the `[video]` extra installed."""
 
 
+@lru_cache(maxsize=1)
 def video_dependencies_available() -> bool:
     """Return whether the optional video dependencies appear to be installed.
 

@@ -473,7 +473,7 @@ def _format_grep_tool_result(
 
     formatted = truncate_if_too_long(format_grep_matches(matches, output_mode))
     if result.error:
-        return f"{result.error}\n\nPartial matches:\n{formatted}", "error"
+        return truncate_if_too_long(f"{result.error}\n\nPartial matches:\n{formatted}"), "error"
     if result.truncated:
         return f"{formatted}\n\n{SEARCH_TRUNCATION_NOTE}", "success"
     return formatted, "success"

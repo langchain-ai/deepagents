@@ -29,6 +29,7 @@ from deepagents.backends.protocol import (
     SandboxBackendProtocol,
 )
 from deepagents.backends.utils import (
+    TOOL_RESULT_TOKEN_LIMIT,
     TRUNCATION_GUIDANCE,
     create_file_data,
     format_content_with_line_numbers,
@@ -627,6 +628,33 @@ class TestFilesystemMiddleware:
         assert "Partial matches:" in result.content
         assert "/test.py" in result.content
         assert "1: import os" in result.content
+
+    def test_grep_partial_error_truncates_combined_output(self):
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        error = "Grep failed on unreadable file\n" + ("x" * (TOOL_RESULT_TOKEN_LIMIT * 4 + 1000))
+        result_with_partial_matches = GrepResult(
+            error=error,
+            matches=[{"path": "/test.py", "line": 1, "text": "import os"}],
+        )
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "grep", return_value=result_with_partial_matches),
+        ):
+            result = grep_search_tool.invoke(
+                {
+                    "pattern": "import",
+                    "output_mode": "content",
+                    "runtime": _runtime(),
+                }
+            )
+
+        assert result.status == "error"
+        assert len(result.content) < len(error)
+        assert TRUNCATION_GUIDANCE in result.content
 
     def test_grep_truncated_renders_as_success_with_note(self):
         """A truncated grep is a success with valid partial matches plus a narrow-your-search note."""

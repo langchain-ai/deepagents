@@ -19,6 +19,7 @@ from deepagents_talon.config import TalonConfig
 from deepagents_talon.cron import CronJobStore, PersistentCronScheduler
 from deepagents_talon.data_lifecycle import cleanup_sensitive_state
 from deepagents_talon.fleet import FleetAgentComponents, load_fleet_agent_components
+from deepagents_talon.fleet_manifest import ChannelSelection, refresh_fleet_run_manifest
 from deepagents_talon.host import TalonHost
 from deepagents_talon.mcp import load_mcp_tools, print_mcp_config_paths
 from deepagents_talon.runtime import (
@@ -71,10 +72,11 @@ def main() -> None:
     config.ensure_home()
     cleanup_sensitive_state(config=config, cron_store=cron_store)
 
+    channel_selection = _channel_selection(config, whatsapp=args.whatsapp, telegram=args.telegram)
     channels = _channels(config, whatsapp=args.whatsapp, telegram=args.telegram)
     host = TalonHost(
         config=config,
-        agent=asyncio.run(_agent_runtime(config, cron_store)),
+        agent=asyncio.run(_agent_runtime(config, cron_store, selected_channel=channel_selection)),
         channels=channels,
         voice_transcriber=build_voice_transcriber(config),
     )
@@ -108,15 +110,19 @@ def _add_mcp_parsers(
 async def _agent_runtime(
     config: TalonConfig,
     cron_store: CronJobStore,
+    *,
+    selected_channel: ChannelSelection | None = None,
 ) -> EchoAgentRuntime | DeepAgentRuntime:
     env = _runtime_env(config)
     if config.fleet_dir is not None:
         fleet_dir = config.fleet_dir
         components = await load_fleet_agent_components(fleet_dir, env=env)
+        refresh_fleet_run_manifest(config, components, selected_channel=selected_channel)
         runtime_components = _runtime_components_from_fleet(config, components, env=env)
 
         async def reload_fleet_components() -> RuntimeAgentComponents:
             refreshed = await load_fleet_agent_components(fleet_dir, env=env)
+            refresh_fleet_run_manifest(config, refreshed, selected_channel=selected_channel)
             return _runtime_components_from_fleet(config, refreshed, env=env)
 
         return DeepAgentRuntime(
@@ -208,6 +214,40 @@ def _channels(
     if telegram or _env_enabled(config.env, "DEEPAGENTS_TALON_TELEGRAM_ENABLED"):
         channels.append(TelegramChannel(TelegramChannelConfig.from_talon_config(config)))
     return tuple(channels)
+
+
+def _channel_selection(
+    config: TalonConfig,
+    *,
+    whatsapp: bool = False,
+    telegram: bool = False,
+) -> ChannelSelection | None:
+    selections: list[tuple[str, str]] = []
+    if whatsapp:
+        selections.append(("whatsapp", "cli"))
+    elif _env_enabled(config.env, "DEEPAGENTS_TALON_WHATSAPP_ENABLED"):
+        selections.append(("whatsapp", "environment"))
+
+    if telegram:
+        selections.append(("telegram", "cli"))
+    elif _env_enabled(config.env, "DEEPAGENTS_TALON_TELEGRAM_ENABLED"):
+        selections.append(("telegram", "environment"))
+
+    if not selections:
+        return None
+
+    if len(selections) == 1:
+        provider, source = selections[0]
+        return ChannelSelection(provider=provider, source=source)
+
+    return ChannelSelection(
+        provider="multiple",
+        source="mixed",
+        metadata={
+            "providers": ",".join(provider for provider, _source in selections),
+            "sources": ",".join(source for _provider, source in selections),
+        },
+    )
 
 
 def _env_enabled(env: Mapping[str, str], key: str) -> bool:

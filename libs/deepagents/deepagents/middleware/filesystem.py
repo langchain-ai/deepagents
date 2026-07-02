@@ -641,9 +641,10 @@ GREP_GLOB_DESCRIPTION = (
 
 GREP_OUTPUT_MODE_DESCRIPTION = (
     "Shape of the returned text. 'files_with_matches' (default): newline-separated "
-    "matching file paths. 'content': matching lines grouped by file, each formatted "
-    "'<line_number>: <line text>' (only the matched line, no surrounding context). "
-    "'count': one '<path>: <match_count>' line per file."
+    "matching file paths. 'content': matching lines grouped by file under a "
+    "'<path>:' header, each line indented and formatted '<line_number>: <line text>' "
+    "(only the matched line, no surrounding context). 'count': one "
+    "'<path>: <match_count>' line per file."
 )
 
 

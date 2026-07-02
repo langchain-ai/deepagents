@@ -50,6 +50,14 @@ class TestLooksLikeRegex:
             "TODO",
             "a == b",
             "",
+            # Metacharacters deliberately treated as literal (see `_REGEX_SIGNAL_RE`
+            # docstring): bare `^`, `$`, `?`, `*`, `+` are common in literal code
+            # searches and must not trip a false hint.
+            "^main",
+            "cost$5",
+            "value?",
+            "a*b",
+            "c++",
         ],
     )
     def test_ignores_literal(self, pattern: str) -> None:

@@ -894,10 +894,11 @@ def _looks_like_regex(pattern: str) -> bool:
 
 
 def regex_literal_hint(pattern: str) -> str | None:
-    """Return a hint when a no-match pattern looks like an (unsupported) regex.
+    """Return a hint when a pattern looks like an (unsupported) regex.
 
     `grep` matches literal text, so regex metacharacters are searched verbatim
-    and silently miss.
+    and silently miss. Callers gate this on a no-match result; the function
+    itself only inspects the pattern.
 
     Returns `None` when the pattern has no regex signals.
     """

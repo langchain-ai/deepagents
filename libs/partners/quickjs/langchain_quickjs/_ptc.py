@@ -39,8 +39,8 @@ _RESERVED_SUBAGENT_TASK_NAME = "task"
 _TASK_IN_PTC_MSG = (
     "The subagent `task` tool cannot be exposed via `ptc`. It is always "
     "available as the top-level `task()` global inside the REPL (with "
-    "`subagentType` and `responseSchema` support); exposing it through the "
-    "`tools.*` namespace would create a second, conflicting dispatch path "
+    "`subagentType`, `label`, and `responseSchema` support); exposing it through "
+    "the `tools.*` namespace would create a second, conflicting dispatch path "
     'that drops `responseSchema`. Remove "task" from `ptc`.'
 )
 

@@ -1356,6 +1356,157 @@ class TestDeepAgentEndToEnd:
         assert "base64" in tm.content[0]
 
 
+class TestDeleteFileTool:
+    """End-to-end tests for the `delete` filesystem tool."""
+
+    def test_delete_removes_existing_file(self) -> None:
+        """Delete removes a file from state and reports success."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "delete",
+                                "args": {"file_path": "/keep.txt"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model)
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="delete it")],
+                "files": {
+                    "/keep.txt": create_file_data("bye"),
+                    "/other.txt": create_file_data("stay"),
+                },
+            }
+        )
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].status == "success"
+        assert tool_messages[0].content == "Deleted /keep.txt"
+        assert set(result["files"].keys()) == {"/other.txt"}
+
+    def test_delete_directory_removes_nested_files(self) -> None:
+        """Delete on a directory removes every nested file from state (StateBackend)."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "delete",
+                                "args": {"file_path": "/work"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model)
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="delete the work dir")],
+                "files": {
+                    "/work/a.txt": create_file_data("a"),
+                    "/work/sub/b.txt": create_file_data("b"),
+                    "/keep.txt": create_file_data("stay"),
+                },
+            }
+        )
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert tool_messages[0].status == "success"
+        # Whole /work subtree gone; sibling preserved.
+        assert set(result["files"].keys()) == {"/keep.txt"}
+
+    def test_delete_missing_returns_error(self) -> None:
+        """Delete on a missing path returns an error tool message."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "delete",
+                                "args": {"file_path": "/nope.txt"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model)
+        result = agent.invoke({"messages": [HumanMessage(content="delete it")]})
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].status == "error"
+        assert "not found" in tool_messages[0].content
+
+    def test_delete_permission_deny_blocks_delete(self) -> None:
+        """FilesystemPermission deny write blocks delete (delete is a write op)."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "delete",
+                                "args": {"file_path": "/secrets/key.txt"},
+                                "id": "call_1",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=model,
+            permissions=[
+                FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny"),
+            ],
+        )
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="delete secret")],
+                "files": {"/secrets/key.txt": create_file_data("data")},
+            }
+        )
+
+        tool_messages = [m for m in result["messages"] if m.type == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].status == "error"
+        assert "permission denied" in tool_messages[0].content
+        assert "write" in tool_messages[0].content
+        # The file must still be present after a denied delete.
+        assert "/secrets/key.txt" in result["files"]
+
+
 class TestDeepAgentPermissionsEndToEnd:
     """End-to-end tests for create_deep_agent with FilesystemPermission."""
 
@@ -2694,6 +2845,146 @@ class TestStateBackendConfigKeys:
         tool_msg = next(m for m in result["messages"] if m.type == "tool" and m.tool_call_id == "call_wr")
         assert "buffered" in tool_msg.content
         assert "ERROR" not in tool_msg.content
+
+    def test_write_overwrites_existing_file(self) -> None:
+        """write_file on an existing path replaces its content."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "write_file",
+                                "args": {"file_path": "/doc.txt", "content": "new content"},
+                                "id": "call_w2",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "read_file",
+                                "args": {"file_path": "/doc.txt"},
+                                "id": "call_r2",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model)
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="go")],
+                "files": {"/doc.txt": {"content": "old content", "encoding": "utf-8"}},
+            }
+        )
+
+        tool_msgs = [m for m in result["messages"] if m.type == "tool"]
+        # write should succeed and overwrite the old content
+        assert any("Updated file" in m.content for m in tool_msgs)
+        assert any("new content" in m.content for m in tool_msgs)
+        assert not any("old content" in m.content for m in tool_msgs)
+
+    def test_state_backend_delete_in_graph_context(self) -> None:
+        """delete() removes a file from state; missing paths report an error."""
+        backend = StateBackend()
+
+        @tool
+        def delete_path(path: str) -> str:
+            """Delete a file via StateBackend."""
+            result = backend.delete(path)
+            return result.error or f"deleted {result.path}"
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {"name": "delete_path", "args": {"path": "/keep.txt"}, "id": "c1", "type": "tool_call"},
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {"name": "delete_path", "args": {"path": "/missing.txt"}, "id": "c2", "type": "tool_call"},
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model, backend=backend, tools=[delete_path])
+        result = agent.invoke(
+            {
+                "messages": [HumanMessage(content="go")],
+                "files": {
+                    "/keep.txt": create_file_data("bye"),
+                    "/other.txt": create_file_data("stay"),
+                },
+            }
+        )
+
+        tool_msgs = {m.tool_call_id: m.content for m in result["messages"] if m.type == "tool"}
+        assert tool_msgs["c1"] == "deleted /keep.txt"
+        assert "not found" in tool_msgs["c2"]
+        # The deleted file is gone; the untouched file remains.
+        assert set(result["files"].keys()) == {"/other.txt"}
+
+    async def test_state_backend_delete_in_graph_context_async(self) -> None:
+        """adelete() removes a file from state on the async path; missing paths report an error."""
+        backend = StateBackend()
+
+        @tool
+        async def adelete_path(path: str) -> str:
+            """Delete a file via StateBackend's async path."""
+            result = await backend.adelete(path)
+            return result.error or f"deleted {result.path}"
+
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {"name": "adelete_path", "args": {"path": "/keep.txt"}, "id": "c1", "type": "tool_call"},
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {"name": "adelete_path", "args": {"path": "/missing.txt"}, "id": "c2", "type": "tool_call"},
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(model=model, backend=backend, tools=[adelete_path])
+        result = await agent.ainvoke(
+            {
+                "messages": [HumanMessage(content="go")],
+                "files": {
+                    "/keep.txt": create_file_data("bye"),
+                    "/other.txt": create_file_data("stay"),
+                },
+            }
+        )
+
+        tool_msgs = {m.tool_call_id: m.content for m in result["messages"] if m.type == "tool"}
+        assert tool_msgs["c1"] == "deleted /keep.txt"
+        assert "not found" in tool_msgs["c2"]
+        # The deleted file is gone; the untouched file remains.
+        assert set(result["files"].keys()) == {"/other.txt"}
 
 
 class TestArtifactsRoot:
@@ -4059,7 +4350,8 @@ class TestRubricMiddlewareEndToEnd:
         assert state["_rubric_status"] == "max_iterations_reached"
         assert state["_rubric_iterations"] == 2
         assert len(state["_rubric_evaluations"]) == 2
-        assert all(e["result"] == "needs_revision" for e in state["_rubric_evaluations"])
+        results = [e["result"] for e in state["_rubric_evaluations"]]
+        assert results == ["needs_revision", "max_iterations_reached"]
 
     def test_no_rubric_is_noop(self) -> None:
         """Without a rubric on invocation state the middleware does not call the grader."""

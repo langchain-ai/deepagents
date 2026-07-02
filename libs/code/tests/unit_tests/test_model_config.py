@@ -15,6 +15,7 @@ from deepagents_code.model_config import (
     IMPLICIT_AUTH_PROVIDERS,
     NO_AUTH_REQUIRED_PROVIDERS,
     PROVIDER_API_KEY_ENV,
+    PROVIDER_BASE_URL_ENV,
     RETRY_PARAM_BY_PROVIDER,
     THREAD_COLUMN_DEFAULTS,
     ModelConfig,
@@ -319,6 +320,27 @@ class TestStoredCredentials:
         # The alternate name the SDK also reads must not retain a stale value.
         assert "OPENAI_API_BASE" not in os.environ
 
+    def test_apply_stored_credentials_sets_baseten_base_url(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored Baseten endpoint writes `BASETEN_BASE_URL` and clears legacy."""
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import apply_stored_credentials
+
+        monkeypatch.delenv("BASETEN_API_KEY", raising=False)
+        monkeypatch.setenv("BASETEN_API_BASE", "https://stale.example/v1")
+        auth_store.set_stored_key(
+            "baseten", "from-store", base_url="https://mine.example/v1"
+        )
+
+        assert apply_stored_credentials("baseten") is True
+        assert os.environ["BASETEN_BASE_URL"] == "https://mine.example/v1"
+        assert "BASETEN_API_BASE" not in os.environ
+
     def test_apply_stored_credentials_blank_base_url_clears_gateway(
         self,
         fake_state_dir: Path,  # noqa: ARG002
@@ -367,6 +389,146 @@ class TestStoredCredentials:
 
         assert apply_stored_credentials("google_genai") is True
         assert "GOOGLE_GEMINI_BASE_URL" not in os.environ
+
+    def test_apply_stored_credentials_blank_base_url_clears_anthropic_custom_headers(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored Anthropic key with no base_url clears `ANTHROPIC_CUSTOM_HEADERS`.
+
+        The Anthropic SDK reads `ANTHROPIC_CUSTOM_HEADERS` and injects the
+        headers into every request. A gateway-provisioned environment sets
+        this to `X-Api-Key: <gateway-key>`, which overrides the SDK's own
+        `api_key`-derived header. When switching to a personal key, the
+        custom header must also be cleared or the gateway key is sent to
+        the provider's native endpoint and rejected.
+        """
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import apply_stored_credentials
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv(
+            "ANTHROPIC_BASE_URL", "https://gateway.smith.langchain.com/anthropic"
+        )
+        monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Api-Key: lsv2_sk_gateway_key")
+        auth_store.set_stored_key("anthropic", "sk-ant-personal")
+
+        assert apply_stored_credentials("anthropic") is True
+        assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-personal"
+        assert "ANTHROPIC_BASE_URL" not in os.environ
+        assert "ANTHROPIC_API_URL" not in os.environ
+        assert "ANTHROPIC_CUSTOM_HEADERS" not in os.environ
+
+    def test_apply_stored_credentials_with_base_url_preserves_anthropic_custom_headers(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored Anthropic key *with* a base_url preserves custom headers.
+
+        When the user stores a gateway endpoint in `/auth`, the custom
+        headers env var should be left in place — it carries the gateway
+        auth header that the gateway expects.
+        """
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import apply_stored_credentials
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Api-Key: lsv2_sk_gateway_key")
+        auth_store.set_stored_key(
+            "anthropic",
+            "lsv2_sk_gateway_key",
+            base_url="https://gateway.smith.langchain.com/anthropic",
+        )
+
+        assert apply_stored_credentials("anthropic") is True
+        assert (
+            os.environ["ANTHROPIC_BASE_URL"]
+            == "https://gateway.smith.langchain.com/anthropic"
+        )
+        assert (
+            os.environ["ANTHROPIC_CUSTOM_HEADERS"] == "X-Api-Key: lsv2_sk_gateway_key"
+        )
+
+    def test_apply_stored_credentials_config_base_url_preserves_anthropic_headers(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A config-routed Anthropic gateway keeps its custom headers."""
+        import os
+
+        from deepagents_code import auth_store, model_config
+        from deepagents_code.model_config import apply_stored_credentials, clear_caches
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.anthropic]
+base_url = "https://configured.gateway.example/anthropic"
+models = ["claude-sonnet-4-5"]
+""")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv(
+            "ANTHROPIC_BASE_URL", "https://stale.gateway.example/anthropic"
+        )
+        monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Api-Key: lsv2_sk_gateway_key")
+        auth_store.set_stored_key("anthropic", "sk-ant-personal")
+
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            clear_caches()
+            assert apply_stored_credentials("anthropic") is True
+            assert (
+                model_config.ModelConfig.load().get_base_url("anthropic")
+                == "https://configured.gateway.example/anthropic"
+            )
+
+        assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-personal"
+        assert "ANTHROPIC_BASE_URL" not in os.environ
+        assert "ANTHROPIC_API_URL" not in os.environ
+        assert (
+            os.environ["ANTHROPIC_CUSTOM_HEADERS"] == "X-Api-Key: lsv2_sk_gateway_key"
+        )
+
+    def test_apply_stored_credentials_prefixed_base_url_preserves_anthropic_headers(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A scoped Anthropic endpoint override keeps its gateway headers."""
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import apply_stored_credentials
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv(
+            "ANTHROPIC_BASE_URL", "https://stale.gateway.example/anthropic"
+        )
+        monkeypatch.setenv(
+            "DEEPAGENTS_CODE_ANTHROPIC_BASE_URL",
+            "https://scoped.gateway.example/anthropic",
+        )
+        monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Api-Key: lsv2_sk_gateway_key")
+        auth_store.set_stored_key("anthropic", "sk-ant-personal")
+
+        assert apply_stored_credentials("anthropic") is True
+
+        assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-personal"
+        assert "ANTHROPIC_BASE_URL" not in os.environ
+        assert "ANTHROPIC_API_URL" not in os.environ
+        assert (
+            os.environ["DEEPAGENTS_CODE_ANTHROPIC_BASE_URL"]
+            == "https://scoped.gateway.example/anthropic"
+        )
+        assert (
+            os.environ["ANTHROPIC_CUSTOM_HEADERS"] == "X-Api-Key: lsv2_sk_gateway_key"
+        )
 
     def test_apply_stored_credentials_clears_config_base_url_env(
         self,
@@ -432,7 +594,33 @@ class TestServiceCredentials:
         from deepagents_code.model_config import is_service
 
         assert is_service("tavily") is True
+        assert is_service("langsmith") is True
         assert is_service("anthropic") is False
+
+    def test_langsmith_service_env_var(self) -> None:
+        """LangSmith is registered as a service mapped to its API-key env var."""
+        from deepagents_code.model_config import (
+            LANGSMITH_SERVICE,
+            SERVICE_API_KEY_ENV,
+        )
+
+        assert SERVICE_API_KEY_ENV[LANGSMITH_SERVICE] == "LANGSMITH_API_KEY"
+
+    def test_apply_exports_stored_langsmith_key(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored LangSmith key is copied onto LANGSMITH_API_KEY."""
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import apply_stored_service_credentials
+
+        monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+        auth_store.set_stored_key("langsmith", "lsv2_test")
+        apply_stored_service_credentials()
+        assert os.environ["LANGSMITH_API_KEY"] == "lsv2_test"
 
     def test_status_missing_when_unset(
         self,
@@ -519,6 +707,23 @@ class TestServiceCredentials:
         auth_store.set_stored_key("tavily", "from-store")
         apply_stored_service_credentials()
         assert os.environ["TAVILY_API_KEY"] == "from-store"
+
+    def test_apply_stored_key_respects_prefixed_override(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A scoped service key is not overwritten by a stored key."""
+        import os
+
+        from deepagents_code import auth_store
+        from deepagents_code.model_config import apply_stored_service_credentials
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_prefixed")
+        monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_prefixed")
+        auth_store.set_stored_key("langsmith", "lsv2_stored")
+        apply_stored_service_credentials()
+        assert os.environ["LANGSMITH_API_KEY"] == "lsv2_prefixed"
 
 
 class TestSplitCredentialSource:
@@ -1241,6 +1446,17 @@ class TestProviderApiKeyEnv:
         assert PROVIDER_API_KEY_ENV["xai"] == "XAI_API_KEY"
 
 
+class TestProviderBaseUrlEnv:
+    """Tests for PROVIDER_BASE_URL_ENV constant."""
+
+    def test_baseten_matches_langchain_baseten_precedence(self) -> None:
+        """Baseten reads the new env var before the legacy fallback."""
+        assert PROVIDER_BASE_URL_ENV["baseten"] == (
+            "BASETEN_BASE_URL",
+            "BASETEN_API_BASE",
+        )
+
+
 class TestModelConfigLoad:
     """Tests for ModelConfig.load() method."""
 
@@ -1544,6 +1760,21 @@ models = ["llama3"]
 
         assert config.get_base_url("openai") == "https://gw.example/openai/v1"
 
+    def test_baseten_base_url_precedes_legacy_api_base(self, monkeypatch):
+        """Baseten follows `langchain-baseten` endpoint env precedence."""
+        monkeypatch.setenv("BASETEN_BASE_URL", "https://new.example/v1")
+        monkeypatch.setenv("BASETEN_API_BASE", "https://legacy.example/v1")
+        config = ModelConfig()
+
+        assert config.get_base_url("baseten") == "https://new.example/v1"
+
+    def test_baseten_falls_back_to_legacy_api_base(self, monkeypatch):
+        """Baseten still honors the legacy endpoint env var."""
+        monkeypatch.setenv("BASETEN_API_BASE", "https://legacy.example/v1")
+        config = ModelConfig()
+
+        assert config.get_base_url("baseten") == "https://legacy.example/v1"
+
     def test_env_prefix_overrides_plain(self, monkeypatch):
         """`DEEPAGENTS_CODE_*` beats the plain env var, like API keys."""
         monkeypatch.setenv("OPENAI_BASE_URL", "https://plain.example/v1")
@@ -1586,17 +1817,17 @@ models = ["m1"]
     ) -> None:
         """A `/auth` endpoint resolves for a provider with no base-URL env var.
 
-        Some OpenAI-compatible providers (e.g. Baseten) have an API-key env var
-        but no dedicated base-URL env var, so steps 1-2 find nothing. The
-        stored endpoint must still resolve here so it reaches the model as the
-        `base_url` kwarg — otherwise a value saved in `/auth` is silently lost.
+        Some providers have an API-key env var but no dedicated base-URL env var,
+        so steps 1-2 find nothing. The stored endpoint must still resolve here so
+        it reaches the model as the `base_url` kwarg — otherwise a value saved in
+        `/auth` is silently lost.
         """
         from deepagents_code import auth_store
 
-        auth_store.set_stored_key("baseten", "k", base_url="https://proxy.example/v1")
+        auth_store.set_stored_key("litellm", "k", base_url="https://proxy.example/v1")
         config = ModelConfig()
 
-        assert config.get_base_url("baseten") == "https://proxy.example/v1"
+        assert config.get_base_url("litellm") == "https://proxy.example/v1"
 
     def test_config_literal_wins_over_stored_base_url(
         self,
@@ -1659,6 +1890,31 @@ class TestGetDefaultBaseUrlEnv:
         assert (
             model_config.get_default_base_url_env("openai")
             == "DEEPAGENTS_CODE_OPENAI_BASE_URL"
+        )
+
+    def test_returns_prefixed_alternate_when_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A prefixed alternate is named when it supplies the blank fallback."""
+        monkeypatch.setenv(
+            "DEEPAGENTS_CODE_BASETEN_API_BASE", "https://legacy.example/v1"
+        )
+        assert (
+            model_config.get_default_base_url_env("baseten")
+            == "DEEPAGENTS_CODE_BASETEN_API_BASE"
+        )
+
+    def test_canonical_prefixed_name_precedes_alternate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The helper matches `get_base_url` provider env precedence."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_BASETEN_BASE_URL", "https://new.example/v1")
+        monkeypatch.setenv(
+            "DEEPAGENTS_CODE_BASETEN_API_BASE", "https://legacy.example/v1"
+        )
+        assert (
+            model_config.get_default_base_url_env("baseten")
+            == "DEEPAGENTS_CODE_BASETEN_BASE_URL"
         )
 
     def test_ignores_plain_env_var(self, monkeypatch: pytest.MonkeyPatch) -> None:

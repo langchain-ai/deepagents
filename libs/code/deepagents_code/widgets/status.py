@@ -491,7 +491,8 @@ class StatusBar(Horizontal):
         except NoMatches:
             return
         widget.remove_class("thinking")
-        widget.update(f"{self._spinner.current_frame()} {self._busy_message}")
+        frame = self._spinner.current_frame()
+        widget.update(Content.assemble(frame, " ", Content(self._busy_message)))
 
     def set_busy(self, message: str) -> None:
         """Show or clear an animated busy indicator in the status-message slot.

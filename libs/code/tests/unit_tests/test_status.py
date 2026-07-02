@@ -639,6 +639,15 @@ class TestBusyIndicator:
             assert get_glyphs().spinner_frames[0] in rendered
             assert bar._spinner_timer is not None
 
+    async def test_set_busy_treats_bracket_text_as_literal(self) -> None:
+        """A model spec with markup-like brackets must render verbatim, not crash."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_busy("Switching to openai:[00]")
+            await pilot.pause()
+            msg = pilot.app.query_one("#status-message", Static)
+            assert "Switching to openai:[00]" in str(msg.render())
+
     async def test_clear_busy_stops_spinner_and_clears_message(self) -> None:
         """Clearing the busy state should stop the timer and empty the slot."""
         async with StatusBarApp().run_test() as pilot:

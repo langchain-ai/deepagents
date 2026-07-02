@@ -9085,8 +9085,10 @@ class DeepAgentsApp(App):
             self._server_kwargs["rubric_model"] = display
 
         if self._server_proc is not None:
+            env_key = f"{SERVER_ENV_PREFIX}RUBRIC_MODEL"
+            env_value = display or ""
             self._server_proc.update_env(
-                **{f"{SERVER_ENV_PREFIX}RUBRIC_MODEL": display or ""},
+                **{env_key: env_value},
             )
             restarted = await self._respawn_server(
                 log_message="Server restart failed while changing rubric model",
@@ -9104,9 +9106,10 @@ class DeepAgentsApp(App):
                 # `previous` so a later restart cannot resurrect the model this
                 # command just rolled back.
                 self._server_proc.update_env(
-                    **{f"{SERVER_ENV_PREFIX}RUBRIC_MODEL": previous or ""},
+                    **{env_key: previous or ""},
                 )
                 return
+            self._server_proc.persist_env(**{env_key: env_value})
 
         if display:
             await self._mount_message(

@@ -16,7 +16,7 @@ from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents.backends import filesystem as fs_module
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import DeleteResult, EditResult, ReadResult, WriteResult
-from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.filesystem import GLOB_TIMEOUT, FilesystemMiddleware
 
 
 def write_file(p: Path, content: str):
@@ -944,6 +944,57 @@ def test_glob_zero_match_still_honors_deadline(tmp_path: Path, monkeypatch: pyte
     assert result.truncated is True
     assert result.error is None
     assert result.matches == []
+
+
+def test_glob_returns_matches_gathered_before_deadline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the deadline trips mid-walk, `glob` returns the matches found so far, not an empty list."""
+    for name in ("a.py", "b.py", "c.py"):
+        (tmp_path / name).write_text("x")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    monkeypatch.setattr(fs_module, "_DEFAULT_GLOB_TIMEOUT", 2)
+    # First reading sets the deadline (0 + 2 = 2); the walk then processes two
+    # entries (ticks 1, 2) before the third (tick 3) trips the deadline.
+    ticks = iter([0, 1, 2, 3, 4, 5, 6])
+    monkeypatch.setattr(fs_module.time, "monotonic", lambda: next(ticks))
+
+    result = be.glob("*.py")
+
+    assert result.truncated is True
+    assert result.error is None
+    # Partial, non-empty payload: some matches landed before the deadline.
+    assert result.matches is not None
+    assert 0 < len(result.matches) < 3
+
+
+def test_glob_mid_iteration_oserror_is_error_not_truncated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A mid-walk failure surfaces as an error, distinct from a benign timeout truncation."""
+    (tmp_path / "a.py").write_text("x")
+    (tmp_path / "b.py").write_text("y")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    _install_flaky_rglob(monkeypatch, OSError("simulated mid-walk failure"))
+
+    result = be.glob("*")
+
+    assert result.error is not None
+    assert "aborted partway" in result.error
+    assert result.truncated is False
+
+
+def test_glob_backend_budget_below_middleware_deadline() -> None:
+    """The backend glob budget must stay below the middleware's outer deadline so partial results win first."""
+    assert fs_module._DEFAULT_GLOB_TIMEOUT < GLOB_TIMEOUT
+
+
+def test_glob_supports_brace_expansion(tmp_path: Path) -> None:
+    """Glob enables brace expansion via `wcmatch`, diverging from stdlib `rglob` (which is literal)."""
+    (tmp_path / "a.py").write_text("x")
+    (tmp_path / "b.md").write_text("y")
+    (tmp_path / "c.txt").write_text("z")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    matches = {info["path"] for info in be.glob("*.{py,md}", path="/").matches or []}
+
+    assert matches == {"/a.py", "/b.md"}
 
 
 @pytest.mark.usefixtures("_isolate_rg_cache")

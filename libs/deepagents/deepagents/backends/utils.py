@@ -131,13 +131,20 @@ def compile_grep_include_glob(pattern: str) -> Callable[[str], bool]:
 
 
 def compile_recursive_glob(pattern: str) -> Callable[[str], bool]:
-    """Compile a `glob` pattern into a matcher with `Path.rglob` semantics.
+    """Compile a `glob` pattern into a per-entry matcher for a recursive walk.
 
     `Path.rglob(pattern)` is equivalent to `Path.glob("**/" + pattern)`, so the
     pattern matches at any depth (e.g. `*.py` matches `src/app/main.py`). Prefix
     the pattern with `**/` and compile it with globstar support so a matcher can
     be applied to each visited entry while walking the tree, letting the caller
     enforce a deadline on every entry instead of only on matched paths.
+
+    Depth (`GLOBSTAR`) and dotfile matching (`DOTMATCH`) mirror `Path.rglob`:
+    `DOTMATCH` is required because `wcmatch` excludes dotfiles by default whereas
+    stdlib `rglob` includes them. Brace expansion (`BRACE`) is an intentional
+    *divergence* from `rglob` — `{a,b}.py` expands here but `Path.rglob` treats
+    the braces literally — chosen so `glob` matches the include-glob semantics of
+    `compile_grep_include_glob`.
 
     Args:
         pattern: Glob pattern (a leading `/` is stripped).

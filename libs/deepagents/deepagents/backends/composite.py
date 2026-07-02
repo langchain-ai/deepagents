@@ -441,6 +441,10 @@ class CompositeBackend(BackendProtocol):
         # Path doesn't match any specific route - search default backend AND all routed backends
         truncated = False
         default_result = self.default.glob(pattern, path)
+        # A backend error must not be swallowed as a partial success (mirrors the
+        # grep merge path); surface it instead of returning default-only matches.
+        if isinstance(default_result, GlobResult) and default_result.error:
+            return default_result
         default_matches = default_result.matches if isinstance(default_result, GlobResult) else default_result
         results.extend(default_matches or [])
         truncated = truncated or _glob_truncated(default_result)
@@ -448,6 +452,8 @@ class CompositeBackend(BackendProtocol):
         for route_prefix, backend in self.routes.items():
             route_pattern = _strip_route_from_pattern(pattern, route_prefix)
             sub_result = backend.glob(route_pattern, "/")
+            if isinstance(sub_result, GlobResult) and sub_result.error:
+                return sub_result
             sub_matches = sub_result.matches if isinstance(sub_result, GlobResult) else sub_result
             results.extend(_remap_file_info_path(fi, route_prefix) for fi in (sub_matches or []))
             truncated = truncated or _glob_truncated(sub_result)
@@ -479,6 +485,10 @@ class CompositeBackend(BackendProtocol):
         # Path doesn't match any specific route - search default backend AND all routed backends
         truncated = False
         default_result = await self.default.aglob(pattern, path)
+        # A backend error must not be swallowed as a partial success (mirrors the
+        # grep merge path); surface it instead of returning default-only matches.
+        if isinstance(default_result, GlobResult) and default_result.error:
+            return default_result
         default_matches = default_result.matches if isinstance(default_result, GlobResult) else default_result
         results.extend(default_matches or [])
         truncated = truncated or _glob_truncated(default_result)
@@ -486,6 +496,8 @@ class CompositeBackend(BackendProtocol):
         for route_prefix, backend in self.routes.items():
             route_pattern = _strip_route_from_pattern(pattern, route_prefix)
             sub_result = await backend.aglob(route_pattern, "/")
+            if isinstance(sub_result, GlobResult) and sub_result.error:
+                return sub_result
             sub_matches = sub_result.matches if isinstance(sub_result, GlobResult) else sub_result
             results.extend(_remap_file_info_path(fi, route_prefix) for fi in (sub_matches or []))
             truncated = truncated or _glob_truncated(sub_result)

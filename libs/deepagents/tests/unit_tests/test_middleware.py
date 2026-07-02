@@ -681,6 +681,97 @@ class TestFilesystemMiddleware:
         assert "/test.py" in result.content
         assert SEARCH_TRUNCATION_NOTE in result.content
 
+    def test_grep_not_truncated_omits_note(self):
+        """A complete grep must not carry the truncation note."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        complete_result = GrepResult(matches=[{"path": "/test.py", "line": 1, "text": "import os"}], truncated=False)
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "grep", return_value=complete_result),
+        ):
+            result = grep_search_tool.invoke({"pattern": "import", "output_mode": "content", "runtime": _runtime()})
+
+        assert result.status == "success"
+        assert SEARCH_TRUNCATION_NOTE not in result.content
+
+    def test_glob_not_truncated_omits_note(self):
+        """A complete glob must not carry the truncation note."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        backend_obj = middleware._get_backend(_runtime())
+
+        complete_result = GlobResult(matches=[{"path": "/test.py", "is_dir": False}], truncated=False)
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "glob", return_value=complete_result),
+        ):
+            result = glob_search_tool.invoke({"pattern": "*.py", "runtime": _runtime()})
+
+        assert result.status == "success"
+        assert SEARCH_TRUNCATION_NOTE not in result.content
+
+    def test_grep_truncation_note_survives_size_truncation(self):
+        """A grep that is both time-truncated and size-overflowing keeps the truncation note (it isn't tail-cut)."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        # Enough matches to overflow the size limit so the match body is tail-cut.
+        big_matches = [{"path": f"/f{i}.py", "line": i + 1, "text": "import os " * 8} for i in range(6000)]
+        truncated_result = GrepResult(matches=big_matches, truncated=True)
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "grep", return_value=truncated_result),
+        ):
+            result = grep_search_tool.invoke({"pattern": "import", "output_mode": "content", "runtime": _runtime()})
+
+        assert result.status == "success"
+        # Size truncation engaged (body was cut) yet the time-limit note survived at the tail.
+        assert TRUNCATION_GUIDANCE in result.content
+        assert SEARCH_TRUNCATION_NOTE in result.content
+
+    async def test_async_grep_truncated_renders_as_success_with_note(self):
+        """The async grep handler renders a truncated result as success with the note (parity with sync)."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        truncated_result = GrepResult(matches=[{"path": "/test.py", "line": 1, "text": "import os"}], truncated=True)
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "agrep", return_value=truncated_result),
+        ):
+            result = await grep_search_tool.ainvoke({"pattern": "import", "output_mode": "content", "runtime": _runtime()})
+
+        assert result.status == "success"
+        assert "1: import os" in result.content
+        assert SEARCH_TRUNCATION_NOTE in result.content
+
+    async def test_async_glob_truncated_renders_as_success_with_note(self):
+        """The async glob handler renders a truncated result as success with the note (parity with sync)."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
+        backend_obj = middleware._get_backend(_runtime())
+
+        truncated_result = GlobResult(matches=[{"path": "/test.py", "is_dir": False}], truncated=True)
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "aglob", return_value=truncated_result),
+        ):
+            result = await glob_search_tool.ainvoke({"pattern": "*.py", "runtime": _runtime()})
+
+        assert result.status == "success"
+        assert "/test.py" in result.content
+        assert SEARCH_TRUNCATION_NOTE in result.content
+
     def test_grep_search_shortterm_content_mode(self):
         files = {
             "/test.py": FileData(

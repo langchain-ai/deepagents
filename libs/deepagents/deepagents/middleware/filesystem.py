@@ -390,12 +390,18 @@ def _format_grep_tool_result(
     result: GrepResult,
     output_mode: Literal["files_with_matches", "content", "count"],
 ) -> tuple[str, Literal["success", "error"]]:
-    """Format a backend grep result for the tool boundary."""
+    """Format a backend grep result for the tool boundary.
+
+    Size-truncation is applied to the match body here, before any note is
+    appended, so a trailing `SEARCH_TRUNCATION_NOTE` survives instead of being
+    sliced off by an outer `truncate_if_too_long` at the call site. Callers
+    should use the returned content as-is rather than re-truncating it.
+    """
     matches = result.matches or []
     if result.error and not matches:
         return result.error, "error"
 
-    formatted = format_grep_matches(matches, output_mode)
+    formatted = truncate_if_too_long(format_grep_matches(matches, output_mode))
     if result.error:
         return f"{result.error}\n\nPartial matches:\n{formatted}", "error"
     if result.truncated:
@@ -441,7 +447,7 @@ GLOB_TIMEOUT = 20.0  # seconds
 LINE_NUMBER_WIDTH = 6
 SEARCH_TRUNCATION_NOTE = (
     "Note: the search stopped early because it hit its time limit. The matches above are valid but incomplete. "
-    "Narrow the search (a more specific pattern, a subdirectory path, or a file glob) to see the rest."
+    "Narrow the search (a more specific pattern or a narrower path) to see the rest."
 )
 
 
@@ -1980,7 +1986,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 output_mode,
             )
             return ToolMessage(
-                content=truncate_if_too_long(formatted),
+                # `formatted` is already size-truncated inside
+                # `_format_grep_tool_result` so the truncation note survives.
+                content=formatted,
                 tool_call_id=runtime.tool_call_id,
                 name="grep",
                 status=status,
@@ -2020,7 +2028,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 output_mode,
             )
             return ToolMessage(
-                content=truncate_if_too_long(formatted),
+                # `formatted` is already size-truncated inside
+                # `_format_grep_tool_result` so the truncation note survives.
+                content=formatted,
                 tool_call_id=runtime.tool_call_id,
                 name="grep",
                 status=status,

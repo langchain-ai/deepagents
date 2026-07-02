@@ -50,8 +50,10 @@ _DEFAULT_GLOB_TIMEOUT = 10
 
 A fixed bound keeps `glob` from hanging on huge or slow trees; when it elapses
 the walk returns whatever it found so far with `GlobResult.truncated=True`
-rather than erroring. Kept below the middleware's outer glob deadline so the
-backend returns partial results before that net abandons the call.
+rather than erroring. Kept below the middleware's `GLOB_TIMEOUT`
+(`deepagents.middleware.filesystem.GLOB_TIMEOUT`, currently 20s) so the backend
+returns partial results before that outer net abandons the call; the ordering is
+guarded by `test_glob_backend_budget_below_middleware_deadline`.
 """
 
 
@@ -675,11 +677,12 @@ class FilesystemBackend(BackendProtocol):
         Returns:
             A `(results, truncated)` tuple. `results` maps file paths to a list
                 of `(line_number, line_text)` tuples, or is `None` when ripgrep
-                is unavailable or hard-errored and the caller should fall back to
-                the Python search. `truncated` is `True` when ripgrep timed out
-                but had already emitted partial output (returned here instead of
-                falling back). Results whose resolved path lies outside
-                `base_full` are silently filtered regardless of `virtual_mode`.
+                is unavailable, hard-errored, or timed out before emitting any
+                output — in each case the caller should fall back to the Python
+                search. `truncated` is `True` when ripgrep timed out but had
+                already emitted partial output (returned here instead of falling
+                back). Results whose resolved path lies outside `base_full` are
+                silently filtered regardless of `virtual_mode`.
         """
         rg_path = _resolve_ripgrep_path()
         if rg_path is None:
@@ -714,11 +717,13 @@ class FilesystemBackend(BackendProtocol):
             )
             stdout = proc.stdout
         except subprocess.TimeoutExpired as exc:
-            # On POSIX `subprocess.run` already drains whatever ripgrep wrote
-            # before the kill into `exc.stdout`. `--json` is newline-delimited
-            # so a truncated trailing frame just fails to parse and is skipped
-            # below; the matches that did land are still usable. Only fall back
-            # to the (slower) Python search when nothing was captured.
+            # `subprocess.run` attaches whatever ripgrep wrote before the kill to
+            # `exc.stdout` on both POSIX (drained during `communicate`) and
+            # Windows (via a post-`kill` `communicate`), so this path needs no
+            # per-platform branch. `--json` is newline-delimited so a truncated
+            # trailing frame just fails to parse and is skipped below; the
+            # matches that did land are still usable. Only fall back to the
+            # (slower) Python search when nothing was captured.
             # `TimeoutExpired.stdout` is bytes even under `text=True`, so decode
             # before the emptiness check or real partial output looks empty.
             stdout = exc.stdout or ""
@@ -986,8 +991,11 @@ class FilesystemBackend(BackendProtocol):
         # sparse or zero-match search over a huge tree traverses the whole tree
         # without ever checking the deadline. `rglob("*")` yields on every entry,
         # letting us honour the deadline while matching with `rglob` semantics.
-        matches_pattern = compile_recursive_glob(pattern)
         try:
+            # Compiled inside the try so a malformed pattern (e.g. an unbalanced
+            # brace, now that brace expansion is enabled) returns a
+            # `GlobResult(error=...)` instead of raising to a direct caller.
+            matches_pattern = compile_recursive_glob(pattern)
             for matched_path in search_path.rglob("*"):
                 if time.monotonic() > deadline:
                     logger.warning(
@@ -1052,8 +1060,9 @@ class FilesystemBackend(BackendProtocol):
                     except OSError:
                         results.append({"path": virt, "is_dir": False})
         except (OSError, RuntimeError, ValueError) as e:
-            # rglob() raised mid-iteration. Return whatever was accumulated
-            # but flag the partial result so callers don't trust it as complete.
+            # The pattern failed to compile, or `rglob()` raised mid-iteration.
+            # Return whatever was accumulated but as an error so callers don't
+            # trust it as complete.
             display_path = path if path is not None else "<default>"
             msg = f"Glob of '{display_path}' aborted partway: {e}"
             logger.warning("%s", msg, exc_info=True)

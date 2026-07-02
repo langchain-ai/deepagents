@@ -281,6 +281,97 @@ def test_composite_grep_and_glob_propagate_truncated(monkeypatch: pytest.MonkeyP
     assert glob_result.matches and glob_result.matches[0]["path"] == "/memories/notes.txt"
 
 
+def _merge_composite() -> tuple[CompositeBackend, StoreBackend, StoreBackend]:
+    """Build a composite whose default + one route are both searched on a `/` merge."""
+    mem_store = InMemoryStore()
+    default = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    routed = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    comp = CompositeBackend(default=default, routes={"/memories/": routed})
+    return comp, default, routed
+
+
+@pytest.mark.parametrize(
+    ("default_truncated", "route_truncated", "expected"),
+    [(True, False, True), (False, True, True), (False, False, False), (True, True, True)],
+)
+def test_composite_grep_merge_ors_truncated_across_backends(
+    monkeypatch: pytest.MonkeyPatch, *, default_truncated: bool, route_truncated: bool, expected: bool
+) -> None:
+    """The merge path (`path='/'`) ORs `truncated` across the default and every route and keeps both sources' matches."""
+    comp, default, routed = _merge_composite()
+    monkeypatch.setattr(
+        default, "grep", lambda *_a, **_k: GrepResult(matches=[{"path": "/d.txt", "line": 1, "text": "hit"}], truncated=default_truncated)
+    )
+    monkeypatch.setattr(
+        routed, "grep", lambda *_a, **_k: GrepResult(matches=[{"path": "/r.txt", "line": 1, "text": "hit"}], truncated=route_truncated)
+    )
+
+    merged = comp.grep("hit", path="/")
+
+    assert merged.truncated is expected
+    assert {m["path"] for m in merged.matches or []} == {"/d.txt", "/memories/r.txt"}
+
+
+@pytest.mark.parametrize(
+    ("default_truncated", "route_truncated", "expected"),
+    [(True, False, True), (False, True, True), (False, False, False), (True, True, True)],
+)
+def test_composite_glob_merge_ors_truncated_across_backends(
+    monkeypatch: pytest.MonkeyPatch, *, default_truncated: bool, route_truncated: bool, expected: bool
+) -> None:
+    """The glob merge path ORs `truncated` across the default and every route and keeps both sources' matches."""
+    comp, default, routed = _merge_composite()
+    monkeypatch.setattr(default, "glob", lambda *_a, **_k: GlobResult(matches=[{"path": "/d.txt", "is_dir": False}], truncated=default_truncated))
+    monkeypatch.setattr(routed, "glob", lambda *_a, **_k: GlobResult(matches=[{"path": "/r.txt", "is_dir": False}], truncated=route_truncated))
+
+    merged = comp.glob("*.txt", path="/")
+
+    assert merged.truncated is expected
+    assert {m["path"] for m in merged.matches or []} == {"/d.txt", "/memories/r.txt"}
+
+
+@pytest.mark.parametrize("erroring", ["default", "route"])
+def test_composite_glob_merge_propagates_backend_error(monkeypatch: pytest.MonkeyPatch, erroring: str) -> None:
+    """A backend error in the glob merge path surfaces instead of being swallowed as a partial success."""
+    comp, default, routed = _merge_composite()
+    ok = GlobResult(matches=[{"path": "/ok.txt", "is_dir": False}])
+    err = GlobResult(error="sandbox RPC failed", matches=[])
+    monkeypatch.setattr(default, "glob", lambda *_a, **_k: err if erroring == "default" else ok)
+    monkeypatch.setattr(routed, "glob", lambda *_a, **_k: err if erroring == "route" else ok)
+
+    result = comp.glob("*.txt", path="/")
+
+    assert result.error == "sandbox RPC failed"
+
+
+async def test_composite_async_merge_propagates_truncated_and_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`agrep`/`aglob` merge paths mirror the sync accumulation and error precedence."""
+    comp, default, routed = _merge_composite()
+
+    async def _agrep_trunc(*_a: object, **_k: object) -> GrepResult:
+        return GrepResult(matches=[{"path": "/r.txt", "line": 1, "text": "hit"}], truncated=True)
+
+    async def _agrep_clean(*_a: object, **_k: object) -> GrepResult:
+        return GrepResult(matches=[{"path": "/d.txt", "line": 1, "text": "hit"}], truncated=False)
+
+    async def _aglob_clean(*_a: object, **_k: object) -> GlobResult:
+        return GlobResult(matches=[{"path": "/d.txt", "is_dir": False}], truncated=False)
+
+    async def _aglob_error(*_a: object, **_k: object) -> GlobResult:
+        return GlobResult(error="sandbox RPC failed", matches=[])
+
+    monkeypatch.setattr(default, "agrep", _agrep_clean)
+    monkeypatch.setattr(routed, "agrep", _agrep_trunc)
+    grep_result = await comp.agrep("hit", path="/")
+    assert grep_result.truncated is True
+    assert {m["path"] for m in grep_result.matches or []} == {"/d.txt", "/memories/r.txt"}
+
+    monkeypatch.setattr(default, "aglob", _aglob_clean)
+    monkeypatch.setattr(routed, "aglob", _aglob_error)
+    glob_result = await comp.aglob("*.txt", path="/")
+    assert glob_result.error == "sandbox RPC failed"
+
+
 def test_composite_backend_ls_nested_directories(tmp_path: Path):
     root = tmp_path
 

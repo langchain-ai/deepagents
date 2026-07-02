@@ -1004,6 +1004,106 @@ class TestToolCallMessageSearchOutput:
         assert result.content.plain.split("\n") == lines
 
 
+class TestToolCallMessageEditFileOutput:
+    """edit_file hides its success result line but still surfaces errors."""
+
+    def test_edit_file_success_preview_renders_no_lines(self) -> None:
+        """A successful edit preview stays hidden; the status glyph speaks for it."""
+        msg = ToolCallMessage("edit_file", {"file_path": "/tmp/f.py"})
+        msg._status = "success"
+
+        result = msg._format_edit_file_output(
+            "Successfully replaced 1 instance(s) of the string in '/tmp/f.py'",
+            is_preview=True,
+        )
+
+        assert result.content.plain == ""
+        assert result.truncation is None
+
+    def test_edit_file_success_full_renders_original_output(self) -> None:
+        """A successful edit's full output remains recoverable."""
+        msg = ToolCallMessage("edit_file", {"file_path": "/tmp/f.py"})
+        msg._status = "success"
+        output = "Successfully replaced 1 instance(s) of the string in '/tmp/f.py'"
+
+        result = msg._format_edit_file_output(output, is_preview=False)
+
+        assert result.content.plain == output
+        assert result.truncation is None
+
+    def test_edit_file_error_still_renders(self) -> None:
+        """Errors must still render so failures stay visible."""
+        msg = ToolCallMessage("edit_file", {"file_path": "/tmp/f.py"})
+        msg._status = "error"
+
+        result = msg._format_edit_file_output(
+            "Error: String not found in file", is_preview=False
+        )
+
+        assert "String not found in file" in result.content.plain
+
+    async def test_edit_file_success_expands_to_original_output(self) -> None:
+        """End to end: a successful edit_file hides preview but expands to output."""
+        output = "Successfully replaced 2 instance(s) of the string in '/tmp/f.py'"
+        app = _tool_msg_app("edit_file", {"file_path": "/tmp/f.py"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._preview_row is not None
+            assert app.msg._full_row is not None
+            assert app.msg._hint_widget is not None
+            assert app.msg._preview_row.display is False
+            assert app.msg._full_row.display is False
+            assert app.msg._hint_widget.display is True
+            assert app.msg._has_expandable_output() is True
+
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            assert app.msg._expanded is True
+            assert app.msg._preview_row.display is False
+            assert app.msg._full_row.display is True
+            full = app.msg._full_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert full.plain == output
+
+
+class TestToolCallMessageSuccessStatus:
+    """A successful call with no output shows a "Success!" status marker."""
+
+    async def test_success_without_output_shows_success_status(self) -> None:
+        """edit_file (no visible output) shows the success marker instead of hiding."""
+        from deepagents_code.config import get_glyphs
+
+        app = _tool_msg_app("edit_file", {"file_path": "/tmp/f.py"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(
+                "Successfully replaced 1 instance(s) of the string in '/tmp/f.py'"
+            )
+            await pilot.pause()
+
+            assert app.msg._status_widget is not None
+            assert app.msg._status_widget.display is True
+            assert app.msg._status_widget.has_class("success")
+            content = app.msg._status_widget._Static__content  # ty: ignore
+            assert get_glyphs().checkmark in content.plain
+            assert "Success!" in content.plain
+
+    async def test_success_with_output_keeps_status_hidden(self) -> None:
+        """A tool whose output speaks for itself keeps the status hidden."""
+        app = _tool_msg_app("read_file", {"file_path": "/tmp/f.py"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("line one\nline two")
+            await pilot.pause()
+
+            assert app.msg._status_widget is not None
+            assert app.msg._status_widget.display is False
+            assert not app.msg._status_widget.has_class("success")
+
+
 class TestToolCallMessageExpandHint:
     """Tests for the preview/expand hint on collapsed tool output."""
 

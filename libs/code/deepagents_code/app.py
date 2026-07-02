@@ -14169,11 +14169,14 @@ class DeepAgentsApp(App):
             )
             return
 
-        if selection.server_config.get("auth") != "oauth":
+        from deepagents_code.mcp_tools import _resolve_server_type
+
+        transport = _resolve_server_type(selection.server_config)
+        if transport not in {"http", "sse"}:
             await self._mount_message(
                 ErrorMessage(
-                    f"MCP server {server_name!r} does not use OAuth; "
-                    "nothing to log into.",
+                    f"MCP server {server_name!r} uses {transport!r} transport; "
+                    "OAuth login is only valid for http/sse.",
                 ),
             )
             return

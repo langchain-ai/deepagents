@@ -30,6 +30,14 @@ from deepagents_code.config import (
     is_ascii_mode,
 )
 from deepagents_code.input import IMAGE_PLACEHOLDER_PATTERN, VIDEO_PLACEHOLDER_PATTERN
+from deepagents_code.paste_collapse import (
+    PastedContent,
+    count_lines,
+    expand_paste_refs,
+    format_paste_ref,
+    parse_paste_refs,
+    should_collapse_paste,
+)
 from deepagents_code.widgets.autocomplete import (
     CompletionResult,
     FuzzyFileController,
@@ -521,6 +529,22 @@ class ChatTextArea(TextArea):
             self.paths = paths
             super().__init__()
 
+    class PastedText(Message):
+        """Message sent when a paste is large enough to be collapsed.
+
+        The full text is carried in the message so `ChatInput` can store it
+        and insert a compact placeholder into the text area instead.
+        """
+
+        def __init__(self, text: str) -> None:
+            """Initialize with the full pasted text.
+
+            Args:
+                text: The complete pasted text content.
+            """
+            self.text = text
+            super().__init__()
+
     class Typing(Message):
         """Posted when the user presses a printable key or backspace.
 
@@ -993,7 +1017,7 @@ class ChatTextArea(TextArea):
         return row == 0 and col == 0
 
     async def _flush_paste_burst(self) -> None:
-        """Flush buffered burst text through dropped-path parsing.
+        """Flush buffered burst text through dropped-path and large-paste checks.
 
         When parsing fails, the buffered text is inserted unchanged so regular
         typing behavior is preserved.
@@ -1006,6 +1030,7 @@ class ChatTextArea(TextArea):
             return
 
         from deepagents_code.input import parse_pasted_path_payload
+        from deepagents_code.paste_collapse import should_collapse_paste
 
         try:
             parsed = await asyncio.to_thread(parse_pasted_path_payload, payload)
@@ -1013,6 +1038,10 @@ class ChatTextArea(TextArea):
             parsed = None
         if parsed is not None:
             self.post_message(self.PastedPaths(payload, parsed.paths))
+            return
+
+        if should_collapse_paste(payload):
+            self.post_message(self.PastedText(payload))
             return
 
         self.insert(payload)
@@ -1285,26 +1314,36 @@ class ChatTextArea(TextArea):
         return None
 
     async def _on_paste(self, event: events.Paste) -> None:
-        """Handle paste events and detect dragged file paths."""
+        """Handle paste events, detecting file paths and large pastes."""
         self._backslash_pending_time = None
         if self._paste_burst_buffer:
             await self._flush_paste_burst()
 
         from deepagents_code.input import parse_pasted_path_payload
+        from deepagents_code.paste_collapse import should_collapse_paste
 
         try:
             parsed = await asyncio.to_thread(parse_pasted_path_payload, event.text)
         except Exception:  # noqa: BLE001  # Treat thread failure as non-path text
             parsed = None
-        if parsed is None:
-            # Don't call super() here — Textual's MRO dispatch already calls
-            # TextArea._on_paste after this handler returns. Calling super()
-            # would insert the text a second time, duplicating the paste.
+        if parsed is not None:
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.PastedPaths(event.text, parsed.paths))
             return
 
-        event.prevent_default()
-        event.stop()
-        self.post_message(self.PastedPaths(event.text, parsed.paths))
+        if should_collapse_paste(event.text):
+            # Intercept the paste so Textual's default _on_paste doesn't insert
+            # the full text. ChatInput stores the content and inserts a compact
+            # placeholder instead.
+            event.prevent_default()
+            event.stop()
+            self.post_message(self.PastedText(event.text))
+            return
+
+        # Don't call super() here — Textual's MRO dispatch already calls
+        # TextArea._on_paste after this handler returns. Calling super()
+        # would insert the text a second time, duplicating the paste.
 
     def set_text_from_history(self, text: str, *, cursor_at_end: bool = True) -> None:
         """Set text from history navigation.
@@ -1557,6 +1596,13 @@ class ChatInput(Vertical):
         self._completion_view: _CompletionViewAdapter | None = None
         self._slash_controller: SlashCommandController | None = None
 
+        # Collapsed paste storage: paste_id → full content.  When a large paste
+        # arrives, the full text is stored here and a compact
+        # ``[Pasted text #N +M lines]`` placeholder is inserted into the text
+        # area instead.  At submission the placeholder is expanded back.
+        self._pasted_contents: dict[int, PastedContent] = {}
+        self._next_paste_id = 1
+
         # Guard flag: set True before programmatically stripping the mode
         # prefix character so the resulting text-change event does not
         # re-evaluate mode.
@@ -1786,6 +1832,7 @@ class ChatInput(Vertical):
         should_check_path_payload = self._should_check_path_payload(text)
         self._prev_text = text
         self._sync_media_tracker_to_text(text)
+        self._cleanup_orphaned_paste_contents(text)
 
         # History handlers explicitly decide mode and stripped display text.
         # Skip mode detection here so recalled entries don't inherit stale mode.
@@ -2166,6 +2213,9 @@ class ChatInput(Vertical):
         if self._completion_manager:
             self._completion_manager.reset()
 
+        # Expand collapsed paste placeholders back to their full content so the
+        # agent receives the original text, not the compact reference.
+        value = expand_paste_refs(value, self._pasted_contents)
         value = self._replace_submitted_paths_with_images(value)
 
         # Prepend mode prefix so the app layer receives the original trigger
@@ -2183,6 +2233,7 @@ class ChatInput(Vertical):
             # Preserve submission-time attachments until adapter consumes them.
             self._skip_media_sync_events += 1
             self._text_area.clear_text()
+        self._pasted_contents.clear()
         self.mode = "normal"
 
     def _sync_media_tracker_to_text(self, text: str) -> None:
@@ -2204,6 +2255,23 @@ class ChatInput(Vertical):
                 self._skip_media_sync_events -= 1
             return
         self._image_tracker.sync_to_text(text)
+
+    def _cleanup_orphaned_paste_contents(self, text: str) -> None:
+        """Remove stored paste content whose placeholder was deleted from input.
+
+        Args:
+            text: Current text in the input area.
+        """
+        if not self._pasted_contents:
+            return
+        referenced_ids = {paste_id for paste_id, _, _, _ in parse_paste_refs(text)}
+        orphaned = [
+            paste_id
+            for paste_id in self._pasted_contents
+            if paste_id not in referenced_ids
+        ]
+        for paste_id in orphaned:
+            del self._pasted_contents[paste_id]
 
     def on_chat_text_area_typing(
         self,
@@ -2258,11 +2326,26 @@ class ChatInput(Vertical):
 
         self._insert_pasted_paths(event.raw_text, event.paths)
 
+    def on_chat_text_area_pasted_text(self, event: ChatTextArea.PastedText) -> None:
+        """Handle large pastes by collapsing into a compact placeholder.
+
+        Stores the full text in ``_pasted_contents`` and inserts a
+        ``[Pasted text #N +M lines]`` placeholder into the text area instead
+        of the raw content, keeping the input box compact.
+
+        Args:
+            event: The ``PastedText`` message carrying the full pasted text.
+        """
+        if not self._text_area:
+            return
+        self._collapse_and_insert_paste(event.text)
+
     def handle_external_paste(self, pasted: str) -> bool:
         """Handle paste text from app-level routing when input is not focused.
 
         When the text area is mounted, the paste is always consumed: file paths
-        are attached as images, and plain text is inserted directly.
+        are attached as images, large text is collapsed into a placeholder,
+        and remaining plain text is inserted directly.
 
         Args:
             pasted: Raw pasted text payload.
@@ -2275,13 +2358,29 @@ class ChatInput(Vertical):
             return False
 
         parsed = self._parse_dropped_path_payload(pasted)
-        if parsed is None:
-            self._text_area.insert(pasted)
-        else:
+        if parsed is not None:
             self._insert_pasted_paths(pasted, parsed.paths)
+        elif should_collapse_paste(pasted):
+            self._collapse_and_insert_paste(pasted)
+        else:
+            self._text_area.insert(pasted)
 
         self._text_area.focus()
         return True
+
+    def _collapse_and_insert_paste(self, text: str) -> None:
+        """Store full paste content and insert a compact placeholder.
+
+        Args:
+            text: The full pasted text to collapse.
+        """
+        if not self._text_area:
+            return
+        paste_id = self._next_paste_id
+        self._next_paste_id += 1
+        self._pasted_contents[paste_id] = PastedContent(id=paste_id, content=text)
+        placeholder = format_paste_ref(paste_id, count_lines(text))
+        self._text_area.insert(placeholder)
 
     def _apply_inline_dropped_path_replacement(self, text: str) -> bool:
         """Replace full dropped-path payload text with image placeholders.
@@ -2663,7 +2762,7 @@ class ChatInput(Vertical):
         """Copy the current draft to the clipboard from the `[ COPY ]` button."""
         from deepagents_code.clipboard import copy_text_with_feedback
 
-        text = self.value
+        text = expand_paste_refs(self.value, self._pasted_contents)
         if text:
             copy_text_with_feedback(
                 self.app,

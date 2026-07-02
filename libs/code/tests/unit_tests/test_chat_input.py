@@ -4259,3 +4259,273 @@ class TestPasteBurstEnterSuppression:
             await pilot.pause()
 
             assert len(app.submitted) == 1
+
+
+class TestPasteCollapseHelpers:
+    """Unit tests for the paste_collapse module helpers."""
+
+    def test_should_collapse_short_text(self) -> None:
+        """Short single-line text should not be collapsed."""
+        from deepagents_code.paste_collapse import should_collapse_paste
+
+        assert should_collapse_paste("hello") is False
+
+    def test_should_collapse_long_text(self) -> None:
+        """Text exceeding the character threshold should be collapsed."""
+        from deepagents_code.paste_collapse import should_collapse_paste
+
+        assert should_collapse_paste("x" * 801) is True
+
+    def test_should_collapse_multi_line(self) -> None:
+        """Text with more lines than the threshold should be collapsed."""
+        from deepagents_code.paste_collapse import should_collapse_paste
+
+        assert should_collapse_paste("line1\nline2\nline3\nline4") is True
+
+    def test_should_not_collapse_two_lines(self) -> None:
+        """Exactly two newlines (three lines) should not be collapsed by line count."""
+        from deepagents_code.paste_collapse import should_collapse_paste
+
+        assert should_collapse_paste("line1\nline2\nline3") is False
+
+    def test_format_paste_ref_single_line(self) -> None:
+        """Single-line paste ref has no line count suffix."""
+        from deepagents_code.paste_collapse import format_paste_ref
+
+        assert format_paste_ref(1, 0) == "[Pasted text #1]"
+
+    def test_format_paste_ref_multi_line(self) -> None:
+        """Multi-line paste ref includes the line count."""
+        from deepagents_code.paste_collapse import format_paste_ref
+
+        assert format_paste_ref(3, 5) == "[Pasted text #3 +5 lines]"
+
+    def test_parse_paste_refs_finds_placeholders(self) -> None:
+        """parse_paste_refs extracts all placeholders in order."""
+        from deepagents_code.paste_collapse import parse_paste_refs
+
+        text = "intro [Pasted text #1 +10 lines] mid [Pasted text #2] end"
+        refs = parse_paste_refs(text)
+        assert len(refs) == 2
+        assert refs[0][0] == 1
+        assert refs[0][1] == "[Pasted text #1 +10 lines]"
+        assert refs[1][0] == 2
+        assert refs[1][1] == "[Pasted text #2]"
+
+    def test_parse_paste_refs_no_matches(self) -> None:
+        """parse_paste_refs returns empty list for plain text."""
+        from deepagents_code.paste_collapse import parse_paste_refs
+
+        assert parse_paste_refs("just regular text") == []
+
+    def test_expand_paste_refs(self) -> None:
+        """expand_paste_refs replaces placeholders with stored content."""
+        from deepagents_code.paste_collapse import PastedContent, expand_paste_refs
+
+        contents = {
+            1: PastedContent(id=1, content="FIRST\nSECOND"),
+            2: PastedContent(id=2, content="third"),
+        }
+        text = "before [Pasted text #1 +1 lines] after [Pasted text #2] end"
+        expanded = expand_paste_refs(text, contents)
+        assert expanded == "before FIRST\nSECOND after third end"
+
+    def test_expand_paste_refs_unknown_id_left_as_is(self) -> None:
+        """Placeholders with unknown IDs are left unchanged."""
+        from deepagents_code.paste_collapse import expand_paste_refs
+
+        text = "[Pasted text #99 +5 lines]"
+        assert expand_paste_refs(text, {}) == text
+
+    def test_expand_paste_refs_empty_contents(self) -> None:
+        """Expanding with no stored contents returns text unchanged."""
+        from deepagents_code.paste_collapse import expand_paste_refs
+
+        text = "hello [Pasted text #1] world"
+        assert expand_paste_refs(text, {}) == text
+
+
+class TestPasteCollapseIntegration:
+    """Integration tests for paste collapsing in ChatInput."""
+
+    async def test_large_paste_inserts_placeholder(self) -> None:
+        """Pasting text > 800 chars inserts a placeholder, not the full text."""
+        big_text = "x" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(big_text)
+            await pilot.pause()
+
+            assert "[Pasted text #1]" in chat._text_area.text
+            assert "x" * 900 not in chat._text_area.text
+            assert 1 in chat._pasted_contents
+            assert chat._pasted_contents[1].content == big_text
+
+    async def test_small_paste_inserts_directly(self) -> None:
+        """Pasting text under the threshold is inserted as-is."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste("short text")
+            await pilot.pause()
+
+            assert chat._text_area.text == "short text"
+            assert len(chat._pasted_contents) == 0
+
+    async def test_multi_line_paste_inserts_placeholder(self) -> None:
+        """Pasting text with > 2 newlines inserts a placeholder."""
+        multi_line = "\n".join(f"line {i}" for i in range(5))
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(multi_line)
+            await pilot.pause()
+
+            assert "[Pasted text #1 +4 lines]" in chat._text_area.text
+            assert "line 0" not in chat._text_area.text
+
+    async def test_submit_expands_placeholder(self) -> None:
+        """Submitting text with a placeholder sends the full expanded content."""
+        big_text = "A" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(big_text)
+            await pilot.pause()
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == big_text
+
+    async def test_submit_clears_paste_contents(self) -> None:
+        """Paste contents are cleared after submission."""
+        big_text = "B" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(big_text)
+            await pilot.pause()
+            assert len(chat._pasted_contents) == 1
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(chat._pasted_contents) == 0
+
+    async def test_multiple_pastes_get_incrementing_ids(self) -> None:
+        """Consecutive large pastes get incrementing placeholder IDs."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste("X" * 900)
+            await pilot.pause()
+            chat.handle_external_paste("Y" * 900)
+            await pilot.pause()
+
+            assert "[Pasted text #1]" in chat._text_area.text
+            assert "[Pasted text #2]" in chat._text_area.text
+            assert chat._pasted_contents[1].content == "X" * 900
+            assert chat._pasted_contents[2].content == "Y" * 900
+
+    async def test_multiple_pastes_submit_expands_all(self) -> None:
+        """Submitting with multiple placeholders expands all of them."""
+        text_a = "A" * 900
+        text_b = "B" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(text_a)
+            await pilot.pause()
+            chat.handle_external_paste(text_b)
+            await pilot.pause()
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == text_a + text_b
+
+    async def test_text_around_placeholder_preserved_on_submit(self) -> None:
+        """Text typed around a placeholder is preserved on submission."""
+        big_text = "C" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            for char in "fix this: ":
+                await pilot.press(char)
+            await pilot.pause()
+
+            chat.handle_external_paste(big_text)
+            await pilot.pause()
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == f"fix this: {big_text}"
+
+    async def test_orphaned_paste_content_cleaned_on_delete(self) -> None:
+        """Deleting a placeholder removes its stored content."""
+        big_text = "D" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(big_text)
+            await pilot.pause()
+            assert 1 in chat._pasted_contents
+
+            chat._text_area.text = "all gone"
+            await pilot.pause()
+
+            assert 1 not in chat._pasted_contents
+
+    async def test_copy_button_expands_placeholders(self) -> None:
+        """The copy button copies expanded text, not the placeholder."""
+        big_text = "E" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(big_text)
+            await pilot.pause()
+
+            copied: list[str] = []
+
+            def capture_copy(_app_arg: object, text: str, **_kwargs: object) -> None:
+                copied.append(text)
+
+            import deepagents_code.clipboard as clipboard_mod
+
+            original_copy = clipboard_mod.copy_text_with_feedback
+            clipboard_mod.copy_text_with_feedback = capture_copy  # ty: ignore
+
+            try:
+                chat._copy_via_button()
+                await pilot.pause()
+            finally:
+                clipboard_mod.copy_text_with_feedback = original_copy  # ty: ignore
+
+            assert len(copied) == 1
+            assert copied[0] == big_text

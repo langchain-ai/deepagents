@@ -3700,3 +3700,51 @@ class TestLiveToolGroupSummary:
             assert not pilot.app.query(ToolGroupSummary)
             assert t1.display is True
             assert t2.display is True
+
+
+class TestUserMessageTruncation:
+    """Test head+tail truncation of very long user messages at render time."""
+
+    def test_short_message_not_truncated(self) -> None:
+        """Messages under the threshold should render in full."""
+        from deepagents_code.widgets.messages import _truncate_for_display
+
+        text = "short message"
+        assert _truncate_for_display(text) == text
+
+    def test_long_message_truncated_with_elision(self) -> None:
+        """Messages over 10k chars should get head+tail+elision marker."""
+        from deepagents_code.widgets.messages import _truncate_for_display
+
+        text = "A" * 12_000
+        result = _truncate_for_display(text)
+        assert "… +" in result
+        assert " lines …" in result
+        # Head and tail are preserved
+        assert result.startswith("A" * 2500)
+        assert result.endswith("A" * 2500)
+
+    def test_truncation_counts_hidden_lines(self) -> None:
+        """The elision marker should report the correct hidden line count."""
+        from deepagents_code.widgets.messages import _truncate_for_display
+
+        lines = [f"line {i:04d} " + "x" * 20 for i in range(600)]
+        text = "\n".join(lines)
+        assert len(text) > 10_000
+        result = _truncate_for_display(text)
+        assert "… +" in result
+        assert " lines …" in result
+
+    def test_full_content_preserved_in_widget(self) -> None:
+        """The widget should store full content even when display is truncated."""
+        big = "B" * 12_000
+        msg = UserMessage(big)
+        assert msg._content == big
+        assert len(msg._content) == 12_000
+
+    def test_message_at_boundary_not_truncated(self) -> None:
+        """Messages exactly at the threshold should not be truncated."""
+        from deepagents_code.widgets.messages import _truncate_for_display
+
+        text = "C" * 10_000
+        assert _truncate_for_display(text) == text

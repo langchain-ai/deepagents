@@ -110,6 +110,13 @@ _DEFAULT_TODO_WRAP_WIDTH = 80
 _TODO_WRAP_GUARD_COLUMNS = 4
 _MAX_WEB_CONTENT_LEN = 100
 
+# User message display truncation — when content exceeds this many characters,
+# only the head and tail are rendered with an elision marker in between.
+# This keeps very large pastes from flooding the conversation scrollback.
+_USER_MSG_MAX_DISPLAY_CHARS = 10_000
+_USER_MSG_TRUNCATE_HEAD_CHARS = 2_500
+_USER_MSG_TRUNCATE_TAIL_CHARS = 2_500
+
 # Tools that have their key info already in the header (no need for args line)
 _TOOLS_WITH_HEADER_INFO: set[str] = {
     # Filesystem tools
@@ -205,6 +212,29 @@ def _select_prompt_body(widget: Static) -> None:
     }
 
 
+def _truncate_for_display(text: str) -> str:
+    """Truncate very long user message text for display in the conversation.
+
+    Keeps the first and last portions and replaces the middle with an elision
+    marker showing how many lines are hidden.  This mirrors Claude Code's
+    ``UserPromptMessage`` head+tail truncation for rendering performance.
+
+    Args:
+        text: Full message content.
+
+    Returns:
+        Truncated text with an elision marker, or the original text when
+        it does not exceed the display threshold.
+    """
+    if len(text) <= _USER_MSG_MAX_DISPLAY_CHARS:
+        return text
+    head = text[:_USER_MSG_TRUNCATE_HEAD_CHARS]
+    tail = text[-_USER_MSG_TRUNCATE_TAIL_CHARS:]
+    hidden_text = text[_USER_MSG_TRUNCATE_HEAD_CHARS:-_USER_MSG_TRUNCATE_TAIL_CHARS]
+    hidden_lines = hidden_text.count("\n")
+    return f"{head}\n… +{hidden_lines} lines …\n{tail}"
+
+
 class UserMessage(Static):
     """Widget displaying a user message."""
 
@@ -283,6 +313,10 @@ class UserMessage(Static):
             content = content[len(prefix_text) :]
         else:
             parts.append(("> ", f"bold {colors.primary}"))
+
+        # Truncate very long content for display so large pastes don't flood
+        # the conversation.  The full text is still available for copy/select.
+        content = _truncate_for_display(content)
 
         # Highlight @mentions and /commands in the content
         last_end = 0
@@ -381,6 +415,7 @@ class QueuedUserMessage(Static):
             content = content[len(prefix_text) :]
         else:
             prefix = ("> ", f"bold {colors.muted}")
+        content = _truncate_for_display(content)
         return Content.assemble(prefix, (content, colors.muted))
 
 

@@ -1800,6 +1800,188 @@ class TestFilesystemMiddleware:
         # tool filtering — and with an empty system prompt, no override at all.
         request.override.assert_not_called()
 
+    def test_enabled_tools_raises_when_read_file_excluded(self):
+        """read_file must be in tools when a non-empty allowlist is given."""
+        with pytest.raises(ValueError, match="read_file must be included in tools"):
+            FilesystemMiddleware(backend=StateBackend(), tools=["write_file"])
+
+    def test_enabled_tools_filters_unlisted_tool(self):
+        """A tool not in tools is filtered out of the model request."""
+        middleware = FilesystemMiddleware(
+            backend=StateBackend(),
+            system_prompt="",
+            tools=["read_file", "ls"],
+        )
+        write_tool = MagicMock()
+        write_tool.name = "write_file"
+        ls_tool = MagicMock()
+        ls_tool.name = "ls"
+        request = MagicMock()
+        request.tools = [ls_tool, write_tool]
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
+        assert "write_file" not in filtered_names
+        assert "ls" in filtered_names
+
+    def test_enabled_tools_filters_multiple_unlisted(self):
+        """Only tools in the allowlist survive; the rest are filtered."""
+        middleware = FilesystemMiddleware(
+            backend=StateBackend(),
+            system_prompt="",
+            tools=["read_file", "ls", "grep"],
+        )
+        tools = [MagicMock(name=n) for n in ("ls", "write_file", "delete", "grep")]
+        for t in tools:
+            t.name = t._mock_name
+        request = MagicMock()
+        request.tools = tools
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
+        assert "write_file" not in filtered_names
+        assert "delete" not in filtered_names
+        assert "ls" in filtered_names
+        assert "grep" in filtered_names
+
+    def test_enabled_tools_does_not_filter_user_provided_tools(self):
+        """User-provided (non-filesystem) tools are never removed by the allowlist."""
+        middleware = FilesystemMiddleware(
+            backend=StateBackend(),
+            system_prompt="",
+            tools=["read_file", "ls"],
+        )
+        ls_tool = MagicMock()
+        ls_tool.name = "ls"
+        write_tool = MagicMock()
+        write_tool.name = "write_file"
+        custom_tool = MagicMock()
+        custom_tool.name = "search"
+        request = MagicMock()
+        request.tools = [ls_tool, write_tool, custom_tool]
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
+        assert "ls" in filtered_names
+        assert "search" in filtered_names  # user tool untouched
+        assert "write_file" not in filtered_names  # FS tool not in allowlist
+
+    def test_enabled_tools_passes_listed_tools_through(self):
+        """Tools in the allowlist survive; an unlisted tool is dropped."""
+        middleware = FilesystemMiddleware(
+            backend=StateBackend(),
+            system_prompt="",
+            tools=["read_file", "ls", "grep"],
+        )
+        ls_tool = MagicMock()
+        ls_tool.name = "ls"
+        grep_tool = MagicMock()
+        grep_tool.name = "grep"
+        edit_tool = MagicMock()
+        edit_tool.name = "edit_file"
+        request = MagicMock()
+        request.tools = [ls_tool, grep_tool, edit_tool]
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
+        assert "ls" in filtered_names
+        assert "grep" in filtered_names
+        assert "edit_file" not in filtered_names
+
+    def test_enabled_tools_read_file_only_filters_everything_else(self):
+        """tools=["read_file"] hides all other tools."""
+        all_other_tools = {"ls", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
+        middleware = FilesystemMiddleware(
+            backend=StateBackend(),
+            system_prompt="",
+            tools=["read_file"],
+        )
+        tools = [MagicMock() for _ in range(len(all_other_tools) + 1)]
+        for t, name in zip(tools, [*all_other_tools, "read_file"], strict=True):
+            t.name = name
+        request = MagicMock()
+        request.tools = tools
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
+        assert "read_file" in filtered_names
+        assert filtered_names == {"read_file"}
+
+    def test_enabled_tools_none_default_passes_all_tools(self):
+        """tools=None (default) does not filter any tools."""
+        middleware = FilesystemMiddleware(
+            backend=StateBackend(),
+            system_prompt="",
+        )
+        tools = [MagicMock() for _ in range(3)]
+        for t, name in zip(tools, ["ls", "read_file", "write_file"], strict=True):
+            t.name = name
+        request = MagicMock()
+        request.tools = tools
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        # No tools=... override should have been made (nothing filtered)
+        tools_overrides = [c for c in request.override.call_args_list if "tools" in c.kwargs]
+        assert tools_overrides == []
+
+    def test_enabled_tools_execute_listed_but_backend_unsupported_is_noop(self):
+        """Execute in tools list is still filtered when the backend doesn't support execution."""
+        middleware = FilesystemMiddleware(
+            backend=StateBackend(),  # StateBackend has no execution support
+            system_prompt="",
+            tools=["read_file", "ls", "execute"],
+        )
+        ls_tool = MagicMock()
+        ls_tool.name = "ls"
+        execute_tool = MagicMock()
+        execute_tool.name = "execute"
+        request = MagicMock()
+        request.tools = [ls_tool, execute_tool]
+        request.runtime = MagicMock()
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        filtered_names = {tool.name for tool in request.override.call_args.kwargs["tools"]}
+        assert "execute" not in filtered_names
+        assert "ls" in filtered_names
+
+    def test_enabled_tools_system_prompt_lists_only_enabled_tools(self):
+        """Dynamic system prompt only mentions the tools that survived filtering."""
+        middleware = FilesystemMiddleware(
+            backend=StateBackend(),
+            tools=["read_file", "ls"],
+        )
+        ls_tool = MagicMock()
+        ls_tool.name = "ls"
+        write_tool = MagicMock()
+        write_tool.name = "write_file"
+        request = MagicMock()
+        request.tools = [ls_tool, write_tool]
+        request.system_message = None
+        request.override.return_value = request
+
+        middleware._filter_unsupported_tools_and_apply_prompt(request)
+
+        system_message_override = next(c for c in request.override.call_args_list if "system_message" in c.kwargs)
+        content = system_message_override.kwargs["system_message"].content
+        system_text = content if isinstance(content, str) else " ".join(b["text"] for b in content if isinstance(b, dict) and "text" in b)
+        assert "ls" in system_text
+        assert "read_file" in system_text
+        assert "write_file" not in system_text
+
     def test_delete_invalid_path_returns_error(self):
         """The sync delete tool rejects a traversal path before deleting."""
         middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")

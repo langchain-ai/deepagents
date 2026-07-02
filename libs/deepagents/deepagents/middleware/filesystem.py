@@ -481,10 +481,14 @@ def _format_grep_tool_result(
         # "Partial matches:" section past the token limit and cut it off.
         error = truncate_if_too_long(result.error)
         return f"{error}\n\nPartial matches:\n{formatted}", "error"
-    if not matches and (hint := regex_literal_hint(pattern)):
-        return f"{formatted}\n\n{hint}", "success"
+    notes = []
     if result.truncated:
-        return f"{formatted}\n\n{SEARCH_TRUNCATION_NOTE}", "success"
+        notes.append(SEARCH_TRUNCATION_NOTE)
+    if not matches and (hint := regex_literal_hint(pattern)):
+        notes.append(hint)
+    if notes:
+        formatted_notes = "\n\n".join(notes)
+        return f"{formatted}\n\n{formatted_notes}", "success"
     return formatted, "success"
 
 
@@ -630,8 +634,9 @@ class FilesystemState(AgentState):
 GREP_GLOB_DESCRIPTION = (
     "Glob pattern (NOT regex) limiting which files are searched, matched against "
     "the file name (e.g. '*.py', '*.ts'). This is an in-tool file filter, "
-    "not a call to the separate glob tool. Brace alternation like '*.{ts,tsx}' is "
-    "not supported across backends; run a separate search per extension instead."
+    "not a call to the separate glob tool. Brace expansion (e.g. '*.{ts,tsx}') "
+    "is not supported on all backends; run a separate search per extension for "
+    "reliable results."
 )
 
 GREP_OUTPUT_MODE_DESCRIPTION = (

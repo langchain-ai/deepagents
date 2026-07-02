@@ -687,6 +687,30 @@ class TestFilesystemMiddleware:
         assert "1: import os" in result.content
         assert SEARCH_TRUNCATION_NOTE in result.content
 
+    def test_grep_truncated_regex_pattern_no_matches_keeps_note(self):
+        """A regex-looking miss still reports that the backend search was incomplete."""
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        backend_obj = middleware._get_backend(_runtime())
+
+        truncated_result = GrepResult(matches=[], truncated=True)
+        with (
+            patch.object(middleware, "_get_backend", return_value=backend_obj),
+            patch.object(backend_obj, "grep", return_value=truncated_result),
+        ):
+            result = grep_search_tool.invoke(
+                {
+                    "pattern": "def hello|def world",
+                    "runtime": _runtime(),
+                }
+            )
+
+        assert result.status == "success"
+        assert result.content.startswith("No matches found")
+        assert SEARCH_TRUNCATION_NOTE in result.content
+        assert "literal text, not regex" in result.content
+
     def test_glob_truncated_renders_as_success_with_note(self):
         """A truncated glob returns its partial paths as a success plus the narrow-your-search note."""
         backend, _ = _make_backend()

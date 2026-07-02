@@ -59,6 +59,7 @@ class TestLooksLikeRegex:
         hint = regex_literal_hint("foo|bar")
         assert hint is not None
         assert "literal text, not regex" in hint
+        assert "execute" not in hint
 
     def test_hint_absent_for_literal(self) -> None:
         assert regex_literal_hint("plain text") is None

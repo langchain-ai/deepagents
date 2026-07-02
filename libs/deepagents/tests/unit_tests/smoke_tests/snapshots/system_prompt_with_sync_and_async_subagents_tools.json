@@ -210,7 +210,7 @@
               }
             ],
             "default": null,
-            "description": "Glob pattern (NOT regex) limiting which files are searched, matched against the file name (e.g. '*.py', '*.ts'). This is an in-tool file filter, not a call to the separate glob tool. Brace alternation like '*.{ts,tsx}' is not supported across backends; run a separate search per extension instead."
+            "description": "Glob pattern (NOT regex) limiting which files are searched, matched against the file name (e.g. '*.py', '*.ts'). This is an in-tool file filter, not a call to the separate glob tool. Brace expansion (e.g. '*.{ts,tsx}') is not supported on all backends; run a separate search per extension for reliable results."
           },
           "output_mode": {
             "default": "files_with_matches",

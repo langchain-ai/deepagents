@@ -906,5 +906,5 @@ def regex_literal_hint(pattern: str) -> str | None:
     return (
         "Note: grep matches literal text, not regex, so characters like "
         "`|`, `.*`, and `\\.` are searched verbatim. Run a separate literal "
-        "search for each alternative, or use the execute tool with `rg` for regex."
+        "search for each alternative."
     )

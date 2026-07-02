@@ -1,0 +1,21 @@
+libs/code/deepagents_code/mcp_tools.py
+  s_ac93febc271b58::t_b12c222862a327 1486-1489,1507-1509,1512-1513
+libs/code/tests/unit_tests/test_mcp_tools.py
+  s_ac93febc271b58::t_ca88105c6fc8f2 1422-1465
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "7061317c5e6311e59f4be56756a60427303935fa",
+  "prompts": {},
+  "sessions": {
+    "s_ac93febc271b58": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f1ff5-56c9-72b0-a81e-bfe3b742560e",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

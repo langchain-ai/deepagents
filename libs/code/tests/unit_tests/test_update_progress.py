@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 from textual.app import App
 from textual.widgets import Log, Static
 
 from deepagents_code.config import get_glyphs
 from deepagents_code.widgets.update_progress import UpdateProgressScreen
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 async def test_update_progress_screen_shows_tail_when_details_toggle(tmp_path) -> None:
@@ -221,3 +226,50 @@ async def test_update_progress_screen_warning_without_copy_text_copies_log_path(
         await pilot.pause()
 
         assert copied == [str(log_path)]
+
+
+@pytest.mark.parametrize(
+    "complete",
+    [
+        pytest.param(lambda screen: screen.mark_success(), id="success"),
+        pytest.param(
+            lambda screen: screen.mark_failure("uv tool upgrade deepagents-code"),
+            id="failure",
+        ),
+        pytest.param(lambda screen: screen.mark_warning("Heads up"), id="warning"),
+    ],
+)
+async def test_update_progress_screen_quit_waits_until_done(
+    complete: Callable[[UpdateProgressScreen], None],
+    tmp_path,
+) -> None:
+    """Q is ignored while updating and quits the app once the modal is done.
+
+    Every terminal state (success, failure, warning) gates quit on the same
+    `_done` flag, so the shortcut must behave identically in each.
+    """
+    screen = UpdateProgressScreen(
+        latest="2.0.0",
+        command="uv tool upgrade deepagents-code",
+        log_path=tmp_path / "update.log",
+    )
+
+    app = App()
+    async with app.run_test() as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+
+        help_text = screen.query(Static).filter(".up-help").first()
+        assert "q quit" not in str(help_text.render())
+
+        await pilot.press("q")
+        await pilot.pause()
+        assert app.is_running
+
+        complete(screen)
+        await pilot.pause()
+        assert "q quit" in str(help_text.render())
+
+        await pilot.press("q")
+        await pilot.pause()
+        assert not app.is_running

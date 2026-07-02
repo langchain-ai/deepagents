@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
 from textual.app import App, ComposeResult, ScreenStackError
-from textual.containers import Container
+from textual.containers import Container, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
-from deepagents_code.extras_info import ExtraDependencyStatus
+from deepagents_code.config import get_glyphs
+from deepagents_code.extras_info import (
+    MODEL_PROVIDER_EXTRAS,
+    SANDBOX_EXTRAS,
+    STANDALONE_EXTRAS,
+    ExtraDependencyStatus,
+)
 from deepagents_code.widgets.launch_init import (
     LaunchDependenciesScreen,
     LaunchNameScreen,
@@ -83,8 +90,8 @@ class TestLaunchNameScreen:
 
         assert name_input.placeholder == "Your name (optional)"
 
-    async def test_copy_prompts_for_name_and_explains_skip(self) -> None:
-        """The name screen should prompt for a name and describe skip semantics."""
+    async def test_copy_prompts_for_name_and_hides_skip_hint(self) -> None:
+        """The name screen prompts for a name without advertising the skip hint."""
         app = LaunchNameTestApp()
         async with app.run_test() as pilot:
             app.show_name_screen()
@@ -94,7 +101,8 @@ class TestLaunchNameScreen:
             help_text = app.screen.query_one(".launch-init-help", Static)
 
         assert "What should Deep Agents call you?" in str(copy.content)
-        assert "Esc skip setup" in str(help_text.content)
+        assert "Enter to continue" in str(help_text.content)
+        assert "Esc skip setup" not in str(help_text.content)
 
     async def test_submit_returns_normalized_name(self) -> None:
         """Submitting a name should dismiss with the trimmed, title-cased value."""
@@ -136,6 +144,63 @@ class TestLaunchNameScreen:
 
         assert app.dismissed is True
         assert app.result == ""
+
+    async def test_submit_can_switch_directly_to_next_screen(self) -> None:
+        """Submitting can replace the modal without exposing the base screen."""
+        app = LaunchNameTestApp()
+        continued: list[str] = []
+
+        async with app.run_test() as pilot:
+            app.push_screen(
+                LaunchNameScreen(
+                    continue_screen=DummyNextScreen(),
+                    on_continue=continued.append,
+                ),
+                lambda result: setattr(app, "result", result),
+            )
+            await pilot.pause()
+
+            await pilot.press("a", "d", "a", "enter")
+            await pilot.pause()
+
+            assert isinstance(app.screen, DummyNextScreen)
+
+        assert continued == ["Ada"]
+        assert app.result is None
+
+    async def test_submit_switch_failure_dismisses_with_typed_name(self) -> None:
+        """A `ScreenStackError` during switch should dismiss with the typed name.
+
+        Unlike `LaunchDependenciesScreen`, the name screen emits no toast on this
+        path: the name has already propagated via `on_continue` before the switch
+        is attempted, so the fallback only needs to dismiss without dropping it.
+        """
+        app = LaunchNameTestApp()
+        continued: list[str] = []
+
+        async with app.run_test() as pilot:
+            app.push_screen(
+                LaunchNameScreen(
+                    continue_screen=DummyNextScreen(),
+                    on_continue=continued.append,
+                ),
+                lambda result: setattr(app, "result", result),
+            )
+            await pilot.pause()
+
+            def fake_switch_screen(_screen: object) -> None:
+                msg = "stack torn down"
+                raise ScreenStackError(msg)
+
+            app.switch_screen = fake_switch_screen  # ty: ignore
+
+            await pilot.press("a", "d", "a", "enter")
+            await pilot.pause()
+
+        # `on_continue` fired before the failed switch, so the name propagated.
+        assert continued == ["Ada"]
+        # The fallback dismisses with the typed name rather than dropping it.
+        assert app.result == "Ada"
 
     async def test_escape_skips(self) -> None:
         """Escape should skip the setup flow."""
@@ -188,14 +253,173 @@ class TestLaunchDependenciesScreen:
                 str(widget.content) for widget in app.screen.query(Static)
             )
 
+        glyphs = get_glyphs()
         assert "Installed Integrations" in content
-        assert "Ready now" in content
-        assert "Model providers: anthropic" in content
-        assert "Sandboxes: daytona" in content
-        assert "Available to add" in content
-        assert "Model providers: bedrock" in content
-        assert "Sandboxes: runloop" in content
-        assert "Esc skip setup" in content
+        # Section titles carry a total count; the `(2)` suffix is distinctive
+        # enough to prove the section header rendered (vs. matching the intro
+        # copy, which also mentions "model providers and sandboxes").
+        assert "Ready now (2)" in content
+        assert "Available to add (2)" in content
+        # Ready extras carry the checkmark glyph; addable ones the empty circle.
+        assert f"{glyphs.checkmark} anthropic" in content
+        assert f"{glyphs.checkmark} daytona" in content
+        assert f"{glyphs.circle_empty} bedrock" in content
+        assert f"{glyphs.circle_empty} runloop" in content
+        # The screen points at how to act on the listed integrations.
+        assert "/install" in content
+        assert "Enter to continue" in content
+        assert "Esc skip setup" not in content
+
+    async def test_available_section_is_not_truncated(self) -> None:
+        """Every addable extra is listed, with no "+N more" summary."""
+        statuses = tuple(
+            ExtraDependencyStatus(
+                name=name, installed=(), missing=(f"langchain-{name}",)
+            )
+            for name in sorted(MODEL_PROVIDER_EXTRAS)
+        )
+        app = LaunchNameTestApp()
+        async with app.run_test() as pilot:
+            app.show_dependencies_screen(statuses)
+            await pilot.pause()
+
+            content = "\n".join(
+                str(widget.content) for widget in app.screen.query(Static)
+            )
+
+        # No "+N more" truncation summary (the old `_EXTRA_LIST_LIMIT` cap).
+        assert re.search(r"\+\d+ more", content) is None
+        for name in MODEL_PROVIDER_EXTRAS:
+            assert name in content
+
+    async def test_populated_screen_fits_standard_terminal_height(self) -> None:
+        """A full dependency list should keep footer controls visible at 80x24."""
+        statuses = tuple(
+            ExtraDependencyStatus(
+                name=name, installed=(), missing=(f"langchain-{name}",)
+            )
+            for name in sorted(
+                MODEL_PROVIDER_EXTRAS | SANDBOX_EXTRAS | STANDALONE_EXTRAS
+            )
+        )
+        app = LaunchNameTestApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            app.show_dependencies_screen(statuses)
+            await pilot.pause()
+            await pilot.pause()
+
+            container = app.screen.query_one(Vertical)
+            body = app.screen.query_one("#launch-dependencies-body", VerticalScroll)
+            help_text = app.screen.query_one(".launch-init-help", Static)
+
+        assert container.region.y >= 0
+        assert container.region.y + container.region.height <= app.size.height
+        assert help_text.region.y + help_text.region.height <= app.size.height
+        max_height = body.styles.max_height
+        assert max_height is not None
+        assert max_height.cells is not None
+        assert max_height.cells < 16
+
+    async def test_renders_other_category(self) -> None:
+        """Compatibility standalone extras get their own category."""
+        statuses = (
+            ExtraDependencyStatus(
+                name="quickjs", installed=(), missing=("langchain-quickjs",)
+            ),
+        )
+        app = LaunchNameTestApp()
+        async with app.run_test() as pilot:
+            app.show_dependencies_screen(statuses)
+            await pilot.pause()
+
+            content = "\n".join(
+                str(widget.content) for widget in app.screen.query(Static)
+            )
+
+        assert "Other" in content
+        assert "quickjs" in content
+
+    async def test_empty_ready_section_shows_placeholder(self) -> None:
+        """When nothing is installed, "Ready now" shows its placeholder."""
+        statuses = tuple(
+            ExtraDependencyStatus(
+                name=name, installed=(), missing=(f"langchain-{name}",)
+            )
+            for name in sorted(MODEL_PROVIDER_EXTRAS)
+        )
+        app = LaunchNameTestApp()
+        async with app.run_test() as pilot:
+            app.show_dependencies_screen(statuses)
+            await pilot.pause()
+
+            content = "\n".join(
+                str(widget.content) for widget in app.screen.query(Static)
+            )
+
+        assert "Ready now (0)" in content
+        assert "Nothing installed yet" in content
+        # No extra is ready, so the checkmark glyph never appears.
+        assert get_glyphs().checkmark not in content
+
+    async def test_empty_available_section_shows_placeholder(self) -> None:
+        """When everything is installed, "Available to add" shows its placeholder."""
+        statuses = tuple(
+            ExtraDependencyStatus(
+                name=name,
+                installed=((f"langchain-{name}", "1.0.0"),),
+                missing=(),
+            )
+            for name in sorted(MODEL_PROVIDER_EXTRAS)
+        )
+        app = LaunchNameTestApp()
+        async with app.run_test() as pilot:
+            app.show_dependencies_screen(statuses)
+            await pilot.pause()
+
+            content = "\n".join(
+                str(widget.content) for widget in app.screen.query(Static)
+            )
+
+        assert "Available to add (0)" in content
+        assert "All bundled integrations are installed." in content
+        # Nothing is addable, so the empty-circle glyph never appears.
+        assert get_glyphs().circle_empty not in content
+
+    async def test_resize_shrinks_body_to_keep_footer_visible(self) -> None:
+        """Shrinking the terminal refits the body so the footer stays visible."""
+        statuses = tuple(
+            ExtraDependencyStatus(
+                name=name, installed=(), missing=(f"langchain-{name}",)
+            )
+            for name in sorted(
+                MODEL_PROVIDER_EXTRAS | SANDBOX_EXTRAS | STANDALONE_EXTRAS
+            )
+        )
+        app = LaunchNameTestApp()
+        async with app.run_test(size=(80, 40)) as pilot:
+            app.show_dependencies_screen(statuses)
+            await pilot.pause()
+            await pilot.pause()
+
+            # A tall terminal leaves room for the full cap.
+            tall = app.screen.query_one(
+                "#launch-dependencies-body", VerticalScroll
+            ).styles.max_height
+            assert tall is not None
+            assert tall.cells == 16
+
+            await pilot.resize_terminal(80, 16)
+            await pilot.pause()
+            await pilot.pause()
+
+            body = app.screen.query_one("#launch-dependencies-body", VerticalScroll)
+            help_text = app.screen.query_one(".launch-init-help", Static)
+            short = body.styles.max_height
+
+        assert short is not None
+        assert short.cells is not None
+        assert short.cells < 16
+        assert help_text.region.y + help_text.region.height <= app.size.height
 
     async def test_enter_continues(self) -> None:
         """Enter should continue to the next onboarding step."""

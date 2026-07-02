@@ -40,6 +40,7 @@ _FS_TOOL_PATH_ARGS: dict[str, tuple[FilesystemOperation, str, ToolScope, str | N
     "read_file": ("read", "file_path", "exact", None),
     "write_file": ("write", "file_path", "exact", None),
     "edit_file": ("write", "file_path", "exact", None),
+    "delete": ("write", "file_path", "bulk", None),
     "glob": ("read", "path", "bulk", "pattern"),
     "grep": ("read", "path", "bulk", None),
 }

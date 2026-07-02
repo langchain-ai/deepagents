@@ -162,6 +162,64 @@ class TestSet:
         assert auth_store.get_stored_key("openai") == "sk-new"
         assert auth_store.get_stored_base_url("openai") == "https://gateway.example/v1"
 
+    def test_set_langsmith_with_project(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`--project` stores a custom LangSmith project alongside the key."""
+        monkeypatch.setattr(sys, "stdin", io.StringIO("lsv2_test\n"))
+        code = run_auth_command(
+            _ns(
+                auth_command="set",
+                provider="langsmith",
+                from_env=None,
+                project="my-app",
+            )
+        )
+        assert code == 0
+        assert auth_store.get_stored_key("langsmith") == "lsv2_test"
+        assert auth_store.get_stored_project("langsmith") == "my-app"
+
+    def test_set_langsmith_preserves_existing_project(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Rotating the key without `--project` keeps the stored project."""
+        auth_store.set_stored_key("langsmith", "old", project="my-app")
+        monkeypatch.setattr(sys, "stdin", io.StringIO("new\n"))
+        code = run_auth_command(
+            _ns(auth_command="set", provider="langsmith", from_env=None, project=None)
+        )
+        assert code == 0
+        assert auth_store.get_stored_key("langsmith") == "new"
+        assert auth_store.get_stored_project("langsmith") == "my-app"
+
+    def test_set_langsmith_empty_project_clears_existing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An explicit empty `--project` clears a previously stored project."""
+        auth_store.set_stored_key("langsmith", "old", project="my-app")
+        monkeypatch.setattr(sys, "stdin", io.StringIO("new\n"))
+        code = run_auth_command(
+            _ns(auth_command="set", provider="langsmith", from_env=None, project="")
+        )
+        assert code == 0
+        assert auth_store.get_stored_key("langsmith") == "new"
+        assert auth_store.get_stored_project("langsmith") is None
+
+    def test_set_project_rejected_for_non_langsmith(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`--project` is only valid for the langsmith service."""
+        monkeypatch.setattr(sys, "stdin", io.StringIO("sk-ant\n"))
+        code = run_auth_command(
+            _ns(
+                auth_command="set",
+                provider="anthropic",
+                from_env=None,
+                project="my-app",
+            )
+        )
+        assert code == 1
+        assert auth_store.get_stored_key("anthropic") is None
+        assert "--project is only valid for langsmith" in capsys.readouterr().err
+
     def test_set_from_unset_env_fails(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -424,6 +482,15 @@ class TestStatus:
         assert code == 0
         assert "env: ANTHROPIC_API_KEY" in capsys.readouterr().out
 
+    def test_status_service_stored(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """A stored service (langsmith) resolves via the service status path."""
+        auth_store.set_stored_key("langsmith", "lsv2_test")
+        code = run_auth_command(_ns(auth_command="status", provider="langsmith"))
+        assert code == 0
+        out = capsys.readouterr().out
+        assert "langsmith" in out
+        assert "stored" in out
+
     def test_status_env_uses_prefixed_override(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -555,29 +622,39 @@ class TestList:
             tmp_path / "missing.toml",
         )
 
-        assert _known_providers() == (["openai", "openai_codex"], None)
+        from deepagents_code.model_config import SERVICE_API_KEY_ENV
+
+        expected = sorted({"openai", "openai_codex", *SERVICE_API_KEY_ENV})
+        assert _known_providers() == (expected, None)
         code = run_auth_command(_ns(auth_command="list"))
 
         assert code == 0
         assert "openai_codex" in capsys.readouterr().out
 
     @pytest.mark.usefixtures("clean_model_caches")
-    def test_list_empty_when_no_providers(
+    def test_list_shows_services_when_no_model_providers(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """With no installed, stored, or configured providers, say so plainly."""
+        """Services (e.g. LangSmith tracing) are always listed, even with no models.
+
+        Mirrors the TUI `/auth` manager, where services are configurable
+        regardless of whether any model-provider package is installed.
+        """
         monkeypatch.setattr("deepagents_code.model_config.get_available_models", dict)
         monkeypatch.setattr(
             "deepagents_code.model_config.DEFAULT_CONFIG_PATH",
             tmp_path / "missing.toml",
         )
-        assert _known_providers() == ([], None)
+
+        from deepagents_code.model_config import SERVICE_API_KEY_ENV
+
+        assert _known_providers() == (sorted(SERVICE_API_KEY_ENV), None)
         code = run_auth_command(_ns(auth_command="list"))
         assert code == 0
-        assert "No providers found." in capsys.readouterr().out
+        assert "langsmith" in capsys.readouterr().out
 
     def test_list_warns_when_store_corrupt(
         self, capsys: pytest.CaptureFixture[str]

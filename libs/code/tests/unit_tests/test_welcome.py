@@ -95,13 +95,13 @@ def _make_banner(
     # Temporarily clear the cached settings singleton so _get_settings()
     # re-creates it from the patched env vars inside the context manager.
     saved = _cfg.__dict__.pop("settings", None)
-    saved_bootstrap = _cfg._bootstrap_done
-    _cfg._bootstrap_done = False
+    saved_bootstrap = _cfg._bootstrap_state.done
+    _cfg._bootstrap_state.done = False
     try:
         with patch.dict("os.environ", env, clear=True):
             return WelcomeBanner(thread_id=thread_id)
     finally:
-        _cfg._bootstrap_done = saved_bootstrap
+        _cfg._bootstrap_state.done = saved_bootstrap
         if saved is not None:
             _cfg.__dict__["settings"] = saved
         else:
@@ -627,6 +627,11 @@ class TestBuildWelcomeFooter:
     def test_copy_command_tip_registered(self) -> None:
         """The `/copy` command must have a discoverability tip."""
         assert "Use /copy to copy the latest assistant message" in _TIPS
+
+    def test_workflow_subagent_tip_registered(self) -> None:
+        """The workflow trigger phrase should have a weighted discoverability tip."""
+        tip = "Ask for a workflow to fan work out to subagents in parallel"
+        assert _TIPS[tip] == 3
 
     def test_tip_varies_across_calls(self) -> None:
         """Tips should rotate (not always the same)."""

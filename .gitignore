@@ -251,3 +251,6 @@ CLAUDE.md
 libs/cli/frontend/node_modules/
 libs/cli/frontend/dist/
 node_modules/
+
+# Generated at build time by libs/code/hatch_build.py (stamps the release commit)
+libs/code/deepagents_code/_build_info.py

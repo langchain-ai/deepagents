@@ -14,6 +14,10 @@ import pytest
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.widgets.messages import AppMessage, ErrorMessage
 
+MANUAL_EXTRA_COMMAND = (
+    "curl -LsSf https://langch.in/dcode | DEEPAGENTS_CODE_EXTRAS=quickjs bash"
+)
+
 
 async def test_install_slash_usage_when_no_extra() -> None:
     """`/install` with no argument prints a usage hint plus the valid extras."""
@@ -190,14 +194,8 @@ async def test_install_slash_provider_extra_skips_redundant_hint_when_prompted()
         assert "/restart" not in contents
 
 
-async def test_install_slash_standalone_extra_recommends_interpreter_relaunch() -> None:
-    """`quickjs` must point at a `--interpreter` relaunch, not `/restart`.
-
-    `quickjs` only does anything behind the launch-only `--interpreter` flag
-    (with a startup-time dependency gate), so a `/restart` — which reuses the
-    original launch settings — can't enable it. The user has to exit and
-    relaunch with the flag.
-    """
+async def test_install_slash_standalone_extra_recommends_relaunch() -> None:
+    """Compatibility standalone extras still point at a full relaunch."""
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -218,7 +216,7 @@ async def test_install_slash_standalone_extra_recommends_interpreter_relaunch() 
         rendered = str(success._content)
         assert "/restart" not in rendered
         assert "relaunch dcode" in rendered.lower()
-        assert "--interpreter" in rendered
+        assert "--interpreter" not in rendered
 
 
 async def test_install_slash_unknown_extra_requires_force() -> None:
@@ -294,6 +292,14 @@ async def test_install_slash_failure_surfaces_log_path_and_manual_cmd() -> None:
                 return_value="/tmp/deepagents-install.log",
             ),
             patch(
+                "deepagents_code.update_check.install_extra_command",
+                return_value=MANUAL_EXTRA_COMMAND,
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_recovery_command",
+                return_value=MANUAL_EXTRA_COMMAND,
+            ),
+            patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
                 return_value=(False, "resolver: conflict"),
@@ -306,7 +312,8 @@ async def test_install_slash_failure_surfaces_log_path_and_manual_cmd() -> None:
         assert "Install failed" in joined
         assert "resolver: conflict" in joined
         assert "/tmp/deepagents-install.log" in joined
-        assert "uv tool install -U 'deepagents-code" in joined
+        assert "curl -LsSf https://langch.in/dcode" in joined
+        assert "DEEPAGENTS_CODE_EXTRAS=quickjs bash" in joined
         assert "quickjs" in joined
 
 
@@ -322,6 +329,14 @@ async def test_install_slash_exception_surfaces_log_path_and_manual_cmd() -> Non
                 return_value="/tmp/deepagents-install.log",
             ),
             patch(
+                "deepagents_code.update_check.install_extra_command",
+                return_value=MANUAL_EXTRA_COMMAND,
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_recovery_command",
+                return_value=MANUAL_EXTRA_COMMAND,
+            ),
+            patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
                 side_effect=OSError("disk full"),
@@ -334,8 +349,118 @@ async def test_install_slash_exception_surfaces_log_path_and_manual_cmd() -> Non
         assert "OSError" in joined
         assert "disk full" in joined
         assert "/tmp/deepagents-install.log" in joined
-        assert "uv tool install -U 'deepagents-code" in joined
+        assert "curl -LsSf https://langch.in/dcode" in joined
+        assert "DEEPAGENTS_CODE_EXTRAS=quickjs bash" in joined
         assert "quickjs" in joined
+
+
+async def test_install_slash_failure_renders_recovery_bracket_literally() -> None:
+    """A uv recovery command's `[extra]` bracket renders literally in the TUI.
+
+    The TUI mounts recovery commands as Textual `Content`, so — unlike the
+    Rich-markup CLI path — the bracket must not be backslash-escaped.
+    """
+    uv_cmd = "uv tool install -U 'deepagents-code[quickjs]'"
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value="/tmp/deepagents-install.log",
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_command",
+                return_value=MANUAL_EXTRA_COMMAND,
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_recovery_command",
+                return_value=uv_cmd,
+            ),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=(False, "resolver: conflict"),
+            ),
+        ):
+            await app._handle_command("/install quickjs")
+            await pilot.pause()
+        joined = "\n".join(str(m._content) for m in app.query(ErrorMessage))
+        assert "deepagents-code[quickjs]" in joined
+        assert "deepagents-code\\[quickjs]" not in joined
+
+
+async def test_install_slash_failure_recovery_error_keeps_prior_command() -> None:
+    """A recovery-command error on a failed install keeps the prior command.
+
+    The TUI shows the command resolved before the failure rather than crashing
+    or showing nothing.
+    """
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value="/tmp/deepagents-install.log",
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_command",
+                return_value=MANUAL_EXTRA_COMMAND,
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_recovery_command",
+                side_effect=ValueError("bad receipt"),
+            ),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=(False, "resolver: conflict"),
+            ),
+        ):
+            await app._handle_command("/install quickjs")
+            await pilot.pause()
+        joined = "\n".join(str(m._content) for m in app.query(ErrorMessage))
+        assert "Install failed" in joined
+        assert MANUAL_EXTRA_COMMAND in joined
+
+
+async def test_install_slash_exception_recovery_error_keeps_prior_command() -> None:
+    """A raised install plus a failed recovery command keeps the prior command.
+
+    When `perform_install_extra` raises and the recovery command also fails, the
+    TUI still surfaces the command resolved before the failure.
+    """
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value="/tmp/deepagents-install.log",
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_command",
+                return_value=MANUAL_EXTRA_COMMAND,
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_recovery_command",
+                side_effect=ValueError("bad receipt"),
+            ),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                side_effect=OSError("disk full"),
+            ),
+        ):
+            await app._handle_command("/install quickjs")
+            await pilot.pause()
+        joined = "\n".join(str(m._content) for m in app.query(ErrorMessage))
+        assert "OSError" in joined
+        assert MANUAL_EXTRA_COMMAND in joined
 
 
 async def test_install_slash_editable_install_refuses() -> None:

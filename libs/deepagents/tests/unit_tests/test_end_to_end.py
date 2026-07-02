@@ -4523,9 +4523,7 @@ class TestFilesystemMiddlewareToolsAllowlist:
 
     def test_allowlist_removes_tools_from_request_and_system_prompt(self) -> None:
         """tools=[...] on FilesystemMiddleware restricts both request.tools and the system prompt."""
-        model = FixedGenericFakeChatModel(
-            messages=iter([AIMessage(content="done")])
-        )
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="done")]))
         spy, captured_tool_sets = self._make_spy_middleware()
         capturing = SystemMessageCapturingMiddleware()
 

@@ -29,14 +29,31 @@ else:
 
 
 MISSING_VIDEO_HINT = "Reading video files requires the optional video dependencies. Install them with `uv add 'deepagents[video]'`."
+"""User-facing message shown when a video read is attempted without the `[video]` extra installed."""
+
 MAX_VIDEO_SAMPLED_FRAMES: Final = 64
+"""Upper bound on the number of frames emitted per video read."""
+
 MAX_VIDEO_FRAME_PIXELS: Final = 1920 * 1080
+"""Maximum pixel count a decoded frame may have before being downscaled."""
+
 MAX_VIDEO_FRAME_SIDE: Final = 4096
+"""Maximum width or height of a decoded frame before being downscaled."""
+
 MAX_VIDEO_OUTPUT_WIDTH: Final = 1920
+"""Target width (pixels) for frames emitted to the model."""
+
 MAX_VIDEO_OUTPUT_HEIGHT: Final = 1080
+"""Target height (pixels) for frames emitted to the model."""
+
 MAX_VIDEO_EMITTED_BYTES: Final = 4 * 1024 * 1024
+"""Maximum total encoded byte size for the frame set returned from one read."""
+
 MAX_VIDEO_DECODE_SECONDS: Final = 10.0
+"""Maximum source duration (seconds) decoded in a single read call."""
+
 _JPEG_QUALITY: Final = 85
+"""JPEG quality (1-100) used when encoding sampled frames."""
 
 
 class VideoExtractionError(RuntimeError):

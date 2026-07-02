@@ -124,9 +124,14 @@ def test_make_graph_builds_headless_local_deepagent(
     assert "grader" not in captured_create[0]["system_prompt"]
 
 
-def test_make_graph_defaults_to_app_workdir(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_make_graph_defaults_to_app_workdir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     captured_create: list[dict[str, object]] = []
 
+    # When no cwd is passed, the default workdir is used — as long as it exists. Point the
+    # default at an existing tmp dir so the assertion is deterministic on any host.
+    monkeypatch.setattr(langgraph_agent, "_DEFAULT_WORKDIR", tmp_path)
     monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(
         langgraph_agent,
@@ -143,8 +148,31 @@ def test_make_graph_defaults_to_app_workdir(monkeypatch: pytest.MonkeyPatch) -> 
         }
     )
 
-    assert captured_create[0]["cwd"] == Path("/app")
+    assert captured_create[0]["cwd"] == tmp_path
     assert captured_create[0]["assistant_id"]
+
+
+def test_workdir_returns_existing_configured_cwd(tmp_path: Path) -> None:
+    assert langgraph_agent._workdir({"cwd": str(tmp_path)}) == tmp_path
+
+
+def test_workdir_falls_back_when_configured_cwd_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A configured cwd that does not exist in the task image would make every shell command
+    # fail with FileNotFoundError; fall back to the first existing dir instead.
+    monkeypatch.setattr(langgraph_agent, "_WORKDIR_FALLBACKS", (tmp_path,))
+    out = langgraph_agent._workdir({"cwd": "/no/such/dir-xyz"})
+    assert out == tmp_path
+    assert out.is_dir()
+
+
+def test_workdir_default_falls_back_when_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(langgraph_agent, "_DEFAULT_WORKDIR", Path("/no/such/default-xyz"))
+    monkeypatch.setattr(langgraph_agent, "_WORKDIR_FALLBACKS", (tmp_path,))
+    assert langgraph_agent._workdir({}) == tmp_path
 
 
 def test_make_graph_sanitizes_dotted_session_id(

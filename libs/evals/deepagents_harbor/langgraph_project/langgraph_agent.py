@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import uuid
@@ -17,7 +18,11 @@ from langchain.chat_models import init_chat_model
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+logger = logging.getLogger(__name__)
+
 _DEFAULT_WORKDIR = Path("/app")
+# Directories to try, in order, when the resolved workdir is absent from the task image.
+_WORKDIR_FALLBACKS: tuple[Path, ...] = (Path("/app"), Path("/workspace"), Path("/root"), Path("/"))
 
 _SHELL_ENV_DENYLIST = frozenset(
     {
@@ -210,12 +215,20 @@ def _model_name(configurable: dict[str, object]) -> str:
 
 def _workdir(configurable: dict[str, object]) -> Path:
     value = configurable.get("cwd")
-    if value is None:
-        return _DEFAULT_WORKDIR
-    if not isinstance(value, str | Path):
+    if value is not None and not isinstance(value, str | Path):
         msg = "`configurable.cwd` must be a string path"
         raise TypeError(msg)
-    return Path(value)
+    chosen = _DEFAULT_WORKDIR if value is None else Path(value)
+    if chosen.is_dir():
+        return chosen
+    # The resolved workdir is absent from this task image. Harbor passes no cwd, so this is
+    # usually the /app default, but some task images use /workspace instead — and spawning
+    # shell commands in a missing cwd makes every command fail with FileNotFoundError,
+    # stranding the agent. Fall back to the first directory that exists. Warn rather than
+    # fail silently so the misconfiguration stays visible in the logs.
+    fallback = next((c for c in _WORKDIR_FALLBACKS if c.is_dir()), Path("/"))
+    logger.warning("configured workdir %s does not exist; falling back to %s", chosen, fallback)
+    return fallback
 
 
 def make_graph(config: dict[str, object] | None = None) -> object:

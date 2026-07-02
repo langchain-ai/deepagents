@@ -197,12 +197,9 @@ permissions:
 env:
   UV_NO_SYNC: "true"
   HARBOR_DATASET: ${{ inputs.dataset || 'terminal-bench/terminal-bench-2' }}
-  # Pinned to the exact commit (not the moving nh/integration branch) so the uv
-  # cache key tracks the build and CI can't reuse a stale pre-fix wheel. 403f989
-  # carries the PEP-668-safe agent bootstrap (astral uv installer + uv-managed
-  # Python); the branch ref previously served a cached pre-fix build that ran
-  # `pip install --upgrade uv` into externally-managed system Python and failed.
-  HARBOR_PACKAGE_OVERRIDE: "harbor[langsmith] @ git+https://github.com/nick-hollon-lc/harbor.git@403f98997cb305448624a9193aba894e894db2d6"
+  # Pinned to an exact commit (not a moving branch) so the uv cache key tracks
+  # the build and CI can't reuse a stale wheel. 5a5e120 is nick-hollon-lc/harbor.
+  HARBOR_PACKAGE_OVERRIDE: "harbor[langsmith] @ git+https://github.com/nick-hollon-lc/harbor.git@5a5e1204858ff1715f1d74002255b40488348b46"
 
 jobs:
   prep:

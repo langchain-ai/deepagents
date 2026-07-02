@@ -754,6 +754,33 @@ class TestGetSystemPromptModelIdentity:
         assert "(provider: anthropic)" in prompt
         assert "200,000 tokens" in prompt
 
+    def test_make_prompt_for_honors_profile_base(self) -> None:
+        """A target model whose profile sets a custom base uses it, not BASE."""
+        from deepagents import HarnessProfile
+        from deepagents.graph import BASE_AGENT_PROMPT
+        from langchain_anthropic import ChatAnthropic
+
+        from deepagents_code.agent import _make_prompt_for
+        from deepagents_code.config import ModelResult
+
+        model = ChatAnthropic(model_name="claude-sonnet-4-6", anthropic_api_key="x")
+        model_result = ModelResult(
+            model=model, model_name="claude-sonnet-4-6", provider="anthropic"
+        )
+        profile = HarnessProfile(
+            base_system_prompt="CUSTOM PROFILE BASE", system_prompt_suffix="PROFILE SFX"
+        )
+        with patch(
+            "deepagents_code.agent._harness_profile_for_model", return_value=profile
+        ):
+            prompt = _make_prompt_for("CLI PROMPT")(model_result)
+
+        assert isinstance(prompt, str)
+        assert "CLI PROMPT" in prompt
+        assert "CUSTOM PROFILE BASE" in prompt
+        assert "PROFILE SFX" in prompt
+        assert BASE_AGENT_PROMPT not in prompt
+
 
 class TestGetSystemPromptNonInteractive:
     """Tests for interactive vs non-interactive system prompt."""

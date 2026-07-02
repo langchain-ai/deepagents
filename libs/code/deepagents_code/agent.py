@@ -791,11 +791,11 @@ def build_model_identity_section(
 def _make_prompt_for(cli_prompt: str) -> Callable[[ModelResult], str | SystemMessage]:
     """Build a renderer for the full system prompt of a given model.
 
-    Assembles `cli_prompt -> SDK base -> model identity -> profile suffix` via
+    Assembles `cli_prompt -> base -> model identity -> profile suffix` via
     `render_system_prompt`, so a runtime `/model` switch re-renders the
     model-specific tail from structured parts (identity built from the
-    `ModelResult` fields, suffix read off the harness profile) rather than
-    patching the rendered prompt.
+    `ModelResult` fields, base and suffix read off the harness profile) rather
+    than patching the rendered prompt.
 
     Returns:
         A callable that renders the system prompt for a resolved `ModelResult`.
@@ -811,7 +811,10 @@ def _make_prompt_for(cli_prompt: str) -> Callable[[ModelResult], str | SystemMes
         profile = _harness_profile_for_model(model_result.model, None)
         parts = (identity, profile.system_prompt_suffix)
         suffix = "\n\n".join(part for part in parts if part)
-        return render_system_prompt({"prefix": cli_prompt, "suffix": suffix})
+        config: SystemPromptConfig = {"prefix": cli_prompt, "suffix": suffix}
+        if profile.base_system_prompt is not None:
+            config["base"] = profile.base_system_prompt
+        return render_system_prompt(config)
 
     return prompt_for
 

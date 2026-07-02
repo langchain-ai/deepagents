@@ -13194,7 +13194,7 @@ class TestHasConversationMessages:
 
 
 class TestRememberRequiresMessages:
-    """Ensure /remember early-returns when no conversation exists."""
+    """Ensure /remember early-returns only when bare and no conversation exists."""
 
     async def test_remember_no_messages_shows_early_return(self) -> None:
         """/remember should mount an AppMessage and skip the skill."""
@@ -13202,13 +13202,17 @@ class TestRememberRequiresMessages:
         async with app.run_test() as pilot:
             await pilot.pause()
 
-            with patch.object(app, "_has_conversation_messages", return_value=False):
+            with (
+                patch.object(app, "_has_conversation_messages", return_value=False),
+                patch.object(app, "_handle_skill_command") as mock_skill,
+            ):
                 await app._handle_command("/remember")
                 await pilot.pause()
 
             msgs = app.query(AppMessage)
             assert len(msgs) == 1
             assert "Nothing to remember yet" in str(msgs[0]._content)
+            mock_skill.assert_not_called()
 
     async def test_remember_with_messages_delegates_to_skill(self) -> None:
         """/remember should delegate to _handle_skill_command when messages exist."""
@@ -13224,6 +13228,39 @@ class TestRememberRequiresMessages:
                 await pilot.pause()
 
             mock_skill.assert_called_once_with("/skill:remember")
+
+    async def test_remember_with_args_no_messages_delegates_to_skill(self) -> None:
+        """/remember with args proceeds even without conversation history."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                patch.object(app, "_has_conversation_messages", return_value=False),
+                patch.object(app, "_handle_skill_command") as mock_skill,
+            ):
+                await app._handle_command("/remember i like blue")
+                await pilot.pause()
+
+            mock_skill.assert_called_once_with("/skill:remember i like blue")
+
+    async def test_remember_blank_args_no_messages_shows_early_return(self) -> None:
+        """/remember with whitespace-only args is treated as bare (early-return)."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                patch.object(app, "_has_conversation_messages", return_value=False),
+                patch.object(app, "_handle_skill_command") as mock_skill,
+            ):
+                await app._handle_command("/remember   ")
+                await pilot.pause()
+
+            msgs = app.query(AppMessage)
+            assert len(msgs) == 1
+            assert "Nothing to remember yet" in str(msgs[0]._content)
+            mock_skill.assert_not_called()
 
 
 class TestSwitchAgentGuards:

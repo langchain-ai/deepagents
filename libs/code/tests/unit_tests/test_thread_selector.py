@@ -3099,9 +3099,17 @@ class TestResumeThread:
         _app_test_double(app)._load_thread_history = AsyncMock()
         _app_test_double(app)._mount_message = AsyncMock()
         _app_test_double(app).query_one = MagicMock(side_effect=_NoMatches())
+        offer_cwd_switch = AsyncMock(return_value="continue")
+        _app_test_double(app)._offer_thread_cwd_switch = offer_cwd_switch
 
         await app._resume_thread("new-thread")
 
+        # In-session switches never offer abort — that is launch-time only.
+        # Exact-args match fails if `allow_abort=True` ever leaks in here.
+        offer_cwd_switch.assert_awaited_once_with(
+            "new-thread",
+            restart_server=True,
+        )
         assert app._lc_thread_id == "new-thread"
         assert app._session_state.thread_id == "new-thread"
         app._pending_messages.clear.assert_called_once()

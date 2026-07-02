@@ -1160,7 +1160,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         def sync_ls(
             runtime: ToolRuntime[None, FilesystemState],
-            path: Annotated[str, "Absolute path to the directory to list. Must be absolute, not relative."],
+            path: str,
         ) -> ToolMessage:
             """Synchronous wrapper for ls tool."""
             resolved_backend = self._get_backend(runtime)
@@ -1199,7 +1199,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
         async def async_ls(
             runtime: ToolRuntime[None, FilesystemState],
-            path: Annotated[str, "Absolute path to the directory to list. Must be absolute, not relative."],
+            path: str,
         ) -> ToolMessage:
             """Asynchronous wrapper for ls tool."""
             resolved_backend = self._get_backend(runtime)
@@ -1361,13 +1361,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             )
 
         def sync_read_file(
-            file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
+            file_path: str,
             runtime: ToolRuntime[None, FilesystemState],
-            offset: Annotated[
-                int,
-                "Line number to start reading from for text files (0-indexed). For videos, seconds into the source to start sampling.",
-            ] = DEFAULT_READ_OFFSET,
-            limit: Annotated[int, "Maximum number of lines to read for text files. For videos, seconds of source to sample."] = DEFAULT_READ_LIMIT,
+            offset: int = DEFAULT_READ_OFFSET,
+            limit: int = DEFAULT_READ_LIMIT,
         ) -> ToolMessage | Command:
             """Synchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
@@ -1391,13 +1388,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             return _handle_read_result(read_result, validated_path, runtime.tool_call_id, offset, limit)
 
         async def async_read_file(
-            file_path: Annotated[str, "Absolute path to the file to read. Must be absolute, not relative."],
+            file_path: str,
             runtime: ToolRuntime[None, FilesystemState],
-            offset: Annotated[
-                int,
-                "Line number to start reading from for text files (0-indexed). For videos, seconds into the source to start sampling.",
-            ] = DEFAULT_READ_OFFSET,
-            limit: Annotated[int, "Maximum number of lines to read for text files. For videos, seconds of source to sample."] = DEFAULT_READ_LIMIT,
+            offset: int = DEFAULT_READ_OFFSET,
+            limit: int = DEFAULT_READ_LIMIT,
         ) -> ToolMessage | Command:
             """Asynchronous wrapper for read_file tool."""
             resolved_backend = self._get_backend(runtime)
@@ -1434,8 +1428,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_description = self._custom_tool_descriptions.get("write_file") or WRITE_FILE_TOOL_DESCRIPTION
 
         def sync_write_file(
-            file_path: Annotated[str, "Absolute path where the file should be written. Must be absolute, not relative."],
-            content: Annotated[str, "The text content to write to the file. This parameter is required."],
+            file_path: str,
+            content: str,
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
             """Synchronous wrapper for write_file tool."""
@@ -1473,8 +1467,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             )
 
         async def async_write_file(
-            file_path: Annotated[str, "Absolute path where the file should be written. Must be absolute, not relative."],
-            content: Annotated[str, "The text content to write to the file. This parameter is required."],
+            file_path: str,
+            content: str,
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
             """Asynchronous wrapper for write_file tool."""
@@ -1525,12 +1519,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_description = self._custom_tool_descriptions.get("edit_file") or EDIT_FILE_TOOL_DESCRIPTION
 
         def sync_edit_file(
-            file_path: Annotated[str, "Absolute path to the file to edit. Must be absolute, not relative."],
-            old_string: Annotated[str, "The exact text to find and replace. Must be unique in the file unless replace_all is True."],
-            new_string: Annotated[str, "The text to replace old_string with. Must be different from old_string."],
+            file_path: str,
+            old_string: str,
+            new_string: str,
             runtime: ToolRuntime[None, FilesystemState],
             *,
-            replace_all: Annotated[bool, "If True, replace all occurrences of old_string. If False (default), old_string must be unique."] = False,
+            replace_all: bool = False,
         ) -> ToolMessage:
             """Synchronous wrapper for edit_file tool."""
             resolved_backend = self._get_backend(runtime)
@@ -1567,12 +1561,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             )
 
         async def async_edit_file(
-            file_path: Annotated[str, "Absolute path to the file to edit. Must be absolute, not relative."],
-            old_string: Annotated[str, "The exact text to find and replace. Must be unique in the file unless replace_all is True."],
-            new_string: Annotated[str, "The text to replace old_string with. Must be different from old_string."],
+            file_path: str,
+            old_string: str,
+            new_string: str,
             runtime: ToolRuntime[None, FilesystemState],
             *,
-            replace_all: Annotated[bool, "If True, replace all occurrences of old_string. If False (default), old_string must be unique."] = False,
+            replace_all: bool = False,
         ) -> ToolMessage:
             """Asynchronous wrapper for edit_file tool."""
             resolved_backend = self._get_backend(runtime)
@@ -1622,7 +1616,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_description = self._custom_tool_descriptions.get("delete") or DELETE_TOOL_DESCRIPTION
 
         def sync_delete(
-            file_path: Annotated[str, "Absolute path to the file to delete. Must be absolute, not relative."],
+            file_path: str,
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
             """Synchronous wrapper for delete tool."""
@@ -1661,7 +1655,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             )
 
         async def async_delete(
-            file_path: Annotated[str, "Absolute path to the file to delete. Must be absolute, not relative."],
+            file_path: str,
             runtime: ToolRuntime[None, FilesystemState],
         ) -> ToolMessage:
             """Asynchronous wrapper for delete tool."""
@@ -1713,9 +1707,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_description = self._custom_tool_descriptions.get("glob") or GLOB_TOOL_DESCRIPTION
 
         def sync_glob(  # noqa: PLR0911 - early returns for distinct error conditions
-            pattern: Annotated[str, "Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md')."],
+            pattern: str,
             runtime: ToolRuntime[None, FilesystemState],
-            path: Annotated[str | None, "Base directory to search from. Defaults to the backend's default root."] = None,
+            path: str | None = None,
         ) -> ToolMessage:
             """Synchronous wrapper for glob tool."""
             resolved_backend = self._get_backend(runtime)
@@ -1809,9 +1803,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             )
 
         async def async_glob(
-            pattern: Annotated[str, "Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md')."],
+            pattern: str,
             runtime: ToolRuntime[None, FilesystemState],
-            path: Annotated[str | None, "Base directory to search from. Defaults to the backend's default root."] = None,
+            path: str | None = None,
         ) -> ToolMessage:
             """Asynchronous wrapper for glob tool."""
             resolved_backend = self._get_backend(runtime)
@@ -1886,14 +1880,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_description = self._custom_tool_descriptions.get("grep") or GREP_TOOL_DESCRIPTION
 
         def sync_grep(
-            pattern: Annotated[str, "Text pattern to search for (literal string, not regex)."],
+            pattern: str,
             runtime: ToolRuntime[None, FilesystemState],
-            path: Annotated[str | None, "Directory to search in. Defaults to current working directory."] = None,
-            glob: Annotated[str | None, "Glob pattern to filter which files to search (e.g., '*.py')."] = None,
-            output_mode: Annotated[
-                Literal["files_with_matches", "content", "count"],
-                "Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
-            ] = "files_with_matches",
+            path: str | None = None,
+            glob: str | None = None,
+            output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
         ) -> ToolMessage:
             """Synchronous wrapper for grep tool."""
             if path is not None:
@@ -1929,14 +1920,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             )
 
         async def async_grep(
-            pattern: Annotated[str, "Text pattern to search for (literal string, not regex)."],
+            pattern: str,
             runtime: ToolRuntime[None, FilesystemState],
-            path: Annotated[str | None, "Directory to search in. Defaults to current working directory."] = None,
-            glob: Annotated[str | None, "Glob pattern to filter which files to search (e.g., '*.py')."] = None,
-            output_mode: Annotated[
-                Literal["files_with_matches", "content", "count"],
-                "Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
-            ] = "files_with_matches",
+            path: str | None = None,
+            glob: str | None = None,
+            output_mode: Literal["files_with_matches", "content", "count"] = "files_with_matches",
         ) -> ToolMessage:
             """Asynchronous wrapper for grep tool."""
             if path is not None:
@@ -2053,12 +2041,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         tool_description = self._custom_tool_descriptions.get("execute") or EXECUTE_TOOL_DESCRIPTION
 
         def sync_execute(  # noqa: PLR0911 - early returns for distinct error conditions
-            command: Annotated[str, "Shell command to execute in the sandbox environment."],
+            command: str,
             runtime: ToolRuntime[None, FilesystemState],
-            timeout: Annotated[
-                int | None,
-                "Optional timeout in seconds for this command. Overrides the default timeout. Use 0 for no-timeout execution on backends that support it.",
-            ] = None,
+            timeout: int | None = None,
         ) -> ToolMessage:
             """Synchronous wrapper for execute tool."""
             if timeout is not None:
@@ -2143,14 +2128,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             )
 
         async def async_execute(  # noqa: PLR0911 - early returns for distinct error conditions
-            command: Annotated[str, "Shell command to execute in the sandbox environment."],
+            command: str,
             runtime: ToolRuntime[None, FilesystemState],
-            # ASYNC109 - timeout is a semantic parameter forwarded to the
-            # backend's implementation, not an asyncio.timeout() contract.
-            timeout: Annotated[  # noqa: ASYNC109
-                int | None,
-                "Optional timeout in seconds for this command. Overrides the default timeout. Use 0 for no-timeout execution on backends that support it.",
-            ] = None,
+            timeout: int | None = None,  # noqa: ASYNC109  # forwarded to backend, not an asyncio contract
         ) -> ToolMessage:
             """Asynchronous wrapper for execute tool."""
             if timeout is not None:

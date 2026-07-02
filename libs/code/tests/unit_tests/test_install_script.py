@@ -95,6 +95,7 @@ if [ "${{1:-}}" = "-v" ]; then
 fi
 if [ "${{1:-}}" = "tools" ]; then
   printf '%s\\n' "$*" >> {str(tools_log)!r}
+  printf 'Using ripgrep already on PATH at /tmp/fake-rg\\n'
   exit "${{FAKE_DCODE_TOOLS_RC:-0}}"
 fi
 exit 0
@@ -1409,8 +1410,26 @@ def test_install_script_managed_ripgrep_calls_tools_install(tmp_path: Path) -> N
     assert tools_log.exists(), proc.stdout + proc.stderr
     assert "tools install" in tools_log.read_text()
     combined = proc.stdout + proc.stderr
-    assert "Setting up ripgrep..." in combined
+    assert "Setting up ripgrep..." not in combined
+    assert "Using ripgrep already on PATH" not in combined
     assert "opt out with DEEPAGENTS_CODE_RIPGREP_INSTALLER=system" not in combined
+
+
+def test_install_script_managed_ripgrep_verbose_reports_tools_install(
+    tmp_path: Path,
+) -> None:
+    """Verbose mode prints the otherwise quiet managed-ripgrep setup details."""
+    proc, _ = _invoke(
+        tmp_path,
+        {"DEEPAGENTS_CODE_SKIP_OPTIONAL": "0", "DEEPAGENTS_CODE_VERBOSE": "1"},
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    combined = proc.stdout + proc.stderr
+    assert "Setting up ripgrep..." in combined
+    assert "Using ripgrep already on PATH" in combined
 
 
 def test_install_script_system_ripgrep_skips_tools_install(tmp_path: Path) -> None:
@@ -1443,7 +1462,11 @@ def test_install_script_skip_optional_skips_tools_install(tmp_path: Path) -> Non
 
 
 def test_install_script_managed_ripgrep_failure_warns(tmp_path: Path) -> None:
-    """A failed `dcode tools install` falls back with a slow-grep warning."""
+    """A failed `dcode tools install` falls back with a slow-grep warning.
+
+    The captured command output is surfaced on failure — the whole reason the
+    quiet path writes to a temp file instead of discarding to `/dev/null`.
+    """
     proc, _ = _invoke(
         tmp_path,
         {"DEEPAGENTS_CODE_SKIP_OPTIONAL": "0", "FAKE_DCODE_TOOLS_RC": "1"},
@@ -1452,7 +1475,31 @@ def test_install_script_managed_ripgrep_failure_warns(tmp_path: Path) -> None:
     )
 
     assert proc.returncode == 0, proc.stderr
-    assert "slower fallback" in (proc.stdout + proc.stderr)
+    combined = proc.stdout + proc.stderr
+    assert "slower fallback" in combined
+    assert "Using ripgrep already on PATH" in combined
+
+
+def test_install_script_managed_ripgrep_verbose_failure_warns(
+    tmp_path: Path,
+) -> None:
+    """Verbose mode still warns and shows setup output when the install fails."""
+    proc, _ = _invoke(
+        tmp_path,
+        {
+            "DEEPAGENTS_CODE_SKIP_OPTIONAL": "0",
+            "DEEPAGENTS_CODE_VERBOSE": "1",
+            "FAKE_DCODE_TOOLS_RC": "1",
+        },
+        installed_version="0.1.0",
+        latest_version="0.2.0",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    combined = proc.stdout + proc.stderr
+    assert "Setting up ripgrep..." in combined
+    assert "Using ripgrep already on PATH" in combined
+    assert "slower fallback" in combined
 
 
 def test_install_script_skips_managed_install_when_verify_failed(

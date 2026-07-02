@@ -1,0 +1,14 @@
+libs/code/pyproject.toml
+  h_9f69767fa5fabf 125,127-128
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "bac688429dbc8fd156a1a30fb28160eaa6b15bc7",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

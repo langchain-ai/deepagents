@@ -1,0 +1,20 @@
+libs/deepagents/deepagents/middleware/async_subagents.py
+  s_3369f79b1b359b::t_87c5cfe396d306 626
+  s_3369f79b1b359b::t_2189016bd2efc4 457
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "912993d85383ce65523bc1280b348174d6a400ff",
+  "prompts": {},
+  "sessions": {
+    "s_3369f79b1b359b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "23b42a46-2212-4598-9cb2-47da87332b81",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

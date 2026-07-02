@@ -1,0 +1,14 @@
+libs/deepagents/deepagents/middleware/filesystem.py
+  h_9f69767fa5fabf 715,727
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.8",
+  "base_commit_sha": "965cb87196665f5de4fd90896dd6be6bbc3492f5",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

@@ -330,6 +330,8 @@ if TYPE_CHECKING:
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
     from textual.events import MouseUp, Paste
+    from textual.geometry import Size
+    from textual.layout import DockArrangeResult
     from textual.scrollbar import ScrollUp
     from textual.timer import Timer
     from textual.widget import Widget
@@ -1799,6 +1801,63 @@ class _ChatScroll(VerticalScroll):
     """
 
     FOCUS_ON_CLICK = False
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Initialize the chat scroll container."""
+        super().__init__(*args, **kwargs)
+        self._follow_bottom_when_scrollable = False
+
+    def anchor(self, anchor: bool = True) -> None:
+        """Anchor only once the transcript is tall enough to scroll.
+
+        Textual's default bottom anchor also bottom-aligns content that is
+        shorter than the viewport, which makes the welcome banner snap down as
+        soon as the first message arrives. Deferring the real anchor preserves
+        the top-aligned banner while still following the bottom after overflow.
+        """
+        self._follow_bottom_when_scrollable = anchor
+        if not anchor:
+            super().anchor(False)
+            return
+        self._anchor_released = False
+        if self._is_scrollable():
+            super().anchor(True)
+            return
+        super().anchor(False)
+        self.scroll_y = 0
+        self.scroll_target_y = 0
+
+    def release_anchor(self) -> None:
+        """Release bottom-follow intent when the user scrolls manually."""
+        self._follow_bottom_when_scrollable = False
+        super().release_anchor()
+
+    def arrange(self, size: Size, optimal: bool = False) -> DockArrangeResult:
+        """Arrange children and enable bottom-follow only after overflow.
+
+        Args:
+            size: Size of the chat scroll container.
+            optimal: Whether fr units should avoid expanding widgets.
+
+        Returns:
+            Widget placement information for the arranged children.
+        """
+        result = super().arrange(size, optimal=optimal)
+        if not self._follow_bottom_when_scrollable or self._anchor_released:
+            return result
+
+        viewport_height = self.container_size.height - self.scrollbar_size_horizontal
+        if result.spatial_map.total_region.bottom > viewport_height:
+            self._anchored = True
+        else:
+            self._anchored = False
+            self.scroll_y = 0
+            self.scroll_target_y = 0
+        return result
+
+    def _is_scrollable(self) -> bool:
+        """Return whether current chat content overflows the viewport."""
+        return self.max_scroll_y > 0
 
 
 class DeepAgentsApp(App):

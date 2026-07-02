@@ -50,6 +50,7 @@ from deepagents_code.app import (
     QueuedMessage,
     TextualSessionState,
     _build_whats_new_message,
+    _ChatScroll,
     _display_model_label,
     _extra_is_ready,
     _parse_rubric_max_iterations,
@@ -19429,6 +19430,63 @@ class TestCanBypassQueue:
         assert processed == []
         assert len(app._pending_messages) == 1
         assert app._pending_messages[0].text == "/clear"
+
+
+class _ChatScrollTestApp(App[None]):
+    """Small app for exercising chat scroll anchoring."""
+
+    CSS = """
+    #chat {
+        height: 5;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        """Compose a short transcript in the chat scroll."""
+        with _ChatScroll(id="chat"):
+            yield Static("welcome", id="welcome")
+            yield Static("message", id="message")
+
+
+class TestChatScrollAnchoring:
+    """Regression coverage for welcome banner positioning."""
+
+    async def test_anchor_keeps_short_content_top_aligned(self) -> None:
+        """Bottom-follow should not bottom-align content shorter than the viewport."""
+        app = _ChatScrollTestApp()
+
+        async with app.run_test() as pilot:
+            chat = app.query_one("#chat", _ChatScroll)
+
+            chat.anchor()
+            await pilot.pause()
+
+            assert chat.scroll_y == 0
+            assert not chat.is_anchored
+
+            chat.release_anchor()
+            chat.anchor()
+            await pilot.pause()
+
+            assert chat.scroll_y == 0
+            assert not chat.is_anchored
+
+    async def test_anchor_engages_after_content_overflows(self) -> None:
+        """Deferred bottom-follow should engage once chat content overflows."""
+        app = _ChatScrollTestApp()
+
+        async with app.run_test() as pilot:
+            chat = app.query_one("#chat", _ChatScroll)
+            chat.anchor()
+            await pilot.pause()
+
+            await chat.mount(Static("\n".join(f"line {i}" for i in range(20))))
+            await pilot.pause()
+            await pilot.pause()
+
+            assert chat.is_anchored
+            assert chat.max_scroll_y > 0
+            assert chat.scroll_y == chat.max_scroll_y
 
 
 class TestStatusBarConnectionMirroring:

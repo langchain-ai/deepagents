@@ -270,7 +270,7 @@ Prefer targeted paths:
 
 - SDK source: `libs/deepagents/deepagents`
 - SDK tests: `libs/deepagents/tests`
-- Code/TUI package: `libs/code`
+- Deep Agents Code/TUI package: `libs/code` (terminal coding agent)
 - CLI deploy package: `libs/cli`
 - ACP package: `libs/acp`
 

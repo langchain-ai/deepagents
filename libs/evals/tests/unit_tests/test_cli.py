@@ -144,6 +144,27 @@ class TestTrialsSubcommand:
         assert "--eval-category" in argv
         assert "tool_use" in argv
 
+    def test_dry_run_forwards_eval_category_exclude(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc = cli.main(
+            [
+                "trials",
+                "--model",
+                "openai:gpt-5.5",
+                "--trials",
+                "2",
+                "--eval-category-exclude",
+                "memory",
+                "--dry-run",
+                "--json",
+            ]
+        )
+        assert rc == cli.EXIT_OK
+        argv = json.loads(capsys.readouterr().out)["argv"]
+        assert "--eval-category-exclude" in argv
+        assert argv[argv.index("--eval-category-exclude") + 1] == "memory"
+
     def test_retry_failed_collects_nodeids(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:

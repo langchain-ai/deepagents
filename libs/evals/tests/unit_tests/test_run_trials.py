@@ -318,6 +318,7 @@ def _make_args(**overrides: Any) -> argparse.Namespace:
         "model": "openai:gpt-5.5",
         "trials": 1,
         "eval_category": [],
+        "eval_category_exclude": [],
         "eval_tier": [],
         "openai_reasoning_effort": None,
         "openrouter_provider": None,
@@ -350,6 +351,14 @@ class TestBuildPytestArgs:
         assert "tool_use" in cmd
         assert cmd.count("--eval-tier") == 1
         assert "baseline" in cmd
+
+    def test_repeated_category_excludes(self) -> None:
+        args = _make_args(eval_category_exclude=["memory", "tool_use"])
+        cmd = run_trials._build_pytest_args(args, Path("/tmp/r.json"))
+        # Each repeated value should show up as its own --eval-category-exclude flag.
+        assert cmd.count("--eval-category-exclude") == 2
+        assert "memory" in cmd
+        assert "tool_use" in cmd
 
     def test_optional_flags_pass_through(self) -> None:
         args = _make_args(
@@ -417,6 +426,21 @@ class TestParseArgs:
         assert args.aggregate_only == tmp_path
         assert args.model is None
         assert args.trials is None
+
+    def test_accepts_repeated_eval_category_exclude(self) -> None:
+        args = run_trials._parse_args(
+            [
+                "--model",
+                "openai:gpt-5.5",
+                "--trials",
+                "1",
+                "--eval-category-exclude",
+                "memory",
+                "--eval-category-exclude",
+                "tool_use",
+            ]
+        )
+        assert args.eval_category_exclude == ["memory", "tool_use"]
 
     def test_strips_leading_double_dash_from_pytest_extra(self) -> None:
         args = run_trials._parse_args(

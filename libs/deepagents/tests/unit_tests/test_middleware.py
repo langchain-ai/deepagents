@@ -2356,6 +2356,23 @@ class TestFilesystemMiddleware:
         grep_tool = next(tool for tool in tools_override if tool.name == "grep")
         assert grep_tool.description == custom_description
 
+    def test_grep_description_swap_copies_dict_tool_specs(self):
+        """Dict-shaped grep specs are swapped via a copy, leaving the input untouched."""
+        middleware = FilesystemMiddleware(backend=StateBackend(), system_prompt="")
+        default_description = next(tool for tool in middleware.tools if tool.name == "grep").description
+        original = {"name": "grep", "description": default_description}
+
+        rewritten = middleware._with_filtered_grep_description([original], include_execution=False)
+
+        rewritten_grep = next(tool for tool in rewritten if tool["name"] == "grep")
+        # Swapped via a copy, never mutated in place.
+        assert rewritten_grep is not original
+        assert original["description"] == default_description
+        # The copy carries the without-execute variant.
+        assert "execute tool" not in rewritten_grep["description"]
+        assert "rg '<regex>'" not in rewritten_grep["description"]
+        assert "LITERAL text pattern" in rewritten_grep["description"]
+
     def test_enabled_tools_system_prompt_lists_only_enabled_tools(self):
         """Dynamic system prompt only mentions the tools that survived filtering."""
         middleware = FilesystemMiddleware(

@@ -845,7 +845,9 @@ Examples:
 - `*.txt` - Find all text files in the backend's default root
 - `/subdir/**/*.md` - Find all markdown files under /subdir"""
 
-_GREP_REGEX_EXECUTE_FALLBACK = "- If you genuinely need regex, use the execute tool with `rg '<regex>'` instead."
+# Carries its own leading newline so the empty-string substitution below drops
+# the whole line cleanly, with no blank line left behind.
+_GREP_REGEX_EXECUTE_FALLBACK = "\n- If you genuinely need regex, use the execute tool with `rg '<regex>'` instead."
 
 _GREP_TOOL_DESCRIPTION_TEMPLATE = """Search for a LITERAL text pattern across files (NOT regex).
 
@@ -855,8 +857,7 @@ verbatim: regex metacharacters are treated as ordinary characters, NOT operators
 Do NOT pass a regex. In particular:
 - To match any of several strings, run a SEPARATE grep for each one. There is no
   `|` alternation: `grep(pattern="foo|bar")` looks for the literal text "foo|bar".
-- Do not use wildcards (`.*`) or escapes (`\\.`); they match those characters literally.
-{execute_fallback}
+- Do not use wildcards (`.*`) or escapes (`\\.`); they match those characters literally.{execute_fallback}
 
 Examples:
 - Search all files: `grep(pattern="TODO")`
@@ -865,10 +866,7 @@ Examples:
 - Literal special chars are fine: `grep(pattern="def __init__(self):")`"""
 
 GREP_TOOL_DESCRIPTION = _GREP_TOOL_DESCRIPTION_TEMPLATE.format(execute_fallback=_GREP_REGEX_EXECUTE_FALLBACK)
-_GREP_TOOL_DESCRIPTION_WITHOUT_EXECUTE = _GREP_TOOL_DESCRIPTION_TEMPLATE.format(execute_fallback="").replace(
-    "\n\nExamples:",
-    "\nExamples:",
-)
+_GREP_TOOL_DESCRIPTION_WITHOUT_EXECUTE = _GREP_TOOL_DESCRIPTION_TEMPLATE.format(execute_fallback="")
 
 EXECUTE_TOOL_DESCRIPTION = """Executes a shell command in an isolated sandbox environment.
 
@@ -2120,6 +2118,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
     def _create_grep_tool(self) -> BaseTool:
         """Create the grep tool."""
+        # Provisional default: assume execute is available so the description can
+        # point at `rg` for genuine regex. `_filter_unsupported_tools_and_apply_prompt`
+        # reconciles this to the backend's actual execute capability at request time,
+        # swapping in the without-execute variant when execute isn't active. The static
+        # description on `self.tools` is therefore only a placeholder until a request runs.
         tool_description = self._grep_tool_description(include_execution=True)
 
         def sync_grep(

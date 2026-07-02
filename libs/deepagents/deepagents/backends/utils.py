@@ -900,7 +900,12 @@ def regex_literal_hint(pattern: str) -> str | None:
     and silently miss. Callers gate this on a no-match result; the function
     itself only inspects the pattern.
 
-    Returns `None` when the pattern has no regex signals.
+    Args:
+        pattern: The literal grep pattern to inspect for regex signals.
+
+    Returns:
+        A one-line hint steering the caller toward literal search, or `None`
+            when the pattern has no regex signals.
     """
     if not _looks_like_regex(pattern):
         return None

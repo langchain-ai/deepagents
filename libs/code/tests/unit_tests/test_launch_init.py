@@ -321,7 +321,7 @@ class TestLaunchDependenciesScreen:
         assert max_height.cells < 16
 
     async def test_renders_other_category(self) -> None:
-        """Standalone extras (e.g. quickjs) get their own category."""
+        """Compatibility standalone extras get their own category."""
         statuses = (
             ExtraDependencyStatus(
                 name="quickjs", installed=(), missing=("langchain-quickjs",)

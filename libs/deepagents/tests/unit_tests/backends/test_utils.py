@@ -9,6 +9,7 @@ from pydantic import TypeAdapter
 from deepagents.backends.protocol import FileData, ReadResult
 from deepagents.backends.utils import (
     _EXTENSION_TO_FILE_TYPE,
+    _get_backend_read_file_type,
     _get_file_type,
     _glob_search_files,
     grep_matches_from_files,
@@ -246,6 +247,22 @@ def test_get_file_type_returns_text_for_unknown_extensions() -> None:
     assert _get_file_type("/foo/bar.txt") == "text"
     assert _get_file_type("/foo/bar.py") == "text"
     assert _get_file_type("/foo/bar") == "text"
+
+
+def test_get_file_type_does_not_recognize_mkv() -> None:
+    """`.mkv` is intentionally absent from the shared multimodal map."""
+    assert _get_file_type("/foo/bar.mkv") == "text"
+
+
+def test_get_backend_read_file_type_forces_mkv_to_binary() -> None:
+    """Backends must read `.mkv` as binary even though it is not in the map."""
+    assert _get_backend_read_file_type("/foo/bar.mkv") == "video"
+
+
+def test_get_backend_read_file_type_matches_get_file_type_for_other_extensions() -> None:
+    """The backend classifier only adds `.mkv`; everything else is unchanged."""
+    for path in ("/foo/bar.mp4", "/foo/bar.png", "/foo/bar.txt", "/foo/bar", "/foo/bar.pdf"):
+        assert _get_backend_read_file_type(path) == _get_file_type(path)
 
 
 def test_get_file_type_non_text_values_are_valid_content_block_types() -> None:

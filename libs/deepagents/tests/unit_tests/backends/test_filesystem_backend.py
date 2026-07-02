@@ -1,3 +1,4 @@
+import base64
 import logging
 import shutil
 import subprocess
@@ -13,7 +14,7 @@ from langchain_core.messages import ToolMessage
 from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents.backends import filesystem as fs_module
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.protocol import EditResult, ReadResult, WriteResult
+from deepagents.backends.protocol import DeleteResult, EditResult, ReadResult, WriteResult
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
@@ -255,6 +256,49 @@ def test_filesystem_backend_read_non_utf8_file(tmp_path: Path):
     assert isinstance(result, ReadResult)
     assert result.error is not None
     assert "chinese.txt" in result.error
+
+
+def test_filesystem_backend_reads_mkv_as_binary(tmp_path: Path) -> None:
+    """Local `.mkv` reads must be routed as binary before UTF-8 decoding."""
+    target = tmp_path / "clip.mkv"
+    raw = b"\x80\x81mkv bytes"
+    target.write_bytes(raw)
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    result = be.read(str(target))
+
+    assert isinstance(result, ReadResult)
+    assert result.error is None
+    assert result.file_data == {
+        "content": base64.standard_b64encode(raw).decode("ascii"),
+        "encoding": "base64",
+    }
+
+
+def test_filesystem_backend_rejects_oversized_video_before_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Local video reads fail before loading oversized files into memory."""
+    target = tmp_path / "clip.mp4"
+    target.write_bytes(b"abcd")
+    monkeypatch.setattr(fs_module, "MAX_VIDEO_INPUT_BYTES", 3)
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    result = be.read(str(target))
+
+    assert isinstance(result, ReadResult)
+    assert result.error == "Video file exceeds maximum input size of 3 bytes"
+
+
+def test_filesystem_backend_rejects_oversized_mkv_before_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Local `.mkv` reads use the video size guard before loading bytes."""
+    target = tmp_path / "clip.mkv"
+    target.write_bytes(b"abcd")
+    monkeypatch.setattr(fs_module, "MAX_VIDEO_INPUT_BYTES", 3)
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    result = be.read(str(target))
+
+    assert isinstance(result, ReadResult)
+    assert result.error == "Video file exceeds maximum input size of 3 bytes"
 
 
 def test_filesystem_backend_intercept_large_tool_result(tmp_path: Path):
@@ -1667,3 +1711,119 @@ class TestReadTrailingNewlineRoundtrip:
         assert result.error is not None
         assert "old_string ends with a newline" in result.error
         assert target.read_text() == "# Agent Role:\nyou are an assistant"
+
+
+class TestFilesystemDelete:
+    """Tests for FilesystemBackend.delete."""
+
+    def test_delete_existing_file(self, tmp_path: Path) -> None:
+        f = tmp_path / "a.txt"
+        write_file(f, "hello")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        result = be.delete("/a.txt")
+        assert isinstance(result, DeleteResult)
+        assert result.error is None
+        assert result.path == "/a.txt"
+        assert not f.exists()
+
+    def test_delete_missing_file_returns_error(self, tmp_path: Path) -> None:
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        result = be.delete("/missing.txt")
+        assert result.path is None
+        assert result.error is not None
+        assert "not found" in result.error
+
+    def test_delete_empty_directory(self, tmp_path: Path) -> None:
+        (tmp_path / "sub").mkdir()
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        result = be.delete("/sub")
+        assert result.error is None
+        assert result.path == "/sub"
+        assert not (tmp_path / "sub").exists()
+
+    def test_delete_directory_recursively(self, tmp_path: Path) -> None:
+        # A directory is removed along with all of its nested contents.
+        sub = tmp_path / "sub"
+        (sub / "deep").mkdir(parents=True)
+        write_file(sub / "b.txt", "b")
+        write_file(sub / "deep" / "d.txt", "d")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        result = be.delete("/sub")
+        assert result.error is None
+        assert result.path == "/sub"
+        assert not sub.exists()
+
+    def test_delete_directory_leaves_siblings(self, tmp_path: Path) -> None:
+        (tmp_path / "sub").mkdir()
+        write_file(tmp_path / "sub" / "b.txt", "b")
+        write_file(tmp_path / "keep.txt", "keep")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        assert be.delete("/sub").error is None
+        assert not (tmp_path / "sub").exists()
+        assert (tmp_path / "keep.txt").exists()
+
+    def test_delete_symlink_to_dir_does_not_follow(self, tmp_path: Path) -> None:
+        # Deleting a symlink that points at a directory removes only the link;
+        target = tmp_path / "target"
+        target.mkdir()
+        write_file(target / "keep.txt", "keep")
+        link = tmp_path / "link"
+        link.symlink_to(target, target_is_directory=True)
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+        result = be.delete(str(link))
+        assert result.error is None
+        assert not link.exists()
+        assert target.exists()
+        assert (target / "keep.txt").exists()
+
+    def test_delete_only_removes_target(self, tmp_path: Path) -> None:
+        write_file(tmp_path / "keep.txt", "keep")
+        write_file(tmp_path / "drop.txt", "drop")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        assert be.delete("/drop.txt").error is None
+        assert not (tmp_path / "drop.txt").exists()
+        assert (tmp_path / "keep.txt").exists()
+
+    async def test_adelete_existing_file(self, tmp_path: Path) -> None:
+        f = tmp_path / "a.txt"
+        write_file(f, "hello")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        result = await be.adelete("/a.txt")
+        assert result.error is None
+        assert result.path == "/a.txt"
+        assert not f.exists()
+
+    def test_delete_resolve_failure_returns_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A failure resolving the path surfaces as a deletion error, not a raise.
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        def _boom(_path: str) -> Path:
+            raise OSError
+
+        monkeypatch.setattr(be, "_resolve_path", _boom)
+        result = be.delete("/a.txt")
+        assert result.path is None
+        assert result.error is not None
+        assert "Error deleting" in result.error
+
+    def test_delete_unlink_failure_returns_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # An OSError from unlink (e.g. permission denied) is reported, file kept.
+        f = tmp_path / "a.txt"
+        write_file(f, "hello")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+        def _boom(_self: Path, *_args: object, **_kwargs: object) -> None:
+            raise OSError
+
+        monkeypatch.setattr(Path, "unlink", _boom)
+        result = be.delete("/a.txt")
+        assert result.path is None
+        assert result.error is not None
+        assert "Error deleting" in result.error
+        assert f.exists()

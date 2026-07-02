@@ -11,7 +11,7 @@ import re
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import Any, Literal, overload
+from typing import Any, Final, Literal, overload
 
 import wcmatch.glob as wcglob
 
@@ -19,6 +19,8 @@ from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMatch as _GrepMatch, GrepResult, ReadResult
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
+MAX_VIDEO_INPUT_BYTES: Final = 1024 * 1024 * 1024
+"""Maximum raw video payload size accepted by `read_file` frame extraction."""
 
 FileType = Literal["text", "image", "audio", "video", "file"]
 """Classification of a file by extension."""
@@ -55,6 +57,10 @@ _EXTENSION_TO_FILE_TYPE: dict[str, FileType] = {
     ".pptx": "file",
 }
 """Extension-to-type mapping for non-text files.
+
+Optional features may layer on additional classifications at the use site. For
+example, `read_file` treats `.mkv` as video only when the optional video
+dependencies are installed.
 
 Derived from Google's multimodal API supported formats:
 
@@ -218,6 +224,38 @@ def _get_file_type(path: str) -> FileType:
             Defaults to `"text"` for unrecognized extensions.
     """
     return _EXTENSION_TO_FILE_TYPE.get(PurePosixPath(path).suffix.lower(), "text")
+
+
+_VIDEO_EXTRA_EXTENSIONS: frozenset[str] = frozenset({".mkv"})
+"""Video container extensions handled outside the Google-derived multimodal map.
+
+These are intentionally absent from `_EXTENSION_TO_FILE_TYPE`, so a `read_file`
+without the optional `[video]` extra returns them as a generic file block rather
+than a native video block. Backends must still read them as binary — never
+text-decode them — and `read_file` layers frame extraction on top only when the
+`[video]` dependencies are installed.
+"""
+
+
+def _get_backend_read_file_type(path: str) -> FileType:
+    """Classify a file for backend reads, forcing known video containers to binary.
+
+    Backends decide binary-vs-text on `_get_file_type(...) != "text"`. Extensions
+    in `_VIDEO_EXTRA_EXTENSIONS` are absent from `_EXTENSION_TO_FILE_TYPE`, so
+    `_get_file_type` alone would treat them as text and corrupt the bytes (a raw
+    UTF-8 decode of a video, or line-slicing a base64 blob). Classify them as
+    `"video"` here so the binary read path runs on every backend.
+
+    Args:
+        path: File path to classify.
+
+    Returns:
+        `"video"` for `_VIDEO_EXTRA_EXTENSIONS`; otherwise the shared
+            `_get_file_type` classification.
+    """
+    if PurePosixPath(path).suffix.lower() in _VIDEO_EXTRA_EXTENSIONS:
+        return "video"
+    return _get_file_type(path)
 
 
 def _to_legacy_file_data(file_data: FileData) -> dict[str, Any]:

@@ -1077,17 +1077,22 @@ async def test_async_task_global_not_installed_when_disabled(
     ("code", "message"),
     [
         (
-            "await task({subagentType: 'worker'})",
+            "await task({subagentType: 'worker', label: 'lbl'})",
             "task() requires non-empty string field `description`",
         ),
         (
-            "await task({description: 'work'})",
+            "await task({description: 'work', label: 'lbl'})",
             "task() requires non-empty string field `subagentType`",
+        ),
+        (
+            "await task({description: 'work', subagentType: 'worker', label: 123})",
+            "task() field `label` must be a string when provided",
         ),
         (
             "await task({"
             "description: 'work', "
             "subagentType: 'worker', "
+            "label: 'lbl', "
             "responseSchema: 'bad'"
             "})",
             "task() field `responseSchema` must be an object when provided",
@@ -1124,7 +1129,7 @@ async def test_async_task_global_missing_task_tool_surfaces_as_eval_error(
     )
 
     outcome = await repl.eval_async(
-        "await task({description: 'work', subagentType: 'worker'})",
+        "await task({description: 'work', subagentType: 'worker', label: 'lbl'})",
         outer_runtime=runtime,
     )
 
@@ -1144,11 +1149,13 @@ async def test_async_task_global_returns_declarative_structured_response_object(
         "const first = await task({"
         "description: 'work', "
         "subagentType: 'worker', "
+        "label: 'first', "
         "responseSchema: schema"
         "});"
         "const second = await task({"
         "description: 'work again', "
         "subagentType: 'worker', "
+        "label: 'second', "
         "responseSchema: schema"
         "});"
         "JSON.stringify({"
@@ -1177,6 +1184,7 @@ async def test_async_task_global_rejects_compiled_response_schema(
         "await task({"
         "description: 'work', "
         "subagentType: 'worker', "
+        "label: 'lbl', "
         "responseSchema: {"
         "type: 'object', "
         "properties: {ok: {type: 'boolean'}}, "
@@ -1206,7 +1214,9 @@ async def test_async_task_global_uses_last_non_empty_ai_message(
     )
 
     outcome = await repl.eval_async(
-        "JSON.stringify(await task({description: 'work', subagentType: 'worker'}))",
+        "JSON.stringify(await task({"
+        "description: 'work', subagentType: 'worker', label: 'lbl'"
+        "}))",
         outer_runtime=_subagent_runtime(runnable),
     )
 
@@ -1227,7 +1237,7 @@ async def test_async_task_global_rejects_state_without_messages(
     )
 
     outcome = await repl.eval_async(
-        "await task({description: 'work', subagentType: 'worker'})",
+        "await task({description: 'work', subagentType: 'worker', label: 'lbl'})",
         outer_runtime=_subagent_runtime(runnable),
     )
 
@@ -1279,7 +1289,9 @@ async def test_async_task_global_limits_concurrency_per_repl(
     outcome = await repl.eval_async(
         "const calls = [];"
         "for (let i = 0; i < 64; i++) {"
-        "  calls.push(task({description: String(i), subagentType: 'worker'}));"
+        "  calls.push(task({"
+        "description: String(i), subagentType: 'worker', label: 'c' + i"
+        "}));"
         "}"
         "(await Promise.all(calls)).length",
         outer_runtime=_subagent_runtime(runnable),

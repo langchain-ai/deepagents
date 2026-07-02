@@ -2,6 +2,127 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.30](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.29...deepagents-code==0.1.30) (2026-07-02)
+
+### Features
+
+* Add reasoning effort selector ([#4403](https://github.com/langchain-ai/deepagents/issues/4403)) ([6ee0ac4](https://github.com/langchain-ai/deepagents/commit/6ee0ac4cca998f84e157187d565084e2a1912626))
+* Collapse completed tool calls into group summaries ([#4373](https://github.com/langchain-ai/deepagents/issues/4373)) ([3735829](https://github.com/langchain-ai/deepagents/commit/3735829a0c14fb1537daf930140c66b647c8222c))
+* Auto-detect MCP OAuth from 401 challenge ([#4364](https://github.com/langchain-ai/deepagents/issues/4364)) ([9763ffc](https://github.com/langchain-ai/deepagents/commit/9763ffceab8800526ae9fe10decdb2f32d8e4707))
+* Toast when opening a clicked URL ([#4368](https://github.com/langchain-ai/deepagents/issues/4368)) ([434f29e](https://github.com/langchain-ai/deepagents/commit/434f29e5cb3d94988e2a4d80b78452bee4b10812))
+
+### Bug Fixes
+
+* Allow `/remember` with args when no conversation history ([#4418](https://github.com/langchain-ai/deepagents/issues/4418)) ([5df9c83](https://github.com/langchain-ai/deepagents/commit/5df9c83b58f2529561848ae9f1364961e1c80641))
+* Persist rubric model after server restart ([#4419](https://github.com/langchain-ai/deepagents/issues/4419)) ([5605a68](https://github.com/langchain-ai/deepagents/commit/5605a681c9fec888d8c6dfbde2decd4692c8cef0))
+* Persist resume model state privately ([#4400](https://github.com/langchain-ai/deepagents/issues/4400)) ([bbd0f0d](https://github.com/langchain-ai/deepagents/commit/bbd0f0d1ddc9d22d399a819d7b4363f7997d119e))
+* Quiet routine ripgrep installer output ([#4417](https://github.com/langchain-ai/deepagents/issues/4417)) ([a52c18d](https://github.com/langchain-ai/deepagents/commit/a52c18d3ef8fe462d1289dca8798c51450e0368a))
+* Honest MCP OAuth callback close message ([#4410](https://github.com/langchain-ai/deepagents/issues/4410)) ([ef637f4](https://github.com/langchain-ai/deepagents/commit/ef637f4a3f38ee155ad7d31e64a5cdd7bfaee62c))
+
+## [0.1.29](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.28...deepagents-code==0.1.29) (2026-07-01)
+
+### Features
+
+* Add rubric iteration controls ([#4405](https://github.com/langchain-ai/deepagents/issues/4405)) ([d6692a7](https://github.com/langchain-ai/deepagents/commit/d6692a7c713490f170b17510d613e02ee37574ab))
+* Add Claude Sonnet 5 to model picker ([#4386](https://github.com/langchain-ai/deepagents/issues/4386)) ([64758dd](https://github.com/langchain-ai/deepagents/commit/64758dddf8b46c5b68c345fb1eac1fb7bcbf7f7e))
+
+### Bug Fixes
+
+* Full-width chat messages, hide scrollbar, flush input bg ([#4374](https://github.com/langchain-ai/deepagents/issues/4374)) ([1f8e8dc](https://github.com/langchain-ai/deepagents/commit/1f8e8dc942ac54c4014ac48f9345ee0201be0b1b))
+* Resolve editable SDK version metadata ([#4394](https://github.com/langchain-ai/deepagents/issues/4394)) ([3239bf4](https://github.com/langchain-ai/deepagents/commit/3239bf4edf2be3037bb18315463ac6a0c3537e5c))
+* Unblock MCP force reconnect modal ([#4396](https://github.com/langchain-ai/deepagents/issues/4396)) ([8b7eab0](https://github.com/langchain-ai/deepagents/commit/8b7eab023db686f577d16f4f9ac872205baf136f))
+
+## [0.1.28](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.27...deepagents-code==0.1.28) (2026-06-29)
+
+### Features
+
+* Add Fireworks session settings ([#4360](https://github.com/langchain-ai/deepagents/issues/4360)) ([90ebb1d](https://github.com/langchain-ai/deepagents/commit/90ebb1d68cb5942f07847f6dce48c14c7caef992))
+* `RubricMiddleware` implementation (`/goal`/`--goal` and `/rubric`/`--rubric`)
+  * Add rubric-backed goal workflow ([#4365](https://github.com/langchain-ai/deepagents/issues/4365)) ([8fca61d](https://github.com/langchain-ai/deepagents/commit/8fca61dc036888a4414ff5a4536b957c63dab4a5))
+  * Non-interactive rubric grading flags ([#4305](https://github.com/langchain-ai/deepagents/issues/4305)) ([1bcb112](https://github.com/langchain-ai/deepagents/commit/1bcb112ee78138eca9cb400c206ce198322aae32))
+* Adopt coding-agent-v1 trace metadata ([#4367](https://github.com/langchain-ai/deepagents/issues/4367)) ([cb39747](https://github.com/langchain-ai/deepagents/commit/cb3974748024fcec2e2ee0ccc0a9b23c880733a2))
+* Quit shortcut on completed update modal ([#4312](https://github.com/langchain-ai/deepagents/issues/4312)) ([5e6eae9](https://github.com/langchain-ai/deepagents/commit/5e6eae9f094a5167b6bf01f2d84cf06ca5cd80c3))
+
+### Bug Fixes
+
+* Redact LangSmith trace secrets by default ([#4356](https://github.com/langchain-ai/deepagents/issues/4356)) ([5e01fec](https://github.com/langchain-ai/deepagents/commit/5e01fec72d8b179a3b075b07268162d2eaebfe84))
+* Honor Baseten base URL env precedence ([#4328](https://github.com/langchain-ai/deepagents/issues/4328)) ([8f20d74](https://github.com/langchain-ai/deepagents/commit/8f20d74892112c3b88aaca63d8c04a355fd6726f))
+* Highlight just-installed provider on `/auth` reopen ([#4311](https://github.com/langchain-ai/deepagents/issues/4311)) ([85e47b5](https://github.com/langchain-ai/deepagents/commit/85e47b532b5caf92a52f1a070a95bdb39bee6d3d))
+* Clear transient update launch status ([#4355](https://github.com/langchain-ai/deepagents/issues/4355)) ([b870b18](https://github.com/langchain-ai/deepagents/commit/b870b18750f65442009028a85a2ac18f1b06640c))
+* Clearer MCP config JSON parse errors ([#4327](https://github.com/langchain-ai/deepagents/issues/4327)) ([9cee602](https://github.com/langchain-ai/deepagents/commit/9cee60274d38d4ad8a2d7a7e9d3ae59aebce5261))
+* Record shell output as user context ([#4353](https://github.com/langchain-ai/deepagents/issues/4353)) ([0d504a5](https://github.com/langchain-ai/deepagents/commit/0d504a5df8454e871597932ce1cd3e95b10ab00e))
+* Suppress expected MCP reauth logs ([#4359](https://github.com/langchain-ai/deepagents/issues/4359)) ([15ee384](https://github.com/langchain-ai/deepagents/commit/15ee384117ccd955f7481346dd92b7f4b007a60d))
+
+### Performance Improvements
+
+* Background refresh for `@` file completion cache ([#3911](https://github.com/langchain-ai/deepagents/issues/3911)) ([aa22d6b](https://github.com/langchain-ai/deepagents/commit/aa22d6b6d5a49e4d6c3aa2d4932df75d14d65f78))
+* Speed up shutdown after `Ctrl+C`/`Ctrl+D` ([#4351](https://github.com/langchain-ai/deepagents/issues/4351)) ([db441ed](https://github.com/langchain-ai/deepagents/commit/db441ed306a8e03fb68f2ae6a2c08523e248976d))
+
+## [0.1.27](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.26...deepagents-code==0.1.27) (2026-06-26)
+
+### Features
+
+* Show last update check time in `dcode doctor` ([#4307](https://github.com/langchain-ai/deepagents/issues/4307)) ([b669f37](https://github.com/langchain-ai/deepagents/commit/b669f37fb08998cfbf983da76f57822215614e7b))
+
+### Bug Fixes
+
+* `dcode doctor` shows `not configured` for unset tracing ([#4318](https://github.com/langchain-ai/deepagents/issues/4318)) ([e323d0c](https://github.com/langchain-ai/deepagents/commit/e323d0c7d91f3b11e03a016c14cf52008dc66b55))
+* Drop duplicate token-request `client_id` under Basic auth ([#4323](https://github.com/langchain-ai/deepagents/issues/4323)) ([426dfad](https://github.com/langchain-ai/deepagents/commit/426dfad3ea1e453914cb87efa8fc70fb85a9efcb))
+* Include skill invocations in input history ([#4211](https://github.com/langchain-ai/deepagents/issues/4211)) ([7b8d0b2](https://github.com/langchain-ai/deepagents/commit/7b8d0b2ec184e0d9a0cbe858a0d9a7128791969d))
+* Offload `create_model` in server graph factory to unblock Codex ([#4324](https://github.com/langchain-ai/deepagents/issues/4324)) ([064ea0c](https://github.com/langchain-ai/deepagents/commit/064ea0c6851353d0b0bc347a0758149765688945))
+
+## [0.1.26](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.25...deepagents-code==0.1.26) (2026-06-26)
+
+### Bug Fixes
+
+* Pin app version when installing extras ([#4313](https://github.com/langchain-ai/deepagents/issues/4313)) ([c20c8e2](https://github.com/langchain-ai/deepagents/commit/c20c8e2fc138f72f1444107d2a936305a591807b))
+
+## [0.1.25](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.24...deepagents-code==0.1.25) (2026-06-26)
+
+### Bug Fixes
+
+* Bind ephemeral port instead of squatting `langgraph dev`'s 2024 ([#4264](https://github.com/langchain-ai/deepagents/issues/4264)) ([11e5359](https://github.com/langchain-ai/deepagents/commit/11e5359851f0291783661b4311ad5e4436a36fb7))
+* Block dotenv shell startup hooks ([#4288](https://github.com/langchain-ai/deepagents/issues/4288)) ([686d6f3](https://github.com/langchain-ai/deepagents/commit/686d6f3a1da8b6393efb4c0cf87b3eb35e0cca50))
+* Defer server graph construction ([#4300](https://github.com/langchain-ai/deepagents/issues/4300)) ([220dfc0](https://github.com/langchain-ai/deepagents/commit/220dfc0e6b03f9ccb499c6b850c586b9d57cc077))
+  * Avoid blocking MCP imports during graph readiness ([#4302](https://github.com/langchain-ai/deepagents/issues/4302)) ([7533ca8](https://github.com/langchain-ai/deepagents/commit/7533ca89f3afc9863ba5e1ecee2d4c5974dea320))
+* Gate `delete` file operations ([#4299](https://github.com/langchain-ai/deepagents/issues/4299)) ([92a8681](https://github.com/langchain-ai/deepagents/commit/92a86819adfefbc6ccfd01a861191ba292eca754))
+* Handle recursive `fetch_url` conversion ([#4257](https://github.com/langchain-ai/deepagents/issues/4257)) ([f240a40](https://github.com/langchain-ai/deepagents/commit/f240a40dc05d812c38e9926c1d81ba38deb86e3f))
+* Report editable SDK runtime version ([#4304](https://github.com/langchain-ai/deepagents/issues/4304)) ([4439e91](https://github.com/langchain-ai/deepagents/commit/4439e912da4bfa6f1e38e14b5a03d2bfe9367d3b))
+* Show months instead of "0y ago" for 360-364 day old timestamps ([#4267](https://github.com/langchain-ai/deepagents/issues/4267)) ([820b331](https://github.com/langchain-ai/deepagents/commit/820b331552cb7ce4695ddca3c9b8343a3144392b))
+* Surface `/auth`-stored credentials in `config show`/`get` ([#4258](https://github.com/langchain-ai/deepagents/issues/4258)) ([c7c8788](https://github.com/langchain-ai/deepagents/commit/c7c8788ecf0068914298a6055a5f3fd31c36bd44))
+* Switch input mode without flashing the mode trigger ([#4243](https://github.com/langchain-ai/deepagents/issues/4243)) ([fc5d9cb](https://github.com/langchain-ai/deepagents/commit/fc5d9cb8fb978ec95f98407692d4809ea1e86577))
+
+## [0.1.24](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.23...deepagents-code==0.1.24) (2026-06-25)
+
+### Features
+
+* Enable `js_eval` by default ([#4245](https://github.com/langchain-ai/deepagents/issues/4245)) ([2e04ff3](https://github.com/langchain-ai/deepagents/commit/2e04ff397e60389c9a19c4a9b528e15602ad8338))
+* Dynamic subagents UI ([#4221](https://github.com/langchain-ai/deepagents/issues/4221)) ([10bcba2](https://github.com/langchain-ai/deepagents/commit/10bcba25600e51aba135f170b34aa6315c0f53d6))
+* Gate onboarding integrations modal behind opt-in flag ([#4227](https://github.com/langchain-ai/deepagents/issues/4227)) ([6c930c5](https://github.com/langchain-ai/deepagents/commit/6c930c5e4502f572be554acc896c5fb6d061e0e5))
+
+### Bug Fixes
+
+* Eager managed ripgrep install via `dcode tools install` ([#4199](https://github.com/langchain-ai/deepagents/issues/4199)) ([cf536f3](https://github.com/langchain-ai/deepagents/commit/cf536f339958d6726fa41f896c4a3e42df644c9f))
+* Interrupt remote runs on chat cancellation ([#4234](https://github.com/langchain-ai/deepagents/issues/4234)) ([37c5fa2](https://github.com/langchain-ai/deepagents/commit/37c5fa23e621616836694bc59c1b0c38def81604))
+* Sync approval toggles during active runs ([#4239](https://github.com/langchain-ai/deepagents/issues/4239)) ([4600365](https://github.com/langchain-ai/deepagents/commit/4600365ea0b60c3e9113ecf59b5336be37d03428))
+* Clear stale live approval mode keys ([#4242](https://github.com/langchain-ai/deepagents/issues/4242)) ([f11a769](https://github.com/langchain-ai/deepagents/commit/f11a76962c9d536a38e27ac05b32feca364b2424))
+
+## [0.1.23](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.22...deepagents-code==0.1.23) (2026-06-25)
+
+### Features
+
+* Collect Tavily key during onboarding ([#4233](https://github.com/langchain-ai/deepagents/issues/4233)) ([e321cba](https://github.com/langchain-ai/deepagents/commit/e321cba5701313e974f979069186680f1a39587c))
+* Surface `/auth` in `/trace not-configured` hint ([#4206](https://github.com/langchain-ai/deepagents/issues/4206)) ([392e410](https://github.com/langchain-ai/deepagents/commit/392e410e48639a56fda5e35b6f7f85a5215cce9c))
+* Add Opus 4.8 to recommended models ([#4204](https://github.com/langchain-ai/deepagents/issues/4204)) ([8faf2b0](https://github.com/langchain-ai/deepagents/commit/8faf2b025f8429481a41a3e65544d26614e53589))
+
+### Bug Fixes
+
+* `--reinstall` on `/install` so upgrades rebuild a clean env ([#4196](https://github.com/langchain-ai/deepagents/issues/4196)) ([5e152ac](https://github.com/langchain-ai/deepagents/commit/5e152ac0256d64376f96b293f8844bc8acc993ec))
+* Suppress auto-update migration notice on fresh installs ([#4224](https://github.com/langchain-ai/deepagents/issues/4224)) ([eb8ff80](https://github.com/langchain-ai/deepagents/commit/eb8ff809a1b3130a261083c66a193e532095c6db))
+* Bake release commit into `dcode doctor` ([#4225](https://github.com/langchain-ai/deepagents/issues/4225)) ([6dc0246](https://github.com/langchain-ai/deepagents/commit/6dc0246f5c6e9170e05191e1c82fad6975ac945c))
+* Drop redundant version from "already up to date" message ([#4223](https://github.com/langchain-ai/deepagents/issues/4223)) ([5d080df](https://github.com/langchain-ai/deepagents/commit/5d080df2776d380214bf20ae31266b9628e4e5b0))
+* Note subscription plans unusable for Anthropic in `/auth` ([#4207](https://github.com/langchain-ai/deepagents/issues/4207)) ([28cd19d](https://github.com/langchain-ai/deepagents/commit/28cd19db08bacf981ab2c91195638e66072816fe))
+
 ## [0.1.22](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.21...deepagents-code==0.1.22) (2026-06-24)
 
 ### Features

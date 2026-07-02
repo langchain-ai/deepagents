@@ -335,6 +335,24 @@ def test_release_pr_change_covers_repo_wide_lockfiles() -> None:
     )
 
 
+def test_release_title_ignores_lockfile_churn_for_other_package_dirs() -> None:
+    """Release PRs ignore lockfiles in unrelated package dirs when checking scope."""
+    changed = [
+        ".github/RELEASING.md",
+        "libs/code/AGENTS.md",
+        "libs/code/CHANGELOG.md",
+        "libs/code/deepagents_code/_version.py",
+        "libs/code/pyproject.toml",
+        "libs/code/uv.lock",
+        "libs/evals/uv.lock",
+        "libs/talon/uv.lock",
+    ]
+    config = json.loads(DEFAULT_CONFIG.read_text(encoding="utf-8"))
+
+    assert not is_release_pr_change("release(deepagents-code): 0.1.23", changed)
+    assert find_offenders("release(deepagents-code): 0.1.23", changed, config) == []
+
+
 def test_release_title_with_mixed_files_does_not_bypass() -> None:
     """A release artifact cannot launder an accompanying source edit."""
     changed = ["libs/code/CHANGELOG.md", "libs/code/deepagents_code/app.py"]

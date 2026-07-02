@@ -10,6 +10,7 @@ from langgraph.config import get_config
 from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends.protocol import (
     BackendProtocol,
+    DeleteResult,
     EditResult,
     FileData,
     FileDownloadResponse,
@@ -23,7 +24,7 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.utils import (
-    _get_file_type,
+    _get_backend_read_file_type,
     _glob_search_files,
     _to_legacy_file_data,
     create_file_data,
@@ -230,7 +231,7 @@ class StateBackend(BackendProtocol):
         if file_data is None:
             return ReadResult(error=f"File '{file_path}' not found")
 
-        if _get_file_type(file_path) != "text":
+        if _get_backend_read_file_type(file_path) != "text":
             return ReadResult(file_data=file_data)
 
         sliced = slice_read_response(file_data, offset, limit)
@@ -251,16 +252,14 @@ class StateBackend(BackendProtocol):
         file_path: str,
         content: str,
     ) -> WriteResult:
-        """Create a new file with content.
+        """Write content to a file, creating it or overwriting it if it already exists.
 
         The update is queued directly via `CONFIG_KEY_SEND`.
         """
         files = self._read_files()
 
-        if file_path in files:
-            return WriteResult(error=f"Cannot write to {file_path} because it already exists. Read and then make an edit, or write to a new path.")
-
-        new_file_data = create_file_data(content)
+        existing = files.get(file_path)
+        new_file_data = update_file_data(existing, content) if existing is not None else create_file_data(content)
         self._send_files_update({file_path: self._prepare_for_storage(new_file_data)})
         return WriteResult(path=file_path)
 
@@ -291,6 +290,32 @@ class StateBackend(BackendProtocol):
         new_file_data = update_file_data(file_data, new_content)
         self._send_files_update({file_path: self._prepare_for_storage(new_file_data)})
         return EditResult(path=file_path, occurrences=int(occurrences))
+
+    def delete(self, file_path: str) -> DeleteResult:
+        """Delete a file or directory from state.
+
+        Deleting a path removes the exact file at `file_path` plus every nested
+        key under it (the prefix `file_path` + "/"), so a directory is removed
+        recursively. Each removal is queued via `CONFIG_KEY_SEND` as a ``None``
+        value, which the `files` channel reducer interprets as a deletion marker.
+
+        Args:
+            file_path: Path of the file or directory to delete.
+
+        Returns:
+            `DeleteResult` with `file_path` on success, or an error if nothing is
+                stored at or under it.
+        """
+        files = self._read_files()
+
+        base = file_path.rstrip("/")
+        prefix = base + "/"
+        to_delete = [key for key in files if key == base or key.startswith(prefix)]
+        if not to_delete:
+            return DeleteResult(error=f"Error: File '{file_path}' not found")
+
+        self._send_files_update(dict.fromkeys(to_delete, None))
+        return DeleteResult(path=file_path)
 
     def grep(
         self,

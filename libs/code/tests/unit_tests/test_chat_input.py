@@ -11,6 +11,7 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Container
 from textual.widgets import Static
+from textual.widgets.text_area import Selection
 
 from deepagents_code import _textual_patches as _textual_patches
 from deepagents_code.command_registry import SLASH_COMMANDS
@@ -26,6 +27,7 @@ from deepagents_code.widgets.chat_input import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Coroutine
     from pathlib import Path
 
     from textual.pilot import Pilot
@@ -225,6 +227,122 @@ class _RecordingApp(App[None]):
 
     def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         self.submitted.append(event)
+
+
+async def _noop() -> None:
+    pass
+
+
+class _RefreshController:
+    def __init__(self) -> None:
+        self.cwd_values: list[Path] = []
+        self.force_values: list[bool] = []
+
+    def set_cwd(self, cwd: Path) -> None:
+        self.cwd_values.append(cwd)
+
+    def warm_cache(self, *, force: bool = False) -> Coroutine[object, object, None]:
+        self.force_values.append(force)
+        return _noop()
+
+
+class TestChatInputFileCacheRefresh:
+    def test_refresh_file_cache_uses_exclusive_worker(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        chat = ChatInput()
+        controller = _RefreshController()
+        worker_calls: list[dict[str, object]] = []
+
+        def fake_run_worker(
+            work: Coroutine[object, object, None], **kwargs: object
+        ) -> None:
+            work.close()
+            worker_calls.append(kwargs)
+
+        monkeypatch.setattr(chat, "_file_controller", controller, raising=False)
+        monkeypatch.setattr(chat, "run_worker", fake_run_worker)
+
+        chat._refresh_file_cache()
+
+        assert controller.force_values == [True]
+        assert worker_calls == [
+            {
+                "exclusive": True,
+                "group": chat_input_module._FILE_CACHE_WORKER_GROUP,
+                "exit_on_error": False,
+            }
+        ]
+
+    def test_set_cwd_uses_file_cache_worker_group(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        chat = ChatInput()
+        controller = _RefreshController()
+        worker_calls: list[dict[str, object]] = []
+
+        def fake_run_worker(
+            work: Coroutine[object, object, None], **kwargs: object
+        ) -> None:
+            work.close()
+            worker_calls.append(kwargs)
+
+        monkeypatch.setattr(chat, "_file_controller", controller, raising=False)
+        monkeypatch.setattr(chat, "run_worker", fake_run_worker)
+
+        chat.set_cwd(tmp_path)
+
+        assert controller.cwd_values == [tmp_path]
+        assert controller.force_values == [False]
+        assert worker_calls == [
+            {
+                "exclusive": False,
+                "group": chat_input_module._FILE_CACHE_WORKER_GROUP,
+                "exit_on_error": False,
+            }
+        ]
+
+    def test_refresh_file_cache_noop_without_controller(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Refresh is a no-op before the file controller is wired up."""
+        chat = ChatInput()
+        worker_calls: list[object] = []
+        monkeypatch.setattr(
+            chat,
+            "run_worker",
+            lambda *args, **kwargs: worker_calls.append((args, kwargs)),
+        )
+
+        assert getattr(chat, "_file_controller", None) is None
+        chat._refresh_file_cache()
+
+        assert worker_calls == []
+
+    async def test_on_mount_schedules_file_cache_refresh(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`on_mount` schedules the periodic `@` file-cache refresh.
+
+        Without this the cache would only warm on mount and cwd switches, so
+        files created or deleted mid-session would never surface.
+        """
+        interval_calls: list[tuple[float, object]] = []
+
+        def fake_set_interval(
+            _self: ChatInput, interval: float, callback: object, **_kwargs: object
+        ) -> None:
+            interval_calls.append((interval, callback))
+
+        monkeypatch.setattr(ChatInput, "set_interval", fake_set_interval)
+
+        app = _ChatInputTestApp()
+        async with app.run_test():
+            chat = app.query_one(ChatInput)
+            assert (
+                chat_input_module._FILE_CACHE_REFRESH_INTERVAL_SECONDS,
+                chat._refresh_file_cache,
+            ) in interval_calls
 
 
 class TestChatInputScrollbar:
@@ -847,6 +965,62 @@ class TestPromptIndicator:
             chat_input.mode = "shell"
             await pilot.pause()
             assert any(m.mode == "shell" for m in messages)
+
+
+class TestModeSwitchNoJitter:
+    """Regression tests: mode glyph and completion popup update atomically.
+
+    Switching modes (e.g. `/` → `!` or `!` → `/`) must change the prompt glyph
+    and completion popup visibility in the same frame. A deferred ordering that
+    closes the popup one frame before the glyph changes (or vice versa) creates
+    visible jitter.
+    """
+
+    async def test_slash_to_bang_updates_glyph_and_popup_same_frame(self) -> None:
+        """Switching from command mode to shell mode atomically hides popup."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            prompt = chat.query_one("#prompt", Static)
+            popup = chat.query_one(CompletionPopup)
+            assert chat._text_area is not None
+
+            # Enter command mode — popup visible, glyph is "/"
+            await pilot.press("/")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+            assert _prompt_text(prompt) == "/"
+            assert popup.styles.display == "block"
+
+            # Switch to shell mode — popup hidden AND glyph is "$" after one pause
+            await pilot.press("!")
+            await pilot.pause()
+            assert chat.mode == "shell"
+            assert _prompt_text(prompt) == "$"
+            assert popup.styles.display == "none"
+
+    async def test_bang_to_slash_updates_glyph_and_popup_same_frame(self) -> None:
+        """Switching from shell mode to command mode atomically shows popup."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            prompt = chat.query_one("#prompt", Static)
+            popup = chat.query_one(CompletionPopup)
+            assert chat._text_area is not None
+
+            # Enter shell mode first — popup hidden, glyph is "$"
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell"
+            assert _prompt_text(prompt) == "$"
+            assert popup.styles.display == "none"
+
+            # Switch to command mode — popup visible AND glyph is "/" after one pause
+            await pilot.press("/")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+            assert _prompt_text(prompt) == "/"
+            assert popup.styles.display == "block"
 
 
 class TestHistoryNavigationFlag:
@@ -1569,6 +1743,166 @@ class TestModePrefixStripping:
             assert chat.mode == "command"
             assert chat._text_area.text == ""
 
+    async def test_handle_mode_prefix_keystroke_switches_without_text_change(
+        self,
+    ) -> None:
+        """A typed mode selector is consumed without inserting the character.
+
+        Regression guard for the `!`-flash: `handle_mode_prefix_keystroke`
+        consumes the keystroke and flips the mode directly when needed, so the
+        trigger is never inserted (and thus never flashes for a frame before
+        stripping).
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            assert chat.handle_mode_prefix_keystroke("!") is True
+            await pilot.pause()
+            assert chat.mode == "shell"
+            assert chat._text_area.text == ""
+
+            # Second bang promotes to incognito, still without inserted text.
+            assert chat.handle_mode_prefix_keystroke("!") is True
+            await pilot.pause()
+            assert chat.mode == "shell_incognito"
+            assert chat._text_area.text == ""
+
+            # A third bang in incognito is literal body text — not consumed.
+            assert chat.handle_mode_prefix_keystroke("!") is False
+            # Non-trigger characters are never consumed.
+            assert chat.handle_mode_prefix_keystroke("a") is False
+
+    async def test_redundant_typed_slash_keystroke_stays_command_mode(self) -> None:
+        """A redundant `/` at the command prompt is consumed as a mode selector."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("/")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+            assert chat._text_area.text == ""
+
+            await pilot.press("/")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "command"
+            assert chat._text_area.text == ""
+
+    async def test_typed_bang_keystroke_skips_strip_round_trip(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pressing `!` enters shell mode without an insert-then-strip round trip."""
+        strip_calls: list[int] = []
+        original = ChatInput._strip_mode_prefix
+
+        def _spy(self: ChatInput, length: int = 1) -> None:
+            strip_calls.append(length)
+            original(self, length)
+
+        monkeypatch.setattr(ChatInput, "_strip_mode_prefix", _spy)
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "shell"
+            assert chat._text_area.text == ""
+            assert strip_calls == []
+
+    async def test_typed_slash_keystroke_enters_command_mode_with_completions(
+        self,
+    ) -> None:
+        """Pressing `/` enters command mode and activates completions, no flash."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("/")
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "command"
+            assert chat._text_area.text == ""
+            assert chat._completion_manager is not None
+            assert chat._completion_manager._active is not None
+
+    async def test_typed_bang_not_at_start_is_literal(self) -> None:
+        """A `!` typed mid-text is body content, not a mode switch."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("ab")
+            await pilot.pause()
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == "ab!"
+
+    async def test_typed_trigger_at_cursor_zero_with_text_switches_mode(self) -> None:
+        """A trigger typed at start of existing text switches mode, keeps text.
+
+        Exercises the `cursor_location == (0, 0)` arm of the `_on_key` guard
+        with a non-empty input: the keystroke is consumed (no inserted `!`) and
+        the body text is preserved, matching the legacy insert-then-strip path.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("abc")
+            await pilot.pause()
+            chat._text_area.move_cursor((0, 0))
+            await pilot.pause()
+
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "shell"
+            assert chat._text_area.text == "abc"
+
+    async def test_typed_trigger_with_selection_is_not_intercepted(self) -> None:
+        """A trigger typed over a selection replaces it instead of switching.
+
+        A backward selection puts the cursor at `(0, 0)` while leaving the
+        selection non-empty, so only the `selection.is_empty` arm of the
+        `_on_key` guard keeps the keystroke from being intercepted. Removing
+        that arm would swallow the `/` and strand the selected text in the
+        input, which this test catches.
+        """
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.insert("ab")
+            await pilot.pause()
+            # Anchor at end, cursor at start: cursor_location is (0, 0) but the
+            # selection is non-empty.
+            chat._text_area.selection = Selection((0, 2), (0, 0))
+            await pilot.pause()
+            assert chat._text_area.cursor_location == (0, 0)
+            assert not chat._text_area.selection.is_empty
+
+            await pilot.press("/")
+            await _pause_for_strip(pilot)
+
+            # TextArea replaced the selected "ab" with "/", which the change
+            # handler then detected and stripped into command mode. The key
+            # point: the selected text did not survive as literal input.
+            assert chat._text_area.text == ""
+            assert chat.mode == "command"
+
     async def test_mode_stays_on_empty_text(self) -> None:
         """Clearing text after entering shell mode should stay in mode."""
         app = _ChatInputTestApp()
@@ -1608,6 +1942,24 @@ class TestModePrefixStripping:
             await pilot.pause()
             assert chat.mode == "normal"
 
+    async def test_backspace_on_empty_incognito_exits_to_normal(self) -> None:
+        """Backspace cancels incognito mode instead of demoting to shell mode."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("!")
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell_incognito"
+            assert chat._text_area.text == ""
+
+            await pilot.press("backspace")
+            await pilot.pause()
+            assert chat.mode == "normal"
+            assert chat._text_area.text == ""
+
     async def test_backspace_on_single_char_stays_in_mode(self) -> None:
         """Deleting last char in command mode should stay in mode, not exit."""
         app = _ChatInputTestApp()
@@ -1635,8 +1987,8 @@ class TestModePrefixStripping:
             await pilot.pause()
             assert chat.mode == "normal"
 
-    async def test_backspace_at_cursor_zero_with_text_exits_mode(self) -> None:
-        """Backspace at cursor position 0 with text after cursor exits mode."""
+    async def test_backspace_at_cursor_zero_with_text_stays_in_mode(self) -> None:
+        """Backspace only exits a mode prompt when the input is empty."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -1655,10 +2007,12 @@ class TestModePrefixStripping:
             chat._text_area.move_cursor((0, 0))
             await pilot.pause()
 
-            # Backspace at position 0 with text after cursor — should exit mode
+            # Backspace at position 0 with text after cursor is a text-editing
+            # no-op; it should not cancel the active mode.
             await pilot.press("backspace")
             await pilot.pause()
-            assert chat.mode == "normal"
+            assert chat.mode == "command"
+            assert chat._text_area.text == "help"
 
     async def test_backspace_exit_mode_dismisses_completion(self) -> None:
         """Exiting mode via backspace-on-empty should hide the completion popup."""
@@ -1914,6 +2268,39 @@ class TestModePrefixStripping:
 
 class TestExitModePreservesText:
     """Exiting shell/command mode should preserve typed text."""
+
+    async def test_exit_empty_shell_mode_does_not_restore_prefix(self) -> None:
+        """Escape cancels shell mode; it does not turn `!` back into text."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell"
+            assert chat._text_area.text == ""
+
+            assert chat.exit_mode() is True
+            assert chat.mode == "normal"
+            assert chat._text_area.text == ""
+
+    async def test_exit_empty_incognito_mode_does_not_restore_prefix(self) -> None:
+        """Escape cancels incognito mode; it does not turn `!!` back into text."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await pilot.press("!")
+            await pilot.press("!")
+            await _pause_for_strip(pilot)
+            assert chat.mode == "shell_incognito"
+            assert chat._text_area.text == ""
+
+            assert chat.exit_mode() is True
+            assert chat.mode == "normal"
+            assert chat._text_area.text == ""
 
     async def test_exit_shell_mode_keeps_text(self) -> None:
         """Pressing Escape in shell mode should switch to normal but keep text."""
@@ -3576,7 +3963,7 @@ class TestArgumentHints:
             assert app.submitted[0].value == "/remember"
 
     async def test_hint_cleared_when_backspace_exits_command_mode(self) -> None:
-        """Backspace mode exit clears ghost text without needing a text edit."""
+        """Backspace mode exit clears stale ghost text without a text edit."""
         app = _ChatInputTestApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -3584,19 +3971,17 @@ class TestArgumentHints:
 
             chat._text_area.insert("/")
             await _pause_for_strip(pilot)
-            chat._text_area.insert("remember ")
-            await pilot.pause()
-            assert chat._text_area.argument_hint == "[context]"
+            assert chat.mode == "command"
+            assert chat._text_area.text == ""
 
-            chat._text_area.move_cursor((0, 0))
-            await pilot.pause()
+            chat._text_area.argument_hint = "[context]"
             await pilot.press("backspace")
             await pilot.pause()
 
             assert chat.mode == "normal"
-            assert chat._text_area.text == "remember "
+            assert chat._text_area.text == ""
             assert chat._text_area.argument_hint == ""
-            assert _render_text_area_line(chat._text_area) == "remember"
+            assert _render_text_area_line(chat._text_area) == ""
 
     async def test_hint_not_shown_in_normal_mode(self) -> None:
         """Ghost text does not appear when not in command mode."""

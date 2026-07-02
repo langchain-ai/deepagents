@@ -310,20 +310,30 @@ def find_offenders(
 
     Returns:
         Sorted list of offender objects with `package` and `dirs` keys. Empty
-            when the PR is a release-please artifact update (`is_release_pr_change`),
             when the title declares no package scopes, when no package dirs are
-            touched, or when every touched package is covered by a declared scope.
+            touched (for release PRs, after release-managed artifacts such as
+            `uv.lock` files are filtered out), or when every touched package is
+            covered by a declared scope.
 
     Raises:
         ValueError: If required config sections are missing or malformed.
     """
-    # Computed before the release short-circuit so a malformed labeler config
-    # still fails closed (raises) on release PRs rather than passing unchecked.
+    # Computed before the release filtering so a malformed labeler config still
+    # fails closed (raises) on release PRs rather than passing unchecked.
     declared = declared_packages(title, config)
-    if is_release_pr_change(title, changed, release_config_path=release_config_path):
-        return []
+    if is_release_title(title):
+        # Validate the release config even when no package offenders remain. Then
+        # ignore release-managed artifacts for package-dir matching: release PRs
+        # often regenerate dependent `uv.lock` files in packages unrelated to the
+        # release component, but ordinary source edits must still be checked.
+        _release_files(release_config_path)
+        changed = [
+            file
+            for file in changed
+            if not is_release_file(file, release_config_path=release_config_path)
+        ]
 
-    if not declared:
+    if not changed or not declared:
         return []
 
     touched = changed_packages(changed, config)
@@ -357,9 +367,10 @@ def main(
     try:
         # Wrap the labeler-config read so its errors name the labeler file. The
         # outer handler also catches ValueErrors raised while reading the
-        # release config (via find_offenders -> is_release_pr_change), whose
-        # messages name release-please-config.json themselves — so the generic
-        # prefix below does not mis-attribute one config's failure to the other.
+        # release config — by find_offenders (via `_release_files`) and by the
+        # is_release_pr_change call below — whose messages name
+        # release-please-config.json themselves, so the generic prefix below
+        # does not mis-attribute one config's failure to the other.
         try:
             config = json.loads(config_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as e:

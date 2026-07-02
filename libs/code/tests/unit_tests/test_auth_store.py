@@ -264,6 +264,14 @@ class TestCorruption:
         with pytest.raises(RuntimeError, match="Delete the file"):
             auth_store.load_credentials()
 
+    def test_non_utf8_raises(self, fake_home: Path) -> None:
+        """A non-UTF-8 file surfaces the deletion hint, not a `UnicodeDecodeError`."""
+        path = _auth_file(fake_home)
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"\xff\xfe not utf-8")
+        with pytest.raises(RuntimeError, match="Delete the file"):
+            auth_store.load_credentials()
+
     def test_unknown_version_raises(self, fake_home: Path) -> None:
         """A future schema version is rejected."""
         path = _auth_file(fake_home)

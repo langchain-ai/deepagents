@@ -13,6 +13,14 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+_UPDATE_CHECK_SELF_MANAGED_MARK = "self_managed_update_check"
+
+
+def _self_manages_update_check(request: pytest.FixtureRequest) -> bool:
+    """Return whether the test owns app-startup update-check setup."""
+    return request.node.get_closest_marker(_UPDATE_CHECK_SELF_MANAGED_MARK) is not None
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _warm_model_caches() -> None:
     """Pre-populate model-config caches once per xdist worker.
@@ -81,13 +89,34 @@ def _clear_langsmith_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "LANGCHAIN_API_KEY",
         "LANGSMITH_TRACING",
         "LANGCHAIN_TRACING_V2",
+        "LANGSMITH_ENDPOINT",
+        "LANGCHAIN_ENDPOINT",
         "LANGSMITH_PROJECT",
         "DEEPAGENTS_CODE_LANGSMITH_PROJECT",
+        "DEEPAGENTS_CODE_LANGSMITH_REDACT",
         "DEEPAGENTS_CODE_LANGSMITH_API_KEY",
         "DEEPAGENTS_CODE_LANGCHAIN_API_KEY",
         "DEEPAGENTS_CODE_LANGSMITH_TRACING",
         "DEEPAGENTS_CODE_LANGCHAIN_TRACING_V2",
     ):
+        monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _clear_tavily_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent a Tavily key loaded from .env from leaking into tests.
+
+    Like `LANGSMITH_*`, `dotenv.load_dotenv()` at `deepagents_code.config`
+    import time may inject `TAVILY_API_KEY` from a developer's local `.env`.
+    A leaked key flips `settings.has_tavily` to `True`, which silently changes
+    onboarding behavior: the launch sequence short-circuits the Tavily step on
+    a dev machine but runs it on CI, so a test that reaches the step passes
+    locally yet hangs (real screen push) or writes a credential on CI.
+
+    Each test that *needs* a Tavily key should set it explicitly via
+    `monkeypatch.setenv` or patch `settings.has_tavily`.
+    """
+    for key in ("TAVILY_API_KEY", "DEEPAGENTS_CODE_TAVILY_API_KEY"):
         monkeypatch.delenv(key, raising=False)
 
 
@@ -105,9 +134,13 @@ def _clear_provider_base_url_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "OPENAI_API_BASE",
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_API_URL",
+        "BASETEN_BASE_URL",
+        "BASETEN_API_BASE",
         "GOOGLE_GEMINI_BASE_URL",
         "DEEPAGENTS_CODE_OPENAI_BASE_URL",
         "DEEPAGENTS_CODE_ANTHROPIC_BASE_URL",
+        "DEEPAGENTS_CODE_BASETEN_BASE_URL",
+        "DEEPAGENTS_CODE_BASETEN_API_BASE",
         "DEEPAGENTS_CODE_GOOGLE_GEMINI_BASE_URL",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -120,24 +153,35 @@ def _clear_onboarding_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _clear_update_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def _clear_update_env(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Prevent update debug/loop-guard and toggle env vars from affecting tests.
 
     `DEEPAGENTS_CODE_DEBUG_UPDATE` short-circuits the install path, and the
     internal `DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE` sentinel suppresses
-    auto-update to break a restart loop. `DEEPAGENTS_CODE_NO_UPDATE_CHECK` and
-    `DEEPAGENTS_CODE_AUTO_UPDATE` are read directly from the environment by the
-    startup gate (`is_update_check_enabled` / `is_auto_update_enabled`), so a
-    developer who exports either to opt out would otherwise make the auto-update
-    tests fail or pass spuriously. Any of these leaking in (from a developer
-    shell, or a prior test exercising the production code that sets the
-    sentinel) would make the startup auto-update tests non-deterministic. Tests
-    that need a specific value set them explicitly via `monkeypatch`/`patch`.
+    auto-update to break a restart loop. The sentinel can leak in not just from a
+    developer shell but from a prior test exercising the production code that sets
+    it, so it is cleared unconditionally. `DEEPAGENTS_CODE_AUTO_UPDATE` is read
+    directly from the environment by `is_auto_update_enabled`, so a developer who
+    exports it would otherwise make auto-update tests fail or pass spuriously.
+
+    Most unit tests should not run the app startup PyPI update check at all: it
+    performs DNS in a background worker, which pytest-socket reports under
+    `--disable-socket` even when the app swallows the failure. Set the production
+    opt-out env var by default so subprocess tests inherit the same no-network
+    behavior. Tests marked `self_managed_update_check` cover the update-check
+    gate directly, so they opt out of this default below.
     """
     monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG_UPDATE", raising=False)
     monkeypatch.delenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", raising=False)
-    monkeypatch.delenv("DEEPAGENTS_CODE_NO_UPDATE_CHECK", raising=False)
     monkeypatch.delenv("DEEPAGENTS_CODE_AUTO_UPDATE", raising=False)
+
+    if _self_manages_update_check(request):
+        monkeypatch.delenv("DEEPAGENTS_CODE_NO_UPDATE_CHECK", raising=False)
+    else:
+        monkeypatch.setenv("DEEPAGENTS_CODE_NO_UPDATE_CHECK", "1")
 
 
 @pytest.fixture(autouse=True)
@@ -147,10 +191,10 @@ def _disable_app_startup_update_checks(
 ) -> None:
     """Keep app startup tests from racing PyPI or user update config.
 
-    `test_config_manifest` and `test_main` patch `is_update_check_enabled` themselves.
+    Tests marked `self_managed_update_check` manage the gate themselves, so leave
+    `is_update_check_enabled` untouched for them.
     """
-    module_name = request.module.__name__.rsplit(".", 1)[-1]
-    if module_name in {"test_config_manifest", "test_main"}:
+    if _self_manages_update_check(request):
         return
     monkeypatch.setattr(
         "deepagents_code.update_check.is_update_check_enabled",

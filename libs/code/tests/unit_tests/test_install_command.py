@@ -194,14 +194,8 @@ async def test_install_slash_provider_extra_skips_redundant_hint_when_prompted()
         assert "/restart" not in contents
 
 
-async def test_install_slash_standalone_extra_recommends_interpreter_relaunch() -> None:
-    """`quickjs` must point at a `--interpreter` relaunch, not `/restart`.
-
-    `quickjs` only does anything behind the launch-only `--interpreter` flag
-    (with a startup-time dependency gate), so a `/restart` — which reuses the
-    original launch settings — can't enable it. The user has to exit and
-    relaunch with the flag.
-    """
+async def test_install_slash_standalone_extra_recommends_relaunch() -> None:
+    """Compatibility standalone extras still point at a full relaunch."""
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -222,7 +216,7 @@ async def test_install_slash_standalone_extra_recommends_interpreter_relaunch() 
         rendered = str(success._content)
         assert "/restart" not in rendered
         assert "relaunch dcode" in rendered.lower()
-        assert "--interpreter" in rendered
+        assert "--interpreter" not in rendered
 
 
 async def test_install_slash_unknown_extra_requires_force() -> None:

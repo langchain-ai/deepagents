@@ -993,6 +993,11 @@ ripgrep_manual_hint() {
   esac
 }
 
+ripgrep_managed_failed() {
+  log_warn "Managed ripgrep setup did not complete; the grep tool will use a slower fallback."
+  ripgrep_manual_hint
+}
+
 if [ "$SKIP_OPTIONAL" != "1" ]; then
   if [ "$RIPGREP_INSTALLER" = "managed" ] && [ "$VERIFY_OK" = true ] && [ -n "$DCODE_BIN" ]; then
     # Eager, non-prompting managed install through the freshly installed binary
@@ -1000,14 +1005,28 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
     # (downloads into ~/.deepagents/bin, no sudo). Doing it here removes the
     # first-run download latency. The binary reuses a system `rg` already on
     # PATH and honors DEEPAGENTS_CODE_OFFLINE and
-    # DEEPAGENTS_CODE_RIPGREP_INSTALLER=system, reporting what it did.
-    echo ""
-    log_info "Setting up ripgrep..."
-    if "$DCODE_BIN" tools install; then
-      fix_owner "${HOME}/.deepagents/bin"
+    # DEEPAGENTS_CODE_RIPGREP_INSTALLER=system. Routine output stays behind
+    # verbose mode because most users do not need ripgrep setup details.
+    if [ "$VERBOSE" = "1" ]; then
+      echo ""
+      log_info "Setting up ripgrep..."
+      if "$DCODE_BIN" tools install; then
+        fix_owner "${HOME}/.deepagents/bin"
+      else
+        ripgrep_managed_failed
+      fi
     else
-      log_warn "Managed ripgrep setup did not complete; the grep tool will use a slower fallback."
-      ripgrep_manual_hint
+      # Quiet path: capture setup output and surface it only on failure, so a
+      # broken install stays debuggable without noise in the common case.
+      ripgrep_setup_out=$(mktemp 2>/dev/null) || ripgrep_setup_out="/tmp/deepagents-ripgrep-setup.$$.out"
+      if "$DCODE_BIN" tools install >"$ripgrep_setup_out" 2>&1; then
+        fix_owner "${HOME}/.deepagents/bin"
+      else
+        echo ""
+        cat "$ripgrep_setup_out" >&2 2>/dev/null || true
+        ripgrep_managed_failed
+      fi
+      rm -f "$ripgrep_setup_out"
     fi
   elif command -v rg >/dev/null 2>&1; then
     if [ "$VERBOSE" = "1" ]; then

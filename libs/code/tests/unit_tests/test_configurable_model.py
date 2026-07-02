@@ -17,7 +17,6 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents_code._cli_context import CLIContext, CLIContextSchema
-from deepagents_code.agent import build_model_identity_section
 from deepagents_code.configurable_model import (
     ConfigurableModelMiddleware,
     _get_context,
@@ -835,148 +834,66 @@ class TestModelParams:
         assert captured[0].model_settings == {"temperature": 0.3}
 
 
-class TestModelIdentityPatch:
-    """System prompt Model Identity section is updated on model swap."""
+class TestModelIdentityReRender:
+    """On model swap, the whole system prompt is re-rendered via `prompt_for`."""
 
-    _OLD_PROMPT = (
-        "Some preamble.\n\n---\n\n"
-        "### Model Identity\n\n"
-        "You are running as model `claude-opus-4-6` (provider: anthropic).\n"
-        "Your context window is 200,000 tokens.\n\n"
-        "### Skills Directory\n\nYour skills are stored at: `/tmp/skills`\n"
-    )
-
-    def test_identity_replaced_on_swap(self) -> None:
+    def test_prompt_rerendered_on_swap(self) -> None:
+        """A model swap replaces the system prompt with `prompt_for`'s output."""
         override = _make_model("gpt-5.5")
         result = _make_model_result(
             override, model_name="gpt-5.5", provider="openai", context_limit=128_000
         )
+        mw = ConfigurableModelMiddleware(
+            prompt_for=lambda mr: (
+                f"BASE\n\nrunning as `{mr.model_name}` ({mr.provider})"
+            )
+        )
         request = _make_request(
             _make_model("claude-opus-4-6"),
             context=CLIContext(model="openai:gpt-5.5"),
-            system_prompt=self._OLD_PROMPT,
+            system_prompt="stale prompt naming claude-opus-4-6",
         )
         captured: list[ModelRequest] = []
         with patch(_PATCH_CREATE, return_value=result):
-            _mw.wrap_model_call(
+            mw.wrap_model_call(
                 request, lambda r: (captured.append(r), _make_response())[1]
             )
 
-        prompt = captured[0].system_prompt
-        assert prompt is not None
-        assert "`gpt-5.5`" in prompt
-        assert "(provider: openai)" in prompt
-        assert "128,000 tokens" in prompt
-        assert "`claude-opus-4-6`" not in prompt
-        # Surrounding content must survive the replacement
-        assert "Some preamble." in prompt
-        assert "### Skills Directory" in prompt
-        assert "`/tmp/skills`" in prompt
-
-    def test_no_identity_section_left_unchanged(self) -> None:
-        """Prompt without identity section is not modified."""
-        bare_prompt = "You are a helpful assistant.\n\n### Skills Directory\n"
-        override = _make_model("gpt-5.5")
-        result = _make_model_result(override, model_name="gpt-5.5", provider="openai")
-        request = _make_request(
-            _make_model("claude-opus-4-6"),
-            context=CLIContext(model="openai:gpt-5.5"),
-            system_prompt=bare_prompt,
-        )
-        captured: list[ModelRequest] = []
-        with patch(_PATCH_CREATE, return_value=result):
-            _mw.wrap_model_call(
-                request, lambda r: (captured.append(r), _make_response())[1]
-            )
-
-        assert captured[0].system_prompt == bare_prompt
-
-    def test_no_system_prompt_skips_patch(self) -> None:
-        """When system_prompt is None, no patching is attempted."""
-        override = _make_model("gpt-5.5")
-        request = _make_request(
-            _make_model("claude-opus-4-6"),
-            context=CLIContext(model="openai:gpt-5.5"),
-        )
-        captured: list[ModelRequest] = []
-        with patch(_PATCH_CREATE, return_value=_make_model_result(override)):
-            _mw.wrap_model_call(
-                request, lambda r: (captured.append(r), _make_response())[1]
-            )
-
+        assert captured[0].system_prompt == "BASE\n\nrunning as `gpt-5.5` (openai)"
         assert captured[0].model is override
 
-    def test_identity_at_end_of_prompt(self) -> None:
-        """Identity section at the very end (no trailing ###) is still replaced."""
-        prompt = (
-            "Preamble.\n\n### Model Identity\n\nYou are running as model `old`.\n\n"
-        )
+    def test_no_prompt_for_leaves_prompt_unchanged(self) -> None:
+        """Without `prompt_for` (subagents), the model swaps but the prompt does not."""
         override = _make_model("gpt-5.5")
         result = _make_model_result(override, model_name="gpt-5.5", provider="openai")
+        mw = ConfigurableModelMiddleware()  # prompt_for=None
         request = _make_request(
-            _make_model("old"),
+            _make_model("claude-opus-4-6"),
             context=CLIContext(model="openai:gpt-5.5"),
-            system_prompt=prompt,
+            system_prompt="unchanged prompt",
         )
         captured: list[ModelRequest] = []
         with patch(_PATCH_CREATE, return_value=result):
-            _mw.wrap_model_call(
+            mw.wrap_model_call(
                 request, lambda r: (captured.append(r), _make_response())[1]
             )
 
-        patched = captured[0].system_prompt
-        assert patched is not None
-        assert "`gpt-5.5`" in patched
-        assert "`old`" not in patched
-        assert "Preamble." in patched
+        assert captured[0].system_prompt == "unchanged prompt"
+        assert captured[0].model is override
 
-    def test_identity_without_context_limit(self) -> None:
-        result = build_model_identity_section("gpt-5.5", provider="openai")
-        assert "`gpt-5.5`" in result
-        assert "(provider: openai)" in result
-        assert "context window" not in result
-
-    def test_identity_without_provider(self) -> None:
-        result = build_model_identity_section("local-llama", context_limit=4096)
-        assert "`local-llama`" in result
-        assert "provider" not in result
-        assert "4,096 tokens" in result
-
-    def test_identity_no_model_name(self) -> None:
-        assert build_model_identity_section(None) == ""
-
-    def test_modality_line_replaced_on_swap(self) -> None:
-        """Swapping replaces old modality warning with the new model's."""
-        prompt_with_modality = (
-            "Preamble.\n\n### Model Identity\n\n"
-            "You are running as model `deepseek-r1` (provider: deepseek).\n"
-            "Your context window is 64,000 tokens.\n"
-            "Audio, image, pdf, video input may not be available for this model.\n\n"
-            "### Skills Directory\n\nSkills here.\n"
-        )
-        override = _make_model("claude-sonnet-4-6")
-        result = _make_model_result(
-            override,
-            model_name="claude-sonnet-4-6",
-            provider="anthropic",
-            context_limit=200_000,
-            unsupported_modalities=frozenset(),
-        )
+    def test_prompt_for_not_invoked_without_swap(self) -> None:
+        """When the model doesn't change, `prompt_for` is not called."""
+        prompt_for = MagicMock()
+        mw = ConfigurableModelMiddleware(prompt_for=prompt_for)
         request = _make_request(
-            _make_model("deepseek-r1"),
-            context=CLIContext(model="anthropic:claude-sonnet-4-6"),
-            system_prompt=prompt_with_modality,
+            _make_model("claude-opus-4-6"),
+            context=CLIContext(),
+            system_prompt="original",
         )
         captured: list[ModelRequest] = []
-        with patch(_PATCH_CREATE, return_value=result):
-            _mw.wrap_model_call(
-                request, lambda r: (captured.append(r), _make_response())[1]
-            )
+        mw.wrap_model_call(
+            request, lambda r: (captured.append(r), _make_response())[1]
+        )
 
-        patched = captured[0].system_prompt
-        assert patched is not None
-        assert "`claude-sonnet-4-6`" in patched
-        assert "200,000 tokens" in patched
-        assert "may not be available" not in patched
-        assert "`deepseek-r1`" not in patched
-        assert "### Skills Directory" in patched
+        prompt_for.assert_not_called()
+        assert captured[0].system_prompt == "original"

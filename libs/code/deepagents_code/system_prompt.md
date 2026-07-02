@@ -171,7 +171,7 @@ When referencing code, use format: `file_path:line_number`
 
 ---
 
-{model_identity_section}{working_dir_section}### Skills Directory
+{working_dir_section}### Skills Directory
 
 Your skills are stored at: `{skills_path}`
 Skills may contain scripts or supporting files. When executing skill scripts with bash, use the real filesystem path:

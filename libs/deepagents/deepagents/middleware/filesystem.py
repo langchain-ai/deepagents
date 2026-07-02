@@ -473,7 +473,12 @@ def _format_grep_tool_result(
 
     formatted = truncate_if_too_long(format_grep_matches(matches, output_mode))
     if result.error:
-        return truncate_if_too_long(f"{result.error}\n\nPartial matches:\n{formatted}"), "error"
+        # Truncate the error separately so the already-size-limited partial
+        # matches survive. A very long error string (e.g. many collected file
+        # read errors from the Python fallback) would otherwise push the
+        # "Partial matches:" section past the token limit and cut it off.
+        error = truncate_if_too_long(result.error)
+        return f"{error}\n\nPartial matches:\n{formatted}", "error"
     if result.truncated:
         return f"{formatted}\n\n{SEARCH_TRUNCATION_NOTE}", "success"
     return formatted, "success"

@@ -655,6 +655,10 @@ class TestFilesystemMiddleware:
         assert result.status == "error"
         assert len(result.content) < len(error)
         assert TRUNCATION_GUIDANCE in result.content
+        # The error is truncated separately so partial matches survive.
+        assert "Partial matches:" in result.content
+        assert "/test.py" in result.content
+        assert "1: import os" in result.content
 
     def test_grep_truncated_renders_as_success_with_note(self):
         """A truncated grep is a success with valid partial matches plus a narrow-your-search note."""

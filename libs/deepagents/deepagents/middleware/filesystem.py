@@ -197,7 +197,7 @@ def _handle_video_read(
             duration_seconds=duration_seconds,
             sampling_rate=rate,
         )
-    except (VideoExtractionError, ValueError) as exc:
+    except VideoExtractionError as exc:
         return _err(str(exc))
     blocks.insert(0, {"type": "text", "text": header})
     frame_count = sum(1 for block in blocks if isinstance(block, dict) and block.get("type") == "image")

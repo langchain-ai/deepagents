@@ -192,6 +192,23 @@ def test_read_file_video_extraction_error_surfaces_as_error_message(monkeypatch:
     assert "av not installed" in result.content
 
 
+def test_read_file_video_unexpected_value_error_is_not_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unexpected extractor bugs should remain visible to operators."""
+
+    def fake_extract(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
+        msg = "unexpected formatter failure"
+        raise ValueError(msg)
+
+    monkeypatch.setattr(filesystem_middleware, "extract_video_frames", fake_extract)
+    middleware = FilesystemMiddleware(backend=_video_backend())
+    state = FilesystemState(messages=[], files={})
+    runtime = _build_runtime(state, "video-read-unexpected-value-error")
+    read_file_tool = next(t for t in middleware.tools if t.name == "read_file")
+
+    with pytest.raises(ValueError, match="unexpected formatter failure"):
+        read_file_tool.invoke({"file_path": "/c.mp4", "runtime": runtime})
+
+
 def test_read_file_video_non_positive_limit_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     """A non-positive `limit` is rejected as a tool error, not silently clamped."""
     called = {"count": 0}
@@ -500,8 +517,8 @@ def test_read_file_video_truncation_hint_appended_on_byte_cap(monkeypatch: pytes
             "type": "text",
             "text": (
                 "Coverage truncated at t=00:00:00.000: the output or frame cap was reached "
-                "before the full window was decoded. Re-read with a narrower window "
-                "(e.g. offset=0.000) to see the remaining frames."
+                "before the full window was decoded. Continue from "
+                "offset=0.000 to see the remaining frames."
             ),
         },
     ]
@@ -524,4 +541,4 @@ def test_read_file_video_truncation_hint_appended_on_byte_cap(monkeypatch: pytes
     assert isinstance(last_block, dict)
     assert last_block["type"] == "text"
     assert "Coverage truncated" in last_block["text"]
-    assert "Re-read with a narrower window" in last_block["text"]
+    assert "Continue from offset=" in last_block["text"]

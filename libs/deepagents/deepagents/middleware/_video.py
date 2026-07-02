@@ -112,18 +112,17 @@ def extract_video_frames(
 
     Raises:
         VideoExtractionError: If PyAV cannot open the payload or the
-            requested window yields no decodable frames.
-        ValueError: If argument validation fails before opening the file.
+            requested window yields no decodable frames, or if argument
+            validation fails before opening the file.
     """
-    if offset_seconds < 0:
-        msg = f"offset_seconds must be >= 0, got {offset_seconds!r}"
-        raise ValueError(msg)
-    if sampling_rate <= 0:
-        msg = f"sampling_rate must be > 0, got {sampling_rate!r}"
-        raise ValueError(msg)
-    if duration_seconds <= 0:
-        msg = f"duration_seconds must be > 0, got {duration_seconds!r}"
-        raise ValueError(msg)
+    try:
+        _validate_video_window(
+            offset_seconds=offset_seconds,
+            duration_seconds=duration_seconds,
+            sampling_rate=sampling_rate,
+        )
+    except ValueError as exc:
+        raise VideoExtractionError(str(exc)) from exc
     rate = float(sampling_rate)
     duration = float(duration_seconds)
 
@@ -171,6 +170,19 @@ def extract_video_frames(
         msg = f"No frames decoded for window [{offset_seconds:.3f}s, {end_seconds:.3f}s)"
         raise VideoExtractionError(msg)
     return blocks
+
+
+def _validate_video_window(*, offset_seconds: float, duration_seconds: float, sampling_rate: float) -> None:
+    """Validate the requested sampling window before opening the video."""
+    if offset_seconds < 0:
+        msg = f"offset_seconds must be >= 0, got {offset_seconds!r}"
+        raise ValueError(msg)
+    if sampling_rate <= 0:
+        msg = f"sampling_rate must be > 0, got {sampling_rate!r}"
+        raise ValueError(msg)
+    if duration_seconds <= 0:
+        msg = f"duration_seconds must be > 0, got {duration_seconds!r}"
+        raise ValueError(msg)
 
 
 def _open_video_container(av: Any, content: bytes) -> Any:  # noqa: ANN401  # PyAV types are unavailable without the [video] extra
@@ -331,8 +343,8 @@ def _sample_frames_in_window(
                 "type": "text",
                 "text": (
                     f"Coverage truncated at t={last_ts}: the output or frame cap was reached "
-                    f"before the full window was decoded. Re-read with a narrower window "
-                    f"(e.g. offset={last_emitted_seconds:.3f}) to see the remaining frames."
+                    f"before the full window was decoded. Continue from "
+                    f"offset={last_emitted_seconds:.3f} to see the remaining frames."
                 ),
             }
         )

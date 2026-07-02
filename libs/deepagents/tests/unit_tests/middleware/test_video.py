@@ -48,7 +48,7 @@ def synthetic_video_bytes(tmp_path_factory: pytest.TempPathFactory) -> bytes:
 
 
 def test_extract_rejects_negative_offset(synthetic_video_bytes: bytes) -> None:
-    with pytest.raises(ValueError, match="offset_seconds must be >= 0"):
+    with pytest.raises(video_module.VideoExtractionError, match="offset_seconds must be >= 0"):
         video_module.extract_video_frames(
             synthetic_video_bytes,
             offset_seconds=-0.1,
@@ -58,7 +58,7 @@ def test_extract_rejects_negative_offset(synthetic_video_bytes: bytes) -> None:
 
 
 def test_extract_rejects_zero_or_negative_duration(synthetic_video_bytes: bytes) -> None:
-    with pytest.raises(ValueError, match="duration_seconds must be > 0"):
+    with pytest.raises(video_module.VideoExtractionError, match="duration_seconds must be > 0"):
         video_module.extract_video_frames(
             synthetic_video_bytes,
             offset_seconds=0,
@@ -68,7 +68,7 @@ def test_extract_rejects_zero_or_negative_duration(synthetic_video_bytes: bytes)
 
 
 def test_extract_rejects_zero_or_negative_sampling_rate(synthetic_video_bytes: bytes) -> None:
-    with pytest.raises(ValueError, match="sampling_rate must be > 0"):
+    with pytest.raises(video_module.VideoExtractionError, match="sampling_rate must be > 0"):
         video_module.extract_video_frames(
             synthetic_video_bytes,
             offset_seconds=0,
@@ -98,7 +98,10 @@ def test_extract_returns_interleaved_text_and_image_blocks(synthetic_video_bytes
     assert jpeg[:3] == b"\xff\xd8\xff"
 
 
-def test_extract_truncation_hint_on_byte_cap(synthetic_video_bytes: bytes) -> None:
+def test_extract_truncation_hint_on_byte_cap(
+    synthetic_video_bytes: bytes,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """When the emitted-byte cap truncates output, a coverage hint is appended."""
     # First, measure the size of one frame so we can set a cap that fits
     # exactly one frame but not two.
@@ -112,45 +115,40 @@ def test_extract_truncation_hint_on_byte_cap(synthetic_video_bytes: bytes) -> No
         ),
     )
     one_frame_bytes = sum(len(b.get("text", "").encode()) + len(b.get("base64", "").encode("ascii")) for b in one_frame_blocks)
-    original_cap = video_module.MAX_VIDEO_EMITTED_BYTES
-    try:
-        # Cap fits one frame but not two.
-        video_module.MAX_VIDEO_EMITTED_BYTES = one_frame_bytes + 10
-        blocks = cast(
-            "list[dict[str, str]]",
-            video_module.extract_video_frames(
-                synthetic_video_bytes,
-                offset_seconds=0,
-                duration_seconds=30,
-                sampling_rate=0.5,
-            ),
-        )
-    finally:
-        video_module.MAX_VIDEO_EMITTED_BYTES = original_cap
+    # Cap fits one frame but not two.
+    monkeypatch.setattr(video_module, "MAX_VIDEO_EMITTED_BYTES", one_frame_bytes + 10)
+    blocks = cast(
+        "list[dict[str, str]]",
+        video_module.extract_video_frames(
+            synthetic_video_bytes,
+            offset_seconds=0,
+            duration_seconds=30,
+            sampling_rate=0.5,
+        ),
+    )
 
     # The last block should be a truncation hint, not a frame.
     last = blocks[-1]
     assert last["type"] == "text"
     assert "Coverage truncated" in last["text"]
-    assert "Re-read with a narrower window" in last["text"]
+    assert "Continue from offset=" in last["text"]
 
 
-def test_extract_truncation_hint_on_frame_count_cap(synthetic_video_bytes: bytes) -> None:
+def test_extract_truncation_hint_on_frame_count_cap(
+    synthetic_video_bytes: bytes,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """When the frame-count cap truncates output, a coverage hint is appended."""
-    original_cap = video_module.MAX_VIDEO_SAMPLED_FRAMES
-    try:
-        video_module.MAX_VIDEO_SAMPLED_FRAMES = 1
-        blocks = cast(
-            "list[dict[str, str]]",
-            video_module.extract_video_frames(
-                synthetic_video_bytes,
-                offset_seconds=0,
-                duration_seconds=30,
-                sampling_rate=0.5,
-            ),
-        )
-    finally:
-        video_module.MAX_VIDEO_SAMPLED_FRAMES = original_cap
+    monkeypatch.setattr(video_module, "MAX_VIDEO_SAMPLED_FRAMES", 1)
+    blocks = cast(
+        "list[dict[str, str]]",
+        video_module.extract_video_frames(
+            synthetic_video_bytes,
+            offset_seconds=0,
+            duration_seconds=30,
+            sampling_rate=0.5,
+        ),
+    )
 
     # Exactly one image block, then the truncation hint.
     image_count = sum(1 for b in blocks if b["type"] == "image")
@@ -162,7 +160,6 @@ def test_extract_truncation_hint_on_frame_count_cap(synthetic_video_bytes: bytes
 
 def test_extract_raises_on_none_time_base(synthetic_video_bytes: bytes) -> None:
     """A stream with `time_base=None` raises `VideoExtractionError`, not `TypeError`."""
-    real_open = video_module._open_video_container
     av_module = video_module._import_av()
 
     class _FakeStream:
@@ -201,8 +198,6 @@ def test_extract_raises_on_none_time_base(synthetic_video_bytes: bytes) -> None:
             )
     finally:
         av_module.open = real_container_open
-        # Restore the module-level reference too.
-        _ = real_open
 
 
 def test_extract_offset_skips_into_source(synthetic_video_bytes: bytes) -> None:

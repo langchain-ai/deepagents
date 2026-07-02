@@ -498,10 +498,16 @@ async def test_effort_selector_apply_failure_reports_error(
 def test_without_effort_clears_anthropic_thinking_and_effort() -> None:
     effort_params = model_params_for_effort("anthropic:claude-opus-4-8", "xhigh")
     assert effort_params is not None
-    params = merge_effort_model_params({"temperature": 0.3}, effort_params)
-    assert params["output_config"] == {"effort": "xhigh"}
+    format_config = {"type": "json_schema", "schema": {"type": "object"}}
+    params = merge_effort_model_params(
+        {"temperature": 0.3, "output_config": {"format": format_config}}, effort_params
+    )
+    assert params["output_config"] == {"format": format_config, "effort": "xhigh"}
     assert "thinking" in params
-    assert without_effort_model_params(params) == {"temperature": 0.3}
+    assert without_effort_model_params(params) == {
+        "temperature": 0.3,
+        "output_config": {"format": format_config},
+    }
 
 
 def test_without_effort_clears_legacy_anthropic_top_level_effort() -> None:

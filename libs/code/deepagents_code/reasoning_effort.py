@@ -522,15 +522,15 @@ def merge_effort_model_params(
         effort_params: Params returned by `model_params_for_effort`.
 
     Returns:
-        A new merged dictionary preserving unrelated nested `model_kwargs`.
+        A new merged dictionary preserving unrelated nested config objects.
     """
     merged = dict(existing) if existing else {}
     for key, value in effort_params.items():
-        if key == "model_kwargs" and isinstance(value, dict):
-            current = merged.get("model_kwargs")
+        if key in {"model_kwargs", "output_config"} and isinstance(value, dict):
+            current = merged.get(key)
             base = dict(current) if isinstance(current, dict) else {}
             base.update(value)
-            merged["model_kwargs"] = base
+            merged[key] = base
         else:
             merged[key] = value
     return merged
@@ -549,14 +549,14 @@ def without_effort_model_params(
     """
     if not existing:
         return None
-    # Exclude `model_kwargs` from the comprehension and rebuild it below.
-    # Leaving it here would retain a stale `reasoning_effort` when the cleaned
+    # Exclude nested config objects from the comprehension and rebuild them below.
+    # Leaving them here would retain stale nested effort keys when the cleaned
     # nested dict ends up empty — the empty-check would then skip the overwrite
     # and the original (still-populated) copy would survive.
     cleaned = {
         key: (dict(value) if isinstance(value, dict) else value)
         for key, value in existing.items()
-        if key not in _REASONING_KEYS and key != "model_kwargs"
+        if key not in _REASONING_KEYS and key not in {"model_kwargs", "output_config"}
     }
     kwargs = existing.get("model_kwargs")
     if isinstance(kwargs, dict):
@@ -565,4 +565,11 @@ def without_effort_model_params(
             cleaned["model_kwargs"] = model_kwargs
     elif kwargs is not None:
         cleaned["model_kwargs"] = kwargs
+    output_config = existing.get("output_config")
+    if isinstance(output_config, dict):
+        output_config_params = {k: v for k, v in output_config.items() if k != "effort"}
+        if output_config_params:
+            cleaned["output_config"] = output_config_params
+    elif output_config is not None:
+        cleaned["output_config"] = output_config
     return cleaned or None

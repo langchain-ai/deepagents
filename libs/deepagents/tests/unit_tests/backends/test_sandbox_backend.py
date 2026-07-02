@@ -30,6 +30,7 @@ from deepagents.backends.sandbox import (
     _READ_COMMAND_TEMPLATE,
     _WRITE_CHECK_TEMPLATE,
     BaseSandbox,
+    _build_read_cmd,
     _check_preflight_result,
     _map_edit_error,
     _parse_grep_output,
@@ -1141,6 +1142,13 @@ def test_read_script_genuine_binary_returns_base64(tmp_path: Path) -> None:
     result = _run_read_script(target)
 
     assert result["encoding"] == "base64"
+
+
+def test_build_read_cmd_classifies_mkv_as_video() -> None:
+    """`.mkv` reads must run the binary path, not the text path, in the sandbox."""
+    assert "file_type = 'video'" in _build_read_cmd("/clips/a.mkv", 0, 100)
+    # Sanity: a plain text file still classifies as text.
+    assert "file_type = 'text'" in _build_read_cmd("/notes.txt", 0, 100)
 
 
 def test_read_script_mid_buffer_invalid_utf8_returns_base64(tmp_path: Path) -> None:

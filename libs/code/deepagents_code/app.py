@@ -2672,6 +2672,13 @@ class DeepAgentsApp(App):
         Built alongside `_discovered_skills`.
         """
 
+        self._skill_trust_denied: set[str] = set()
+        """Resolved skill directories the user declined to trust this session.
+
+        Prevents re-prompting for the same untrusted location after a deny
+        within a single run.
+        """
+
         # Media
         # Lazily imported here to avoid pulling image dependencies into
         # argument parsing paths.
@@ -9606,8 +9613,15 @@ class DeepAgentsApp(App):
                 normalized_name,
                 exc_info=True,
             )
-            await _mount_error(str(exc))
-            return
+            content = await self._prompt_skill_trust_and_retry(
+                normalized_name,
+                skill_path,
+                allowed_roots,
+                fallback_error=str(exc),
+                mount_error=_mount_error,
+            )
+            if content is None:
+                return
         except OSError as exc:
             logger.warning(
                 "Filesystem error loading skill %r",
@@ -9656,6 +9670,85 @@ class DeepAgentsApp(App):
             envelope.prompt,
             message_kwargs=envelope.message_kwargs,
         )
+
+    async def _prompt_skill_trust_and_retry(
+        self,
+        skill_name: str,
+        skill_path: str | Path,
+        allowed_roots: list[Path],
+        *,
+        fallback_error: str,
+        mount_error: Callable[[str], Awaitable[None]],
+    ) -> str | None:
+        """Prompt to trust an out-of-bounds skill directory, then reload it.
+
+        Mirrors the MCP project-trust flow: when containment fails, the user is
+        asked once to allow the resolved target directory. Allowing persists the
+        decision, extends the in-session containment allowlist, and retries the
+        read. Denying (or a prior deny this session) shows the original error.
+
+        Args:
+            skill_name: Normalized skill name, for messaging.
+            skill_path: Path to the skill's `SKILL.md`.
+            allowed_roots: Containment roots to extend on approval.
+            fallback_error: Original `PermissionError` message to show on deny.
+            mount_error: Callback to surface an error in the chat log.
+
+        Returns:
+            The skill content on approval and successful reload, or `None` when
+                the user declined or the retry failed (an error was mounted).
+        """
+        from pathlib import Path as _Path
+
+        from deepagents_code.skills.load import load_skill_content
+        from deepagents_code.skills.trust import trust_skill_dir
+        from deepagents_code.widgets.skill_trust import SkillTrustScreen
+
+        target_dir = str(_Path(skill_path).resolve().parent)
+
+        if target_dir in self._skill_trust_denied:
+            await mount_error(fallback_error)
+            return None
+
+        allowed = await self._push_screen_wait(
+            SkillTrustScreen(skill_name, target_dir)
+        )
+        if not allowed:
+            self._skill_trust_denied.add(target_dir)
+            await mount_error(fallback_error)
+            return None
+
+        if not await asyncio.to_thread(trust_skill_dir, target_dir):
+            logger.warning("Could not persist skill trust for %s", target_dir)
+
+        target_path = _Path(target_dir)
+        for roots in (allowed_roots, self._skill_allowed_roots):
+            if target_path not in roots:
+                roots.append(target_path)
+
+        def _retry() -> str | None:
+            return load_skill_content(str(skill_path), allowed_roots=allowed_roots)
+
+        try:
+            content = await asyncio.to_thread(_retry)
+        except (OSError, PermissionError):
+            logger.warning(
+                "Retry load failed for skill %r after trust",
+                skill_name,
+                exc_info=True,
+            )
+            await mount_error(
+                f"Could not load skill: {skill_name} after granting trust.",
+            )
+            return None
+
+        if content is None:
+            await mount_error(
+                f"Could not read content for skill: {skill_name}. "
+                "Check that the SKILL.md file exists, is readable, "
+                "and is saved as UTF-8.",
+            )
+        return content
 
     async def _handle_skill_command(self, command: str) -> None:
         """Handle a `/skill:<name>` command by loading and invoking a skill.

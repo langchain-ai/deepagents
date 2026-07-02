@@ -15893,7 +15893,7 @@ class DeepAgentsApp(App):
             # frozen. The work itself already runs off the event loop via
             # `asyncio.to_thread`, so the UI stays responsive meanwhile.
             if self._status_bar:
-                self._status_bar.set_busy(f"Switching to {display}")
+                self._status_bar.set_busy("Switching model")
             try:
                 result = await asyncio.to_thread(
                     _create_model_with_deepagents_import_lock,

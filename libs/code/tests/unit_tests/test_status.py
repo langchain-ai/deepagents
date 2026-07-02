@@ -631,11 +631,11 @@ class TestBusyIndicator:
 
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
-            bar.set_busy("Switching to anthropic:claude-sonnet-4-5")
+            bar.set_busy("Switching model")
             await pilot.pause()
             msg = pilot.app.query_one("#status-message", Static)
             rendered = str(msg.render())
-            assert "Switching to anthropic:claude-sonnet-4-5" in rendered
+            assert "Switching model" in rendered
             assert get_glyphs().spinner_frames[0] in rendered
             assert bar._spinner_timer is not None
 
@@ -652,7 +652,7 @@ class TestBusyIndicator:
         """Clearing the busy state should stop the timer and empty the slot."""
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
-            bar.set_busy("Switching to openai:gpt-5.5")
+            bar.set_busy("Switching model")
             await pilot.pause()
             bar.set_busy("")
             await pilot.pause()
@@ -666,7 +666,7 @@ class TestBusyIndicator:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.set_status_message("Thinking")
             await pilot.pause()
-            bar.set_busy("Switching to openai:gpt-5.5")
+            bar.set_busy("Switching model")
             await pilot.pause()
             msg = pilot.app.query_one("#status-message", Static)
             assert "Switching" in str(msg.render())
@@ -678,7 +678,7 @@ class TestBusyIndicator:
         """Regular status updates must not clobber an active busy indicator."""
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
-            bar.set_busy("Switching to openai:gpt-5.5")
+            bar.set_busy("Switching model")
             await pilot.pause()
             bar.set_status_message("Executing")
             await pilot.pause()
@@ -690,7 +690,7 @@ class TestBusyIndicator:
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.set_connection("connecting")
-            bar.set_busy("Switching to openai:gpt-5.5")
+            bar.set_busy("Switching model")
             await pilot.pause()
             assert bar._spinner_timer is not None
             bar.set_busy("")

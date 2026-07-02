@@ -1071,13 +1071,21 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.STRUCTURED,
         toml_keys=("threads", "columns"),
     ),
-    # --- Warnings (config.toml-only) -----------------------------------
+    # --- Warnings ------------------------------------------------------
     ConfigOption(
         key="warnings.suppress",
         group="Warnings",
         summary="Warning keys to suppress (e.g. 'ripgrep').",
         kind=OptionKind.STRUCTURED,
         toml_keys=("warnings", "suppress"),
+    ),
+    ConfigOption(
+        key="warnings.suppress_env_override",
+        group="Warnings",
+        summary="Silence the LangSmith env-var override warning at startup.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.SUPPRESS_ENV_OVERRIDE_WARNING,
     ),
     # --- Updates --------------------------------------------------------
     ConfigOption(

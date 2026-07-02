@@ -745,7 +745,10 @@ def _ensure_bootstrap() -> None:
             # LangSmith SDK reads os.environ directly and has no knowledge
             # of the DEEPAGENTS_CODE_ prefix. Setting canonical vars here
             # bridges that gap.
+            from deepagents_code._env_vars import SUPPRESS_ENV_OVERRIDE_WARNING
             from deepagents_code.model_config import _ENV_PREFIX
+
+            suppress_override_warning = is_env_truthy(SUPPRESS_ENV_OVERRIDE_WARNING)
 
             for canonical in (
                 "LANGSMITH_API_KEY",
@@ -762,14 +765,22 @@ def _ensure_bootstrap() -> None:
                     os.environ[canonical] = prefixed_val
                 elif os.environ[canonical] != prefixed_val:
                     os.environ[canonical] = prefixed_val
-                    logger.warning(
-                        "Both %s and %s are set with different values; "
-                        "using %s. Unset %s to silence this warning.",
-                        canonical,
-                        prefixed,
-                        prefixed,
-                        canonical,
-                    )
+                    if not suppress_override_warning:
+                        logger.warning(
+                            "%s and %s are both set to different values. Deep "
+                            "Agents Code uses %s for this session (the "
+                            "%s-prefixed value takes precedence). The %s you "
+                            "exported in your own shell is unaffected. This is "
+                            "expected. To silence this warning, unset %s or set "
+                            "%s=1.",
+                            canonical,
+                            prefixed,
+                            prefixed,
+                            _ENV_PREFIX,
+                            canonical,
+                            canonical,
+                            SUPPRESS_ENV_OVERRIDE_WARNING,
+                        )
 
             # Bridge stored service keys, apply stored LangSmith tracing defaults,
             # disable orphaned tracing, and route active tracing to the displayed

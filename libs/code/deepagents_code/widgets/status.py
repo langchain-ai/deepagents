@@ -15,6 +15,7 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 from deepagents_code._env_vars import HIDE_CWD, HIDE_GIT_BRANCH, is_env_truthy
+from deepagents_code._session_stats import format_cost
 from deepagents_code.config import get_glyphs
 from deepagents_code.widgets.loading import Spinner
 
@@ -223,6 +224,12 @@ class StatusBar(Horizontal):
         color: $text-muted;
     }
 
+    StatusBar .status-cost {
+        width: auto;
+        padding: 0 1;
+        color: $text-muted;
+    }
+
     StatusBar .status-rubric {
         width: auto;
         padding: 0 1;
@@ -247,6 +254,7 @@ class StatusBar(Horizontal):
     cwd: reactive[str] = reactive("", init=False)
     branch: reactive[str] = reactive("", init=False)
     tokens: reactive[int] = reactive(0, init=False)
+    cost: reactive[float] = reactive(0.0, init=False)
     rubric_label: reactive[str] = reactive("", init=False)
 
     def __init__(self, cwd: str | Path | None = None, **kwargs: Any) -> None:
@@ -285,6 +293,7 @@ class StatusBar(Horizontal):
             yield Static("", classes="status-branch", id="branch-display")
         yield Static("", classes="status-rubric", id="rubric-display")
         yield Static("", classes="status-tokens", id="tokens-display")
+        yield Static("", classes="status-cost", id="cost-display")
         yield ModelLabel(id="model-display")
 
     _BRANCH_WIDTH_THRESHOLD = 100
@@ -658,6 +667,38 @@ class StatusBar(Horizontal):
             self.query_one("#tokens-display", Static).update("... tokens")
         except NoMatches:
             return
+
+    def watch_cost(self, new_value: float) -> None:
+        """Update the cost display when the running total changes."""
+        self._render_cost(new_value)
+
+    def _render_cost(self, usd: float) -> None:
+        """Render the running session cost into the display widget.
+
+        Args:
+            usd: Cumulative estimated session cost in USD. Values `<= 0` render
+                as empty so the widget's padding doesn't leave a gap before the
+                cost has been established.
+        """
+        try:
+            display = self.query_one("#cost-display", Static)
+        except NoMatches:
+            return
+        display.update(format_cost(usd) if usd > 0 else "")
+
+    def set_cost(self, usd: float) -> None:
+        """Set the running session cost shown in the status bar.
+
+        Forces a render even when the value is unchanged, mirroring
+        `set_tokens`, so a repeated identical total still refreshes the widget.
+
+        Args:
+            usd: Cumulative estimated session cost in USD.
+        """
+        if self.cost == usd:
+            self._render_cost(usd)
+        else:
+            self.cost = usd
 
     def set_model(self, *, provider: str, model: str, effort: str = "") -> None:
         """Update the model display text.

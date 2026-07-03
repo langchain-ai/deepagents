@@ -7,8 +7,29 @@ import pytest
 from deepagents_code._session_stats import (
     ModelStats,
     SessionStats,
+    format_cost,
     format_token_count,
 )
+
+
+class TestFormatCost:
+    """Tests for format_cost()."""
+
+    @pytest.mark.parametrize(
+        ("usd", "expected"),
+        [
+            (0.0, "$0.00"),
+            (-1.0, "$0.00"),
+            (0.0001, "<$0.01"),
+            (0.009, "<$0.01"),
+            (0.01, "$0.01"),
+            (0.42, "$0.42"),
+            (12.5, "$12.50"),
+            (1234.5, "$1234.50"),
+        ],
+    )
+    def test_format(self, usd: float, expected: str) -> None:
+        assert format_cost(usd) == expected
 
 
 class TestFormatTokenCount:
@@ -127,6 +148,27 @@ class TestSessionStats:
         assert stats.input_tokens == 100
         assert stats.per_model == {}
 
+    def test_record_request_defaults_cost_to_zero(self) -> None:
+        stats = SessionStats()
+        stats.record_request("gpt-5.5", 100, 50)
+        assert stats.total_cost_usd == pytest.approx(0.0)
+        assert stats.per_model["", "gpt-5.5"].cost_usd == pytest.approx(0.0)
+
+    def test_record_request_accumulates_cost(self) -> None:
+        stats = SessionStats()
+        stats.record_request("gpt-5.5", 100, 50, cost_usd=0.01)
+        stats.record_request("gpt-5.5", 200, 75, cost_usd=0.02)
+        assert stats.total_cost_usd == pytest.approx(0.03)
+        assert stats.per_model["", "gpt-5.5"].cost_usd == pytest.approx(0.03)
+
+    def test_record_request_cost_split_by_model(self) -> None:
+        stats = SessionStats()
+        stats.record_request("gpt-5.5", 100, 50, cost_usd=0.01)
+        stats.record_request("claude-sonnet-4-5", 200, 75, cost_usd=0.05)
+        assert stats.total_cost_usd == pytest.approx(0.06)
+        assert stats.per_model["", "gpt-5.5"].cost_usd == pytest.approx(0.01)
+        assert stats.per_model["", "claude-sonnet-4-5"].cost_usd == pytest.approx(0.05)
+
     def test_merge_combines_totals(self) -> None:
         a = SessionStats(
             request_count=1,
@@ -145,6 +187,18 @@ class TestSessionStats:
         assert a.input_tokens == 300
         assert a.output_tokens == 125
         assert a.wall_time_seconds == pytest.approx(3.5)
+
+    def test_merge_combines_cost(self) -> None:
+        a = SessionStats()
+        a.record_request("gpt-5.5", 100, 50, cost_usd=0.01)
+        b = SessionStats()
+        b.record_request("gpt-5.5", 200, 75, cost_usd=0.02)
+        b.record_request("claude-sonnet-4-5", 300, 100, cost_usd=0.05)
+
+        a.merge(b)
+        assert a.total_cost_usd == pytest.approx(0.08)
+        assert a.per_model["", "gpt-5.5"].cost_usd == pytest.approx(0.03)
+        assert a.per_model["", "claude-sonnet-4-5"].cost_usd == pytest.approx(0.05)
 
     def test_merge_combines_per_model(self) -> None:
         a = SessionStats()

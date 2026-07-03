@@ -177,7 +177,13 @@ COMMANDS: tuple[SlashCommand, ...] = (
         name="/tokens",
         description="Show token usage",
         bypass_tier=BypassTier.QUEUED,
-        hidden_keywords="cost",
+        hidden_keywords="cost price spend",
+    ),
+    SlashCommand(
+        name="/cost",
+        description="Show estimated cost",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="price spend usage tokens dollars",
     ),
     SlashCommand(
         name="/reload",

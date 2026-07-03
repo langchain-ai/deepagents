@@ -287,6 +287,39 @@ class TestTokenDisplay:
             assert "+" not in rendered
 
 
+class TestCostDisplay:
+    """Tests for the running-cost display in the status bar."""
+
+    async def test_set_cost_updates_display(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_cost(0.42)
+            await pilot.pause()
+            display = pilot.app.query_one("#cost-display")
+            assert "$0.42" in str(display.render())
+
+    async def test_cost_empty_by_default(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            display = pilot.app.query_one("#cost-display")
+            assert str(display.render()) == ""
+
+    async def test_zero_cost_renders_empty(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_cost(0.0)
+            await pilot.pause()
+            display = pilot.app.query_one("#cost-display")
+            assert str(display.render()) == ""
+
+    async def test_sub_cent_cost_renders_floor(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_cost(0.003)
+            await pilot.pause()
+            display = pilot.app.query_one("#cost-display")
+            assert "<$0.01" in str(display.render())
+
+
 class TestModeIndicator:
     """Tests for the input-mode indicator in the status bar."""
 

@@ -54,6 +54,7 @@ from deepagents_code._git import (
 from deepagents_code._session_stats import (
     SessionStats,
     SpinnerStatus,
+    format_cost,
     format_token_count,
 )
 
@@ -1395,6 +1396,10 @@ class _ThreadHistoryPayload:
     pending_goal_rubric: str | None = None
     """Persisted pending goal criteria, if any."""
 
+    session_cost_usd: float = 0.0
+    """Persisted cumulative `_session_cost_usd` from the checkpoint (0.0 if
+    absent), used to seed the status-bar running cost on resume."""
+
 
 def _new_thread_id() -> str:
     """Deferred-import wrapper around `sessions.generate_thread_id`.
@@ -2610,6 +2615,14 @@ class DeepAgentsApp(App):
         copy for the status bar.
         """
 
+        self._session_cost_usd: float = 0.0
+        """Running cumulative estimated cost (USD) shown in the status bar.
+
+        Accumulated per turn from client-side `estimate_cost` and seeded from the
+        persisted `_session_cost_usd` channel (written by `CostTrackingMiddleware`)
+        on resume, so the displayed cost spans the whole thread's lifetime.
+        """
+
         self._tokens_approximate: bool = False
         """Whether the cached token count is stale (interrupted generation)."""
 
@@ -3175,6 +3188,7 @@ class DeepAgentsApp(App):
         self._ui_adapter._on_tokens_update = self._on_tokens_update
         self._ui_adapter._on_tokens_pending = self._show_pending_tokens
         self._ui_adapter._on_tokens_show = self._show_tokens
+        self._ui_adapter._on_cost_update = self._on_cost_update
 
         if self._server_startup_deferred:
             await self._mount_deferred_start_notice()
@@ -5583,6 +5597,55 @@ class DeepAgentsApp(App):
         """Show the unknown token count placeholder during streaming."""
         if self._status_bar:
             self._status_bar.show_pending_tokens()
+
+    def _update_cost(self) -> None:
+        """Push the running session cost to the status bar."""
+        if self._status_bar:
+            self._status_bar.set_cost(self._session_cost_usd)
+
+    def _on_cost_update(self, turn_cost_usd: float) -> None:
+        """Add a completed turn's cost to the running total and refresh the bar.
+
+        Wired to the adapter's `_on_cost_update`. Receives the per-turn delta;
+        the cumulative total lives here so it can be seeded from persisted state
+        on resume.
+
+        Args:
+            turn_cost_usd: Estimated USD cost of the just-completed turn.
+        """
+        self._session_cost_usd += turn_cost_usd
+        self._update_cost()
+
+    def _format_cost_summary(self) -> str:
+        """Build the message shown by the `/cost` command.
+
+        Returns:
+            A running-total line plus a per-model breakdown (this session), or a
+            friendly placeholder when nothing has been priced yet.
+        """
+        if self._session_cost_usd <= 0:
+            from deepagents_code.config import settings
+
+            model_name = settings.model_name
+            base = "No cost recorded yet"
+            # A session can run without any priced cost if the active model has
+            # no entry in the bundled price data — flag that rather than imply $0.
+            if self._session_stats.request_count > 0:
+                base += " (no price data for this model)"
+            return f"{base} · {model_name}" if model_name else base
+
+        lines = [f"{format_cost(self._session_cost_usd)} estimated cost this thread"]
+        priced = [
+            ms for ms in self._session_stats.per_model.values() if ms.cost_usd > 0
+        ]
+        if len(priced) > 1:
+            for ms in priced:
+                label = (
+                    f"{ms.provider}:{ms.model_name}" if ms.provider else ms.model_name
+                )
+                lines.append(f"├ {label}: {format_cost(ms.cost_usd)}")
+        lines.append("Estimated from token usage via genai-prices.")
+        return "\n".join(lines)
 
     def _check_hydration_needed(self) -> None:
         """Check if we need to hydrate messages from the store.
@@ -8076,6 +8139,13 @@ class DeepAgentsApp(App):
         def _as_str(value: object) -> str | None:
             return value if isinstance(value, str) else None
 
+        raw_cost = state_values.get("_session_cost_usd")
+        session_cost_usd = (
+            float(raw_cost)
+            if isinstance(raw_cost, (int, float)) and raw_cost > 0
+            else 0.0
+        )
+
         return _ThreadHistoryPayload(
             messages,
             context_tokens,
@@ -8094,6 +8164,7 @@ class DeepAgentsApp(App):
             rubric_status=_as_str(state_values.get("_rubric_status")),
             pending_goal_objective=_as_str(state_values.get("_pending_goal_objective")),
             pending_goal_rubric=_as_str(state_values.get("_pending_goal_rubric")),
+            session_cost_usd=session_cost_usd,
         )
 
     def _restore_goal_rubric_state(self, payload: _ThreadHistoryPayload) -> None:
@@ -9231,7 +9302,7 @@ class DeepAgentsApp(App):
                 "/mcp, /model [--model-params JSON] [--default], "
                 "/notifications, /reload, /restart, /rubric, "
                 "/skill:<name>, /remember, "
-                "/skill-creator, /theme, /scrollbar, /timestamps, /tokens, "
+                "/skill-creator, /theme, /scrollbar, /timestamps, /tokens, /cost, "
                 "/threads, /trace, "
                 "/update, /auto-update, /install, /changelog, /docs, "
                 "/feedback, /help\n\n"
@@ -9422,6 +9493,9 @@ class DeepAgentsApp(App):
                     parts.append(model_name)
 
                 await self._mount_message(AppMessage(" · ".join(parts)))
+        elif cmd == "/cost":
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(AppMessage(self._format_cost_summary()))
         elif cmd == "/remember" or cmd.startswith("/remember "):
             # Convenience alias for /skill:remember — shorter and discoverable
             # before skill loading completes.
@@ -10824,6 +10898,12 @@ class DeepAgentsApp(App):
             # Seed token cache from persisted state
             if payload.context_tokens > 0:
                 self._on_tokens_update(payload.context_tokens)
+
+            # Seed the running session cost from persisted state so the status
+            # bar reflects the whole thread's lifetime spend after resume.
+            if payload.session_cost_usd > 0:
+                self._session_cost_usd = payload.session_cost_usd
+                self._update_cost()
 
             # 5. Cache container ref (single query). Queried before the store
             # load so history can be reconciled against widgets already in the

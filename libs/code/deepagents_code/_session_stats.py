@@ -42,6 +42,9 @@ class ModelStats:
     model_name: str = ""
     """Model name displayed in usage output."""
 
+    cost_usd: float = 0.0
+    """Cumulative estimated USD cost for this model (0.0 when unpriced)."""
+
 
 ModelStatsKey = tuple[str, str]
 """Per-model dict key: the `(provider, model_name)` pair.
@@ -69,6 +72,14 @@ class SessionStats:
     output_tokens: int = 0
     """Cumulative output tokens across all LLM requests."""
 
+    total_cost_usd: float = 0.0
+    """Cumulative estimated USD cost across all LLM requests.
+
+    Summed from per-request estimates (`genai_prices`). Requests whose model has
+    no known price contribute 0.0, so this is a lower bound when pricing gaps
+    exist rather than an exact figure.
+    """
+
     wall_time_seconds: float = 0.0
     """Wall-clock duration from stream start to end."""
 
@@ -86,6 +97,7 @@ class SessionStats:
         input_toks: int,
         output_toks: int,
         provider: str = "",
+        cost_usd: float = 0.0,
     ) -> None:
         """Accumulate token counts for one completed LLM request.
 
@@ -100,10 +112,13 @@ class SessionStats:
             provider: Provider that served the model (e.g. `openai`). Combined
                 with `model_name` to form the per-model key, so the same model
                 served by different providers is tracked separately.
+            cost_usd: Estimated USD cost for this request (0.0 when the model
+                has no known price).
         """
         self.request_count += 1
         self.input_tokens += input_toks
         self.output_tokens += output_toks
+        self.total_cost_usd += cost_usd
         if model_name:
             key = (provider, model_name)
             entry = self.per_model.setdefault(
@@ -113,6 +128,7 @@ class SessionStats:
             entry.request_count += 1
             entry.input_tokens += input_toks
             entry.output_tokens += output_toks
+            entry.cost_usd += cost_usd
 
     def merge(self, other: SessionStats) -> None:
         """Merge another `SessionStats` into this one (mutates *self*).
@@ -125,6 +141,7 @@ class SessionStats:
         self.request_count += other.request_count
         self.input_tokens += other.input_tokens
         self.output_tokens += other.output_tokens
+        self.total_cost_usd += other.total_cost_usd
         self.wall_time_seconds += other.wall_time_seconds
         for key, ms in other.per_model.items():
             entry = self.per_model.setdefault(
@@ -134,6 +151,7 @@ class SessionStats:
             entry.request_count += ms.request_count
             entry.input_tokens += ms.input_tokens
             entry.output_tokens += ms.output_tokens
+            entry.cost_usd += ms.cost_usd
 
 
 def format_token_count(count: int) -> str:
@@ -150,3 +168,20 @@ def format_token_count(count: int) -> str:
     if count >= 1000:  # noqa: PLR2004
         return f"{count / 1000:.1f}K"
     return str(count)
+
+
+def format_cost(usd: float) -> str:
+    """Format a USD cost into a compact display string.
+
+    Args:
+        usd: Estimated cost in US dollars.
+
+    Returns:
+        A string like `'$0.42'`, or `'<$0.01'` for a tiny but non-zero cost.
+        Costs of `0` (including unpriced sessions) return `'$0.00'`.
+    """
+    if usd <= 0:
+        return "$0.00"
+    if usd < 0.01:  # noqa: PLR2004 — display floor for sub-cent estimates
+        return "<$0.01"
+    return f"${usd:.2f}"

@@ -1565,10 +1565,13 @@ def create_cli_agent(
     # request. The CLI reads them back from `state_values` on thread resume.
     # Goal tools: exposes the read-only `get_goal`/`get_rubric` tools and the
     # constrained `update_goal` tool, and injects goal guidance into the prompt.
+    from deepagents_code.cost_tracking import CostTrackingMiddleware
     from deepagents_code.goal_tools import GoalToolsMiddleware
     from deepagents_code.resume_state import ResumeStateMiddleware
 
-    agent_middleware.extend([ResumeStateMiddleware(), GoalToolsMiddleware()])
+    agent_middleware.extend(
+        [ResumeStateMiddleware(), CostTrackingMiddleware(), GoalToolsMiddleware()]
+    )
 
     # Add ask_user middleware (must be early so its tool is available)
     if enable_ask_user:

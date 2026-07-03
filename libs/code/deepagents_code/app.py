@@ -10140,7 +10140,7 @@ class DeepAgentsApp(App):
         try:
             banner = self.query_one("#welcome-banner", WelcomeBanner)
             banner.update_model(provider=provider, model=model)
-        except NoMatches:
+        except (NoMatches, ScreenStackError):
             pass
         if self._status_bar is None:
             return
@@ -15205,6 +15205,8 @@ class DeepAgentsApp(App):
             self._chat_input.set_cwd(cwd)
         if self._status_bar is not None:
             self._status_bar.cwd = cwd_text
+        with suppress(NoMatches, ScreenStackError):
+            self.query_one("#welcome-banner", WelcomeBanner).update_cwd(cwd_text)
 
     @staticmethod
     def _refresh_project_context_after_cwd_switch(cwd: Path) -> None:

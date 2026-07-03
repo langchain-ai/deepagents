@@ -138,6 +138,15 @@ class WelcomeBanner(Static):
         self._model_name = model
         self.update(self._build_banner())
 
+    def update_cwd(self, cwd: str) -> None:
+        """Update the displayed working directory and re-render.
+
+        Args:
+            cwd: New working directory path.
+        """
+        self._cwd = cwd
+        self.update(self._build_banner())
+
     def update_thread_id(self, thread_id: str) -> None:
         """Track a new thread ID and re-render when debug mode is active.
 

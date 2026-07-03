@@ -1756,13 +1756,19 @@ async def _async_iter(items: Sequence[object]) -> AsyncIterator[object]:  # noqa
 class TestProcessAIMessageHooks:
     """Tests for tool.use hook dispatch in _process_ai_message."""
 
-    def test_tool_use_dispatched_on_first_chunk_name(self) -> None:
-        """tool.use fires once with the tool name and id when chunk_name is set."""
+    def test_tool_use_dispatched_with_direct_args_in_quiet_mode(self) -> None:
+        """tool.use fires with parsed args even when quiet mode suppresses output."""
         ai_msg = MagicMock(spec=AIMessage)
         ai_msg.content_blocks = [
-            {"type": "tool_call_chunk", "name": "read_file", "id": "call-1", "index": 0}
+            {
+                "type": "tool_call",
+                "name": "read_file",
+                "id": "call-1",
+                "index": 0,
+                "args": {"path": "foo.py"},
+            }
         ]
-        state = StreamState()
+        state = StreamState(quiet=True)
         console = Console(quiet=True)
 
         with patch(
@@ -1772,7 +1778,47 @@ class TestProcessAIMessageHooks:
 
         mock_dispatch.assert_any_call(
             "tool.use",
-            {"tool_name": "read_file", "tool_id": "call-1", "tool_args": {}},
+            {
+                "tool_name": "read_file",
+                "tool_id": "call-1",
+                "tool_args": {"path": "foo.py"},
+            },
+        )
+
+    def test_tool_use_dispatched_after_split_args_complete(self) -> None:
+        """tool.use waits for later args chunks before dispatching."""
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [
+            {
+                "type": "tool_call_chunk",
+                "name": "execute",
+                "id": "call-1",
+                "index": 0,
+                "args": '{"command": "uv run',
+            },
+            {
+                "type": "tool_call_chunk",
+                "name": None,
+                "id": None,
+                "index": 0,
+                "args": ' pytest"}',
+            },
+        ]
+        state = StreamState(quiet=True)
+        console = Console(quiet=True)
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_ai_message(ai_msg, state, console)
+
+        mock_dispatch.assert_called_once_with(
+            "tool.use",
+            {
+                "tool_name": "execute",
+                "tool_id": "call-1",
+                "tool_args": {"command": "uv run pytest"},
+            },
         )
 
     def test_tool_use_not_dispatched_when_no_name(self) -> None:
@@ -1818,12 +1864,14 @@ class TestProcessAIMessageHooks:
                 "name": "read_file",
                 "id": "call-1",
                 "index": 0,
+                "args": {"path": "foo.py"},
             },
             {
                 "type": "tool_call_chunk",
                 "name": "write_file",
                 "id": "call-2",
                 "index": 1,
+                "args": {"path": "bar.py", "content": "hello"},
             },
         ]
         state = StreamState()

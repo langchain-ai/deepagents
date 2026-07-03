@@ -21,6 +21,7 @@ agent's response text.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import sys
 import threading
@@ -109,6 +110,36 @@ def _write_newline() -> None:
     """Write a newline to stdout (and flush)."""
     sys.stdout.write("\n")
     sys.stdout.flush()
+
+
+def _parse_tool_call_args(buffer: dict[str, Any]) -> dict[str, Any] | None:
+    """Parse accumulated tool-call args when enough data has arrived.
+
+    Returns:
+        Parsed tool-call arguments, or `None` when the buffer is incomplete.
+    """
+    direct_args = buffer.get("args")
+    if isinstance(direct_args, dict):
+        return direct_args
+    if direct_args is not None:
+        return {"value": direct_args}
+
+    parts = buffer.get("args_parts") or []
+    if not parts:
+        return None
+    joined = "".join(parts)
+    stripped = joined.strip()
+    if not stripped:
+        return None
+    if stripped[0] in "{[" and not stripped.endswith(("}", "]")):
+        return None
+    try:
+        parsed = json.loads(joined)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return {"value": parsed}
+    return parsed
 
 
 class _ConsoleSpinner:
@@ -249,9 +280,7 @@ class StreamState:
     full_response: list[str] = field(default_factory=list)
     """Accumulated text fragments from the AI message stream."""
 
-    tool_call_buffers: dict[int | str, dict[str, str | None]] = field(
-        default_factory=dict
-    )
+    tool_call_buffers: dict[int | str, dict[str, Any]] = field(default_factory=dict)
     """Maps a tool-call index or ID to its name/ID metadata for in-progress
     tool calls."""
 
@@ -412,6 +441,7 @@ def _process_ai_message(
             chunk_name = block.get("name")
             chunk_id = block.get("id")
             chunk_index = block.get("index")
+            chunk_args = block.get("args")
 
             if chunk_index is not None:
                 buffer_key: int | str = chunk_index
@@ -420,24 +450,62 @@ def _process_ai_message(
             else:
                 buffer_key = f"unknown-{len(state.tool_call_buffers)}"
 
-            if buffer_key not in state.tool_call_buffers:
-                state.tool_call_buffers[buffer_key] = {"name": None, "id": None}
+            buffer = state.tool_call_buffers.setdefault(
+                buffer_key,
+                {
+                    "name": None,
+                    "id": None,
+                    "args": None,
+                    "args_parts": [],
+                    "hook_dispatched": False,
+                    "displayed": False,
+                },
+            )
             if chunk_name:
-                state.tool_call_buffers[buffer_key]["name"] = chunk_name
+                buffer["name"] = chunk_name
+            if chunk_id:
+                buffer["id"] = chunk_id
+
+            if isinstance(chunk_args, dict):
+                buffer["args"] = chunk_args
+                buffer["args_parts"] = []
+            elif isinstance(chunk_args, str):
+                if chunk_args:
+                    parts: list[str] = buffer.setdefault("args_parts", [])
+                    if not parts or chunk_args != parts[-1]:
+                        parts.append(chunk_args)
+            elif chunk_args is not None:
+                buffer["args"] = chunk_args
+
+            buffer_name = buffer.get("name")
+            buffer_id = buffer.get("id")
+            if isinstance(buffer_name, str) and not buffer.get("displayed"):
                 if state.spinner:
                     state.spinner.stop()
-                if state.quiet:
-                    continue
-                if state.full_response:
-                    _write_newline()
-                console.print(
-                    f"[dim]🔧 Calling tool: {escape_markup(chunk_name)}[/dim]",
-                    highlight=False,
-                )
+                if not state.quiet:
+                    if state.full_response:
+                        _write_newline()
+                    console.print(
+                        f"[dim]🔧 Calling tool: {escape_markup(buffer_name)}[/dim]",
+                        highlight=False,
+                    )
+                buffer["displayed"] = True
+
+            parsed_args = _parse_tool_call_args(buffer)
+            if (
+                isinstance(buffer_name, str)
+                and parsed_args is not None
+                and not buffer.get("hook_dispatched")
+            ):
                 dispatch_hook_fire_and_forget(
                     "tool.use",
-                    {"tool_name": chunk_name, "tool_id": chunk_id, "tool_args": {}},
+                    {
+                        "tool_name": buffer_name,
+                        "tool_id": buffer_id,
+                        "tool_args": parsed_args,
+                    },
                 )
+                buffer["hook_dispatched"] = True
 
 
 def _process_message_chunk(

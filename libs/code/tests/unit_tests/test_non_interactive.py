@@ -27,11 +27,13 @@ from deepagents_code.non_interactive import (
     _build_non_interactive_header,
     _collect_action_request_warnings,
     _make_hitl_decision,
+    _parse_tool_call_args,
     _process_ai_message,
     _process_message_chunk,
     _run_agent_loop,
     _run_startup_command,
     _start_langsmith_thread_url_lookup,
+    _ToolCallBuffer,
     run_non_interactive,
 )
 
@@ -1822,13 +1824,22 @@ class TestProcessAIMessageHooks:
         )
 
     def test_tool_use_not_dispatched_when_no_name(self) -> None:
-        """tool.use must not fire for arg-only chunks that carry no name."""
+        """tool.use must not fire while a chunk has complete args but no name.
+
+        Isolates the name guard: the args parse cleanly (so `parsed_args` is not
+        `None`), leaving the missing name as the only thing blocking dispatch.
+        """
         ai_msg = MagicMock(spec=AIMessage)
         ai_msg.content_blocks = [
-            {"type": "tool_call_chunk", "name": None, "id": None, "index": 0}
+            {
+                "type": "tool_call_chunk",
+                "name": None,
+                "id": "call-1",
+                "index": 0,
+                "args": {"path": "foo.py"},
+            }
         ]
         state = StreamState()
-        state.tool_call_buffers[0] = {"name": "read_file", "id": "call-1"}
         console = Console(quiet=True)
 
         with patch(
@@ -2085,3 +2096,56 @@ class TestProcessMessageChunkHooks:
             c for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
         ]
         assert not tool_result_calls
+
+
+class TestParseToolCallArgs:
+    """Tests for `_parse_tool_call_args` argument reassembly."""
+
+    def test_direct_dict_args_returned_as_is(self) -> None:
+        """A materialized dict is returned unchanged."""
+        buffer = _ToolCallBuffer(args={"path": "foo.py"})
+        assert _parse_tool_call_args(buffer) == {"path": "foo.py"}
+
+    def test_direct_scalar_args_wrapped(self) -> None:
+        """A materialized non-dict value is wrapped as `{"value": ...}`."""
+        buffer = _ToolCallBuffer(args=42)
+        assert _parse_tool_call_args(buffer) == {"value": 42}
+
+    def test_complete_json_fragments_parsed(self) -> None:
+        """Fragments that join into a complete object parse to that object."""
+        buffer = _ToolCallBuffer(args_parts=['{"command": "uv run', ' pytest"}'])
+        assert _parse_tool_call_args(buffer) == {"command": "uv run pytest"}
+
+    def test_incomplete_json_returns_none(self) -> None:
+        """An unclosed object is treated as still streaming, not dispatched."""
+        buffer = _ToolCallBuffer(args_parts=['{"command": "uv run'])
+        assert _parse_tool_call_args(buffer) is None
+
+    def test_json_parsing_to_list_wrapped(self) -> None:
+        """A complete JSON array (non-object) is wrapped as `{"value": ...}`."""
+        buffer = _ToolCallBuffer(args_parts=["[1, 2, 3]"])
+        assert _parse_tool_call_args(buffer) == {"value": [1, 2, 3]}
+
+    def test_empty_parts_returns_none(self) -> None:
+        """No accumulated fragments means nothing to parse yet."""
+        assert _parse_tool_call_args(_ToolCallBuffer()) is None
+
+    def test_whitespace_only_parts_returns_none(self) -> None:
+        """Whitespace-only fragments carry no parseable payload."""
+        buffer = _ToolCallBuffer(args_parts=["   "])
+        assert _parse_tool_call_args(buffer) is None
+
+    def test_malformed_complete_json_returns_none_and_warns(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Complete-looking but invalid JSON returns None and logs a warning.
+
+        This distinguishes genuinely malformed args (surfaced) from mid-stream
+        fragments (silent), so a dropped `tool.use` is never invisible.
+        """
+        buffer = _ToolCallBuffer(args_parts=["{bad json}"])
+        with caplog.at_level("WARNING", logger="deepagents_code.non_interactive"):
+            assert _parse_tool_call_args(buffer) is None
+        assert any(
+            "look complete but failed to parse" in r.message for r in caplog.records
+        )

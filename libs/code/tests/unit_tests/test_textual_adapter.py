@@ -3945,11 +3945,14 @@ class TestToolHooksTextual:
 
     async def test_tool_use_hook_dispatched_before_mount(self) -> None:
         """tool.use fires (with name, id, args) before the ToolCallMessage mounts."""
-        mounted: list[object] = []
+        events: list[str] = []
 
         async def mount_message(widget: object) -> None:
             await asyncio.sleep(0)
-            mounted.append(widget)
+            events.append(f"mount:{type(widget).__name__}")
+
+        def record_dispatch(event: str, _payload: dict[str, Any]) -> None:
+            events.append(f"dispatch:{event}")
 
         chunks = [
             (
@@ -3966,7 +3969,8 @@ class TestToolHooksTextual:
         )
 
         with patch(
-            "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget",
+            side_effect=record_dispatch,
         ) as mock_dispatch:
             await execute_task_textual(
                 user_input="hello",
@@ -3982,6 +3986,8 @@ class TestToolHooksTextual:
         assert payload["tool_name"] == "read_file"
         assert payload["tool_id"] == "call-1"
         assert payload["tool_args"] == {"path": "foo.py"}
+        # The hook must fire before the widget mounts, not merely at some point.
+        assert events.index("dispatch:tool.use") < events.index("mount:ToolCallMessage")
 
     async def test_tool_result_hook_dispatched_on_success(self) -> None:
         """tool.result fires with tool_status='success' after a successful tool run."""
@@ -4224,6 +4230,205 @@ class TestToolHooksTextual:
         payload = tool_result_calls[0][0][1]
         assert payload["tool_status"] == "error"
         assert payload["tool_name"] == "write_file"
+
+    async def test_tool_use_dispatched_after_streaming_fragments(self) -> None:
+        """tool.use reassembles streamed arg fragments and fires exactly once."""
+        chunks = [
+            _tool_chunk(name="execute", args='{"command": "uv run', chunk_id="call-1"),
+            _tool_chunk(name=None, args=' pytest"}', chunk_id=None),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        with patch(
+            "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        tool_use_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.use"
+        ]
+        assert len(tool_use_calls) == 1
+        assert tool_use_calls[0][0][1] == {
+            "tool_name": "execute",
+            "tool_id": "call-1",
+            "tool_args": {"command": "uv run pytest"},
+        }
+
+    async def test_untracked_tool_message_dispatches_tool_result(self) -> None:
+        """A ToolMessage whose id was never mounted still emits tool.result.
+
+        Mirrors the headless path so audit hooks observe every executed tool,
+        even when the tool call was never rendered (e.g. its args never parsed).
+        """
+        chunks = [
+            (
+                (),
+                "messages",
+                (
+                    ToolMessage(
+                        content="orphaned output",
+                        tool_call_id="ghost-1",
+                        name="read_file",
+                        status="error",
+                    ),
+                    {},
+                ),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        with patch(
+            "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+        ) as mock_dispatch:
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        events = [c[0][0] for c in mock_dispatch.call_args_list]
+        assert "tool.error" in events
+        tool_result_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
+        ]
+        assert len(tool_result_calls) == 1
+        payload = tool_result_calls[0][0][1]
+        assert payload["tool_name"] == "read_file"
+        assert payload["tool_id"] == "ghost-1"
+        assert payload["tool_args"] == {}
+        assert payload["tool_status"] == "error"
+        assert payload["tool_output"] == "orphaned output"
+
+    async def test_ask_user_interrupt_cancelled_dispatches_tool_result(self) -> None:
+        """A cancelled ask_user emits tool.error and an error tool.result."""
+        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
+        future.set_result({"type": "cancelled"})
+
+        async def request_ask_user(
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
+            await asyncio.sleep(0)
+            return future
+
+        questions: list[Question] = [{"question": "Name?", "type": "text"}]
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": questions,
+                            "tool_call_id": "ask-1",
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        with patch(
+            "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+        ) as mock_dispatch:
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        assert "tool.error" in [c[0][0] for c in mock_dispatch.call_args_list]
+        tool_result_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
+        ]
+        assert len(tool_result_calls) == 1
+        payload = tool_result_calls[0][0][1]
+        assert payload["tool_name"] == "ask_user"
+        assert payload["tool_id"] == "ask-1"
+        assert payload["tool_status"] == "error"
+        assert payload["tool_output"] == "Question cancelled"
+
+    async def test_ask_user_interrupt_non_list_answers_dispatches_error(self) -> None:
+        """A non-list answers payload emits tool.error and an error tool.result."""
+        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
+        # Deliberately malformed (answers must be a list) to drive the error
+        # branch; cast past the type checker since that is the whole point.
+        future.set_result(
+            cast("AskUserWidgetResult", {"type": "answered", "answers": "not-a-list"})
+        )
+
+        async def request_ask_user(
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
+            await asyncio.sleep(0)
+            return future
+
+        questions: list[Question] = [{"question": "Name?", "type": "text"}]
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": questions,
+                            "tool_call_id": "ask-1",
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        with patch(
+            "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+        ) as mock_dispatch:
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        assert "tool.error" in [c[0][0] for c in mock_dispatch.call_args_list]
+        tool_result_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
+        ]
+        assert len(tool_result_calls) == 1
+        payload = tool_result_calls[0][0][1]
+        assert payload["tool_name"] == "ask_user"
+        assert payload["tool_status"] == "error"
+        assert payload["tool_output"] == "invalid ask_user answers payload"
 
 
 # ---------------------------------------------------------------------------

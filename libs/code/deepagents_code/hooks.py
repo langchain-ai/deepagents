@@ -20,15 +20,18 @@ after the user submits a non-empty preferred name.
 
 ```jsonc
 {"event": "tool.use", "tool_name": "write_file", "tool_id": "toolu_abc123",
- "tool_args": {"path": "src/foo.py", "content": "..."}}
+ "tool_args": {"file_path": "src/foo.py", "content": "..."}}
 
 {"event": "tool.result", "tool_name": "write_file", "tool_id": "toolu_abc123",
- "tool_args": {"path": "src/foo.py", "content": "..."},
- "tool_status": "success", "tool_output": "Written 42 bytes to src/foo.py"}
+ "tool_args": {"file_path": "src/foo.py", "content": "..."},
+ "tool_status": "success", "tool_output": "Updated file src/foo.py"}
 ```
 
-`tool_status` is `"success"` or `"error"`. Both `tool.result` and `tool.error`
-fire on failure so existing `tool.error` hooks are unaffected.
+`tool_args` is the parsed tool-call arguments; a non-object value (rare) is
+wrapped as `{"value": ...}`. `tool_output` is the tool's returned content,
+truncated to `HOOK_TOOL_OUTPUT_LIMIT` characters. `tool_status` is `"success"`
+or `"error"`. When a failing tool emits its result, `tool.error` fires
+alongside `tool.result`, so existing `tool.error` hooks are unaffected.
 """
 
 from __future__ import annotations
@@ -41,6 +44,14 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+HOOK_TOOL_OUTPUT_LIMIT = 2000
+"""Max characters of `tool_output` included in `tool.result` hook payloads.
+
+Bounds payload size (data-amplification guard) while keeping enough of the
+tool's output to be useful to audit/notification hooks. Shared by both the
+interactive and headless dispatch paths so the cap never drifts between them.
+"""
 
 _hooks_config: list[dict[str, Any]] | None = None
 """Cached config — loaded lazily on first dispatch."""
@@ -221,3 +232,21 @@ def dispatch_hook_fire_and_forget(event: str, payload: dict[str, Any]) -> None:
     task = loop.create_task(dispatch_hook(event, payload))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
+
+
+async def drain_pending_hooks() -> None:
+    """Await all in-flight fire-and-forget hook tasks.
+
+    Call this before the event loop tears down (e.g. at the end of a headless
+    run driven by `asyncio.run`) so background dispatches — most importantly the
+    final `tool.result` — are not cancelled mid-flight and silently dropped.
+    Each task's exceptions are already swallowed inside `dispatch_hook`, and any
+    stragglers are collected with `return_exceptions=True`, so this never
+    raises.
+    """
+    # Snapshot: tasks remove themselves from the set via their done-callback as
+    # they finish, so iterating the live set while gathering would mutate it.
+    pending = list(_background_tasks)
+    if not pending:
+        return
+    await asyncio.gather(*pending, return_exceptions=True)

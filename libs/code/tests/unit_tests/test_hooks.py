@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 from typing import TYPE_CHECKING, Any
@@ -355,3 +356,48 @@ class TestDispatchHookFireAndForget:
         # Call from sync context with no running loop — should not raise
         hooks_mod.dispatch_hook_fire_and_forget("session.start", {})
         assert len(hooks_mod._background_tasks) == 0
+
+
+# ---------------------------------------------------------------------------
+# drain_pending_hooks
+# ---------------------------------------------------------------------------
+
+
+class TestDrainPendingHooks:
+    """Test draining of in-flight fire-and-forget hook tasks."""
+
+    async def test_drains_pending_task_before_returning(self):
+        """A scheduled hook runs to completion before drain returns."""
+        hooks_mod._hooks_config = [{"command": ["echo"]}]
+
+        with patch("deepagents_code.hooks.subprocess.run") as mock_run:
+            hooks_mod.dispatch_hook_fire_and_forget("tool.result", {"tool_name": "x"})
+            assert len(hooks_mod._background_tasks) == 1
+
+            await hooks_mod.drain_pending_hooks()
+
+        assert hooks_mod._background_tasks == set()
+        mock_run.assert_called_once()
+
+    async def test_no_pending_tasks_is_noop(self):
+        """Draining with nothing pending returns immediately."""
+        await hooks_mod.drain_pending_hooks()
+        assert hooks_mod._background_tasks == set()
+
+    async def test_drain_swallows_task_exceptions(self):
+        """A task that raises does not propagate out of drain."""
+
+        async def _boom() -> None:
+            await asyncio.sleep(0)
+            msg = "boom"
+            raise RuntimeError(msg)
+
+        loop = asyncio.get_running_loop()
+        task = loop.create_task(_boom())
+        hooks_mod._background_tasks.add(task)
+        task.add_done_callback(hooks_mod._background_tasks.discard)
+
+        # Must not raise despite the task erroring.
+        await hooks_mod.drain_pending_hooks()
+
+        assert hooks_mod._background_tasks == set()

@@ -59,7 +59,11 @@ from deepagents_code._session_stats import (
 from deepagents_code.config import build_stream_config, get_glyphs
 from deepagents_code.file_ops import FileOpTracker
 from deepagents_code.formatting import format_duration
-from deepagents_code.hooks import dispatch_hook, dispatch_hook_fire_and_forget
+from deepagents_code.hooks import (
+    HOOK_TOOL_OUTPUT_LIMIT,
+    dispatch_hook,
+    dispatch_hook_fire_and_forget,
+)
 from deepagents_code.input import MediaTracker, parse_file_mentions
 from deepagents_code.media_utils import create_multimodal_content
 from deepagents_code.tool_display import format_tool_message_content
@@ -77,13 +81,12 @@ _hitl_adapter_cache: TypeAdapter | None = None
 """Lazy singleton for the HITL request validator."""
 
 _ASK_USER_UNSUPPORTED_ERROR = "ask_user not supported by this UI"
-_HOOK_TOOL_OUTPUT_LIMIT = 2000
 
 
 def _dispatch_tool_use_hook(
     tool_name: str, tool_id: str, tool_args: dict[str, Any]
 ) -> None:
-    """Dispatch a `tool.use` hook with the documented textual payload."""
+    """Dispatch a `tool.use` hook with the payload documented in `hooks.py`."""
     dispatch_hook_fire_and_forget(
         "tool.use",
         {
@@ -101,7 +104,7 @@ async def _dispatch_tool_result_hook(
     tool_status: str,
     tool_output: str,
 ) -> None:
-    """Dispatch a `tool.result` hook with the documented textual payload."""
+    """Dispatch a `tool.result` hook with the payload documented in `hooks.py`."""
     await dispatch_hook(
         "tool.result",
         {
@@ -109,7 +112,7 @@ async def _dispatch_tool_result_hook(
             "tool_id": tool_id,
             "tool_args": tool_args,
             "tool_status": tool_status,
-            "tool_output": tool_output[:_HOOK_TOOL_OUTPUT_LIMIT],
+            "tool_output": tool_output[:HOOK_TOOL_OUTPUT_LIMIT],
         },
     )
 
@@ -941,6 +944,7 @@ async def execute_task_textual(
                         tool_name = getattr(message, "name", "")
                         tool_status = getattr(message, "status", "success")
                         tool_content = format_tool_message_content(message.content)
+                        output_str = str(tool_content) if tool_content else ""
                         record = file_op_tracker.complete_with_message(message)
 
                         # Update tool call status with output
@@ -949,7 +953,6 @@ async def execute_task_textual(
                             # Pop before widget calls so the dict drains even
                             # if set_success/set_error raises.
                             tool_msg = adapter._current_tool_messages.pop(tool_id)
-                            output_str = str(tool_content) if tool_content else ""
                             if tool_status == "success":
                                 tool_msg.set_success(output_str)
                             else:
@@ -971,6 +974,19 @@ async def execute_task_textual(
                                 "_current_tool_messages; spinner gating "
                                 "may be stale",
                                 tool_id,
+                            )
+                            # The tool call was never mounted (e.g. its streamed
+                            # args never parsed, so no tool.use fired). Still
+                            # emit tool.result — with no widget we lack the
+                            # parsed args, so send {} — so audit hooks observe
+                            # every executed tool, matching the headless path.
+                            if tool_status == "error":
+                                await dispatch_hook(
+                                    "tool.error",
+                                    {"tool_names": [tool_name]},
+                                )
+                            await _dispatch_tool_result_hook(
+                                tool_name, tool_id, {}, tool_status, output_str
                             )
 
                         # Show file operation results - always show diffs in chat
@@ -1182,6 +1198,20 @@ async def execute_task_textual(
                                 try:
                                     parsed_args = json.loads(joined)
                                 except json.JSONDecodeError:
+                                    # Mirrors _parse_tool_call_args in
+                                    # non_interactive.py — keep the two in sync.
+                                    # Complete-looking (bracketed and closed) but
+                                    # invalid args are malformed, not mid-stream,
+                                    # so surface them instead of silently
+                                    # dropping tool.use.
+                                    if stripped[0] in "{[" and stripped.endswith(
+                                        ("}", "]")
+                                    ):
+                                        logger.warning(
+                                            "Tool-call args look complete but "
+                                            "failed to parse: %r",
+                                            joined[:200],
+                                        )
                                     continue
                                 if not isinstance(parsed_args, dict):
                                     parsed_args = {"value": parsed_args}

@@ -99,7 +99,7 @@ def _first_line(text: str | None) -> str:
     return ""
 
 
-def collect_built_in_tools() -> list[ToolEntry]:
+def collect_built_in_tools(*, enable_interpreter: bool = False) -> list[ToolEntry]:
     """Enumerate the built-in tools the agent binds by default.
 
     Compiles the agent with an offline placeholder model and reads the bound
@@ -108,6 +108,12 @@ def collect_built_in_tools() -> list[ToolEntry]:
     on-disk agent-directory side effects. The custom CLI tools are included the
     same way `server_graph._build_tools` adds them, so `web_search` appears only
     when Tavily is configured.
+
+    Args:
+        enable_interpreter: Wire the JS interpreter middleware so `js_eval`
+            appears when the default agent would bind it. Callers should pass
+            the resolved runtime setting (see `_resolve_enable_interpreter`) so
+            the list matches the tools the agent actually binds.
 
     Returns:
         Built-in tools in bind order.
@@ -127,6 +133,7 @@ def collect_built_in_tools() -> list[ToolEntry]:
         enable_memory=False,
         enable_skills=False,
         enable_shell=True,
+        enable_interpreter=enable_interpreter,
     )
     tool_node = cast("ToolNode", agent.nodes["tools"].bound)
     tools_by_name = tool_node.tools_by_name
@@ -136,7 +143,11 @@ def collect_built_in_tools() -> list[ToolEntry]:
     ]
 
 
-def collect_mcp_tool_groups() -> list[ToolGroup]:
+def collect_mcp_tool_groups(
+    *,
+    mcp_config_path: str | None = None,
+    trust_project_mcp: bool | None = None,
+) -> list[ToolGroup]:
     """Discover MCP servers and their tools, grouped per server.
 
     Best-effort: any discovery failure (no config, offline, load error) is
@@ -144,11 +155,22 @@ def collect_mcp_tool_groups() -> list[ToolGroup]:
     always renders the built-in tools. Servers that expose no tools (errored,
     unauthenticated, or disabled) are omitted.
 
+    Args:
+        mcp_config_path: Explicit MCP config path (`--mcp-config`), or `None`
+            to rely on auto-discovery.
+        trust_project_mcp: Project-level stdio trust decision
+            (`--trust-project-mcp`), forwarded to discovery unchanged.
+
     Returns:
         One group per MCP server that exposes tools.
     """
     try:
-        server_info = asyncio.run(_load_mcp_server_info())
+        server_info = asyncio.run(
+            _load_mcp_server_info(
+                mcp_config_path=mcp_config_path,
+                trust_project_mcp=trust_project_mcp,
+            )
+        )
     except Exception:
         logger.warning("MCP tool discovery failed for `tools list`", exc_info=True)
         return []
@@ -165,8 +187,16 @@ def collect_mcp_tool_groups() -> list[ToolGroup]:
     return groups
 
 
-async def _load_mcp_server_info() -> list[Any]:
+async def _load_mcp_server_info(
+    *,
+    mcp_config_path: str | None,
+    trust_project_mcp: bool | None,
+) -> list[Any]:
     """Load MCP server metadata, cleaning up any temporary sessions.
+
+    Args:
+        mcp_config_path: Explicit MCP config path, or `None` for auto-discovery.
+        trust_project_mcp: Project-level stdio trust decision.
 
     Returns:
         Discovered MCP server metadata, or an empty list when none load.
@@ -183,9 +213,9 @@ async def _load_mcp_server_info() -> list[Any]:
     session_manager = None
     try:
         _tools, session_manager, server_info = await resolve_and_load_mcp_tools(
-            explicit_config_path=None,
+            explicit_config_path=mcp_config_path,
             no_mcp=False,
-            trust_project_mcp=None,
+            trust_project_mcp=trust_project_mcp,
             project_context=project_context,
         )
         return server_info or []
@@ -197,12 +227,24 @@ async def _load_mcp_server_info() -> list[Any]:
                 logger.warning("MCP discovery cleanup failed", exc_info=True)
 
 
-def collect_tool_groups(*, include_mcp: bool = True) -> list[ToolGroup]:
+def collect_tool_groups(
+    *,
+    enable_interpreter: bool = False,
+    include_mcp: bool = True,
+    mcp_config_path: str | None = None,
+    trust_project_mcp: bool | None = None,
+) -> list[ToolGroup]:
     """Collect all tool groups for `dcode tools list`.
 
     Args:
+        enable_interpreter: Whether the default agent binds `js_eval`; forwarded
+            to `collect_built_in_tools`.
         include_mcp: When `True`, append per-server MCP groups after the
-            built-in group. MCP discovery is best-effort.
+            built-in group. MCP discovery is best-effort. Pass `False` to mirror
+            `--no-mcp`.
+        mcp_config_path: Explicit MCP config path (`--mcp-config`).
+        trust_project_mcp: Project-level stdio trust decision
+            (`--trust-project-mcp`).
 
     Returns:
         The built-in group followed by any MCP groups.
@@ -211,9 +253,14 @@ def collect_tool_groups(*, include_mcp: bool = True) -> list[ToolGroup]:
         ToolGroup(
             label=BUILT_IN_GROUP,
             source="built-in",
-            tools=tuple(collect_built_in_tools()),
+            tools=tuple(collect_built_in_tools(enable_interpreter=enable_interpreter)),
         )
     ]
     if include_mcp:
-        groups.extend(collect_mcp_tool_groups())
+        groups.extend(
+            collect_mcp_tool_groups(
+                mcp_config_path=mcp_config_path,
+                trust_project_mcp=trust_project_mcp,
+            )
+        )
     return groups

@@ -70,6 +70,14 @@ class TestCollectBuiltInTools:
             names = {tool.name for tool in collect_built_in_tools()}
         assert "web_search" not in names
 
+    def test_interpreter_toggles_js_eval(self) -> None:
+        without = {tool.name for tool in collect_built_in_tools()}
+        assert "js_eval" not in without
+        with_interp = {
+            tool.name for tool in collect_built_in_tools(enable_interpreter=True)
+        }
+        assert "js_eval" in with_interp
+
 
 class TestCollectMcpToolGroups:
     """Tests for MCP tool grouping."""
@@ -91,17 +99,22 @@ class TestCollectMcpToolGroups:
                 error="boom",
             ),
         ]
-        with patch(
-            "deepagents_code.tool_catalog._load_mcp_server_info",
-            new=AsyncMock(return_value=servers),
-        ):
-            groups = collect_mcp_tool_groups()
+        loader = AsyncMock(return_value=servers)
+        with patch("deepagents_code.tool_catalog._load_mcp_server_info", new=loader):
+            groups = collect_mcp_tool_groups(
+                mcp_config_path="/tmp/mcp.json",
+                trust_project_mcp=True,
+            )
         assert len(groups) == 1
         group = groups[0]
         assert group.label == "docs"
         assert group.source == "mcp"
         assert group.tools == (
             ToolEntry(name="search_docs", description="Search the docs"),
+        )
+        # MCP options are forwarded to discovery unchanged.
+        loader.assert_awaited_once_with(
+            mcp_config_path="/tmp/mcp.json", trust_project_mcp=True
         )
 
     def test_discovery_failure_returns_no_groups(self) -> None:

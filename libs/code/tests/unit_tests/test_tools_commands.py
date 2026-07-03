@@ -204,6 +204,56 @@ class TestToolsList:
         assert data["tools"][-1]["source"] == "mcp"
         assert data["tools"][-1]["group"] == "docs"
 
+    def test_list_forwards_runtime_options(self) -> None:
+        """`--no-mcp`, `--mcp-config`, and interpreter resolution reach the catalog."""
+        args = argparse.Namespace(
+            tools_command="list",
+            output_format="json",
+            interpreter=True,
+            sandbox="none",
+            no_mcp=True,
+            mcp_config="/tmp/mcp.json",
+            trust_project_mcp=True,
+        )
+        with patch(
+            "deepagents_code.tool_catalog.collect_tool_groups",
+            return_value=[],
+        ) as collect:
+            code = run_tools_command(args)
+        assert code == 0
+        collect.assert_called_once_with(
+            enable_interpreter=True,
+            include_mcp=False,
+            mcp_config_path="/tmp/mcp.json",
+            trust_project_mcp=True,
+        )
+
+    def test_list_interpreter_defaults_to_settings(self) -> None:
+        """With no explicit flag, the resolved local default drives `js_eval`."""
+        args = argparse.Namespace(
+            tools_command="list",
+            output_format="json",
+            interpreter=None,
+            sandbox="none",
+            no_mcp=False,
+            mcp_config=None,
+            trust_project_mcp=False,
+        )
+        with (
+            patch(
+                "deepagents_code._server_config._resolve_enable_interpreter",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.tool_catalog.collect_tool_groups",
+                return_value=[],
+            ) as collect,
+        ):
+            code = run_tools_command(args)
+        assert code == 0
+        assert collect.call_args.kwargs["enable_interpreter"] is True
+        assert collect.call_args.kwargs["include_mcp"] is True
+
     def test_list_singular_noun_for_one_tool(self) -> None:
         args = argparse.Namespace(tools_command="list", output_format="text")
         one_group = [

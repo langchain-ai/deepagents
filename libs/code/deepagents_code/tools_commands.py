@@ -67,19 +67,32 @@ def _run_tools_list(args: argparse.Namespace) -> int:
 
     Enumerates the real tool objects the agent binds (see
     `tool_catalog.collect_tool_groups`) so names and descriptions never drift
-    from what the model sees. MCP discovery is best-effort: failures leave the
-    built-in group intact.
+    from what the model sees. The same runtime options that shape the agent's
+    tool set are honored: the resolved interpreter setting controls whether
+    `js_eval` is listed, and the MCP options (`--no-mcp`, `--mcp-config`,
+    `--trust-project-mcp`) control MCP discovery. MCP discovery is best-effort:
+    failures leave the built-in group intact.
 
     Args:
-        args: Parsed CLI namespace. Only `output_format` is read.
+        args: Parsed CLI namespace. Reads `output_format`, `interpreter`,
+            `sandbox`, `no_mcp`, `mcp_config`, and `trust_project_mcp`.
 
     Returns:
         `0` — listing is informational and always succeeds.
     """
+    from deepagents_code._server_config import _resolve_enable_interpreter
     from deepagents_code.tool_catalog import collect_tool_groups
 
     output_format: OutputFormat = getattr(args, "output_format", "text")
-    groups = collect_tool_groups()
+    enable_interpreter = _resolve_enable_interpreter(
+        getattr(args, "interpreter", None), getattr(args, "sandbox", None)
+    )
+    groups = collect_tool_groups(
+        enable_interpreter=enable_interpreter,
+        include_mcp=not getattr(args, "no_mcp", False),
+        mcp_config_path=getattr(args, "mcp_config", None),
+        trust_project_mcp=getattr(args, "trust_project_mcp", False),
+    )
 
     if output_format == "json":
         tools_payload = [

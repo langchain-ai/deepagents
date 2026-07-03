@@ -1293,6 +1293,33 @@ class ChatTextArea(TextArea):
         self.move_cursor(start_location)
         return True
 
+    def _bound_media_placeholders(self) -> set[str]:
+        """Return placeholder tokens bound to currently tracked media.
+
+        Returns:
+            The set of `[image N]`/`[video N]` tokens for media the tracker is
+                actually holding. Empty when there is no owner/tracker.
+        """
+        owner = self._chat_input_owner
+        tracker = owner._image_tracker if owner is not None else None
+        if tracker is None:
+            return set()
+        placeholders = {img.placeholder for img in tracker.images}
+        placeholders.update(video.placeholder for video in tracker.videos)
+        return placeholders
+
+    def _bound_paste_ids(self) -> set[int]:
+        """Return paste ids that have backing content in the owner.
+
+        Returns:
+            The set of paste ids present in `ChatInput._pasted_contents`. Empty
+                when there is no owner.
+        """
+        owner = self._chat_input_owner
+        if owner is None:
+            return set()
+        return set(owner._pasted_contents)
+
     def _find_placeholder_span(
         self, cursor_offset: int, *, backwards: bool
     ) -> tuple[int, int] | None:
@@ -1304,6 +1331,12 @@ class ChatTextArea(TextArea):
         here so an undo can restore the token with its content (it is cleared
         only at submit).
 
+        Only tokens bound to real attachments are treated as atomic: image/video
+        placeholders must correspond to a tracked media item and paste
+        placeholders to an entry in `ChatInput._pasted_contents`. Placeholder-
+        shaped text the user typed by hand (e.g. literally typing ``[image 2]``)
+        is left as ordinary text and edits character by character.
+
         Args:
             cursor_offset: Character offset of the cursor from the start of text.
             backwards: Whether the delete action is backwards (backspace) or
@@ -1311,15 +1344,23 @@ class ChatTextArea(TextArea):
 
         Returns:
             The `(start, end)` character span of the placeholder to delete, or
-                `None` when the cursor is not adjacent to a placeholder token.
+                `None` when the cursor is not adjacent to a bound placeholder
+                token.
         """
         text = self.text
+        media_placeholders = self._bound_media_placeholders()
+        pasted_ids = self._bound_paste_ids()
         for pattern in (
             IMAGE_PLACEHOLDER_PATTERN,
             VIDEO_PLACEHOLDER_PATTERN,
             PASTE_PLACEHOLDER_PATTERN,
         ):
             for match in pattern.finditer(text):
+                if pattern is PASTE_PLACEHOLDER_PATTERN:
+                    if int(match.group(1)) not in pasted_ids:
+                        continue
+                elif match.group(0) not in media_placeholders:
+                    continue
                 start, end = match.span()
                 if backwards:
                     # Cursor is inside token or right after a trailing space inserted

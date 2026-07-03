@@ -2821,6 +2821,95 @@ class TestDroppedImagePaste:
             assert len(app.tracker.get_images()) == 1
             assert app.tracker.next_image_id == 2
 
+    async def test_typed_image_placeholder_is_not_atomic(self) -> None:
+        """Manually typed `[image N]` (no attachment) edits char-by-char.
+
+        Regression test: placeholder-shaped text the user typed must not be
+        treated as an atomic media token, so backspace removes a single
+        character instead of deleting the whole `[image 2]`.
+        """
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = "[image 2]"
+            await pilot.pause()
+            assert app.tracker.get_images() == []
+
+            chat._text_area.move_cursor((0, len("[image 2]")))
+            await pilot.pause()
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert chat._text_area.text == "[image 2"
+
+    async def test_typed_placeholder_not_atomic_alongside_real_image(
+        self, tmp_path
+    ) -> None:
+        """A typed look-alike is char-editable while a real one stays atomic."""
+        img_path = tmp_path / "real.png"
+        from PIL import Image
+
+        image = Image.new("RGB", (4, 4), color="green")
+        image.save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+            assert chat._text_area.text == "[image 1] "
+
+            # Append a manually typed placeholder-shaped token that is not
+            # backed by any attachment.
+            chat._text_area.text = "[image 1] [image 2]"
+            await pilot.pause()
+            assert len(app.tracker.get_images()) == 1
+
+            chat._text_area.move_cursor((0, len("[image 1] [image 2]")))
+            await pilot.pause()
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            # Only one character of the typed token is removed; the real
+            # `[image 1]` placeholder is untouched and still tracked.
+            assert chat._text_area.text == "[image 1] [image 2"
+            assert len(app.tracker.get_images()) == 1
+
+    async def test_real_image_placeholder_still_atomic_with_typed_lookalike(
+        self, tmp_path
+    ) -> None:
+        """The real `[image 1]` deletes atomically even beside a typed token."""
+        img_path = tmp_path / "atomic.png"
+        from PIL import Image
+
+        image = Image.new("RGB", (4, 4), color="purple")
+        image.save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+            chat._text_area.text = "[image 2] [image 1]"
+            await pilot.pause()
+            assert len(app.tracker.get_images()) == 1
+
+            # Cursor just after the real trailing `[image 1]` token.
+            chat._text_area.move_cursor((0, len("[image 2] [image 1]")))
+            await pilot.pause()
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            # The whole real placeholder is removed atomically, leaving the
+            # typed look-alike intact.
+            assert chat._text_area.text == "[image 2] "
+
     async def test_handle_external_paste_attaches_dropped_image(self, tmp_path) -> None:
         """External paste routing should attach dropped images."""
         img_path = tmp_path / "external.png"

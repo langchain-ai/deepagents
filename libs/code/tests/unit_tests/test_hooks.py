@@ -317,6 +317,60 @@ class TestDispatchHook:
 
 
 # ---------------------------------------------------------------------------
+# per-hook timeout configuration
+# ---------------------------------------------------------------------------
+
+
+class TestHookTimeout:
+    """Test per-hook `timeout` configuration."""
+
+    async def test_default_timeout_when_unset(self):
+        """Hooks without a `timeout` use `DEFAULT_HOOK_TIMEOUT`."""
+        hooks_mod._hooks_config = [{"command": ["echo"]}]
+
+        with patch("deepagents_code.hooks.subprocess.run") as mock_run:
+            await hooks_mod.dispatch_hook("session.start", {})
+
+        assert mock_run.call_args[1]["timeout"] == hooks_mod.DEFAULT_HOOK_TIMEOUT
+
+    async def test_custom_timeout_used(self):
+        """A valid numeric `timeout` is passed through to `subprocess.run`."""
+        hooks_mod._hooks_config = [{"command": ["echo"], "timeout": 30}]
+
+        with patch("deepagents_code.hooks.subprocess.run") as mock_run:
+            await hooks_mod.dispatch_hook("session.start", {})
+
+        assert mock_run.call_args[1]["timeout"] == pytest.approx(30.0)
+
+    async def test_per_hook_timeouts_are_independent(self):
+        """Concurrent hooks each get their own configured timeout."""
+        hooks_mod._hooks_config = [
+            {"command": ["fast"], "timeout": 1},
+            {"command": ["slow"], "timeout": 60},
+        ]
+
+        seen: dict[str, float] = {}
+
+        def side_effect(cmd: list[str], **kwargs: Any) -> None:
+            seen[cmd[0]] = kwargs["timeout"]
+
+        with patch("deepagents_code.hooks.subprocess.run", side_effect=side_effect):
+            await hooks_mod.dispatch_hook("session.start", {})
+
+        assert seen == {"fast": pytest.approx(1.0), "slow": pytest.approx(60.0)}
+
+    @pytest.mark.parametrize("invalid", ["ten", 0, -3, True, None, [5]])
+    async def test_invalid_timeout_falls_back_to_default(self, invalid):
+        """Non-numeric, non-positive, or boolean timeouts use the default."""
+        hooks_mod._hooks_config = [{"command": ["echo"], "timeout": invalid}]
+
+        with patch("deepagents_code.hooks.subprocess.run") as mock_run:
+            await hooks_mod.dispatch_hook("session.start", {})
+
+        assert mock_run.call_args[1]["timeout"] == hooks_mod.DEFAULT_HOOK_TIMEOUT
+
+
+# ---------------------------------------------------------------------------
 # dispatch_hook_fire_and_forget
 # ---------------------------------------------------------------------------
 

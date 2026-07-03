@@ -8,10 +8,17 @@ logged but never bubble up to the caller.
 Config format (`~/.deepagents/hooks.json`):
 
 ```json
-{"hooks": [{"command": ["bash", "adapter.sh"], "events": ["session.start"]}]}
+{
+  "hooks": [
+    {"command": ["bash", "adapter.sh"], "events": ["session.start"], "timeout": 10}
+  ]
+}
 ```
 
-If `events` is omitted or empty the hook receives **all** events.
+If `events` is omitted or empty the hook receives **all** events. The optional
+`timeout` (seconds) bounds each command's runtime and defaults to
+`DEFAULT_HOOK_TIMEOUT`; invalid or non-positive values fall back to the
+default.
 
 Onboarding emits `user.name.set` with `{"name": "...", "assistant_id": "..."}`
 after the user submits a non-empty preferred name.
@@ -27,6 +34,9 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_HOOK_TIMEOUT = 5.0
+"""Seconds a hook command may run when its config sets no `timeout`."""
 
 _hooks_config: list[dict[str, Any]] | None = None
 """Cached config — loaded lazily on first dispatch."""
@@ -81,7 +91,29 @@ def _load_hooks() -> list[dict[str, Any]]:
     return _hooks_config
 
 
-def _run_single_hook(command: list[str], event: str, payload_bytes: bytes) -> None:
+def _resolve_timeout(hook: dict[str, Any]) -> float:
+    """Return the hook's `timeout` if valid, else `DEFAULT_HOOK_TIMEOUT`.
+
+    Args:
+        hook: Hook definition dict from the config file.
+
+    Returns:
+        The timeout in seconds. A missing, non-numeric, or non-positive
+            `timeout` falls back to `DEFAULT_HOOK_TIMEOUT`.
+    """
+    timeout = hook.get("timeout", DEFAULT_HOOK_TIMEOUT)
+    is_number = isinstance(timeout, (int, float)) and not isinstance(timeout, bool)
+    if is_number and timeout > 0:
+        return float(timeout)
+    logger.warning(
+        "Invalid hook timeout %r; using default of %ss", timeout, DEFAULT_HOOK_TIMEOUT
+    )
+    return DEFAULT_HOOK_TIMEOUT
+
+
+def _run_single_hook(
+    command: list[str], event: str, payload_bytes: bytes, timeout: float
+) -> None:
     """Execute a single hook command, writing the JSON payload to its stdin.
 
     Uses `subprocess.run` which automatically kills the child process on
@@ -91,6 +123,7 @@ def _run_single_hook(command: list[str], event: str, payload_bytes: bytes) -> No
         command: The command and arguments to run.
         event: Event name (for logging).
         payload_bytes: JSON payload to write to the command's stdin.
+        timeout: Wall-clock limit in seconds before the command is killed.
     """
     try:
         subprocess.run(  # noqa: S603
@@ -99,11 +132,13 @@ def _run_single_hook(command: list[str], event: str, payload_bytes: bytes) -> No
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
-            timeout=5,
+            timeout=timeout,
             check=False,
         )
     except subprocess.TimeoutExpired:
-        logger.warning("Hook command timed out (>5s) for event %s: %s", event, command)
+        logger.warning(
+            "Hook command timed out (>%ss) for event %s: %s", timeout, event, command
+        )
     except (FileNotFoundError, PermissionError) as exc:
         logger.warning("Hook command failed for event %s: %s — %s", event, command, exc)
     except Exception:
@@ -122,15 +157,16 @@ def _dispatch_hook_sync(
 
     Iterates over all configured hooks, skipping those whose event filter
     does not match or whose `command` is missing/invalid. Matching hooks are
-    executed concurrently with a 5-second timeout per command. Errors are caught
-    per-hook and logged without propagating.
+    executed concurrently, each with its configured `timeout` (default
+    `DEFAULT_HOOK_TIMEOUT` seconds). Errors are caught per-hook and logged
+    without propagating.
 
     Args:
         event: Dotted event name (e.g. `'session.start'`).
         payload_bytes: JSON payload to write to each command's stdin.
         hooks: List of hook definition dicts from the config file.
     """
-    matching: list[list[str]] = []
+    matching: list[tuple[list[str], float]] = []
     for hook in hooks:
         command = hook.get("command")
         if not isinstance(command, list) or not command:
@@ -141,18 +177,20 @@ def _dispatch_hook_sync(
         if events and event not in events:
             continue
 
-        matching.append(command)
+        matching.append((command, _resolve_timeout(hook)))
 
     if not matching:
         return
 
     if len(matching) == 1:
-        _run_single_hook(matching[0], event, payload_bytes)
+        command, timeout = matching[0]
+        _run_single_hook(command, event, payload_bytes, timeout)
         return
 
     with ThreadPoolExecutor(max_workers=len(matching)) as pool:
         futures = [
-            pool.submit(_run_single_hook, cmd, event, payload_bytes) for cmd in matching
+            pool.submit(_run_single_hook, cmd, event, payload_bytes, timeout)
+            for cmd, timeout in matching
         ]
         for future in futures:
             future.result()
@@ -166,7 +204,8 @@ async def dispatch_hook(event: str, payload: dict[str, Any]) -> None:
 
     The blocking subprocess work is offloaded to a thread so the caller's
     event loop is never stalled. Matching hooks run concurrently, each with
-    a 5-second timeout. Errors are logged and never propagated.
+    its configured `timeout` (default `DEFAULT_HOOK_TIMEOUT` seconds).
+    Errors are logged and never propagated.
 
     Args:
         event: Dotted event name (e.g. `'session.start'`).

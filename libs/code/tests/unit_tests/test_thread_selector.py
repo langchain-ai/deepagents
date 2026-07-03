@@ -1574,6 +1574,7 @@ class TestFetchThreadUrl:
     async def test_url_resolves_before_thread_load_completes(self) -> None:
         """Header link should appear without waiting for the DB load to finish."""
         from textual.content import Content
+        from textual.style import Style as TStyle
 
         load_gate = asyncio.Event()
 
@@ -1603,11 +1604,85 @@ class TestFetchThreadUrl:
                 assert isinstance(screen, ThreadSelectorScreen)
                 assert not screen._disk_load_complete
                 title_widget = screen.query_one("#thread-title", Static)
-                content = title_widget._Static__content
+                content = title_widget.content
                 assert isinstance(content, Content)
                 assert "abc12345" in content.plain
+                # The thread id must be an actual hyperlink, not just present as
+                # text: assert a link-bearing span exists.
+                link_spans = [
+                    s
+                    for s in content._spans
+                    if isinstance(s.style, TStyle) and s.style.link
+                ]
+                assert len(link_spans) > 0
 
+                # Release the gated load and let the worker finish so it drains
+                # deterministically instead of racing test teardown.
                 load_gate.set()
+                await pilot.pause()
+
+    async def test_url_resolves_on_mount_with_cached_rows(self) -> None:
+        """Cached-rows path should also resolve the header link at mount time.
+
+        The fix unified both branches to resolve the URL on mount; this locks in
+        that the cached path (`_has_initial_threads` is `True`) keeps that
+        behavior alongside the no-cache path.
+        """
+        from textual.content import Content
+        from textual.style import Style as TStyle
+
+        with (
+            _patch_list_threads(),
+            patch(
+                "deepagents_code.widgets.thread_selector.build_langsmith_thread_url",
+                return_value="https://smith.langchain.com/p/t/abc12345",
+            ),
+        ):
+            app = ThreadSelectorTestApp(current_thread="abc12345")
+            async with app.run_test() as pilot:
+                screen = ThreadSelectorScreen(
+                    current_thread="abc12345",
+                    initial_threads=list(MOCK_THREADS),
+                    filter_cwd=None,
+                )
+                app.push_screen(screen)
+                await pilot.pause()
+                await pilot.pause()
+                await pilot.pause()
+
+                assert screen._has_initial_threads
+                title_widget = screen.query_one("#thread-title", Static)
+                content = title_widget.content
+                assert isinstance(content, Content)
+                link_spans = [
+                    s
+                    for s in content._spans
+                    if isinstance(s.style, TStyle) and s.style.link
+                ]
+                assert len(link_spans) > 0
+
+    async def test_no_url_worker_when_no_current_thread(self) -> None:
+        """With no current thread, the title stays plain and no URL is resolved."""
+        with (
+            _patch_list_threads(),
+            patch(
+                "deepagents_code.widgets.thread_selector.build_langsmith_thread_url",
+            ) as mock_build_url,
+        ):
+            app = ThreadSelectorTestApp(current_thread=None)
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await pilot.pause()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                title_widget = screen.query_one("#thread-title", Static)
+                # With no current thread the title stays a plain string (no
+                # hyperlink), and the URL builder is never invoked.
+                assert title_widget.content == "Select Thread"
+                mock_build_url.assert_not_called()
 
     async def test_timeout_leaves_title_unchanged(self) -> None:
         """Timeout during URL resolution should not crash or change the title."""

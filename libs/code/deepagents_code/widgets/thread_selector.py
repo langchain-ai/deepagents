@@ -1394,9 +1394,9 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         self.call_after_refresh(self._update_controls_overflow_hint)
 
         # Resolve the LangSmith thread URL as soon as the modal mounts. The URL
-        # only depends on `self._current_thread` (known at construction), not on
-        # the thread list, so the header hyperlink should not wait for the DB
-        # load to finish.
+        # depends on `self._current_thread` (known at construction) plus
+        # env/config, but not on the loaded thread list, so the header hyperlink
+        # should not wait for the DB load to finish.
         if self._current_thread:
             self._resolve_thread_url()
 

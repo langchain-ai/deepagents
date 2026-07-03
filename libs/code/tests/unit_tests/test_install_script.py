@@ -1457,16 +1457,79 @@ def test_install_script_adds_local_bin_when_dcode_installed_but_not_on_path(
 def test_install_script_uses_uv_env_file_path_hint_when_available(
     tmp_path: Path,
 ) -> None:
-    """When uv wrote ~/.local/bin/env, no duplicate PATH setup is needed."""
+    """When uv wrote ~/.local/bin/env, a source hint is shown for stale shells.
+
+    uv's env file handles PATH setup for *new* shells, so no profile
+    modification is needed. But the current shell still lacks ~/.local/bin on
+    PATH (the binary resolved only via the installer's absolute-path fallback),
+    so the script emits a `source ~/.local/bin/env` reload hint instead of
+    silently returning success — a fresh `dcode` invocation would otherwise fail
+    until the user restarts their shell.
+    """
     proc = _invoke_with_local_dcode_not_on_path(tmp_path, create_env_file=True)
 
     assert proc.returncode == 0
     combined = proc.stdout + proc.stderr
     assert "isn't on your PATH yet" not in combined
-    assert "source ~/.local/bin/env" not in combined
+    assert "source ~/.local/bin/env" in combined
     assert not (tmp_path / "home/.zshrc").exists()
     assert not (tmp_path / "home/.bashrc").exists()
     assert not (tmp_path / "home/.bash_profile").exists()
+
+
+def test_install_script_stale_shell_with_profile_already_set_shows_reload_hint(
+    tmp_path: Path,
+) -> None:
+    """~/.local/bin already in the profile still warns when the shell is stale.
+
+    The profile already has the PATH export, so no file modification is needed.
+    But the current shell's PATH lacks ~/.local/bin (the binary resolved only
+    via the installer's absolute-path fallback), so the script must emit a
+    reload/source hint rather than silently returning success — otherwise the
+    user sees "Run: dcode" but dcode won't resolve until they restart.
+    """
+    bin_dir, home, uv = _write_fake_tools(tmp_path, installed_version=None)
+
+    local_bin = home / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    dcode = local_bin / "dcode"
+    dcode.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "${1:-}" = "-v" ]; then printf "deepagents-code 0.1.0\\n"; exit 0; fi\n'
+        "exit 0\n"
+    )
+    _make_executable(dcode)
+
+    # Pre-seed the shell profile so `local_bin_in_profile` returns true.
+    zshrc = home / ".zshrc"
+    zshrc.write_text('export PATH="$HOME/.local/bin:$PATH"\n')
+
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "XDG_CACHE_HOME": str(home / ".cache"),
+        "PATH": f"{bin_dir}{os.pathsep}{_path_without_dcode()}",
+        "UV_BIN": str(uv),
+        "DEEPAGENTS_CODE_SKIP_OPTIONAL": "1",
+        "SHELL": "/bin/zsh",
+    }
+    proc = subprocess.run(
+        ["bash", str(SCRIPT)],
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    assert proc.returncode == 0
+    combined = proc.stdout + proc.stderr
+    # No duplicate PATH export was appended.
+    assert combined.count('export PATH="$HOME/.local/bin:$PATH"') == 1
+    # But the reload hint is shown because the current shell is stale.
+    assert "Restart your shell, or run:" in combined
+    assert 'export PATH="$HOME/.local/bin:$PATH"' in combined
 
 
 def test_install_script_no_path_warning_when_dcode_on_path(tmp_path: Path) -> None:

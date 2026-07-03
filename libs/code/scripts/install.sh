@@ -978,13 +978,19 @@ local_bin_in_profile() {
 # Ensure dcode is on PATH for new shell sessions. Creates symlinks and/or
 # modifies the shell profile as needed. Only acts when the binary verified
 # but isn't already on the user's original PATH.
+# Returns: 0 = PATH is fixed for the current shell (symlink in an on-PATH dir),
+#          1 = failure (a specific warning was already printed),
+#          2 = no changes needed, but the current shell still must be reloaded
+#              or sourced before dcode will resolve.
 ensure_path_setup() {
   local binary_name="$1"
   local binary_path="$2"
 
-  # uv's env file already handles PATH setup — no need to duplicate.
+  # uv's env file already handles PATH setup for new shells — no profile
+  # change needed. But the current shell still lacks ~/.local/bin on PATH, so
+  # return 2 to let the caller emit a reload/source hint.
   if [ -f "$HOME/.local/bin/env" ]; then
-    return 0
+    return 2
   fi
 
   # Step 1: try symlinking into a dir already in PATH (no profile change).
@@ -1021,13 +1027,15 @@ ensure_path_setup() {
     return 1
   fi
 
-  # Already in profile? Just tell the user to reload.
+  # Already in profile? No changes needed, but the current shell may still
+  # lack ~/.local/bin on PATH (stale shell). Return 2 so the caller can emit
+  # a reload/source hint instead of silently returning success.
   if local_bin_in_profile "$SHELL_PROFILE"; then
     if [ "$VERBOSE" = "1" ]; then
       # shellcheck disable=SC2088  # display string, literal ~/ is intended for readability
       log_info "~/.local/bin already in ${SHELL_PROFILE}."
     fi
-    return 0
+    return 2
   fi
 
   # Collapse $HOME prefix to ~ for a tidier display path.
@@ -1160,8 +1168,12 @@ fi
 # PATH dir, or add ~/.local/bin to the shell profile — so the binary is
 # immediately usable in a new terminal without manual configuration.
 if [ "$VERIFY_OK" = true ] && [ "$DCODE_ON_PATH" = false ] && [ -n "$DCODE_BIN" ]; then
-  if ! ensure_path_setup "$DCODE_NAME" "$DCODE_BIN"; then
-    # ensure_path_setup already printed a specific warning; add the fallback.
+  path_setup_rc=0
+  ensure_path_setup "$DCODE_NAME" "$DCODE_BIN" || path_setup_rc=$?
+  if [ "$path_setup_rc" -ne 0 ]; then
+    # rc=1: ensure_path_setup printed a specific warning; add the fallback.
+    # rc=2: no profile change needed, but the current shell still lacks
+    #   ~/.local/bin on PATH — emit the same reload/source hint.
     log_warn "  Restart your shell, or run:"
     if [ -f "${HOME}/.local/bin/env" ]; then
       log_warn "  source ~/.local/bin/env"

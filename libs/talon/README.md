@@ -35,20 +35,77 @@ Talon can host an operator-unzipped LangSmith Fleet export through the `fleet-de
 
 ```bash
 unzip path/to/fleet-export.zip -d ./fleet
-
-DEEPAGENTS_TALON_FLEET_DIR=./fleet \
-AGENT_ASSISTANT_ID=fleet-local \
-uv run deepagents-talon --once
 ```
 
-In Fleet mode, Talon uses the model from `fleet/config.json` unless `DEEPAGENTS_TALON_MODEL` or `AGENT_MODEL` is set. The Fleet loader resolves MCP registry references through LangSmith, so provide the required `LANGSMITH_API_KEY`, `LANGSMITH_TENANT_ID`, `LANGSMITH_ORGANIZATION_ID`, and when needed `LANGSMITH_USER_ID`, `BUILTIN_MCP_URL`, `LANGSMITH_HOST_URL`, and `HOST_LANGCHAIN_API_URL`. Locally-authored agents without `DEEPAGENTS_TALON_FLEET_DIR` continue to load from the assistant manifest directory and Talon's plain MCP config discovery.
-
-OAuth-backed Fleet MCP tools must be authorized once from an interactive shell before starting a headless host. Run the host in `--once` mode with the same Fleet directory and LangSmith environment you will use in production, complete the browser authorization if prompted, then start the long-running host:
+Import the export once per Talon assistant id. The import validates `AGENTS.md` and
+`config.json`, records the Fleet directory, stores the selected channel, and writes
+Fleet MCP replacement follow-up tasks to the assistant-scoped manifest:
 
 ```bash
-DEEPAGENTS_TALON_FLEET_DIR=./fleet \
 AGENT_ASSISTANT_ID=fleet-local \
-uv run deepagents-talon --once
+uv run deepagents-talon import-fleet ./fleet \
+  --assistant-id fleet-local \
+  --channel telegram \
+  --non-interactive
+```
+
+If `--channel` is omitted, `import-fleet` infers the channel only when exactly one
+of `DEEPAGENTS_TALON_TELEGRAM_ENABLED=true` or
+`DEEPAGENTS_TALON_WHATSAPP_ENABLED=true` is set. In non-interactive shells,
+provide `--channel telegram` or `--channel whatsapp` explicitly.
+
+The manifest is written to `<assistant-home>/agent/tools.json`, where
+`<assistant-home>` is `~/.deepagents/<assistant-id>` by default or
+`$DEEPAGENTS_TALON_HOME/<assistant-id>` when `DEEPAGENTS_TALON_HOME` is set. Local
+MCP replacement setup is best-effort: unresolved Fleet MCP tools are recorded as
+setup tasks, but missing local replacements do not block import. The default
+follow-up target for local MCP replacement configuration is the same manifest file,
+`<assistant-home>/agent/tools.json`.
+
+Run the imported Fleet export through the selected channel by assistant id:
+
+```bash
+uv run deepagents-talon run-fleet --assistant-id fleet-local
+```
+
+Use `uv run deepagents-talon run-fleet --assistant-id fleet-local --once` as a
+local startup check before leaving the host running. `run-fleet` activates the
+imported channel without requiring `DEEPAGENTS_TALON_<CHANNEL>_ENABLED`. Existing
+channel flags such as `--whatsapp` and `--telegram` can still be passed to attach
+additional adapters for the same run.
+
+For Telegram, provide the Bot API token and an exposure policy:
+
+```bash
+DEEPAGENTS_TALON_TELEGRAM_BOT_TOKEN=<telegram-bot-token> \
+DEEPAGENTS_TALON_TELEGRAM_EXPOSURE=allowlist \
+DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_USERS=<telegram-user-id> \
+DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_CHATS=<telegram-chat-id> \
+uv run deepagents-talon run-fleet --assistant-id fleet-local
+```
+
+For WhatsApp:
+
+```bash
+DEEPAGENTS_TALON_WHATSAPP_EXPOSURE=self \
+uv run deepagents-talon run-fleet --assistant-id fleet-local
+```
+
+In Fleet mode, Talon uses the model from `fleet/config.json` unless
+`DEEPAGENTS_TALON_MODEL` or `AGENT_MODEL` is set. The Fleet loader resolves MCP
+registry references through LangSmith, so provide the required
+`LANGSMITH_API_KEY`, `LANGSMITH_TENANT_ID`, and
+`LANGSMITH_ORGANIZATION_ID`. Some exports also require `LANGSMITH_USER_ID`,
+`BUILTIN_MCP_URL`, `LANGSMITH_HOST_URL`, or `HOST_LANGCHAIN_API_URL`. Keep these
+values in environment variables or a local secret manager; do not copy real
+tokens into the manifest, README examples, or command history. Locally-authored
+agents without `DEEPAGENTS_TALON_FLEET_DIR` continue to load from the assistant
+manifest directory and Talon's plain MCP config discovery.
+
+OAuth-backed Fleet MCP tools must be authorized once from an interactive shell before starting a headless host. Run the imported assistant in `--once` mode with the same Fleet directory and LangSmith environment you will use in production, complete the browser authorization if prompted, then start the long-running host:
+
+```bash
+uv run deepagents-talon run-fleet --assistant-id fleet-local --once
 ```
 
 During a long-running Fleet session, Talon treats a 401/403 from an MCP tool as an expired OAuth credential signal. It reloads the Fleet components once, which re-mints tokens and rebuilds MCP connections, then retries the failed graph invocation once. If authorization still fails, Talon returns a structured `mcp_auth_failed` error instead of looping.

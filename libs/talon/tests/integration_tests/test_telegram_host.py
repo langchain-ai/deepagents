@@ -78,6 +78,17 @@ def test_channels_factory_selects_configured_channels(tmp_path: Path) -> None:
                 "DEEPAGENTS_TALON_TELEGRAM_BOT_TOKEN": "test-token",
                 "DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID": "999",
             },
+            False,
+            False,
+            "telegram",
+            (TelegramChannel,),
+        ),
+        ({}, False, False, "whatsapp", (WhatsAppChannel,)),
+        (
+            {
+                "DEEPAGENTS_TALON_TELEGRAM_BOT_TOKEN": "test-token",
+                "DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID": "999",
+            },
             True,
             True,
             None,

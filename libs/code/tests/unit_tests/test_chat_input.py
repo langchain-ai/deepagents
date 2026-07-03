@@ -4483,8 +4483,8 @@ class TestPasteCollapseIntegration:
             assert len(app.submitted) == 1
             assert app.submitted[0].value == f"fix this: {big_text}"
 
-    async def test_orphaned_paste_content_cleaned_on_delete(self) -> None:
-        """Deleting a placeholder removes its stored content."""
+    async def test_paste_content_survives_undo_restored_placeholder(self) -> None:
+        """A restored placeholder still expands after an undoable edit."""
         big_text = "D" * 900
         app = _RecordingApp()
         async with app.run_test() as pilot:
@@ -4493,12 +4493,49 @@ class TestPasteCollapseIntegration:
 
             chat.handle_external_paste(big_text)
             await pilot.pause()
+            placeholder = chat._text_area.text
             assert 1 in chat._pasted_contents
 
             chat._text_area.text = "all gone"
             await pilot.pause()
 
-            assert 1 not in chat._pasted_contents
+            chat._text_area.text = f"fix: {placeholder}"
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == f"fix: {big_text}"
+
+    @pytest.mark.parametrize(
+        ("pasted", "mode", "visible"),
+        [
+            ("/help " + ("x" * 900), "command", "help " + ("x" * 900)),
+            ("!echo " + ("x" * 900), "shell", "echo " + ("x" * 900)),
+            ("!!echo " + ("x" * 900), "shell_incognito", "echo " + ("x" * 900)),
+        ],
+    )
+    async def test_prefixed_large_paste_renders_mode_instead_of_collapsing(
+        self, pasted: str, mode: str, visible: str
+    ) -> None:
+        """Mode-prefixed large pastes stay visible so the prompt shows mode."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(pasted)
+            await pilot.pause()
+
+            assert chat.mode == mode
+            assert chat._text_area.text == visible
+            assert chat._pasted_contents == {}
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == pasted
+            assert app.submitted[0].mode == mode
 
     async def test_copy_button_expands_placeholders(self) -> None:
         """The copy button copies expanded text, not the placeholder."""

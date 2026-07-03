@@ -35,7 +35,6 @@ from deepagents_code.paste_collapse import (
     count_lines,
     expand_paste_refs,
     format_paste_ref,
-    parse_paste_refs,
     should_collapse_paste,
 )
 from deepagents_code.widgets.autocomplete import (
@@ -144,6 +143,11 @@ if TYPE_CHECKING:
     from textual.timer import Timer
 
     from deepagents_code.input import MediaTracker, ParsedPastedPathPayload
+
+
+def _should_collapse_chat_paste(text: str) -> bool:
+    """Return whether pasted chat text should be collapsed."""
+    return detect_mode_prefix(text) is None and should_collapse_paste(text)
 
 
 class CompletionOption(Static):
@@ -1030,7 +1034,6 @@ class ChatTextArea(TextArea):
             return
 
         from deepagents_code.input import parse_pasted_path_payload
-        from deepagents_code.paste_collapse import should_collapse_paste
 
         try:
             parsed = await asyncio.to_thread(parse_pasted_path_payload, payload)
@@ -1040,7 +1043,7 @@ class ChatTextArea(TextArea):
             self.post_message(self.PastedPaths(payload, parsed.paths))
             return
 
-        if should_collapse_paste(payload):
+        if _should_collapse_chat_paste(payload):
             self.post_message(self.PastedText(payload))
             return
 
@@ -1320,7 +1323,6 @@ class ChatTextArea(TextArea):
             await self._flush_paste_burst()
 
         from deepagents_code.input import parse_pasted_path_payload
-        from deepagents_code.paste_collapse import should_collapse_paste
 
         try:
             parsed = await asyncio.to_thread(parse_pasted_path_payload, event.text)
@@ -1332,7 +1334,7 @@ class ChatTextArea(TextArea):
             self.post_message(self.PastedPaths(event.text, parsed.paths))
             return
 
-        if should_collapse_paste(event.text):
+        if _should_collapse_chat_paste(event.text):
             # Intercept the paste so Textual's default _on_paste doesn't insert
             # the full text. ChatInput stores the content and inserts a compact
             # placeholder instead.
@@ -1832,7 +1834,6 @@ class ChatInput(Vertical):
         should_check_path_payload = self._should_check_path_payload(text)
         self._prev_text = text
         self._sync_media_tracker_to_text(text)
-        self._cleanup_orphaned_paste_contents(text)
 
         # History handlers explicitly decide mode and stripped display text.
         # Skip mode detection here so recalled entries don't inherit stale mode.
@@ -2218,21 +2219,29 @@ class ChatInput(Vertical):
         value = expand_paste_refs(value, self._pasted_contents)
         value = self._replace_submitted_paths_with_images(value)
 
+        mode = self.mode
+        if mode == "normal":
+            detected = detect_mode_prefix(value)
+            if detected is not None:
+                _, mode = detected
+
         # Prepend mode prefix so the app layer receives the original trigger
         # form (e.g. "!ls", "/help"). The value may already contain the prefix
         # when a completion controller wrote it back into the text area before
         # the strip handler ran.
-        prefix = MODE_PREFIXES.get(self.mode, "")
+        prefix = MODE_PREFIXES.get(mode, "")
         if prefix and not value.startswith(prefix):
             value = prefix + value
 
         self._history.add(value)
-        self.post_message(self.Submitted(value, self.mode))
+        self.post_message(self.Submitted(value, mode))
 
         if self._text_area:
             # Preserve submission-time attachments until adapter consumes them.
             self._skip_media_sync_events += 1
             self._text_area.clear_text()
+        # Clear only after submit. Ordinary edits are undoable, so removing
+        # backing content earlier can strand a restored placeholder.
         self._pasted_contents.clear()
         self.mode = "normal"
 
@@ -2255,27 +2264,6 @@ class ChatInput(Vertical):
                 self._skip_media_sync_events -= 1
             return
         self._image_tracker.sync_to_text(text)
-
-    def _cleanup_orphaned_paste_contents(self, text: str) -> None:
-        """Remove stored paste content whose placeholder was deleted from input.
-
-        Skips cleanup when the text area is empty so an undoable clear
-        (``discard_text`` / ctrl+z) can still restore placeholders with their
-        backing content intact.
-
-        Args:
-            text: Current text in the input area.
-        """
-        if not self._pasted_contents or not text:
-            return
-        referenced_ids = {paste_id for paste_id, _, _, _ in parse_paste_refs(text)}
-        orphaned = [
-            paste_id
-            for paste_id in self._pasted_contents
-            if paste_id not in referenced_ids
-        ]
-        for paste_id in orphaned:
-            del self._pasted_contents[paste_id]
 
     def on_chat_text_area_typing(
         self,
@@ -2364,7 +2352,7 @@ class ChatInput(Vertical):
         parsed = self._parse_dropped_path_payload(pasted)
         if parsed is not None:
             self._insert_pasted_paths(pasted, parsed.paths)
-        elif should_collapse_paste(pasted):
+        elif _should_collapse_chat_paste(pasted):
             self._collapse_and_insert_paste(pasted)
         else:
             self._text_area.insert(pasted)

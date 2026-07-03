@@ -20,6 +20,7 @@ from deepagents_code._version import __version__
 from deepagents_code.extras_info import ExtrasIntrospectionError, installed_extra_names
 from deepagents_code.update_check import (
     CACHE_TTL,
+    INSTALLED_STALE_NOTICE_DAYS,
     DependencyChange,
     InstallMethod,
     ShadowedDcode,
@@ -61,8 +62,10 @@ from deepagents_code.update_check import (
     install_extra_recovery_command,
     install_extras_command,
     install_package_command,
+    installed_days_old,
     is_auto_update_enabled,
     is_auto_update_explicitly_set,
+    is_installation_stale,
     is_installed_version_at_least,
     is_update_available,
     is_valid_extra_name,
@@ -1171,6 +1174,89 @@ class TestFormatInstalledAgeSuffix:
 
     def test_unknown_age_returns_empty(self, cache_file) -> None:  # noqa: ARG002
         assert format_installed_age_suffix("1.0.0") == ""
+
+
+def _write_installed_release_time(cache_file: Path, *, days_ago: int) -> None:
+    """Seed the cache with a release time for the running version."""
+    from datetime import UTC, datetime, timedelta
+
+    iso = (datetime.now(tz=UTC) - timedelta(days=days_ago)).isoformat()
+    cache_file.write_text(
+        json.dumps(
+            {
+                "release_times": {__version__: iso},
+                "checked_at": time.time(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+class TestInstalledDaysOld:
+    def test_returns_days_for_known_release(self, cache_file) -> None:
+        _write_installed_release_time(cache_file, days_ago=21)
+        assert installed_days_old() == 21
+
+    def test_unknown_release_returns_none(self, cache_file) -> None:  # noqa: ARG002
+        assert installed_days_old() is None
+
+
+class TestIsInstallationStale:
+    def test_true_when_older_than_threshold(self, cache_file) -> None:
+        _write_installed_release_time(
+            cache_file, days_ago=INSTALLED_STALE_NOTICE_DAYS + 1
+        )
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
+        ):
+            assert is_installation_stale() is True
+
+    def test_false_when_newer_than_threshold(self, cache_file) -> None:
+        _write_installed_release_time(
+            cache_file, days_ago=INSTALLED_STALE_NOTICE_DAYS - 1
+        )
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
+        ):
+            assert is_installation_stale() is False
+
+    def test_false_for_editable_install(self, cache_file) -> None:
+        _write_installed_release_time(
+            cache_file, days_ago=INSTALLED_STALE_NOTICE_DAYS + 30
+        )
+        with patch("deepagents_code.config._is_editable_install", return_value=True):
+            assert is_installation_stale() is False
+
+    def test_false_when_update_checks_disabled(self, cache_file) -> None:
+        _write_installed_release_time(
+            cache_file, days_ago=INSTALLED_STALE_NOTICE_DAYS + 30
+        )
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=False,
+            ),
+        ):
+            assert is_installation_stale() is False
+
+    def test_false_on_cold_cache(self, cache_file) -> None:  # noqa: ARG002
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
+        ):
+            assert is_installation_stale() is False
 
 
 class TestDetectInstallMethod:

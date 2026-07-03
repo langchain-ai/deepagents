@@ -2263,6 +2263,28 @@ class DeepAgentsApp(App):
             )
             self.sub_title = f"Sandbox: {display}"
 
+        from deepagents_code.update_check import (
+            installed_days_old,
+            is_installation_stale,
+        )
+
+        self._installation_stale: bool = sub_title is None and is_installation_stale()
+        """Whether the installed version is old enough to force the header banner.
+
+        Set once at construction from the cache-only install-age check. When
+        `True`, `compose` renders the header even without `DEEPAGENTS_CODE_SHOW_HEADER`
+        and the subtitle carries the advisory below — overriding the sandbox
+        subtitle by design.
+        """
+
+        if self._installation_stale:
+            days = installed_days_old()
+            unit = "day" if days == 1 else "days"
+            self.sub_title = (
+                f"Update available \u2014 installed version is "
+                f"{days} {unit} old (run /update)"
+            )
+
         # Per-turn model overrides
         self._model_override: str | None = None
         """Per-turn model override set via `/model`; `None` uses session default."""
@@ -2770,7 +2792,7 @@ class DeepAgentsApp(App):
         """
         from deepagents_code._env_vars import SHOW_HEADER, is_env_truthy
 
-        if is_env_truthy(SHOW_HEADER):
+        if is_env_truthy(SHOW_HEADER) or self._installation_stale:
             yield _StaticHeader(id="app-header")
         # Main chat area with scrollable messages
         # VerticalScroll tracks user scroll intent for better auto-scroll behavior.
@@ -16338,8 +16360,9 @@ async def run_textual_app(
         defer_server_start: Whether to keep app-owned server startup paused
             until credentials or a model are configured from inside the TUI.
         title: Override the Textual `App.title` shown in the optional header
-            bar (gated on `DEEPAGENTS_CODE_SHOW_HEADER`). When `None`, the
-            default `"Deep Agents"` is used.
+            bar (gated on `DEEPAGENTS_CODE_SHOW_HEADER`, or shown automatically
+            when the installation is stale). When `None`, the default
+            `"Deep Agents"` is used.
         sub_title: Override the Textual `App.sub_title` shown in the optional
             header bar.
 

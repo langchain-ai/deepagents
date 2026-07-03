@@ -20,6 +20,7 @@ from deepagents_code.media_utils import (
     get_clipboard_image,
     get_image_from_path,
     get_video_from_path,
+    strip_media_placeholders,
 )
 
 
@@ -213,6 +214,80 @@ class TestCreateMultimodalContent:
 
         assert len(result) == 1
         assert result[0]["type"] == "image_url"
+
+    def test_placeholder_not_leaked_into_text_block(self) -> None:
+        """The `[image N]` display placeholder must not reach model-facing text.
+
+        Regression test: sending an image previously serialized the display
+        placeholder as literal user-authored text in the traced/model message.
+        """
+        img = ImageData(base64_data="abc", format="png", placeholder="[image 1]")
+        result = create_multimodal_content("[image 1] what's in this image?", [img])
+
+        assert len(result) == 2
+        assert result[0]["type"] == "text"
+        # Placeholder is gone but the surrounding user text is preserved.
+        assert "[image 1]" not in result[0]["text"]
+        assert result[0]["text"] == "what's in this image?"
+        assert result[1]["type"] == "image_url"
+
+    def test_placeholder_removed_when_only_placeholder(self) -> None:
+        """A message that is only a placeholder yields no text block."""
+        img = ImageData(base64_data="abc", format="png", placeholder="[image 1]")
+        result = create_multimodal_content("[image 1]", [img])
+
+        assert len(result) == 1
+        assert result[0]["type"] == "image_url"
+
+    def test_placeholders_removed_for_video(self) -> None:
+        """Video placeholders are also stripped from model-facing text."""
+        vid = VideoData(base64_data="vid", format="mp4", placeholder="[video 1]")
+        result = create_multimodal_content("summarize [video 1] please", [], [vid])
+
+        assert result[0]["type"] == "text"
+        assert "[video 1]" not in result[0]["text"]
+        assert result[0]["text"] == "summarize please"
+
+    def test_multiple_placeholders_all_stripped(self) -> None:
+        """All placeholders are removed while surrounding text is preserved."""
+        img1 = ImageData(base64_data="a", format="png", placeholder="[image 1]")
+        img2 = ImageData(base64_data="b", format="png", placeholder="[image 2]")
+        result = create_multimodal_content(
+            "[image 1] and [image 2] differ how?", [img1, img2]
+        )
+
+        assert result[0]["type"] == "text"
+        assert "[image 1]" not in result[0]["text"]
+        assert "[image 2]" not in result[0]["text"]
+        assert result[0]["text"] == "and differ how?"
+
+
+class TestStripMediaPlaceholders:
+    """Tests for `strip_media_placeholders`."""
+
+    def test_leading_placeholder(self) -> None:
+        """A leading placeholder is removed along with its trailing space."""
+        assert strip_media_placeholders("[image 1] hello") == "hello"
+
+    def test_inline_placeholder_no_double_space(self) -> None:
+        """An inline placeholder does not leave a double space behind."""
+        assert strip_media_placeholders("before [image 1] after") == "before after"
+
+    def test_bare_placeholder(self) -> None:
+        """Bare `[image]`/`[video]` placeholders are also removed."""
+        assert strip_media_placeholders("look [image] here") == "look here"
+
+    def test_text_without_placeholder_unchanged(self) -> None:
+        """Text without any placeholder is returned unchanged (aside from trim)."""
+        assert strip_media_placeholders("plain text only") == "plain text only"
+
+    def test_only_placeholder_becomes_empty(self) -> None:
+        """A string that is only a placeholder becomes empty."""
+        assert strip_media_placeholders("[video 2]") == ""
+
+    def test_newlines_preserved(self) -> None:
+        """Newlines around a placeholder are preserved."""
+        assert strip_media_placeholders("line1\n[image 1]\nline2") == "line1\n\nline2"
 
 
 class TestGetClipboardImage:

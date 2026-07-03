@@ -5,6 +5,7 @@ import io
 import logging
 import os
 import pathlib
+import re
 import shutil
 
 # S404: subprocess needed for clipboard access via pngpaste/osascript
@@ -48,6 +49,31 @@ VIDEO_EXTENSIONS: frozenset[str] = frozenset(
 
 MAX_MEDIA_BYTES: int = 20 * 1024 * 1024
 """Maximum media file size (20 MB). Keeps base64 payload under ~27 MB."""
+
+_MEDIA_PLACEHOLDER_PATTERN = re.compile(r"[ \t]*\[(?:image|video)(?: \d+)?\]")
+"""Matches display-only media placeholders (`[image 1]`, `[video 2]`, `[image]`).
+
+Consumes any leading spaces/tabs so removing an inline placeholder collapses to a
+single space rather than leaving a double space behind. Newlines are preserved so
+multi-line prompts keep their structure.
+"""
+
+
+def strip_media_placeholders(text: str) -> str:
+    """Remove display-only media placeholders from user text.
+
+    Placeholders like `[image 1]` are inserted into the terminal input purely for
+    display; the actual media travels as structured content blocks. They must not
+    leak into the canonical model-facing message or LangSmith trace as if the user
+    typed them.
+
+    Args:
+        text: Raw user text that may contain `[image N]`/`[video N]` placeholders.
+
+    Returns:
+        Text with media placeholders removed and surrounding whitespace tidied.
+    """
+    return _MEDIA_PLACEHOLDER_PATTERN.sub("", text).strip()
 
 
 def _get_executable(name: str) -> str | None:
@@ -464,9 +490,12 @@ def create_multimodal_content(
     """
     content_blocks = []
 
-    # Add text block
-    if text.strip():
-        content_blocks.append({"type": "text", "text": text})
+    # Add text block. Strip display-only media placeholders (e.g. "[image 1]")
+    # so the canonical/model-facing text never contains fake user-authored
+    # placeholder text; the media itself is carried by the structured blocks below.
+    clean_text = strip_media_placeholders(text)
+    if clean_text:
+        content_blocks.append({"type": "text", "text": clean_text})
 
     # Add image blocks
     content_blocks.extend(image.to_message_content() for image in images)

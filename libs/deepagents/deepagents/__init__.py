@@ -6,6 +6,7 @@ from deepagents.graph import (
     SystemPromptConfig,
     create_deep_agent,
 )
+from deepagents.hitl import DeepAgentInterruptOnConfig
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission, FsToolName
 from deepagents.middleware.memory import MemoryMiddleware
@@ -30,6 +31,7 @@ __all__ = [
     "AsyncSubAgent",
     "AsyncSubAgentMiddleware",
     "CompiledSubAgent",
+    "DeepAgentInterruptOnConfig",
     "DeepAgentState",
     "FilesystemMiddleware",
     "FilesystemPermission",

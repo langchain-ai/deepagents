@@ -3,11 +3,11 @@
 import contextlib
 import dataclasses
 import json
-from collections.abc import Awaitable, Callable, Generator, Sequence
+from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
 from typing import Any, NotRequired, TypedDict, cast
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
+from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     ContextT,
@@ -26,6 +26,7 @@ from langsmith.run_helpers import get_tracing_context, tracing_context
 from pydantic import BaseModel, Field
 
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
+from deepagents.hitl import InterruptOnConfigValue, _normalize_interrupt_on
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemPermission
 
@@ -67,6 +68,8 @@ class SubAgent(TypedDict):
             the default one.
         interrupt_on: Configure human-in-the-loop for specific tools.
 
+            `{"enabled": True}` is equivalent to `True`, and
+            `{"enabled": False}` is equivalent to `False`.
             Requires a checkpointer.
         skills: Skill source paths for `SkillsMiddleware`.
 
@@ -107,7 +110,7 @@ class SubAgent(TypedDict):
     middleware: NotRequired[list[AgentMiddleware]]
     """Additional middleware for custom behavior."""
 
-    interrupt_on: NotRequired[dict[str, bool | InterruptOnConfig]]
+    interrupt_on: NotRequired[Mapping[str, InterruptOnConfigValue]]
     """Configure human-in-the-loop for specific tools."""
 
     skills: NotRequired[list[str]]
@@ -498,7 +501,7 @@ def create_sub_agent(
 
     interrupt_on = spec.get("interrupt_on")
     if interrupt_on:
-        middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
+        middleware.append(HumanInTheLoopMiddleware(interrupt_on=_normalize_interrupt_on(interrupt_on)))
 
     selected_response_format = response_format if response_format is not None else spec.get("response_format")
     create_agent_kwargs: dict[str, Any] = {

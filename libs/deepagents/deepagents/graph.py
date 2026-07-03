@@ -6,7 +6,7 @@ subagent, and summarization middleware.
 """
 
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from importlib import import_module
 from typing import Annotated, Any, Required, TypedDict, cast
 
@@ -38,6 +38,7 @@ from deepagents._tools import _apply_tool_description_overrides
 from deepagents._version import __version__
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendFactory, BackendProtocol
+from deepagents.hitl import DeepAgentInterruptOnConfig, InterruptOnConfigValue, _normalize_interrupt_on
 from deepagents.middleware._fs_interrupt import _build_interrupt_on_from_permissions
 from deepagents.middleware._state import private_state_field_names
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
@@ -266,7 +267,7 @@ def _append_prompt_caching_middleware(middleware: list[AgentMiddleware[Any, Any,
 
 def _merge_fs_interrupt_on(
     fs_interrupt_on: dict[str, InterruptOnConfig],
-    user_interrupt_on: dict[str, bool | InterruptOnConfig] | None,
+    user_interrupt_on: Mapping[str, InterruptOnConfigValue] | None,
 ) -> dict[str, bool | InterruptOnConfig] | None:
     """Combine filesystem-permission configs with user-defined interrupts.
 
@@ -277,10 +278,10 @@ def _merge_fs_interrupt_on(
     """
     if not fs_interrupt_on and not user_interrupt_on:
         return None
-    merged: dict[str, bool | InterruptOnConfig] = {**fs_interrupt_on}
+    merged: dict[str, InterruptOnConfigValue] = {**fs_interrupt_on}
     if user_interrupt_on:
         merged.update(user_interrupt_on)
-    return merged
+    return _normalize_interrupt_on(merged)
 
 
 def _apply_custom_middleware(
@@ -361,7 +362,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     memory: list[str] | None = None,
     permissions: list[FilesystemPermission] | None = None,
     backend: BackendProtocol | BackendFactory | None = None,
-    interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
+    interrupt_on: dict[str, bool | InterruptOnConfig | DeepAgentInterruptOnConfig] | None = None,
     response_format: ResponseFormat[ResponseT] | type[ResponseT] | dict[str, Any] | None = None,
     state_schema: type[DeepAgentState] | None = None,
     context_schema: type[ContextT] | None = None,
@@ -586,7 +587,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 subagent itself.
 
             For example, `interrupt_on={"edit_file": True}` pauses before
-            every edit.
+            every edit. `{"edit_file": {"enabled": True}}` is equivalent to
+            `True`, and `{"edit_file": {"enabled": False}}` is equivalent to
+            `False`. Dict configs can combine `enabled` with
+            `allowed_decisions` or `when`.
         response_format: A structured output response format to use for the agent.
         state_schema: Custom state schema for the agent graph. Must be a
             `TypedDict` subclass of

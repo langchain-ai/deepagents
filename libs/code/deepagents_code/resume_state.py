@@ -229,13 +229,19 @@ def _estimate_turn_cost(message: AIMessage, spec: object) -> float | None:
         provider = settings.model_provider or ""
         model = settings.model_name or ""
 
-    from deepagents_code._cost import estimate_request_cost
+    from deepagents_code._cost import (
+        cache_tokens_from_usage,
+        estimate_request_cost,
+    )
 
+    cache_read, cache_write = cache_tokens_from_usage(usage)
     return estimate_request_cost(
         input_tokens=input_toks,
         output_tokens=output_toks,
         model_name=model,
         provider=provider,
+        cache_read_tokens=cache_read,
+        cache_write_tokens=cache_write,
     )
 
 

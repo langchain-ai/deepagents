@@ -386,9 +386,13 @@ def _process_ai_message(
         total_toks = usage.get("total_tokens", 0)
         active_model = settings.model_name or ""
         active_provider = settings.model_provider or ""
-        from deepagents_code._cost import estimate_request_cost
+        from deepagents_code._cost import (
+            cache_tokens_from_usage,
+            estimate_request_cost,
+        )
 
         if input_toks or output_toks:
+            cache_read, cache_write = cache_tokens_from_usage(usage)
             state.stats.record_request(
                 active_model,
                 input_toks,
@@ -399,6 +403,8 @@ def _process_ai_message(
                     output_tokens=output_toks,
                     model_name=active_model,
                     provider=active_provider,
+                    cache_read_tokens=cache_read,
+                    cache_write_tokens=cache_write,
                 ),
             )
         elif total_toks:

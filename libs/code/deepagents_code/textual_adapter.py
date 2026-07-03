@@ -994,6 +994,7 @@ async def execute_task_textual(
                             output_toks = usage.get("output_tokens", 0)
                             total_toks = usage.get("total_tokens", 0)
                             from deepagents_code._cost import (
+                                cache_tokens_from_usage,
                                 estimate_request_cost,
                             )
                             from deepagents_code.config import settings
@@ -1002,6 +1003,7 @@ async def execute_task_textual(
                             active_provider = settings.model_provider or ""
                             if input_toks or output_toks:
                                 # Model gives split counts — preferred path
+                                cache_read, cache_write = cache_tokens_from_usage(usage)
                                 turn_stats.record_request(
                                     active_model,
                                     input_toks,
@@ -1012,6 +1014,8 @@ async def execute_task_textual(
                                         output_tokens=output_toks,
                                         model_name=active_model,
                                         provider=active_provider,
+                                        cache_read_tokens=cache_read,
+                                        cache_write_tokens=cache_write,
                                     ),
                                 )
                                 captured_input_tokens = max(

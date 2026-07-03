@@ -3771,3 +3771,68 @@ class TestUserMessageTruncation:
             text, _ending = result
             assert text == big
             assert "…" not in text
+
+    def test_truncation_reports_exact_hidden_newline_count(self) -> None:
+        """The elision marker reports the exact number of hidden newlines."""
+        from deepagents_code.widgets.messages import _truncate_for_display
+
+        text = "H" * 6000 + "\n" * 50 + "T" * 6000
+        result = _truncate_for_display(text)
+        assert "… +50 lines …" in result
+
+    async def test_partial_selection_uses_visible_render(self) -> None:
+        """A partial selection defers to the on-screen (truncated) render.
+
+        Select-all extracts from the full content, but a partial selection must
+        stay aligned with what is visible, so it delegates to the base widget.
+        """
+        from textual.geometry import Offset
+        from textual.selection import Selection
+        from textual.widgets import Static
+
+        big = "X" * 12_000
+        msg = UserMessage(big)
+
+        class _TestApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield msg
+
+        app = _TestApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            partial = Selection(Offset(2, 0), Offset(6, 0))
+            expected = _strip_prompt_prefix(Static.get_selection(msg, partial), partial)
+            result = msg.get_selection(partial)
+            # Delegates to the base (truncated) extraction, so it must not
+            # return the full 12k body the way full-content extraction would.
+            assert result == expected
+            assert result is not None
+            assert result[0] != big
+
+    def test_queued_message_render_truncates(self) -> None:
+        """QueuedUserMessage render truncates long content with an elision marker."""
+        content = _render_content(QueuedUserMessage("Q" * 12_000))
+        assert content.plain.startswith("> ")
+        assert "… +" in content.plain
+        assert len(content.plain) < 12_000
+
+    async def test_queued_selection_returns_full_content(self) -> None:
+        """Select-all on a truncated QueuedUserMessage returns the full text."""
+        from textual.geometry import Offset
+        from textual.selection import Selection
+
+        big = "Y" * 12_000
+        msg = QueuedUserMessage(big)
+
+        class _TestApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield msg
+
+        app = _TestApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            result = msg.get_selection(Selection(Offset(2, 0), None))
+            assert result is not None
+            text, _ending = result
+            assert text == big
+            assert "…" not in text

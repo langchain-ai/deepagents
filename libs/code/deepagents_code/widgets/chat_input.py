@@ -1037,7 +1037,15 @@ class ChatTextArea(TextArea):
 
         try:
             parsed = await asyncio.to_thread(parse_pasted_path_payload, payload)
-        except Exception:  # noqa: BLE001  # Treat thread failure as non-path text
+        except Exception:
+            # The parser absorbs OSError/RuntimeError internally, so reaching
+            # here signals an unexpected regression.  Leave a breadcrumb (never
+            # the paste content) instead of swallowing it, then fall through to
+            # normal text handling.
+            logger.debug(
+                "Path-payload parsing failed; treating burst as text",
+                exc_info=True,
+            )
             parsed = None
         if parsed is not None:
             self.post_message(self.PastedPaths(payload, parsed.paths))
@@ -1326,7 +1334,13 @@ class ChatTextArea(TextArea):
 
         try:
             parsed = await asyncio.to_thread(parse_pasted_path_payload, event.text)
-        except Exception:  # noqa: BLE001  # Treat thread failure as non-path text
+        except Exception:
+            # See _flush_paste_burst: swallowing here would silently break the
+            # drag-drop-file path, so log a breadcrumb and fall through to text.
+            logger.debug(
+                "Path-payload parsing failed; treating paste as text",
+                exc_info=True,
+            )
             parsed = None
         if parsed is not None:
             event.prevent_default()
@@ -2241,8 +2255,11 @@ class ChatInput(Vertical):
             self._skip_media_sync_events += 1
             self._text_area.clear_text()
         # Clear only after submit. Ordinary edits are undoable, so removing
-        # backing content earlier can strand a restored placeholder.
+        # backing content earlier can strand a restored placeholder.  The input
+        # and its paste map are emptied together here, so IDs can safely restart
+        # at 1 for the next message.
         self._pasted_contents.clear()
+        self._next_paste_id = 1
         self.mode = "normal"
 
     def _sync_media_tracker_to_text(self, text: str) -> None:
@@ -2367,10 +2384,11 @@ class ChatInput(Vertical):
             text: The full pasted text to collapse.
         """
         if not self._text_area:
+            logger.debug("Dropping collapsed paste: text area not mounted")
             return
         paste_id = self._next_paste_id
         self._next_paste_id += 1
-        self._pasted_contents[paste_id] = PastedContent(id=paste_id, content=text)
+        self._pasted_contents[paste_id] = PastedContent(content=text)
         placeholder = format_paste_ref(paste_id, count_lines(text))
         self._text_area.insert(placeholder)
 

@@ -4276,6 +4276,12 @@ class TestPasteCollapseHelpers:
 
         assert should_collapse_paste("x" * 801) is True
 
+    def test_should_not_collapse_at_char_boundary(self) -> None:
+        """Text exactly at the character threshold should not be collapsed."""
+        from deepagents_code.paste_collapse import should_collapse_paste
+
+        assert should_collapse_paste("x" * 800) is False
+
     def test_should_collapse_multi_line(self) -> None:
         """Text with more lines than the threshold should be collapsed."""
         from deepagents_code.paste_collapse import should_collapse_paste
@@ -4300,35 +4306,36 @@ class TestPasteCollapseHelpers:
 
         assert format_paste_ref(3, 5) == "[Pasted text #3 +5 lines]"
 
-    def test_parse_paste_refs_finds_placeholders(self) -> None:
-        """parse_paste_refs extracts all placeholders in order."""
-        from deepagents_code.paste_collapse import parse_paste_refs
-
-        text = "intro [Pasted text #1 +10 lines] mid [Pasted text #2] end"
-        refs = parse_paste_refs(text)
-        assert len(refs) == 2
-        assert refs[0][0] == 1
-        assert refs[0][1] == "[Pasted text #1 +10 lines]"
-        assert refs[1][0] == 2
-        assert refs[1][1] == "[Pasted text #2]"
-
-    def test_parse_paste_refs_no_matches(self) -> None:
-        """parse_paste_refs returns empty list for plain text."""
-        from deepagents_code.paste_collapse import parse_paste_refs
-
-        assert parse_paste_refs("just regular text") == []
-
     def test_expand_paste_refs(self) -> None:
         """expand_paste_refs replaces placeholders with stored content."""
         from deepagents_code.paste_collapse import PastedContent, expand_paste_refs
 
         contents = {
-            1: PastedContent(id=1, content="FIRST\nSECOND"),
-            2: PastedContent(id=2, content="third"),
+            1: PastedContent(content="FIRST\nSECOND"),
+            2: PastedContent(content="third"),
         }
         text = "before [Pasted text #1 +1 lines] after [Pasted text #2] end"
         expanded = expand_paste_refs(text, contents)
         assert expanded == "before FIRST\nSECOND after third end"
+
+    def test_expand_paste_refs_out_of_order_and_repeated(self) -> None:
+        """Placeholders expand by id regardless of order, and repeats reuse content."""
+        from deepagents_code.paste_collapse import PastedContent, expand_paste_refs
+
+        contents = {
+            1: PastedContent(content="ONE"),
+            2: PastedContent(content="TWO"),
+        }
+        text = "[Pasted text #2] [Pasted text #1] [Pasted text #1]"
+        assert expand_paste_refs(text, contents) == "TWO ONE ONE"
+
+    def test_expand_paste_refs_content_with_backslashes(self) -> None:
+        """Stored content is inserted literally, not as a regex replacement."""
+        from deepagents_code.paste_collapse import PastedContent, expand_paste_refs
+
+        contents = {1: PastedContent(content=r"\1 \g<0> back\slash")}
+        expanded = expand_paste_refs("[Pasted text #1]", contents)
+        assert expanded == r"\1 \g<0> back\slash"
 
     def test_expand_paste_refs_unknown_id_left_as_is(self) -> None:
         """Placeholders with unknown IDs are left unchanged."""
@@ -4537,9 +4544,57 @@ class TestPasteCollapseIntegration:
             assert app.submitted[0].value == pasted
             assert app.submitted[0].mode == mode
 
-    async def test_copy_button_expands_placeholders(self) -> None:
+    async def test_bracketed_paste_event_collapses(self) -> None:
+        """A real Paste event over the threshold collapses to a placeholder.
+
+        Exercises the production path (`_on_paste` -> `PastedText` message ->
+        `on_chat_text_area_pasted_text`) rather than `handle_external_paste`.
+        """
+        big_text = "z" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            await chat._text_area._on_paste(events.Paste(big_text))
+            await pilot.pause()
+
+            assert "[Pasted text #1]" in chat._text_area.text
+            assert big_text not in chat._text_area.text
+            assert chat._pasted_contents[1].content == big_text
+
+    async def test_paste_burst_flush_collapses_large_payload(self) -> None:
+        """A large buffered paste burst collapses to a placeholder on flush."""
+        big_text = "q" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area._paste_burst_buffer = big_text
+            await chat._text_area._flush_paste_burst()
+            await pilot.pause()
+
+            assert "[Pasted text #1]" in chat._text_area.text
+            assert big_text not in chat._text_area.text
+            assert chat._pasted_contents[1].content == big_text
+
+    async def test_copy_button_expands_placeholders(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """The copy button copies expanded text, not the placeholder."""
         big_text = "E" * 900
+        copied: list[str] = []
+
+        def capture_copy(_app_arg: object, text: str, **_kwargs: object) -> None:
+            copied.append(text)
+
+        # _copy_via_button imports copy_text_with_feedback at call time, so
+        # patching the module attribute is picked up without a manual restore.
+        monkeypatch.setattr(
+            "deepagents_code.clipboard.copy_text_with_feedback", capture_copy
+        )
+
         app = _RecordingApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
@@ -4548,24 +4603,11 @@ class TestPasteCollapseIntegration:
             chat.handle_external_paste(big_text)
             await pilot.pause()
 
-            copied: list[str] = []
+            chat._copy_via_button()
+            await pilot.pause()
 
-            def capture_copy(_app_arg: object, text: str, **_kwargs: object) -> None:
-                copied.append(text)
-
-            import deepagents_code.clipboard as clipboard_mod
-
-            original_copy = clipboard_mod.copy_text_with_feedback
-            clipboard_mod.copy_text_with_feedback = capture_copy  # ty: ignore
-
-            try:
-                chat._copy_via_button()
-                await pilot.pause()
-            finally:
-                clipboard_mod.copy_text_with_feedback = original_copy  # ty: ignore
-
-            assert len(copied) == 1
-            assert copied[0] == big_text
+        assert len(copied) == 1
+        assert copied[0] == big_text
 
     async def test_paste_content_survives_undoable_clear(self) -> None:
         """Undoable clear (discard_text) must not delete paste contents.

@@ -50,33 +50,52 @@ class TestCwdDisplay:
 
 
 class TestCostDisplay:
-    """Tests for the cumulative session cost display in the status bar."""
+    """Tests for the cumulative session cost, shown in the tokens slot."""
 
-    async def test_set_cost_renders_formatted_value(self) -> None:
+    async def test_cost_renders_alongside_tokens(self) -> None:
         async with StatusBarApp().run_test(size=(120, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(12_500)
             bar.set_cost(0.0045)
             await pilot.pause()
-            display = pilot.app.query_one("#cost-display", Static)
-            assert "$0.0045" in str(display.render())
+            display = pilot.app.query_one("#tokens-display", Static)
+            rendered = str(display.render())
+            assert "12.5K tokens" in rendered
+            assert "$0.0045" in rendered
 
-    async def test_set_cost_dollars(self) -> None:
+    async def test_cost_without_tokens(self) -> None:
         async with StatusBarApp().run_test(size=(120, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.set_cost(1.5)
             await pilot.pause()
-            display = pilot.app.query_one("#cost-display", Static)
+            display = pilot.app.query_one("#tokens-display", Static)
             assert "$1.50" in str(display.render())
 
-    async def test_zero_cost_clears_display(self) -> None:
+    async def test_zero_cost_shows_only_tokens(self) -> None:
         async with StatusBarApp().run_test(size=(120, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(1000)
             bar.set_cost(1.0)
             await pilot.pause()
             bar.set_cost(0.0)
             await pilot.pause()
-            display = pilot.app.query_one("#cost-display", Static)
-            assert str(display.render()) == ""
+            display = pilot.app.query_one("#tokens-display", Static)
+            rendered = str(display.render())
+            assert "$" not in rendered
+            assert "1.0K tokens" in rendered
+
+    async def test_cost_survives_pending_tokens(self) -> None:
+        async with StatusBarApp().run_test(size=(120, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(1000)
+            bar.set_cost(0.0045)
+            await pilot.pause()
+            bar.show_pending_tokens()
+            await pilot.pause()
+            display = pilot.app.query_one("#tokens-display", Static)
+            rendered = str(display.render())
+            assert "... tokens" in rendered
+            assert "$0.0045" in rendered
 
 
 class TestBranchDisplay:

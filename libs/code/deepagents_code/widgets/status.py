@@ -223,12 +223,6 @@ class StatusBar(Horizontal):
         color: $text-muted;
     }
 
-    StatusBar .status-cost {
-        width: auto;
-        padding: 0 1;
-        color: $text-muted;
-    }
-
     StatusBar .status-rubric {
         width: auto;
         padding: 0 1;
@@ -276,8 +270,8 @@ class StatusBar(Horizontal):
         """Compose the status bar layout.
 
         Yields:
-            Widgets for mode, auto-approve, message, cwd, branch, tokens, cost,
-                and model display.
+            Widgets for mode, auto-approve, message, cwd, branch, tokens (with
+                cost), and model display.
         """
         yield Static("", classes="status-mode normal", id="mode-indicator")
         yield Static(
@@ -292,7 +286,6 @@ class StatusBar(Horizontal):
             yield Static("", classes="status-branch", id="branch-display")
         yield Static("", classes="status-rubric", id="rubric-display")
         yield Static("", classes="status-tokens", id="tokens-display")
-        yield Static("", classes="status-cost", id="cost-display")
         yield ModelLabel(id="model-display")
 
     _BRANCH_WIDTH_THRESHOLD = 100
@@ -605,8 +598,44 @@ class StatusBar(Horizontal):
         display.display = bool(new_value)
         display.update(new_value)
 
+    @staticmethod
+    def _tokens_text(count: int, *, approximate: bool = False) -> str:
+        """Build the token portion of the tokens/cost display.
+
+        Args:
+            count: Total context token count.
+            approximate: Append "+" suffix to indicate the count is stale.
+
+        Returns:
+            Formatted token string like `'12.5K tokens'`, or `''` when there is
+                no count yet.
+        """
+        if count <= 0:
+            return ""
+        suffix = "+" if approximate else ""
+        if count >= 1000:  # noqa: PLR2004  # Count formatting threshold
+            return f"{count / 1000:.1f}K{suffix} tokens"
+        return f"{count}{suffix} tokens"
+
+    def _cost_text(self) -> str:
+        """Build the cost portion of the tokens/cost display.
+
+        Returns:
+            Formatted cost string like `'$0.0045'`, or `''` when no priced
+                usage has been recorded this session.
+        """
+        if self.cost <= 0:
+            return ""
+        from deepagents_code._cost import format_cost
+
+        return format_cost(self.cost)
+
     def _render_tokens(self, count: int, *, approximate: bool = False) -> None:
-        """Render the token count into the display widget.
+        """Render the combined token count and session cost into the widget.
+
+        Cost rides in the same slot as the token count (`'12.5K tokens ·
+        $0.0045'`) so it does not consume a separate, always-padded status-bar
+        column and crowd out the model label on narrow terminals.
 
         Args:
             count: Total context token count.
@@ -618,15 +647,10 @@ class StatusBar(Horizontal):
         except NoMatches:
             return
 
-        if count > 0:
-            suffix = "+" if approximate else ""
-            # Format with K suffix for thousands
-            if count >= 1000:  # noqa: PLR2004  # Count formatting threshold
-                display.update(f"{count / 1000:.1f}K{suffix} tokens")
-            else:
-                display.update(f"{count}{suffix} tokens")
-        else:
-            display.update("")
+        tokens_text = self._tokens_text(count, approximate=approximate)
+        cost_text = self._cost_text()
+        parts = [p for p in (tokens_text, cost_text) if p]
+        display.update(" \u00b7 ".join(parts))
 
     def set_rubric_label(self, label: str) -> None:
         """Set the rubric status label.
@@ -659,36 +683,24 @@ class StatusBar(Horizontal):
             self.tokens = count
 
     def show_pending_tokens(self) -> None:
-        """Show an unknown token count placeholder during streaming."""
+        """Show an unknown token count placeholder during streaming.
+
+        Keeps the session cost visible alongside the placeholder so the running
+        total does not blink out mid-turn.
+        """
         if not self._has_token_count:
             return
         try:
-            self.query_one("#tokens-display", Static).update("... tokens")
+            display = self.query_one("#tokens-display", Static)
         except NoMatches:
             return
+        cost_text = self._cost_text()
+        parts = [p for p in ("... tokens", cost_text) if p]
+        display.update(" \u00b7 ".join(parts))
 
-    def watch_cost(self, new_value: float) -> None:
-        """Update cost display when the cumulative session cost changes."""
-        self._render_cost(new_value)
-
-    def _render_cost(self, cost: float) -> None:
-        """Render the cumulative session cost into the display widget.
-
-        Args:
-            cost: Cumulative session cost in USD. Values `<= 0` clear the widget
-                so a session with no priced requests shows nothing.
-        """
-        try:
-            display = self.query_one("#cost-display", Static)
-        except NoMatches:
-            return
-
-        if cost > 0:
-            from deepagents_code._cost import format_cost
-
-            display.update(format_cost(cost))
-        else:
-            display.update("")
+    def watch_cost(self) -> None:
+        """Re-render the tokens/cost slot when the session cost changes."""
+        self._render_tokens(self.tokens, approximate=self._approximate)
 
     def set_cost(self, cost: float) -> None:
         """Set the cumulative session cost.
@@ -697,8 +709,8 @@ class StatusBar(Horizontal):
             cost: Cumulative session cost in USD.
         """
         if self.cost == cost:
-            # Reactive dedup would skip the watcher — render directly.
-            self._render_cost(cost)
+            # Reactive dedup would skip the watcher — re-render directly.
+            self._render_tokens(self.tokens, approximate=self._approximate)
         else:
             self.cost = cost
 

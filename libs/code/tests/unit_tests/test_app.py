@@ -17140,6 +17140,30 @@ class TestStaleInstallBanner:
                 "Update available \u2014 installed version is 1 day old (run /update)"
             )
 
+    async def test_none_days_drops_banner(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `None` age (cache race) drops the banner, never `"None days old"`."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_SHOW_HEADER", raising=False)
+        from textual.widgets import Header
+
+        with (
+            patch(
+                "deepagents_code.update_check.is_installation_stale",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.installed_days_old",
+                return_value=None,
+            ),
+        ):
+            app = DeepAgentsApp()
+            assert app._installation_stale is False
+            assert "None" not in (app.sub_title or "")
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                assert not app.query(Header)
+
 
 class TestHandleExternalSignal:
     """Verify routing of `kind=signal` external events."""

@@ -716,10 +716,15 @@ def installed_days_old() -> int | None:
     """Return whole days since the installed version's release, or `None`.
 
     Cache-only (`get_release_time`), so it never blocks on the network.
-    Returns `None` when the release time is unknown (cold cache, unparseable
-    timestamp, or `None` version).
+    Returns `None` when the release time is unknown (cold cache or an
+    unparseable timestamp). Best-effort: any unexpected error degrades to
+    `None` rather than propagating, since this runs on the startup path.
     """
-    return _days_old_from_iso(get_release_time(__version__))
+    try:
+        return _days_old_from_iso(get_release_time(__version__))
+    except Exception:
+        logger.debug("Failed to compute installed version age", exc_info=True)
+        return None
 
 
 def is_installation_stale() -> bool:
@@ -730,15 +735,22 @@ def is_installation_stale() -> bool:
     `False` for editable/dev installs (release age is meaningless there), when
     update checks are disabled (the opt-out silences this too), and when the age
     or update answer is unknown.
+
+    Best-effort: any unexpected error degrades to `False` rather than
+    propagating, so this cosmetic check can never abort TUI startup.
     """
     from deepagents_code.config import _is_editable_install
 
-    if _is_editable_install() or not is_update_check_enabled():
+    try:
+        if _is_editable_install() or not is_update_check_enabled():
+            return False
+        available, _ = get_cached_update_available()
+        if not available:
+            return False
+        days = installed_days_old()
+    except Exception:
+        logger.debug("Failed to determine installation staleness", exc_info=True)
         return False
-    available, _ = get_cached_update_available()
-    if not available:
-        return False
-    days = installed_days_old()
     return days is not None and days >= INSTALLED_STALE_NOTICE_DAYS
 
 

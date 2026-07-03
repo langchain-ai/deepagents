@@ -10795,21 +10795,57 @@ class DeepAgentsApp(App):
             if payload.context_tokens > 0:
                 self._on_tokens_update(payload.context_tokens)
 
-            # 3. Bulk load into store (sets visible window)
-            _archived, visible = self._message_store.bulk_load(payload.messages)
-
-            # 5. Cache container ref (single query)
+            # 5. Cache container ref (single query). Queried before the store
+            # load so history can be reconciled against widgets already in the
+            # DOM (see below).
             try:
                 messages_container = self.query_one("#messages", Container)
             except NoMatches:
                 return
 
-            # 6-7. Create and mount only visible widgets (max WINDOW_SIZE).
-            # Skip any whose ID already exists in the DOM: mounting a duplicate
-            # ID raises `DuplicateIds`, which would abort the entire history
-            # load. Widened message IDs make natural collisions vanishingly
-            # unlikely, but re-entrant loads (e.g. a stale preloaded payload
-            # remounted over surviving widgets) can still reintroduce one.
+            # 3. Reconcile against existing state before loading the store.
+            # Mounting a widget whose ID already exists raises `DuplicateIds`,
+            # which would abort the entire history load. Widened message IDs
+            # make natural collisions vanishingly unlikely, but a re-entrant
+            # load (e.g. a server respawn that re-runs the startup sequence
+            # over a non-cleared store and its surviving widgets) can still
+            # reintroduce an already-present ID. Two guards keep this safe:
+            #
+            #   a) Drop payload messages whose ID is already in the store (or
+            #      repeated within the payload) before `bulk_load`. Otherwise
+            #      `bulk_load` would append duplicate entries to `_messages`,
+            #      desyncing the visible window from the DOM and tripping up
+            #      later pruning/hydration.
+            #   b) Skip mounting any visible message whose ID is already in the
+            #      DOM. `bulk_load` returns a window over the *whole* store, so
+            #      a surviving pre-existing entry can still surface as a mount
+            #      candidate even after (a); its widget already exists.
+            seen: set[str] = set()
+            deduped: list[MessageData] = []
+            for msg_data in payload.messages:
+                if (
+                    msg_data.id in seen
+                    or self._message_store.get_message(msg_data.id) is not None
+                ):
+                    continue
+                seen.add(msg_data.id)
+                deduped.append(msg_data)
+            dropped = len(payload.messages) - len(deduped)
+            if dropped:
+                logger.warning(
+                    "Dropped %d duplicate history message(s) for thread %s: "
+                    "IDs were already in the store or repeated in the payload",
+                    dropped,
+                    history_thread_id,
+                )
+
+            # Bulk load into store (sets visible window over the deduped set).
+            _archived, visible = self._message_store.bulk_load(deduped)
+
+            # 6-7. Create and mount the visible widgets (max WINDOW_SIZE),
+            # skipping any whose ID is already mounted (guard (b) above).
+            # `existing_ids` includes footer node IDs, which never collide with
+            # the `msg-`/`asst-` message IDs checked here.
             existing_ids = {
                 node.id for node in messages_container.children if node.id is not None
             }
@@ -10817,10 +10853,10 @@ class DeepAgentsApp(App):
             nodes: list[Widget] = []
             for msg_data in visible:
                 if msg_data.id in existing_ids:
-                    logger.warning(
-                        "Skipping history widget %s: a widget with that ID is "
-                        "already mounted",
+                    logger.debug(
+                        "Skipping already-mounted history widget %s in thread %s",
                         msg_data.id,
+                        history_thread_id,
                     )
                     continue
                 existing_ids.add(msg_data.id)

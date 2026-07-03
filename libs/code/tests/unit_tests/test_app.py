@@ -8060,10 +8060,177 @@ class TestMessageTimestampFooters:
             notes = [str(widget._content) for widget in app.query(AppMessage)]
             assert not any("Could not load history" in note for note in notes)
             # The colliding message was skipped; the original widget survives
-            # (exactly one, no duplicate mounted).
-            assert len(app.query("#dup-id")) == 1
+            # (exactly one, no duplicate mounted) and keeps its own content --
+            # the history entry did not overwrite or replace it.
+            survivors = app.query("#dup-id")
+            assert len(survivors) == 1
+            survivor = survivors.first()
+            assert isinstance(survivor, AppMessage)
+            assert "stale" in str(survivor._content)
             # The non-colliding message mounted normally.
             assert app.query_one("#fresh-id", UserMessage)
+            # The load ran to completion (past the mount block to step 9).
+            assert any("Resumed thread: t-dup" in note for note in notes)
+
+    async def test_load_thread_history_preserves_assistant_content_after_skip(
+        self,
+    ) -> None:
+        """A skipped duplicate keeps the surviving assistant content aligned.
+
+        Regression guard for the `mounted` pairing: `set_content` must render
+        each surviving `AssistantMessage`'s own content, never a neighbor's.
+        Only exercised when a skip removes an entry, shifting the survivors.
+        """
+        from deepagents_code.app import _ThreadHistoryPayload
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Occupy the first assistant message's ID so it is skipped.
+            await app._mount_message(AssistantMessage("stale", id="asst-dup"))
+            await pilot.pause()
+
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(type=MessageType.ASSISTANT, content="A", id="asst-dup"),
+                    MessageData(
+                        type=MessageType.ASSISTANT, content="B", id="asst-fresh"
+                    ),
+                ],
+                0,
+                "",
+            )
+            await app._load_thread_history(
+                thread_id="t-asst", preloaded_payload=payload
+            )
+            await pilot.pause()
+
+            # The surviving fresh assistant renders its own content ("B"),
+            # not the skipped duplicate's ("A").
+            fresh = app.query_one("#asst-fresh", AssistantMessage)
+            assert "B" in str(fresh._content)
+            assert "A" not in str(fresh._content)
+
+    async def test_load_thread_history_dedupes_within_payload(self) -> None:
+        """Two payload entries sharing an ID mount exactly one widget.
+
+        The intra-batch `seen` guard prevents a same-payload collision from
+        raising `DuplicateIds` on the bulk mount.
+        """
+        from deepagents_code.app import _ThreadHistoryPayload
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(type=MessageType.USER, content="first", id="same-id"),
+                    MessageData(type=MessageType.USER, content="second", id="same-id"),
+                    MessageData(type=MessageType.USER, content="other", id="other-id"),
+                ],
+                0,
+                "",
+            )
+            await app._load_thread_history(
+                thread_id="t-intra", preloaded_payload=payload
+            )
+            await pilot.pause()
+
+            notes = [str(widget._content) for widget in app.query(AppMessage)]
+            assert not any("Could not load history" in note for note in notes)
+            # Exactly one widget for the repeated ID; the first entry wins.
+            assert len(app.query("#same-id")) == 1
+            same = app.query_one("#same-id", UserMessage)
+            assert "first" in str(same._content)
+            assert app.query_one("#other-id", UserMessage)
+
+    async def test_load_thread_history_keeps_store_window_in_sync_after_skip(
+        self,
+    ) -> None:
+        """A re-entrant load must not create duplicate store entries.
+
+        Regression: `bulk_load` blindly appends, so re-loading a message whose
+        ID is already in the store used to add a second `_messages` entry for
+        the same ID -- desyncing the visible window from the DOM and tripping
+        up later pruning/hydration. Deduplicating against the store before
+        `bulk_load` keeps every ID represented exactly once.
+        """
+        from deepagents_code.app import _ThreadHistoryPayload
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # `_mount_message` records the widget in the store, so `dup-id` is
+            # present in both the store and the DOM before the load.
+            await app._mount_message(AppMessage("stale", id="dup-id"))
+            await pilot.pause()
+
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(type=MessageType.USER, content="dup", id="dup-id"),
+                    MessageData(type=MessageType.USER, content="fresh", id="fresh-id"),
+                ],
+                0,
+                "",
+            )
+            await app._load_thread_history(
+                thread_id="t-sync", preloaded_payload=payload
+            )
+            await pilot.pause()
+
+            store = app._message_store
+            # Every stored ID is represented exactly once (no phantom double
+            # entry for the re-loaded `dup-id`).
+            all_ids = [msg.id for msg in store.get_all_messages()]
+            assert len(all_ids) == len(set(all_ids))
+            assert store.get_message("dup-id") is not None
+            assert store.get_message("fresh-id") is not None
+            # The visible window is internally consistent with its range.
+            start, end = store.get_visible_range()
+            assert store.visible_count == end - start
+
+    async def test_load_thread_history_all_duplicates_completes_cleanly(self) -> None:
+        """A payload whose every ID is already mounted still finishes the load.
+
+        With nothing left to mount after dedup, the load must skip the mount
+        block and still reach completion without an error note -- the benign
+        re-entrant reload case (same payload over surviving widgets).
+        """
+        from deepagents_code.app import _ThreadHistoryPayload
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._mount_message(UserMessage("kept", id="a-id"))
+            await app._mount_message(UserMessage("kept", id="b-id"))
+            await pilot.pause()
+
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(type=MessageType.USER, content="a", id="a-id"),
+                    MessageData(type=MessageType.USER, content="b", id="b-id"),
+                ],
+                0,
+                "",
+            )
+            await app._load_thread_history(thread_id="t-all", preloaded_payload=payload)
+            await pilot.pause()
+
+            notes = [str(widget._content) for widget in app.query(AppMessage)]
+            assert not any("Could not load history" in note for note in notes)
+            assert any("Resumed thread: t-all" in note for note in notes)
+            # No duplicates were mounted; the originals survive.
+            assert len(app.query("#a-id")) == 1
+            assert len(app.query("#b-id")) == 1
 
     async def test_footers_render_for_hydrated_messages_above(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

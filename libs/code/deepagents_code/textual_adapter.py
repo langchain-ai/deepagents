@@ -59,7 +59,7 @@ from deepagents_code._session_stats import (
 from deepagents_code.config import build_stream_config, get_glyphs
 from deepagents_code.file_ops import FileOpTracker
 from deepagents_code.formatting import format_duration
-from deepagents_code.hooks import dispatch_hook
+from deepagents_code.hooks import dispatch_hook, dispatch_hook_fire_and_forget
 from deepagents_code.input import MediaTracker, parse_file_mentions
 from deepagents_code.media_utils import create_multimodal_content
 from deepagents_code.tool_display import format_tool_message_content
@@ -77,13 +77,14 @@ _hitl_adapter_cache: TypeAdapter | None = None
 """Lazy singleton for the HITL request validator."""
 
 _ASK_USER_UNSUPPORTED_ERROR = "ask_user not supported by this UI"
+_HOOK_TOOL_OUTPUT_LIMIT = 2000
 
 
-async def _dispatch_tool_use_hook(
+def _dispatch_tool_use_hook(
     tool_name: str, tool_id: str, tool_args: dict[str, Any]
 ) -> None:
     """Dispatch a `tool.use` hook with the documented textual payload."""
-    await dispatch_hook(
+    dispatch_hook_fire_and_forget(
         "tool.use",
         {
             "tool_name": tool_name,
@@ -108,7 +109,7 @@ async def _dispatch_tool_result_hook(
             "tool_id": tool_id,
             "tool_args": tool_args,
             "tool_status": tool_status,
-            "tool_output": tool_output,
+            "tool_output": tool_output[:_HOOK_TOOL_OUTPUT_LIMIT],
         },
     )
 
@@ -818,7 +819,7 @@ async def execute_task_textual(
                                                     "questions"
                                                 ]
                                             }
-                                            await _dispatch_tool_use_hook(
+                                            _dispatch_tool_use_hook(
                                                 "ask_user", tool_id, tool_args
                                             )
                                             tool_msg = ToolCallMessage(
@@ -1228,7 +1229,7 @@ async def execute_task_textual(
                                     buffer_name,
                                     repr(parsed_args)[:200],
                                 )
-                                await _dispatch_tool_use_hook(
+                                _dispatch_tool_use_hook(
                                     buffer_name, buffer_id, parsed_args
                                 )
                                 tool_msg = ToolCallMessage(buffer_name, parsed_args)

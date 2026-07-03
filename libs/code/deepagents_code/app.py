@@ -11930,7 +11930,12 @@ class DeepAgentsApp(App):
 
         # Dispatch synchronously — the event loop is about to be torn down by
         # super().exit(), so an async task would never complete.
-        from deepagents_code.hooks import _dispatch_hook_sync, _load_hooks
+        from deepagents_code.hooks import (
+            _dispatch_hook_sync,
+            _load_hooks,
+            drain_pending_hooks,
+            has_pending_hooks,
+        )
 
         hooks = _load_hooks()
         if hooks:
@@ -11961,38 +11966,53 @@ class DeepAgentsApp(App):
         # finish persisting the in-flight run's trace instead of being
         # SIGTERM'd mid-request.
         agent_worker = self._agent_worker if self._agent_running else None
+        should_wait_for_agent = (
+            agent_worker is not None and not agent_worker.is_finished
+        )
+        should_drain_hooks = has_pending_hooks()
 
-        if agent_worker is not None and not agent_worker.is_finished:
+        if should_wait_for_agent or should_drain_hooks:
 
             async def _graceful_exit() -> None:
                 from textual.worker import WorkerCancelled, WorkerFailed
 
                 try:
-                    await asyncio.wait_for(
-                        asyncio.shield(agent_worker.wait()),
-                        timeout=_GRACEFUL_EXIT_WAIT_SECONDS,
-                    )
-                except (asyncio.CancelledError, WorkerCancelled):
-                    # Expected: exit() cancelled the worker above, so its
-                    # cancellation handler ran to completion. Nothing to flag.
-                    logger.debug(
-                        "Agent worker cancelled cleanly before app exit",
-                        exc_info=True,
-                    )
-                except (TimeoutError, WorkerFailed):
-                    # The worker did not finish within the window, so the
-                    # in-flight run's server-side trace may be incomplete.
-                    # Surface above debug so the loss isn't silent.
-                    logger.warning(
-                        "Agent worker did not finish persisting before app "
-                        "exit; the in-flight run's trace may be incomplete",
-                        exc_info=True,
-                    )
-                except Exception:
-                    logger.warning(
-                        "Agent worker wait raised unexpectedly before app exit",
-                        exc_info=True,
-                    )
+                    worker = agent_worker
+                    if should_wait_for_agent and worker is not None:
+                        try:
+                            await asyncio.wait_for(
+                                asyncio.shield(worker.wait()),
+                                timeout=_GRACEFUL_EXIT_WAIT_SECONDS,
+                            )
+                        except (asyncio.CancelledError, WorkerCancelled):
+                            # Expected: exit() cancelled the worker above, so
+                            # its cancellation handler ran to completion.
+                            logger.debug(
+                                "Agent worker cancelled cleanly before app exit",
+                                exc_info=True,
+                            )
+                        except (TimeoutError, WorkerFailed):
+                            # The worker did not finish within the window, so
+                            # the in-flight run's server-side trace may be
+                            # incomplete. Surface above debug so the loss isn't
+                            # silent.
+                            logger.warning(
+                                "Agent worker did not finish persisting before app "
+                                "exit; the in-flight run's trace may be incomplete",
+                                exc_info=True,
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Agent worker wait raised unexpectedly before app exit",
+                                exc_info=True,
+                            )
+                    try:
+                        await drain_pending_hooks()
+                    except Exception:
+                        logger.warning(
+                            "Hook drain raised unexpectedly before app exit",
+                            exc_info=True,
+                        )
                 finally:
                     # This is the only call that stops the event loop, so it
                     # must run on every path the try/except can take, including

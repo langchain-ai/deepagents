@@ -97,7 +97,15 @@ def _dispatch_tool_use_hook(
     )
 
 
-async def _dispatch_tool_result_hook(
+def _dispatch_tool_error_hook(tool_name: str) -> None:
+    """Dispatch a `tool.error` hook with the payload documented in `hooks.py`."""
+    dispatch_hook_fire_and_forget(
+        "tool.error",
+        {"tool_names": [tool_name]},
+    )
+
+
+def _dispatch_tool_result_hook(
     tool_name: str,
     tool_id: str,
     tool_args: dict[str, Any],
@@ -105,7 +113,7 @@ async def _dispatch_tool_result_hook(
     tool_output: str,
 ) -> None:
     """Dispatch a `tool.result` hook with the payload documented in `hooks.py`."""
-    await dispatch_hook(
+    dispatch_hook_fire_and_forget(
         "tool.result",
         {
             "tool_name": tool_name,
@@ -957,11 +965,8 @@ async def execute_task_textual(
                                 tool_msg.set_success(output_str)
                             else:
                                 tool_msg.set_error(output_str or "Error")
-                                await dispatch_hook(
-                                    "tool.error",
-                                    {"tool_names": [tool_msg._tool_name]},
-                                )
-                            await _dispatch_tool_result_hook(
+                                _dispatch_tool_error_hook(tool_msg._tool_name)
+                            _dispatch_tool_result_hook(
                                 tool_msg._tool_name,
                                 tool_id,
                                 tool_msg._args,
@@ -981,11 +986,8 @@ async def execute_task_textual(
                             # parsed args, so send {} — so audit hooks observe
                             # every executed tool, matching the headless path.
                             if tool_status == "error":
-                                await dispatch_hook(
-                                    "tool.error",
-                                    {"tool_names": [tool_name]},
-                                )
-                            await _dispatch_tool_result_hook(
+                                _dispatch_tool_error_hook(tool_name)
+                            _dispatch_tool_result_hook(
                                 tool_name, tool_id, {}, tool_status, output_str
                             )
 
@@ -1398,7 +1400,7 @@ async def execute_task_textual(
                                         "_current_tool_messages on answered",
                                         tool_id,
                                     )
-                                await _dispatch_tool_result_hook(
+                                _dispatch_tool_result_hook(
                                     "ask_user", tool_id, tool_args, "success", output
                                 )
                             else:
@@ -1419,11 +1421,8 @@ async def execute_task_textual(
                                 )
                                 if tool_msg is not None:
                                     tool_msg.set_error(output)
-                                await dispatch_hook(
-                                    "tool.error",
-                                    {"tool_names": ["ask_user"]},
-                                )
-                                await _dispatch_tool_result_hook(
+                                _dispatch_tool_error_hook("ask_user")
+                                _dispatch_tool_result_hook(
                                     "ask_user", tool_id, tool_args, "error", output
                                 )
                         elif result_type == "cancelled":
@@ -1445,11 +1444,8 @@ async def execute_task_textual(
                                     tool_id,
                                 )
                             output = "Question cancelled"
-                            await dispatch_hook(
-                                "tool.error",
-                                {"tool_names": ["ask_user"]},
-                            )
-                            await _dispatch_tool_result_hook(
+                            _dispatch_tool_error_hook("ask_user")
+                            _dispatch_tool_result_hook(
                                 "ask_user", tool_id, tool_args, "error", output
                             )
                         else:
@@ -1465,11 +1461,8 @@ async def execute_task_textual(
                             tool_msg = adapter._current_tool_messages.pop(tool_id, None)
                             if tool_msg is not None:
                                 tool_msg.set_error(error_text)
-                            await dispatch_hook(
-                                "tool.error",
-                                {"tool_names": ["ask_user"]},
-                            )
-                            await _dispatch_tool_result_hook(
+                            _dispatch_tool_error_hook("ask_user")
+                            _dispatch_tool_result_hook(
                                 "ask_user", tool_id, tool_args, "error", error_text
                             )
                     else:
@@ -1486,11 +1479,8 @@ async def execute_task_textual(
                         tool_msg = adapter._current_tool_messages.pop(tool_id, None)
                         if tool_msg is not None:
                             tool_msg.set_error(_ASK_USER_UNSUPPORTED_ERROR)
-                        await dispatch_hook(
-                            "tool.error",
-                            {"tool_names": ["ask_user"]},
-                        )
-                        await _dispatch_tool_result_hook(
+                        _dispatch_tool_error_hook("ask_user")
+                        _dispatch_tool_result_hook(
                             "ask_user",
                             tool_id,
                             tool_args,

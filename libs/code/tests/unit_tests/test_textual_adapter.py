@@ -4017,9 +4017,21 @@ class TestToolHooksTextual:
             request_approval=_mock_approval,
         )
 
-        with patch(
-            "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
-        ) as mock_dispatch:
+        def fail_if_tool_result(event: str, _payload: dict[str, Any]) -> None:
+            if event == "tool.result":
+                msg = "tool.result hooks must not be awaited in the textual path"
+                raise AssertionError(msg)
+
+        with (
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
+                side_effect=fail_if_tool_result,
+            ),
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch,
+        ):
             await execute_task_textual(
                 user_input="hello",
                 agent=_FakeAgent(chunks),
@@ -4079,7 +4091,7 @@ class TestToolHooksTextual:
         with (
             patch(
                 "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
-            ) as mock_dispatch,
+            ),
             patch(
                 "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
             ) as mock_dispatch_background,
@@ -4092,7 +4104,7 @@ class TestToolHooksTextual:
                 adapter=adapter,
             )
 
-        mock_dispatch_background.assert_called_once_with(
+        mock_dispatch_background.assert_any_call(
             "tool.use",
             {
                 "tool_name": "ask_user",
@@ -4102,7 +4114,9 @@ class TestToolHooksTextual:
         )
 
         tool_result_calls = [
-            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
+            c
+            for c in mock_dispatch_background.call_args_list
+            if c[0][0] == "tool.result"
         ]
         assert len(tool_result_calls) == 1
         assert tool_result_calls[0][0][1] == {
@@ -4140,7 +4154,7 @@ class TestToolHooksTextual:
         with (
             patch(
                 "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
-            ) as mock_dispatch,
+            ),
             patch(
                 "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
             ) as mock_dispatch_background,
@@ -4153,9 +4167,9 @@ class TestToolHooksTextual:
                 adapter=adapter,
             )
 
-        dispatched_events = [c[0][0] for c in mock_dispatch.call_args_list]
+        dispatched_events = [c[0][0] for c in mock_dispatch_background.call_args_list]
         assert "tool.error" in dispatched_events
-        mock_dispatch_background.assert_called_once_with(
+        mock_dispatch_background.assert_any_call(
             "tool.use",
             {
                 "tool_name": "ask_user",
@@ -4165,7 +4179,9 @@ class TestToolHooksTextual:
         )
 
         tool_result_calls = [
-            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
+            c
+            for c in mock_dispatch_background.call_args_list
+            if c[0][0] == "tool.result"
         ]
         assert len(tool_result_calls) == 1
         payload = tool_result_calls[0][0][1]
@@ -4209,9 +4225,14 @@ class TestToolHooksTextual:
             request_approval=_mock_approval,
         )
 
-        with patch(
-            "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
-        ) as mock_dispatch:
+        with (
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+            ),
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch_background,
+        ):
             await execute_task_textual(
                 user_input="hello",
                 agent=_FakeAgent(chunks),
@@ -4220,12 +4241,13 @@ class TestToolHooksTextual:
                 adapter=adapter,
             )
 
-        dispatched_events = {c[0][0] for c in mock_dispatch.call_args_list}
+        dispatched_events = {c[0][0] for c in mock_dispatch_background.call_args_list}
         assert "tool.error" in dispatched_events
-        assert "tool.result" in dispatched_events
 
         tool_result_calls = [
-            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
+            c
+            for c in mock_dispatch_background.call_args_list
+            if c[0][0] == "tool.result"
         ]
         payload = tool_result_calls[0][0][1]
         assert payload["tool_status"] == "error"
@@ -4293,9 +4315,14 @@ class TestToolHooksTextual:
             request_approval=_mock_approval,
         )
 
-        with patch(
-            "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
-        ) as mock_dispatch:
+        with (
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+            ),
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch_background,
+        ):
             await execute_task_textual(
                 user_input="hello",
                 agent=_FakeAgent(chunks),
@@ -4304,10 +4331,12 @@ class TestToolHooksTextual:
                 adapter=adapter,
             )
 
-        events = [c[0][0] for c in mock_dispatch.call_args_list]
+        events = [c[0][0] for c in mock_dispatch_background.call_args_list]
         assert "tool.error" in events
         tool_result_calls = [
-            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
+            c
+            for c in mock_dispatch_background.call_args_list
+            if c[0][0] == "tool.result"
         ]
         assert len(tool_result_calls) == 1
         payload = tool_result_calls[0][0][1]
@@ -4350,9 +4379,14 @@ class TestToolHooksTextual:
             request_ask_user=request_ask_user,
         )
 
-        with patch(
-            "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
-        ) as mock_dispatch:
+        with (
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+            ),
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch_background,
+        ):
             await execute_task_textual(
                 user_input="hello",
                 agent=agent,
@@ -4361,9 +4395,13 @@ class TestToolHooksTextual:
                 adapter=adapter,
             )
 
-        assert "tool.error" in [c[0][0] for c in mock_dispatch.call_args_list]
+        assert "tool.error" in [
+            c[0][0] for c in mock_dispatch_background.call_args_list
+        ]
         tool_result_calls = [
-            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
+            c
+            for c in mock_dispatch_background.call_args_list
+            if c[0][0] == "tool.result"
         ]
         assert len(tool_result_calls) == 1
         payload = tool_result_calls[0][0][1]
@@ -4409,9 +4447,14 @@ class TestToolHooksTextual:
             request_ask_user=request_ask_user,
         )
 
-        with patch(
-            "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
-        ) as mock_dispatch:
+        with (
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+            ),
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch_background,
+        ):
             await execute_task_textual(
                 user_input="hello",
                 agent=agent,
@@ -4420,9 +4463,13 @@ class TestToolHooksTextual:
                 adapter=adapter,
             )
 
-        assert "tool.error" in [c[0][0] for c in mock_dispatch.call_args_list]
+        assert "tool.error" in [
+            c[0][0] for c in mock_dispatch_background.call_args_list
+        ]
         tool_result_calls = [
-            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
+            c
+            for c in mock_dispatch_background.call_args_list
+            if c[0][0] == "tool.result"
         ]
         assert len(tool_result_calls) == 1
         payload = tool_result_calls[0][0][1]

@@ -234,6 +234,11 @@ def dispatch_hook_fire_and_forget(event: str, payload: dict[str, Any]) -> None:
     task.add_done_callback(_background_tasks.discard)
 
 
+def has_pending_hooks() -> bool:
+    """Return whether fire-and-forget hook tasks are still in flight."""
+    return any(not task.done() for task in _background_tasks)
+
+
 async def drain_pending_hooks() -> None:
     """Await all in-flight fire-and-forget hook tasks.
 

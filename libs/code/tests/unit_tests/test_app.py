@@ -10998,6 +10998,29 @@ class TestExitGracefulWorkerHandoff:
             assert app._graceful_exit_task is None
             worker.wait.assert_not_awaited()
 
+    async def test_drains_pending_hooks_before_exit_without_worker(self) -> None:
+        """Pending fire-and-forget hooks defer teardown until they drain."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=True),
+                patch(
+                    "deepagents_code.hooks.drain_pending_hooks",
+                    new_callable=AsyncMock,
+                ) as drain_hooks,
+                patch.object(App, "exit") as super_exit,
+            ):
+                app.exit()
+                super_exit.assert_not_called()
+                assert app._graceful_exit_task is not None
+
+                await app._graceful_exit_task
+
+            drain_hooks.assert_awaited_once()
+            super_exit.assert_called_once()
+
     async def test_second_exit_force_quits_pending_graceful_exit(self) -> None:
         """A second exit() during a pending graceful exit force-quits.
 

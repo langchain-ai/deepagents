@@ -274,4 +274,106 @@ class RambleMiddleware(AgentMiddleware):
         return self.after_model(state, runtime)
 
 
-__all__ = ["FinalizeMiddleware", "RambleMiddleware"]
+# --- Adherence gate -----------------------------------------------------------
+
+_ADHERENCE_NUDGE_TEXT = (
+    "STOP — do not finish on a self-assessment. A confident summary is not evidence; verify "
+    "the way an independent check from a clean checkout would, and believe only what you "
+    "OBSERVE.\n"
+    "0. Re-read the TASK itself as the source of truth, and scan your todo list for any "
+    "step you planned but never executed. Verify against what the TASK requires — not only "
+    "what your plan listed (a plan can under-cover the task or bake in a misreading).\n"
+    "1. Restore every input you edited back to its ORIGINAL contents and check against those "
+    "— a check against the working copy you mutated can show 'matches' while the real thing "
+    "fails.\n"
+    "2. Run each deliverable via its EXACT stated invocation — the exact command, filename, "
+    "and interpreter the task names (if it says `python`, run `python`, not `python3`) — in "
+    "the BASE environment. Do not rely on packages you installed this session or paths only "
+    "you created; a fresh run will not have them.\n"
+    "3. Reproduce EVERY required mode/command, not just the one that passes — if two build "
+    "commands or both states of a flag are required, run both.\n"
+    "4. Confirm each named output actually EXISTS and matches the required shape exactly: "
+    "filename, format, field/column names, line count, byte-for-byte if specified.\n"
+    "5. For any stated threshold or constraint (a time limit, a tolerance, a count), MEASURE "
+    "it and compare — do not assume it holds.\n"
+    "If any observed result does not match what the task requires, that is unfinished work: "
+    "fix it and re-run. You are done only when a clean, independent re-run has SHOWN every "
+    "requirement met — not when you believe it."
+)
+
+
+class AdherenceState(AgentState):
+    """State schema for ``AdherenceGateMiddleware``."""
+
+    # `PrivateStateAttr` keeps this flag out of the input/output schema while it
+    # still persists internally across turns (default last-value reducer).
+    adherence_nudged: NotRequired[Annotated[bool, PrivateStateAttr]]
+
+
+class AdherenceGateMiddleware(AgentMiddleware):
+    """Intercept the first finish attempt and force one faithful-verification pass.
+
+    Ported from the Nemotron profile's plan-adherence gate, decoupled from any plan
+    file. When the latest ``AIMessage`` is a finish attempt (no tool calls and non-empty
+    content), inject a one-time faithful-verification nudge and jump back to the model so
+    it must verify against the task's real criteria before it can actually finish. The
+    one-time flag caps it at a single extra model turn per run; leaves ``write_todos``
+    and every other tool untouched.
+    """
+
+    state_schema = AdherenceState  # type: ignore[assignment]
+
+    @staticmethod
+    def _is_finalizing(message: AIMessage) -> bool:
+        """True if ``message`` is a finish attempt: no tool calls, non-empty content."""
+        if message.tool_calls:
+            return False
+        content = message.content
+        if isinstance(content, str):
+            return bool(content.strip())
+        if isinstance(content, list):
+            return any(
+                isinstance(part, dict) and str(part.get("text", "")).strip()
+                for part in content
+            )
+        return False
+
+    @hook_config(can_jump_to=["model"])
+    def after_model(
+        self,
+        state: AdherenceState,
+        runtime: Runtime[Any],  # noqa: ARG002  (part of the hook signature)
+    ) -> dict[str, Any] | None:
+        """Nudge once + loop back to the model on the first finish attempt.
+
+        Returns:
+            ``{"messages": [...], "jump_to": "model", "adherence_nudged": True}`` on the
+            first finalizing turn not yet nudged; otherwise ``None``.
+        """
+        if state.get("adherence_nudged"):
+            return None
+        messages = state.get("messages") or []
+        if not messages:
+            return None
+        last = messages[-1]
+        if not isinstance(last, AIMessage) or not self._is_finalizing(last):
+            return None
+        return {
+            "messages": [HumanMessage(content=_ADHERENCE_NUDGE_TEXT)],
+            "jump_to": "model",
+            "adherence_nudged": True,
+        }
+
+    @hook_config(can_jump_to=["model"])
+    async def aafter_model(
+        self, state: AdherenceState, runtime: Runtime[Any]
+    ) -> dict[str, Any] | None:
+        """Async variant of ``after_model``.
+
+        Returns:
+            Same as ``after_model``.
+        """
+        return self.after_model(state, runtime)
+
+
+__all__ = ["AdherenceGateMiddleware", "FinalizeMiddleware", "RambleMiddleware"]

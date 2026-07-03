@@ -29,7 +29,7 @@ from deepagents_talon.import_fleet import (
     import_fleet_manifest,
     load_fleet_run_manifest,
 )
-from deepagents_talon.mcp import load_mcp_tools, print_mcp_config_paths
+from deepagents_talon.mcp import MCPTools, load_mcp_tools, print_mcp_config_paths
 from deepagents_talon.observability import log_event
 from deepagents_talon.runtime import (
     DeepAgentRuntime,
@@ -40,7 +40,9 @@ from deepagents_talon.runtime import (
 from deepagents_talon.speech import build_voice_transcriber
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Mapping, Sequence
+
+    from langchain_core.tools import BaseTool
 
     from deepagents_talon.cron import CronJob
     from deepagents_talon.interfaces import ChannelAdapter
@@ -202,11 +204,25 @@ async def _agent_runtime(
     if config.fleet_dir is not None:
         fleet_dir = config.fleet_dir
         components = await load_fleet_agent_components(fleet_dir, env=env)
-        runtime_components = _runtime_components_from_fleet(config, components, env=env)
+        mcp = await load_mcp_tools(config)
+        _log_mcp_servers(mcp)
+        runtime_components = _runtime_components_from_fleet(
+            config,
+            components,
+            env=env,
+            local_tools=mcp.tools,
+        )
 
         async def reload_fleet_components() -> RuntimeAgentComponents:
             refreshed = await load_fleet_agent_components(fleet_dir, env=env)
-            return _runtime_components_from_fleet(config, refreshed, env=env)
+            reloaded = await load_mcp_tools(config)
+            _log_mcp_servers(reloaded)
+            return _runtime_components_from_fleet(
+                config,
+                refreshed,
+                env=env,
+                local_tools=reloaded.tools,
+            )
 
         return DeepAgentRuntime(
             model=runtime_components.model,
@@ -225,11 +241,7 @@ async def _agent_runtime(
         return EchoAgentRuntime()
 
     mcp = await load_mcp_tools(config)
-    for server in mcp.servers:
-        if server.error is not None:
-            logger.warning("MCP server %s failed: %s", server.name, server.error)
-        else:
-            logger.info("MCP server %s loaded %d tool(s)", server.name, len(server.tools))
+    _log_mcp_servers(mcp)
     return DeepAgentRuntime(
         model=config.model,
         tools=mcp.tools,
@@ -245,16 +257,51 @@ def _runtime_components_from_fleet(
     components: FleetAgentComponents,
     *,
     env: Mapping[str, str],
+    local_tools: Sequence[BaseTool | Callable[..., object]] = (),
 ) -> RuntimeAgentComponents:
     return RuntimeAgentComponents(
         model=config.model or components.model,
-        tools=components.tools,
+        tools=_merge_tools(components.tools, local_tools),
         system_prompt=components.system_prompt,
         subagents=components.subagents,
         skills=components.skills,
         middleware=components.middleware,
         interrupt_on=interrupt_on_with_env_overlay(components.interrupt_on, env),
     )
+
+
+def _log_mcp_servers(mcp: MCPTools) -> None:
+    for server in mcp.servers:
+        if server.error is not None:
+            logger.warning("MCP server %s failed: %s", server.name, server.error)
+        else:
+            logger.info("MCP server %s loaded %d tool(s)", server.name, len(server.tools))
+
+
+def _merge_tools(
+    primary: Sequence[BaseTool | Callable[..., object]],
+    extra: Sequence[BaseTool | Callable[..., object]],
+) -> tuple[BaseTool | Callable[..., object], ...]:
+    tools: list[BaseTool | Callable[..., object]] = list(primary)
+    seen = {_tool_name(tool) for tool in primary}
+    for tool in extra:
+        name = _tool_name(tool)
+        if name is not None and name in seen:
+            continue
+        tools.append(tool)
+        if name is not None:
+            seen.add(name)
+    return tuple(tools)
+
+
+def _tool_name(tool: BaseTool | Callable[..., object]) -> str | None:
+    name = getattr(tool, "name", None)
+    if isinstance(name, str) and name:
+        return name
+    fallback = getattr(tool, "__name__", None)
+    if isinstance(fallback, str) and fallback:
+        return fallback
+    return None
 
 
 async def _run_mcp_command(args: argparse.Namespace, config: TalonConfig) -> int:

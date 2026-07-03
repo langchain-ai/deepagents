@@ -3641,6 +3641,30 @@ class TestAskUserLifecycle:
         tool.toggle_args.assert_called_once_with()
         tool.toggle_output.assert_not_called()
 
+    def test_ctrl_o_prefers_command_when_both_expandable(self) -> None:
+        """Ctrl+O toggles the command/code block even when output can also expand.
+
+        Matches the region-aware click routing and the "click or Ctrl+O to show
+        command/code" hint: the output stays reachable by clicking its own row.
+        """
+        from deepagents_code.widgets.messages import ToolCallMessage
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        tool = MagicMock(spec=ToolCallMessage)
+        tool.has_class.return_value = False
+        tool.has_output = True
+        tool.has_expandable_output = True  # long stdout, expandable
+        tool.has_expandable_args = True  # long command, expandable
+        container = MagicMock()
+        container.children = [tool]
+
+        with patch.object(app, "query_one", return_value=container):
+            app.action_toggle_tool_output()
+
+        tool.toggle_args.assert_called_once_with()
+        tool.toggle_output.assert_not_called()
+
     def test_ctrl_o_prefers_more_recent_tool_in_dom_order(self) -> None:
         """The newest tool row in DOM order wins over an older one."""
         from deepagents_code.widgets.messages import ToolCallMessage
@@ -17048,6 +17072,121 @@ class TestSandboxSubTitle:
         """An unrecognized provider falls back to `.title()` casing."""
         app = DeepAgentsApp(server_kwargs={"sandbox_type": "kubernetes"})
         assert app.sub_title == "Sandbox: Kubernetes"
+
+
+class TestStaleInstallBanner:
+    """The persistent header banner surfaces stale installations."""
+
+    _MESSAGE_21 = (
+        "Update available \u2014 installed version is 21 days old (run /update)"
+    )
+
+    async def test_header_mounted_when_stale_without_env_var(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stale install shows the header even without the env var."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_SHOW_HEADER", raising=False)
+        from textual.widgets import Header
+
+        with (
+            patch(
+                "deepagents_code.update_check.is_installation_stale",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.installed_days_old",
+                return_value=21,
+            ),
+        ):
+            app = DeepAgentsApp()
+            assert app._installation_stale is True
+            assert app.sub_title == self._MESSAGE_21
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                assert len(app.query(Header)) == 1
+
+    async def test_header_absent_when_not_stale(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A fresh install keeps the header hidden without the env var."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_SHOW_HEADER", raising=False)
+        from textual.widgets import Header
+
+        with patch(
+            "deepagents_code.update_check.is_installation_stale",
+            return_value=False,
+        ):
+            app = DeepAgentsApp()
+            assert app._installation_stale is False
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                assert not app.query(Header)
+
+    async def test_stale_overrides_sandbox_sub_title(self) -> None:
+        """The stale-install advisory takes precedence over the sandbox label."""
+        with (
+            patch(
+                "deepagents_code.update_check.is_installation_stale",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.installed_days_old",
+                return_value=21,
+            ),
+        ):
+            app = DeepAgentsApp(server_kwargs={"sandbox_type": "modal"})
+            assert app.sub_title == self._MESSAGE_21
+
+    async def test_explicit_sub_title_suppresses_stale_banner(self) -> None:
+        """An explicitly passed sub_title is never overwritten by the advisory."""
+        with patch(
+            "deepagents_code.update_check.is_installation_stale",
+            return_value=True,
+        ):
+            app = DeepAgentsApp(sub_title="custom")
+            assert app._installation_stale is False
+            assert app.sub_title == "custom"
+
+    async def test_singular_day_wording(self) -> None:
+        """The day count is pluralized correctly."""
+        with (
+            patch(
+                "deepagents_code.update_check.is_installation_stale",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.installed_days_old",
+                return_value=1,
+            ),
+        ):
+            app = DeepAgentsApp()
+            assert app.sub_title == (
+                "Update available \u2014 installed version is 1 day old (run /update)"
+            )
+
+    async def test_none_days_drops_banner(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `None` age (cache race) drops the banner, never `"None days old"`."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_SHOW_HEADER", raising=False)
+        from textual.widgets import Header
+
+        with (
+            patch(
+                "deepagents_code.update_check.is_installation_stale",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.installed_days_old",
+                return_value=None,
+            ),
+        ):
+            app = DeepAgentsApp()
+            assert app._installation_stale is False
+            assert "None" not in (app.sub_title or "")
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                assert not app.query(Header)
 
 
 class TestHandleExternalSignal:

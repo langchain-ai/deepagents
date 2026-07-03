@@ -4768,6 +4768,7 @@ class TestLazyModuleAttributes:
 
         original_done = config_mod._bootstrap_state.done
         original_ls = config_mod._bootstrap_state.original_langsmith_project
+        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
         config_mod._bootstrap_state.done = False
 
         try:
@@ -4788,9 +4789,200 @@ class TestLazyModuleAttributes:
 
             # Prefixed value wins — canonical is overwritten.
             assert os.environ["LANGSMITH_API_KEY"] == "lsv2_override"
+            # The original canonical value is saved for subprocess restoration.
+            assert (
+                config_mod._bootstrap_state.original_tracing_api_keys[
+                    "LANGSMITH_API_KEY"
+                ]
+                == "lsv2_original"
+            )
         finally:
             config_mod._bootstrap_state.done = original_done
             config_mod._bootstrap_state.original_langsmith_project = original_ls
+            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
+
+    @pytest.mark.parametrize("canonical", ["LANGSMITH_API_KEY", "LANGCHAIN_API_KEY"])
+    def test_restore_user_tracing_api_keys_recovers_original_value(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, canonical: str
+    ) -> None:
+        """Shell subprocess env gets the caller's original API key, not the override.
+
+        Parametrized over both members of `_TRACING_API_KEY_ENV_VARS` so the
+        `LANGCHAIN_API_KEY` alias is covered, not just the primary var.
+        """
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code.config import (
+            _ensure_bootstrap,
+            restore_user_tracing_api_keys,
+        )
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
+        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
+        config_mod._bootstrap_state.done = False
+
+        try:
+            # Isolate the key var under test so its sibling alias cannot mask it.
+            for var in config_mod._TRACING_API_KEY_ENV_VARS:
+                monkeypatch.delenv(var, raising=False)
+                monkeypatch.delenv(f"DEEPAGENTS_CODE_{var}", raising=False)
+            monkeypatch.setenv(canonical, "lsv2_original")
+            monkeypatch.setenv(f"DEEPAGENTS_CODE_{canonical}", "lsv2_override")
+            monkeypatch.setenv("LANGSMITH_TRACING", "true")
+            monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
+
+            with (
+                patch("deepagents_code.config._load_dotenv"),
+                patch(
+                    "deepagents_code.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            # Bootstrap overwrote the canonical key with the prefixed value.
+            assert os.environ[canonical] == "lsv2_override"
+
+            shell_env = os.environ.copy()
+            restore_user_tracing_api_keys(shell_env)
+
+            # Shell subprocesses get the caller's original key back.
+            assert shell_env[canonical] == "lsv2_original"
+        finally:
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
+            config_mod._bootstrap_state.original_tracing_env = original_tracing
+            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
+
+    def test_restore_user_tracing_api_keys_drops_unset_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the caller had no canonical key, restore removes it from shell env."""
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code.config import (
+            _ensure_bootstrap,
+            restore_user_tracing_api_keys,
+        )
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
+        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
+        config_mod._bootstrap_state.done = False
+
+        try:
+            monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+            monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_prefixed")
+            monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
+
+            with (
+                patch("deepagents_code.config._load_dotenv"),
+                patch(
+                    "deepagents_code.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            # Bootstrap propagated the prefixed key to canonical.
+            assert os.environ["LANGSMITH_API_KEY"] == "lsv2_prefixed"
+
+            shell_env = os.environ.copy()
+            restore_user_tracing_api_keys(shell_env)
+
+            # Caller had no key — the propagated value is removed from shell env.
+            assert "LANGSMITH_API_KEY" not in shell_env
+        finally:
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
+            config_mod._bootstrap_state.original_tracing_env = original_tracing
+            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
+
+    def test_restore_user_tracing_api_keys_pops_auth_stored_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `/auth`-stored key is bridged onto the env but popped for shells.
+
+        The snapshot is captured *before* `apply_stored_langsmith_auth` bridges
+        the stored key onto `LANGSMITH_API_KEY`, so the caller's original is
+        `None` and restore pops the bridged key instead of leaking the agent's
+        stored credential into `execute` subprocesses. Locks in the
+        capture-before-bridge ordering that a bootstrap refactor could break.
+        """
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code import auth_store
+        from deepagents_code.config import (
+            _ensure_bootstrap,
+            restore_user_tracing_api_keys,
+        )
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+
+        original_done = config_mod._bootstrap_state.done
+        original_ls = config_mod._bootstrap_state.original_langsmith_project
+        original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
+        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
+        config_mod._bootstrap_state.done = False
+
+        try:
+            # No env or prefixed key — only a `/auth`-stored credential.
+            for var in (
+                "LANGSMITH_API_KEY",
+                "LANGCHAIN_API_KEY",
+                "DEEPAGENTS_CODE_LANGSMITH_API_KEY",
+                "DEEPAGENTS_CODE_LANGCHAIN_API_KEY",
+                "DEEPAGENTS_CODE_LANGSMITH_PROJECT",
+            ):
+                monkeypatch.delenv(var, raising=False)
+            auth_store.set_stored_key("langsmith", "lsv2_stored")
+
+            with (
+                patch("deepagents_code.config._load_dotenv"),
+                patch(
+                    "deepagents_code.project_utils.get_server_project_context",
+                    return_value=None,
+                ),
+            ):
+                _ensure_bootstrap()
+
+            # Bootstrap bridged the stored key onto the canonical env var...
+            assert os.environ["LANGSMITH_API_KEY"] == "lsv2_stored"
+            # ...but the caller had none, so the snapshot (taken before the
+            # bridge) records it as absent.
+            assert (
+                config_mod._bootstrap_state.original_tracing_api_keys[
+                    "LANGSMITH_API_KEY"
+                ]
+                is None
+            )
+
+            shell_env = os.environ.copy()
+            restore_user_tracing_api_keys(shell_env)
+
+            # The agent's stored credential is not leaked into shell subprocesses.
+            assert "LANGSMITH_API_KEY" not in shell_env
+        finally:
+            config_mod._bootstrap_state.done = original_done
+            config_mod._bootstrap_state.original_langsmith_project = original_ls
+            config_mod._bootstrap_state.original_tracing_env = original_tracing
+            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
 
     def test_bootstrap_warns_on_conflicting_override(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
@@ -4803,6 +4995,7 @@ class TestLazyModuleAttributes:
 
         original_done = config_mod._bootstrap_state.done
         original_ls = config_mod._bootstrap_state.original_langsmith_project
+        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
         config_mod._bootstrap_state.done = False
 
         try:
@@ -4833,6 +5026,7 @@ class TestLazyModuleAttributes:
         finally:
             config_mod._bootstrap_state.done = original_done
             config_mod._bootstrap_state.original_langsmith_project = original_ls
+            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
 
     def test_bootstrap_suppresses_override_warning(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
@@ -4846,6 +5040,7 @@ class TestLazyModuleAttributes:
 
         original_done = config_mod._bootstrap_state.done
         original_ls = config_mod._bootstrap_state.original_langsmith_project
+        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
         config_mod._bootstrap_state.done = False
 
         try:
@@ -4874,6 +5069,7 @@ class TestLazyModuleAttributes:
         finally:
             config_mod._bootstrap_state.done = original_done
             config_mod._bootstrap_state.original_langsmith_project = original_ls
+            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
 
     def test_bootstrap_no_warning_when_values_match(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
@@ -4887,6 +5083,7 @@ class TestLazyModuleAttributes:
 
         original_done = config_mod._bootstrap_state.done
         original_ls = config_mod._bootstrap_state.original_langsmith_project
+        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
         config_mod._bootstrap_state.done = False
 
         try:
@@ -4917,6 +5114,7 @@ class TestLazyModuleAttributes:
         finally:
             config_mod._bootstrap_state.done = original_done
             config_mod._bootstrap_state.original_langsmith_project = original_ls
+            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
 
     def test_bootstrap_propagates_empty_string(
         self, monkeypatch: pytest.MonkeyPatch
@@ -5067,6 +5265,7 @@ class TestLazyModuleAttributes:
         original_done = config_mod._bootstrap_state.done
         original_ls = config_mod._bootstrap_state.original_langsmith_project
         original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
+        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
         config_mod._bootstrap_state.done = False
 
         try:
@@ -5107,6 +5306,7 @@ class TestLazyModuleAttributes:
             config_mod._bootstrap_state.done = original_done
             config_mod._bootstrap_state.original_langsmith_project = original_ls
             config_mod._bootstrap_state.original_tracing_env = original_tracing
+            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
 
     def test_bootstrap_prefixed_langsmith_key_wins_over_stored_key(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -5125,6 +5325,7 @@ class TestLazyModuleAttributes:
         original_done = config_mod._bootstrap_state.done
         original_ls = config_mod._bootstrap_state.original_langsmith_project
         original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
+        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
         config_mod._bootstrap_state.done = False
 
         try:
@@ -5150,6 +5351,7 @@ class TestLazyModuleAttributes:
             config_mod._bootstrap_state.done = original_done
             config_mod._bootstrap_state.original_langsmith_project = original_ls
             config_mod._bootstrap_state.original_tracing_env = original_tracing
+            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
 
     def test_scoped_tracing_opt_out_restores_user_tracing_for_shell_env(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -5168,6 +5370,7 @@ class TestLazyModuleAttributes:
         original_done = config_mod._bootstrap_state.done
         original_ls = config_mod._bootstrap_state.original_langsmith_project
         original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
+        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
         config_mod._bootstrap_state.done = False
 
         try:
@@ -5199,6 +5402,7 @@ class TestLazyModuleAttributes:
             config_mod._bootstrap_state.done = original_done
             config_mod._bootstrap_state.original_langsmith_project = original_ls
             config_mod._bootstrap_state.original_tracing_env = original_tracing
+            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
 
 
 class TestApplyDefaultLangsmithProject:

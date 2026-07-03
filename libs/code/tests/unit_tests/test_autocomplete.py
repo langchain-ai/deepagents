@@ -859,11 +859,17 @@ class TestGetProjectFiles:
 
     @staticmethod
     def _init_repo(root: Path) -> None:
-        """Initialize a throwaway git repo with a test identity."""
+        """Initialize a throwaway git repo with a test identity.
+
+        Commit signing is disabled locally so commits succeed even when the
+        host has `commit.gpgsign=true` set globally (no signing key is
+        available in the throwaway repo).
+        """
         for args in (
             ["init"],
             ["config", "user.email", "test@example.com"],
             ["config", "user.name", "Test"],
+            ["config", "commit.gpgsign", "false"],
         ):
             subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
 

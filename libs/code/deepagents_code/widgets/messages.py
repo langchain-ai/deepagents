@@ -111,6 +111,13 @@ _DEFAULT_TODO_WRAP_WIDTH = 80
 _TODO_WRAP_GUARD_COLUMNS = 4
 _MAX_WEB_CONTENT_LEN = 100
 
+# User message display truncation — when content exceeds this many characters,
+# only the head and tail are rendered with an elision marker in between.
+# This keeps very large pastes from flooding the conversation scrollback.
+_USER_MSG_MAX_DISPLAY_CHARS = 10_000
+_USER_MSG_TRUNCATE_HEAD_CHARS = 2_500
+_USER_MSG_TRUNCATE_TAIL_CHARS = 2_500
+
 # Tools that have their key info already in the header (no need for args line)
 _TOOLS_WITH_HEADER_INFO: set[str] = {
     # Filesystem tools
@@ -206,6 +213,30 @@ def _select_prompt_body(widget: Static) -> None:
     }
 
 
+def _truncate_for_display(text: str) -> str:
+    """Truncate very long user message text for display in the conversation.
+
+    Keeps the first and last portions and replaces the middle with an elision
+    marker showing the number of newlines in the hidden region.  This mirrors
+    Claude Code's `UserPromptMessage` head+tail truncation for rendering
+    performance.
+
+    Args:
+        text: Full message content.
+
+    Returns:
+        Truncated text with an elision marker, or the original text when
+        it does not exceed the display threshold.
+    """
+    if len(text) <= _USER_MSG_MAX_DISPLAY_CHARS:
+        return text
+    head = text[:_USER_MSG_TRUNCATE_HEAD_CHARS]
+    tail = text[-_USER_MSG_TRUNCATE_TAIL_CHARS:]
+    hidden_text = text[_USER_MSG_TRUNCATE_HEAD_CHARS:-_USER_MSG_TRUNCATE_TAIL_CHARS]
+    hidden_lines = hidden_text.count("\n")
+    return f"{head}\n… +{hidden_lines} lines …\n{tail}"
+
+
 class UserMessage(Static):
     """Widget displaying a user message."""
 
@@ -240,7 +271,13 @@ class UserMessage(Static):
         self.add_class("-cancelled")
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
-        """Exclude the prompt prefix glyph from copied text.
+        """Return selected text, preferring the full content over the render.
+
+        `render()` truncates long messages, so for a full-message selection
+        (select-all / select-to-end, where `selection.end` is `None`) the text
+        is extracted from the untruncated content so copy yields the complete
+        original.  A partial selection is extracted from the base (on-screen)
+        render so its offsets stay aligned with what the user highlighted.
 
         Args:
             selection: The active selection geometry.
@@ -248,7 +285,38 @@ class UserMessage(Static):
         Returns:
             The `(text, ending)` selection with the prefix removed, or `None`.
         """
-        return _strip_prompt_prefix(super().get_selection(selection), selection)
+        if selection.end is not None:
+            return _strip_prompt_prefix(super().get_selection(selection), selection)
+        text = str(self._build_full_render())
+        return _strip_prompt_prefix((selection.extract(text), "\n"), selection)
+
+    def _prefix_and_body(self) -> tuple[tuple[str, str], str]:
+        """Compute the styled mode prefix and the body with its trigger stripped.
+
+        Returns:
+            A `(prefix, body)` pair where `prefix` is a `(text, style)` tuple and
+            `body` is the content with any mode-trigger prefix removed.
+        """
+        colors = theme.get_theme_colors(self)
+        content = self._content
+        mode_match = detect_mode_prefix(content)
+        if mode_match:
+            prefix_text, mode = mode_match
+            glyph = MODE_DISPLAY_GLYPHS.get(mode, prefix_text[0])
+            return (
+                (f"{glyph} ", f"bold {_mode_color(mode, self)}"),
+                content[len(prefix_text) :],
+            )
+        return ("> ", f"bold {colors.primary}"), content
+
+    def _build_full_render(self) -> Content:
+        """Build a Content from the full content without display truncation.
+
+        Returns:
+            Content with the mode prefix glyph and the full message body.
+        """
+        prefix, body = self._prefix_and_body()
+        return Content.assemble(prefix, body)
 
     def text_select_all(self) -> None:
         """Select the message body without the prompt prefix glyph."""
@@ -270,20 +338,16 @@ class UserMessage(Static):
             Styled Content with mode prefix and highlighted mentions.
         """
         colors = theme.get_theme_colors(self)
-        parts: list[str | tuple[str, str]] = []
-        content = self._content
 
         # Use mode-specific prefix indicator when content starts with a
         # mode trigger character (e.g. "!" for shell, "/" for commands).
         # The display glyph may differ from the trigger (e.g. "$" for shell).
-        mode_match = detect_mode_prefix(content)
-        if mode_match:
-            prefix_text, mode = mode_match
-            glyph = MODE_DISPLAY_GLYPHS.get(mode, prefix_text[0])
-            parts.append((f"{glyph} ", f"bold {_mode_color(mode, self)}"))
-            content = content[len(prefix_text) :]
-        else:
-            parts.append(("> ", f"bold {colors.primary}"))
+        prefix, content = self._prefix_and_body()
+        parts: list[str | tuple[str, str]] = [prefix]
+
+        # Truncate very long content for display so large pastes don't flood
+        # the conversation.  The full text is still available for copy/select.
+        content = _truncate_for_display(content)
 
         # Highlight @mentions and /commands in the content
         last_end = 0
@@ -352,7 +416,11 @@ class QueuedUserMessage(Static):
             self.add_class("-ascii")
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
-        """Exclude the prompt prefix glyph from copied text.
+        """Return selected text, preferring the full content over the render.
+
+        See `UserMessage.get_selection`: full-message selections extract from
+        the untruncated content, partial selections defer to the on-screen
+        render so offsets stay aligned.
 
         Args:
             selection: The active selection geometry.
@@ -360,7 +428,34 @@ class QueuedUserMessage(Static):
         Returns:
             The `(text, ending)` selection with the prefix removed, or `None`.
         """
-        return _strip_prompt_prefix(super().get_selection(selection), selection)
+        if selection.end is not None:
+            return _strip_prompt_prefix(super().get_selection(selection), selection)
+        text = str(self._build_full_render())
+        return _strip_prompt_prefix((selection.extract(text), "\n"), selection)
+
+    def _prefix_and_body(self) -> tuple[tuple[str, str], str]:
+        """Compute the muted mode prefix and body with its trigger stripped.
+
+        Returns:
+            A `(prefix, body)` pair where `prefix` is a `(text, style)` tuple.
+        """
+        colors = theme.get_theme_colors(self)
+        content = self._content
+        mode_match = detect_mode_prefix(content)
+        if mode_match:
+            prefix_text, mode = mode_match
+            glyph = MODE_DISPLAY_GLYPHS.get(mode, prefix_text[0])
+            return (f"{glyph} ", f"bold {colors.muted}"), content[len(prefix_text) :]
+        return ("> ", f"bold {colors.muted}"), content
+
+    def _build_full_render(self) -> Content:
+        """Build a Content from the full content without display truncation.
+
+        Returns:
+            Content with the mode prefix glyph and the full message body.
+        """
+        prefix, body = self._prefix_and_body()
+        return Content.assemble(prefix, body)
 
     def text_select_all(self) -> None:
         """Select the message body without the prompt prefix glyph."""
@@ -373,15 +468,8 @@ class QueuedUserMessage(Static):
             Styled Content with dimmed prefix and body.
         """
         colors = theme.get_theme_colors(self)
-        content = self._content
-        mode_match = detect_mode_prefix(content)
-        if mode_match:
-            prefix_text, mode = mode_match
-            glyph = MODE_DISPLAY_GLYPHS.get(mode, prefix_text[0])
-            prefix = (f"{glyph} ", f"bold {colors.muted}")
-            content = content[len(prefix_text) :]
-        else:
-            prefix = ("> ", f"bold {colors.muted}")
+        prefix, content = self._prefix_and_body()
+        content = _truncate_for_display(content)
         return Content.assemble(prefix, (content, colors.muted))
 
 

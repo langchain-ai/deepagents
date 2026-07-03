@@ -673,7 +673,7 @@ def show_config_help() -> None:
     console.print("  path              Show config file locations")
     console.print()
     _print_option_section(
-        "  -v, --verbose     Also show each option's description and how to set it",
+        "  -v, --verbose, --all  Also show each option's description and how to set it",
     )
     console.print()
     console.print(

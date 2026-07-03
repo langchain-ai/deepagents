@@ -26,7 +26,7 @@ import logging
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from deepagents_code.output import write_json
 
@@ -80,7 +80,7 @@ def setup_config_parser(
     add_output_args(config_parser)
     config_sub = config_parser.add_subparsers(dest="config_command")
 
-    def _add_verbose_arg(parser: Any) -> None:  # noqa: ANN401
+    def _add_verbose_arg(parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
             "-v",
             "--verbose",
@@ -199,7 +199,7 @@ def _resolve(
     toml_data: dict[str, Any],
     *,
     stored: _StoredCredentialView | None = None,
-) -> tuple[bool, str, Any]:
+) -> tuple[bool, str, object]:
     """Resolve an option for display, reporting what the runtime actually reads.
 
     Credential options follow runtime precedence: a present `DEEPAGENTS_CODE_`
@@ -323,6 +323,30 @@ def _missing_extra_hint(option: ConfigOption) -> bool:
     return importlib.util.find_spec(option.dependency_module) is None
 
 
+class ResolvedOption(NamedTuple):
+    """An option paired with its resolved effective value, for display.
+
+    Bundles the four values that always travel together through the render
+    helpers as one named record, so they can't be reordered or misaligned at a
+    call site the way a bare positional tuple can.
+    """
+
+    option: ConfigOption
+    """The option being described."""
+
+    is_set: bool
+    """`False` when `value` came from the option's typed default."""
+
+    source: str
+    """Where the effective value came from (e.g. `env (...)`, `stored`, `default`)."""
+
+    value: object
+    """The effective value; `None` when unset.
+
+    Redacted for secrets before display.
+    """
+
+
 # --- Commands ---------------------------------------------------------------
 
 
@@ -371,11 +395,20 @@ def _show_json_row(
     return row
 
 
-def _run_show(output_format: OutputFormat, *, verbose: bool, command_label: str) -> int:
+def _run_show(output_format: OutputFormat, *, verbose: bool, list_mode: bool) -> int:
     """Resolve every option and print its effective value and source.
 
     With `verbose`, each option also lists its description and where it can be
     set (the catalog detail formerly served by `config list`).
+
+    Args:
+        output_format: `text` for the rendered view, `json` for a machine-
+            readable payload.
+        verbose: Fold each option's description and how-to-set into the output.
+        list_mode: `True` when invoked as `config list`/`ls` rather than
+            `config show`. It selects the `config list` JSON envelope label and,
+            for backward compatibility, includes the static catalog fields in
+            `config list --json` even without `verbose`.
 
     Returns:
         Process exit code (`0` on success).
@@ -391,34 +424,37 @@ def _run_show(output_format: OutputFormat, *, verbose: bool, command_label: str)
     # re-parsing `auth.json` per credential option.
     stored = _load_stored_credentials()
 
-    options = get_config_options()
-    resolved = [(opt, *_resolve(opt, toml_data, stored=stored)) for opt in options]
+    resolved = [
+        ResolvedOption(opt, *_resolve(opt, toml_data, stored=stored))
+        for opt in get_config_options()
+    ]
 
     if output_format == "json":
+        label = "config list" if list_mode else "config show"
         # `config list --json` was the catalog endpoint; keep its catalog fields
         # so existing consumers stay unbroken (now additive alongside effective
         # values). `config show --json` stays effective-only unless `--verbose`.
-        include_catalog = verbose or command_label == "config list"
+        include_catalog = verbose or list_mode
         write_json(
-            command_label,
+            label,
             [
                 _show_json_row(
-                    opt,
-                    is_set=is_set,
-                    source=source,
-                    value=value,
+                    row.option,
+                    is_set=row.is_set,
+                    source=row.source,
+                    value=row.value,
                     store_error=stored.error,
                     include_catalog=include_catalog,
                 )
-                for opt, is_set, source, value in resolved
+                for row in resolved
             ],
         )
         return 0
 
     if verbose:
-        _print_show_verbose(resolved, options, store_error=stored.error)
+        _print_show_verbose(resolved, store_error=stored.error)
     else:
-        _print_show_table(resolved, options, store_error=stored.error)
+        _print_show_table(resolved, store_error=stored.error)
     return 0
 
 
@@ -435,8 +471,7 @@ def _print_store_warning(store_error: str | None) -> None:
 
 
 def _print_show_table(
-    resolved: Sequence[tuple[ConfigOption, bool, str, Any]],
-    options: Sequence[ConfigOption],
+    resolved: Sequence[ResolvedOption],
     *,
     store_error: str | None = None,
 ) -> None:
@@ -449,30 +484,29 @@ def _print_show_table(
 
     console.print()
     _print_store_warning(store_error)
-    for group in iter_groups(options):
+    for group in iter_groups(row.option for row in resolved):
         console.print(f"[bold]{group}[/bold]")
         table = Table.grid(padding=(0, 2))
         table.add_column()
         table.add_column()
         table.add_column(style="dim")
-        for opt, is_set, source, value in resolved:
-            if opt.group != group:
+        for row in resolved:
+            if row.option.group != group:
                 continue
-            display = _display_value(opt, is_set=is_set, value=value)
+            display = _display_value(row.option, is_set=row.is_set, value=row.value)
             # `display`/`source` may contain markup from env/TOML; `Text` cells
             # render literally, so values can't break the table.
             table.add_row(
-                Text(f"  {opt.key}"),
+                Text(f"  {row.option.key}"),
                 Text(display),
-                Text(_source_label(source, option=opt)),
+                Text(_source_label(row.source, option=row.option)),
             )
         console.print(table, highlight=False)
         console.print()
 
 
 def _print_show_verbose(
-    resolved: Sequence[tuple[ConfigOption, bool, str, Any]],
-    options: Sequence[ConfigOption],
+    resolved: Sequence[ResolvedOption],
     *,
     store_error: str | None = None,
 ) -> None:
@@ -484,20 +518,22 @@ def _print_show_verbose(
 
     console.print()
     _print_store_warning(store_error)
-    for group in iter_groups(options):
+    for group in iter_groups(row.option for row in resolved):
         console.print(f"[bold]{group}[/bold]")
-        for opt, is_set, source, value in resolved:
-            if opt.group != group:
+        for row in resolved:
+            if row.option.group != group:
                 continue
-            display = _display_value(opt, is_set=is_set, value=value)
+            display = _display_value(row.option, is_set=row.is_set, value=row.value)
             # `display`/`source` may carry markup from env/TOML; escape them.
             console.print(
-                f"  [cyan]{opt.key}[/cyan]  {escape(display)}  "
-                f"[dim]{escape(_source_label(source, option=opt))}[/dim]",
+                f"  [cyan]{row.option.key}[/cyan]  {escape(display)}  "
+                f"[dim]{escape(_source_label(row.source, option=row.option))}[/dim]",
                 highlight=False,
             )
-            console.print(f"    {opt.summary}", highlight=False, style="dim")
-            console.print(f"    {_sources_line(opt)}", highlight=False, style="dim")
+            console.print(f"    {row.option.summary}", highlight=False, style="dim")
+            console.print(
+                f"    {_sources_line(row.option)}", highlight=False, style="dim"
+            )
         console.print()
 
 
@@ -602,8 +638,9 @@ def run_config_command(args: argparse.Namespace) -> int:
     verbose: bool = getattr(args, "verbose", False)
 
     if command in {"show", "list", "ls"}:
-        label = "config list" if command in {"list", "ls"} else "config show"
-        return _run_show(output_format, verbose=verbose, command_label=label)
+        return _run_show(
+            output_format, verbose=verbose, list_mode=command in {"list", "ls"}
+        )
     if command == "get":
         return _run_get(args.key, output_format)
     if command == "path":
@@ -619,7 +656,7 @@ def run_config_command(args: argparse.Namespace) -> int:
 
 
 def _sources_line(option: ConfigOption) -> str:
-    """Render a compact 'set via' line for `config list`.
+    """Render a compact 'set via' line for the verbose (`--verbose`) view.
 
     Returns:
         A human-readable description of where the option can be set.

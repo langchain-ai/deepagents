@@ -151,6 +151,28 @@ def _should_collapse_chat_paste(text: str) -> bool:
     return detect_mode_prefix(text) is None and should_collapse_paste(text)
 
 
+def _load_collapse_pastes() -> bool:
+    """Resolve whether large chat-input pastes are collapsed into placeholders.
+
+    Reads `DEEPAGENTS_CODE_COLLAPSE_PASTES`, then `[ui].collapse_pastes` in
+    `~/.deepagents/config.toml`, defaulting to enabled.
+
+    Returns:
+        The resolved preference (defaults to `True`).
+    """
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("display.collapse_pastes")
+    if option is None:
+        return True
+    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    return bool(value)
+
+
 class CompletionOption(Static):
     """A clickable completion option in the autocomplete popup."""
 
@@ -1006,6 +1028,15 @@ class ChatTextArea(TextArea):
             return True
         return self.text.startswith("/")
 
+    def _paste_collapse_enabled(self) -> bool:
+        """Return whether large pastes should be collapsed into placeholders.
+
+        Reads the owning `ChatInput`'s resolved preference, defaulting to
+        enabled when the owner is not yet attached.
+        """
+        owner = self._chat_input_owner
+        return owner is None or owner._collapse_pastes
+
     def _should_start_paste_burst(self, char: str) -> bool:
         """Return whether a keypress should start paste-burst buffering.
 
@@ -1052,7 +1083,7 @@ class ChatTextArea(TextArea):
             self.post_message(self.PastedPaths(payload, parsed.paths))
             return
 
-        if _should_collapse_chat_paste(payload):
+        if self._paste_collapse_enabled() and _should_collapse_chat_paste(payload):
             self.post_message(self.PastedText(payload))
             return
 
@@ -1387,7 +1418,7 @@ class ChatTextArea(TextArea):
             self.post_message(self.PastedPaths(event.text, parsed.paths))
             return
 
-        if _should_collapse_chat_paste(event.text):
+        if self._paste_collapse_enabled() and _should_collapse_chat_paste(event.text):
             # Intercept the paste so Textual's default _on_paste doesn't insert
             # the full text. ChatInput stores the content and inserts a compact
             # placeholder instead.
@@ -1657,6 +1688,11 @@ class ChatInput(Vertical):
         # area instead.  At submission the placeholder is expanded back.
         self._pasted_contents: dict[int, PastedContent] = {}
         self._next_paste_id = 1
+
+        # Whether large pastes are collapsed into `[Pasted text #N]` placeholders.
+        # Gated by `display.collapse_pastes` (env / `[ui].collapse_pastes`);
+        # when disabled, pasted text is inserted verbatim.
+        self._collapse_pastes = _load_collapse_pastes()
 
         # Guard flag: set True before programmatically stripping the mode
         # prefix character so the resulting text-change event does not
@@ -2408,7 +2444,7 @@ class ChatInput(Vertical):
         parsed = self._parse_dropped_path_payload(pasted)
         if parsed is not None:
             self._insert_pasted_paths(pasted, parsed.paths)
-        elif _should_collapse_chat_paste(pasted):
+        elif self._collapse_pastes and _should_collapse_chat_paste(pasted):
             self._collapse_and_insert_paste(pasted)
         else:
             self._text_area.insert(pasted)

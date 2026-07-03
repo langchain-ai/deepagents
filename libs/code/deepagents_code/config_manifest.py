@@ -805,6 +805,15 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         toml_keys=("ui", "show_scrollbar"),
     ),
     ConfigOption(
+        key="display.collapse_pastes",
+        group="Display",
+        summary="Collapse large chat-input pastes into compact placeholders.",
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.COLLAPSE_PASTES,
+        toml_keys=("ui", "collapse_pastes"),
+    ),
+    ConfigOption(
         key="display.hide_cwd",
         group="Display",
         summary="Hide local path displays in the footer and startup splash.",

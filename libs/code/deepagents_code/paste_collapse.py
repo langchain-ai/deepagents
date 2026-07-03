@@ -19,7 +19,7 @@ PASTE_THRESHOLD_CHARS = 800
 PASTE_THRESHOLD_LINES = 2
 """Minimum line count (newline-separated) for a paste to be collapsed."""
 
-_PASTE_REF_RE = re.compile(r"\[Pasted text #(\d+)(?: \+(\d+) lines)?\]")
+PASTE_PLACEHOLDER_PATTERN = re.compile(r"\[Pasted text #(\d+)(?: \+(\d+) lines)?\]")
 """Regex matching `[Pasted text #N]` or `[Pasted text #N +M lines]`."""
 
 
@@ -100,4 +100,4 @@ def expand_paste_refs(text: str, pasted_contents: dict[int, PastedContent]) -> s
         # Return the stored text literally; unknown IDs keep their placeholder.
         return content.content if content is not None else match.group(0)
 
-    return _PASTE_REF_RE.sub(_replace, text)
+    return PASTE_PLACEHOLDER_PATTERN.sub(_replace, text)

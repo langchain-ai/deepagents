@@ -4544,6 +4544,103 @@ class TestPasteCollapseIntegration:
             assert app.submitted[0].value == pasted
             assert app.submitted[0].mode == mode
 
+    async def test_identical_second_paste_expands_placeholder(self) -> None:
+        """Pasting identical content again expands the placeholder to full text."""
+        text = "S" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(text)
+            await pilot.pause()
+            assert chat._text_area.text == "[Pasted text #1]"
+
+            chat.handle_external_paste(text)
+            await pilot.pause()
+
+            # Second identical paste expands the placeholder inline. The stored
+            # copy stays available because this edit can be undone.
+            assert chat._text_area.text == text
+            assert chat._pasted_contents[1].content == text
+
+            await pilot.press("enter")
+            await pilot.pause()
+            assert app.submitted[0].value == text
+
+    async def test_repeat_paste_expansion_keeps_content_for_undo(self) -> None:
+        """Undo-restored placeholders still expand after repeat-paste expansion."""
+        text = "U" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(text)
+            await pilot.pause()
+            placeholder = chat._text_area.text
+
+            chat.handle_external_paste(text)
+            await pilot.pause()
+            assert chat._text_area.text == text
+
+            chat._text_area.text = placeholder
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == text
+
+    async def test_identical_second_paste_expands_preserving_surrounding_text(
+        self,
+    ) -> None:
+        """Expanding a repeated paste keeps text typed around the placeholder."""
+        text = "S" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            for char in "fix: ":
+                await pilot.press(char)
+            chat.handle_external_paste(text)
+            await pilot.pause()
+            assert chat._text_area.text == "fix: [Pasted text #1]"
+
+            chat.handle_external_paste(text)
+            await pilot.pause()
+
+            assert chat._text_area.text == f"fix: {text}"
+            assert chat._pasted_contents[1].content == text
+
+    async def test_repeat_paste_skips_stale_deleted_placeholder_ids(self) -> None:
+        """Repeat expansion targets a visible placeholder, not stale paste data."""
+        text = "R" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(text)
+            await pilot.pause()
+            assert chat._text_area.text == "[Pasted text #1]"
+
+            await pilot.press("backspace")
+            await pilot.pause()
+            assert chat._text_area.text == ""
+            assert chat._pasted_contents[1].content == text
+
+            chat.handle_external_paste(text)
+            await pilot.pause()
+            assert chat._text_area.text == "[Pasted text #2]"
+
+            chat.handle_external_paste(text)
+            await pilot.pause()
+
+            assert chat._text_area.text == text
+            assert chat._pasted_contents[1].content == text
+            assert chat._pasted_contents[2].content == text
+
     async def test_bracketed_paste_event_collapses(self) -> None:
         """A real Paste event over the threshold collapses to a placeholder.
 
@@ -4578,6 +4675,106 @@ class TestPasteCollapseIntegration:
             assert "[Pasted text #1]" in chat._text_area.text
             assert big_text not in chat._text_area.text
             assert chat._pasted_contents[1].content == big_text
+
+    async def test_backspace_removes_full_paste_placeholder(self) -> None:
+        """Backspace deletes a [Pasted text #N] placeholder as a single token."""
+        big_text = "p" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(big_text)
+            await pilot.pause()
+            assert "[Pasted text #1]" in chat._text_area.text
+
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert chat._text_area.text == ""
+            # Backing content is preserved so an undo can restore the token;
+            # it is cleared only at submit.
+            assert 1 in chat._pasted_contents
+
+    async def test_forward_delete_removes_full_paste_placeholder(self) -> None:
+        """Forward delete removes a paste placeholder as a single token."""
+        big_text = "p" * 900
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(big_text)
+            await pilot.pause()
+            chat._text_area.move_cursor((0, 0))
+
+            await pilot.press("delete")
+            await pilot.pause()
+
+            assert chat._text_area.text == ""
+            # Like backspace, forward delete leaves the backing content for undo;
+            # it is cleared only at submit.
+            assert 1 in chat._pasted_contents
+
+    async def test_backspace_removes_only_targeted_paste_placeholder(self) -> None:
+        """Backspace deletes only the placeholder at the cursor, not others."""
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste("A" * 900)
+            await pilot.pause()
+            chat.handle_external_paste("B" * 900)
+            await pilot.pause()
+            assert "[Pasted text #1]" in chat._text_area.text
+            assert "[Pasted text #2]" in chat._text_area.text
+
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            # Exact equality (not a substring check): a non-atomic delete that
+            # removed a single char would leave "[Pasted text #2" and still
+            # satisfy a `"[Pasted text #2]" not in text` assertion.
+            assert chat._text_area.text == "[Pasted text #1]"
+
+    async def test_backspace_removes_multiline_paste_placeholder(self) -> None:
+        """Backspace atomically deletes the `+M lines` placeholder variant."""
+        multi_line = "\n".join(f"line {i}" for i in range(5))
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(multi_line)
+            await pilot.pause()
+            # The multi-line form carries a "+M lines" suffix, so its span is
+            # longer than the bare "[Pasted text #N]" token.
+            assert chat._text_area.text == "[Pasted text #1 +4 lines]"
+
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert chat._text_area.text == ""
+            assert 1 in chat._pasted_contents
+
+    async def test_identical_multiline_repaste_expands_placeholder(self) -> None:
+        """Repeat-pasting multi-line content expands its `+M lines` placeholder."""
+        multi_line = "\n".join(f"line {i}" for i in range(5))
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(multi_line)
+            await pilot.pause()
+            assert chat._text_area.text == "[Pasted text #1 +4 lines]"
+
+            chat.handle_external_paste(multi_line)
+            await pilot.pause()
+
+            assert chat._text_area.text == multi_line
+            assert chat._pasted_contents[1].content == multi_line
 
     async def test_copy_button_expands_placeholders(
         self, monkeypatch: pytest.MonkeyPatch

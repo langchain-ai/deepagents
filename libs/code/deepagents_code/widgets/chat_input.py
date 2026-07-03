@@ -31,6 +31,7 @@ from deepagents_code.config import (
 )
 from deepagents_code.input import IMAGE_PLACEHOLDER_PATTERN, VIDEO_PLACEHOLDER_PATTERN
 from deepagents_code.paste_collapse import (
+    PASTE_PLACEHOLDER_PATTERN,
     PastedContent,
     count_lines,
     expand_paste_refs,
@@ -1212,12 +1213,12 @@ class ChatTextArea(TextArea):
             self.action_insert_newline()
             return
 
-        if event.key == "backspace" and self._delete_image_placeholder(backwards=True):
+        if event.key == "backspace" and self._delete_placeholder_token(backwards=True):
             event.prevent_default()
             event.stop()
             return
 
-        if event.key == "delete" and self._delete_image_placeholder(backwards=False):
+        if event.key == "delete" and self._delete_placeholder_token(backwards=False):
             event.prevent_default()
             event.stop()
             return
@@ -1267,8 +1268,8 @@ class ChatTextArea(TextArea):
 
         await super()._on_key(event)
 
-    def _delete_image_placeholder(self, *, backwards: bool) -> bool:
-        """Delete a full image placeholder token in one keypress.
+    def _delete_placeholder_token(self, *, backwards: bool) -> bool:
+        """Delete a full placeholder token (image, video, or paste) in one keypress.
 
         Args:
             backwards: Whether the delete action is backwards (`backspace`) or
@@ -1281,7 +1282,7 @@ class ChatTextArea(TextArea):
             return False
 
         cursor_offset = self.document.get_index_from_location(self.cursor_location)  # ty: ignore[unresolved-attribute]  # Document has this method; DocumentBase stub is narrower
-        span = self._find_image_placeholder_span(cursor_offset, backwards=backwards)
+        span = self._find_placeholder_span(cursor_offset, backwards=backwards)
         if span is None:
             return False
 
@@ -1292,19 +1293,32 @@ class ChatTextArea(TextArea):
         self.move_cursor(start_location)
         return True
 
-    def _find_image_placeholder_span(
+    def _find_placeholder_span(
         self, cursor_offset: int, *, backwards: bool
     ) -> tuple[int, int] | None:
         """Return placeholder span to delete for current cursor and key direction.
+
+        Covers image, video, and collapsed-paste placeholders so each deletes as
+        a single atomic token.  Paste placeholders carry backing content in
+        `ChatInput._pasted_contents`; that map is intentionally left untouched
+        here so an undo can restore the token with its content (it is cleared
+        only at submit).
 
         Args:
             cursor_offset: Character offset of the cursor from the start of text.
             backwards: Whether the delete action is backwards (backspace) or
                 forwards (delete).
+
+        Returns:
+            The `(start, end)` character span of the placeholder to delete, or
+                `None` when the cursor is not adjacent to a placeholder token.
         """
         text = self.text
-        # Check both image and video placeholders
-        for pattern in (IMAGE_PLACEHOLDER_PATTERN, VIDEO_PLACEHOLDER_PATTERN):
+        for pattern in (
+            IMAGE_PLACEHOLDER_PATTERN,
+            VIDEO_PLACEHOLDER_PATTERN,
+            PASTE_PLACEHOLDER_PATTERN,
+        ):
             for match in pattern.finditer(text):
                 start, end = match.span()
                 if backwards:
@@ -1323,6 +1337,31 @@ class ChatTextArea(TextArea):
                 elif start <= cursor_offset < end:
                     return start, end
         return None
+
+    def replace_placeholder_with_text(self, paste_id: int, content: str) -> bool:
+        """Replace a `[Pasted text #id]` placeholder with full text in place.
+
+        Used when the same content is pasted again: the compact placeholder is
+        expanded back to the original text where it sits, preserving surrounding
+        input.
+
+        Args:
+            paste_id: The paste id whose placeholder should be expanded.
+            content: The full text to insert where the placeholder was.
+
+        Returns:
+            `True` when a matching placeholder was found and replaced.
+        """
+        for match in PASTE_PLACEHOLDER_PATTERN.finditer(self.text):
+            if int(match.group(1)) != paste_id:
+                continue
+            start, end = match.span()
+            start_location = self.document.get_location_from_index(start)  # ty: ignore[unresolved-attribute]  # Document has this method; DocumentBase stub is narrower
+            end_location = self.document.get_location_from_index(end)  # ty: ignore[unresolved-attribute]
+            self.delete(start_location, end_location)
+            self.insert(content, start_location)
+            return True
+        return False
 
     async def _on_paste(self, event: events.Paste) -> None:
         """Handle paste events, detecting file paths and large pastes."""
@@ -2380,11 +2419,32 @@ class ChatInput(Vertical):
     def _collapse_and_insert_paste(self, text: str) -> None:
         """Store full paste content and insert a compact placeholder.
 
+        Pasting content identical to a visible already-collapsed placeholder
+        expands that placeholder back to the full text in place instead of
+        adding a second placeholder — a repeat paste is treated as a request to
+        see the content in full.
+
         Args:
             text: The full pasted text to collapse.
         """
         if not self._text_area:
             logger.debug("Dropping collapsed paste: text area not mounted")
+            return
+        visible_ids = {
+            int(match.group(1))
+            for match in PASTE_PLACEHOLDER_PATTERN.finditer(self._text_area.text)
+        }
+        match_id = next(
+            (
+                pid
+                for pid, stored in self._pasted_contents.items()
+                if pid in visible_ids and stored.content == text
+            ),
+            None,
+        )
+        if match_id is not None and self._text_area.replace_placeholder_with_text(
+            match_id, text
+        ):
             return
         paste_id = self._next_paste_id
         self._next_paste_id += 1

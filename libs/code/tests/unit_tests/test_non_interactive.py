@@ -27,6 +27,7 @@ from deepagents_code.non_interactive import (
     _build_non_interactive_header,
     _collect_action_request_warnings,
     _make_hitl_decision,
+    _make_stdio_encoding_safe,
     _process_ai_message,
     _process_message_chunk,
     _run_agent_loop,
@@ -1746,3 +1747,36 @@ async def _async_iter(items: Sequence[object]) -> AsyncIterator[object]:  # noqa
     """Create an async iterator from a list for testing."""
     for item in items:
         yield item
+
+
+class TestMakeStdioEncodingSafe:
+    """Tests for `_make_stdio_encoding_safe`."""
+
+    def test_cp1252_stream_survives_unicode_glyphs(self):
+        """Unencodable glyphs degrade to "?" instead of raising."""
+        buffer = io.BytesIO()
+        stream = io.TextIOWrapper(buffer, encoding="cp1252")
+        with patch.object(sys, "stdout", stream), patch.object(sys, "stderr", stream):
+            _make_stdio_encoding_safe()
+            sys.stdout.write("✓ Server ready")
+            sys.stdout.flush()
+
+        assert buffer.getvalue() == b"? Server ready"
+
+    def test_stream_encoding_is_preserved(self):
+        """Only the error handler changes; the encoding stays untouched."""
+        buffer = io.BytesIO()
+        stream = io.TextIOWrapper(buffer, encoding="cp1252")
+        with patch.object(sys, "stdout", stream), patch.object(sys, "stderr", stream):
+            _make_stdio_encoding_safe()
+
+        assert stream.encoding == "cp1252"
+        assert stream.errors == "replace"
+
+    def test_non_reconfigurable_stream_is_left_alone(self):
+        """Streams without `reconfigure` (e.g. StringIO) do not raise."""
+        stream = io.StringIO()
+        with patch.object(sys, "stdout", stream), patch.object(sys, "stderr", stream):
+            _make_stdio_encoding_safe()
+
+        assert not stream.closed

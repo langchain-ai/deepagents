@@ -111,6 +111,28 @@ def _write_newline() -> None:
     sys.stdout.flush()
 
 
+def _make_stdio_encoding_safe() -> None:
+    """Prevent `UnicodeEncodeError` from killing a non-interactive run.
+
+    Legacy Windows consoles default to a locale code page (e.g. cp1252) that
+    cannot encode glyphs like "✓"; the first `console.print()` containing one
+    then crashes the whole run. Reconfiguring the streams with
+    `errors="replace"` degrades unencodable characters to "?" instead. The
+    stream encoding itself is left untouched.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        # Streams replaced by non-reconfigurable objects (e.g. a StringIO in
+        # tests) are left as-is.
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors="replace")
+        except (ValueError, OSError):
+            # Closed or detached stream — leave it as-is.
+            continue
+
+
 class _ConsoleSpinner:
     """Animated spinner for non-interactive verbose output.
 
@@ -1134,6 +1156,8 @@ async def run_non_interactive(
             budget was exceeded (matching GNU `timeout`), 130 for keyboard
             interrupt.
     """
+    _make_stdio_encoding_safe()
+
     # stderr=True routes all console.print() to stderr; agent response text
     # uses _write_text() -> sys.stdout directly.
     console = Console(stderr=True) if quiet else Console()

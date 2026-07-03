@@ -4034,6 +4034,121 @@ class TestToolHooksTextual:
         assert payload["tool_output"] == "contents"
         assert payload["tool_args"] == {"path": "foo.py"}
 
+    async def test_ask_user_interrupt_dispatches_tool_hooks(self) -> None:
+        """ask_user interrupt rows emit tool.use and tool.result hooks."""
+        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
+        future.set_result({"type": "answered", "answers": ["Alice"]})
+
+        async def request_ask_user(
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
+            await asyncio.sleep(0)
+            return future
+
+        questions: list[Question] = [{"question": "Name?", "type": "text"}]
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": questions,
+                            "tool_call_id": "ask-1",
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        with patch(
+            "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+        ) as mock_dispatch:
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        tool_use_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.use"
+        ]
+        assert len(tool_use_calls) == 1
+        assert tool_use_calls[0][0][1] == {
+            "tool_name": "ask_user",
+            "tool_id": "ask-1",
+            "tool_args": {"questions": questions},
+        }
+
+        tool_result_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
+        ]
+        assert len(tool_result_calls) == 1
+        assert tool_result_calls[0][0][1] == {
+            "tool_name": "ask_user",
+            "tool_id": "ask-1",
+            "tool_args": {"questions": questions},
+            "tool_status": "success",
+            "tool_output": "User answered",
+        }
+
+    async def test_ask_user_interrupt_error_dispatches_tool_result_hook(self) -> None:
+        """ask_user UI errors emit tool.result with tool_status='error'."""
+        questions: list[Question] = [{"question": "Name?", "type": "text"}]
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": questions,
+                            "tool_call_id": "ask-1",
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=None,
+        )
+
+        with patch(
+            "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+        ) as mock_dispatch:
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        dispatched_events = [c[0][0] for c in mock_dispatch.call_args_list]
+        assert "tool.error" in dispatched_events
+
+        tool_result_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
+        ]
+        assert len(tool_result_calls) == 1
+        payload = tool_result_calls[0][0][1]
+        assert payload["tool_name"] == "ask_user"
+        assert payload["tool_id"] == "ask-1"
+        assert payload["tool_args"] == {"questions": questions}
+        assert payload["tool_status"] == "error"
+        assert payload["tool_output"] == "ask_user not supported by this UI"
+
     async def test_tool_result_hook_dispatched_on_error(self) -> None:
         """tool.result fires with tool_status='error' and tool.error also fires."""
         mounted: list[object] = []

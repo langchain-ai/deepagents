@@ -204,7 +204,7 @@ async def _agent_runtime(
     if config.fleet_dir is not None:
         fleet_dir = config.fleet_dir
         components = await load_fleet_agent_components(fleet_dir, env=env)
-        mcp = await load_mcp_tools(config)
+        mcp = await load_mcp_tools(config, allow_empty=True)
         _log_mcp_servers(mcp)
         runtime_components = _runtime_components_from_fleet(
             config,
@@ -215,7 +215,7 @@ async def _agent_runtime(
 
         async def reload_fleet_components() -> RuntimeAgentComponents:
             refreshed = await load_fleet_agent_components(fleet_dir, env=env)
-            reloaded = await load_mcp_tools(config)
+            reloaded = await load_mcp_tools(config, allow_empty=True)
             _log_mcp_servers(reloaded)
             return _runtime_components_from_fleet(
                 config,

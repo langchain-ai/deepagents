@@ -255,7 +255,8 @@ async def test_agent_runtime_loads_fleet_components(
             middleware=(middleware,),
         )
 
-    async def fake_load_mcp(_config) -> MCPTools:
+    async def fake_load_mcp(_config, *, allow_empty: bool = False) -> MCPTools:
+        assert allow_empty is True
         return MCPTools(tools=(cast("Any", local_tool),), servers=())
 
     monkeypatch.setattr("deepagents_talon.__main__.load_fleet_agent_components", fake_load_fleet)
@@ -326,7 +327,12 @@ async def test_agent_runtime_allows_fleet_model_override(
             interrupt_on=None,
         )
 
+    async def fake_load_mcp(_config, *, allow_empty: bool = False) -> MCPTools:
+        assert allow_empty is True
+        return MCPTools(tools=(), servers=())
+
     monkeypatch.setattr("deepagents_talon.__main__.load_fleet_agent_components", fake_load_fleet)
+    monkeypatch.setattr("deepagents_talon.__main__.load_mcp_tools", fake_load_mcp)
     config = TalonConfig.from_env(
         {
             "AGENT_ASSISTANT_ID": "test",

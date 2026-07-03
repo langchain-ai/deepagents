@@ -122,3 +122,17 @@ async def test_load_mcp_tools_prefers_env_config_path(
     await load_mcp_tools(config)
 
     assert seen == [env_path]
+
+
+async def test_load_mcp_tools_allows_empty_manifest_config(tmp_path: Path) -> None:
+    config = TalonConfig.from_env({"AGENT_ASSISTANT_ID": "test"}, base_home=tmp_path)
+    config.ensure_home()
+    (config.manifest_dir / "tools.json").write_text(
+        json.dumps({"mcpServers": {}, "manifest": {"source": "fleet"}}),
+        encoding="utf-8",
+    )
+
+    result = await load_mcp_tools(config, allow_empty=True)
+
+    assert result.tools == ()
+    assert result.servers == ()

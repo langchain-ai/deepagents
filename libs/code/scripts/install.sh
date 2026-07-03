@@ -324,7 +324,11 @@ prepare_install_log_dir() {
   [ ! -L "$cache_root" ] || return 1
   [ ! -L "$dir" ] || return 1
   if [ ! -d "$cache_root" ]; then
-    mkdir -m 700 -p "$cache_root" 2>/dev/null || return 1
+    # `-m` with `-p` only sets the mode on the deepest dir (SC2174); any parents
+    # -p creates keep the umask default. Create, then chmod the target itself so
+    # 0700 is reliably applied to cache_root.
+    mkdir -p "$cache_root" 2>/dev/null || return 1
+    chmod 700 "$cache_root" 2>/dev/null || return 1
   fi
   [ -d "$cache_root" ] && [ ! -L "$cache_root" ] || return 1
   if [ -e "$dir" ]; then

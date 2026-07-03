@@ -3641,6 +3641,30 @@ class TestAskUserLifecycle:
         tool.toggle_args.assert_called_once_with()
         tool.toggle_output.assert_not_called()
 
+    def test_ctrl_o_prefers_command_when_both_expandable(self) -> None:
+        """Ctrl+O toggles the command/code block even when output can also expand.
+
+        Matches the region-aware click routing and the "click or Ctrl+O to show
+        command/code" hint: the output stays reachable by clicking its own row.
+        """
+        from deepagents_code.widgets.messages import ToolCallMessage
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        tool = MagicMock(spec=ToolCallMessage)
+        tool.has_class.return_value = False
+        tool.has_output = True
+        tool.has_expandable_output = True  # long stdout, expandable
+        tool.has_expandable_args = True  # long command, expandable
+        container = MagicMock()
+        container.children = [tool]
+
+        with patch.object(app, "query_one", return_value=container):
+            app.action_toggle_tool_output()
+
+        tool.toggle_args.assert_called_once_with()
+        tool.toggle_output.assert_not_called()
+
     def test_ctrl_o_prefers_more_recent_tool_in_dom_order(self) -> None:
         """The newest tool row in DOM order wins over an older one."""
         from deepagents_code.widgets.messages import ToolCallMessage

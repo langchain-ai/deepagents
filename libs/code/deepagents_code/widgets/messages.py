@@ -1540,12 +1540,31 @@ class ToolCallMessage(Vertical):
         Returns:
             `True` if the click landed on the header/args region.
         """
-        targets = (self._header_widget, self._args_widget, self._args_hint_widget)
+        targets = tuple(
+            target
+            for target in (
+                self._header_widget,
+                self._args_widget,
+                self._args_hint_widget,
+            )
+            if target is not None
+        )
+        if not targets:
+            # A click can only arrive post-mount, where these refs are always
+            # cached, so an empty tuple means a regression nulled them out. Log
+            # it rather than silently routing every click to output (mirrors
+            # `_update_args_display`).
+            logger.debug("_click_targets_args_region: header/args refs not cached")
+            return False
+        # The header/args/hint widgets are direct children of `self` (a click on
+        # rendered text reports a descendant, so the real match depth is 0-1).
+        # 8 is generous headroom that also bounds the walk for a detached or mock
+        # node, whose `.parent` chain never reaches `self`.
         node = widget
         for _ in range(8):
             if node is None or node is self:
                 return False
-            if any(node is target for target in targets if target is not None):
+            if any(node is target for target in targets):
                 return True
             node = getattr(node, "parent", None)
         return False
@@ -2527,7 +2546,9 @@ class ToolCallMessage(Vertical):
             # "click to collapse" there is misleading.
             if self._has_expandable_output():
                 self._hint_widget.update(
-                    Content.styled("click or Ctrl+O to collapse", "dim italic")
+                    Content.styled(
+                        f"{self._output_hint_keys()} to collapse", "dim italic"
+                    )
                 )
                 self._hint_widget.display = True
             else:
@@ -2550,7 +2571,9 @@ class ToolCallMessage(Vertical):
                 self._preview_row.display = False
                 ellipsis = get_glyphs().ellipsis
                 self._hint_widget.update(
-                    Content.styled(f"{ellipsis} click or Ctrl+O to expand", "dim")
+                    Content.styled(
+                        f"{ellipsis} {self._output_hint_keys()} to expand", "dim"
+                    )
                 )
                 self._hint_widget.display = True
                 return
@@ -2574,13 +2597,29 @@ class ToolCallMessage(Vertical):
                 ellipsis = get_glyphs().ellipsis
                 self._hint_widget.update(
                     Content.styled(
-                        f"{ellipsis} {result.truncation} — click or Ctrl+O to expand",
+                        f"{ellipsis} {result.truncation} — "
+                        f"{self._output_hint_keys()} to expand",
                         "dim",
                     )
                 )
                 self._hint_widget.display = True
             else:
                 self._hint_widget.display = False
+
+    def _output_hint_keys(self) -> str:
+        """Affordances to advertise in the output expand/collapse hint.
+
+        Ctrl+O routes to the collapsible command/code block whenever this row
+        has one (see `action_toggle_tool_output`), so the output hint only
+        advertises Ctrl+O when Ctrl+O would actually toggle the *output*. When a
+        command/code block is present the output is reachable by clicking its
+        own region instead.
+
+        Returns:
+            `"click"` when an expandable command/code block owns Ctrl+O,
+                otherwise `"click or Ctrl+O"`.
+        """
+        return "click" if self.has_expandable_args else "click or Ctrl+O"
 
     @property
     def has_output(self) -> bool:
@@ -2628,7 +2667,8 @@ class ToolCallMessage(Vertical):
             a single line is long enough to be truncated in the header.
         - `execute`: the header truncates the shell command at
             `EXECUTE_HEADER_MAX_LENGTH`, so the full command is offered as a
-            collapsible block whenever it would be clipped there.
+            collapsible block when the command, after stripping surrounding
+            whitespace, is longer than `EXECUTE_HEADER_MAX_LENGTH`.
         """
         if self._tool_name == "ask_user":
             return bool(self._args)

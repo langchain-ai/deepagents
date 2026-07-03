@@ -2014,6 +2014,115 @@ class TestToolCallMessageExecuteCommandExpand:
             assert msg._expanded is True
             assert msg._args_expanded is False
 
+    @staticmethod
+    def _harness(msg: ToolCallMessage) -> App[None]:
+        """Build a minimal single-widget app hosting `msg`."""
+
+        class _Harness(App[None]):
+            def compose(self) -> ComposeResult:
+                yield msg
+
+        return _Harness()
+
+    async def test_click_targets_args_region_walks_parents(self) -> None:
+        """A click on a descendant of the header still routes to the command.
+
+        A real Textual click reports the rendered-text node *inside* the
+        `Static`, not the `Static` itself, so the region check must walk up the
+        `.parent` chain rather than compare identities directly.
+        """
+        msg = ToolCallMessage("execute", {"command": "echo hi"})
+        app = self._harness(msg)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Direct hit, one hop, and two hops all resolve to the header.
+            one_hop = SimpleNamespace(parent=msg._header_widget)
+            two_hops = SimpleNamespace(parent=one_hop)
+            assert msg._click_targets_args_region(msg._header_widget) is True
+            assert msg._click_targets_args_region(one_hop) is True
+            assert msg._click_targets_args_region(two_hops) is True
+            # A detached node and `self` never match.
+            assert msg._click_targets_args_region(SimpleNamespace(parent=None)) is False
+            assert msg._click_targets_args_region(msg) is False
+
+    async def test_click_on_args_hint_toggles_command(self) -> None:
+        """Clicking the args-hint line expands the command, not the output."""
+        long_cmd = "echo " + "x" * EXECUTE_HEADER_MAX_LENGTH
+        msg = ToolCallMessage("execute", {"command": long_cmd})
+        app = self._harness(msg)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg.set_success("\n".join(str(i) for i in range(50)))
+            await pilot.pause()
+            assert msg.has_expandable_output is True
+
+            event = MagicMock()
+            event.widget = msg._args_hint_widget
+            msg.on_click(event)
+            await pilot.pause()
+            assert msg._args_expanded is True
+            assert msg._expanded is False
+
+    async def test_click_on_expanded_command_collapses(self) -> None:
+        """Clicking the expanded command block collapses it again."""
+        long_cmd = "echo " + "x" * EXECUTE_HEADER_MAX_LENGTH
+        msg = ToolCallMessage("execute", {"command": long_cmd})
+        app = self._harness(msg)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg.toggle_args()
+            await pilot.pause()
+            assert msg._args_expanded is True
+
+            event = MagicMock()
+            event.widget = msg._args_widget
+            msg.on_click(event)
+            await pilot.pause()
+            assert msg._args_expanded is False
+
+    async def test_expanded_command_uses_command_noun_and_detail(self) -> None:
+        """Expanding wires the `command` noun and `_format_command_detail`."""
+        long_cmd = "echo " + "x" * EXECUTE_HEADER_MAX_LENGTH
+        msg = ToolCallMessage("execute", {"command": long_cmd})
+        app = self._harness(msg)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg.toggle_args()
+            await pilot.pause()
+
+            hint = msg._args_hint_widget._Static__content  # ty: ignore
+            body = msg._args_widget._Static__content  # ty: ignore
+            assert "hide command" in hint.plain
+            assert body.plain == msg._format_command_detail().plain
+
+    async def test_output_hint_omits_ctrl_o_when_command_expandable(self) -> None:
+        """With an expandable command, Ctrl+O owns it, so the output hint drops it."""
+        long_cmd = "echo " + "x" * EXECUTE_HEADER_MAX_LENGTH
+        msg = ToolCallMessage("execute", {"command": long_cmd})
+        app = self._harness(msg)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg.set_success("\n".join(str(i) for i in range(50)))
+            await pilot.pause()
+            assert msg.has_expandable_args is True
+
+            hint = msg._hint_widget._Static__content  # ty: ignore
+            assert "click to expand" in hint.plain
+            assert "Ctrl+O" not in hint.plain
+
+    async def test_output_hint_keeps_ctrl_o_without_expandable_command(self) -> None:
+        """A short command leaves Ctrl+O on the output, so the hint keeps it."""
+        msg = ToolCallMessage("execute", {"command": "echo hi"})
+        app = self._harness(msg)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg.set_success("\n".join(str(i) for i in range(50)))
+            await pilot.pause()
+            assert msg.has_expandable_args is False
+
+            hint = msg._hint_widget._Static__content  # ty: ignore
+            assert "Ctrl+O" in hint.plain
+
 
 class TestToolCallMessageShellCommand:
     """Test ToolCallMessage shows full shell command for errors.

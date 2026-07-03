@@ -261,33 +261,76 @@ class TestCreateMultimodalContent:
         assert "[image 2]" not in result[0]["text"]
         assert result[0]["text"] == "and differ how?"
 
+    def test_unbound_placeholder_like_text_preserved(self) -> None:
+        """Placeholder-shaped text not bound to attached media is preserved.
+
+        Regression test for false positives: a user attaches image 1 but their
+        prompt also literally mentions `[image 2]` (which is not attached). Only
+        the real `[image 1]` token is stripped; the literal `[image 2]` stays.
+        """
+        img = ImageData(base64_data="abc", format="png", placeholder="[image 1]")
+        result = create_multimodal_content(
+            "[image 1] see the note about [image 2] in the docs", [img]
+        )
+
+        assert result[0]["type"] == "text"
+        assert result[0]["text"] == "see the note about [image 2] in the docs"
+
+    def test_placeholder_like_text_without_attachment_untouched(self) -> None:
+        """With no media attached, placeholder-shaped text is never stripped."""
+        result = create_multimodal_content("compare [image 1] vs [image 2]", [])
+
+        assert len(result) == 1
+        assert result[0]["type"] == "text"
+        assert result[0]["text"] == "compare [image 1] vs [image 2]"
+
 
 class TestStripMediaPlaceholders:
     """Tests for `strip_media_placeholders`."""
 
     def test_leading_placeholder(self) -> None:
         """A leading placeholder is removed along with its trailing space."""
-        assert strip_media_placeholders("[image 1] hello") == "hello"
+        assert strip_media_placeholders("[image 1] hello", ["[image 1]"]) == "hello"
 
     def test_inline_placeholder_no_double_space(self) -> None:
         """An inline placeholder does not leave a double space behind."""
-        assert strip_media_placeholders("before [image 1] after") == "before after"
+        assert (
+            strip_media_placeholders("before [image 1] after", ["[image 1]"])
+            == "before after"
+        )
 
-    def test_bare_placeholder(self) -> None:
-        """Bare `[image]`/`[video]` placeholders are also removed."""
-        assert strip_media_placeholders("look [image] here") == "look here"
+    def test_only_bound_placeholders_removed(self) -> None:
+        """Only tokens in the bound set are removed; look-alikes are preserved."""
+        result = strip_media_placeholders(
+            "keep [image 2] drop [image 1]", ["[image 1]"]
+        )
+        assert result == "keep [image 2] drop"
 
     def test_text_without_placeholder_unchanged(self) -> None:
-        """Text without any placeholder is returned unchanged (aside from trim)."""
-        assert strip_media_placeholders("plain text only") == "plain text only"
+        """Text without a bound placeholder is unchanged (aside from trim)."""
+        assert (
+            strip_media_placeholders("plain text only", ["[image 1]"])
+            == "plain text only"
+        )
+
+    def test_no_placeholders_returns_text_verbatim(self) -> None:
+        """An empty placeholder set returns the text unchanged, including whitespace."""
+        assert strip_media_placeholders("  [image 1]  ", []) == "  [image 1]  "
 
     def test_only_placeholder_becomes_empty(self) -> None:
-        """A string that is only a placeholder becomes empty."""
-        assert strip_media_placeholders("[video 2]") == ""
+        """A string that is only a bound placeholder becomes empty."""
+        assert strip_media_placeholders("[video 2]", ["[video 2]"]) == ""
 
     def test_newlines_preserved(self) -> None:
         """Newlines around a placeholder are preserved."""
-        assert strip_media_placeholders("line1\n[image 1]\nline2") == "line1\n\nline2"
+        assert (
+            strip_media_placeholders("line1\n[image 1]\nline2", ["[image 1]"])
+            == "line1\n\nline2"
+        )
+
+    def test_special_regex_chars_in_placeholder_are_escaped(self) -> None:
+        """Placeholder tokens are treated literally, not as regex."""
+        assert strip_media_placeholders("a [image (1)] b", ["[image (1)]"]) == "a b"
 
 
 class TestGetClipboardImage:

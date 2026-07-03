@@ -12,6 +12,7 @@ import shutil
 import subprocess  # noqa: S404
 import sys
 import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -50,16 +51,8 @@ VIDEO_EXTENSIONS: frozenset[str] = frozenset(
 MAX_MEDIA_BYTES: int = 20 * 1024 * 1024
 """Maximum media file size (20 MB). Keeps base64 payload under ~27 MB."""
 
-_MEDIA_PLACEHOLDER_PATTERN = re.compile(r"[ \t]*\[(?:image|video)(?: \d+)?\]")
-"""Matches display-only media placeholders (`[image 1]`, `[video 2]`, `[image]`).
 
-Consumes any leading spaces/tabs so removing an inline placeholder collapses to a
-single space rather than leaving a double space behind. Newlines are preserved so
-multi-line prompts keep their structure.
-"""
-
-
-def strip_media_placeholders(text: str) -> str:
+def strip_media_placeholders(text: str, placeholders: Iterable[str]) -> str:
     """Remove display-only media placeholders from user text.
 
     Placeholders like `[image 1]` are inserted into the terminal input purely for
@@ -67,13 +60,30 @@ def strip_media_placeholders(text: str) -> str:
     leak into the canonical model-facing message or LangSmith trace as if the user
     typed them.
 
+    Only the exact placeholder tokens bound to real tracked media are removed, so
+    text that merely resembles the placeholder schema (e.g. a user pasting the
+    literal string ``[image 7]`` without attaching image 7) is preserved verbatim.
+    No escaping mechanism is needed because stripping is scoped to known tokens
+    rather than a blanket pattern.
+
     Args:
-        text: Raw user text that may contain `[image N]`/`[video N]` placeholders.
+        text: Raw user text that may contain media placeholders.
+        placeholders: Exact placeholder tokens for the media actually attached to
+            this message (e.g. ``["[image 1]", "[video 1]"]``).
 
     Returns:
-        Text with media placeholders removed and surrounding whitespace tidied.
+        Text with the given media placeholders removed and surrounding whitespace
+        tidied. Newlines are preserved so multi-line prompts keep their structure.
     """
-    return _MEDIA_PLACEHOLDER_PATTERN.sub("", text).strip()
+    tokens = [p for p in placeholders if p]
+    if not tokens:
+        return text
+    # Consume any leading spaces/tabs so removing an inline placeholder collapses
+    # to a single space rather than leaving a double space behind.
+    pattern = re.compile(
+        r"[ \t]*(?:" + "|".join(re.escape(token) for token in tokens) + r")"
+    )
+    return pattern.sub("", text).strip()
 
 
 def _get_executable(name: str) -> str | None:
@@ -490,10 +500,15 @@ def create_multimodal_content(
     """
     content_blocks = []
 
-    # Add text block. Strip display-only media placeholders (e.g. "[image 1]")
-    # so the canonical/model-facing text never contains fake user-authored
-    # placeholder text; the media itself is carried by the structured blocks below.
-    clean_text = strip_media_placeholders(text)
+    # Add text block. Strip only the display-only placeholders bound to the media
+    # actually attached here (e.g. "[image 1]") so the canonical/model-facing text
+    # never contains fake user-authored placeholder text, while text that merely
+    # resembles the schema is left untouched. The media itself is carried by the
+    # structured blocks below.
+    placeholders = [img.placeholder for img in images]
+    if videos:
+        placeholders.extend(video.placeholder for video in videos)
+    clean_text = strip_media_placeholders(text, placeholders)
     if clean_text:
         content_blocks.append({"type": "text", "text": clean_text})
 

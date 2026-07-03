@@ -1,0 +1,35 @@
+libs/code/deepagents_code/_cost.py
+  s_d06efe5d0001ba::t_a496559fb6efda 16-19,24-42,49-50,54-60,62-65,69-72,84-91,96-101
+libs/code/deepagents_code/non_interactive.py
+  s_4205c1c83dadab::t_c0ac05e0677ba7 389-392,395,406-407
+libs/code/deepagents_code/resume_state.py
+  s_d06efe5d0001ba::t_4dbf8bd76d3953 232-235,237,243-244
+libs/code/deepagents_code/textual_adapter.py
+  s_d06efe5d0001ba::t_748c39616aba23 997,1006,1017-1018
+libs/code/tests/unit_tests/test_cost.py
+  s_d06efe5d0001ba::t_c3cbac18ccc7f4 7-11,82-180
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.9",
+  "base_commit_sha": "b5bebb9beeb719f0534afc9aa8a624165514ace6",
+  "prompts": {},
+  "sessions": {
+    "s_4205c1c83dadab": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fe6250ea-6c14-432c-a9cb-587586b50999",
+        "model": "unknown"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    },
+    "s_d06efe5d0001ba": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2cbe4844-9232-458a-985d-22fe62226af1",
+        "model": "unknown"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

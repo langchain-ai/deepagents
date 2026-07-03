@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -19,7 +20,7 @@ from deepagents_code.mcp_tools import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Sequence
 
     from langchain_core.tools import BaseTool
 
@@ -48,6 +49,8 @@ def discover_mcp_config_paths(config: TalonConfig) -> list[Path]:
 
     Args:
         config: Talon runtime configuration.
+        allow_empty: Whether an existing config with an empty `mcpServers` object
+            should be treated as no local MCP config.
 
     Returns:
         Existing files, ordered from lowest to highest precedence.
@@ -59,11 +62,17 @@ def discover_mcp_config_paths(config: TalonConfig) -> list[Path]:
     return [path for path in paths if _is_file(path)]
 
 
-async def load_mcp_tools(config: TalonConfig) -> MCPTools:
+async def load_mcp_tools(
+    config: TalonConfig,
+    *,
+    allow_empty: bool = False,
+) -> MCPTools:
     """Load configured MCP tools for a Talon runtime.
 
     Args:
         config: Talon runtime configuration.
+        allow_empty: Whether an existing config with an empty `mcpServers` object
+            should be treated as no local MCP config.
 
     Returns:
         Loaded tools and status for each configured server.
@@ -73,6 +82,8 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
     """
     path = _select_mcp_config_path(config)
     if path is None:
+        return MCPTools(tools=(), servers=())
+    if allow_empty and _mcp_servers_empty(path):
         return MCPTools(tools=(), servers=())
     try:
         tools, manager, infos = await get_mcp_tools(str(path))
@@ -131,3 +142,11 @@ def _is_file(path: Path) -> bool:
     except OSError:
         logger.warning("Could not inspect MCP config path %s", path, exc_info=True)
         return False
+
+
+def _mcp_servers_empty(path: Path) -> bool:
+    try:
+        data = json.loads(path.expanduser().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(data, Mapping) and data.get("mcpServers") == {}

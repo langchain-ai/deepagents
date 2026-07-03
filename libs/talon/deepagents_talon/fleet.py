@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 
 from fleet_deepagents_export import StaticSkillsLoader, load_agent_components
 
+from deepagents_talon.fleet_export import strip_url_query_and_fragment, validate_fleet_export
 from deepagents_talon.observability import log_event
 
 if TYPE_CHECKING:
@@ -70,8 +71,11 @@ async def load_fleet_agent_components(
         Validated Fleet components ready for Talon's runtime wiring.
 
     Raises:
+        FleetExportValidationError: If the Fleet export is missing required
+            files or contains malformed Fleet MCP tool metadata.
         TypeError: If the library returns an unexpected component shape.
     """
+    validate_fleet_export(fleet_dir)
     with _patched_environ(env):
         raw = await load_agent_components(fleet_dir)
     components = _coerce_components(raw)
@@ -373,7 +377,7 @@ def _fleet_log_endpoint(
     if auth_path != "builtin":
         return server_url
     values = os.environ if env is None else env
-    return values.get("BUILTIN_MCP_URL") or server_url
+    return strip_url_query_and_fragment(values.get("BUILTIN_MCP_URL") or server_url)
 
 
 def _is_builtin_fleet_server(

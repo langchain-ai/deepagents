@@ -1985,7 +1985,8 @@ class DeepAgentsApp(App):
             defer_server_start: Whether to keep app-owned server startup paused
                 until the user configures credentials or explicitly picks a model.
             title: Override the Textual `App.title` shown in the optional
-                header bar.
+                header bar (shown when `DEEPAGENTS_CODE_SHOW_HEADER` is set or
+                the installation is stale).
 
                 When `None`, the class-level `TITLE` is used.
 
@@ -1993,7 +1994,8 @@ class DeepAgentsApp(App):
             sub_title: Override the Textual `App.sub_title` shown in the
                 optional header bar.
 
-                When `None`, the parent default is used.
+                When `None`, a sandbox label or a stale-install advisory may be
+                substituted; otherwise the parent default is used.
 
                 Reassigning `app.sub_title` at runtime updates the header live.
             **kwargs: Additional arguments passed to parent
@@ -2262,6 +2264,34 @@ class DeepAgentsApp(App):
                 self._sandbox_type.title(),
             )
             self.sub_title = f"Sandbox: {display}"
+
+        from deepagents_code.update_check import (
+            installed_days_old,
+            is_installation_stale,
+        )
+
+        self._installation_stale: bool = sub_title is None and is_installation_stale()
+        """Whether the installed version is old enough to force the header banner.
+
+        Set once at construction from the cache-only install-age check. When
+        `True`, `compose` renders the header even without `DEEPAGENTS_CODE_SHOW_HEADER`
+        and the subtitle carries the advisory below — overriding the sandbox
+        subtitle by design.
+        """
+
+        if self._installation_stale:
+            days = installed_days_old()
+            if days is None:
+                # The cache changed between the staleness gate and this read
+                # (e.g. a concurrent `dcode` process). Drop the banner rather
+                # than render "installed version is None days old".
+                self._installation_stale = False
+            else:
+                unit = "day" if days == 1 else "days"
+                self.sub_title = (
+                    f"Update available \u2014 installed version is "
+                    f"{days} {unit} old (run /update)"
+                )
 
         # Per-turn model overrides
         self._model_override: str | None = None
@@ -2770,7 +2800,7 @@ class DeepAgentsApp(App):
         """
         from deepagents_code._env_vars import SHOW_HEADER, is_env_truthy
 
-        if is_env_truthy(SHOW_HEADER):
+        if is_env_truthy(SHOW_HEADER) or self._installation_stale:
             yield _StaticHeader(id="app-header")
         # Main chat area with scrollable messages
         # VerticalScroll tracks user scroll intent for better auto-scroll behavior.
@@ -16343,8 +16373,9 @@ async def run_textual_app(
         defer_server_start: Whether to keep app-owned server startup paused
             until credentials or a model are configured from inside the TUI.
         title: Override the Textual `App.title` shown in the optional header
-            bar (gated on `DEEPAGENTS_CODE_SHOW_HEADER`). When `None`, the
-            default `"Deep Agents"` is used.
+            bar (gated on `DEEPAGENTS_CODE_SHOW_HEADER`, or shown automatically
+            when the installation is stale). When `None`, the default
+            `"Deep Agents"` is used.
         sub_title: Override the Textual `App.sub_title` shown in the optional
             header bar.
 

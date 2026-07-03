@@ -184,6 +184,38 @@ class TestCollectTracing:
         assert "secret" not in labels["Endpoint"]
         assert "api_key" not in labels["Endpoint"]
 
+    def test_gateway_yes_for_default_endpoint(self) -> None:
+        """No custom endpoint means the SDK default (managed gateway) is used."""
+        section = self._section(enabled=True, has_credentials=True, endpoint=None)
+        labels = {item.label: item.value for item in section.items}
+        assert labels["Gateway"] == "yes"
+
+    def test_gateway_yes_for_langsmith_host(self) -> None:
+        """A `smith.langchain.com` endpoint routes through the managed gateway."""
+        section = self._section(
+            enabled=True,
+            has_credentials=True,
+            endpoint="https://api.smith.langchain.com",
+        )
+        labels = {item.label: item.value for item in section.items}
+        assert labels["Gateway"] == "yes"
+
+    def test_gateway_no_for_custom_endpoint(self) -> None:
+        """A self-hosted/dev endpoint is not the LangSmith managed gateway."""
+        section = self._section(
+            enabled=True,
+            has_credentials=False,
+            endpoint="http://localhost:1984",
+        )
+        labels = {item.label: item.value for item in section.items}
+        assert labels["Gateway"] == "no"
+
+    def test_gateway_absent_when_not_enabled(self) -> None:
+        """The Gateway line only appears when tracing is enabled."""
+        section = self._section(enabled=False)
+        labels = {item.label: item.value for item in section.items}
+        assert "Gateway" not in labels
+
     def test_replica_project_listed_when_set(self) -> None:
         """A configured replica project is surfaced as its own item."""
         section = self._section(
@@ -193,6 +225,41 @@ class TestCollectTracing:
         )
         labels = {item.label: item.value for item in section.items}
         assert labels["Replica project"] == "replica"
+
+
+class TestIsLangSmithGatewayEndpoint:
+    """Tests for the tracing gateway-host detection helper."""
+
+    def test_none_is_gateway(self) -> None:
+        from deepagents_code.doctor import _is_langsmith_gateway_endpoint
+
+        assert _is_langsmith_gateway_endpoint(None) is True
+
+    def test_exact_host_is_gateway(self) -> None:
+        from deepagents_code.doctor import _is_langsmith_gateway_endpoint
+
+        assert _is_langsmith_gateway_endpoint("https://smith.langchain.com") is True
+
+    def test_regional_subdomain_is_gateway(self) -> None:
+        from deepagents_code.doctor import _is_langsmith_gateway_endpoint
+
+        assert (
+            _is_langsmith_gateway_endpoint("https://eu.api.smith.langchain.com") is True
+        )
+
+    def test_self_hosted_is_not_gateway(self) -> None:
+        from deepagents_code.doctor import _is_langsmith_gateway_endpoint
+
+        assert _is_langsmith_gateway_endpoint("http://localhost:1984") is False
+
+    def test_lookalike_host_is_not_gateway(self) -> None:
+        """A host merely containing the domain as a substring is not the gateway."""
+        from deepagents_code.doctor import _is_langsmith_gateway_endpoint
+
+        assert (
+            _is_langsmith_gateway_endpoint("https://smith.langchain.com.evil.example")
+            is False
+        )
 
 
 class TestCollectUpdates:

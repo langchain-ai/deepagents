@@ -66,6 +66,9 @@ dependencies = [
     # Version parsing
     "packaging>=26.2",
 
+    # LLM cost estimation (offline price data, powers the status-bar cost display)
+    "genai-prices>=0.0.34",
+
     # Utilities
     "uuid-utils>=0.16.2,<1.0.0",
     "python-dotenv>=1.2.2,<2.0.0",

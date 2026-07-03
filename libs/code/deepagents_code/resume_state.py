@@ -141,6 +141,15 @@ class ResumeState(GoalRubricChannels):
     _context_tokens: Annotated[NotRequired[int], PrivateStateAttr]
     """Total context tokens reported by the model's last `usage_metadata`."""
 
+    _session_cost: Annotated[NotRequired[float], PrivateStateAttr]
+    """Cumulative estimated USD cost across every turn on this thread.
+
+    Unlike `_context_tokens` (which reflects the *current* context size and is
+    reset by `/compact`), this is a monotonically increasing session total. Each
+    turn reads the prior value and adds the latest turn's estimated cost, so
+    resuming a thread restores the accumulated spend.
+    """
+
     _model_spec: Annotated[NotRequired[str], PrivateStateAttr]
     """`provider:model` spec effectively in use for the latest turn."""
 
@@ -171,6 +180,65 @@ def _extract_context_tokens(message: AIMessage) -> int | None:
     return total or None
 
 
+def _split_provider_model(spec: object) -> tuple[str, str]:
+    """Split a persisted `provider:model` spec into its parts.
+
+    Args:
+        spec: Value read from `_model_spec` state (may be absent or malformed).
+
+    Returns:
+        A `(provider, model)` pair. Either element may be `""` when the spec is
+        missing or does not contain a `:` separator (in which case the whole
+        value is treated as the model name).
+    """
+    if not isinstance(spec, str) or not spec:
+        return "", ""
+    provider, sep, model = spec.partition(":")
+    if not sep:
+        return "", provider
+    return provider, model
+
+
+def _estimate_turn_cost(message: AIMessage, spec: object) -> float | None:
+    """Estimate the USD cost of the turn's latest AI message.
+
+    Args:
+        message: The most recent `AIMessage` carrying `usage_metadata`.
+        spec: The persisted `_model_spec` used to recover provider/model.
+
+    Returns:
+        Estimated cost in USD, or `None` when usage or pricing is unavailable.
+    """
+    usage = getattr(message, "usage_metadata", None)
+    if not usage:
+        return None
+    input_toks = usage.get("input_tokens", 0) or 0
+    output_toks = usage.get("output_tokens", 0) or 0
+    if not input_toks and not output_toks:
+        # Only an aggregate total is available; attribute it all to input so the
+        # request is still priced (input is the cheaper rate, so this is a
+        # conservative lower bound rather than an overstatement).
+        input_toks = usage.get("total_tokens", 0) or 0
+    if not input_toks and not output_toks:
+        return None
+
+    provider, model = _split_provider_model(spec)
+    if not model:
+        from deepagents_code.config import settings
+
+        provider = settings.model_provider or ""
+        model = settings.model_name or ""
+
+    from deepagents_code._cost import estimate_request_cost
+
+    return estimate_request_cost(
+        input_tokens=input_toks,
+        output_tokens=output_toks,
+        model_name=model,
+        provider=provider,
+    )
+
+
 class ResumeStateMiddleware(AgentMiddleware[ResumeState, ContextT]):
     """Persists per-checkpoint resume facts after each model call.
 
@@ -186,19 +254,21 @@ class ResumeStateMiddleware(AgentMiddleware[ResumeState, ContextT]):
         state: ResumeState,
         runtime: Runtime[ContextT],  # noqa: ARG002
     ) -> dict[str, Any] | None:
-        """Write `_context_tokens` for the latest turn.
+        """Write `_context_tokens` and accumulate `_session_cost` for the turn.
 
         Model metadata is written by `ConfigurableModelMiddleware` from the
-        actual request that completed successfully; this hook only records token
-        usage from the most recent `AIMessage.usage_metadata`.
+        actual request that completed successfully; this hook records token
+        usage from the most recent `AIMessage.usage_metadata` and folds the
+        turn's estimated cost into the running session total.
 
         Args:
-            state: Current agent state; only `messages` is inspected.
+            state: Current agent state; `messages`, `_model_spec`, and
+                `_session_cost` are inspected.
             runtime: LangGraph runtime required by the middleware interface.
 
         Returns:
-            State update with `_context_tokens`, or `None` when no token count is
-            available.
+            State update with `_context_tokens` and/or `_session_cost`, or `None`
+            when no token count is available.
         """
         update: dict[str, Any] = {}
 
@@ -207,6 +277,10 @@ class ResumeStateMiddleware(AgentMiddleware[ResumeState, ContextT]):
                 tokens = _extract_context_tokens(msg)
                 if tokens is not None:
                     update["_context_tokens"] = tokens
+                turn_cost = _estimate_turn_cost(msg, state.get("_model_spec"))
+                if turn_cost:
+                    prior = state.get("_session_cost") or 0.0
+                    update["_session_cost"] = float(prior) + turn_cost
                 break
 
         return update or None

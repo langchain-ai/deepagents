@@ -36,6 +36,9 @@ class ModelStats:
     output_tokens: int = 0
     """Cumulative output tokens received from this model."""
 
+    cost: float = 0.0
+    """Cumulative estimated USD cost for requests served by this model."""
+
     provider: str = ""
     """Provider that served this model (e.g. `openai`), or `""` when unknown."""
 
@@ -69,6 +72,13 @@ class SessionStats:
     output_tokens: int = 0
     """Cumulative output tokens across all LLM requests."""
 
+    cost: float = 0.0
+    """Cumulative estimated USD cost across all LLM requests.
+
+    Populated only when `record_request` receives a non-`None` `cost` (i.e. the
+    model was found in the bundled price data). Left at `0.0` otherwise.
+    """
+
     wall_time_seconds: float = 0.0
     """Wall-clock duration from stream start to end."""
 
@@ -86,8 +96,9 @@ class SessionStats:
         input_toks: int,
         output_toks: int,
         provider: str = "",
+        cost: float | None = None,
     ) -> None:
-        """Accumulate token counts for one completed LLM request.
+        """Accumulate token counts (and optional cost) for one LLM request.
 
         Updates both the session totals and the per-model breakdown.
 
@@ -100,10 +111,15 @@ class SessionStats:
             provider: Provider that served the model (e.g. `openai`). Combined
                 with `model_name` to form the per-model key, so the same model
                 served by different providers is tracked separately.
+            cost: Estimated USD cost for this request, or `None` when pricing is
+                unavailable (unknown model/provider). `None` leaves the cost
+                totals unchanged; `0.0` is a valid recorded cost.
         """
         self.request_count += 1
         self.input_tokens += input_toks
         self.output_tokens += output_toks
+        if cost is not None:
+            self.cost += cost
         if model_name:
             key = (provider, model_name)
             entry = self.per_model.setdefault(
@@ -113,6 +129,8 @@ class SessionStats:
             entry.request_count += 1
             entry.input_tokens += input_toks
             entry.output_tokens += output_toks
+            if cost is not None:
+                entry.cost += cost
 
     def merge(self, other: SessionStats) -> None:
         """Merge another `SessionStats` into this one (mutates *self*).
@@ -125,6 +143,7 @@ class SessionStats:
         self.request_count += other.request_count
         self.input_tokens += other.input_tokens
         self.output_tokens += other.output_tokens
+        self.cost += other.cost
         self.wall_time_seconds += other.wall_time_seconds
         for key, ms in other.per_model.items():
             entry = self.per_model.setdefault(
@@ -134,6 +153,7 @@ class SessionStats:
             entry.request_count += ms.request_count
             entry.input_tokens += ms.input_tokens
             entry.output_tokens += ms.output_tokens
+            entry.cost += ms.cost
 
 
 def format_token_count(count: int) -> str:

@@ -223,6 +223,12 @@ class StatusBar(Horizontal):
         color: $text-muted;
     }
 
+    StatusBar .status-cost {
+        width: auto;
+        padding: 0 1;
+        color: $text-muted;
+    }
+
     StatusBar .status-rubric {
         width: auto;
         padding: 0 1;
@@ -247,6 +253,7 @@ class StatusBar(Horizontal):
     cwd: reactive[str] = reactive("", init=False)
     branch: reactive[str] = reactive("", init=False)
     tokens: reactive[int] = reactive(0, init=False)
+    cost: reactive[float] = reactive(0.0, init=False)
     rubric_label: reactive[str] = reactive("", init=False)
 
     def __init__(self, cwd: str | Path | None = None, **kwargs: Any) -> None:
@@ -269,8 +276,8 @@ class StatusBar(Horizontal):
         """Compose the status bar layout.
 
         Yields:
-            Widgets for mode, auto-approve, message, cwd, branch, tokens, and
-                model display.
+            Widgets for mode, auto-approve, message, cwd, branch, tokens, cost,
+                and model display.
         """
         yield Static("", classes="status-mode normal", id="mode-indicator")
         yield Static(
@@ -285,6 +292,7 @@ class StatusBar(Horizontal):
             yield Static("", classes="status-branch", id="branch-display")
         yield Static("", classes="status-rubric", id="rubric-display")
         yield Static("", classes="status-tokens", id="tokens-display")
+        yield Static("", classes="status-cost", id="cost-display")
         yield ModelLabel(id="model-display")
 
     _BRANCH_WIDTH_THRESHOLD = 100
@@ -658,6 +666,41 @@ class StatusBar(Horizontal):
             self.query_one("#tokens-display", Static).update("... tokens")
         except NoMatches:
             return
+
+    def watch_cost(self, new_value: float) -> None:
+        """Update cost display when the cumulative session cost changes."""
+        self._render_cost(new_value)
+
+    def _render_cost(self, cost: float) -> None:
+        """Render the cumulative session cost into the display widget.
+
+        Args:
+            cost: Cumulative session cost in USD. Values `<= 0` clear the widget
+                so a session with no priced requests shows nothing.
+        """
+        try:
+            display = self.query_one("#cost-display", Static)
+        except NoMatches:
+            return
+
+        if cost > 0:
+            from deepagents_code._cost import format_cost
+
+            display.update(format_cost(cost))
+        else:
+            display.update("")
+
+    def set_cost(self, cost: float) -> None:
+        """Set the cumulative session cost.
+
+        Args:
+            cost: Cumulative session cost in USD.
+        """
+        if self.cost == cost:
+            # Reactive dedup would skip the watcher — render directly.
+            self._render_cost(cost)
+        else:
+            self.cost = cost
 
     def set_model(self, *, provider: str, model: str, effort: str = "") -> None:
         """Update the model display text.

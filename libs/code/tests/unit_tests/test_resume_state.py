@@ -171,6 +171,70 @@ class TestAfterModelHook:
         result = middleware.after_model({"messages": []}, _runtime(None))  # ty: ignore
         assert result is None
 
+    async def test_accumulates_session_cost_from_model_spec(self) -> None:
+        """Cost is priced from `_model_spec` and added to the running total."""
+        middleware = ResumeStateMiddleware()
+        state: dict[str, Any] = {
+            "messages": [
+                HumanMessage(content="hi"),
+                AIMessage(
+                    content="response",
+                    usage_metadata={
+                        "input_tokens": 1000,
+                        "output_tokens": 100,
+                        "total_tokens": 1100,
+                    },
+                ),
+            ],
+            "_model_spec": "anthropic:claude-sonnet-4-5",
+        }
+        result = middleware.after_model(state, _runtime(None))  # ty: ignore
+        assert result is not None
+        assert result["_context_tokens"] == 1100
+        assert result["_session_cost"] > 0
+
+    async def test_session_cost_adds_to_prior_total(self) -> None:
+        """A prior `_session_cost` is read and the turn's cost is added on top."""
+        middleware = ResumeStateMiddleware()
+        state: dict[str, Any] = {
+            "messages": [
+                HumanMessage(content="hi"),
+                AIMessage(
+                    content="response",
+                    usage_metadata={
+                        "input_tokens": 1000,
+                        "output_tokens": 100,
+                        "total_tokens": 1100,
+                    },
+                ),
+            ],
+            "_model_spec": "anthropic:claude-sonnet-4-5",
+            "_session_cost": 1.0,
+        }
+        result = middleware.after_model(state, _runtime(None))  # ty: ignore
+        assert result is not None
+        assert result["_session_cost"] > 1.0
+
+    async def test_no_session_cost_for_unknown_model(self) -> None:
+        """An unpriceable model records tokens but no cost."""
+        middleware = ResumeStateMiddleware()
+        state: dict[str, Any] = {
+            "messages": [
+                HumanMessage(content="hi"),
+                AIMessage(
+                    content="response",
+                    usage_metadata={
+                        "input_tokens": 1000,
+                        "output_tokens": 100,
+                        "total_tokens": 1100,
+                    },
+                ),
+            ],
+            "_model_spec": "made-up:unknown-model-xyz",
+        }
+        result = middleware.after_model(state, _runtime(None))  # ty: ignore
+        assert result == {"_context_tokens": 1100}
+
     async def test_skips_intervening_tool_messages(self) -> None:
         """Picks up the most recent AIMessage even when followed by tool turns."""
         from langchain_core.messages import ToolMessage

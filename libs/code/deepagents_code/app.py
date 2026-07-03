@@ -1358,6 +1358,9 @@ class _ThreadHistoryPayload:
     model_params: dict[str, Any] | None = None
     """Persisted `_model_params` from the checkpoint, if any."""
 
+    session_cost: float = 0.0
+    """Persisted cumulative `_session_cost` from the checkpoint (0.0 if absent)."""
+
     rubric: str | None = None
     """Legacy persisted rubric or graph rubric input, if any."""
 
@@ -2583,6 +2586,14 @@ class DeepAgentsApp(App):
         self._tokens_approximate: bool = False
         """Whether the cached token count is stale (interrupted generation)."""
 
+        self._session_cost: float = 0.0
+        """Local cache of the cumulative session cost (USD) for the status bar.
+
+        Source of truth is `_session_cost` in graph state; this is a sync copy.
+        Unlike `_context_tokens`, this is a monotonic session total, not the
+        current context size, so `/compact` does not reset it.
+        """
+
         # Session lazy state & startup
         self._session_state: TextualSessionState | None = None
         """Auto-approve + thread state shared with `execute_task_textual`.
@@ -3145,6 +3156,9 @@ class DeepAgentsApp(App):
         self._ui_adapter._on_tokens_update = self._on_tokens_update
         self._ui_adapter._on_tokens_pending = self._show_pending_tokens
         self._ui_adapter._on_tokens_show = self._show_tokens
+        # Wire cost display callback and seed the persisted base
+        self._ui_adapter._on_cost_update = self._on_cost_update
+        self._ui_adapter._session_cost_base = self._session_cost
 
         if self._server_startup_deferred:
             await self._mount_deferred_start_notice()
@@ -5553,6 +5567,36 @@ class DeepAgentsApp(App):
         """Show the unknown token count placeholder during streaming."""
         if self._status_bar:
             self._status_bar.show_pending_tokens()
+
+    def _on_cost_update(self, cost: float) -> None:
+        """Update the cached cumulative session cost and the status bar.
+
+        Wired to the adapter's `_on_cost_update`. The value is the full session
+        total (persisted base plus the current turn), so it is assigned rather
+        than accumulated here.
+
+        Args:
+            cost: Cumulative session cost in USD.
+        """
+        self._session_cost = cost
+        if self._status_bar:
+            self._status_bar.set_cost(cost)
+
+    def _seed_session_cost(self, cost: float) -> None:
+        """Seed the cumulative session cost from persisted state.
+
+        Updates the local cache, the status bar, and the adapter's per-turn base
+        so live updates during the next turn build on the restored total. A new
+        (empty) thread seeds `0.0`, resetting the display.
+
+        Args:
+            cost: Cumulative session cost restored from the checkpoint.
+        """
+        self._session_cost = cost
+        if self._ui_adapter is not None:
+            self._ui_adapter._session_cost_base = cost
+        if self._status_bar:
+            self._status_bar.set_cost(cost)
 
     def _check_hydration_needed(self) -> None:
         """Check if we need to hydrate messages from the store.
@@ -8024,6 +8068,7 @@ class DeepAgentsApp(App):
         context_tokens: int,
         model_spec: str,
         model_params: dict[str, Any] | None = None,
+        session_cost: float = 0.0,
     ) -> _ThreadHistoryPayload:
         """Build a thread payload from raw checkpoint channel values.
 
@@ -8037,6 +8082,7 @@ class DeepAgentsApp(App):
             context_tokens: Persisted context-token count.
             model_spec: Persisted model spec, or `""` for legacy threads.
             model_params: Persisted model params, or `None` when absent.
+            session_cost: Persisted cumulative session cost, or `0.0` when absent.
 
         Returns:
             Payload with goal/rubric channels coerced to known types.
@@ -8051,6 +8097,7 @@ class DeepAgentsApp(App):
             context_tokens,
             model_spec,
             model_params,
+            session_cost=session_cost,
             rubric=_as_str(state_values.get("rubric")),
             sticky_rubric=_as_str(state_values.get("_sticky_rubric")),
             sticky_rubric_recorded="_sticky_rubric" in state_values,
@@ -9251,6 +9298,7 @@ class DeepAgentsApp(App):
             self._context_tokens = 0
             self._tokens_approximate = False
             self._update_tokens(0)
+            self._seed_session_cost(0.0)
             self._clear_all_goal_rubric_state()
             self._sync_status_rubric()
             # Clear status message (e.g., "Interrupted" from previous session)
@@ -9377,6 +9425,13 @@ class DeepAgentsApp(App):
                     msg += (
                         f"\n\u251c System prompt + tools: ~{overhead_str}{overhead_unit} (fixed)"  # noqa: E501
                         f"\n\u2514 Conversation: ~{conv_str}{conv_unit}"
+                    )
+
+                if self._session_cost > 0:
+                    from deepagents_code._cost import format_cost
+
+                    msg += (
+                        f"\n\nEstimated session cost: {format_cost(self._session_cost)}"
                     )
 
                 await self._mount_message(AppMessage(msg))
@@ -10607,6 +10662,12 @@ class DeepAgentsApp(App):
         model_spec = raw_spec if isinstance(raw_spec, str) else ""
         raw_params = state_values.get("_model_params")
         model_params = dict(raw_params) if isinstance(raw_params, dict) else None
+        raw_cost = state_values.get("_session_cost")
+        session_cost = (
+            float(raw_cost)
+            if isinstance(raw_cost, (int, float)) and raw_cost >= 0
+            else 0.0
+        )
         if _warn_discarded_goal_channels(state_values):
             self.notify(
                 "Some saved goal/rubric state was corrupted and was not restored.",
@@ -10618,6 +10679,7 @@ class DeepAgentsApp(App):
             context_tokens=context_tokens,
             model_spec=model_spec,
             model_params=model_params,
+            session_cost=session_cost,
         )
         messages = state_values.get("messages", [])
 
@@ -10794,6 +10856,10 @@ class DeepAgentsApp(App):
             # Seed token cache from persisted state
             if payload.context_tokens > 0:
                 self._on_tokens_update(payload.context_tokens)
+
+            # Seed cumulative cost from persisted state so the status bar and
+            # the adapter's per-turn base reflect prior spend on this thread.
+            self._seed_session_cost(payload.session_cost)
 
             # 3. Bulk load into store (sets visible window)
             _archived, visible = self._message_store.bulk_load(payload.messages)
@@ -12999,6 +13065,7 @@ class DeepAgentsApp(App):
                 self._context_tokens = 0
                 self._tokens_approximate = False
                 self._update_tokens(0)
+                self._seed_session_cost(0.0)
                 self._update_status("")
 
                 if self._session_state:
@@ -15679,6 +15746,7 @@ class DeepAgentsApp(App):
             self._context_tokens = 0
             self._tokens_approximate = False
             self._update_tokens(0)
+            self._seed_session_cost(0.0)
             self._update_status("")
 
             # Switch to the selected thread

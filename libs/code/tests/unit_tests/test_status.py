@@ -49,6 +49,36 @@ class TestCwdDisplay:
             assert branch.display is True
 
 
+class TestCostDisplay:
+    """Tests for the cumulative session cost display in the status bar."""
+
+    async def test_set_cost_renders_formatted_value(self) -> None:
+        async with StatusBarApp().run_test(size=(120, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_cost(0.0045)
+            await pilot.pause()
+            display = pilot.app.query_one("#cost-display", Static)
+            assert "$0.0045" in str(display.render())
+
+    async def test_set_cost_dollars(self) -> None:
+        async with StatusBarApp().run_test(size=(120, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_cost(1.5)
+            await pilot.pause()
+            display = pilot.app.query_one("#cost-display", Static)
+            assert "$1.50" in str(display.render())
+
+    async def test_zero_cost_clears_display(self) -> None:
+        async with StatusBarApp().run_test(size=(120, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_cost(1.0)
+            await pilot.pause()
+            bar.set_cost(0.0)
+            await pilot.pause()
+            display = pilot.app.query_one("#cost-display", Static)
+            assert str(display.render()) == ""
+
+
 class TestBranchDisplay:
     """Tests for the git branch display in the status bar."""
 

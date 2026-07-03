@@ -386,12 +386,34 @@ def _process_ai_message(
         total_toks = usage.get("total_tokens", 0)
         active_model = settings.model_name or ""
         active_provider = settings.model_provider or ""
+        from deepagents_code._cost import estimate_request_cost
+
         if input_toks or output_toks:
             state.stats.record_request(
-                active_model, input_toks, output_toks, active_provider
+                active_model,
+                input_toks,
+                output_toks,
+                active_provider,
+                cost=estimate_request_cost(
+                    input_tokens=input_toks,
+                    output_tokens=output_toks,
+                    model_name=active_model,
+                    provider=active_provider,
+                ),
             )
         elif total_toks:
-            state.stats.record_request(active_model, total_toks, 0, active_provider)
+            state.stats.record_request(
+                active_model,
+                total_toks,
+                0,
+                active_provider,
+                cost=estimate_request_cost(
+                    input_tokens=total_toks,
+                    output_tokens=0,
+                    model_name=active_model,
+                    provider=active_provider,
+                ),
+            )
 
     if not hasattr(message_obj, "content_blocks"):
         logger.debug("AIMessage missing content_blocks attribute, skipping")

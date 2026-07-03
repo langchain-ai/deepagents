@@ -57,6 +57,7 @@ class TestModelStats:
         assert stats.request_count == 0
         assert stats.input_tokens == 0
         assert stats.output_tokens == 0
+        assert stats.cost == pytest.approx(0.0)
         assert stats.provider == ""
 
 
@@ -127,6 +128,27 @@ class TestSessionStats:
         assert stats.input_tokens == 100
         assert stats.per_model == {}
 
+    def test_record_request_accumulates_cost(self) -> None:
+        stats = SessionStats()
+        stats.record_request("gpt-5.5", 100, 50, cost=0.01)
+        stats.record_request("gpt-5.5", 200, 75, cost=0.02)
+        assert stats.cost == pytest.approx(0.03)
+        assert stats.per_model["", "gpt-5.5"].cost == pytest.approx(0.03)
+
+    def test_record_request_none_cost_leaves_total_unchanged(self) -> None:
+        stats = SessionStats()
+        stats.record_request("gpt-5.5", 100, 50, cost=0.01)
+        stats.record_request("gpt-5.5", 200, 75, cost=None)
+        assert stats.cost == pytest.approx(0.01)
+        assert stats.per_model["", "gpt-5.5"].cost == pytest.approx(0.01)
+
+    def test_record_request_zero_cost_is_recorded(self) -> None:
+        stats = SessionStats()
+        stats.record_request("free-model", 100, 50, cost=0.0)
+        assert stats.cost == pytest.approx(0.0)
+        # A zero cost is a recorded value, distinct from "no pricing" (None).
+        assert stats.per_model["", "free-model"].cost == pytest.approx(0.0)
+
     def test_merge_combines_totals(self) -> None:
         a = SessionStats(
             request_count=1,
@@ -145,6 +167,15 @@ class TestSessionStats:
         assert a.input_tokens == 300
         assert a.output_tokens == 125
         assert a.wall_time_seconds == pytest.approx(3.5)
+
+    def test_merge_combines_cost(self) -> None:
+        a = SessionStats(cost=0.01)
+        a.record_request("gpt-5.5", 100, 50, cost=0.02)
+        b = SessionStats()
+        b.record_request("gpt-5.5", 200, 75, cost=0.03)
+        a.merge(b)
+        assert a.cost == pytest.approx(0.06)
+        assert a.per_model["", "gpt-5.5"].cost == pytest.approx(0.05)
 
     def test_merge_combines_per_model(self) -> None:
         a = SessionStats()

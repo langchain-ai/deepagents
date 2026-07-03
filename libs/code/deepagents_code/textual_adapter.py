@@ -45,6 +45,11 @@ if TYPE_CHECKING:
 
         def __call__(self, *, approximate: bool = False) -> None: ...
 
+    class _CostUpdateCallback(Protocol):
+        """Callback signature for `_on_cost_update`."""
+
+        def __call__(self, cost: float) -> None: ...
+
 
 from deepagents_code._ask_user_types import AskUserRequest
 from deepagents_code._cli_context import CLIContext
@@ -131,11 +136,14 @@ def print_usage_table(
             padding=(0, 2, 0, 0),
             show_edge=False,
         )
+        from deepagents_code._cost import format_cost
+
         table.add_column("Provider", style="dim")
         table.add_column("Model", style="dim")
         table.add_column("Reqs", justify="right", style="dim")
         table.add_column("InputTok", justify="right", style="dim")
         table.add_column("OutputTok", justify="right", style="dim")
+        table.add_column("Cost", justify="right", style="dim")
 
         if multi_model:
             for ms in stats.per_model.values():
@@ -145,6 +153,7 @@ def print_usage_table(
                     str(ms.request_count),
                     format_token_count(ms.input_tokens),
                     format_token_count(ms.output_tokens),
+                    format_cost(ms.cost),
                 )
             table.add_row(
                 "",
@@ -152,6 +161,7 @@ def print_usage_table(
                 str(stats.request_count),
                 format_token_count(stats.input_tokens),
                 format_token_count(stats.output_tokens),
+                format_cost(stats.cost),
             )
         else:
             ms = next(iter(stats.per_model.values()))
@@ -161,6 +171,7 @@ def print_usage_table(
                 str(stats.request_count),
                 format_token_count(stats.input_tokens),
                 format_token_count(stats.output_tokens),
+                format_cost(stats.cost),
             )
 
         console.print()
@@ -360,6 +371,17 @@ class TextualUIAdapter:
 
         self._on_tokens_show: _TokensShowCallback | None = None
         """Called to restore the token display with the cached value."""
+
+        self._on_cost_update: _CostUpdateCallback | None = None
+        """Called with the cumulative session cost (USD) after each response."""
+
+        self._session_cost_base: float = 0.0
+        """Cumulative cost persisted before this session's first live turn.
+
+        Restored from the checkpoint's `_session_cost` on resume so the live
+        display shows total spend across restarts, not just the current run.
+        Per-turn cost accumulated in `turn_stats.cost` is added on top of this.
+        """
 
     def finalize_pending_tools_with_error(self, error: str) -> None:
         """Mark all pending/running tool widgets as error and clear tracking.
@@ -971,6 +993,9 @@ async def execute_task_textual(
                             input_toks = usage.get("input_tokens", 0)
                             output_toks = usage.get("output_tokens", 0)
                             total_toks = usage.get("total_tokens", 0)
+                            from deepagents_code._cost import (
+                                estimate_request_cost,
+                            )
                             from deepagents_code.config import settings
 
                             active_model = settings.model_name or ""
@@ -982,14 +1007,31 @@ async def execute_task_textual(
                                     input_toks,
                                     output_toks,
                                     active_provider,
+                                    cost=estimate_request_cost(
+                                        input_tokens=input_toks,
+                                        output_tokens=output_toks,
+                                        model_name=active_model,
+                                        provider=active_provider,
+                                    ),
                                 )
                                 captured_input_tokens = max(
                                     captured_input_tokens, input_toks + output_toks
                                 )
                             elif total_toks:
-                                # Fallback: model gives only total (no split)
+                                # Fallback: model gives only total (no split).
+                                # Price the aggregate as input tokens (cheaper
+                                # rate) so the request is still costed.
                                 turn_stats.record_request(
-                                    active_model, total_toks, 0, active_provider
+                                    active_model,
+                                    total_toks,
+                                    0,
+                                    active_provider,
+                                    cost=estimate_request_cost(
+                                        input_tokens=total_toks,
+                                        output_tokens=0,
+                                        model_name=active_model,
+                                        provider=active_provider,
+                                    ),
                                 )
                                 captured_input_tokens = max(
                                     captured_input_tokens, total_toks
@@ -1582,6 +1624,7 @@ async def execute_task_textual(
                         captured_input_tokens,
                         captured_output_tokens,
                     )
+                    _report_cost(adapter, turn_stats)
                     return turn_stats
 
                 stream_input = Command(resume=resume_payload)
@@ -1623,6 +1666,7 @@ async def execute_task_textual(
         captured_input_tokens,
         captured_output_tokens,
     )
+    _report_cost(adapter, turn_stats)
     return turn_stats
 
 
@@ -1749,6 +1793,15 @@ async def _handle_interrupt_cleanup(
             captured_total = captured_input_tokens + captured_output_tokens
             if captured_total:
                 cancellation_values["_context_tokens"] = captured_total
+            # `after_model` never ran on the partial turn, so fold this turn's
+            # accumulated cost into the persisted session total here (mirroring
+            # the token piggy-back above). Advance the in-memory base too so a
+            # subsequent turn in the same session keeps building on it.
+            if turn_stats.cost:
+                new_total = adapter._session_cost_base + turn_stats.cost
+                cancellation_values["_session_cost"] = new_total
+                adapter._session_cost_base = new_total
+                turn_stats.cost = 0.0
             await agent.aupdate_state(config, cancellation_values)
     except (httpx.TransportError, httpx.TimeoutException) as e:
         logger.warning("Could not save interrupted state (network): %s", e)
@@ -1782,6 +1835,7 @@ async def _handle_interrupt_cleanup(
         captured_output_tokens,
         approximate=approximate,
     )
+    _report_cost(adapter, turn_stats)
 
 
 def _report_tokens(
@@ -1809,6 +1863,23 @@ def _report_tokens(
             adapter._on_tokens_update(captured_input_tokens, approximate=approximate)
     elif adapter._on_tokens_show:
         adapter._on_tokens_show(approximate=approximate)
+
+
+def _report_cost(adapter: TextualUIAdapter, turn_stats: SessionStats) -> None:
+    """Refresh the running session-cost UI display.
+
+    The displayed value is the cumulative session cost: the persisted base
+    restored on resume (`adapter._session_cost_base`) plus the cost accumulated
+    this turn (`turn_stats.cost`). Persistence of the new total into graph state
+    is owned by `ResumeStateMiddleware.after_model`, not this helper.
+
+    Args:
+        adapter: UI adapter with the cost callback and persisted base.
+        turn_stats: Stats for the current turn, carrying `cost`.
+    """
+    if adapter._on_cost_update is None:
+        return
+    adapter._on_cost_update(adapter._session_cost_base + turn_stats.cost)
 
 
 async def _flush_assistant_text_ns(

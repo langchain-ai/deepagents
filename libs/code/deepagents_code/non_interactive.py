@@ -564,14 +564,22 @@ def _process_message_chunk(
                     f"[dim]📝 {escape_markup(record.display_path)}[/dim]",
                     highlight=False,
                 )
+        tool_name = getattr(message_obj, "name", "")
+        tool_status = getattr(message_obj, "status", "success")
+        tool_output = str(message_obj.content)[:2000]
+        if tool_status == "error":
+            dispatch_hook_fire_and_forget(
+                "tool.error",
+                {"tool_names": [tool_name]},
+            )
         dispatch_hook_fire_and_forget(
             "tool.result",
             {
-                "tool_name": getattr(message_obj, "name", ""),
+                "tool_name": tool_name,
                 "tool_id": tool_id,
                 "tool_args": tool_args,
-                "tool_status": getattr(message_obj, "status", "success"),
-                "tool_output": str(message_obj.content)[:2000],
+                "tool_status": tool_status,
+                "tool_output": tool_output,
             },
         )
         if state.spinner:

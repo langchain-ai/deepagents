@@ -2011,7 +2011,7 @@ class TestProcessMessageChunkHooks:
         assert state.tool_call_args_by_id == {}
 
     def test_tool_result_dispatched_for_error_status(self) -> None:
-        """tool.result fires with tool_status='error' when tool call failed."""
+        """tool.error and tool.result fire when a tool call failed."""
         from langchain_core.messages import ToolMessage
 
         tool_msg = ToolMessage(
@@ -2030,9 +2030,19 @@ class TestProcessMessageChunkHooks:
         ) as mock_dispatch:
             _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
 
-        payload = mock_dispatch.call_args[0][1]
-        assert payload["tool_status"] == "error"
-        assert payload["tool_name"] == "write_file"
+        assert mock_dispatch.call_args_list == [
+            call("tool.error", {"tool_names": ["write_file"]}),
+            call(
+                "tool.result",
+                {
+                    "tool_name": "write_file",
+                    "tool_id": "call-2",
+                    "tool_args": {},
+                    "tool_status": "error",
+                    "tool_output": "Permission denied",
+                },
+            ),
+        ]
 
     def test_tool_result_output_truncated_to_2000_chars(self) -> None:
         """tool_output in the payload is at most 2000 characters."""

@@ -205,6 +205,15 @@ def _fleet_model(config: Mapping[str, object]) -> str:
         nested = cast("Mapping[str, object]", agent).get("model")
         if isinstance(nested, str) and nested:
             return nested
+    runtime = config.get("config")
+    if isinstance(runtime, Mapping):
+        configurable = cast("Mapping[str, object]", runtime).get("configurable")
+        if isinstance(configurable, Mapping):
+            model_config = cast("Mapping[str, object]", configurable).get("llm_model_config")
+            if isinstance(model_config, Mapping):
+                model_id = cast("Mapping[str, object]", model_config).get("modelId")
+                if isinstance(model_id, str) and model_id:
+                    return model_id
     msg = "Malformed Fleet config.json: missing model"
     raise FleetImportError(msg)
 

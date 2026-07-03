@@ -7,7 +7,12 @@ import pytest
 from rich.style import Style
 from textual.content import Content
 
-from deepagents_code._env_vars import HIDE_CWD, HIDE_SPLASH_VERSION
+from deepagents_code._env_vars import (
+    DEBUG,
+    HIDE_CWD,
+    HIDE_LANGSMITH_TRACING,
+    HIDE_SPLASH_VERSION,
+)
 from deepagents_code._version import __version__
 from deepagents_code.widgets.welcome import (
     WelcomeBanner,
@@ -15,6 +20,7 @@ from deepagents_code.widgets.welcome import (
 )
 
 _EDITABLE = "deepagents_code.widgets.welcome._is_editable_install"
+_PROJECT_NAME = "deepagents_code.widgets.welcome.get_langsmith_project_name"
 
 
 def _make_banner(
@@ -22,6 +28,9 @@ def _make_banner(
     model_provider: str = "anthropic",
     model_name: str = "claude-opus-4-8",
     cwd: str | None = "/work/project",
+    thread_id: str | None = None,
+    mcp_tool_count: int = 0,
+    project_name: str | None = None,
     env: dict[str, str] | None = None,
 ) -> WelcomeBanner:
     """Create a `WelcomeBanner` with a controlled environment.
@@ -30,16 +39,24 @@ def _make_banner(
         model_provider: Model provider to display.
         model_name: Model name to display.
         cwd: Working directory to display.
+        thread_id: Thread ID to display (only shown in debug mode).
+        mcp_tool_count: MCP tool count to display.
+        project_name: LangSmith project name to inject (or `None`).
         env: Environment variables to set while constructing.
 
     Returns:
         A `WelcomeBanner` instance ready for testing.
     """
-    with patch.dict("os.environ", env or {}, clear=True):
+    with (
+        patch(_PROJECT_NAME, return_value=project_name),
+        patch.dict("os.environ", env or {}, clear=True),
+    ):
         return WelcomeBanner(
             model_provider=model_provider,
             model_name=model_name,
             cwd=cwd,
+            thread_id=thread_id,
+            mcp_tool_count=mcp_tool_count,
         )
 
 
@@ -60,8 +77,8 @@ class TestTitle:
     """Tests for the banner title line."""
 
     def test_shows_product_name(self) -> None:
-        """The banner shows the `Deep Agents` title."""
-        assert "Deep Agents" in _make_banner()._build_banner().plain
+        """The banner shows the `dcode` title."""
+        assert "dcode" in _make_banner()._build_banner().plain
 
     def test_shows_version_by_default(self) -> None:
         """The version is shown when not hidden and not editable."""
@@ -146,13 +163,84 @@ class TestDirectoryLine:
         assert "/work/project" not in plain
 
 
+class TestTracingLine:
+    """Tests for the LangSmith tracing project row."""
+
+    def test_shows_project_name(self) -> None:
+        """The tracing row renders the LangSmith project name."""
+        plain = _make_banner(project_name="dcode-johannes")._build_banner().plain
+        assert "tracing:" in plain
+        assert "'dcode-johannes'" in plain
+
+    def test_omitted_when_no_project(self) -> None:
+        """No tracing row when the project name is `None`."""
+        plain = _make_banner(project_name=None)._build_banner().plain
+        assert "tracing:" not in plain
+
+    def test_hidden_when_hide_langsmith_env_set(self) -> None:
+        """`HIDE_LANGSMITH_TRACING` removes the tracing row."""
+        plain = (
+            _make_banner(
+                project_name="dcode-johannes",
+                env={HIDE_LANGSMITH_TRACING: "1"},
+            )
+            ._build_banner()
+            .plain
+        )
+        assert "tracing:" not in plain
+
+
+class TestThreadLine:
+    """Tests for the thread ID row (shown only in debug mode)."""
+
+    def test_shows_thread_id_when_debug_enabled(self) -> None:
+        """The thread row renders the thread ID when debug mode is on."""
+        plain = (
+            _make_banner(thread_id="abc-123", env={DEBUG: "1"})._build_banner().plain
+        )
+        assert "thread:" in plain
+        assert "abc-123" in plain
+
+    def test_omitted_when_debug_disabled(self) -> None:
+        """No thread row when debug mode is off."""
+        plain = _make_banner(thread_id="abc-123")._build_banner().plain
+        assert "thread:" not in plain
+        assert "abc-123" not in plain
+
+    def test_omitted_when_no_thread_id(self) -> None:
+        """No thread row in debug mode when the thread ID is unset."""
+        plain = _make_banner(thread_id=None, env={DEBUG: "1"})._build_banner().plain
+        assert "thread:" not in plain
+
+
+class TestMcpToolLine:
+    """Tests for the MCP tool count row."""
+
+    def test_shows_tool_count(self) -> None:
+        """The mcp row renders the tool count."""
+        plain = _make_banner(mcp_tool_count=5)._build_banner().plain
+        assert "mcp:" in plain
+        assert "5 tools" in plain
+
+    def test_singular_tool_label(self) -> None:
+        """A count of 1 uses the singular `tool` label."""
+        plain = _make_banner(mcp_tool_count=1)._build_banner().plain
+        assert "1 tool" in plain
+        assert "1 tools" not in plain
+
+    def test_omitted_when_zero(self) -> None:
+        """No mcp row when the tool count is zero."""
+        plain = _make_banner(mcp_tool_count=0)._build_banner().plain
+        assert "mcp:" not in plain
+
+
 class TestRemovedSections:
-    """The minimal banner drops the old tracing/MCP/tip/footer content."""
+    """The banner does not show the old splash tips/footer content."""
 
     def test_no_legacy_sections(self) -> None:
-        """None of the removed splash sections appear."""
+        """None of the old splash footer sections appear."""
         plain = _make_banner()._build_banner().plain
-        for absent in ("Ready to code", "Tip:", "LangSmith", "MCP", "Thread:"):
+        for absent in ("Ready to code", "Tip:"):
             assert absent not in plain
 
 
@@ -186,11 +274,20 @@ class TestCompatibilityMethods:
         assert "Ready to code" not in widget._build_banner().plain
 
     def test_update_thread_id_tracks_without_rendering(self) -> None:
-        """`update_thread_id` stores the id but does not display it."""
+        """`update_thread_id` stores the id but does not display it without debug."""
         widget = _make_banner()
         widget.update_thread_id("abc123")
         assert widget._cli_thread_id == "abc123"
         assert "abc123" not in widget._build_banner().plain
+
+    def test_update_thread_id_renders_in_debug(self) -> None:
+        """`update_thread_id` re-renders to show the id when debug mode is on."""
+        widget = _make_banner(env={DEBUG: "1"})
+        with patch.object(widget, "update"):
+            widget.update_thread_id("abc123")
+        plain = widget._build_banner().plain
+        assert "abc123" in plain
+        assert "thread:" in plain
 
 
 class TestAutoLinksDisabled:

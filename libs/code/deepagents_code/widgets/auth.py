@@ -102,6 +102,20 @@ PROVIDER_DISPLAY_NAMES: dict[str, str] = {
 }
 
 
+PROVIDER_SHORT_NAMES: dict[str, str] = {
+    # Only providers whose `PROVIDER_DISPLAY_NAMES` label is too verbose for a
+    # compact tag need an entry here; everything else falls back to the display
+    # name, which is already short.
+    "openai_codex": "OpenAI Codex",
+}
+"""Compact brand labels for space-constrained UI (e.g. the `/model` Recent tag).
+
+Sparse companion to `PROVIDER_DISPLAY_NAMES`: an entry exists only when the full
+display name carries a parenthetical qualifier that reads badly inside a tag
+(e.g. `"OpenAI Codex (ChatGPT login)"`). Resolved via `provider_short_name`.
+"""
+
+
 PROVIDER_API_KEY_URLS: dict[str, str] = {
     "anthropic": "https://platform.claude.com/login?returnTo=%2Fsettings%2Fkeys",
     "baseten": "https://docs.baseten.co/organization/api-keys",
@@ -141,8 +155,14 @@ def _is_safe_acquisition_url(url: str) -> bool:
     return urlsplit(url).scheme in {"http", "https"}
 
 
-def _provider_display_name(provider: str, config: ModelConfig | None = None) -> str:
-    """Return a human-readable provider label for auth UI.
+def provider_display_name(provider: str, config: ModelConfig | None = None) -> str:
+    """Return a human-readable provider label.
+
+    Shared by the auth UI and the model selector so a provider is labeled
+    identically in both. (The install prompt reuses the underlying
+    `PROVIDER_DISPLAY_NAMES` map directly rather than this function, to avoid an
+    event-loop config read, so a user-configured `display_name` won't surface
+    there.)
 
     Resolution order: a configured `display_name`, then the built-in
     `PROVIDER_DISPLAY_NAMES` map, then a title-cased form of the provider key.
@@ -158,6 +178,29 @@ def _provider_display_name(provider: str, config: ModelConfig | None = None) -> 
     return model_config.get_provider_display_name(
         provider
     ) or PROVIDER_DISPLAY_NAMES.get(provider, provider.replace("_", " ").title())
+
+
+def provider_short_name(provider: str, config: ModelConfig | None = None) -> str:
+    """Return a compact brand label for a provider.
+
+    For space-constrained UI (e.g. the `/model` Recent tag). Resolution order:
+    a configured `short_name`, then the built-in `PROVIDER_SHORT_NAMES` map,
+    then the full `provider_display_name` (which is already short for providers
+    without a parenthetical qualifier).
+
+    Args:
+        provider: Provider config key.
+        config: Parsed model config, if already loaded by the caller.
+
+    Returns:
+        Compact brand label, falling back to the display name when none is set.
+    """
+    model_config = config or ModelConfig.load()
+    return (
+        model_config.get_provider_short_name(provider)
+        or PROVIDER_SHORT_NAMES.get(provider)
+        or provider_display_name(provider, model_config)
+    )
 
 
 def _auth_status_for(provider: str) -> ProviderAuthStatus:
@@ -558,7 +601,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
             Widgets that make up the auth prompt modal.
         """
         glyphs = get_glyphs()
-        provider_label = _provider_display_name(self._provider, self._config)
+        provider_label = provider_display_name(self._provider, self._config)
         with Vertical():
             # Tag the title with `(stored)` so the user knows a replacement
             # (or the `Ctrl+D delete` affordance shown in the help line) is
@@ -801,7 +844,7 @@ class AuthPromptScreen(ModalScreen[AuthResult]):
         url = configured_url or PROVIDER_API_KEY_URLS.get(
             self._provider, _PROVIDERS_DOCS_URL
         )
-        provider = _provider_display_name(self._provider, config)
+        provider = provider_display_name(self._provider, config)
         label = (
             f"{provider} key page"
             if configured_url or self._provider in PROVIDER_API_KEY_URLS
@@ -1532,7 +1575,7 @@ class AuthManagerScreen(ModalScreen[None]):
         Returns:
             A composed `Content` with the provider label and a status badge.
         """
-        name = _provider_display_name(provider)
+        name = provider_display_name(provider)
         if not installed:
             return Content.assemble(
                 Content.styled(name, "dim"),

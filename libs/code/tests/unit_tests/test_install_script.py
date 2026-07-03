@@ -1100,6 +1100,11 @@ def _run_install_uv(
         "set -euo pipefail\n"
         "log_info() { :; }\n"
         'log_error() { printf "%s\\n" "$*" >&2; }\n'
+        "register_temp() { :; }\n"
+        # install_uv branches on is_snap_curl; stub it to the non-snap answer so
+        # the harness exercises the normal curl path (and emits no stray
+        # "command not found" on stderr).
+        "is_snap_curl() { return 1; }\n"
         f"VERBOSE={'1' if verbose else '0'}\n"
         f"{_extract_shell_function('install_uv')}\n"
         "install_uv\n",
@@ -1154,6 +1159,67 @@ def test_install_uv_requires_secure_temp_file(tmp_path: Path) -> None:
     assert proc.returncode != 0
     assert "mktemp is required to create a secure temp file" in proc.stderr
     assert "UV_INSTALLER_NOISE" not in proc.stderr
+
+
+def _run_signal_traps(tmp_path: Path, *, interrupt: bool) -> str:
+    """Wire the real EXIT + INT/TERM traps from `install.sh` and trip one.
+
+    Extracts the shipped `cleanup_on_signal`/`cleanup_on_interrupt` handlers and
+    installs them exactly as the script does. With `interrupt=True` the process
+    sends itself SIGINT (the Ctrl-C path); otherwise it exits non-zero without a
+    signal (the ordinary-failure path). Returns combined stderr so callers can
+    assert which trap message the user actually sees.
+    """
+    script = tmp_path / "signal_trap_harness.sh"
+    body = "kill -INT $$\nsleep 5\n" if interrupt else "exit 2\n"
+    script.write_text(
+        "set -uo pipefail\n"
+        'log_warn()  { printf "%s\\n" "$*" >&2; }\n'
+        'log_error() { printf "%s\\n" "$*" >&2; }\n'
+        "cleanup_temp_files() { :; }\n"
+        f"{_extract_shell_function('cleanup_on_signal')}\n"
+        f"{_extract_shell_function('cleanup_on_interrupt')}\n"
+        "trap cleanup_on_signal EXIT\n"
+        "trap cleanup_on_interrupt INT TERM\n"
+        f"{body}",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        ["bash", str(script)],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        check=False,
+        start_new_session=True,
+    )
+    return proc.stderr
+
+
+def test_interrupt_shows_notice_without_failure_message(tmp_path: Path) -> None:
+    """Ctrl-C prints only the interrupt notice, not the EXIT trap's failure line.
+
+    `cleanup_on_interrupt` disarms the EXIT trap (`trap - EXIT`) before exiting,
+    so the friendly "Installation interrupted." message isn't followed by a
+    contradictory "Installation failed (exit code 1)". Guards against dropping
+    that disarm, which would surface both messages on a single Ctrl-C.
+    """
+    stderr = _run_signal_traps(tmp_path, interrupt=True)
+
+    assert "Installation interrupted." in stderr
+    assert "Installation failed" not in stderr
+
+
+def test_exit_trap_reports_failure_on_ordinary_error(tmp_path: Path) -> None:
+    """A non-signal, non-zero exit still fires the EXIT trap's failure message.
+
+    The interrupt handler's `trap - EXIT` must be scoped to the interrupt path
+    only: an ordinary failure exit still needs `cleanup_on_signal` to tell the
+    user the install failed and where to get help.
+    """
+    stderr = _run_signal_traps(tmp_path, interrupt=False)
+
+    assert "Installation failed (exit code 2)." in stderr
+    assert "Installation interrupted." not in stderr
 
 
 def test_install_script_macos_without_clt_exits_early(tmp_path: Path) -> None:
@@ -1355,36 +1421,52 @@ def _invoke_with_local_dcode_not_on_path(
     )
 
 
-def test_install_script_warns_when_dcode_installed_but_not_on_path(
+def test_install_script_adds_local_bin_when_dcode_installed_but_not_on_path(
     tmp_path: Path,
 ) -> None:
-    """A fresh install resolved only via ~/.local/bin warns it isn't on PATH.
+    """A fresh install resolved only via ~/.local/bin adds it to PATH setup.
 
     Simulates `uv tool install` dropping the binary in ~/.local/bin without the
     current shell having picked it up: `command -v dcode` misses, the fallback
-    path hits, and the script verifies it directly. The success path must still
-    tell the user the binary isn't callable as `dcode` yet and how to fix it,
-    rather than printing a "Run: dcode" footer that dead-ends.
+    path hits, and the script verifies it directly. The success path should not
+    replace the installed executable with a self-referential symlink when the
+    binary path and intended symlink path are the same.
     """
     proc = _invoke_with_local_dcode_not_on_path(tmp_path)
 
     assert proc.returncode == 0
     combined = proc.stdout + proc.stderr
-    assert "isn't on your PATH yet" in combined
-    assert 'export PATH="$HOME/.local/bin:$PATH"' in combined
+    dcode = tmp_path / "home/.local/bin/dcode"
+    assert not dcode.is_symlink()
+    assert "deepagents-code 0.1.0" in dcode.read_text()
+    assert "Added ~/.local/bin to PATH" in combined
+    assert "isn't on your PATH yet" not in combined
+    profile_texts = [
+        profile.read_text()
+        for profile in (
+            tmp_path / "home/.zshrc",
+            tmp_path / "home/.bashrc",
+            tmp_path / "home/.bash_profile",
+        )
+        if profile.exists()
+    ]
+    assert any('export PATH="$HOME/.local/bin:$PATH"' in text for text in profile_texts)
     assert "source ~/.local/bin/env" not in combined
 
 
 def test_install_script_uses_uv_env_file_path_hint_when_available(
     tmp_path: Path,
 ) -> None:
-    """When uv wrote ~/.local/bin/env, the not-on-PATH hint points to it."""
+    """When uv wrote ~/.local/bin/env, no duplicate PATH setup is needed."""
     proc = _invoke_with_local_dcode_not_on_path(tmp_path, create_env_file=True)
 
     assert proc.returncode == 0
     combined = proc.stdout + proc.stderr
-    assert "isn't on your PATH yet" in combined
-    assert "source ~/.local/bin/env" in combined
+    assert "isn't on your PATH yet" not in combined
+    assert "source ~/.local/bin/env" not in combined
+    assert not (tmp_path / "home/.zshrc").exists()
+    assert not (tmp_path / "home/.bashrc").exists()
+    assert not (tmp_path / "home/.bash_profile").exists()
 
 
 def test_install_script_no_path_warning_when_dcode_on_path(tmp_path: Path) -> None:

@@ -30,6 +30,7 @@ from deepagents_code.model_config import (
     CODEX_PROVIDER,
     ModelConfig,
     ModelProfileEntry,
+    ModelSpec,
     ProviderAuthState,
     ProviderAuthStatus,
     clear_default_model,
@@ -159,6 +160,7 @@ class ModelOption(Static):
         *,
         auth_status: ProviderAuthStatus | None = None,
         classes: str = "",
+        show_provider_prefix: bool = True,
     ) -> None:
         """Initialize a model option.
 
@@ -170,10 +172,16 @@ class ModelOption(Static):
             index: The index of this option in the filtered list.
             auth_status: Provider auth/readiness status.
             classes: CSS classes for styling.
+            show_provider_prefix: Whether the row label keeps the
+                `provider:` prefix. `False` shows just the model name; used
+                for provider-grouped rows where the header already names the
+                provider. Persisted on the widget so incremental relabels in
+                `_move_selection` reproduce the same display.
         """
         super().__init__(label, classes=classes)
         self.model_spec = model_spec
         self.index = index
+        self.show_provider_prefix = show_provider_prefix
         self.auth_status = auth_status or ProviderAuthStatus(
             state=ProviderAuthState.UNKNOWN,
             provider=provider,
@@ -1137,7 +1145,11 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     classes += " model-option-current"
 
                 label = self._build_option_label(
-                    model_spec, provider, auth_status, selected=is_selected
+                    model_spec,
+                    provider,
+                    auth_status,
+                    selected=is_selected,
+                    show_provider_prefix=False,
                 )
                 widget = ModelOption(
                     label=label,
@@ -1146,6 +1158,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     index=flat_index,
                     auth_status=auth_status,
                     classes=classes,
+                    show_provider_prefix=False,
                 )
                 all_widgets.append(widget)
                 self._option_widgets.append(widget)
@@ -1199,6 +1212,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         auth_status: ProviderAuthStatus,
         *,
         selected: bool,
+        show_provider_prefix: bool = True,
     ) -> Content:
         """Build a model-option label from the current screen state.
 
@@ -1215,6 +1229,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 install-required set.
             auth_status: Provider auth/readiness status for the row.
             selected: Whether this row is the highlighted one.
+            show_provider_prefix: Whether to keep the `provider:` prefix in
+                the displayed label. `False` shows just the model name.
 
         Returns:
             Styled `Content` label.
@@ -1227,6 +1243,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             is_default=model_spec == self._default_spec,
             status=self._get_model_status(model_spec),
             install_required=provider in self._install_extras,
+            show_provider_prefix=show_provider_prefix,
         )
 
     @staticmethod
@@ -1239,6 +1256,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         is_default: bool = False,
         status: str | None = None,
         install_required: bool = False,
+        show_provider_prefix: bool = True,
     ) -> Content:
         """Build the display label for a model option.
 
@@ -1254,6 +1272,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             install_required: Whether the provider's integration package is not
                 installed; renders the spec dimmed since selecting it prompts
                 an install rather than switching immediately.
+            show_provider_prefix: Whether to keep the `provider:` prefix. When
+                `False`, only the model name is shown — used for
+                provider-grouped rows where the header already names the
+                provider. Specs without a `provider:` prefix are shown as-is.
 
         Returns:
             Styled Content label.
@@ -1261,19 +1283,24 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         colors = theme.get_theme_colors()
         glyphs = get_glyphs()
         cursor = f"{glyphs.cursor} " if selected else "  "
+        if show_provider_prefix:
+            display = model_spec
+        else:
+            parsed = ModelSpec.try_parse(model_spec)
+            display = parsed.model if parsed else model_spec
         # When selected, skip the inline primary color — CSS already flips the
         # row to ($primary bg, $background fg). Keep `bold` so the default
         # emphasis survives both states.
         if install_required and not selected:
-            spec = Content.styled(model_spec, "dim")
+            spec = Content.styled(display, "dim")
         elif auth_status.blocks_start:
-            spec = Content.styled(model_spec, colors.warning)
+            spec = Content.styled(display, colors.warning)
         elif is_default and selected:
-            spec = Content.styled(model_spec, "bold")
+            spec = Content.styled(display, "bold")
         elif is_default:
-            spec = Content.styled(model_spec, f"bold {colors.primary}")
+            spec = Content.styled(display, f"bold {colors.primary}")
         else:
-            spec = Content(model_spec)
+            spec = Content(display)
         suffix = Content.styled(" (current)", "dim") if current else Content("")
         if is_default and selected:
             default_suffix = Content.styled(" (default)", "bold")
@@ -1461,6 +1488,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 old_widget.provider,
                 old_widget.auth_status,
                 selected=False,
+                show_provider_prefix=old_widget.show_provider_prefix,
             )
         )
 
@@ -1473,6 +1501,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 new_widget.provider,
                 new_widget.auth_status,
                 selected=True,
+                show_provider_prefix=new_widget.show_provider_prefix,
             )
         )
 

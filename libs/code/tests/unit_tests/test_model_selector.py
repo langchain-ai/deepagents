@@ -1845,6 +1845,67 @@ class TestFormatOptionLabel:
         # Not dimmed when selected; the missing-creds warning color applies.
         assert DARK_COLORS.warning in label.markup
 
+    def test_hides_provider_prefix_shows_model_name(self) -> None:
+        """Provider-grouped rows show just the model name, not the full spec."""
+        label = ModelSelectorScreen._format_option_label(
+            "anthropic:claude-sonnet-4-5",
+            selected=False,
+            current=False,
+            auth_status=ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider="anthropic",
+                source=ProviderAuthSource.ENV,
+            ),
+            show_provider_prefix=False,
+        )
+        assert "claude-sonnet-4-5" in label.plain
+        assert "anthropic:" not in label.plain
+
+    def test_keeps_provider_prefix_by_default(self) -> None:
+        """The Recent section keeps the full spec (default show_provider_prefix)."""
+        label = ModelSelectorScreen._format_option_label(
+            "anthropic:claude-sonnet-4-5",
+            selected=False,
+            current=False,
+            auth_status=ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider="anthropic",
+                source=ProviderAuthSource.ENV,
+            ),
+        )
+        assert "anthropic:claude-sonnet-4-5" in label.plain
+
+    def test_hides_prefix_preserves_colon_in_model_name(self) -> None:
+        """Only the leading `provider:` is stripped; model names may keep colons."""
+        label = ModelSelectorScreen._format_option_label(
+            "ollama:kimi-k2.7-code:cloud",
+            selected=False,
+            current=False,
+            auth_status=ProviderAuthStatus(
+                state=ProviderAuthState.NOT_REQUIRED,
+                provider="ollama",
+                detail="local provider",
+            ),
+            show_provider_prefix=False,
+        )
+        assert "kimi-k2.7-code:cloud" in label.plain
+        assert "ollama:" not in label.plain
+
+    def test_hides_prefix_falls_back_for_bare_spec(self) -> None:
+        """A spec without a `provider:` prefix is shown unchanged."""
+        label = ModelSelectorScreen._format_option_label(
+            "gpt-5.5",
+            selected=False,
+            current=False,
+            auth_status=ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider="openai",
+                source=ProviderAuthSource.ENV,
+            ),
+            show_provider_prefix=False,
+        )
+        assert "gpt-5.5" in label.plain
+
 
 class TestFormatAuthIndicator:
     """Tests for provider auth indicator labels."""

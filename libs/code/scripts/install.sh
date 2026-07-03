@@ -75,8 +75,22 @@
 # Credits:
 #   Interactive mode detection, color logging, and optional tool install
 #   patterns adapted from hermes-agent (NousResearch/hermes-agent).
+#   Snap curl detection, shell-profile PATH modification, and symlink-first
+#   PATH setup adapted from Amp (https://ampcode.com/install.sh).
 
 set -euo pipefail
+
+# Registry of temp files to clean up on exit or interrupt. Functions that
+# create tempfiles append their paths here; cleanup_on_signal removes them all.
+TEMP_FILES=()
+register_temp() {
+  TEMP_FILES+=("$1")
+}
+cleanup_temp_files() {
+  for f in "${TEMP_FILES[@]:-}"; do
+    rm -f "$f" 2>/dev/null || true
+  done
+}
 
 # Keep the shell PATH the user started with. The installer may source
 # ~/.local/bin/env later so it can find a freshly installed uv, but that does
@@ -103,17 +117,32 @@ log_warn()    { printf "${YELLOW}⚠${NC} %s\n" "$*" >&2; }
 log_error()   { printf "${RED}✖${NC} %s\n" "$*" >&2; }
 
 # ---------------------------------------------------------------------------
-# Exit trap — ensures the user always sees an actionable message on failure
+# Exit / interrupt traps — ensures the user always sees an actionable message
+# on failure and temp files are cleaned up on Ctrl-C / SIGTERM.
 # ---------------------------------------------------------------------------
-cleanup() {
+cleanup_on_signal() {
   local exit_code=$?
+  cleanup_temp_files
   if [ $exit_code -ne 0 ]; then
     echo "" >&2
     log_error "Installation failed (exit code ${exit_code}). See errors above."
     log_error "For help, visit: https://docs.langchain.com/deepagents-code"
   fi
 }
-trap cleanup EXIT
+trap cleanup_on_signal EXIT
+
+cleanup_on_interrupt() {
+  # Disarm the EXIT trap first: exiting from here would otherwise also fire
+  # cleanup_on_signal, appending a contradictory "Installation failed" message
+  # after the friendly interrupt notice below. Temp files are still cleaned up
+  # explicitly here, so nothing leaks despite the disarm.
+  trap - EXIT
+  echo "" >&2
+  log_warn "Installation interrupted."
+  cleanup_temp_files
+  exit 1
+}
+trap cleanup_on_interrupt INT TERM
 
 # ---------------------------------------------------------------------------
 # Interactive mode detection
@@ -295,7 +324,11 @@ prepare_install_log_dir() {
   [ ! -L "$cache_root" ] || return 1
   [ ! -L "$dir" ] || return 1
   if [ ! -d "$cache_root" ]; then
-    mkdir -m 700 -p "$cache_root" 2>/dev/null || return 1
+    # `-m` with `-p` only sets the mode on the deepest dir (SC2174); any parents
+    # -p creates keep the umask default. Create, then chmod the target itself so
+    # 0700 is reliably applied to cache_root.
+    mkdir -p "$cache_root" 2>/dev/null || return 1
+    chmod 700 "$cache_root" 2>/dev/null || return 1
   fi
   [ -d "$cache_root" ] && [ ! -L "$cache_root" ] || return 1
   if [ -e "$dir" ]; then
@@ -425,6 +458,37 @@ fi
 # ---------------------------------------------------------------------------
 # uv installation
 # ---------------------------------------------------------------------------
+
+# Detect whether `curl` is a snap package, which lacks the permissions to
+# download files outside the snap sandbox. On such systems curl appears to
+# work but fails on actual downloads, so callers should fall back to wget.
+is_snap_curl() {
+  if ! command -v curl >/dev/null 2>&1; then
+    return 1
+  fi
+  local curl_path
+  curl_path=$(command -v curl 2>/dev/null) || return 1
+  case "$curl_path" in
+    */snap/*) return 0 ;;
+    *)        return 1 ;;
+  esac
+}
+
+# Download a URL to stdout using the first available working downloader.
+# Prefers curl (unless it's a snap install, which has sandbox permission
+# issues), then falls back to wget. Prints nothing and returns non-zero if no
+# working downloader is available.
+download_to_stdout() {
+  local url="$1" ua="${2:-deepagents-code-install}"
+  if command -v curl >/dev/null 2>&1 && ! is_snap_curl; then
+    curl -fsSL -H "User-Agent: ${ua}" "$url" 2>/dev/null || return $?
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO- --header="User-Agent: ${ua}" "$url" 2>/dev/null || return $?
+  else
+    return 1
+  fi
+}
+
 install_uv() {
   # The upstream uv installer is chatty (download progress, install paths,
   # PATH-setup hints). Capture it and surface the output only when debugging
@@ -434,15 +498,21 @@ install_uv() {
     log_error "mktemp is required to create a secure temp file."
     exit 1
   }
+  register_temp "$uv_install_out"
   # Only the piped `sh` (the installer body) is captured by `>"$uv_install_out"
   # 2>&1`; curl/wget keep their own stderr on the terminal. That's intentional —
   # `-fsSL` includes `-S`, so a failed download still prints curl's error
   # directly (above the "uv installation failed" line) even though the captured
   # file is then empty. Don't assume curl's stderr is in the capture.
-  if command -v curl >/dev/null 2>&1; then
+  if command -v curl >/dev/null 2>&1 && ! is_snap_curl; then
     curl -fsSL https://astral.sh/uv/install.sh | sh >"$uv_install_out" 2>&1 || uv_install_rc=$?
   elif command -v wget >/dev/null 2>&1; then
     wget -qO- https://astral.sh/uv/install.sh | sh >"$uv_install_out" 2>&1 || uv_install_rc=$?
+  elif is_snap_curl; then
+    rm -f "$uv_install_out"
+    log_error "curl is installed as a snap and cannot download files due to sandbox permissions."
+    log_error "Please install wget, or reinstall curl with a different package manager (e.g. apt)."
+    exit 1
   else
     rm -f "$uv_install_out"
     log_error "curl or wget is required to install uv."
@@ -523,11 +593,8 @@ fi
 # already treats as "unknown latest" and recovers from — never a bad install.
 fetch_latest_version() {
   local json="" ua="deepagents-code-install"
-  if command -v curl >/dev/null 2>&1; then
-    json=$(curl -fsSL -H "User-Agent: ${ua}" "$PYPI_JSON_URL" 2>/dev/null) || return 0
-  elif command -v wget >/dev/null 2>&1; then
-    json=$(wget -qO- --header="User-Agent: ${ua}" "$PYPI_JSON_URL" 2>/dev/null) || return 0
-  else
+  json=$(download_to_stdout "$PYPI_JSON_URL" "$ua" 2>/dev/null) || return 0
+  if [ -z "$json" ]; then
     return 0
   fi
   # `|| true` keeps a no-match (grep exit 1 under `pipefail`) from aborting the
@@ -654,6 +721,7 @@ fi
 # status, don't race the warning past later log lines, and can re-scan the
 # raw output for (4) after the awk pass above has already reformatted it.
 uv_stderr=$(mktemp 2>/dev/null) || uv_stderr="/tmp/deepagents-install.$$.err"
+register_temp "$uv_stderr"
 uv_rc=0
 UV_REPORTED_PACKAGE_CHANGES=false
 # Mirror uv's raw output to a persistent log under the XDG cache dir. A
@@ -791,9 +859,217 @@ fi
 # Restore ownership for the log path without recursively chowning a cache path
 # that could have been swapped after creation.
 fix_install_log_owner
+
 # ---------------------------------------------------------------------------
-# Post-install verification + contextual status
+# PATH setup — make dcode immediately findable in a new shell
 # ---------------------------------------------------------------------------
+# After `uv tool install`, dcode lands in ~/.local/bin. If that directory is
+# already in the user's PATH (via ~/.local/bin/env or a shell profile), dcode
+# just works after a shell restart. If it isn't, the user is stuck with a
+# successful install but no callable binary.
+#
+# Strategy (adapted from Amp's installer, https://ampcode.com/install.sh):
+#   1. If a common bin dir (~/.local/bin, ~/bin, ~/.bin) is already in PATH,
+#      create a symlink there — no profile modification needed.
+#   2. Otherwise, create ~/.local/bin, symlink dcode there, then add
+#      ~/.local/bin to the user's shell profile (.zshrc, .bashrc,
+#      .bash_profile, or config.fish). Prompt interactively before writing;
+#      auto-add in non-interactive mode (CI, cron, piped install).
+#   3. Skip the whole thing if the binary is already on PATH or uv's env file
+#      exists (uv's installer already handles PATH setup in that case).
+
+# Check if a directory is in PATH.
+dir_in_path() {
+  local check_dir="$1"
+  [ -d "$check_dir" ] || return 1
+  check_dir=$(cd "$check_dir" 2>/dev/null && pwd) || return 1
+  case ":${PATH:-}:" in
+    *":$check_dir:"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Try to symlink the dcode binary into a directory already in PATH. Tries
+# ~/.local/bin, ~/bin, and ~/.bin in order. Returns 0 on success.
+try_symlink_in_path() {
+  local binary_name="$1"
+  local binary_path="$2"
+  local preferred_dirs=("$HOME/.local/bin" "$HOME/bin" "$HOME/.bin")
+  local dir symlink_path
+  for dir in "${preferred_dirs[@]}"; do
+    if dir_in_path "$dir"; then
+      mkdir -p "$dir" 2>/dev/null || continue
+      symlink_path="$dir/$binary_name"
+      if [ "$binary_path" = "$symlink_path" ]; then
+        return 0
+      fi
+      # Remove existing symlink if it points elsewhere or is stale
+      if [ -L "$symlink_path" ]; then
+        rm -f "$symlink_path"
+      fi
+      if ln -sf "$binary_path" "$symlink_path" 2>/dev/null; then
+        fix_owner "$symlink_path" 2>/dev/null || true
+        return 0
+      fi
+    fi
+  done
+  return 1
+}
+
+# Detect the user's shell and return the profile file + PATH export statement.
+# Sets SHELL_PROFILE and PATH_EXPORT as globals.
+detect_shell_profile() {
+  local default_shell="bash"
+  if [ "$OS" = "macos" ]; then
+    default_shell="zsh"
+  fi
+  local shell_name
+  shell_name=$(basename "${SHELL:-$default_shell}" 2>/dev/null) || shell_name="$default_shell"
+  SHELL_PROFILE=""
+  PATH_EXPORT=""
+  case "$shell_name" in
+    zsh)
+      SHELL_PROFILE="$HOME/.zshrc"
+      # shellcheck disable=SC2016  # single-quoted so $HOME/$PATH expand at profile source time, not here
+      PATH_EXPORT='export PATH="$HOME/.local/bin:$PATH"'
+      ;;
+    bash)
+      if [ "$OS" = "macos" ]; then
+        if [ -f "$HOME/.bash_profile" ]; then
+          SHELL_PROFILE="$HOME/.bash_profile"
+        elif [ -f "$HOME/.bashrc" ]; then
+          SHELL_PROFILE="$HOME/.bashrc"
+        else
+          SHELL_PROFILE="$HOME/.bash_profile"
+        fi
+      else
+        if [ -f "$HOME/.bashrc" ]; then
+          SHELL_PROFILE="$HOME/.bashrc"
+        elif [ -f "$HOME/.bash_profile" ]; then
+          SHELL_PROFILE="$HOME/.bash_profile"
+        else
+          SHELL_PROFILE="$HOME/.bashrc"
+        fi
+      fi
+      # shellcheck disable=SC2016  # single-quoted so $HOME/$PATH expand at profile source time, not here
+      PATH_EXPORT='export PATH="$HOME/.local/bin:$PATH"'
+      ;;
+    fish)
+      SHELL_PROFILE="$HOME/.config/fish/config.fish"
+      # shellcheck disable=SC2016  # single-quoted so $HOME expands at profile source time, not here
+      PATH_EXPORT='fish_add_path "$HOME/.local/bin"'
+      ;;
+    *)
+      # Unknown shell — don't modify any profile.
+      ;;
+  esac
+}
+
+# Check if ~/.local/bin is already referenced in the shell profile's PATH
+# config. Matches non-commented lines containing .local/bin in a PATH
+# assignment or fish_add_path. Returns 0 if already present.
+local_bin_in_profile() {
+  local profile="$1"
+  [ -f "$profile" ] || return 1
+  grep -v '^[[:space:]]*#' "$profile" 2>/dev/null | grep -qE 'PATH=.*\.local/bin' \
+    || grep -v '^[[:space:]]*#' "$profile" 2>/dev/null | grep -qE 'fish_add_path.*\.local/bin'
+}
+
+# Ensure dcode is on PATH for new shell sessions. Creates symlinks and/or
+# modifies the shell profile as needed. Only acts when the binary verified
+# but isn't already on the user's original PATH.
+# Returns: 0 = PATH is fixed for the current shell (symlink in an on-PATH dir),
+#          1 = failure (a specific warning was already printed),
+#          2 = no changes needed, but the current shell still must be reloaded
+#              or sourced before dcode will resolve.
+ensure_path_setup() {
+  local binary_name="$1"
+  local binary_path="$2"
+
+  # uv's env file already handles PATH setup for new shells — no profile
+  # change needed. But the current shell still lacks ~/.local/bin on PATH, so
+  # return 2 to let the caller emit a reload/source hint.
+  if [ -f "$HOME/.local/bin/env" ]; then
+    return 2
+  fi
+
+  # Step 1: try symlinking into a dir already in PATH (no profile change).
+  if try_symlink_in_path "$binary_name" "$binary_path"; then
+    if [ "$VERBOSE" = "1" ]; then
+      log_success "Created symlink in PATH for ${binary_name}."
+    fi
+    return 0
+  fi
+
+  # Step 2: create ~/.local/bin, symlink there, then add to shell profile.
+  mkdir -p "$HOME/.local/bin" 2>/dev/null || {
+    log_warn "Could not create ~/.local/bin."
+    return 1
+  }
+  fix_owner "$HOME/.local/bin"
+  local symlink_path="$HOME/.local/bin/$binary_name"
+  if [ "$binary_path" != "$symlink_path" ]; then
+    if [ -L "$symlink_path" ]; then
+      rm -f "$symlink_path"
+    fi
+    if ! ln -sf "$binary_path" "$symlink_path" 2>/dev/null; then
+      log_warn "Could not create symlink at ${symlink_path}."
+      return 1
+    fi
+    fix_owner "$symlink_path"
+  fi
+
+  # Step 3: detect shell and add ~/.local/bin to profile if needed.
+  detect_shell_profile
+  if [ -z "$SHELL_PROFILE" ]; then
+    log_warn "${binary_name} installed to ~/.local/bin but your shell is unknown."
+    log_warn "  Add ~/.local/bin to your PATH manually."
+    return 1
+  fi
+
+  # Already in profile? No changes needed, but the current shell may still
+  # lack ~/.local/bin on PATH (stale shell). Return 2 so the caller can emit
+  # a reload/source hint instead of silently returning success.
+  if local_bin_in_profile "$SHELL_PROFILE"; then
+    if [ "$VERBOSE" = "1" ]; then
+      # shellcheck disable=SC2088  # display string, literal ~/ is intended for readability
+      log_info "~/.local/bin already in ${SHELL_PROFILE}."
+    fi
+    return 2
+  fi
+
+  # Collapse $HOME prefix to ~ for a tidier display path.
+  local tilde_profile="${SHELL_PROFILE/#$HOME/\~}"
+
+  # Prompt interactively, or auto-add when non-interactive.
+  local should_add=true
+  if [ "$IS_INTERACTIVE" = true ] && can_prompt; then
+    if ! prompt_yn "Add ~/.local/bin to your PATH in ${tilde_profile}?"; then
+      should_add=false
+    fi
+  fi
+
+  if [ "$should_add" = true ]; then
+    # Create the profile file if it doesn't exist.
+    if [ ! -f "$SHELL_PROFILE" ]; then
+      mkdir -p "$(dirname "$SHELL_PROFILE")" 2>/dev/null || true
+      touch "$SHELL_PROFILE" 2>/dev/null || {
+        log_warn "Could not create ${tilde_profile}. Add ~/.local/bin to PATH manually."
+        return 1
+      }
+    fi
+    {
+      echo ""
+      echo "# Added by deepagents-code installer"
+      echo "$PATH_EXPORT"
+    } >> "$SHELL_PROFILE"
+    fix_owner "$SHELL_PROFILE"
+    log_success "Added ~/.local/bin to PATH in ${tilde_profile}."
+  else
+    log_info "Skipped modifying ${tilde_profile}."
+    log_info "  To use ${binary_name}, add to PATH:  ${PATH_EXPORT}"
+  fi
+}
 DCODE_BIN=""
 DCODE_NAME=""
 # Tracks whether the binary would have resolved via the user's original PATH,
@@ -887,14 +1163,23 @@ fi
 
 # The binary verified via its absolute path but isn't on the current shell's
 # PATH (typical right after a fresh `uv tool install`): typing `dcode` won't
-# work until the shell picks up ~/.local/bin. Point the user at the fix so the
-# "Run: dcode" footer below isn't a dead end.
-if [ "$VERIFY_OK" = true ] && [ "$DCODE_ON_PATH" = false ]; then
-  log_warn "${DCODE_NAME} isn't on your PATH yet${DCODE_BIN_DISPLAY:+ (installed at ${DCODE_BIN_DISPLAY})}. Restart your shell, or run:"
-  if [ -f "${HOME}/.local/bin/env" ]; then
-    log_warn "  source ~/.local/bin/env"
-  else
-    log_warn "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+# work until the shell picks up ~/.local/bin. Instead of just telling the user
+# to restart their shell, try to fix the PATH now — symlink into an existing
+# PATH dir, or add ~/.local/bin to the shell profile — so the binary is
+# immediately usable in a new terminal without manual configuration.
+if [ "$VERIFY_OK" = true ] && [ "$DCODE_ON_PATH" = false ] && [ -n "$DCODE_BIN" ]; then
+  path_setup_rc=0
+  ensure_path_setup "$DCODE_NAME" "$DCODE_BIN" || path_setup_rc=$?
+  if [ "$path_setup_rc" -ne 0 ]; then
+    # rc=1: ensure_path_setup printed a specific warning; add the fallback.
+    # rc=2: no profile change needed, but the current shell still lacks
+    #   ~/.local/bin on PATH — emit the same reload/source hint.
+    log_warn "  Restart your shell, or run:"
+    if [ -f "${HOME}/.local/bin/env" ]; then
+      log_warn "  source ~/.local/bin/env"
+    else
+      log_warn "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+    fi
   fi
 fi
 
@@ -993,6 +1278,11 @@ ripgrep_manual_hint() {
   esac
 }
 
+ripgrep_managed_failed() {
+  log_warn "Managed ripgrep setup did not complete; the grep tool will use a slower fallback."
+  ripgrep_manual_hint
+}
+
 if [ "$SKIP_OPTIONAL" != "1" ]; then
   if [ "$RIPGREP_INSTALLER" = "managed" ] && [ "$VERIFY_OK" = true ] && [ -n "$DCODE_BIN" ]; then
     # Eager, non-prompting managed install through the freshly installed binary
@@ -1000,14 +1290,29 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
     # (downloads into ~/.deepagents/bin, no sudo). Doing it here removes the
     # first-run download latency. The binary reuses a system `rg` already on
     # PATH and honors DEEPAGENTS_CODE_OFFLINE and
-    # DEEPAGENTS_CODE_RIPGREP_INSTALLER=system, reporting what it did.
-    echo ""
-    log_info "Setting up ripgrep..."
-    if "$DCODE_BIN" tools install; then
-      fix_owner "${HOME}/.deepagents/bin"
+    # DEEPAGENTS_CODE_RIPGREP_INSTALLER=system. Routine output stays behind
+    # verbose mode because most users do not need ripgrep setup details.
+    if [ "$VERBOSE" = "1" ]; then
+      echo ""
+      log_info "Setting up ripgrep..."
+      if "$DCODE_BIN" tools install; then
+        fix_owner "${HOME}/.deepagents/bin"
+      else
+        ripgrep_managed_failed
+      fi
     else
-      log_warn "Managed ripgrep setup did not complete; the grep tool will use a slower fallback."
-      ripgrep_manual_hint
+      # Quiet path: capture setup output and surface it only on failure, so a
+      # broken install stays debuggable without noise in the common case.
+      ripgrep_setup_out=$(mktemp 2>/dev/null) || ripgrep_setup_out="/tmp/deepagents-ripgrep-setup.$$.out"
+      register_temp "$ripgrep_setup_out"
+      if "$DCODE_BIN" tools install >"$ripgrep_setup_out" 2>&1; then
+        fix_owner "${HOME}/.deepagents/bin"
+      else
+        echo ""
+        cat "$ripgrep_setup_out" >&2 2>/dev/null || true
+        ripgrep_managed_failed
+      fi
+      rm -f "$ripgrep_setup_out"
     fi
   elif command -v rg >/dev/null 2>&1; then
     if [ "$VERBOSE" = "1" ]; then

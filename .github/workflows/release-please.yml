@@ -292,7 +292,7 @@ jobs:
   #     than silently guessing "in flight" for 45 min and stranding commits.
   guard-pending-release:
     needs: [guard-empty-commit, detect-release-commit]
-    name: Wait while a publish is in flight
+    name: Check for in-flight publish
     if: needs.detect-release-commit.outputs.release-commit != 'true'
     runs-on: ubuntu-latest
     # Backstops the poll loop at the job level (covers checkout + every `gh`

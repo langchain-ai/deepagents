@@ -103,8 +103,10 @@ class TestServerGraph:
             model=model_obj,
             apply_to_settings=MagicMock(),
         )
+        configure_redaction = MagicMock()
         config_module = _module_with_attrs(
             "deepagents_code.config",
+            configure_langsmith_secret_redaction=configure_redaction,
             create_model=MagicMock(side_effect=create_model_side_effect),
             settings=SimpleNamespace(
                 has_tavily=False,
@@ -169,6 +171,7 @@ class TestServerGraph:
             ):
                 assert await module.make_graph() is graph_obj
 
+        configure_redaction.assert_called_once_with()
         resolve_mcp_tools.assert_awaited_once()
         assert warm_import_thread_ids
         assert warm_import_thread_ids[0] != loop_thread_id
@@ -202,6 +205,8 @@ class TestServerGraph:
             enable_skills=True,
             enable_shell=True,
             enable_interpreter=False,
+            rubric_model=None,
+            rubric_max_iterations=None,
             mcp_server_info=mcp_server_info,
             cwd=None,
             project_context=None,
@@ -271,6 +276,7 @@ class TestServerGraph:
         )
         config_module = _module_with_attrs(
             "deepagents_code.config",
+            configure_langsmith_secret_redaction=MagicMock(),
             create_model=MagicMock(
                 return_value=SimpleNamespace(
                     model=model_obj,

@@ -186,6 +186,21 @@ def show_help() -> None:
         "  --max-turns N              Max agentic turns before stopping (needs -n)"
     )
     console.print(
+        "  --goal TEXT                Draft goal criteria; review, then run "
+        "accepted goal"
+    )
+    console.print(
+        "  --rubric TEXT|@PATH        Acceptance criteria to grade against; "
+        "'@path' reads a file relative to cwd, '~' ok (needs -n)"
+    )
+    console.print(
+        "  --rubric-model MODEL       Model the rubric grader uses "
+        "(defaults to main model)"
+    )
+    console.print(
+        "  --rubric-max-iterations N  Override grader iterations per rubric attempt"
+    )
+    console.print(
         "  --timeout SECONDS          Hard wall-clock limit; exits 124 on expiry"
         " (needs -n/stdin)"
     )
@@ -653,12 +668,13 @@ def show_config_help() -> None:
     console.print("  dcode config <command> [options]")
     console.print()
     console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
-    console.print("  show              Show effective values and their source")
-    console.print("  list|ls           List all available options")
+    console.print("  show|list|ls      Show effective values and their source")
     console.print("  get <key>         Show one option's value and source")
     console.print("  path              Show config file locations")
     console.print()
-    _print_option_section()
+    _print_option_section(
+        "  -v, --verbose, --all  Also show each option's description and how to set it",
+    )
     console.print()
     console.print(
         "  Credentials are reported as set/not set only; values are never printed.",
@@ -667,7 +683,7 @@ def show_config_help() -> None:
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  dcode config show")
-    console.print("  dcode config list --json")
+    console.print("  dcode config show --verbose")
     console.print("  dcode config get interpreter.memory_limit_mb")
     console.print("  dcode config path")
     console.print()

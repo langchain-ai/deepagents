@@ -27,7 +27,7 @@ AGENT_ASSISTANT_ID=local AGENT_MODEL=<provider>:<model-id> uv run deepagents-tal
 
 If `AGENT_MODEL` is unset, Talon starts with the echo runtime. This is useful for checking host lifecycle and channel wiring without provider credentials.
 
-Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host creates restrictive state directories for the materialized agent manifest, channel sessions, and cron jobs. The default local execution workspace is the current working directory; set `DEEPAGENTS_TALON_WORKSPACE` to use a different directory.
+Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host creates restrictive state directories for the materialized agent manifest, channel sessions, and cron jobs. The default local execution workspace is the current working directory; set `DEEPAGENTS_TALON_WORKSPACE` to use a different directory. The per-invocation graph recursion limit defaults to `500`; set `DEEPAGENTS_TALON_RECURSION_LIMIT` to tune it.
 
 ## Fleet Exports
 
@@ -52,6 +52,14 @@ uv run deepagents-talon --once
 ```
 
 During a long-running Fleet session, Talon treats a 401/403 from an MCP tool as an expired OAuth credential signal. It reloads the Fleet components once, which re-mints tokens and rebuilds MCP connections, then retries the failed graph invocation once. If authorization still fails, Talon returns a structured `mcp_auth_failed` error instead of looping.
+
+## Tool Approval Overrides
+
+Set `DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS` to a comma-separated list of tool names that should always require Talon's channel approval flow. This local override is additive with Fleet-provided HITL configuration and also applies to non-Fleet MCP or local runtime tools.
+
+```bash
+DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS=bash,execute,github_create_pr
+```
 
 ## WhatsApp
 

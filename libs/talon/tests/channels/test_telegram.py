@@ -27,7 +27,7 @@ from deepagents_talon.channels.telegram import (
     _TelegramTransport,
 )
 from deepagents_talon.config import TalonConfig
-from deepagents_talon.interfaces import ChannelMedia, ChannelMessage
+from deepagents_talon.interfaces import ChannelMedia, ChannelMessage, ChannelReaction
 
 
 class JsonResponse:
@@ -166,6 +166,33 @@ def _make_channel_post(
     }
 
 
+def _make_reaction_update(  # noqa: PLR0913  # test helper with many optional fields
+    *,
+    update_id: int = 1,
+    chat_id: int = 111,
+    sender_id: int | None = 111,
+    chat_type: str = "private",
+    message_id: int = 10,
+    emoji: str = "👍",
+    anonymous: bool = False,
+    new_reaction: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    reaction: dict[str, object] = {
+        "chat": {"id": chat_id, "type": chat_type},
+        "message_id": message_id,
+        "date": 1_700_000_000,
+        "old_reaction": [],
+        "new_reaction": new_reaction
+        if new_reaction is not None
+        else [{"type": "emoji", "emoji": emoji}],
+    }
+    if sender_id is not None:
+        reaction["user"] = {"id": sender_id, "is_bot": False, "first_name": "Operator"}
+    if anonymous:
+        reaction["actor_chat"] = {"id": chat_id, "type": chat_type, "title": "Anonymous"}
+    return {"update_id": update_id, "message_reaction": reaction}
+
+
 def _make_config(
     tmp_path: Path,
     *,
@@ -217,6 +244,28 @@ async def _run_channel_once(
     try:
         if expected_messages:
             await _wait_for_received(received, expected_messages)
+        else:
+            await asyncio.sleep(0)
+    finally:
+        await channel.stop()
+    return received
+
+
+async def _run_channel_reactions_once(
+    channel: TelegramChannel,
+    *,
+    expected_reactions: int = 1,
+) -> list[ChannelReaction]:
+    received: list[ChannelReaction] = []
+
+    async def record(reaction: ChannelReaction) -> None:
+        received.append(reaction)
+
+    channel.set_reaction_handler(record)
+    await channel.start()
+    try:
+        if expected_reactions:
+            await _wait_for_reactions(received, expected_reactions)
         else:
             await asyncio.sleep(0)
     finally:
@@ -417,7 +466,162 @@ async def test_channel_polls_and_dispatches_allowed_messages(tmp_path: Path) -> 
     assert received[0].conversation_id == "111"
     assert received[0].message_id == "10"
     get_updates_calls = [call for call in transport.calls if call[0] == "getUpdates"]
-    assert get_updates_calls[0][1]["allowed_updates"] == ["message", "channel_post"]
+    assert get_updates_calls[0][1]["allowed_updates"] == [
+        "message",
+        "channel_post",
+        "message_reaction",
+    ]
+
+
+async def test_channel_polls_and_dispatches_allowed_reactions(tmp_path: Path) -> None:
+    cases: tuple[tuple[str, int], ...] = (
+        ("private", 111),
+        ("group", -111),
+        ("supergroup", -100111),
+        ("channel", -100222),
+    )
+
+    for chat_type, chat_id in cases:
+        case_dir = tmp_path / chat_type
+        transport = RecordingTransport(
+            updates=[
+                _make_reaction_update(
+                    update_id=10,
+                    chat_id=chat_id,
+                    sender_id=222,
+                    chat_type=chat_type,
+                    message_id=42,
+                    emoji="👎",
+                ),
+            ],
+        )
+        channel = TelegramChannel(
+            _make_config(
+                case_dir,
+                exposure=ChannelExposure(
+                    mode=ExposureMode.OPEN,
+                    operator_ids=frozenset({"222"}),
+                ),
+            ),
+            transport=cast("_TelegramTransport", transport),
+        )
+
+        received = await _run_channel_reactions_once(channel)
+
+        assert received == [
+            ChannelReaction(
+                conversation_id=str(chat_id),
+                message_id="42",
+                emoji="👎",
+                sender_id="222",
+                metadata={"provider": "telegram", "chat_type": chat_type},
+            )
+        ]
+
+
+async def test_channel_drops_anonymous_or_senderless_reactions(tmp_path: Path) -> None:
+    transport = RecordingTransport(
+        updates=[
+            _make_reaction_update(
+                update_id=10,
+                chat_id=-100111,
+                sender_id=None,
+                chat_type="channel",
+                anonymous=True,
+            ),
+            _make_reaction_update(
+                update_id=11,
+                chat_id=111,
+                sender_id=None,
+                chat_type="private",
+            ),
+        ],
+    )
+    config = _make_config(tmp_path, exposure=ChannelExposure(mode=ExposureMode.OPEN))
+    channel = TelegramChannel(config, transport=cast("_TelegramTransport", transport))
+
+    received = await _run_channel_reactions_once(channel, expected_reactions=0)
+
+    assert received == []
+    assert _load_offset(config.offset_file) == 12
+
+
+async def test_channel_drops_reactions_denied_by_exposure(tmp_path: Path) -> None:
+    transport = RecordingTransport(
+        updates=[
+            _make_reaction_update(
+                update_id=10,
+                chat_id=111,
+                sender_id=222,
+                chat_type="private",
+                message_id=42,
+            ),
+        ],
+    )
+    config = _make_config(tmp_path, operator_id="111")
+    channel = TelegramChannel(config, transport=cast("_TelegramTransport", transport))
+
+    received = await _run_channel_reactions_once(channel, expected_reactions=0)
+
+    assert received == []
+    assert _load_offset(config.offset_file) == 11
+
+
+async def test_channel_drops_untrusted_reactions_in_allowlisted_conversation(
+    tmp_path: Path,
+) -> None:
+    transport = RecordingTransport(
+        updates=[
+            _make_reaction_update(
+                update_id=10,
+                chat_id=-100111,
+                sender_id=222,
+                chat_type="channel",
+                message_id=42,
+            ),
+            _make_reaction_update(
+                update_id=11,
+                chat_id=-100111,
+                sender_id=111,
+                chat_type="channel",
+                message_id=42,
+            ),
+        ],
+    )
+    config = _make_config(
+        tmp_path,
+        exposure=ChannelExposure(
+            mode=ExposureMode.ALLOWLIST,
+            conversations=frozenset({"-100111"}),
+        ),
+        allowed_user_ids=frozenset({"111"}),
+    )
+    channel = TelegramChannel(config, transport=cast("_TelegramTransport", transport))
+
+    received = await _run_channel_reactions_once(channel)
+
+    assert [reaction.sender_id for reaction in received] == ["111"]
+    assert _load_offset(config.offset_file) == 12
+
+
+async def test_channel_persists_offset_after_reaction_update(tmp_path: Path) -> None:
+    transport = RecordingTransport(
+        updates=[
+            _make_reaction_update(
+                update_id=20,
+                chat_id=111,
+                sender_id=111,
+                message_id=42,
+            ),
+        ],
+    )
+    config = _make_config(tmp_path, operator_id="111")
+    channel = TelegramChannel(config, transport=cast("_TelegramTransport", transport))
+
+    received = await _run_channel_reactions_once(channel)
+
+    assert received[0].message_id == "42"
+    assert _load_offset(config.offset_file) == 21
 
 
 async def test_channel_polls_and_dispatches_allowed_channel_posts(tmp_path: Path) -> None:
@@ -1180,4 +1384,14 @@ async def _wait_for_received(messages: list[ChannelMessage], count: int) -> None
             return
         await asyncio.sleep(0.01)
     msg = f"received {len(messages)} message(s), expected {count}"
+    raise AssertionError(msg)
+
+
+async def _wait_for_reactions(reactions: list[ChannelReaction], count: int) -> None:
+    deadline = asyncio.get_running_loop().time() + 2
+    while asyncio.get_running_loop().time() < deadline:
+        if len(reactions) >= count:
+            return
+        await asyncio.sleep(0.01)
+    msg = f"received {len(reactions)} reaction(s), expected {count}"
     raise AssertionError(msg)

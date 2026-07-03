@@ -796,6 +796,15 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.KITTY_KEYBOARD,
     ),
     ConfigOption(
+        key="display.show_scrollbar",
+        group="Display",
+        summary="Show the vertical scrollbar in the chat area (off by default).",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.SHOW_SCROLLBAR,
+        toml_keys=("ui", "show_scrollbar"),
+    ),
+    ConfigOption(
         key="display.hide_cwd",
         group="Display",
         summary="Hide local path displays in the footer and startup splash.",
@@ -852,6 +861,15 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.NO_TERMINAL_ESCAPE,
     ),
     ConfigOption(
+        key="display.show_url_open_toast",
+        group="Display",
+        summary="Show a confirmation toast after clicking a URL.",
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.SHOW_URL_OPEN_TOAST,
+        toml_keys=("ui", "show_url_open_toast"),
+    ),
+    ConfigOption(
         key="display.onboarding_integrations_screen",
         group="Display",
         summary="Show the integrations summary screen during first-run onboarding.",
@@ -885,6 +903,15 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.LANGSMITH_PROJECT,
         fallback_env_vars=("LANGSMITH_PROJECT",),
         settings_field="deepagents_langchain_project",
+    ),
+    ConfigOption(
+        key="tracing.langsmith_redact",
+        group="Tracing",
+        summary="Redact detected secrets from LangSmith agent traces before upload.",
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.LANGSMITH_REDACT,
+        toml_keys=("tracing", "langsmith_redact"),
     ),
     ConfigOption(
         key="tracing.user_id",
@@ -1044,13 +1071,21 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.STRUCTURED,
         toml_keys=("threads", "columns"),
     ),
-    # --- Warnings (config.toml-only) -----------------------------------
+    # --- Warnings ------------------------------------------------------
     ConfigOption(
         key="warnings.suppress",
         group="Warnings",
         summary="Warning keys to suppress (e.g. 'ripgrep').",
         kind=OptionKind.STRUCTURED,
         toml_keys=("warnings", "suppress"),
+    ),
+    ConfigOption(
+        key="warnings.suppress_env_override",
+        group="Warnings",
+        summary="Silence the LangSmith env-var override warning at startup.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.SUPPRESS_ENV_OVERRIDE_WARNING,
     ),
     # --- Updates --------------------------------------------------------
     ConfigOption(

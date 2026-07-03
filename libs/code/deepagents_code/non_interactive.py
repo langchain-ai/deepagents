@@ -284,6 +284,9 @@ class StreamState:
     """Maps a tool-call index or ID to its name/ID metadata for in-progress
     tool calls."""
 
+    tool_call_args_by_id: dict[str, dict[str, Any]] = field(default_factory=dict)
+    """Maps completed tool-call IDs to their parsed arguments for result hooks."""
+
     pending_interrupts: dict[str, HITLRequest] = field(default_factory=dict)
     """Maps interrupt IDs to their validated HITL requests that are awaiting
     decisions."""
@@ -506,6 +509,9 @@ def _process_ai_message(
                     },
                 )
                 buffer["hook_dispatched"] = True
+                if isinstance(buffer_id, str):
+                    state.tool_call_args_by_id[buffer_id] = parsed_args
+                state.tool_call_buffers.pop(buffer_key, None)
 
 
 def _process_message_chunk(
@@ -543,6 +549,12 @@ def _process_message_chunk(
     if isinstance(message_obj, AIMessage):
         _process_ai_message(message_obj, state, console)
     elif isinstance(message_obj, ToolMessage):
+        tool_id = getattr(message_obj, "tool_call_id", None)
+        tool_args = (
+            state.tool_call_args_by_id.pop(tool_id, {})
+            if isinstance(tool_id, str)
+            else {}
+        )
         record = file_op_tracker.complete_with_message(message_obj)
         if record and record.diff:
             if state.spinner:
@@ -556,7 +568,8 @@ def _process_message_chunk(
             "tool.result",
             {
                 "tool_name": getattr(message_obj, "name", ""),
-                "tool_id": getattr(message_obj, "tool_call_id", None),
+                "tool_id": tool_id,
+                "tool_args": tool_args,
                 "tool_status": getattr(message_obj, "status", "success"),
                 "tool_output": str(message_obj.content)[:2000],
             },

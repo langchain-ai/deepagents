@@ -1889,6 +1889,60 @@ class TestProcessAIMessageHooks:
         names = {c[0][1]["tool_name"] for c in tool_use_calls}
         assert names == {"read_file", "write_file"}
 
+    def test_reused_tool_call_index_dispatches_for_later_turns(self) -> None:
+        """A completed index-0 call must not suppress the next index-0 call."""
+        first_msg = MagicMock(spec=AIMessage)
+        first_msg.content_blocks = [
+            {
+                "type": "tool_call_chunk",
+                "name": "read_file",
+                "id": "call-1",
+                "index": 0,
+                "args": {"path": "foo.py"},
+            }
+        ]
+        second_msg = MagicMock(spec=AIMessage)
+        second_msg.content_blocks = [
+            {
+                "type": "tool_call_chunk",
+                "name": "write_file",
+                "id": "call-2",
+                "index": 0,
+                "args": {"path": "bar.py", "content": "hello"},
+            }
+        ]
+        state = StreamState()
+        console = Console(quiet=True)
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_ai_message(first_msg, state, console)
+            _process_ai_message(second_msg, state, console)
+
+        tool_use_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.use"
+        ]
+        assert tool_use_calls == [
+            call(
+                "tool.use",
+                {
+                    "tool_name": "read_file",
+                    "tool_id": "call-1",
+                    "tool_args": {"path": "foo.py"},
+                },
+            ),
+            call(
+                "tool.use",
+                {
+                    "tool_name": "write_file",
+                    "tool_id": "call-2",
+                    "tool_args": {"path": "bar.py", "content": "hello"},
+                },
+            ),
+        ]
+        assert state.tool_call_buffers == {}
+
 
 class TestProcessMessageChunkHooks:
     """Tests for tool.result hook dispatch in _process_message_chunk."""
@@ -1918,10 +1972,43 @@ class TestProcessMessageChunkHooks:
             {
                 "tool_name": "read_file",
                 "tool_id": "call-1",
+                "tool_args": {},
                 "tool_status": "success",
                 "tool_output": "File read successfully",
             },
         )
+
+    def test_tool_result_includes_tool_args_from_matching_use(self) -> None:
+        """tool.result includes the args from the matching tool.use event."""
+        from langchain_core.messages import ToolMessage
+
+        tool_msg = ToolMessage(
+            content="File read successfully",
+            tool_call_id="call-1",
+            name="read_file",
+            status="success",
+        )
+        state = StreamState(tool_call_args_by_id={"call-1": {"path": "foo.py"}})
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
+
+        mock_dispatch.assert_called_once_with(
+            "tool.result",
+            {
+                "tool_name": "read_file",
+                "tool_id": "call-1",
+                "tool_args": {"path": "foo.py"},
+                "tool_status": "success",
+                "tool_output": "File read successfully",
+            },
+        )
+        assert state.tool_call_args_by_id == {}
 
     def test_tool_result_dispatched_for_error_status(self) -> None:
         """tool.result fires with tool_status='error' when tool call failed."""

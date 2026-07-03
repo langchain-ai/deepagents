@@ -1653,7 +1653,7 @@ class ChatInput(Vertical):
 
         # Collapsed paste storage: paste_id → full content.  When a large paste
         # arrives, the full text is stored here and a compact
-        # ``[Pasted text #N +M lines]`` placeholder is inserted into the text
+        # `[Pasted text #N +M lines]` placeholder is inserted into the text
         # area instead.  At submission the placeholder is expanded back.
         self._pasted_contents: dict[int, PastedContent] = {}
         self._next_paste_id = 1
@@ -2377,12 +2377,12 @@ class ChatInput(Vertical):
     def on_chat_text_area_pasted_text(self, event: ChatTextArea.PastedText) -> None:
         """Handle large pastes by collapsing into a compact placeholder.
 
-        Stores the full text in ``_pasted_contents`` and inserts a
-        ``[Pasted text #N +M lines]`` placeholder into the text area instead
+        Stores the full text in `_pasted_contents` and inserts a
+        `[Pasted text #N +M lines]` placeholder into the text area instead
         of the raw content, keeping the input box compact.
 
         Args:
-            event: The ``PastedText`` message carrying the full pasted text.
+            event: The `PastedText` message carrying the full pasted text.
         """
         if not self._text_area:
             return

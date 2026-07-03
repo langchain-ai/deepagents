@@ -144,6 +144,29 @@ class TestTrialsSubcommand:
         assert "--eval-category" in argv
         assert "tool_use" in argv
 
+    def test_dry_run_forwards_eval_category_exclude(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Regression: `trials` accepted --eval-category-exclude but silently
+        # dropped it instead of forwarding it to run_trials. See issue #4440.
+        rc = cli.main(
+            [
+                "trials",
+                "--model",
+                "openai:gpt-5.5",
+                "--trials",
+                "2",
+                "--eval-category-exclude",
+                "memory",
+                "--dry-run",
+                "--json",
+            ]
+        )
+        assert rc == cli.EXIT_OK
+        argv = json.loads(capsys.readouterr().out)["argv"]
+        assert "--eval-category-exclude" in argv
+        assert "memory" in argv
+
     def test_retry_failed_collects_nodeids(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:

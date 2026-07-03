@@ -279,6 +279,8 @@ def _build_pytest_args(args: argparse.Namespace, report_path: Path) -> list[str]
     ]
     for cat in args.eval_category or []:
         cmd.extend(["--eval-category", cat])
+    for cat in args.eval_category_exclude or []:
+        cmd.extend(["--eval-category-exclude", cat])
     for tier in args.eval_tier or []:
         cmd.extend(["--eval-tier", tier])
     if args.openai_reasoning_effort:
@@ -487,6 +489,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="append",
         default=[],
         help="Restrict to one eval category (repeatable).",
+    )
+    parser.add_argument(
+        "--eval-category-exclude",
+        action="append",
+        default=[],
+        help="Exclude one eval category (repeatable).",
     )
     parser.add_argument(
         "--eval-tier",

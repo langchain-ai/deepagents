@@ -398,6 +398,8 @@ def _cmd_trials(args: argparse.Namespace, parser: argparse.ArgumentParser) -> in
     rt_argv: list[str] = ["--model", args.model, "--trials", str(args.trials)]
     for cat in args.eval_category or []:
         rt_argv.extend(["--eval-category", cat])
+    for cat in args.eval_category_exclude or []:
+        rt_argv.extend(["--eval-category-exclude", cat])
     for tier in args.eval_tier or []:
         rt_argv.extend(["--eval-tier", tier])
     if args.openai_reasoning_effort:

@@ -1,14 +1,18 @@
 """The `dcode tools` command group: provision managed external tools.
 
-Currently this exposes `dcode tools install`, which fetches the pinned,
-SHA-256-verified ripgrep binary into `~/.deepagents/bin` (the same managed
-path used on first run) and is also handy for repairing a missing or stale
-`rg`. The install script calls this verb instead of re-encoding the pinned
-version + checksum table in bash.
+`dcode tools install` fetches the pinned, SHA-256-verified ripgrep binary into
+`~/.deepagents/bin` (the same managed path used on first run) and is also handy
+for repairing a missing or stale `rg`. The install script calls this verb
+instead of re-encoding the pinned version + checksum table in bash.
 
-Help rendering for `dcode tools -h` / `dcode tools install -h` is served by
-`ui.show_tools_help` / `ui.show_tools_install_help`, which do not import this
-module, so the help path stays light.
+`dcode tools list` prints the tools available to the agent, grouped by source
+(built-in tools, then per-server MCP tools), enumerated from the real tool
+objects the agent binds so the output never drifts from what the model sees.
+
+Help rendering for `dcode tools -h` / `dcode tools install -h` /
+`dcode tools list -h` is served by `ui.show_tools_help` /
+`ui.show_tools_install_help` / `ui.show_tools_list_help`, which do not import
+this module, so the help path stays light.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ if TYPE_CHECKING:
     import argparse
 
     from deepagents_code.output import OutputFormat
+    from deepagents_code.tool_catalog import ToolGroup
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +51,8 @@ def run_tools_command(args: argparse.Namespace) -> int:
     subcommand = getattr(args, "tools_command", None)
     if subcommand == "install":
         return _run_tools_install(args)
+    if subcommand == "list":
+        return _run_tools_list(args)
 
     # `cli_main`'s bare-group help fast path handles `dcode tools` with no
     # subcommand, so this is only reached for an unexpected value.
@@ -53,6 +60,104 @@ def run_tools_command(args: argparse.Namespace) -> int:
 
     ui.show_tools_help()
     return 0
+
+
+def _run_tools_list(args: argparse.Namespace) -> int:
+    """List the tools available to the agent, grouped by source.
+
+    Enumerates the real tool objects the agent binds (see
+    `tool_catalog.collect_tool_groups`) so names and descriptions never drift
+    from what the model sees. MCP discovery is best-effort: failures leave the
+    built-in group intact.
+
+    Args:
+        args: Parsed CLI namespace. Only `output_format` is read.
+
+    Returns:
+        `0` — listing is informational and always succeeds.
+    """
+    from deepagents_code.tool_catalog import collect_tool_groups
+
+    output_format: OutputFormat = getattr(args, "output_format", "text")
+    groups = collect_tool_groups()
+
+    if output_format == "json":
+        tools_payload = [
+            {
+                "name": entry.name,
+                "description": entry.description,
+                "group": group.label,
+                "source": group.source,
+            }
+            for group in groups
+            for entry in group.tools
+        ]
+        write_json(
+            "tools list",
+            {"tools": tools_payload, "count": len(tools_payload)},
+        )
+        return 0
+
+    _print_tool_groups(groups)
+    return 0
+
+
+def _print_tool_groups(groups: list[ToolGroup]) -> None:
+    """Render tool groups as aligned `name  description` rows.
+
+    Args:
+        groups: Ordered tool groups (built-in first, then MCP servers).
+    """
+    from deepagents_code.config import console, get_glyphs
+
+    ellipsis = get_glyphs().ellipsis
+    total = sum(len(group.tools) for group in groups)
+    noun = "tool" if total == 1 else "tools"
+
+    console.print()
+    console.print(f"{total} {noun} available", highlight=False)
+
+    for group in groups:
+        if not group.tools:
+            continue
+        name_width = max(len(entry.name) for entry in group.tools)
+        # Indent (2) + name column + gap (2) precede the description; keep each
+        # row on one line by truncating the description to the terminal width.
+        desc_width = console.width - 2 - name_width - 2
+        console.print()
+        console.print(group.label, style="bold", markup=False, highlight=False)
+        for entry in group.tools:
+            padded = entry.name.ljust(name_width)
+            description = _truncate(entry.description, desc_width, ellipsis)
+            # `markup=False`/`highlight=False`: tool names and descriptions are
+            # sourced from tool objects and may contain brackets or numbers.
+            console.print(
+                f"  {padded}  {description}".rstrip(),
+                markup=False,
+                highlight=False,
+                no_wrap=True,
+                crop=True,
+            )
+    console.print()
+
+
+def _truncate(text: str, width: int, ellipsis: str) -> str:
+    """Truncate `text` to `width` columns, appending `ellipsis` when clipped.
+
+    Args:
+        text: Description text to truncate.
+        width: Maximum column width for the description.
+        ellipsis: Marker appended when `text` is clipped.
+
+    Returns:
+        `text` unchanged when it fits, otherwise a clipped string ending in
+        `ellipsis`.
+    """
+    if width <= 0 or len(text) <= width:
+        return text
+    if width <= len(ellipsis):
+        return text[:width]
+    return text[: width - len(ellipsis)].rstrip() + ellipsis
 
 
 def _run_tools_install(args: argparse.Namespace) -> int:

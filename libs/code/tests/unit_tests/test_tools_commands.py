@@ -12,6 +12,7 @@ from rich.console import Console
 
 from deepagents_code import managed_tools
 from deepagents_code._env_vars import OFFLINE, RIPGREP_INSTALLER
+from deepagents_code.tool_catalog import ToolEntry, ToolGroup
 from deepagents_code.tools_commands import run_tools_command
 
 
@@ -142,3 +143,80 @@ class TestToolsInstall:
             code = run_tools_command(args)
         assert code == 0
         show_help.assert_called_once()
+
+
+_SAMPLE_GROUPS = [
+    ToolGroup(
+        label="Built-in",
+        source="built-in",
+        tools=(
+            ToolEntry(name="read_file", description="Read a file"),
+            ToolEntry(name="execute", description="Run a shell command"),
+        ),
+    ),
+    ToolGroup(
+        label="docs",
+        source="mcp",
+        tools=(ToolEntry(name="search_docs", description="Search the docs"),),
+    ),
+]
+
+
+class TestToolsList:
+    """Tests for `dcode tools list` dispatch."""
+
+    def test_list_text_output(self) -> None:
+        args = argparse.Namespace(tools_command="list", output_format="text")
+        with patch(
+            "deepagents_code.tool_catalog.collect_tool_groups",
+            return_value=_SAMPLE_GROUPS,
+        ):
+            code, output = _run_text(args)
+        assert code == 0
+        assert "3 tools available" in output
+        assert "Built-in" in output
+        assert "read_file" in output
+        assert "Run a shell command" in output
+        # MCP tools grouped under their server name.
+        assert "docs" in output
+        assert "search_docs" in output
+
+    def test_list_json_output(self, capsys) -> None:
+        args = argparse.Namespace(tools_command="list", output_format="json")
+        with patch(
+            "deepagents_code.tool_catalog.collect_tool_groups",
+            return_value=_SAMPLE_GROUPS,
+        ):
+            code = run_tools_command(args)
+        assert code == 0
+        envelope = json.loads(capsys.readouterr().out)
+        assert envelope["command"] == "tools list"
+        data = envelope["data"]
+        assert data["count"] == 3
+        assert len(data["tools"]) == 3
+        first = data["tools"][0]
+        assert first == {
+            "name": "read_file",
+            "description": "Read a file",
+            "group": "Built-in",
+            "source": "built-in",
+        }
+        assert data["tools"][-1]["source"] == "mcp"
+        assert data["tools"][-1]["group"] == "docs"
+
+    def test_list_singular_noun_for_one_tool(self) -> None:
+        args = argparse.Namespace(tools_command="list", output_format="text")
+        one_group = [
+            ToolGroup(
+                label="Built-in",
+                source="built-in",
+                tools=(ToolEntry(name="ls", description="List files"),),
+            )
+        ]
+        with patch(
+            "deepagents_code.tool_catalog.collect_tool_groups",
+            return_value=one_group,
+        ):
+            code, output = _run_text(args)
+        assert code == 0
+        assert "1 tool available" in output

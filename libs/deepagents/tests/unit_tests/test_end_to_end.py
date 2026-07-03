@@ -32,7 +32,7 @@ from deepagents.backends.protocol import BackendProtocol, ExecuteResponse, Sandb
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, create_file_data
-from deepagents.graph import create_deep_agent
+from deepagents.graph import SystemPromptConfig, create_deep_agent
 from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN, FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.rubric import RUBRIC_GRADER_MESSAGE_SOURCE, RubricMiddleware
 from deepagents.middleware.subagents import SubAgent  # noqa: TC001
@@ -580,21 +580,107 @@ class TestDeepAgentEndToEnd:
         assert "You are a helpful research assistant." in content
         assert "You are a deep agent" in content
 
-    def test_deep_agent_system_prompt_config_overwrites_base(self) -> None:
-        """`system_prompt={"base": ...}` replaces the built-in base prompt."""
+    @pytest.mark.parametrize(
+        ("system_prompt", "ordered", "absent"),
+        [
+            # `base` replaces the built-in base prompt.
+            pytest.param(
+                {"base": "__base__"},
+                ["__base__"],
+                ["You are a deep agent"],
+                id="base-replaces-default",
+            ),
+            # `prefix` sits before the retained default base.
+            pytest.param(
+                {"prefix": "__pre__"},
+                ["__pre__", "You are a deep agent"],
+                [],
+                id="prefix-before-default-base",
+            ),
+            # `suffix` sits after the retained default base.
+            pytest.param(
+                {"suffix": "__suf__"},
+                ["You are a deep agent", "__suf__"],
+                [],
+                id="suffix-after-default-base",
+            ),
+            # All three slots, in order, with the default base replaced.
+            pytest.param(
+                {"prefix": "__pre__", "base": "__b__", "suffix": "__suf__"},
+                ["__pre__", "__b__", "__suf__"],
+                ["You are a deep agent"],
+                id="prefix-base-suffix",
+            ),
+            # `base=None` drops the base entirely (distinct from omitting it).
+            pytest.param(
+                {"base": None, "suffix": "__only__"},
+                ["__only__"],
+                ["You are a deep agent"],
+                id="base-none-drops-base",
+            ),
+            # Back-compat: a bare string still prepends before the default base.
+            pytest.param(
+                "__bare__",
+                ["__bare__", "You are a deep agent"],
+                [],
+                id="bare-str-prepends",
+            ),
+        ],
+    )
+    def test_deep_agent_system_prompt_config(
+        self,
+        system_prompt: str | SystemPromptConfig,
+        ordered: list[str],
+        absent: list[str],
+    ) -> None:
+        """`system_prompt` config assembles prefix -> base -> suffix in order."""
         model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
         capturing_middleware = SystemMessageCapturingMiddleware()
         agent = create_deep_agent(
             model=model,
-            system_prompt={"base": "__foo__"},
+            system_prompt=system_prompt,
             middleware=[capturing_middleware],
         )
 
         agent.invoke({"messages": [HumanMessage(content="Hello")]})
 
         content = str(capturing_middleware.captured_system_messages[0].content)
-        assert "__foo__" in content
-        assert "You are a deep agent" not in content
+        positions = [content.find(fragment) for fragment in ordered]
+        for fragment, pos in zip(ordered, positions, strict=True):
+            assert pos != -1, f"{fragment!r} missing from system prompt:\n{content}"
+        assert positions == sorted(positions), f"fragments out of order: {ordered}"
+        for fragment in absent:
+            assert fragment not in content, f"{fragment!r} unexpectedly present"
+
+    def test_deep_agent_system_prompt_config_preserves_content_blocks(self) -> None:
+        """A `SystemMessage` in a slot keeps its content blocks and cache markers."""
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        capturing_middleware = SystemMessageCapturingMiddleware()
+        prefix = SystemMessage(
+            content=[
+                {
+                    "type": "text",
+                    "text": "__cached_prefix__",
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+        )
+        agent = create_deep_agent(
+            model=model,
+            system_prompt={"prefix": prefix},
+            middleware=[capturing_middleware],
+        )
+
+        agent.invoke({"messages": [HumanMessage(content="Hello")]})
+
+        captured = capturing_middleware.captured_system_messages[0]
+        assert isinstance(captured, SystemMessage)
+        blocks = captured.content_blocks
+        cached = [b for b in blocks if b.get("text") == "__cached_prefix__"]
+        assert cached, f"cached prefix block missing: {blocks}"
+        assert cached[0].get("cache_control") == {"type": "ephemeral"}
+        # Default base still follows the caller's cached prefix block.
+        assert any("You are a deep agent" in (b.get("text") or "") for b in blocks)
 
     def test_deep_agent_two_turns_no_initial_files(self) -> None:
         """Test deepagent with two conversation turns without specifying files on invoke.

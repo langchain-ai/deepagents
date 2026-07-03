@@ -255,12 +255,11 @@ async def test_agent_runtime_loads_fleet_components(
             middleware=(middleware,),
         )
 
-    async def fail_load_mcp(_config):
-        msg = "local MCP loader should not run for Fleet sources"
-        raise AssertionError(msg)
+    async def fake_load_mcp(_config) -> MCPTools:
+        return MCPTools(tools=(cast("Any", local_tool),), servers=())
 
     monkeypatch.setattr("deepagents_talon.__main__.load_fleet_agent_components", fake_load_fleet)
-    monkeypatch.setattr("deepagents_talon.__main__.load_mcp_tools", fail_load_mcp)
+    monkeypatch.setattr("deepagents_talon.__main__.load_mcp_tools", fake_load_mcp)
 
     config = TalonConfig.from_env(
         {
@@ -279,7 +278,7 @@ async def test_agent_runtime_loads_fleet_components(
     assert isinstance(runtime, DeepAgentRuntime)
     assert runtime.model == "fleet:model"
     assert runtime.system_prompt == "fleet prompt"
-    assert runtime.tools == (fleet_tool,)
+    assert runtime.tools == (fleet_tool, local_tool)
     assert runtime.subagents == (subagent,)
     assert runtime.skills == ("/fleet/skills",)
     assert runtime.middleware == (middleware,)
@@ -296,7 +295,7 @@ async def test_agent_runtime_loads_fleet_components(
     refreshed = await runtime.reload_agent_components()
 
     assert refreshed.model == "fleet:model"
-    assert refreshed.tools == (fleet_tool,)
+    assert refreshed.tools == (fleet_tool, local_tool)
     assert refreshed.middleware == (middleware,)
     assert refreshed.interrupt_on == {
         "fleet_tool": True,

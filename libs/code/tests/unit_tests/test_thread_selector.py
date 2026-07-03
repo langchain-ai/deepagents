@@ -440,7 +440,7 @@ class TestThreadSelectorTabSort:
                 updated_cell = header.query_one(".thread-cell-updated_at", Static)
                 created_cell = header.query_one(".thread-cell-created_at", Static)
                 sort_select = screen.query_one("#thread-sort-select", Select)
-                assert str(updated_cell._Static__content) == "Updated"
+                assert str(updated_cell.content) == "Updated"
                 assert updated_cell.has_class("thread-cell-sorted")
                 assert not created_cell.has_class("thread-cell-sorted")
                 assert sort_select.value == "updated_at"
@@ -451,7 +451,7 @@ class TestThreadSelectorTabSort:
                 assert screen._columns == original_columns
                 created_cell = header.query_one(".thread-cell-created_at", Static)
                 updated_cell = header.query_one(".thread-cell-updated_at", Static)
-                assert str(created_cell._Static__content) == "Created"
+                assert str(created_cell.content) == "Created"
                 assert created_cell.has_class("thread-cell-sorted")
                 assert not updated_cell.has_class("thread-cell-sorted")
                 assert sort_select.value == "created_at"
@@ -1567,7 +1567,7 @@ class TestFetchThreadUrl:
                 screen = app.screen
                 assert isinstance(screen, ThreadSelectorScreen)
                 title_widget = screen.query_one("#thread-title", Static)
-                content = title_widget._Static__content
+                content = title_widget.content
                 assert isinstance(content, Content)
                 assert "abc12345" in content.plain
 
@@ -1713,7 +1713,7 @@ class TestFetchThreadUrl:
                 screen = app.screen
                 assert isinstance(screen, ThreadSelectorScreen)
                 title_widget = screen.query_one("#thread-title", Static)
-                assert isinstance(title_widget._Static__content, str)
+                assert isinstance(title_widget.content, str)
 
     async def test_oserror_leaves_title_unchanged(self) -> None:
         """OSError during URL resolution should not crash or change the title."""
@@ -1734,7 +1734,7 @@ class TestFetchThreadUrl:
                 screen = app.screen
                 assert isinstance(screen, ThreadSelectorScreen)
                 title_widget = screen.query_one("#thread-title", Static)
-                assert isinstance(title_widget._Static__content, str)
+                assert isinstance(title_widget.content, str)
 
     async def test_unexpected_exception_leaves_title_unchanged(self) -> None:
         """Unexpected exception should not crash the thread selector."""
@@ -1755,7 +1755,7 @@ class TestFetchThreadUrl:
                 screen = app.screen
                 assert isinstance(screen, ThreadSelectorScreen)
                 title_widget = screen.query_one("#thread-title", Static)
-                assert isinstance(title_widget._Static__content, str)
+                assert isinstance(title_widget.content, str)
 
     async def test_none_url_leaves_title_unchanged(self) -> None:
         """When build returns None the title should remain a plain string."""
@@ -1776,7 +1776,7 @@ class TestFetchThreadUrl:
                 screen = app.screen
                 assert isinstance(screen, ThreadSelectorScreen)
                 title_widget = screen.query_one("#thread-title", Static)
-                content = title_widget._Static__content
+                content = title_widget.content
                 assert isinstance(content, str)
                 assert "abc12345" in content
 

@@ -438,6 +438,13 @@ class ProviderConfig(TypedDict, total=False):
     capitalization.
     """
 
+    short_name: str
+    """Compact brand label for space-constrained UI (e.g. the `/model` Recent
+    tag), where the full `display_name` — which may carry a parenthetical
+    qualifier like `"OpenAI Codex (ChatGPT login)"` — is too long. Optional;
+    when unset, callers fall back to `display_name`.
+    """
+
     api_key_url: str
     """Provider page where users can create or manage API keys.
 
@@ -2430,6 +2437,15 @@ class ModelConfig:
                     display_name,
                 )
 
+            short_name = cast("object", provider.get("short_name"))
+            if short_name is not None and not isinstance(short_name, str):
+                logger.warning(
+                    "Provider '%s' has non-string 'short_name' value %r "
+                    "(expected a string). Falling back to the display name.",
+                    name,
+                    short_name,
+                )
+
             api_key_url = cast("object", provider.get("api_key_url"))
             if api_key_url is not None and not isinstance(api_key_url, str):
                 logger.warning(
@@ -2616,6 +2632,19 @@ class ModelConfig:
         """
         provider = self.providers.get(provider_name)
         name = provider.get("display_name") if provider else None
+        return name if isinstance(name, str) else None
+
+    def get_provider_short_name(self, provider_name: str) -> str | None:
+        """Get the configured compact brand name for a provider.
+
+        Args:
+            provider_name: The provider to look up.
+
+        Returns:
+            Compact brand name if configured, None otherwise.
+        """
+        provider = self.providers.get(provider_name)
+        name = provider.get("short_name") if provider else None
         return name if isinstance(name, str) else None
 
     def get_provider_api_key_url(self, provider_name: str) -> str | None:

@@ -195,7 +195,7 @@ class InstallProviderConfirmScreen(ModalScreen[bool]):
         # Reuse the auth UI's curated labels (e.g. `google_genai` -> "Google
         # Gemini") so the title reads naturally, falling back to a title-cased
         # provider key. Avoids the event-loop config read in
-        # `_provider_display_name`, which is overkill for a static title.
+        # `provider_display_name`, which is overkill for a static title.
         from deepagents_code.widgets.auth import PROVIDER_DISPLAY_NAMES
 
         provider = PROVIDER_DISPLAY_NAMES.get(

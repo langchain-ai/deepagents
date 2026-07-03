@@ -723,16 +723,20 @@ def installed_days_old() -> int | None:
 
 
 def is_installation_stale() -> bool:
-    """Return whether the installed version is old enough to warn about.
+    """Return whether an older installed version should warn about updating.
 
-    `True` only when the installed version's release is at least
-    `INSTALLED_STALE_NOTICE_DAYS` old. Returns `False` for editable/dev
-    installs (release age is meaningless there), when update checks are
-    disabled (the opt-out silences this too), and when the age is unknown.
+    `True` only when a fresh cache says an update is available and the installed
+    version's release is at least `INSTALLED_STALE_NOTICE_DAYS` old. Returns
+    `False` for editable/dev installs (release age is meaningless there), when
+    update checks are disabled (the opt-out silences this too), and when the age
+    or update answer is unknown.
     """
     from deepagents_code.config import _is_editable_install
 
     if _is_editable_install() or not is_update_check_enabled():
+        return False
+    available, _ = get_cached_update_available()
+    if not available:
         return False
     days = installed_days_old()
     return days is not None and days >= INSTALLED_STALE_NOTICE_DAYS

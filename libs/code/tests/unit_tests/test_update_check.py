@@ -1176,18 +1176,21 @@ class TestFormatInstalledAgeSuffix:
         assert format_installed_age_suffix("1.0.0") == ""
 
 
-def _write_installed_release_time(cache_file: Path, *, days_ago: int) -> None:
+def _write_installed_release_time(
+    cache_file: Path, *, days_ago: int, latest_version: str | None = None
+) -> None:
     """Seed the cache with a release time for the running version."""
     from datetime import UTC, datetime, timedelta
 
     iso = (datetime.now(tz=UTC) - timedelta(days=days_ago)).isoformat()
+    data: dict[str, object] = {
+        "release_times": {__version__: iso},
+        "checked_at": time.time(),
+    }
+    if latest_version is not None:
+        data["version"] = latest_version
     cache_file.write_text(
-        json.dumps(
-            {
-                "release_times": {__version__: iso},
-                "checked_at": time.time(),
-            }
-        ),
+        json.dumps(data),
         encoding="utf-8",
     )
 
@@ -1204,7 +1207,9 @@ class TestInstalledDaysOld:
 class TestIsInstallationStale:
     def test_true_when_older_than_threshold(self, cache_file) -> None:
         _write_installed_release_time(
-            cache_file, days_ago=INSTALLED_STALE_NOTICE_DAYS + 1
+            cache_file,
+            days_ago=INSTALLED_STALE_NOTICE_DAYS + 1,
+            latest_version="99.0.0",
         )
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
@@ -1215,9 +1220,26 @@ class TestIsInstallationStale:
         ):
             assert is_installation_stale() is True
 
+    def test_false_when_current_version_is_old(self, cache_file) -> None:
+        _write_installed_release_time(
+            cache_file,
+            days_ago=INSTALLED_STALE_NOTICE_DAYS + 30,
+            latest_version=__version__,
+        )
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
+        ):
+            assert is_installation_stale() is False
+
     def test_false_when_newer_than_threshold(self, cache_file) -> None:
         _write_installed_release_time(
-            cache_file, days_ago=INSTALLED_STALE_NOTICE_DAYS - 1
+            cache_file,
+            days_ago=INSTALLED_STALE_NOTICE_DAYS - 1,
+            latest_version="99.0.0",
         )
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),

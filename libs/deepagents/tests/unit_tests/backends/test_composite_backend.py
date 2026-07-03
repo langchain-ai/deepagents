@@ -10,8 +10,10 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import (
     BackendProtocol,
     ExecuteResponse,
+    FileInfo,
     GlobResult,
     GrepResult,
+    LsResult,
     SandboxBackendProtocol,
     WriteResult,
 )
@@ -1628,3 +1630,24 @@ async def test_composite_adelete_unsupported_route_returns_error() -> None:
     assert result.path is None
     assert result.error is not None
     assert "not supported" in result.error
+
+
+def test_composite_backend_ls_unwraps_nested_lsresult_entries():
+    """ls() tolerates backends that accidentally nest LsResult inside entries."""
+    mem_store = InMemoryStore()
+
+    class BuggyBackend(StoreBackend):
+        def ls(self, path: str) -> LsResult:
+            result = super().ls(path)
+            return LsResult(entries=result)
+
+    composite = CompositeBackend(
+        default=BuggyBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={},
+    )
+
+    result = composite.ls("/")
+
+    assert result.error is None
+    assert result.entries is not None
+    assert all(isinstance(entry, dict) for entry in result.entries)

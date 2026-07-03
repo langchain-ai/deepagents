@@ -175,8 +175,21 @@ class CompositeBackend(BackendProtocol):
 
     @staticmethod
     def _coerce_ls_result(raw: LsResult | list[FileInfo]) -> LsResult:
-        """Normalize legacy `list[FileInfo]` returns to `LsResult`."""
+        """Normalize legacy `list[FileInfo]` returns to `LsResult`.
+
+        Also unwraps malformed backends that nest an `LsResult` inside
+        `entries` instead of returning `list[FileInfo]`.
+        """
         if isinstance(raw, LsResult):
+            if raw.error:
+                return raw
+            entries = raw.entries
+            while isinstance(entries, LsResult):
+                if entries.error:
+                    return entries
+                entries = entries.entries
+            if entries is not raw.entries:
+                return LsResult(entries=entries)
             return raw
         return LsResult(entries=raw)
 

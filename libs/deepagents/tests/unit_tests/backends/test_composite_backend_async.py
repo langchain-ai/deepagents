@@ -9,6 +9,8 @@ from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import (
     ExecuteResponse,
+    FileInfo,
+    LsResult,
     SandboxBackendProtocol,
     WriteResult,
 )
@@ -1077,3 +1079,63 @@ async def test_aedit_result_path_restored_to_full_routed_path():
 
     assert res.error is None
     assert res.path == "/memories/notes.md"  # not "/notes.md"
+
+
+async def test_composite_backend_als_unwraps_nested_lsresult_entries():
+    """als() tolerates backends that accidentally nest LsResult inside entries."""
+    mem_store = InMemoryStore()
+
+    class BuggyBackend(StoreBackend):
+        async def als(self, path: str) -> LsResult:
+            result = await super().als(path)
+            return LsResult(entries=result)
+
+    composite = CompositeBackend(
+        default=BuggyBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={},
+    )
+
+    result = await composite.als("/")
+
+    assert result.error is None
+    assert result.entries is not None
+    assert all(isinstance(entry, dict) for entry in result.entries)
+
+
+async def test_composite_backend_als_unwraps_doubly_nested_lsresult_entries():
+    """als() unwraps multiple levels of nested LsResult entries."""
+    mem_store = InMemoryStore()
+    inner_entries = [FileInfo(path="/file.txt", is_dir=False, size=1, modified_at="")]
+
+    class DoublyNestedBackend(StoreBackend):
+        async def als(self, path: str) -> LsResult:
+            return LsResult(entries=LsResult(entries=LsResult(entries=inner_entries)))
+
+    composite = CompositeBackend(
+        default=DoublyNestedBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={},
+    )
+
+    result = await composite.als("/")
+
+    assert result.error is None
+    assert result.entries == inner_entries
+
+
+async def test_composite_backend_als_propagates_nested_lsresult_error():
+    """als() surfaces errors from nested LsResult entries on routed paths."""
+    mem_store = InMemoryStore()
+
+    class NestedErrorBackend(StoreBackend):
+        async def als(self, path: str) -> LsResult:
+            return LsResult(entries=LsResult(error="not found"))
+
+    composite = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": NestedErrorBackend(store=mem_store, namespace=lambda _rt: ("memories",))},
+    )
+
+    result = await composite.als("/memories/")
+
+    assert result.error == "not found"
+    assert result.entries is None

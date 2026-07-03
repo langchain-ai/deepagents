@@ -100,6 +100,35 @@ def test_import_fleet_manifest_records_builtin_mcp_as_resolved(tmp_path: Path) -
     assert summary.setup_task_count == 2
 
 
+def test_import_fleet_manifest_reads_nested_fleet_model_config(tmp_path: Path) -> None:
+    fleet = _fleet_export(tmp_path)
+    (fleet / "config.json").write_text(
+        json.dumps(
+            {
+                "config": {
+                    "configurable": {
+                        "llm_model_config": {
+                            "modelId": "openai:gpt-5.5",
+                        },
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = import_fleet_manifest(
+        fleet,
+        assistant_id="agent-1",
+        channel="whatsapp",
+        env={"DEEPAGENTS_TALON_HOME": str(tmp_path / "home")},
+    )
+
+    manifest = json.loads(summary.manifest_path.read_text(encoding="utf-8"))
+    assert summary.model_source == "fleet_config"
+    assert manifest["manifest"]["model"] == "openai:gpt-5.5"
+
+
 def test_import_fleet_manifest_fails_on_malformed_required_config(tmp_path: Path) -> None:
     fleet = tmp_path / "fleet"
     fleet.mkdir()

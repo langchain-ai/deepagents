@@ -72,6 +72,7 @@ from deepagents.backends.utils import (
     check_empty_content,
     format_content_with_line_numbers,
     format_grep_matches,
+    regex_literal_hint,
     sanitize_tool_call_id as sanitize_tool_call_id,
     truncate_if_too_long,
     validate_path,
@@ -459,15 +460,42 @@ def _filter_grep_matches_by_permission(
 def _format_grep_tool_result(
     result: GrepResult,
     output_mode: Literal["files_with_matches", "content", "count"],
+    pattern: str,
+    *,
+    backend_had_matches: bool,
 ) -> tuple[str, Literal["success", "error"]]:
-    """Format a backend grep result for the tool boundary."""
+    """Format a backend grep result for the tool boundary.
+
+    Size-truncation is applied to the match body here, before any note is
+    appended, so a trailing `SEARCH_TRUNCATION_NOTE` survives instead of being
+    sliced off by an outer `truncate_if_too_long` at the call site. Callers
+    should use the returned content as-is rather than re-truncating it.
+
+    `backend_had_matches` reports whether the backend found anything *before*
+    permission filtering, so the regex hint fires only on a genuine no-match —
+    not when matches existed but were all redacted by read permissions (a
+    redaction miss has nothing to do with regex syntax).
+    """
     matches = result.matches or []
     if result.error and not matches:
         return result.error, "error"
 
-    formatted = format_grep_matches(matches, output_mode)
+    formatted = truncate_if_too_long(format_grep_matches(matches, output_mode))
     if result.error:
-        return f"{result.error}\n\nPartial matches:\n{formatted}", "error"
+        # Truncate the error separately so the already-size-limited partial
+        # matches survive. A very long error string (e.g. many collected file
+        # read errors from the Python fallback) would otherwise push the
+        # "Partial matches:" section past the token limit and cut it off.
+        error = truncate_if_too_long(result.error)
+        return f"{error}\n\nPartial matches:\n{formatted}", "error"
+    notes: list[str] = []
+    if result.truncated:
+        notes.append(SEARCH_TRUNCATION_NOTE)
+    if not result.truncated and not matches and not backend_had_matches and (hint := regex_literal_hint(pattern)):
+        notes.append(hint)
+    if notes:
+        formatted_notes = "\n\n".join(notes)
+        return f"{formatted}\n\n{formatted_notes}", "success"
     return formatted, "success"
 
 
@@ -496,9 +524,21 @@ def _format_file_paths(paths: list[str]) -> str:
     return str(truncate_if_too_long(paths))
 
 
+def _format_glob_tool_result(paths: list[str], *, truncated: bool) -> str:
+    """Render glob paths for the tool boundary, appending the truncation note when partial."""
+    content = _format_file_paths(paths)
+    if truncated:
+        return f"{content}\n\n{SEARCH_TRUNCATION_NOTE}"
+    return content
+
+
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
-GLOB_TIMEOUT = 20.0  # seconds
+GLOB_TIMEOUT = 10.0  # seconds
 LINE_NUMBER_WIDTH = 6
+SEARCH_TRUNCATION_NOTE = (
+    "Note: the search stopped early because it hit its time limit. The matches above are valid but incomplete. "
+    "Narrow the search (a more specific pattern or a narrower path) to see the rest."
+)
 
 
 def _glob_timeout_message() -> str:
@@ -598,6 +638,24 @@ class FilesystemState(AgentState):
     """Files in the filesystem. Uses DeltaChannel with snapshots every ~50 pregel steps to bound read depth."""
 
 
+GREP_GLOB_DESCRIPTION = (
+    "Glob pattern (NOT regex) limiting which files are searched (e.g. '*.py', "
+    "'*.ts'). A pattern without '/' matches the file name at any depth; a pattern "
+    "containing '/' matches the search-root-relative path (e.g. 'src/**/*.py'). "
+    "This is an in-tool file filter, not a call to the separate glob tool. Brace "
+    "expansion (e.g. '*.{ts,tsx}') is not supported on all backends; run a "
+    "separate search per extension for reliable results."
+)
+
+GREP_OUTPUT_MODE_DESCRIPTION = (
+    "Shape of the returned text. 'files_with_matches' (default): newline-separated "
+    "matching file paths. 'content': matching lines grouped by file under a "
+    "'<path>:' header, each line indented and formatted '<line_number>: <line text>' "
+    "(only the matched line, no surrounding context). 'count': one "
+    "'<path>: <match_count>' line per file."
+)
+
+
 class LsSchema(BaseModel):
     """Input schema for the `ls` tool."""
 
@@ -682,11 +740,11 @@ class GrepSchema(BaseModel):
 
     path: str | None = Field(default=None, description="Directory to search in. Defaults to current working directory.")
 
-    glob: str | None = Field(default=None, description="Glob pattern to filter which files to search (e.g., '*.py').")
+    glob: str | None = Field(default=None, description=GREP_GLOB_DESCRIPTION)
 
     output_mode: Literal["files_with_matches", "content", "count"] = Field(
         default="files_with_matches",
-        description="Output format: 'files_with_matches' (file paths only, default), 'content' (matching lines with context), 'count' (match counts per file).",
+        description=GREP_OUTPUT_MODE_DESCRIPTION,
     )
 
 
@@ -787,16 +845,28 @@ Examples:
 - `*.txt` - Find all text files in the backend's default root
 - `/subdir/**/*.md` - Find all markdown files under /subdir"""
 
-GREP_TOOL_DESCRIPTION = """Search for a text pattern across files.
+# Carries its own leading newline so the empty-string substitution below drops
+# the whole line cleanly, with no blank line left behind.
+_GREP_REGEX_EXECUTE_FALLBACK = "\n- If you genuinely need regex, use the execute tool with `rg '<regex>'` instead."
 
-Searches for literal text (not regex) and returns matching files or content based on output_mode.
-Special characters like parentheses, brackets, pipes, etc. are treated as literal characters, not regex operators.
+_GREP_TOOL_DESCRIPTION_TEMPLATE = """Search for a LITERAL text pattern across files (NOT regex).
+
+Returns matching files or content based on output_mode. The pattern is matched
+verbatim: regex metacharacters are treated as ordinary characters, NOT operators.
+
+Do NOT pass a regex. In particular:
+- To match any of several strings, run a SEPARATE grep for each one. There is no
+  `|` alternation: `grep(pattern="foo|bar")` looks for the literal text "foo|bar".
+- Do not use wildcards (`.*`) or escapes (`\\.`); they match those characters literally.{execute_fallback}
 
 Examples:
 - Search all files: `grep(pattern="TODO")`
 - Search Python files only: `grep(pattern="import", glob="*.py")`
 - Show matching lines: `grep(pattern="error", output_mode="content")`
-- Search for code with special chars: `grep(pattern="def __init__(self):")`"""
+- Literal special chars are fine: `grep(pattern="def __init__(self):")`"""
+
+GREP_TOOL_DESCRIPTION = _GREP_TOOL_DESCRIPTION_TEMPLATE.format(execute_fallback=_GREP_REGEX_EXECUTE_FALLBACK)
+_GREP_TOOL_DESCRIPTION_WITHOUT_EXECUTE = _GREP_TOOL_DESCRIPTION_TEMPLATE.format(execute_fallback="")
 
 EXECUTE_TOOL_DESCRIPTION = """Executes a shell command in an isolated sandbox environment.
 
@@ -1967,7 +2037,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             infos = glob_result.matches or []
             paths = _apply_permissions_to_glob_results(self._permissions, infos)
             return ToolMessage(
-                content=_format_file_paths(paths),
+                content=_format_glob_tool_result(paths, truncated=glob_result.truncated),
                 tool_call_id=runtime.tool_call_id,
                 name="glob",
                 status="success",
@@ -2031,7 +2101,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             infos = glob_result.matches or []
             paths = _apply_permissions_to_glob_results(self._permissions, infos)
             return ToolMessage(
-                content=_format_file_paths(paths),
+                content=_format_glob_tool_result(paths, truncated=glob_result.truncated),
                 tool_call_id=runtime.tool_call_id,
                 name="glob",
                 status="success",
@@ -2048,7 +2118,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
     def _create_grep_tool(self) -> BaseTool:
         """Create the grep tool."""
-        tool_description = self._custom_tool_descriptions.get("grep") or GREP_TOOL_DESCRIPTION
+        # Provisional default: assume execute is available so the description can
+        # point at `rg` for genuine regex. `_filter_unsupported_tools_and_apply_prompt`
+        # reconciles this to the backend's actual execute capability at request time,
+        # swapping in the without-execute variant when execute isn't active. The static
+        # description on `self.tools` is therefore only a placeholder until a request runs.
+        tool_description = self._grep_tool_description(include_execution=True)
 
         def sync_grep(
             pattern: str,
@@ -2080,11 +2155,15 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             matches = grep_result.matches or []
             filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read")
             formatted, status = _format_grep_tool_result(
-                GrepResult(error=grep_result.error, matches=filtered_matches),
+                GrepResult(error=grep_result.error, matches=filtered_matches, truncated=grep_result.truncated),
                 output_mode,
+                pattern,
+                backend_had_matches=bool(matches),
             )
             return ToolMessage(
-                content=truncate_if_too_long(formatted),
+                # `formatted` is already size-truncated inside
+                # `_format_grep_tool_result` so the truncation note survives.
+                content=formatted,
                 tool_call_id=runtime.tool_call_id,
                 name="grep",
                 status=status,
@@ -2120,11 +2199,15 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             matches = grep_result.matches or []
             filtered_matches = _filter_grep_matches_by_permission(self._permissions, matches, operation="read")
             formatted, status = _format_grep_tool_result(
-                GrepResult(error=grep_result.error, matches=filtered_matches),
+                GrepResult(error=grep_result.error, matches=filtered_matches, truncated=grep_result.truncated),
                 output_mode,
+                pattern,
+                backend_had_matches=bool(matches),
             )
             return ToolMessage(
-                content=truncate_if_too_long(formatted),
+                # `formatted` is already size-truncated inside
+                # `_format_grep_tool_result` so the truncation note survives.
+                content=formatted,
                 tool_call_id=runtime.tool_call_id,
                 name="grep",
                 status=status,
@@ -2138,6 +2221,94 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             infer_schema=False,
             args_schema=GrepSchema,
         )
+
+    def _grep_tool_description(self, *, include_execution: bool) -> str:
+        """Return the grep description for the current execution visibility."""
+        return self._custom_tool_descriptions.get("grep") or (GREP_TOOL_DESCRIPTION if include_execution else _GREP_TOOL_DESCRIPTION_WITHOUT_EXECUTE)
+
+    def _with_filtered_grep_description(
+        self,
+        tools: list[BaseTool | dict[str, Any]],
+        *,
+        include_execution: bool,
+    ) -> list[BaseTool | dict[str, Any]]:
+        """Copy default grep tools when their execution-specific guidance changes."""
+        if self._custom_tool_descriptions.get("grep"):
+            return tools
+
+        target_description = self._grep_tool_description(include_execution=include_execution)
+        default_descriptions = {GREP_TOOL_DESCRIPTION, _GREP_TOOL_DESCRIPTION_WITHOUT_EXECUTE}
+        rewritten: list[BaseTool | dict[str, Any]] = []
+        changed = False
+
+        for tool in tools:
+            tool_name = self._tool_name(tool)
+            if tool_name != "grep":
+                rewritten.append(tool)
+                continue
+
+            if isinstance(tool, BaseTool):
+                if tool.description in default_descriptions and tool.description != target_description:
+                    rewritten.append(tool.model_copy(update={"description": target_description}))
+                    changed = True
+                else:
+                    rewritten.append(tool)
+                continue
+
+            if not isinstance(tool, dict):
+                rewritten.append(cast("BaseTool | dict[str, Any]", tool))
+                continue
+
+            if tool.get("description") in default_descriptions and tool.get("description") != target_description:
+                copied_tool = tool.copy()
+                copied_tool["description"] = target_description
+                rewritten.append(copied_tool)
+                changed = True
+            else:
+                rewritten.append(tool)
+
+        return rewritten if changed else tools
+
+    @staticmethod
+    def _tool_name(tool: object) -> str | None:
+        """Extract a request tool name from `BaseTool`, dict, or test doubles."""
+        if isinstance(tool, BaseTool):
+            return tool.name
+        if isinstance(tool, dict):
+            return cast("str | None", cast("dict[str, Any]", tool).get("name"))
+        if hasattr(tool, "name"):
+            return cast("str | None", tool.name)
+        get = getattr(tool, "get", None)
+        if callable(get):
+            return cast("str | None", get("name"))
+        return None
+
+    def _unsupported_tools_and_execution_state(
+        self,
+        tool_names: set[str | None],
+        runtime: Runtime[ContextT],
+    ) -> tuple[set[str | None], bool, BackendProtocol | None]:
+        """Return unsupported filesystem tools and whether execute remains active."""
+        unsupported: set[str | None] = (
+            {name for name in tool_names if name in _ALL_FS_TOOL_NAMES and name not in self._enabled_tools}
+            if self._enabled_tools is not None
+            else set()
+        )
+        execution_active = False
+        backend = None
+        has_execute_tool = "execute" in tool_names
+        has_delete_tool = "delete" in tool_names
+        if not has_delete_tool and not has_execute_tool:
+            return unsupported, execution_active, backend
+
+        backend = self._get_backend(runtime)  # ty: ignore[invalid-argument-type]
+        if has_execute_tool and "execute" not in unsupported:
+            execution_active = supports_execution(backend)
+            if not execution_active:
+                unsupported.add("execute")
+        if has_delete_tool and "delete" not in unsupported and not _supports_delete(backend):
+            unsupported.add("delete")
+        return unsupported, execution_active, backend
 
     def _resolve_capture(self, resolved_backend: BackendProtocol, tool_call_id: str | None) -> tuple[BaseSandbox, str] | None:
         """Resolve the executing sandbox and offload path for capture-at-source.
@@ -2407,34 +2578,15 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         Returns the request with unsupported tools removed and the filesystem
         system prompt appended.
         """
-        tool_names: set[str | None] = cast(
-            "set[str | None]",
-            {(tool.name if hasattr(tool, "name") else tool.get("name")) for tool in request.tools},
-        )
-        has_execute_tool = "execute" in tool_names
-        has_delete_tool = "delete" in tool_names
-
-        # Tools excluded by the tools allowlist (empty when no allowlist is set).
-        # Only filesystem tools are subject to the allowlist — user-provided tools always pass through.
-        # `execute` and `delete` are also filtered when the backend can't serve them.
-        unsupported: set[str | None] = (
-            {name for name in tool_names if name in _ALL_FS_TOOL_NAMES and name not in self._enabled_tools}
-            if self._enabled_tools is not None
-            else set()
-        )
-        execution_active = False  # tracks whether execute should get system-prompt instructions
-        backend = None
-        if has_delete_tool or has_execute_tool:
-            backend = self._get_backend(request.runtime)  # ty: ignore[invalid-argument-type]
-            if has_execute_tool and "execute" not in unsupported:
-                execution_active = supports_execution(backend)
-                if not execution_active:
-                    unsupported.add("execute")
-            if has_delete_tool and "delete" not in unsupported and not _supports_delete(backend):
-                unsupported.add("delete")
+        tool_names: set[str | None] = {self._tool_name(tool) for tool in request.tools}
+        unsupported, execution_active, backend = self._unsupported_tools_and_execution_state(tool_names, request.runtime)
+        visible_tools = [tool for tool in request.tools if self._tool_name(tool) not in unsupported]
         if unsupported:
-            filtered_tools = [tool for tool in request.tools if (tool.name if hasattr(tool, "name") else tool.get("name")) not in unsupported]
-            request = request.override(tools=filtered_tools)
+            request = request.override(tools=visible_tools)
+
+        described_tools = self._with_filtered_grep_description(visible_tools, include_execution=execution_active)
+        if described_tools is not visible_tools:
+            request = request.override(tools=described_tools)
 
         # Use custom system prompt if provided, otherwise generate dynamically
         if self._custom_system_prompt is not None:

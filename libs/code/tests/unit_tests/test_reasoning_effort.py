@@ -120,7 +120,7 @@ def test_model_params_for_effort_maps_provider_kwargs() -> None:
     }
     assert model_params_for_effort("anthropic:claude-opus-4-8", "xhigh") == {
         "thinking": {"type": "adaptive", "display": "summarized"},
-        "effort": "xhigh",
+        "output_config": {"effort": "xhigh"},
     }
     assert model_params_for_effort("google_genai:gemini-3.5-flash", "low") == {
         "thinking_level": "low"
@@ -128,6 +128,15 @@ def test_model_params_for_effort_maps_provider_kwargs() -> None:
     assert model_params_for_effort(
         "fireworks:accounts/fireworks/models/deepseek-v4-pro", "max"
     ) == {"model_kwargs": {"reasoning_effort": "max"}}
+
+
+def test_current_effort_reads_anthropic_output_config() -> None:
+    assert (
+        current_effort_from_model_params(
+            "anthropic:claude-opus-4-8", {"output_config": {"effort": "low"}}
+        )
+        == "low"
+    )
 
 
 def test_model_params_for_effort_rejects_unsupported_effort() -> None:
@@ -169,7 +178,8 @@ def test_merge_and_clear_effort_model_params_preserves_unrelated_params() -> Non
         ("openai:gpt-5.5", {"reasoning": "high"}),
         # `reasoning.effort` present but not a str.
         ("openai:gpt-5.5", {"reasoning": {"effort": 5}}),
-        ("anthropic:claude-opus-4-8", {"effort": 5}),
+        ("anthropic:claude-opus-4-8", {"output_config": {"effort": 5}}),
+        ("anthropic:claude-opus-4-8", {"output_config": "high"}),
         ("google_genai:gemini-3.5-flash", {"thinking_level": 5}),
         (
             "fireworks:accounts/fireworks/models/deepseek-v4-pro",
@@ -488,10 +498,22 @@ async def test_effort_selector_apply_failure_reports_error(
 def test_without_effort_clears_anthropic_thinking_and_effort() -> None:
     effort_params = model_params_for_effort("anthropic:claude-opus-4-8", "xhigh")
     assert effort_params is not None
-    params = merge_effort_model_params({"temperature": 0.3}, effort_params)
-    assert params["effort"] == "xhigh"
+    format_config = {"type": "json_schema", "schema": {"type": "object"}}
+    params = merge_effort_model_params(
+        {"temperature": 0.3, "output_config": {"format": format_config}}, effort_params
+    )
+    assert params["output_config"] == {"format": format_config, "effort": "xhigh"}
     assert "thinking" in params
-    assert without_effort_model_params(params) == {"temperature": 0.3}
+    assert without_effort_model_params(params) == {
+        "temperature": 0.3,
+        "output_config": {"format": format_config},
+    }
+
+
+def test_without_effort_clears_legacy_anthropic_top_level_effort() -> None:
+    assert without_effort_model_params({"temperature": 0.3, "effort": "xhigh"}) == {
+        "temperature": 0.3
+    }
 
 
 def test_without_effort_clears_google_thinking_level() -> None:

@@ -225,6 +225,20 @@ Defaults to enabled; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
 to suppress the success toast while still opening URLs normally.
 """
 
+SUPPRESS_ENV_OVERRIDE_WARNING = "DEEPAGENTS_CODE_SUPPRESS_ENV_OVERRIDE_WARNING"
+"""Silence the startup warning emitted when a `DEEPAGENTS_CODE_`-prefixed
+LangSmith variable overrides its canonical counterpart (e.g. both
+`LANGSMITH_API_KEY` and `DEEPAGENTS_CODE_LANGSMITH_API_KEY` are set to
+different values).
+
+The override is intentional: the prefixed value overwrites the canonical
+variable inside the Deep Agents Code process (so the LangSmith SDK, which
+only reads canonical names, picks it up). The value you exported in your own
+shell is unaffected, since a process cannot change its parent's environment.
+Off by default; set to a truthy value (`1`, `true`, `yes`, `on`) to suppress
+the warning when this coexistence is expected. Parsed by `is_env_truthy`.
+"""
+
 THEME = "DEEPAGENTS_CODE_THEME"
 """Force the CLI to launch with this theme name when set."""
 

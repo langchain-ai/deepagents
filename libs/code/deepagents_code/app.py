@@ -3525,7 +3525,10 @@ class DeepAgentsApp(App):
         """Resolve a `-r` resume intent into a concrete thread ID.
 
         Consumes `self._resume_thread_intent` and resolves it into a concrete
-        thread ID. Mutates `self._lc_thread_id` and optionally
+        thread ID. When the intent resolves to an existing thread whose cwd
+        differs from the current one, the cwd-switch prompt is shown with an
+        extra "abort" option; choosing it starts a fresh thread instead of
+        resuming. Mutates `self._lc_thread_id` and optionally
         `self._assistant_id` / `self._server_kwargs`. Does NOT touch
         `self._default_assistant_id` — a one-off resume should not redefine
         the user's persisted default agent. Falls back to a fresh thread on
@@ -3539,7 +3542,6 @@ class DeepAgentsApp(App):
             thread_exists,
         )
 
-        resumed_thread_id: str | None = None
         try:
             resume = self._resume_thread_intent
             self._resume_thread_intent = None  # consumed
@@ -3549,80 +3551,117 @@ class DeepAgentsApp(App):
 
             default_agent = DEFAULT_ASSISTANT_ID
 
-            if resume == "__MOST_RECENT__":
+            # Resolve the candidate thread id before any agent/model mutation,
+            # so an abort only needs to reset the thread id (no rollback).
+            via_most_recent = resume == "__MOST_RECENT__"
+            if via_most_recent:
                 agent_filter = (
                     self._assistant_id if self._assistant_id != default_agent else None
                 )
-                thread_id = await get_most_recent(agent_filter)
-                if thread_id:
-                    agent_name = await get_thread_agent(thread_id)
-                    if agent_name:
-                        self._assistant_id = agent_name
-                        if self._server_kwargs:
-                            self._server_kwargs["assistant_id"] = agent_name
-                    self._lc_thread_id = thread_id
-                    resumed_thread_id = thread_id
-                    self._should_adopt_resumed_model = not self._model_explicitly_set
-                else:
+                candidate = await get_most_recent(agent_filter)
+                if not candidate:
                     self._lc_thread_id = generate_thread_id()
+                    self._resuming = False
+                    self._sync_status_connection()
                     if agent_filter:
                         msg = f"No previous threads for '{agent_filter}', starting new."
                     else:
                         msg = "No previous threads, starting new."
                     self.notify(msg, severity="warning", markup=False)
+                    return
             elif await thread_exists(resume):
-                self._lc_thread_id = resume
-                resumed_thread_id = resume
-                self._should_adopt_resumed_model = not self._model_explicitly_set
-                if self._assistant_id == default_agent:
-                    agent_name = await get_thread_agent(resume)
-                    if agent_name:
-                        self._assistant_id = agent_name
-                        if self._server_kwargs:
-                            self._server_kwargs["assistant_id"] = agent_name
+                candidate = resume
             else:
                 # Thread not found — notify + fall back to new thread
                 self._lc_thread_id = generate_thread_id()
+                self._resuming = False
+                self._sync_status_connection()
                 similar = await find_similar_threads(resume)
                 hint = f"Thread '{resume}' not found."
                 if similar:
                     hint += f" Did you mean: {', '.join(str(t) for t in similar)}?"
                 self.notify(hint, severity="warning", timeout=6, markup=False)
-            if resumed_thread_id is not None:
-                # The cwd-switch offer is a post-resolution convenience. Isolate
-                # its failures so they can't fall into the resume-resolution
-                # handler below, which would discard the already-resolved thread
-                # and misleadingly report "Could not look up thread history."
-                try:
-                    await self._offer_thread_cwd_switch(
-                        resumed_thread_id,
-                        restart_server=False,
-                    )
-                except Exception:
-                    logger.exception(
-                        "cwd switch offer failed for resumed thread %s",
-                        resumed_thread_id,
-                    )
-                    self.notify(
-                        "Resumed the thread, but could not check its working "
-                        "directory. Local context may be stale.",
-                        severity="warning",
-                        markup=False,
-                    )
+                return
+
+            # Commit the resolved thread before the cwd-switch offer so a
+            # failure in that offer leaves the thread resolved (see the
+            # isolation guard below) rather than falling through to the
+            # resume-resolution handler.
+            self._lc_thread_id = candidate
+
+            # The cwd-switch prompt doubles as the resume confirmation: at
+            # launch it carries an extra "abort" option that starts a fresh
+            # session instead of resuming. Isolate its failures so they can't
+            # fall into the resume-resolution handler below, which would
+            # discard the already-resolved thread and misleadingly report
+            # "Could not look up thread history."
+            try:
+                cwd_choice = await self._offer_thread_cwd_switch(
+                    candidate,
+                    restart_server=False,
+                    allow_abort=True,
+                )
+            except Exception:
+                logger.exception(
+                    "cwd switch offer failed for resumed thread %s",
+                    candidate,
+                )
+                self.notify(
+                    "Resumed the thread, but could not check its working "
+                    "directory. Local context may be stale.",
+                    severity="warning",
+                    markup=False,
+                )
+                cwd_choice = "continue"
+
+            if cwd_choice == "abort":
+                # User declined the resume: start a fresh session and skip the
+                # agent/model adoption below so it inherits the launch default.
+                self._lc_thread_id = generate_thread_id()
+                self._resuming = False
+                self._sync_status_connection()
+                self.notify(
+                    "Starting a new session.",
+                    severity="information",
+                    markup=False,
+                )
+                return
+
+            # Confirmed: adopt the thread's agent for this session — always when
+            # resuming the most recent thread (bare `-r`, even over an
+            # explicitly pinned `-a`), and for an explicit `-r <id>` only when
+            # the user hasn't pinned a non-default agent — plus its persisted
+            # model.
+            self._should_adopt_resumed_model = not self._model_explicitly_set
+            if via_most_recent or self._assistant_id == default_agent:
+                agent_name = await get_thread_agent(candidate)
+                if agent_name:
+                    self._assistant_id = agent_name
+                    if self._server_kwargs:
+                        self._server_kwargs["assistant_id"] = agent_name
         except Exception:
             logger.exception("Failed to resolve resume thread %r", resume)
             self._lc_thread_id = generate_thread_id()
+            self._resuming = False
+            self._sync_status_connection()
             self.notify(
                 "Could not look up thread history. Starting new session.",
                 severity="warning",
             )
         finally:
+            # Sync the resolved (or fresh) thread id into session state before
+            # signaling completion. This must run in `finally` so an early
+            # return — a fallback to a new thread, or the user aborting the
+            # resume — can't leave `session_state.thread_id` pointing at a
+            # thread that was never adopted. `_init_session_state` may run
+            # concurrently and capture a not-yet-final id mid-prompt; this
+            # reconciles it whenever session state already exists. If session
+            # state hasn't been assigned yet, correctness instead relies on
+            # `_init_session_state` reading the now-final `_lc_thread_id` when
+            # it constructs the state.
+            if self._session_state:
+                self._session_state.thread_id = self._lc_thread_id
             self._resume_thread_resolved_event.set()
-
-        # Update session state if ready (may still be initializing in a
-        # concurrent worker)
-        if self._session_state:
-            self._session_state.thread_id = self._lc_thread_id
 
     async def _start_server_background(self) -> None:
         """Background worker: resolve resume-thread intent, start server + MCP preload.
@@ -7742,8 +7781,7 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 AppMessage(
                     "LangSmith tracing is not configured. "
-                    "Run `/auth` and select LangSmith to enable tracing, or set "
-                    "LANGSMITH_API_KEY and LANGSMITH_TRACING=true.",
+                    "Run `/auth` and select LangSmith to enable tracing.",
                 ),
             )
             return
@@ -10757,32 +10795,86 @@ class DeepAgentsApp(App):
             if payload.context_tokens > 0:
                 self._on_tokens_update(payload.context_tokens)
 
-            # 3. Bulk load into store (sets visible window)
-            _archived, visible = self._message_store.bulk_load(payload.messages)
-
-            # 5. Cache container ref (single query)
+            # 5. Cache container ref (single query). Queried before the store
+            # load so history can be reconciled against widgets already in the
+            # DOM (see below).
             try:
                 messages_container = self.query_one("#messages", Container)
             except NoMatches:
                 return
 
-            # 6-7. Create and mount only visible widgets (max WINDOW_SIZE)
-            widgets = [msg_data.to_widget() for msg_data in visible]
-            if widgets:
-                nodes: list[Widget] = []
-                for widget, msg_data in zip(widgets, visible, strict=False):
-                    nodes.append(widget)
-                    footer = self._build_message_timestamp_footer(
-                        msg_data, visible=self._message_timestamps_visible
+            # 3. Reconcile against existing state before loading the store.
+            # Mounting a widget whose ID already exists raises `DuplicateIds`,
+            # which would abort the entire history load. Widened message IDs
+            # make natural collisions vanishingly unlikely, but a re-entrant
+            # load (e.g. a server respawn that re-runs the startup sequence
+            # over a non-cleared store and its surviving widgets) can still
+            # reintroduce an already-present ID. Two guards keep this safe:
+            #
+            #   a) Drop payload messages whose ID is already in the store (or
+            #      repeated within the payload) before `bulk_load`. Otherwise
+            #      `bulk_load` would append duplicate entries to `_messages`,
+            #      desyncing the visible window from the DOM and tripping up
+            #      later pruning/hydration.
+            #   b) Skip mounting any visible message whose ID is already in the
+            #      DOM. `bulk_load` returns a window over the *whole* store, so
+            #      a surviving pre-existing entry can still surface as a mount
+            #      candidate even after (a); its widget already exists.
+            seen: set[str] = set()
+            deduped: list[MessageData] = []
+            for msg_data in payload.messages:
+                if (
+                    msg_data.id in seen
+                    or self._message_store.get_message(msg_data.id) is not None
+                ):
+                    continue
+                seen.add(msg_data.id)
+                deduped.append(msg_data)
+            dropped = len(payload.messages) - len(deduped)
+            if dropped:
+                logger.warning(
+                    "Dropped %d duplicate history message(s) for thread %s: "
+                    "IDs were already in the store or repeated in the payload",
+                    dropped,
+                    history_thread_id,
+                )
+
+            # Bulk load into store (sets visible window over the deduped set).
+            _archived, visible = self._message_store.bulk_load(deduped)
+
+            # 6-7. Create and mount the visible widgets (max WINDOW_SIZE),
+            # skipping any whose ID is already mounted (guard (b) above).
+            # `existing_ids` includes footer node IDs, which never collide with
+            # the `msg-`/`asst-` message IDs checked here.
+            existing_ids = {
+                node.id for node in messages_container.children if node.id is not None
+            }
+            mounted: list[tuple[Widget, MessageData]] = []
+            nodes: list[Widget] = []
+            for msg_data in visible:
+                if msg_data.id in existing_ids:
+                    logger.debug(
+                        "Skipping already-mounted history widget %s in thread %s",
+                        msg_data.id,
+                        history_thread_id,
                     )
-                    if footer is not None:
-                        nodes.append(footer)
+                    continue
+                existing_ids.add(msg_data.id)
+                widget = msg_data.to_widget()
+                mounted.append((widget, msg_data))
+                nodes.append(widget)
+                footer = self._build_message_timestamp_footer(
+                    msg_data, visible=self._message_timestamps_visible
+                )
+                if footer is not None:
+                    nodes.append(footer)
+            if nodes:
                 await messages_container.mount(*nodes)
 
             # 8. Render content for AssistantMessage after mount
             assistant_updates = [
                 widget.set_content(msg_data.content)
-                for widget, msg_data in zip(widgets, visible, strict=False)
+                for widget, msg_data in mounted
                 if isinstance(widget, AssistantMessage) and msg_data.content
             ]
             if assistant_updates:
@@ -12033,11 +12125,16 @@ class DeepAgentsApp(App):
                 child.toggle_body()
                 return
             if isinstance(child, ToolCallMessage) and not child.has_class("-grouped"):
-                if child.has_output and child.has_expandable_output:
-                    child.toggle_output()
-                    return
+                # Prefer the collapsible command/code block when the row has one,
+                # so Ctrl+O matches the "click or Ctrl+O to show command/code"
+                # hint rendered beside it. The output stays reachable by clicking
+                # its own region (see `ToolCallMessage.on_click`); rows without an
+                # expandable command/code block fall through to the output.
                 if child.has_expandable_args:
                     child.toggle_args()
+                    return
+                if child.has_output and child.has_expandable_output:
+                    child.toggle_output()
                     return
                 if child.has_output:
                     child.toggle_output()
@@ -15458,6 +15555,7 @@ class DeepAgentsApp(App):
         thread_id: str,
         *,
         restart_server: bool,
+        allow_abort: bool = False,
     ) -> Literal["continue", "abort"]:
         """Offer to switch to a resumed thread's cwd when it differs.
 
@@ -15467,11 +15565,16 @@ class DeepAgentsApp(App):
                 switch replaces the app-owned server so the backend runs in the
                 new cwd. When False (launch-time resume), the server has not
                 started yet, so only the process cwd is changed.
+            allow_abort: When True (launch-time `-r` resume), the prompt offers a
+                third "abort" option that declines the resume entirely.
 
         Returns:
-            `"continue"` when resume may proceed, or `"abort"` when a requested
-                switch was accepted but failed (the caller should stop
-                the resume).
+            `"continue"` when resume may proceed, or `"abort"` when the user
+                declined the resume or a requested switch was accepted but
+                failed (the caller should stop the resume). The two abort
+                sources are mode-exclusive: the user-declined abort fires only
+                when `allow_abort` is True, and the switch-failed abort only
+                when `restart_server` is True.
         """
         target = await self._thread_cwd_mismatch(thread_id)
         if target is None:
@@ -15487,8 +15590,11 @@ class DeepAgentsApp(App):
                 current_cwd=self._cwd,
                 thread_cwd=str(target),
                 project_settings_change_detected=project_settings_change_detected,
+                allow_abort=allow_abort,
             )
         )
+        if choice == "abort":
+            return "abort"
         if choice == "switch":
             if restart_server:
                 return await self._replace_server_after_cwd_switch(target)
@@ -15888,6 +15994,12 @@ class DeepAgentsApp(App):
             if provider and not parsed:
                 display = f"{provider}:{model_name}"
 
+            # Provider package imports (e.g. langchain_google_genai) can take a
+            # noticeable moment; show an animated busy indicator so it doesn't look
+            # frozen. The work itself already runs off the event loop via
+            # `asyncio.to_thread`, so the UI stays responsive meanwhile.
+            if self._status_bar:
+                self._status_bar.set_busy("Switching model")
             try:
                 result = await asyncio.to_thread(
                     _create_model_with_deepagents_import_lock,
@@ -15907,6 +16019,9 @@ class DeepAgentsApp(App):
                         ErrorMessage(_build_model_switch_error_body(exc)),
                     )
                 return
+            finally:
+                if self._status_bar:
+                    self._status_bar.set_busy("")
 
             # Set the model override for ConfigurableModelMiddleware.
             # The next stream call passes CLIContext via context= and the

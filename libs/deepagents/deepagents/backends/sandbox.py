@@ -42,7 +42,7 @@ from deepagents.backends.protocol import (
     WriteResult,
     execute_accepts_timeout,
 )
-from deepagents.backends.utils import _get_file_type
+from deepagents.backends.utils import _get_backend_read_file_type
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +81,69 @@ except PermissionError:
 
 Uses base64-encoded parameters to avoid shell escaping issues.
 """
+
+
+_GREP_PATH_GLOB_TEMPLATE = """python3 -c "
+import glob, os, base64, sys
+
+search_path = base64.b64decode('{path_b64}').decode('utf-8')
+glob_pat = base64.b64decode('{glob_b64}').decode('utf-8')
+pattern = base64.b64decode('{pattern_b64}').decode('utf-8')
+
+# When the search path is a directory, chdir to it so glob patterns
+# resolve relative to it. When it is a single file, search it directly
+# (glob filtering is irrelevant for a single-file search).
+if os.path.isdir(search_path):
+    os.chdir(search_path)
+    # A leading `/` would make `glob.glob` treat the pattern as an
+    # absolute filesystem path, searching outside the search root (e.g.
+    # `/*.py` after `chdir('/workspace')` would match `/top.py` on
+    # the host, not `/workspace/top.py`). Strip it so anchored globs
+    # stay relative to the search root, matching the `FilesystemBackend`
+    # semantics where `/` anchors to the root, not the filesystem.
+    rel_glob = glob_pat.lstrip('/')
+    rel_files = sorted(glob.glob(rel_glob, recursive=True))
+    # Open the glob-relative path (cwd is the search root) but report the
+    # path prefixed with the search root, so GrepResult.path matches the
+    # `<root>/<match>` form that `grep -r` emits on the --include route.
+    targets = [(rel, os.path.join(search_path, rel)) for rel in rel_files]
+else:
+    targets = [(search_path, search_path)]
+
+for open_path, display_path in targets:
+    try:
+        with open(open_path, 'r', encoding='utf-8', errors='ignore') as fh:
+            for i, line in enumerate(fh, 1):
+                if pattern in line:
+                    # GNU grep -HnFZ always terminates each record with a
+                    # newline, even when the matched line has none. Strip
+                    # the line's own trailing newline and add an explicit
+                    # one so records never concatenate when a file's last
+                    # line lacks a final newline.
+                    sys.stdout.write(display_path + chr(0) + str(i) + ':' + line.rstrip(chr(10)) + chr(10))
+    except OSError:
+        pass
+" 2>/dev/null"""
+"""Search file contents for a literal string, filtered by a path-relative glob.
+
+Used when the glob pattern contains a `/` (e.g. `src/**/*.py`), because
+GNU `grep --include` only matches basenames and would silently return zero
+results for such patterns. All three parameters are base64-encoded to avoid
+shell escaping issues.
+
+Emits the same `path\0line_num:text` record structure that `grep -HnFZ`
+produces — each match path is prefixed with the search root to mirror
+grep's output — so `_parse_grep_output` consumes it unchanged. Unlike the
+`grep -r` route, results are sorted, hidden files and directories are
+skipped (Python `glob` semantics), and file contents are decoded as UTF-8
+with `errors='ignore'` rather than matched byte-for-byte.
+
+`stderr` is discarded, but `|| true` is deliberately omitted: the script
+exits 0 on a legitimate no-match, so a non-zero exit signals a genuine
+failure (bad base64, an inaccessible search root) that `_parse_grep_output`
+surfaces as an error instead of a silent empty result.
+"""
+
 
 _WRITE_CHECK_TEMPLATE = """python3 -c "
 import os, base64
@@ -438,7 +501,7 @@ def _parse_ls_output(output: str, path: str) -> LsResult:
 
 
 def _build_read_cmd(file_path: str, offset: int, limit: int) -> str:
-    file_type = _get_file_type(file_path)
+    file_type = _get_backend_read_file_type(file_path)
     path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
     # Defensive int coercion in case callers bypass type checking.
     return _READ_COMMAND_TEMPLATE.format(
@@ -486,8 +549,24 @@ def _build_grep_cmd(pattern: str, path: str | None, glob: str | None) -> str:
     # `-Z` separates the filename from line data with NUL, so filenames may
     # contain `:` without making the output ambiguous.
     grep_opts = "-rHnFZ"
-    glob_pattern = f"--include={shlex.quote(glob)}" if glob else ""
     pattern_escaped = shlex.quote(pattern)
+
+    # GNU `grep --include` only matches basenames, so a slash-containing glob
+    # like `src/**/*.py` would silently match zero files. Route those to the
+    # in-process Python template that resolves the glob relative to the search
+    # root. Basename-only globs (no `/`) work correctly with `--include` and
+    # are faster to run through GNU grep.
+    if glob and "/" in glob:
+        path_b64 = base64.b64encode((path or ".").encode("utf-8")).decode("ascii")
+        glob_b64 = base64.b64encode(glob.encode("utf-8")).decode("ascii")
+        pattern_b64 = base64.b64encode(pattern.encode("utf-8")).decode("ascii")
+        return _GREP_PATH_GLOB_TEMPLATE.format(
+            path_b64=path_b64,
+            glob_b64=glob_b64,
+            pattern_b64=pattern_b64,
+        )
+
+    glob_pattern = f"--include={shlex.quote(glob)}" if glob else ""
     return f"grep {grep_opts} {glob_pattern} -e {pattern_escaped} {search_path} 2>/dev/null || true"
 
 
@@ -1138,24 +1217,40 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         return EditResult(path=file_path, occurrences=data.get("count", 1))
 
     def delete(self, file_path: str) -> DeleteResult:
-        """Delete a file or directory from the sandbox via a server-side ``rm``.
+        """Delete a file or directory from the sandbox via a server-side `rm`.
 
-        Uses ``rm -rf``, so directories are removed recursively along with their
-        contents, and deleting a path that does not exist succeeds silently. A
-        non-zero exit (e.g. a permission error) is reported as a failure.
+        Runs `test -e || test -L` first: a path that does not exist (and is not
+        a broken symlink) returns a not-found error, matching the contract of
+        `FilesystemBackend` and `StateBackend`. Because a shell `test` has no
+        error channel, a non-zero probe conflates "absent" with "unstattable"
+        (e.g. an unsearchable parent directory); an unknown exit code is not
+        treated as absent and falls through to the delete.
+
+        Uses `rm -rf`, so directories are removed recursively along with their
+        contents. A recursive delete may remove some entries before failing
+        partway; a non-zero `rm` exit (e.g. a permission error) is reported as
+        a failure.
 
         Args:
             file_path: Absolute path to the file or directory to delete.
 
         Returns:
             `DeleteResult` with the deleted path on success, or an error if the
-                deletion command fails.
+                path does not exist or the deletion command fails.
         """
         # `shlex.quote` only neutralizes shell metacharacters so the path is
         # passed to `rm` as a single literal argument. It is NOT a security
         # boundary: it does not confine the deletion to any sandbox root or
         # block traversal. Whatever the sandbox shell can reach, this can delete.
         quoted = shlex.quote(file_path)
+        exists = self.execute(f"test -e {quoted} || test -L {quoted}")
+        # `exit_code` may be None when the backend cannot determine a status;
+        # only a definite non-zero means the path is absent. Treating None as
+        # not-found would fabricate a diagnosis and skip the delete, so fall
+        # through to `rm` on an unknown probe result (matches the `rm` check
+        # below and `_parse_grep_output`, which both guard `is not None`).
+        if exists.exit_code is not None and exists.exit_code != 0:
+            return DeleteResult(error=f"Error: '{file_path}' not found")
         result = self.execute(f"rm -rf {quoted}")
 
         if result.exit_code == 0:
@@ -1176,8 +1271,11 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             path: Directory or file to search in.
 
                 Defaults to `"."`.
-            glob: Optional file-name glob to restrict the search
-                (e.g. `'*.py'`).
+            glob: Optional glob to restrict the search. Patterns without a
+                `/` (e.g. `'*.py'`) match basenames at any depth via
+                `grep --include`; patterns containing a `/` (e.g.
+                `'src/**/*.py'`) match the search-root-relative path via an
+                in-process Python glob.
 
         Returns:
             `GrepResult` with a list of `GrepMatch` dicts, or `error` on failure.

@@ -3641,6 +3641,30 @@ class TestAskUserLifecycle:
         tool.toggle_args.assert_called_once_with()
         tool.toggle_output.assert_not_called()
 
+    def test_ctrl_o_prefers_command_when_both_expandable(self) -> None:
+        """Ctrl+O toggles the command/code block even when output can also expand.
+
+        Matches the region-aware click routing and the "click or Ctrl+O to show
+        command/code" hint: the output stays reachable by clicking its own row.
+        """
+        from deepagents_code.widgets.messages import ToolCallMessage
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        tool = MagicMock(spec=ToolCallMessage)
+        tool.has_class.return_value = False
+        tool.has_output = True
+        tool.has_expandable_output = True  # long stdout, expandable
+        tool.has_expandable_args = True  # long command, expandable
+        container = MagicMock()
+        container.children = [tool]
+
+        with patch.object(app, "query_one", return_value=container):
+            app.action_toggle_tool_output()
+
+        tool.toggle_args.assert_called_once_with()
+        tool.toggle_output.assert_not_called()
+
     def test_ctrl_o_prefers_more_recent_tool_in_dom_order(self) -> None:
         """The newest tool row in DOM order wins over an older one."""
         from deepagents_code.widgets.messages import ToolCallMessage
@@ -4057,8 +4081,8 @@ class TestTraceCommand:
 
             app_msgs = app.query(AppMessage)
             rendered = "\n".join(str(w._content) for w in app_msgs)
-            assert "LANGSMITH_API_KEY" in rendered
             assert "/auth" in rendered
+            assert "LANGSMITH_API_KEY" not in rendered
 
     async def test_trace_shows_network_error_when_url_fetch_times_out(self) -> None:
         """Should distinguish a network/timeout failure from a config gap.
@@ -8026,6 +8050,211 @@ class TestMessageTimestampFooters:
             # Excluded-type messages get no footer, even on restore.
             with pytest.raises(NoMatches):
                 app.query_one("#hist-app-timestamp-footer", Static)
+
+    async def test_load_thread_history_skips_duplicate_ids(self) -> None:
+        """History reusing an already-mounted widget ID is skipped, not fatal.
+
+        Regression: mounting a widget whose ID already exists raises
+        `DuplicateIds`, which previously aborted the whole load and surfaced a
+        "Could not load history" note instead of the conversation.
+        """
+        from deepagents_code.app import _ThreadHistoryPayload
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Pre-mount a widget occupying the ID the history will reuse.
+            await app._mount_message(AppMessage("stale", id="dup-id"))
+            await pilot.pause()
+
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(type=MessageType.USER, content="dup", id="dup-id"),
+                    MessageData(type=MessageType.USER, content="fresh", id="fresh-id"),
+                ],
+                0,
+                "",
+            )
+            await app._load_thread_history(thread_id="t-dup", preloaded_payload=payload)
+            await pilot.pause()
+
+            # The load completed without the fatal "Could not load history" note.
+            notes = [str(widget._content) for widget in app.query(AppMessage)]
+            assert not any("Could not load history" in note for note in notes)
+            # The colliding message was skipped; the original widget survives
+            # (exactly one, no duplicate mounted) and keeps its own content --
+            # the history entry did not overwrite or replace it.
+            survivors = app.query("#dup-id")
+            assert len(survivors) == 1
+            survivor = survivors.first()
+            assert isinstance(survivor, AppMessage)
+            assert "stale" in str(survivor._content)
+            # The non-colliding message mounted normally.
+            assert app.query_one("#fresh-id", UserMessage)
+            # The load ran to completion (past the mount block to step 9).
+            assert any("Resumed thread: t-dup" in note for note in notes)
+
+    async def test_load_thread_history_preserves_assistant_content_after_skip(
+        self,
+    ) -> None:
+        """A skipped duplicate keeps the surviving assistant content aligned.
+
+        Regression guard for the `mounted` pairing: `set_content` must render
+        each surviving `AssistantMessage`'s own content, never a neighbor's.
+        Only exercised when a skip removes an entry, shifting the survivors.
+        """
+        from deepagents_code.app import _ThreadHistoryPayload
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Occupy the first assistant message's ID so it is skipped.
+            await app._mount_message(AssistantMessage("stale", id="asst-dup"))
+            await pilot.pause()
+
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(type=MessageType.ASSISTANT, content="A", id="asst-dup"),
+                    MessageData(
+                        type=MessageType.ASSISTANT, content="B", id="asst-fresh"
+                    ),
+                ],
+                0,
+                "",
+            )
+            await app._load_thread_history(
+                thread_id="t-asst", preloaded_payload=payload
+            )
+            await pilot.pause()
+
+            # The surviving fresh assistant renders its own content ("B"),
+            # not the skipped duplicate's ("A").
+            fresh = app.query_one("#asst-fresh", AssistantMessage)
+            assert "B" in str(fresh._content)
+            assert "A" not in str(fresh._content)
+
+    async def test_load_thread_history_dedupes_within_payload(self) -> None:
+        """Two payload entries sharing an ID mount exactly one widget.
+
+        The intra-batch `seen` guard prevents a same-payload collision from
+        raising `DuplicateIds` on the bulk mount.
+        """
+        from deepagents_code.app import _ThreadHistoryPayload
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(type=MessageType.USER, content="first", id="same-id"),
+                    MessageData(type=MessageType.USER, content="second", id="same-id"),
+                    MessageData(type=MessageType.USER, content="other", id="other-id"),
+                ],
+                0,
+                "",
+            )
+            await app._load_thread_history(
+                thread_id="t-intra", preloaded_payload=payload
+            )
+            await pilot.pause()
+
+            notes = [str(widget._content) for widget in app.query(AppMessage)]
+            assert not any("Could not load history" in note for note in notes)
+            # Exactly one widget for the repeated ID; the first entry wins.
+            assert len(app.query("#same-id")) == 1
+            same = app.query_one("#same-id", UserMessage)
+            assert "first" in str(same._content)
+            assert app.query_one("#other-id", UserMessage)
+
+    async def test_load_thread_history_keeps_store_window_in_sync_after_skip(
+        self,
+    ) -> None:
+        """A re-entrant load must not create duplicate store entries.
+
+        Regression: `bulk_load` blindly appends, so re-loading a message whose
+        ID is already in the store used to add a second `_messages` entry for
+        the same ID -- desyncing the visible window from the DOM and tripping
+        up later pruning/hydration. Deduplicating against the store before
+        `bulk_load` keeps every ID represented exactly once.
+        """
+        from deepagents_code.app import _ThreadHistoryPayload
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # `_mount_message` records the widget in the store, so `dup-id` is
+            # present in both the store and the DOM before the load.
+            await app._mount_message(AppMessage("stale", id="dup-id"))
+            await pilot.pause()
+
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(type=MessageType.USER, content="dup", id="dup-id"),
+                    MessageData(type=MessageType.USER, content="fresh", id="fresh-id"),
+                ],
+                0,
+                "",
+            )
+            await app._load_thread_history(
+                thread_id="t-sync", preloaded_payload=payload
+            )
+            await pilot.pause()
+
+            store = app._message_store
+            # Every stored ID is represented exactly once (no phantom double
+            # entry for the re-loaded `dup-id`).
+            all_ids = [msg.id for msg in store.get_all_messages()]
+            assert len(all_ids) == len(set(all_ids))
+            assert store.get_message("dup-id") is not None
+            assert store.get_message("fresh-id") is not None
+            # The visible window is internally consistent with its range.
+            start, end = store.get_visible_range()
+            assert store.visible_count == end - start
+
+    async def test_load_thread_history_all_duplicates_completes_cleanly(self) -> None:
+        """A payload whose every ID is already mounted still finishes the load.
+
+        With nothing left to mount after dedup, the load must skip the mount
+        block and still reach completion without an error note -- the benign
+        re-entrant reload case (same payload over surviving widgets).
+        """
+        from deepagents_code.app import _ThreadHistoryPayload
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._mount_message(UserMessage("kept", id="a-id"))
+            await app._mount_message(UserMessage("kept", id="b-id"))
+            await pilot.pause()
+
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(type=MessageType.USER, content="a", id="a-id"),
+                    MessageData(type=MessageType.USER, content="b", id="b-id"),
+                ],
+                0,
+                "",
+            )
+            await app._load_thread_history(thread_id="t-all", preloaded_payload=payload)
+            await pilot.pause()
+
+            notes = [str(widget._content) for widget in app.query(AppMessage)]
+            assert not any("Could not load history" in note for note in notes)
+            assert any("Resumed thread: t-all" in note for note in notes)
+            # No duplicates were mounted; the originals survive.
+            assert len(app.query("#a-id")) == 1
+            assert len(app.query("#b-id")) == 1
 
     async def test_footers_render_for_hydrated_messages_above(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -14017,11 +14246,17 @@ class TestResolveResumeThread:
             assert app._should_adopt_resumed_model is False
 
     async def test_no_previous_thread_leaves_adoption_flag_unset(self) -> None:
-        """Falling back to a fresh thread must not arm model adoption."""
+        """Falling back to a fresh thread must not arm model adoption.
+
+        Also verifies the status bar stops showing "Resuming" when no
+        prior thread was found to resume.
+        """
         app = self._make_app("agent")
 
         async with app.run_test() as pilot:
             await pilot.pause()
+            app._connecting = True
+            app._resuming = True
             app._resume_thread_intent = "__MOST_RECENT__"
             with patch(
                 "deepagents_code.sessions.get_most_recent",
@@ -14030,6 +14265,9 @@ class TestResolveResumeThread:
                 await app._resolve_resume_thread()
 
             assert app._should_adopt_resumed_model is False
+            assert app._resuming is False
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "connecting"
 
     async def test_most_recent_resume_arms_adoption_flag(self) -> None:
         """`-r` (most recent) resolving to a thread also arms model adoption.
@@ -14055,6 +14293,244 @@ class TestResolveResumeThread:
                 await app._resolve_resume_thread()
 
             assert app._should_adopt_resumed_model is True
+
+    async def test_abort_starts_new_thread(self) -> None:
+        """Choosing abort in the cwd prompt starts a fresh thread.
+
+        Also verifies the status bar drops the "Resuming" label in favor of
+        "Connecting" so the footer doesn't lie while the server boots.
+        """
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            app._resuming = True
+            app._resume_thread_intent = "some-thread"
+            app._offer_thread_cwd_switch = AsyncMock(  # ty: ignore[invalid-assignment]
+                return_value="abort"
+            )
+            with (
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value="coder"),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._lc_thread_id != "some-thread"
+            assert app._assistant_id == "agent"
+            assert app._should_adopt_resumed_model is False
+            assert app._resuming is False
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "connecting"
+
+    async def test_abort_most_recent_starts_new_thread(self) -> None:
+        """Aborting a bare `-r` cwd prompt also starts a fresh thread.
+
+        Mirrors `test_abort_starts_new_thread` for the `__MOST_RECENT__` branch
+        and asserts the status bar flips from "Resuming" to "Connecting".
+        """
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            app._resuming = True
+            app._resume_thread_intent = "__MOST_RECENT__"
+            app._offer_thread_cwd_switch = AsyncMock(  # ty: ignore[invalid-assignment]
+                return_value="abort"
+            )
+            with (
+                patch(
+                    "deepagents_code.sessions.get_most_recent",
+                    AsyncMock(return_value="recent-thread"),
+                ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value="coder"),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._lc_thread_id != "recent-thread"
+            assert app._should_adopt_resumed_model is False
+            assert app._resuming is False
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "connecting"
+
+    async def test_resume_offers_abort_option_at_launch(self) -> None:
+        """The launch-time cwd prompt is invoked with `allow_abort=True`."""
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._resume_thread_intent = "some-thread"
+            offer = AsyncMock(return_value="continue")
+            app._offer_thread_cwd_switch = offer  # ty: ignore[invalid-assignment]
+            with (
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value=None),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert offer.await_args is not None
+            assert offer.await_args.kwargs["allow_abort"] is True
+            assert app._lc_thread_id == "some-thread"
+
+    async def test_abort_syncs_session_state_to_fresh_thread(self) -> None:
+        """Aborting points session state at the fresh id, not the declined thread.
+
+        Guards the race where `_init_session_state` captures the candidate
+        thread into `session_state.thread_id` while the cwd prompt is open: the
+        finally-block sync must overwrite it with the fresh id on abort.
+        """
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            # Simulate session state having captured the candidate mid-prompt.
+            app._session_state.thread_id = "some-thread"
+            app._resume_thread_intent = "some-thread"
+            app._offer_thread_cwd_switch = AsyncMock(  # ty: ignore[invalid-assignment]
+                return_value="abort"
+            )
+            with (
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value="coder"),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._lc_thread_id != "some-thread"
+            assert app._session_state.thread_id == app._lc_thread_id
+
+    async def test_thread_not_found_clears_resuming_status(self) -> None:
+        """A non-existent thread id falls back to fresh and drops "Resuming".
+
+        Covers the `elif await thread_exists(resume)` → `else` branch where
+        the thread id is never adopted.
+        """
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            app._resuming = True
+            app._resume_thread_intent = "ghost-thread"
+            with (
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=False),
+                ),
+                patch(
+                    "deepagents_code.sessions.find_similar_threads",
+                    AsyncMock(return_value=[]),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._lc_thread_id != "ghost-thread"
+            assert app._should_adopt_resumed_model is False
+            assert app._resuming is False
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "connecting"
+
+    async def test_resolve_exception_clears_resuming_status(self) -> None:
+        """An unhandled error in resume resolution drops "Resuming".
+
+        Guards the `except Exception` handler path.
+        """
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            app._resuming = True
+            app._resume_thread_intent = "some-thread"
+            with patch(
+                "deepagents_code.sessions.thread_exists",
+                AsyncMock(side_effect=RuntimeError("db offline")),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._resuming is False
+            assert app._status_bar is not None
+            assert app._status_bar.connection_state == "connecting"
+
+    async def test_offer_failure_still_resumes_and_adopts(self) -> None:
+        """A raising cwd-switch offer must not abandon the resolved thread.
+
+        Locks the central invariant of the resolve refactor: the candidate is
+        committed to `_lc_thread_id` *before* the offer, and a failure in the
+        offer is isolated to `"continue"` so agent + model adoption still run.
+        The failure must not fall through to the outer handler (which would
+        discard the thread and start a fresh session).
+        """
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._resume_thread_intent = "some-thread"
+            app._offer_thread_cwd_switch = AsyncMock(  # ty: ignore[invalid-assignment]
+                side_effect=RuntimeError("cwd probe failed")
+            )
+            with (
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value="coder"),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._lc_thread_id == "some-thread"
+            assert app._assistant_id == "coder"
+            assert app._should_adopt_resumed_model is True
+
+    async def test_fallback_syncs_session_state_to_fresh_thread(self) -> None:
+        """A non-abort fallback early return still syncs session state.
+
+        Mirrors `test_abort_syncs_session_state_to_fresh_thread` for the
+        "no previous threads" fallback: the `finally`-block sync is the only
+        thing that stops `session_state.thread_id` from being left pointing at
+        a stale id after the early return.
+        """
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            # Simulate session state having captured a stale id before resolve.
+            app._session_state.thread_id = "stale-thread"
+            app._resume_thread_intent = "__MOST_RECENT__"
+            with patch(
+                "deepagents_code.sessions.get_most_recent",
+                AsyncMock(return_value=None),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._lc_thread_id != "stale-thread"
+            assert app._session_state.thread_id == app._lc_thread_id
 
 
 def _missing_dep_entry(

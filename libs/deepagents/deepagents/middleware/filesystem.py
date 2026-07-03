@@ -868,7 +868,20 @@ Examples:
 GREP_TOOL_DESCRIPTION = _GREP_TOOL_DESCRIPTION_TEMPLATE.format(execute_fallback=_GREP_REGEX_EXECUTE_FALLBACK)
 _GREP_TOOL_DESCRIPTION_WITHOUT_EXECUTE = _GREP_TOOL_DESCRIPTION_TEMPLATE.format(execute_fallback="")
 
-EXECUTE_TOOL_DESCRIPTION = """Executes a shell command in an isolated sandbox environment.
+EXECUTE_TOOL_DESCRIPTION = """Executes a shell command in an isolated POSIX /bin/sh sandbox environment.
+
+Shell contract:
+Commands run under POSIX `/bin/sh`, NOT bash. Bash-only syntax will fail with errors like
+`/bin/sh: -c: line 0: syntax error near unexpected token '('`. Avoid these bash-only constructs:
+  - Process substitution: `<(cmd)` and `>(cmd)` — e.g. `diff <(git show A) <(git show B)` will fail.
+    Write each side to a temp file first: `git show A > /tmp/a && git show B > /tmp/b && diff /tmp/a /tmp/b`.
+  - Extended glob patterns: `!(pat)`, `+(pat)`, `?(pat)`, `@(pat)`
+  - Bash arrays (`arr=(a b c)`, `${arr[@]}`)
+  - `[[ ... ]]` conditionals — use `[ ... ]` instead
+  - `<<<` here-strings — use `echo ... |` instead
+  - `$'...'` ANSI-C quoting — use `printf` instead
+If you truly need a bash feature, either write a script to a temp file and run `sh /tmp/script.sh`,
+or explicitly invoke bash: `/bin/bash -c '<bash command>'` (only if bash is installed in the sandbox).
 
 Usage:
 Executes a given command in the sandbox environment with proper handling and security measures.
@@ -903,12 +916,14 @@ Examples:
     - execute(command="python /path/to/script.py")
     - execute(command="npm install && npm test")
     - execute(command="make build", timeout=300)
+    - execute(command="git show A > /tmp/a && git show B > /tmp/b && diff /tmp/a /tmp/b")  # POSIX-safe alternative to process substitution
 
   Bad examples (avoid these):
     - execute(command="cd /foo/bar && pytest tests")  # Use absolute path instead
     - execute(command="cat file.txt")  # Use read_file tool instead
     - execute(command="find . -name '*.py'")  # Use glob tool instead
     - execute(command="grep -r 'pattern' .")  # Use grep tool instead
+    - execute(command="diff <(git show A) <(git show B)")  # Process substitution is bash-only; fails under /bin/sh
 
 Note: This tool is only available if the backend supports execution (SandboxBackendProtocol).
 If execution is not supported, the tool will return an error message."""

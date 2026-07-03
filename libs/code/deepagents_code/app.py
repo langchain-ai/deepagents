@@ -12125,11 +12125,16 @@ class DeepAgentsApp(App):
                 child.toggle_body()
                 return
             if isinstance(child, ToolCallMessage) and not child.has_class("-grouped"):
-                if child.has_output and child.has_expandable_output:
-                    child.toggle_output()
-                    return
+                # Prefer the collapsible command/code block when the row has one,
+                # so Ctrl+O matches the "click or Ctrl+O to show command/code"
+                # hint rendered beside it. The output stays reachable by clicking
+                # its own region (see `ToolCallMessage.on_click`); rows without an
+                # expandable command/code block fall through to the output.
                 if child.has_expandable_args:
                     child.toggle_args()
+                    return
+                if child.has_output and child.has_expandable_output:
+                    child.toggle_output()
                     return
                 if child.has_output:
                     child.toggle_output()

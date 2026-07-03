@@ -10795,32 +10795,86 @@ class DeepAgentsApp(App):
             if payload.context_tokens > 0:
                 self._on_tokens_update(payload.context_tokens)
 
-            # 3. Bulk load into store (sets visible window)
-            _archived, visible = self._message_store.bulk_load(payload.messages)
-
-            # 5. Cache container ref (single query)
+            # 5. Cache container ref (single query). Queried before the store
+            # load so history can be reconciled against widgets already in the
+            # DOM (see below).
             try:
                 messages_container = self.query_one("#messages", Container)
             except NoMatches:
                 return
 
-            # 6-7. Create and mount only visible widgets (max WINDOW_SIZE)
-            widgets = [msg_data.to_widget() for msg_data in visible]
-            if widgets:
-                nodes: list[Widget] = []
-                for widget, msg_data in zip(widgets, visible, strict=False):
-                    nodes.append(widget)
-                    footer = self._build_message_timestamp_footer(
-                        msg_data, visible=self._message_timestamps_visible
+            # 3. Reconcile against existing state before loading the store.
+            # Mounting a widget whose ID already exists raises `DuplicateIds`,
+            # which would abort the entire history load. Widened message IDs
+            # make natural collisions vanishingly unlikely, but a re-entrant
+            # load (e.g. a server respawn that re-runs the startup sequence
+            # over a non-cleared store and its surviving widgets) can still
+            # reintroduce an already-present ID. Two guards keep this safe:
+            #
+            #   a) Drop payload messages whose ID is already in the store (or
+            #      repeated within the payload) before `bulk_load`. Otherwise
+            #      `bulk_load` would append duplicate entries to `_messages`,
+            #      desyncing the visible window from the DOM and tripping up
+            #      later pruning/hydration.
+            #   b) Skip mounting any visible message whose ID is already in the
+            #      DOM. `bulk_load` returns a window over the *whole* store, so
+            #      a surviving pre-existing entry can still surface as a mount
+            #      candidate even after (a); its widget already exists.
+            seen: set[str] = set()
+            deduped: list[MessageData] = []
+            for msg_data in payload.messages:
+                if (
+                    msg_data.id in seen
+                    or self._message_store.get_message(msg_data.id) is not None
+                ):
+                    continue
+                seen.add(msg_data.id)
+                deduped.append(msg_data)
+            dropped = len(payload.messages) - len(deduped)
+            if dropped:
+                logger.warning(
+                    "Dropped %d duplicate history message(s) for thread %s: "
+                    "IDs were already in the store or repeated in the payload",
+                    dropped,
+                    history_thread_id,
+                )
+
+            # Bulk load into store (sets visible window over the deduped set).
+            _archived, visible = self._message_store.bulk_load(deduped)
+
+            # 6-7. Create and mount the visible widgets (max WINDOW_SIZE),
+            # skipping any whose ID is already mounted (guard (b) above).
+            # `existing_ids` includes footer node IDs, which never collide with
+            # the `msg-`/`asst-` message IDs checked here.
+            existing_ids = {
+                node.id for node in messages_container.children if node.id is not None
+            }
+            mounted: list[tuple[Widget, MessageData]] = []
+            nodes: list[Widget] = []
+            for msg_data in visible:
+                if msg_data.id in existing_ids:
+                    logger.debug(
+                        "Skipping already-mounted history widget %s in thread %s",
+                        msg_data.id,
+                        history_thread_id,
                     )
-                    if footer is not None:
-                        nodes.append(footer)
+                    continue
+                existing_ids.add(msg_data.id)
+                widget = msg_data.to_widget()
+                mounted.append((widget, msg_data))
+                nodes.append(widget)
+                footer = self._build_message_timestamp_footer(
+                    msg_data, visible=self._message_timestamps_visible
+                )
+                if footer is not None:
+                    nodes.append(footer)
+            if nodes:
                 await messages_container.mount(*nodes)
 
             # 8. Render content for AssistantMessage after mount
             assistant_updates = [
                 widget.set_content(msg_data.content)
-                for widget, msg_data in zip(widgets, visible, strict=False)
+                for widget, msg_data in mounted
                 if isinstance(widget, AssistantMessage) and msg_data.content
             ]
             if assistant_updates:
@@ -15935,6 +15989,12 @@ class DeepAgentsApp(App):
             if provider and not parsed:
                 display = f"{provider}:{model_name}"
 
+            # Provider package imports (e.g. langchain_google_genai) can take a
+            # noticeable moment; show an animated busy indicator so it doesn't look
+            # frozen. The work itself already runs off the event loop via
+            # `asyncio.to_thread`, so the UI stays responsive meanwhile.
+            if self._status_bar:
+                self._status_bar.set_busy("Switching model")
             try:
                 result = await asyncio.to_thread(
                     _create_model_with_deepagents_import_lock,
@@ -15954,6 +16014,9 @@ class DeepAgentsApp(App):
                         ErrorMessage(_build_model_switch_error_body(exc)),
                     )
                 return
+            finally:
+                if self._status_bar:
+                    self._status_bar.set_busy("")
 
             # Set the model override for ConfigurableModelMiddleware.
             # The next stream call passes CLIContext via context= and the

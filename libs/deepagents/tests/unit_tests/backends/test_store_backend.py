@@ -51,6 +51,27 @@ def test_store_backend_crud_and_search():
     assert any(i["path"] == "/docs/readme.md" for i in g2)
 
 
+def test_store_backend_reads_mkv_as_binary_without_slicing():
+    """`.mkv` reads bypass text line-slicing so binary bytes are returned intact.
+
+    Regression: `.mkv` is not in the shared multimodal map, so a text
+    classification here would run `slice_read_response` and raise a spurious
+    "line offset exceeds file length" error for any offset past the content.
+    """
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    be.write("/clip.mkv", "single line of bytes")
+
+    # An offset past the 1-line content would raise a text-slice error if `.mkv`
+    # were misclassified as text; the binary path returns the file unsliced.
+    read_result = be.read("/clip.mkv", offset=5, limit=10)
+
+    assert isinstance(read_result, ReadResult)
+    assert read_result.error is None
+    assert read_result.file_data is not None
+    assert read_result.file_data["content"] == "single line of bytes"
+
+
 def test_store_backend_write_overwrites_existing_file():
     mem_store = InMemoryStore()
     be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))

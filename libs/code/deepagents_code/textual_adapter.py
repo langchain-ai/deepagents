@@ -1025,7 +1025,7 @@ async def execute_task_textual(
                                 # Get or create assistant message for this namespace
                                 current_msg = assistant_message_by_namespace.get(ns_key)
                                 if current_msg is None:
-                                    msg_id = f"asst-{uuid.uuid4().hex[:8]}"
+                                    msg_id = f"asst-{uuid.uuid4().hex}"
                                     # Mark active BEFORE mounting so pruning
                                     # (triggered by mount) won't remove it
                                     # (_mount_message can trigger
@@ -1828,7 +1828,7 @@ async def _flush_assistant_text_ns(
     current_msg = assistant_message_by_namespace.get(ns_key)
     if current_msg is None:
         # No message was created during streaming - create one with full content
-        msg_id = f"asst-{uuid.uuid4().hex[:8]}"
+        msg_id = f"asst-{uuid.uuid4().hex}"
         current_msg = AssistantMessage(text, id=msg_id)
         await adapter._mount_message(current_msg)
         await current_msg.write_initial_content()

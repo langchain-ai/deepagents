@@ -122,7 +122,9 @@ all-sandboxes = [
     "deepagents-code[agentcore,daytona,modal,runloop,vercel]",
 ]
 
-# Standalone integrations (kept for backwards-compatible install commands)
+# Standalone integrations
+media = ["av>=17.0.0,<18.0.0", "pillow>=12.2.0,<13.0.0"]
+# (quickjs kept for backwards-compatible install commands)
 quickjs = []
 
 

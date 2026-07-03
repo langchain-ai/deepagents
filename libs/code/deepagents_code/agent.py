@@ -74,6 +74,7 @@ from deepagents_code.config import (
     get_default_coding_instructions,
     get_glyphs,
     get_langsmith_project_name,
+    restore_user_tracing_api_keys,
     restore_user_tracing_env,
     settings,
 )
@@ -1663,6 +1664,7 @@ def create_cli_agent(
             else:
                 shell_env.pop("LANGSMITH_PROJECT", None)
             restore_user_tracing_env(shell_env)
+            restore_user_tracing_api_keys(shell_env)
             # Re-apply a launch-time PYTHONPATH that was stripped from the server
             # interpreter but relayed for approval-gated `execute` commands.
             _apply_inherited_pythonpath(shell_env)
@@ -1673,6 +1675,9 @@ def create_cli_agent(
             # `inherit_env=False`: `shell_env` is already a complete, curated
             # copy of `os.environ`. Inheriting again would re-copy `os.environ`
             # and resurrect the popped carrier var, leaking it into `execute`.
+            # `restore_user_tracing_api_keys` above depends on this too: flipping
+            # to `inherit_env=True` would re-copy the agent's overridden
+            # `LANGSMITH_API_KEY` and undo the restore, leaking it into `execute`.
             backend = LocalShellBackend(
                 root_dir=root_dir,
                 virtual_mode=False,

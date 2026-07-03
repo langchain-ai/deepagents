@@ -25,7 +25,7 @@ Uncomment the Telegram env vars in `.env` and set `DEEPAGENTS_TALON_TELEGRAM_BOT
 
 ## Voice Transcription
 
-Voice transcription is enabled by default in `.env.example`. The Docker example installs `ffmpeg` plus the Talon `speech` extra, so inbound voice notes are transcribed locally with NVIDIA Parakeet through Transformers before reaching the agent. The first voice message can be slow because the ASR model is downloaded lazily. Set `DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_DEVICE=cuda` when running on a GPU-enabled host.
+Voice transcription is enabled by default in `.env.example`. The Docker example installs `ffmpeg` plus the Talon `media` extra, so inbound voice notes are transcribed locally with NVIDIA Parakeet through Transformers before reaching the agent. The first voice message can be slow because the ASR model is downloaded lazily. Set `DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_DEVICE=cuda` when running on a GPU-enabled host.
 
 Cron records, downloaded inbound media, and channel session state persist under `~/talon-workspace/.deepagents/`. The agent's default working directory is `/workspace`, so files it creates are written into `~/talon-workspace/` on the host.
 
@@ -43,7 +43,7 @@ cd ../../libs/talon/deepagents_talon/channels/whatsapp_bridge
 npm install
 
 cd ../../../..
-uv sync --directory libs/talon --extra speech
+uv sync --directory libs/talon --extra media
 cp examples/talon/AGENTS.md ~/.deepagents/talon-local/agent/AGENTS.md
 export DEEPAGENTS_TALON_WORKSPACE=~/talon-workspace
 uv run --directory libs/talon deepagents-talon --whatsapp

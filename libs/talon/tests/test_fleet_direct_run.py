@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Literal, cast
 import pytest
 
 import deepagents_talon.__main__ as talon_main
-from deepagents_talon.fleet import FleetAgentComponents
+from deepagents_talon.mcp import MCPTools
 from tests.conftest import RecordingChannel
 
 if TYPE_CHECKING:
@@ -52,7 +52,6 @@ def test_fleet_direct_run_import_and_once_startup_path(
     )
 
     monkeypatch.setenv("DEEPAGENTS_TALON_HOME", str(home))
-    monkeypatch.setenv("DEEPAGENTS_TALON_FLEET_DIR", str(fleet))
     monkeypatch.setenv("LANGSMITH_API_KEY", OAUTH_TOKEN)
     monkeypatch.setenv("LANGSMITH_TENANT_ID", "tenant-id")
     monkeypatch.setenv("LANGSMITH_ORGANIZATION_ID", "organization-id")
@@ -113,12 +112,10 @@ def _assert_import_result(
 ) -> None:
     del manifest_text
     assert summary.startswith("Imported Fleet export for Talon.")
-    assert f"channel: {context.channel}" in summary
     assert f"assistant_id: {context.assistant_id}" in summary
     assert "replacement_tools: 4" in summary
     assert "setup_tasks: 3" in summary
     assert payload["source"] == "fleet"
-    assert payload["channel"] == context.channel
     assert payload["assistant_id"] == context.assistant_id
     assert payload["fleet_dir"] == str(context.fleet.resolve())
     assert payload["model"] == "fleet:model"
@@ -162,17 +159,11 @@ def _run_once_startup_path(
 ) -> None:
     channels: list[RecordingChannel] = []
     runtimes: list[RecordingRuntime] = []
-    load_calls: list[tuple[Path, dict[str, str]]] = []
+    mcp_configs: list[object] = []
 
-    async def fake_load_fleet(path: Path, *, env: dict[str, str]) -> FleetAgentComponents:
-        load_calls.append((path, dict(env)))
-        return FleetAgentComponents(
-            model="fleet:model",
-            system_prompt="fleet prompt",
-            tools=(),
-            subagents=(),
-            interrupt_on=None,
-        )
+    async def fake_load_mcp(config: object) -> MCPTools:
+        mcp_configs.append(config)
+        return MCPTools(tools=(), servers=())
 
     class RecordingRuntime:
         def __init__(
@@ -182,9 +173,9 @@ def _run_once_startup_path(
             env: dict[str, str],
             **kwargs: object,
         ) -> None:
-            del kwargs
             self.model = model
             self.env = env
+            self.kwargs = kwargs
             self.started = False
             self.stopped = False
             runtimes.append(self)
@@ -207,36 +198,33 @@ def _run_once_startup_path(
             super().__init__(provider="whatsapp")
             channels.append(self)
 
-    monkeypatch.setattr(talon_main, "load_fleet_agent_components", fake_load_fleet)
+    monkeypatch.setattr(talon_main, "load_mcp_tools", fake_load_mcp)
     monkeypatch.setattr(talon_main, "DeepAgentRuntime", RecordingRuntime)
     monkeypatch.setattr(talon_main, "TelegramChannel", RecordingTelegramChannel)
     monkeypatch.setattr(talon_main, "WhatsAppChannel", RecordingWhatsAppChannel)
-    monkeypatch.delenv("DEEPAGENTS_TALON_TELEGRAM_ENABLED", raising=False)
-    monkeypatch.delenv("DEEPAGENTS_TALON_WHATSAPP_ENABLED", raising=False)
+    monkeypatch.setenv("AGENT_ASSISTANT_ID", context.assistant_id)
+    monkeypatch.setenv("AGENT_MODEL", "runtime:model")
+    monkeypatch.delenv("DEEPAGENTS_TALON_FLEET_DIR", raising=False)
     monkeypatch.setattr(
         sys,
         "argv",
         [
             "deepagents-talon",
-            "run-fleet",
-            "--assistant-id",
-            context.assistant_id,
             "--once",
         ],
     )
 
-    with caplog.at_level(logging.INFO), pytest.raises(SystemExit) as exc:
+    with caplog.at_level(logging.INFO):
         talon_main.main()
 
-    assert exc.value.code == 0
     assert [adapter.provider for adapter in channels] == [context.channel]
     assert len(runtimes) == 1
-    assert runtimes[0].model == "fleet:model"
+    assert runtimes[0].model == "runtime:model"
+    assert runtimes[0].kwargs["assistant_dir"] == context.manifest_path.parent
     assert runtimes[0].started is True
     assert runtimes[0].stopped is True
-    assert load_calls == [(context.fleet.resolve(), runtimes[0].env)]
-    assert load_calls[0][1]["DEEPAGENTS_TALON_FLEET_DIR"] == str(context.fleet.resolve())
-    assert load_calls[0][1]["LANGSMITH_API_KEY"] == OAUTH_TOKEN
+    assert runtimes[0].env["LANGSMITH_API_KEY"] == OAUTH_TOKEN
+    assert len(mcp_configs) == 1
     _assert_secret_free(caplog.text)
 
 

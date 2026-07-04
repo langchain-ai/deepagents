@@ -1,19 +1,15 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
 
-from deepagents_talon.config import TalonConfig
-from deepagents_talon.fleet import FleetAgentComponents
 from deepagents_talon.fleet_export import (
     FleetExportValidationError,
     fleet_tool_entries,
     validate_fleet_export,
 )
-from deepagents_talon.fleet_manifest import build_fleet_run_manifest
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -78,63 +74,6 @@ def test_fleet_tool_entries_discovers_subagents_and_strips_url_secrets(tmp_path:
     assert entries[0].server_registry_name == "registry/tools"
     assert entries[1].mcp_server_url == "https://calendar.example/mcp"
     assert entries[1].auth_path == "headers"
-
-
-def test_manifest_groups_tool_requirements_by_scope_and_server_url(tmp_path: Path) -> None:
-    fleet_dir = _fleet_export(tmp_path)
-    _write_tools(
-        fleet_dir / "tools.json",
-        [
-            {
-                "name": "search",
-                "mcp_server_url": "https://tools.example/mcp?token=one",
-                "display_name": "Tools",
-            },
-            {
-                "name": "crawl",
-                "mcp_server_url": "https://tools.example/mcp?token=two",
-                "registry_name": "registry/tools",
-            },
-        ],
-    )
-    subagent_dir = fleet_dir / "subagents" / "researcher"
-    subagent_dir.mkdir(parents=True)
-    _write_tools(
-        subagent_dir / "tools.json",
-        [{"name": "search", "mcp_server_url": "https://tools.example/mcp?token=three"}],
-    )
-    config = TalonConfig.from_env(
-        {
-            "AGENT_ASSISTANT_ID": "assistant",
-            "DEEPAGENTS_TALON_FLEET_DIR": str(fleet_dir),
-        },
-        base_home=tmp_path,
-    )
-
-    manifest = build_fleet_run_manifest(
-        config,
-        FleetAgentComponents(
-            model="openai:gpt-5-mini",
-            system_prompt="fleet prompt",
-            tools=(SimpleNamespace(name="search"),),
-            subagents=(),
-            interrupt_on=None,
-        ),
-    )
-
-    requirements = {
-        (requirement.scope, requirement.mcp_server_url): requirement
-        for requirement in tuple(manifest.tool_requirements)
-    }
-    root = requirements[("root", "https://tools.example/mcp")]
-    subagent = requirements[("subagent:researcher", "https://tools.example/mcp")]
-    assert root.tool_names == ("crawl", "search")
-    assert root.loaded_tool_names == ("search",)
-    assert root.needs_local_mcp is True
-    assert root.server_display_name == "Tools"
-    assert root.server_registry_name == "registry/tools"
-    assert subagent.tool_names == ("search",)
-    assert len(manifest.setup_tasks) == 2
 
 
 def test_validate_fleet_export_allows_missing_optional_content(tmp_path: Path) -> None:

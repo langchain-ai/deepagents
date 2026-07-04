@@ -348,7 +348,7 @@ class DeepAgentRuntime:
             model=model,
             tools=tools,
             system_prompt=self._resolve_system_prompt(),
-            subagents=list(self.subagents) if self.subagents is not None else None,
+            subagents=self._resolve_subagents(),
             backend=self.backend,
             skills=self._resolve_skills(),
             middleware=middleware,
@@ -596,6 +596,13 @@ class DeepAgentRuntime:
             logger.warning("Could not read Talon system prompt from %s", path, exc_info=True)
         return None
 
+    def _resolve_subagents(self) -> list[SubAgent | CompiledSubAgent | AsyncSubAgent] | None:
+        if self.subagents is not None:
+            return list(self.subagents) or None
+        if self.assistant_dir is None:
+            return None
+        return _assistant_subagents(self.assistant_dir) or None
+
     def _resolve_skills(self) -> list[str] | None:
         if self.skills is not None:
             return list(self.skills) or None
@@ -627,6 +634,68 @@ class DeepAgentRuntime:
             paths.append(str(self.assistant_dir / "memory" / "AGENTS.md"))
         prepared = [_prepare_memory_path(path) for path in paths]
         return [path for path in prepared if path is not None] or None
+
+
+def _assistant_subagents(
+    assistant_dir: Path,
+) -> list[SubAgent | CompiledSubAgent | AsyncSubAgent]:
+    subagents_dir = assistant_dir / "subagents"
+    try:
+        children = sorted(path for path in subagents_dir.iterdir() if path.is_dir())
+    except FileNotFoundError:
+        return []
+    except OSError:
+        logger.warning("Could not inspect Talon subagents dir %s", subagents_dir, exc_info=True)
+        return []
+
+    subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = []
+    for path in children:
+        subagent = _assistant_subagent(path)
+        if subagent is not None:
+            subagents.append(subagent)
+    return subagents
+
+
+def _assistant_subagent(path: Path) -> SubAgent | None:
+    prompt_path = path / "AGENTS.md"
+    try:
+        if not prompt_path.is_file():
+            return None
+        system_prompt = prompt_path.read_text(encoding="utf-8")
+        config = _assistant_subagent_config(path / "config.json")
+    except OSError:
+        logger.warning("Could not read Talon subagent from %s", path, exc_info=True)
+        return None
+
+    description = _optional_config_str(config, "description") or path.name
+    model = _optional_config_str(config, "model")
+    subagent: SubAgent = {
+        "name": path.name,
+        "description": description,
+        "system_prompt": system_prompt,
+    }
+    if model is not None:
+        subagent["model"] = model
+    return subagent
+
+
+def _assistant_subagent_config(path: Path) -> Mapping[str, object]:
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("Could not read Talon subagent config from %s", path, exc_info=True)
+        return {}
+    if not isinstance(data, Mapping):
+        logger.warning("Ignoring malformed Talon subagent config at %s", path)
+        return {}
+    return cast("Mapping[str, object]", data)
+
+
+def _optional_config_str(config: Mapping[str, object], key: str) -> str | None:
+    value = config.get(key)
+    return value if isinstance(value, str) and value else None
 
 
 def _interrupts_from_state(state: object) -> tuple[object, ...]:

@@ -7,15 +7,16 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
-from pathlib import Path
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 from urllib.parse import urlsplit, urlunsplit
 
 from deepagents_talon.config import TalonConfig
 
-ChannelName = Literal["telegram", "whatsapp"]
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class FleetImportError(ValueError):
@@ -61,7 +62,6 @@ class FleetImportSummary:
     """Result of importing a Fleet export into an assistant manifest.
 
     Args:
-        channel: Selected channel provider.
         fleet_dir: Validated Fleet export directory.
         assistant_id: Assistant id used to namespace Talon state.
         replacement_tool_count: Number of Fleet-requested tools requiring local replacement.
@@ -71,7 +71,6 @@ class FleetImportSummary:
         model_source: Whether the runtime model comes from Fleet or local env override.
     """
 
-    channel: ChannelName
     fleet_dir: Path
     assistant_id: str
     replacement_tool_count: int
@@ -82,32 +81,12 @@ class FleetImportSummary:
 
 
 @dataclass(frozen=True, slots=True)
-class FleetRunManifest:
-    """Assistant-scoped Fleet run intent persisted by `import-fleet`.
-
-    Args:
-        channel: Selected channel provider to activate when running the manifest.
-        fleet_dir: Validated Fleet export directory.
-        assistant_id: Assistant id used to namespace Talon state.
-        manifest_path: Manifest file that supplied the run intent.
-        replacement_tool_count: Number of Fleet-requested tools requiring local replacement.
-    """
-
-    channel: ChannelName
-    fleet_dir: Path
-    assistant_id: str
-    manifest_path: Path
-    replacement_tool_count: int
-
-
-@dataclass(frozen=True, slots=True)
 class _FleetManifestContext:
-    """Values shared by one manifest refresh."""
+    """Values shared by one assistant materialization."""
 
     target: Path
     fleet_dir: Path
     assistant_id: str
-    channel: ChannelName
     model: str
     model_source: Literal["fleet_config", "local_override"]
 
@@ -116,15 +95,13 @@ def import_fleet_manifest(
     fleet_dir: Path,
     *,
     assistant_id: str,
-    channel: ChannelName,
     env: Mapping[str, str] | None = None,
 ) -> FleetImportSummary:
-    """Write or refresh an assistant-scoped Fleet run manifest.
+    """Materialize a Fleet export into a Talon assistant directory.
 
     Args:
         fleet_dir: Operator-unzipped Fleet export directory.
         assistant_id: Talon assistant id whose home receives the manifest.
-        channel: Selected channel provider.
         env: Environment mapping used to match runtime configuration.
 
     Returns:
@@ -150,23 +127,25 @@ def import_fleet_manifest(
     target = config.manifest_dir / "tools.json"
     replacements = _replacement_tools(source, env=config.env)
     tasks = _setup_tasks(replacements, target=target)
-    manifest = _manifest_payload(
-        _FleetManifestContext(
-            target=target,
-            fleet_dir=source,
-            assistant_id=config.assistant_id,
-            channel=channel,
-            model=model,
-            model_source=model_source,
+    _materialize_agent_directory(
+        source,
+        config.manifest_dir,
+        manifest=_manifest_payload(
+            _FleetManifestContext(
+                target=target,
+                fleet_dir=source,
+                assistant_id=config.assistant_id,
+                model=model,
+                model_source=model_source,
+            ),
+            replacements=replacements,
+            tasks=tasks,
         ),
-        replacements=replacements,
-        tasks=tasks,
+        model=model,
+        model_source=model_source,
     )
-    target.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    target.chmod(0o600)
 
     return FleetImportSummary(
-        channel=channel,
         fleet_dir=source,
         assistant_id=config.assistant_id,
         replacement_tool_count=len(replacements),
@@ -177,75 +156,100 @@ def import_fleet_manifest(
     )
 
 
-def load_fleet_run_manifest(
+def _materialize_agent_directory(
+    source: Path,
+    target: Path,
     *,
-    assistant_id: str,
-    env: Mapping[str, str] | None = None,
-) -> FleetRunManifest:
-    """Load and validate the assistant's Fleet run manifest.
+    manifest: Mapping[str, object],
+    model: str,
+    model_source: Literal["fleet_config", "local_override"],
+) -> None:
+    """Copy Fleet files into Talon's assistant directory.
 
     Args:
-        assistant_id: Talon assistant id whose manifest should be loaded.
-        env: Environment mapping used to resolve the assistant home.
-
-    Returns:
-        Validated Fleet run manifest.
-
-    Raises:
-        FleetImportError: If the manifest is missing, malformed, or points at a
-            stale Fleet export directory.
+        source: Validated Fleet export directory.
+        target: Talon assistant `agent` directory.
+        manifest: Sanitized MCP/setup manifest to write as `tools.json`.
+        model: Model id resolved during import.
+        model_source: Whether `model` came from Fleet config or local env.
     """
-    values = dict(os.environ if env is None else env)
-    values["DEEPAGENTS_TALON_ASSISTANT_ID"] = assistant_id
-    config = TalonConfig.from_env(values)
-    path = config.manifest_dir / "tools.json"
-    if not path.is_file():
-        msg = (
-            f"Fleet run manifest not found for assistant {config.assistant_id!r}. "
-            "Run `deepagents-talon import-fleet` first."
-        )
-        raise FleetImportError(msg)
+    target.mkdir(mode=0o700, parents=True, exist_ok=True)
+    target.chmod(0o700)
+    shutil.copy2(source / "AGENTS.md", target / "AGENTS.md")
 
-    data = _read_json_object(path, label="Fleet run manifest")
-    raw = data.get("manifest")
-    if not isinstance(raw, Mapping):
-        msg = "Malformed Fleet run manifest: missing manifest object"
-        raise FleetImportError(msg)
-    manifest = cast("Mapping[str, object]", raw)
-    if manifest.get("source") != "fleet":
-        msg = "Manifest is not a Fleet run manifest"
-        raise FleetImportError(msg)
+    _copy_tree(source / "skills", target / "skills")
+    _copy_subagents(source / "subagents", target / "subagents")
 
-    manifest_assistant_id = manifest.get("assistant_id")
-    if manifest_assistant_id != config.assistant_id:
-        msg = (
-            "Fleet run manifest assistant id does not match requested assistant "
-            f"{config.assistant_id!r}"
-        )
-        raise FleetImportError(msg)
-
-    channel = manifest.get("channel")
-    if channel not in {"telegram", "whatsapp"}:
-        msg = "Malformed Fleet run manifest: channel must be telegram or whatsapp"
-        raise FleetImportError(msg)
-
-    fleet_dir = manifest.get("fleet_dir")
-    if not isinstance(fleet_dir, str) or not fleet_dir:
-        msg = "Malformed Fleet run manifest: fleet_dir is required"
-        raise FleetImportError(msg)
-
-    replacements = manifest.get("replacement_tools", ())
-    if not isinstance(replacements, Sequence) or isinstance(replacements, (str, bytes, bytearray)):
-        msg = "Malformed Fleet run manifest: replacement_tools must be an array"
-        raise FleetImportError(msg)
-
-    return FleetRunManifest(
-        channel=cast("ChannelName", channel),
-        fleet_dir=_validate_fleet_dir(Path(fleet_dir)),
-        assistant_id=config.assistant_id,
-        manifest_path=path,
-        replacement_tool_count=len(replacements),
+    config = {
+        "model": model,
+        "model_source": model_source,
+        "source": "fleet",
+    }
+    (target / "config.json").write_text(
+        json.dumps(config, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
     )
+    (target / "config.json").chmod(0o600)
+    (target / "tools.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    (target / "tools.json").chmod(0o600)
+
+
+def _copy_subagents(source: Path, target: Path) -> None:
+    if not source.is_dir():
+        return
+    target.mkdir(mode=0o700, parents=True, exist_ok=True)
+    target.chmod(0o700)
+    for child in sorted(path for path in source.iterdir() if path.is_dir()):
+        destination = target / child.name
+        destination.mkdir(mode=0o700, parents=True, exist_ok=True)
+        destination.chmod(0o700)
+        for name in ("AGENTS.md", "config.json"):
+            path = child / name
+            if path.is_file():
+                shutil.copy2(path, destination / name)
+        _copy_tree(child / "skills", destination / "skills")
+
+
+def _copy_tree(source: Path, target: Path) -> None:
+    if source.is_dir():
+        shutil.copytree(source, target, dirs_exist_ok=True)
+
+
+def _manifest_payload(
+    context: _FleetManifestContext,
+    *,
+    replacements: Sequence[FleetReplacementTool],
+    tasks: Sequence[FleetSetupTask],
+) -> dict[str, object]:
+    existing = _read_existing_manifest(context.target)
+    return {
+        "mcpServers": existing.get("mcpServers", {}),
+        "manifest": {
+            "source": "fleet",
+            "fleet_dir": str(context.fleet_dir),
+            "assistant_id": context.assistant_id,
+            "model": context.model,
+            "model_source": context.model_source,
+            "replacement_tools": [asdict(tool) for tool in replacements],
+            "setup_tasks": [asdict(task) for task in tasks],
+        },
+    }
+
+
+def _read_existing_manifest(path: Path) -> Mapping[str, object]:
+    if not path.is_file():
+        return {}
+    data = _read_json_object(path, label="existing Talon manifest")
+    servers = data.get("mcpServers")
+    if servers is None:
+        return {}
+    if not isinstance(servers, Mapping):
+        msg = "Malformed existing Talon manifest: mcpServers must be an object"
+        raise FleetImportError(msg)
+    return {"mcpServers": dict(cast("Mapping[str, object]", servers))}
 
 
 def _validate_fleet_dir(fleet_dir: Path) -> Path:
@@ -404,41 +408,6 @@ def _setup_tasks(
         )
         for (endpoint, auth_path), names in sorted(grouped.items())
     )
-
-
-def _manifest_payload(
-    context: _FleetManifestContext,
-    *,
-    replacements: Sequence[FleetReplacementTool],
-    tasks: Sequence[FleetSetupTask],
-) -> dict[str, object]:
-    existing = _read_existing_manifest(context.target)
-    return {
-        "mcpServers": existing.get("mcpServers", {}),
-        "manifest": {
-            "source": "fleet",
-            "fleet_dir": str(context.fleet_dir),
-            "assistant_id": context.assistant_id,
-            "channel": context.channel,
-            "model": context.model,
-            "model_source": context.model_source,
-            "replacement_tools": [asdict(tool) for tool in replacements],
-            "setup_tasks": [asdict(task) for task in tasks],
-        },
-    }
-
-
-def _read_existing_manifest(path: Path) -> Mapping[str, object]:
-    if not path.is_file():
-        return {}
-    data = _read_json_object(path, label="existing Talon manifest")
-    servers = data.get("mcpServers")
-    if servers is None:
-        return {}
-    if not isinstance(servers, Mapping):
-        msg = "Malformed existing Talon manifest: mcpServers must be an object"
-        raise FleetImportError(msg)
-    return {"mcpServers": dict(cast("Mapping[str, object]", servers))}
 
 
 def _safe_endpoint(value: str) -> str:

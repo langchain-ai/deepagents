@@ -12,7 +12,6 @@ from deepagents_talon.__main__ import _agent_runtime
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.cron import CronJobStore
 from deepagents_talon.fleet import FleetAgentComponents, load_fleet_agent_components
-from deepagents_talon.fleet_manifest import load_fleet_run_manifest, manifest_path
 from deepagents_talon.mcp import MCPTools
 from deepagents_talon.runtime import INTERRUPT_ON_TOOLS_ENV_KEY, DeepAgentRuntime
 
@@ -303,10 +302,6 @@ async def test_agent_runtime_loads_fleet_components(
     assert seen["paths"] == [fleet_dir]
     assert seen["env"]["BUILTIN_MCP_URL"] == "https://tools.example/mcp"
     assert runtime.reload_agent_components is not None
-    manifest = load_fleet_run_manifest(manifest_path(config.home))
-    assert manifest.assistant_id == "test"
-    assert manifest.fleet_dir == str(fleet_dir)
-    assert manifest.local_mcp_config_path == str(tmp_path / "test" / "agent" / "tools.json")
 
     refreshed = await runtime.reload_agent_components()
 
@@ -319,7 +314,6 @@ async def test_agent_runtime_loads_fleet_components(
         "execute": True,
     }
     assert seen["paths"] == [fleet_dir, fleet_dir]
-    assert load_fleet_run_manifest(manifest_path(config.home)).created_at == manifest.created_at
 
 
 async def test_agent_runtime_allows_fleet_model_override(

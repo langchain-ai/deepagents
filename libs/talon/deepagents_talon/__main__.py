@@ -12,7 +12,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from deepagents_talon.channels.telegram import TelegramChannel, TelegramChannelConfig
 from deepagents_talon.channels.whatsapp import WhatsAppChannel, WhatsAppChannelConfig
@@ -20,24 +20,13 @@ from deepagents_talon.config import TalonConfig
 from deepagents_talon.cron import CronJobStore, PersistentCronScheduler
 from deepagents_talon.data_lifecycle import cleanup_sensitive_state
 from deepagents_talon.fleet import FleetAgentComponents, load_fleet_agent_components
-from deepagents_talon.fleet_channel_selection import (
-    ChannelCandidate,
-    ChannelSelectionResolution,
-    ChannelSelectionStatus,
-    resolve_fleet_channel_selection,
-)
-from deepagents_talon.fleet_manifest import ChannelSelection, refresh_fleet_run_manifest
 from deepagents_talon.host import TalonHost
 from deepagents_talon.import_fleet import (
-    ChannelName,
     FleetImportError,
     FleetImportSummary,
-    FleetRunManifest,
     import_fleet_manifest,
-    load_fleet_run_manifest,
 )
 from deepagents_talon.mcp import MCPTools, load_mcp_tools, print_mcp_config_paths
-from deepagents_talon.observability import log_event
 from deepagents_talon.runtime import (
     DeepAgentRuntime,
     EchoAgentRuntime,
@@ -75,25 +64,15 @@ def main() -> None:
         action="store_true",
         help="Attach the Telegram channel adapter.",
     )
-    parser.add_argument(
-        "--channel",
-        choices=("telegram", "whatsapp"),
-        default=None,
-        help="Select the channel for a Fleet-backed direct run.",
-    )
     subparsers = parser.add_subparsers(dest="command")
     _add_mcp_parsers(subparsers)
     _add_import_fleet_parser(subparsers)
-    _add_run_fleet_parser(subparsers)
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 
     if args.command == "import-fleet":
         sys.exit(_run_import_fleet_command(args))
-    if args.command == "run-fleet":
-        sys.exit(_run_fleet_command(args))
-
     config = TalonConfig.from_env()
     if args.command == "mcp":
         sys.exit(asyncio.run(_run_mcp_command(args, config)))
@@ -103,7 +82,6 @@ def main() -> None:
         once=args.once,
         whatsapp=args.whatsapp,
         telegram=args.telegram,
-        selected_channel=None,
     )
 
 
@@ -113,33 +91,20 @@ def _run_host(
     once: bool,
     whatsapp: bool,
     telegram: bool,
-    selected_channel: ChannelName | None,
 ) -> None:
     cron_factory = CronJobStore
     cron_store = cron_factory(assistant_id=config.assistant_id, cron_dir=config.cron_dir)
     config.ensure_home()
     cleanup_sensitive_state(config=config, cron_store=cron_store)
 
-    channel_resolution = _channel_selection(
-        config,
-        channel=selected_channel,
-        whatsapp=whatsapp,
-        telegram=telegram,
-    )
-    if channel_resolution.status != "ready":
-        print(channel_resolution.message, file=sys.stderr)  # noqa: T201
-        sys.exit(2)
-    channel_selection = channel_resolution.selected_channel
-    selected_provider = channel_selection.provider if channel_selection is not None else None
     channels = _channels(
         config,
         whatsapp=whatsapp,
         telegram=telegram,
-        selected_provider=selected_provider,
     )
     host = TalonHost(
         config=config,
-        agent=asyncio.run(_agent_runtime(config, cron_store, selected_channel=channel_selection)),
+        agent=asyncio.run(_agent_runtime(config, cron_store)),
         channels=channels,
         voice_transcriber=build_voice_transcriber(config),
     )
@@ -183,54 +148,23 @@ def _add_import_fleet_parser(
         "--channel",
         choices=("telegram", "whatsapp"),
         default=None,
-        help="Channel provider Talon will run for this Fleet export",
+        help="Accepted for compatibility; channels are selected by the Talon runtime environment.",
     )
     parser.add_argument(
         "--non-interactive",
         action="store_true",
-        help="Fail instead of prompting when channel selection is missing",
-    )
-
-
-def _add_run_fleet_parser(
-    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
-) -> None:
-    parser = subparsers.add_parser(
-        "run-fleet",
-        help="Run a Fleet-backed assistant from its imported manifest",
-    )
-    parser.add_argument("--assistant-id", required=True, help="Assistant id for Talon local state")
-    parser.add_argument(
-        "--once",
-        action="store_true",
-        default=argparse.SUPPRESS,
-        help="Start and stop immediately after bootstrapping the host.",
-    )
-    parser.add_argument(
-        "--whatsapp",
-        action="store_true",
-        default=argparse.SUPPRESS,
-        help="Also attach the WhatsApp channel adapter.",
-    )
-    parser.add_argument(
-        "--telegram",
-        action="store_true",
-        default=argparse.SUPPRESS,
-        help="Also attach the Telegram channel adapter.",
+        help="Accepted for compatibility; import-fleet does not prompt.",
     )
 
 
 async def _agent_runtime(
     config: TalonConfig,
     cron_store: CronJobStore,
-    *,
-    selected_channel: ChannelSelection | None = None,
 ) -> EchoAgentRuntime | DeepAgentRuntime:
     env = _runtime_env(config)
     if config.fleet_dir is not None:
         fleet_dir = config.fleet_dir
         components = await load_fleet_agent_components(fleet_dir, env=env)
-        refresh_fleet_run_manifest(config, components, selected_channel=selected_channel)
         mcp = await load_mcp_tools(config, allow_empty=True)
         _log_mcp_servers(mcp)
         runtime_components = _runtime_components_from_fleet(
@@ -242,7 +176,6 @@ async def _agent_runtime(
 
         async def reload_fleet_components() -> RuntimeAgentComponents:
             refreshed = await load_fleet_agent_components(fleet_dir, env=env)
-            refresh_fleet_run_manifest(config, refreshed, selected_channel=selected_channel)
             reloaded = await load_mcp_tools(config, allow_empty=True)
             _log_mcp_servers(reloaded)
             return _runtime_components_from_fleet(
@@ -344,57 +277,16 @@ async def _run_mcp_command(args: argparse.Namespace, config: TalonConfig) -> int
 
 def _run_import_fleet_command(args: argparse.Namespace) -> int:
     try:
-        channel = _resolve_import_channel(
-            args.channel,
-            non_interactive=args.non_interactive,
-        )
+        del args.channel, args.non_interactive
         summary = import_fleet_manifest(
             args.fleet_dir,
             assistant_id=args.assistant_id,
-            channel=channel,
         )
     except (FleetImportError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)  # noqa: T201
         return 2
     _print_import_summary(summary)
     return 0
-
-
-def _run_fleet_command(args: argparse.Namespace) -> int:
-    try:
-        manifest = load_fleet_run_manifest(assistant_id=args.assistant_id)
-        config = _config_from_fleet_run_manifest(manifest)
-    except (FleetImportError, ValueError) as exc:
-        print(f"error: {exc}", file=sys.stderr)  # noqa: T201
-        return 2
-
-    log_event(
-        logger,
-        "fleet.run_startup",
-        assistant_id=manifest.assistant_id,
-        channel=manifest.channel,
-        fleet_dir=str(manifest.fleet_dir),
-        replacement_tool_count=manifest.replacement_tool_count,
-    )
-    _run_host(
-        config,
-        once=args.once,
-        whatsapp=args.whatsapp,
-        telegram=args.telegram,
-        selected_channel=manifest.channel,
-    )
-    return 0
-
-
-def _config_from_fleet_run_manifest(
-    manifest: FleetRunManifest,
-    *,
-    env: Mapping[str, str] | None = None,
-) -> TalonConfig:
-    values = dict(os.environ if env is None else env)
-    values["DEEPAGENTS_TALON_ASSISTANT_ID"] = manifest.assistant_id
-    values["DEEPAGENTS_TALON_FLEET_DIR"] = str(manifest.fleet_dir)
-    return TalonConfig.from_env(values)
 
 
 async def _run_mcp_login(args: argparse.Namespace) -> int:
@@ -410,46 +302,8 @@ async def _run_mcp_login(args: argparse.Namespace) -> int:
     return await run_mcp_login(server=args.server, config_path=args.config_path)
 
 
-def _resolve_import_channel(
-    channel: str | None,
-    *,
-    non_interactive: bool,
-) -> ChannelName:
-    if channel in {"telegram", "whatsapp"}:
-        return cast("ChannelName", channel)
-
-    env_channel = _import_channel_from_env(os.environ)
-    if env_channel is not None:
-        return env_channel
-
-    if non_interactive:
-        msg = "--channel is required when channel cannot be inferred in non-interactive mode"
-        raise FleetImportError(msg)
-    if not sys.stdin.isatty():
-        msg = "--channel is required when stdin is not interactive"
-        raise FleetImportError(msg)
-
-    while True:
-        value = input("Channel [telegram/whatsapp]: ").strip().lower()
-        if value in {"telegram", "whatsapp"}:
-            return cast("ChannelName", value)
-        print("Enter 'telegram' or 'whatsapp'.", file=sys.stderr)  # noqa: T201
-
-
-def _import_channel_from_env(env: Mapping[str, str]) -> ChannelName | None:
-    enabled: list[ChannelName] = []
-    if _env_enabled(env, "DEEPAGENTS_TALON_TELEGRAM_ENABLED"):
-        enabled.append("telegram")
-    if _env_enabled(env, "DEEPAGENTS_TALON_WHATSAPP_ENABLED"):
-        enabled.append("whatsapp")
-    if len(enabled) == 1:
-        return enabled[0]
-    return None
-
-
 def _print_import_summary(summary: FleetImportSummary) -> None:
     print("Imported Fleet export for Talon.")  # noqa: T201
-    print(f"  channel: {summary.channel}")  # noqa: T201
     print(f"  fleet_dir: {summary.fleet_dir}")  # noqa: T201
     print(f"  assistant_id: {summary.assistant_id}")  # noqa: T201
     print(f"  replacement_tools: {summary.replacement_tool_count}")  # noqa: T201
@@ -468,40 +322,13 @@ def _channels(
     *,
     whatsapp: bool = False,
     telegram: bool = False,
-    selected_provider: str | None = None,
 ) -> tuple[ChannelAdapter, ...]:
     channels: list[ChannelAdapter] = []
-    if selected_provider is not None:
-        whatsapp = selected_provider == "whatsapp"
-        telegram = selected_provider == "telegram"
-
-    if whatsapp or (
-        selected_provider is None and _env_enabled(config.env, "DEEPAGENTS_TALON_WHATSAPP_ENABLED")
-    ):
+    if whatsapp or _env_enabled(config.env, "DEEPAGENTS_TALON_WHATSAPP_ENABLED"):
         channels.append(WhatsAppChannel(WhatsAppChannelConfig.from_talon_config(config)))
-    if telegram or (
-        selected_provider is None and _env_enabled(config.env, "DEEPAGENTS_TALON_TELEGRAM_ENABLED")
-    ):
+    if telegram or _env_enabled(config.env, "DEEPAGENTS_TALON_TELEGRAM_ENABLED"):
         channels.append(TelegramChannel(TelegramChannelConfig.from_talon_config(config)))
     return tuple(channels)
-
-
-def _channel_selection(
-    config: TalonConfig,
-    *,
-    channel: str | None = None,
-    whatsapp: bool = False,
-    telegram: bool = False,
-) -> ChannelSelectionResolution:
-    if config.fleet_dir is None and channel is None:
-        return ChannelSelectionResolution(selected_channel=None, status="ready")
-    return resolve_fleet_channel_selection(
-        config.env,
-        explicit_channel=channel,
-        channel_flags={"telegram": telegram, "whatsapp": whatsapp},
-        interactive=sys.stdin.isatty(),
-        prompt=_prompt_channel,
-    )
 
 
 def _env_enabled(env: Mapping[str, str], key: str) -> bool:
@@ -515,23 +342,6 @@ def _env_enabled(env: Mapping[str, str], key: str) -> bool:
         `True` when the value is one of ``1``, ``true``, or ``yes``.
     """
     return env.get(key, "").lower() in {"1", "true", "yes"}
-
-
-def _prompt_channel(
-    status: ChannelSelectionStatus,
-    candidates: Sequence[ChannelCandidate],
-) -> str:
-    options = ("telegram", "whatsapp")
-    if status == "ambiguous":
-        configured = ", ".join(candidate.provider for candidate in candidates)
-        print(f"Multiple Talon channels are configured ({configured}).", file=sys.stderr)  # noqa: T201
-    else:
-        print("No Talon channel is configured for this Fleet run.", file=sys.stderr)  # noqa: T201
-    while True:
-        value = input("Select channel [telegram/whatsapp]: ").strip().lower()
-        if value in options:
-            return value
-        print("Enter telegram or whatsapp.", file=sys.stderr)  # noqa: T201
 
 
 def _runtime_env(config: TalonConfig) -> dict[str, str]:

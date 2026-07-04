@@ -21,6 +21,49 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+# --- perf: de-duplicate wrap-span trace serialization -------------------------
+# LangChain wraps every middleware `wrap_model_call`/`wrap_tool_call` in
+# `@traceable(process_inputs=_scrub_inputs)`. The stock `_scrub_inputs` keeps the full
+# `request` — including the entire, growing `messages` history (and `state`) — in each
+# span's recorded inputs. With ~9 wrap layers the whole conversation is re-serialized
+# ~9x per model call: O(n) per call -> O(n^2) per run, which dominates wall-clock late
+# in long agent runs and drives timeouts. The messages are already recorded on the
+# inner model (LLM) span, so keeping them on every wrapper span is pure redundancy.
+# We replace `messages` with a lightweight placeholder and drop `state`; trace
+# structure, span outputs, the LLM span, and reward feedback are untouched. Guarded so
+# a LangChain change that renames/removes the symbol is a no-op, not a break. (Ideally
+# upstreamed into `_scrub_inputs` later; local patch to test quickly for now.)
+def _install_lean_wrap_span_scrub() -> None:
+    try:
+        from langchain.agents import factory as _factory  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        logger.warning("lean wrap-span scrub: langchain.agents.factory not importable; skipping")
+        return
+    orig = getattr(_factory, "_scrub_inputs", None)
+    if orig is None or getattr(orig, "_lean_wrap_span", False):
+        return
+
+    def _lean_scrub(inputs: dict[str, Any]) -> dict[str, Any]:
+        filtered = orig(inputs)
+        req = filtered.get("request")
+        if isinstance(req, dict):
+            req = dict(req)
+            msgs = req.get("messages")
+            if isinstance(msgs, list):
+                req["messages"] = f"<{len(msgs)} messages omitted from wrap-span trace>"
+            req.pop("state", None)
+            filtered["request"] = req
+        return filtered
+
+    _lean_scrub._lean_wrap_span = True  # type: ignore[attr-defined]
+    _factory._scrub_inputs = _lean_scrub
+    logger.info("Installed lean wrap-span trace scrub (drops redundant messages/state from wrap spans).")
+
+
+_install_lean_wrap_span_scrub()
+# ------------------------------------------------------------------------------
+
 _DEFAULT_WORKDIR = Path("/app")
 # Directories to try, in order, when the resolved workdir is absent from the task image.
 _WORKDIR_FALLBACKS: tuple[Path, ...] = (Path("/app"), Path("/workspace"), Path("/root"), Path("/"))

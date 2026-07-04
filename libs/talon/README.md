@@ -29,6 +29,10 @@ If `AGENT_MODEL` is unset, Talon starts with the echo runtime. This is useful fo
 
 Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host creates restrictive state directories for the materialized agent manifest, channel sessions, and cron jobs. The default local execution workspace is the current working directory; set `DEEPAGENTS_TALON_WORKSPACE` to use a different directory. The per-invocation graph recursion limit defaults to `500`; set `DEEPAGENTS_TALON_RECURSION_LIMIT` to tune it.
 
+## Fleet Exports
+
+The direct Fleet export runtime path (`DEEPAGENTS_TALON_FLEET_DIR`, `AGENT_FLEET_DIR`, `FLEET_DIR`, and the `fleet-deepagents-export` dependency) has been removed. To import a Fleet export into the local materialized-agent layout, use the Fleet zip import flow (`deepagents-talon import-fleet`) instead. Configuration is owned entirely by the local assistant manifest directory and `.mcp.json` MCP discovery.
+
 ## Tool Approval Overrides
 
 Set `DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS` to a comma-separated list of tool names that should always require Talon's channel approval flow. This local override is additive with agent-provided HITL configuration and applies to MCP or local runtime tools.

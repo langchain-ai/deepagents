@@ -1136,12 +1136,13 @@ class PlanFirstMiddleware(AgentMiddleware):
         return self._finalize_gate(state)
 
 
-_GRADER_MODEL = "fireworks:accounts/langchain-fireworks/deployments/nemotron-tb-test"
+_GRADER_MODEL = "fireworks:accounts/fireworks/models/nemotron-3-ultra-nvfp4"
 """Hardcoded grader model for the independent finalize-time reviewer.
 
-The profile is registered for several specs, but scored runs use this Fireworks
-dedicated deployment; the grader reuses it so its verdict comes from the same
-model class reviewing in a fresh context. Hardcoded for now.
+Uses Fireworks serverless Nemotron so the grader works regardless of the agent's
+endpoint (in particular when the dedicated deployment is capacity-blocked). Same
+model class as the agent, reviewing in a fresh context. Hardcoded for now;
+follow-up: make the grader follow the agent's own model.
 """
 
 # Independent-reviewer prompt for the finalize-time grader sub-agent. Targets the

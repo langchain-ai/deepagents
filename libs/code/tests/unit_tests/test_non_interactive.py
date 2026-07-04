@@ -1823,6 +1823,49 @@ class TestProcessAIMessageHooks:
             },
         )
 
+    def test_tool_use_waits_when_empty_chunk_precedes_real_args(self) -> None:
+        """An empty first args chunk must not clobber later real args."""
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [
+            {
+                "type": "tool_call_chunk",
+                "name": "write_file",
+                "id": "call-1",
+                "index": 0,
+                "args": "",
+            },
+            {
+                "type": "tool_call_chunk",
+                "name": None,
+                "id": None,
+                "index": 0,
+                "args": '{"file_path": "notes.txt", ',
+            },
+            {
+                "type": "tool_call_chunk",
+                "name": None,
+                "id": None,
+                "index": 0,
+                "args": '"content": "hello"}',
+            },
+        ]
+        state = StreamState(quiet=True)
+        console = Console(quiet=True)
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_ai_message(ai_msg, state, console)
+
+        mock_dispatch.assert_called_once_with(
+            "tool.use",
+            {
+                "tool_name": "write_file",
+                "tool_id": "call-1",
+                "tool_args": {"file_path": "notes.txt", "content": "hello"},
+            },
+        )
+
     def test_tool_use_not_dispatched_when_no_name(self) -> None:
         """tool.use must not fire while a chunk has complete args but no name.
 

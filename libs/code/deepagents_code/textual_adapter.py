@@ -125,6 +125,22 @@ def _dispatch_tool_result_hook(
     )
 
 
+def _dispatch_rejected_tool_result_hooks(
+    tool_messages: dict[str, ToolCallMessage],
+    tool_output: str,
+) -> None:
+    """Dispatch terminal hook events for HITL tools that will not resume."""
+    for tool_id, tool_msg in list(tool_messages.items()):
+        _dispatch_tool_error_hook(tool_msg.tool_name)
+        _dispatch_tool_result_hook(
+            tool_msg.tool_name,
+            tool_id,
+            tool_msg._args,
+            "error",
+            tool_output,
+        )
+
+
 def _get_hitl_request_adapter(hitl_request_type: type) -> TypeAdapter:
     """Return a cached `TypeAdapter(HITLRequest)`.
 
@@ -1623,7 +1639,6 @@ async def execute_task_textual(
                                 )
                                 for tool_msg in tool_msgs:
                                     tool_msg.set_rejected(reason=reject_message)
-                                adapter._current_tool_messages.clear()
                                 # Bare reject aborts the turn and shows the
                                 # canned "Command rejected" banner so the user
                                 # can redirect. When a reason is supplied, the
@@ -1631,7 +1646,12 @@ async def execute_task_textual(
                                 # agent: keep `any_rejected=False` so the
                                 # stream resumes and the banner is suppressed.
                                 if reject_message is None:
+                                    _dispatch_rejected_tool_result_hooks(
+                                        adapter._current_tool_messages,
+                                        "Tool approval rejected",
+                                    )
                                     any_rejected = True
+                                adapter._current_tool_messages.clear()
                             else:
                                 logger.warning(
                                     "Unexpected HITL decision type: %s",
@@ -1645,6 +1665,10 @@ async def execute_task_textual(
                                     adapter._current_tool_messages.values()
                                 ):
                                     tool_msg.set_rejected()
+                                _dispatch_rejected_tool_result_hooks(
+                                    adapter._current_tool_messages,
+                                    "Tool approval rejected",
+                                )
                                 adapter._current_tool_messages.clear()
                                 any_rejected = True
                         else:
@@ -1659,6 +1683,10 @@ async def execute_task_textual(
                                 adapter._current_tool_messages.values()
                             ):
                                 tool_msg.set_rejected()
+                            _dispatch_rejected_tool_result_hooks(
+                                adapter._current_tool_messages,
+                                "Tool approval rejected",
+                            )
                             adapter._current_tool_messages.clear()
                             any_rejected = True
 

@@ -4253,6 +4253,84 @@ class TestToolHooksTextual:
         assert payload["tool_status"] == "error"
         assert payload["tool_name"] == "write_file"
 
+    async def test_hitl_bare_reject_dispatches_terminal_tool_hooks(self) -> None:
+        """A bare HITL reject closes the prior tool.use hook before aborting."""
+        action_requests = [{"name": "execute", "args": {"command": "echo hi"}}]
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            _tool_call_message(
+                                "execute", {"command": "echo hi"}, "tool-1"
+                            ),
+                            {},
+                        ),
+                    ),
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": action_requests,
+                            "review_configs": [
+                                {
+                                    "action_name": "execute",
+                                    "allowed_decisions": ["approve", "reject"],
+                                }
+                            ],
+                        }
+                    ),
+                ],
+                [],
+            ]
+        )
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            future: asyncio.Future[object] = asyncio.Future()
+            future.set_result({"type": "reject"})
+            return future
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+
+        with (
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+            ),
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch_background,
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        assert len(agent.stream_inputs) == 1
+        assert [c[0][0] for c in mock_dispatch_background.call_args_list] == [
+            "tool.use",
+            "tool.error",
+            "tool.result",
+        ]
+        tool_result_payload = mock_dispatch_background.call_args_list[2][0][1]
+        assert tool_result_payload == {
+            "tool_name": "execute",
+            "tool_id": "tool-1",
+            "tool_args": {"command": "echo hi"},
+            "tool_status": "error",
+            "tool_output": "Tool approval rejected",
+        }
+
     async def test_tool_use_dispatched_after_streaming_fragments(self) -> None:
         """tool.use reassembles streamed arg fragments and fires exactly once."""
         chunks = [

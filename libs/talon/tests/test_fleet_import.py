@@ -11,7 +11,6 @@ import pytest
 from deepagents_code.mcp_tools import load_mcp_config
 from deepagents_talon.__main__ import main
 from deepagents_talon.fleet_import import FleetImportError, format_import_stdout, import_fleet_zip
-from deepagents_talon.runtime import INTERRUPT_ON_TOOLS_ENV_KEY
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -115,7 +114,7 @@ def test_import_fleet_cli_defaults_target_to_selected_assistant(
     assert exc.value.code == 0
     target = tmp_path / "home" / "default" / "agent"
     assert (target / "AGENTS.md").read_text(encoding="utf-8") == "root prompt"
-    assert f"Target directory: {target}" in capsys.readouterr().out
+    assert f"Agent files imported to: {target}" in capsys.readouterr().out
 
 
 def test_import_fleet_cli_assistant_id_overrides_default_target(
@@ -234,7 +233,12 @@ def test_import_fleet_zip_stdout_recommends_interrupt_env(tmp_path: Path) -> Non
 
     output = format_import_stdout(result)
     assert result.interrupt_tools == ("approve_remote", "write_remote")
-    assert f"{INTERRUPT_ON_TOOLS_ENV_KEY}=approve_remote,write_remote" in output
+    assert "Next steps:" in output
+    assert "- Review .mcp.json before running Talon." in output
+    assert "- Review .mcp.json.setup for requested tools and setup details." in output
+    assert "- Add HITL for sensitive tools with DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS." in output
+    assert "approve_remote" not in output
+    assert "write_remote" not in output
 
 
 def test_import_fleet_zip_removes_existing_mcp_artifacts_when_no_tools(tmp_path: Path) -> None:
@@ -251,7 +255,9 @@ def test_import_fleet_zip_removes_existing_mcp_artifacts_when_no_tools(tmp_path:
     assert result.interrupt_tools == ()
     assert not (target / ".mcp.json.setup").exists()
     assert not (target / ".mcp.json").exists()
-    assert "MCP setup: no Fleet MCP tool requirements found" in format_import_stdout(result)
+    output = format_import_stdout(result)
+    assert "- No Fleet MCP tool requirements were found." in output
+    assert "- Add MCP servers to .mcp.json if this assistant needs local tools." in output
 
 
 def test_import_fleet_zip_sanitizes_secret_bearing_mcp_urls(tmp_path: Path) -> None:

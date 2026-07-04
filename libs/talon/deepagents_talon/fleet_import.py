@@ -170,20 +170,22 @@ def format_import_stdout(result: FleetImportResult) -> str:
     """
     lines = [
         "Fleet import complete.",
-        f"Target directory: {result.target_dir}",
+        f"Agent files imported to: {result.target_dir}",
         f"Root prompts written: {result.root_prompt_count}",
         f"Subagent prompts written: {result.subagent_prompt_count}",
         f"config.json: {'ignored' if result.config_ignored else 'not present'}",
+        "",
+        "Next steps:",
     ]
     if result.mcp_notes is None:
-        lines.append("MCP setup: no Fleet MCP tool requirements found")
+        lines.append("- No Fleet MCP tool requirements were found.")
+        lines.append("- Add MCP servers to .mcp.json if this assistant needs local tools.")
     else:
-        lines.append("")
-        lines.append(result.mcp_notes.rstrip())
+        lines.append("- Review .mcp.json before running Talon.")
+        lines.append("- Review .mcp.json.setup for requested tools and setup details.")
     if result.interrupt_tools:
-        lines.append("")
         lines.append(
-            f"{INTERRUPT_ON_TOOLS_ENV_KEY}={','.join(result.interrupt_tools)}",
+            f"- Add HITL for sensitive tools with {INTERRUPT_ON_TOOLS_ENV_KEY}.",
         )
     return "\n".join(lines) + "\n"
 

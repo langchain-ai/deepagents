@@ -116,7 +116,7 @@ When enabled, Talon wraps each agent run in a LangSmith tracing context with ass
 
 ## MCP Tools
 
-Talon loads MCP servers from one config file. It checks `DEEPAGENTS_TALON_MCP_CONFIG`, then `MCP_CONFIG`, then `~/.deepagents/<assistant_id>/agent/tools.json`, then `~/.deepagents/.mcp.json`. Add Talon-local servers by editing `tools.json` directly:
+Talon loads MCP servers from one config file. It checks `DEEPAGENTS_TALON_MCP_CONFIG`, then `MCP_CONFIG`, then `~/.deepagents/<assistant_id>/agent/.mcp.json`, then `~/.deepagents/.mcp.json`. Add Talon-local servers by editing `.mcp.json` directly:
 
 ```json
 {
@@ -130,6 +130,14 @@ Talon loads MCP servers from one config file. It checks `DEEPAGENTS_TALON_MCP_CO
 ```
 
 Run `deepagents-talon mcp config` to print the resolved config paths, and `deepagents-talon mcp login <server>` for OAuth-backed servers.
+
+Fleet zip exports can be materialized into the selected local agent directory:
+
+```bash
+uv run --directory libs/talon deepagents-talon import-fleet ./fleet-export.zip
+```
+
+The importer writes prompts, skills, subagent prompts, and `.mcp.json.setup` notes. It does not write runtime MCP config; use the setup notes to create or edit `.mcp.json`.
 
 ## Cron Observability
 

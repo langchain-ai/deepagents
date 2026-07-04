@@ -10,6 +10,7 @@ import contextvars
 import json
 import logging
 import os
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -284,7 +285,7 @@ class DeepAgentRuntime:
             model=model,
             tools=tools,
             system_prompt=self._resolve_system_prompt(),
-            subagents=list(self.subagents) if self.subagents is not None else None,
+            subagents=self._resolve_subagents(),
             backend=self.backend,
             skills=self._resolve_skills(),
             middleware=middleware,
@@ -485,6 +486,16 @@ class DeepAgentRuntime:
             if path not in sources:
                 sources.append(path)
         return sources or None
+
+    def _resolve_subagents(self) -> list[SubAgent | CompiledSubAgent | AsyncSubAgent] | None:
+        if self.subagents is not None:
+            return list(self.subagents) or None
+        if self.assistant_dir is None:
+            return None
+        return cast(
+            "list[SubAgent | CompiledSubAgent | AsyncSubAgent] | None",
+            _load_local_subagents(self.assistant_dir) or None,
+        )
 
     def _resolve_memory(self) -> list[str] | None:
         if self.memory is not None:
@@ -855,6 +866,54 @@ def _manifest_memory_paths(assistant_dir: Path) -> list[str]:
             candidate = assistant_dir / candidate
         paths.append(str(candidate))
     return paths
+
+
+def _load_local_subagents(assistant_dir: Path) -> list[SubAgent]:
+    subagents_dir = assistant_dir / "subagents"
+    if not subagents_dir.is_dir():
+        return []
+    subagents: list[SubAgent] = []
+    for child in sorted(subagents_dir.iterdir(), key=lambda item: item.name):
+        if not child.is_dir():
+            continue
+        path = child / "AGENTS.md"
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            logger.warning("Could not read Talon subagent prompt from %s", path, exc_info=True)
+            continue
+        description, system_prompt = _parse_local_subagent_prompt(text, child.name)
+        subagents.append(
+            {
+                "name": child.name,
+                "description": description,
+                "system_prompt": system_prompt,
+            }
+        )
+    return subagents
+
+
+def _parse_local_subagent_prompt(text: str, name: str) -> tuple[str, str]:
+    match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", text, re.DOTALL)
+    if match is None:
+        return _default_subagent_description(name), text
+    description = _frontmatter_description(match.group(1)) or _default_subagent_description(name)
+    return description, match.group(2).lstrip()
+
+
+def _frontmatter_description(frontmatter: str) -> str | None:
+    for line in frontmatter.splitlines():
+        key, separator, value = line.partition(":")
+        if separator and key.strip() == "description":
+            parsed = value.strip().strip("\"'")
+            return parsed or None
+    return None
+
+
+def _default_subagent_description(name: str) -> str:
+    return f"Use the {name} subagent."
 
 
 def _prepare_memory_path(raw: str) -> str | None:

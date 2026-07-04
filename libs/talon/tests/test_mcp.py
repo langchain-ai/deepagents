@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, TypeAlias
 
 from deepagents_code.mcp_tools import MCPServerInfo as CodeMCPServerInfo, MCPToolInfo
 from deepagents_talon.config import TalonConfig
-from deepagents_talon.mcp import load_mcp_tools
+from deepagents_talon.mcp import discover_mcp_config_paths, load_mcp_tools
 
 if TYPE_CHECKING:
     import pytest
@@ -53,7 +53,7 @@ async def test_load_mcp_tools_reads_manifest_config(
     monkeypatch.setattr("deepagents_talon.mcp.get_mcp_tools", fake_loader)
     config = TalonConfig.from_env({"AGENT_ASSISTANT_ID": "test"}, base_home=tmp_path)
     config.ensure_home()
-    tools_path = config.manifest_dir / "tools.json"
+    tools_path = config.manifest_dir / ".mcp.json"
     tools_path.write_text(
         json.dumps(
             {
@@ -106,7 +106,7 @@ async def test_load_mcp_tools_prefers_env_config_path(
         base_home=tmp_path,
     )
     config.ensure_home()
-    (config.manifest_dir / "tools.json").write_text(
+    (config.manifest_dir / ".mcp.json").write_text(
         json.dumps(
             {
                 "mcpServers": {
@@ -122,3 +122,17 @@ async def test_load_mcp_tools_prefers_env_config_path(
     await load_mcp_tools(config)
 
     assert seen == [env_path]
+
+
+def test_discover_mcp_config_paths_ignores_legacy_tools_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    config = TalonConfig.from_env({"AGENT_ASSISTANT_ID": "test"}, base_home=tmp_path)
+    config.ensure_home()
+    (config.manifest_dir / "tools.json").write_text("{}", encoding="utf-8")
+    config_path = config.manifest_dir / ".mcp.json"
+    config_path.write_text('{"mcpServers": {}}', encoding="utf-8")
+
+    assert discover_mcp_config_paths(config) == [config_path]

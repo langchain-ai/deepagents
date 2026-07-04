@@ -1345,7 +1345,14 @@ def register() -> None:
         # Drop the to-do tool: PlanFirstMiddleware makes the agent write a plan up front,
         # which serves as the task list. Nemotron under-used write_todos anyway, so the
         # extra tool was dilution rather than help.
-        excluded_middleware=frozenset({"TodoListMiddleware"}),
+        #
+        # Drop the default RubricMiddleware that create_cli_agent appends: our
+        # _RubricFromTaskMiddleware seeds a rubric, which would otherwise activate BOTH
+        # that default (whose create_agent grader sends tool_choice="any" — rejected 400
+        # by the Fireworks nemotron deployment) AND our _NemotronRubricMiddleware. Exclude
+        # the default so only our plain-text grader runs. Matches by exact name, so the
+        # "_NemotronRubricMiddleware" subclass is unaffected.
+        excluded_middleware=frozenset({"TodoListMiddleware", "RubricMiddleware"}),
         extra_middleware=_build_extra_middleware,
     )
     for spec in _NEMOTRON_ULTRA_MODEL_SPECS:

@@ -1,0 +1,29 @@
+libs/code/tests/unit_tests/test_non_interactive.py
+  s_e686b80ff9b521::t_08398a910eb182 1826-1827,1832,1837-1850,1863,1865
+  s_e582b1cfe3d2a8::t_3c74839ab13756 1828-1831,1833-1836,1851-1862,1864,1866
+  s_e686b80ff9b521::t_1f5b916684f1c9 1824-1825
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "72ea25c50f82d661354bf1d47e23b97ac7e69038",
+  "prompts": {},
+  "sessions": {
+    "s_e582b1cfe3d2a8": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2f57-cf6d-75f3-a455-e56fde770929",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    },
+    "s_e686b80ff9b521": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2f66-bec1-74d0-890b-f1587c6610ea",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

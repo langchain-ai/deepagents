@@ -6,7 +6,7 @@ Talon is an experimental runtime and is subject to change or removal at any time
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 from urllib.parse import urlsplit, urlunsplit
@@ -32,16 +32,12 @@ class FleetExportToolEntry:
         tool_name: Requested MCP tool name.
         mcp_server_url: MCP server URL with query string and fragment removed.
         auth_path: Fleet authentication path for the server.
-        server_display_name: Optional human-readable MCP server name from Fleet.
-        server_registry_name: Optional registry MCP server name from Fleet.
     """
 
     scope: str
     tool_name: str
     mcp_server_url: str
     auth_path: str
-    server_display_name: str | None = None
-    server_registry_name: str | None = None
 
 
 def validate_fleet_export(fleet_dir: Path) -> None:
@@ -127,14 +123,6 @@ def _extend_tool_entries(
                 tool_name=name,
                 mcp_server_url=strip_url_query_and_fragment(server_url),
                 auth_path=_fleet_auth_path(tool),
-                server_display_name=_first_tool_str(
-                    tool,
-                    ("server_display_name", "mcp_server_display_name", "display_name"),
-                ),
-                server_registry_name=_first_tool_str(
-                    tool,
-                    ("server_registry_name", "mcp_server_registry_name", "registry_name"),
-                ),
             )
         )
 
@@ -167,14 +155,6 @@ def _required_tool_str(
         return value
     msg = f"Fleet export {path} tools[{index}].{key} must be a non-empty string"
     raise FleetExportValidationError(msg)
-
-
-def _first_tool_str(tool: Mapping[str, object], keys: Sequence[str]) -> str | None:
-    for key in keys:
-        value = tool.get(key)
-        if isinstance(value, str) and value:
-            return value
-    return None
 
 
 def _fleet_auth_path(tool: Mapping[str, object]) -> str:

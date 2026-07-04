@@ -306,7 +306,8 @@ async def test_agent_runtime_loads_fleet_components(
     manifest = load_fleet_run_manifest(manifest_path(config.home))
     assert manifest.assistant_id == "test"
     assert manifest.fleet_dir == str(fleet_dir)
-    assert manifest.local_mcp_config_path == str(tmp_path / "test" / "agent" / "tools.json")
+    assert manifest.local_mcp_config_path == str(tmp_path / "test" / ".mcp.json")
+    assert manifest.approval_tool_names == ("fleet_tool",)
 
     refreshed = await runtime.reload_agent_components()
 

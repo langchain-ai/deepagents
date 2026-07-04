@@ -40,7 +40,7 @@ def _fake_code_loader(path: str) -> FakeCodeLoaderResult:
     return tools, None, infos
 
 
-async def test_load_mcp_tools_reads_manifest_config(
+async def test_load_mcp_tools_reads_assistant_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -53,8 +53,8 @@ async def test_load_mcp_tools_reads_manifest_config(
     monkeypatch.setattr("deepagents_talon.mcp.get_mcp_tools", fake_loader)
     config = TalonConfig.from_env({"AGENT_ASSISTANT_ID": "test"}, base_home=tmp_path)
     config.ensure_home()
-    tools_path = config.manifest_dir / "tools.json"
-    tools_path.write_text(
+    config_path = config.home / ".mcp.json"
+    config_path.write_text(
         json.dumps(
             {
                 "mcpServers": {
@@ -71,7 +71,7 @@ async def test_load_mcp_tools_reads_manifest_config(
     result = await load_mcp_tools(config)
 
     assert [tool.name for tool in result.tools] == ["files_read", "files_write", "search"]
-    assert seen == [tools_path]
+    assert seen == [config_path]
 
 
 async def test_load_mcp_tools_prefers_env_config_path(
@@ -85,7 +85,7 @@ async def test_load_mcp_tools_prefers_env_config_path(
         return _fake_code_loader(path)
 
     monkeypatch.setattr("deepagents_talon.mcp.get_mcp_tools", fake_loader)
-    env_path = tmp_path / "custom-tools.json"
+    env_path = tmp_path / "custom.mcp.json"
     env_path.write_text(
         json.dumps(
             {
@@ -106,7 +106,7 @@ async def test_load_mcp_tools_prefers_env_config_path(
         base_home=tmp_path,
     )
     config.ensure_home()
-    (config.manifest_dir / "tools.json").write_text(
+    (config.home / ".mcp.json").write_text(
         json.dumps(
             {
                 "mcpServers": {

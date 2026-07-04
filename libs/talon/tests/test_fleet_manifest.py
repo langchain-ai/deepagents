@@ -58,8 +58,9 @@ def test_manifest_serializes_empty_tool_requirements(tmp_path: Path) -> None:
     assert loaded.selected_channel == ChannelSelection(provider="telegram", source="cli")
     assert loaded.model_source == "fleet"
     assert loaded.model == "openai:gpt-5-mini"
-    assert loaded.local_mcp_config_path == str(tmp_path / "assistant" / "agent" / "tools.json")
+    assert loaded.local_mcp_config_path == str(tmp_path / "assistant" / ".mcp.json")
     assert loaded.tool_requirements == ()
+    assert loaded.approval_tool_names == ()
     assert loaded.setup_tasks == ()
 
 
@@ -108,7 +109,7 @@ def test_manifest_refresh_records_root_and_subagent_tool_requirements(tmp_path: 
         system_prompt="fleet prompt",
         tools=(SimpleNamespace(name="search"),),
         subagents=({"tools": [SimpleNamespace(name="calendar")]},),
-        interrupt_on=None,
+        interrupt_on={"search": True, "send_email": True},
     )
 
     first = refresh_fleet_run_manifest(
@@ -145,17 +146,17 @@ def test_manifest_refresh_records_root_and_subagent_tool_requirements(tmp_path: 
     assert requirements["calendar"].scope == "subagent:researcher"
     assert requirements["calendar"].mcp_server_url == "https://calendar.example/mcp"
     assert requirements["calendar"].loaded is True
+    assert second.approval_tool_names == ("search", "send_email")
 
     first_ids = [requirement.id for requirement in first.tool_requirements]
     second_ids = [requirement.id for requirement in second.tool_requirements]
     assert second_ids == first_ids
     assert {task.target_path for task in second.setup_tasks} == {
-        str(tmp_path / "assistant" / "agent" / "tools.json")
+        str(tmp_path / "assistant" / ".mcp.json")
     }
     assert {task.tool_requirement_ids[0] for task in second.setup_tasks} == {
         requirements["calendar"].id,
         requirements["missing"].id,
-        requirements["search"].id,
     }
     assert "secret" not in manifest_path(config.home).read_text(encoding="utf-8")
 

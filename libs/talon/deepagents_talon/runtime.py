@@ -180,29 +180,6 @@ class EchoAgentRuntime:
 
 
 @dataclass(frozen=True, slots=True)
-class RuntimeAgentComponents:
-    """Runtime components used when rebuilding a `DeepAgentRuntime` graph.
-
-    Args:
-        model: Chat model identifier for `create_deep_agent`.
-        tools: Runtime tools exposed to the agent.
-        system_prompt: Optional system prompt.
-        subagents: Optional subagent specs available to the main agent.
-        skills: Optional explicit skill source paths.
-        middleware: Optional middleware to pass through to `create_deep_agent`.
-        interrupt_on: Optional human-in-the-loop tool approval configuration.
-    """
-
-    model: str
-    tools: Sequence[BaseTool | Callable[..., object]] = ()
-    system_prompt: str | None = None
-    subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None
-    skills: Sequence[str] | None = None
-    middleware: Sequence[AgentMiddleware[Any, Any, Any]] = ()
-    interrupt_on: Mapping[str, bool | InterruptOnConfig] | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class _ApprovalAuditContext:
     interrupt_id: str
     conversation_ref: str

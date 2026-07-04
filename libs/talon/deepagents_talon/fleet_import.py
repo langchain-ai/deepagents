@@ -185,7 +185,8 @@ def format_import_stdout(result: FleetImportResult) -> str:
         lines.append("- Review .mcp.json.setup for requested tools and setup details.")
     if result.interrupt_tools:
         lines.append(
-            f"- Add HITL for sensitive tools with {INTERRUPT_ON_TOOLS_ENV_KEY}.",
+            f"- Add HITL for sensitive tools with "
+            f"{INTERRUPT_ON_TOOLS_ENV_KEY}={','.join(result.interrupt_tools)}.",
         )
     return "\n".join(lines) + "\n"
 

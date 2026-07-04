@@ -11,6 +11,7 @@ import pytest
 from deepagents_code.mcp_tools import load_mcp_config
 from deepagents_talon.__main__ import main
 from deepagents_talon.fleet_import import FleetImportError, format_import_stdout, import_fleet_zip
+from deepagents_talon.runtime import INTERRUPT_ON_TOOLS_ENV_KEY
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -205,9 +206,10 @@ def test_import_fleet_zip_stdout_recommends_interrupt_env(tmp_path: Path) -> Non
 
     output = format_import_stdout(result)
     assert result.interrupt_tools == ("approve_remote", "write_remote")
-    assert "- Add HITL for sensitive tools with DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS." in output
-    assert "approve_remote" not in output
-    assert "write_remote" not in output
+    assert (
+        f"- Add HITL for sensitive tools with "
+        f"{INTERRUPT_ON_TOOLS_ENV_KEY}=approve_remote,write_remote."
+    ) in output
 
 
 def test_import_fleet_zip_sanitizes_secret_bearing_mcp_urls(tmp_path: Path) -> None:

@@ -131,6 +131,75 @@ Talon loads MCP servers from one config file. It checks `DEEPAGENTS_TALON_MCP_CO
 
 Run `deepagents-talon mcp config` to print the resolved config paths, and `deepagents-talon mcp login <server>` for OAuth-backed servers.
 
+Fleet zip exports can be materialized into a Talon-local agent directory before
+starting the host:
+
+```bash
+deepagents-talon import-fleet <fleet-export.zip> [--assistant-id <id>] [--target-dir <dir>]
+```
+
+From the repository root:
+
+```bash
+uv run --directory libs/talon deepagents-talon import-fleet ./fleet-export.zip \
+  --assistant-id local
+```
+
+By default, `import-fleet` writes into the selected assistant manifest directory:
+`~/.deepagents/<assistant_id>/agent/`. The selected assistant id comes from
+`DEEPAGENTS_TALON_ASSISTANT_ID`, `AGENT_ASSISTANT_ID`, or `default`; pass
+`--assistant-id <id>` to select a different assistant for the import, or
+`--target-dir <dir>` to write to an explicit directory.
+
+The importer writes Fleet prompts, skills, and subagent prompts. Fleet
+`tools.json` is read only as import input and is not copied into the Talon agent
+directory. Fleet `config.json` is ignored. Talon does not support the old Fleet
+direct-run startup path or its environment variables; import the zip first, then
+run Talon against the materialized local assistant.
+
+When Fleet MCP tools are present, the importer writes `.mcp.json.setup`. This is
+a human-readable setup handoff for the operator, not a runtime config file. Use
+the suggested fragments and your own credentials to create or edit `.mcp.json`,
+which remains the runtime MCP config loaded by Talon:
+
+```json
+{
+  "mcpServers": {
+    "fleet-tools": {
+      "type": "http",
+      "url": "https://tools.example.com/mcp",
+      "auth": "oauth",
+      "allowedTools": ["github_get_file", "github_create_pull_request"]
+    }
+  }
+}
+```
+
+For non-OAuth servers, keep credentials in environment variables or another
+local secret source rather than in committed files:
+
+```json
+{
+  "mcpServers": {
+    "internal-tools": {
+      "command": "internal-mcp-server",
+      "args": ["--token-env", "INTERNAL_MCP_TOKEN"]
+    }
+  }
+}
+```
+
+If the Fleet export contains interrupt-enabled tools, the import summary prints
+the recommended `DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS` value. Set that value when
+starting Talon so those tools continue to require channel approval:
+
+```bash
+DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS=github_create_pull_request,github_update_file \
+AGENT_ASSISTANT_ID=local \
+AGENT_MODEL=<provider>:<model-id> \
+deepagents-talon --telegram
+```
+
 ## Cron Observability
 
 Cron jobs are persisted in `cron/jobs.json` under the assistant state directory. Scheduler lifecycle events are emitted through the standard Python logger as `talon_event` JSON records:

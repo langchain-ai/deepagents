@@ -105,6 +105,20 @@ def _add_import_fleet_parser(
     importer = subparsers.add_parser(
         "import-fleet",
         help="Import a Fleet zip export into a Talon local agent directory",
+        description=(
+            "Import a Fleet zip export into a Talon local agent directory. By default, "
+            "the target directory is the selected assistant manifest directory."
+        ),
+        epilog=(
+            "Usage: deepagents-talon import-fleet <fleet-export.zip> "
+            "[--assistant-id <id>] [--target-dir <dir>]\n\n"
+            ".mcp.json.setup is a human-readable setup handoff for operators; "
+            ".mcp.json remains the runtime MCP config file. Fleet config.json is "
+            "ignored, Fleet tools.json is import input only, and old Fleet direct-run "
+            "environment variables are unsupported. Use import-fleet before running "
+            "the Talon host."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     importer.add_argument("fleet_export", type=Path, help="Fleet zip export to import")
     importer.add_argument(

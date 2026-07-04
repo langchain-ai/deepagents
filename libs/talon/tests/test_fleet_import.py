@@ -93,6 +93,26 @@ def test_import_fleet_cli_assistant_id_overrides_default_target(
     assert not (tmp_path / "home" / "default" / "agent" / "AGENTS.md").exists()
 
 
+def test_import_fleet_help_documents_operator_workflow(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["deepagents-talon", "import-fleet", "--help"])
+
+    with pytest.raises(SystemExit) as exc:
+        main()
+
+    assert exc.value.code == 0
+    output = capsys.readouterr().out
+    assert "deepagents-talon import-fleet <fleet-export.zip>" in output
+    assert "selected assistant manifest directory" in output
+    assert ".mcp.json.setup is a human-readable setup handoff" in output
+    assert ".mcp.json remains the runtime MCP config file" in output
+    assert "Fleet config.json is ignored" in output
+    assert "Fleet tools.json is import input only" in output
+    assert "old Fleet direct-run environment variables are unsupported" in output
+
+
 def test_import_fleet_zip_rejects_missing_root_prompt(tmp_path: Path) -> None:
     source = tmp_path / "fleet.zip"
     _write_zip(source, {"subagents/researcher/AGENTS.md": "prompt"})

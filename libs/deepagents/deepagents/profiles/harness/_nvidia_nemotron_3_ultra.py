@@ -567,6 +567,28 @@ _SLOW_COMMAND_NUDGE = (
     "the timeout."
 )
 
+# Broadened stall trigger. The identical-signature stall above only catches the model
+# re-running the SAME failing command. Inefficient-strategy runs instead thrash through
+# VARIED failing attempts (different edits/commands each time) and never trip it, then burn
+# the wall clock into a timeout/recursion crash (0/9 such fails ever fired the identical
+# stall). Fire ONCE per run when a bounded recent window is mostly failures whose signatures
+# DIFFER. Conservative density + fire-once so legitimate iterative debugging is not nudged.
+_VARIED_STALL_WINDOW = 8
+_VARIED_STALL_THRESHOLD = 6
+_VARIED_STALL_NUDGE_TEXT = (
+    "You have hit a run of failures across several DIFFERENT attempts without landing "
+    "working code. Varied attempts at the same wall will not converge either — stop and "
+    "change strategy: re-derive the problem from the current errors, try a fundamentally "
+    "different approach, prototype on a smaller input, or write the simplest complete version "
+    "of your deliverable now and iterate from there."
+)
+
+
+class StallBreakerState(AgentState):
+    """State schema for ``StallBreakerMiddleware``; the varied-stall nudge fires once."""
+
+    varied_stall_nudged: NotRequired[Annotated[bool, PrivateStateAttr]]
+
 
 class StallBreakerMiddleware(AgentMiddleware):
     """Break no-progress loops where the model re-tries the same failing action.
@@ -588,6 +610,7 @@ class StallBreakerMiddleware(AgentMiddleware):
     """
 
     name = "StallBreakerMiddleware"
+    state_schema = StallBreakerState  # type: ignore[assignment]
 
     @staticmethod
     def _text(content: str | list[Any] | None) -> str:
@@ -615,18 +638,33 @@ class StallBreakerMiddleware(AgentMiddleware):
         if isinstance(last, ToolMessage) and _TIMEOUT_MARKER in self._text(last.content).lower():
             return {"messages": [HumanMessage(_SLOW_COMMAND_NUDGE)]}
         tool_texts = [self._text(m.content) for m in messages if isinstance(m, ToolMessage)]
+        # Identical-failure stall: the same failure signature repeated _STALL_THRESHOLD times.
         recent = tool_texts[-_STALL_THRESHOLD:]
-        if len(recent) < _STALL_THRESHOLD:
+        if (
+            len(recent) == _STALL_THRESHOLD
+            and all(self._is_failure(t) for t in recent)
+            and len({self._signature(t) for t in recent}) == 1
+        ):
+            # Don't re-nudge within the same streak: skip if our nudge is already nearby.
+            window = messages[-(2 * _STALL_THRESHOLD + 2) :]
+            if not any(
+                isinstance(m, HumanMessage) and self._text(m.content) == _STALL_NUDGE_TEXT
+                for m in window
+            ):
+                return {"messages": [HumanMessage(_STALL_NUDGE_TEXT)]}
             return None
-        if not all(self._is_failure(t) for t in recent):
-            return None
-        if len({self._signature(t) for t in recent}) != 1:
-            return None
-        # Don't re-nudge within the same streak: skip if our nudge is already nearby.
-        window = messages[-(2 * _STALL_THRESHOLD + 2) :]
-        if any(isinstance(m, HumanMessage) and self._text(m.content) == _STALL_NUDGE_TEXT for m in window):
-            return None
-        return {"messages": [HumanMessage(_STALL_NUDGE_TEXT)]}
+        # Broadened varied-failure stall: a bounded recent window is mostly failures whose
+        # signatures DIFFER (so the identical trigger never fires). Once per run.
+        if not state.get("varied_stall_nudged"):
+            vrecent = tool_texts[-_VARIED_STALL_WINDOW:]
+            if len(vrecent) == _VARIED_STALL_WINDOW:
+                fails = [t for t in vrecent if self._is_failure(t)]
+                if len(fails) >= _VARIED_STALL_THRESHOLD and len({self._signature(t) for t in fails}) >= 2:
+                    return {
+                        "messages": [HumanMessage(_VARIED_STALL_NUDGE_TEXT)],
+                        "varied_stall_nudged": True,
+                    }
+        return None
 
     def before_model(
         self,
@@ -912,7 +950,20 @@ _PLAN_FIRST_NUDGE = (
     "- For a large input or a long-running build, work so a partial result still counts: "
     "prototype and validate your approach on a small sample before running it against the "
     "full input, and write each deliverable as a complete, self-contained artifact as early "
-    "as you can, so an interrupted run leaves a correct file rather than a half-finished one."
+    "as you can, so an interrupted run leaves a correct file rather than a half-finished one.\n"
+    "- If a test suite, example, or provided check already exists (a `test_*.py`, an eval "
+    "script, sample input/output), run THAT as your main loop — after each change, run it and "
+    "read the result — instead of inventing your own check or eyeballing output; it is the "
+    "fastest reliable signal you have. And do not thrash: if the same step fails ~5 times "
+    "running (a compile, a check, the same edit), stop retrying variations — print the current "
+    "error and re-derive the approach, or land the simplest complete version you have. "
+    "Repeating a failing command burns your budget without new information.\n"
+    "- Verify by reproducing exactly how the code is meant to run: the precise command, and "
+    "any runtime trigger involved — if it is stopped with Ctrl-C, send a real interrupt; if it "
+    "must be reachable on a port, actually connect to that port. A stand-in (a programmatic "
+    "substitute, a different signal) can pass while the real path fails. Run this from a clean "
+    "directory you did not set up (e.g. `cd /tmp`), so a result that only holds inside your own "
+    "build tree is caught."
 )
 
 

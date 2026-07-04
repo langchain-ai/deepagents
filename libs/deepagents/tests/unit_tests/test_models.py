@@ -1729,6 +1729,35 @@ class TestStallBreaker:
         assert nudge.content == _SLOW_COMMAND_NUDGE
         assert "re-run" in nudge.content.lower() and "terminate" in nudge.content.lower()
 
+    def test_nudges_on_many_varied_failures(self) -> None:
+        from langchain_core.messages import HumanMessage  # noqa: PLC0415
+
+        from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415
+            _VARIED_STALL_NUDGE_TEXT,
+        )
+
+        mw = self._mw()
+        # 8 DIFFERENT failures (no 3-in-a-row identical) -> identical trigger never fires,
+        # but the broadened varied trigger does, once.
+        msgs = [self._tm(f"Error: distinct failure {c}") for c in "ABCDEFGH"]
+        out = mw.before_model({"messages": msgs}, None)
+        assert out is not None
+        assert out["messages"][0].content == _VARIED_STALL_NUDGE_TEXT
+        assert isinstance(out["messages"][0], HumanMessage)
+        assert out["varied_stall_nudged"] is True
+
+    def test_varied_stall_fires_once(self) -> None:
+        mw = self._mw()
+        msgs = [self._tm(f"Error: distinct failure {c}") for c in "ABCDEFGH"]
+        # already nudged this run -> no re-fire
+        assert mw.before_model({"messages": msgs, "varied_stall_nudged": True}, None) is None
+
+    def test_no_varied_nudge_when_mostly_success(self) -> None:
+        mw = self._mw()
+        ok = "Command succeeded with exit code 0"
+        msgs = [self._tm(ok)] * 6 + [self._tm("Error: X"), self._tm("Error: Y")]
+        assert mw.before_model({"messages": msgs}, None) is None
+
     def test_no_timeout_nudge_once_model_has_responded(self) -> None:
         # Self-guard: after the nudge is injected (now the last message), it does not
         # re-fire for the same timeout on the next turn.

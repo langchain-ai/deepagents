@@ -164,9 +164,12 @@ LC_LIGHT_INCOGNITO = "#0F766E"
 # ---------------------------------------------------------------------------
 # Warm Charcoal palette — dark
 #
-# Inspired by the look shared by contemporary agentic CLIs (Codex, Cursor CLI,
-# Devin CLI): a warm graphite background with cream body text, sage green as
-# the dominant accent, amber for tool activity, and soft red for errors.
+# Inspired by the monochrome look shared by contemporary agentic CLIs (Codex,
+# Cursor CLI, Devin CLI): a warm graphite background with cream body text and
+# almost no color. Structural and decorative accents are cream/warm-gray rather
+# than saturated hues, so the UI reads as a single warm tone. Semantic status
+# colors (success, warning, error) are kept but heavily muted so they signal
+# meaning without looking neon.
 # ---------------------------------------------------------------------------
 WC_BG = "#282622"
 """Background — warm charcoal graphite, no blue tint."""
@@ -180,32 +183,26 @@ WC_PANEL = "#3C382F"
 WC_FG = "#E3DCC5"
 """Body text — warm cream, high contrast on the charcoal background."""
 
+WC_FG_DIM = "#C4BCA4"
+"""Dimmed cream — decorative accent that stays within the monochrome tone."""
+
 WC_MUTED = "#8F8877"
 """Muted / secondary text — warm gray."""
 
-WC_GREEN = "#A9B665"
-"""Sage green — primary accent, success, paths and links."""
+WC_MUTED_HOVER = "#B0A891"
+"""Muted hover — lighter warm gray for interactive feedback."""
 
-WC_AMBER = "#D8A657"
-"""Amber — warnings and tool call accents."""
+WC_SUCCESS = "#9AA173"
+"""Desaturated olive — success, kept low-chroma to avoid a neon look."""
 
-WC_AMBER_HOVER = "#EDCA8B"
+WC_AMBER = "#C6A870"
+"""Muted amber — warnings and tool activity, dialed toward warm gray."""
+
+WC_AMBER_HOVER = "#DAC091"
 """Amber hover — lighter variant for interactive feedback."""
 
-WC_RED = "#EA6962"
-"""Soft red — errors and destructive actions."""
-
-WC_ROSE = "#D3869B"
-"""Muted rose — secondary accent, badges and command mode."""
-
-WC_TEAL = "#7DAEA3"
-"""Muted teal — contrast accent and incognito shell indicator."""
-
-WC_PERIWINKLE = "#A9A4DE"
-"""Soft periwinkle — skill invocation accent."""
-
-WC_PERIWINKLE_HOVER = "#C7C3EE"
-"""Periwinkle hover — lighter variant for interactive feedback."""
+WC_RED = "#C97A72"
+"""Muted terracotta red — errors and destructive actions."""
 
 
 # ---------------------------------------------------------------------------
@@ -450,21 +447,21 @@ LIGHT_COLORS = ThemeColors(
 """Color set for the light LangChain theme."""
 
 WARM_CHARCOAL_COLORS = ThemeColors(
-    primary=WC_GREEN,
-    secondary=WC_ROSE,
-    accent=WC_TEAL,
+    primary=WC_FG,
+    secondary=WC_MUTED,
+    accent=WC_FG_DIM,
     panel=WC_PANEL,
-    success=WC_GREEN,
+    success=WC_SUCCESS,
     warning=WC_AMBER,
     error=WC_RED,
     muted=WC_MUTED,
-    mode_bash=WC_RED,
-    mode_command=WC_ROSE,
-    mode_incognito=WC_TEAL,
-    skill=WC_PERIWINKLE,
-    skill_hover=WC_PERIWINKLE_HOVER,
-    tool=WC_AMBER,
-    tool_hover=WC_AMBER_HOVER,
+    mode_bash=WC_AMBER,
+    mode_command=WC_FG_DIM,
+    mode_incognito=WC_MUTED,
+    skill=WC_FG_DIM,
+    skill_hover=WC_FG,
+    tool=WC_MUTED,
+    tool_hover=WC_MUTED_HOVER,
     foreground=WC_FG,
     background=WC_BG,
     surface=WC_SURFACE,

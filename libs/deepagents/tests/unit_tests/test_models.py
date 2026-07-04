@@ -1302,7 +1302,7 @@ class TestNemotronUltraProfile:
             "CompletionPressureMiddleware",
             "RambleMiddleware",
             "StallBreakerMiddleware",
-            "RubricMiddleware",
+            "_NemotronRubricMiddleware",
         ]
 
     def test_nemotron_ultra_excludes_todo_list_middleware(self) -> None:
@@ -1344,6 +1344,35 @@ class TestNemotronUltraProfile:
 
         mw = mod._RubricFromTaskMiddleware()
         assert mw.before_agent({"messages": []}, None) is None  # type: ignore[arg-type]
+
+    def test_grader_parse_verdict_needs_revision(self) -> None:
+        """Parses the two-line VERDICT/FEEDBACK format Nemotron emits into a GraderResponse."""
+        from langchain_core.messages import AIMessage  # noqa: PLC0415
+
+        from deepagents.profiles.harness import _nvidia_nemotron_3_ultra as mod  # noqa: PLC0415
+
+        resp = AIMessage("VERDICT: needs_revision\nFEEDBACK: prints 'hi' instead of 'hello'.")
+        graded = mod._NemotronRubricMiddleware._parse_verdict(resp)
+        assert graded.result == "needs_revision"
+        assert "hi" in graded.explanation
+
+    def test_grader_parse_verdict_satisfied(self) -> None:
+        """A 'satisfied' verdict maps to result='satisfied'."""
+        from langchain_core.messages import AIMessage  # noqa: PLC0415
+
+        from deepagents.profiles.harness import _nvidia_nemotron_3_ultra as mod  # noqa: PLC0415
+
+        graded = mod._NemotronRubricMiddleware._parse_verdict(AIMessage("VERDICT: satisfied\nFEEDBACK: none"))
+        assert graded.result == "satisfied"
+
+    def test_grader_parse_verdict_fails_open(self) -> None:
+        """An unparseable grader reply fails open to 'satisfied' (never blocks a finished run)."""
+        from langchain_core.messages import AIMessage  # noqa: PLC0415
+
+        from deepagents.profiles.harness import _nvidia_nemotron_3_ultra as mod  # noqa: PLC0415
+
+        graded = mod._NemotronRubricMiddleware._parse_verdict(AIMessage("sorry, I got confused"))
+        assert graded.result == "satisfied"
 
     def test_plan_first_injects_once_at_start(self) -> None:
         """Injects the plan-first reminder on turn 1, then no-ops once the flag is set."""

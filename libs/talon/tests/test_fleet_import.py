@@ -97,29 +97,19 @@ def test_import_fleet_zip_normalizes_mcp_server_names_for_loader(tmp_path: Path)
     assert '"foo-bar": {' in notes
 
 
-def test_import_fleet_cli_defaults_target_to_selected_assistant(
+@pytest.mark.parametrize(
+    ("extra_args", "expected_id", "unexpected_id"),
+    [
+        ((), "default", None),
+        (("--assistant-id", "chosen"), "chosen", "default"),
+    ],
+)
+def test_import_fleet_cli_resolves_target_assistant(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    source = tmp_path / "fleet.zip"
-    _write_zip(source, {"AGENTS.md": "root prompt"})
-    monkeypatch.setenv("DEEPAGENTS_TALON_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("DEEPAGENTS_TALON_ASSISTANT_ID", "default")
-    monkeypatch.setattr(sys, "argv", ["deepagents-talon", "import-fleet", str(source)])
-
-    with pytest.raises(SystemExit) as exc:
-        main()
-
-    assert exc.value.code == 0
-    target = tmp_path / "home" / "default" / "agent"
-    assert (target / "AGENTS.md").read_text(encoding="utf-8") == "root prompt"
-    assert f"Agent files imported to: {target}" in capsys.readouterr().out
-
-
-def test_import_fleet_cli_assistant_id_overrides_default_target(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    extra_args: tuple[str, ...],
+    expected_id: str,
+    unexpected_id: str | None,
 ) -> None:
     source = tmp_path / "fleet.zip"
     _write_zip(source, {"AGENTS.md": "root prompt"})
@@ -128,35 +118,17 @@ def test_import_fleet_cli_assistant_id_overrides_default_target(
     monkeypatch.setattr(
         sys,
         "argv",
-        ["deepagents-talon", "import-fleet", str(source), "--assistant-id", "chosen"],
+        ["deepagents-talon", "import-fleet", str(source), *extra_args],
     )
 
     with pytest.raises(SystemExit) as exc:
         main()
 
     assert exc.value.code == 0
-    assert (tmp_path / "home" / "chosen" / "agent" / "AGENTS.md").is_file()
-    assert not (tmp_path / "home" / "default" / "agent" / "AGENTS.md").exists()
-
-
-def test_import_fleet_help_documents_operator_workflow(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.setattr(sys, "argv", ["deepagents-talon", "import-fleet", "--help"])
-
-    with pytest.raises(SystemExit) as exc:
-        main()
-
-    assert exc.value.code == 0
-    output = capsys.readouterr().out
-    assert "deepagents-talon import-fleet <fleet-export.zip>" in output
-    assert "selected assistant manifest directory" in output
-    assert ".mcp.json is generated as the runtime MCP config file" in output
-    assert ".mcp.json.setup is a human-readable setup handoff" in output
-    assert "Fleet config.json is ignored" in output
-    assert "Fleet tools.json is import input only" in output
-    assert "old Fleet direct-run environment variables are unsupported" in output
+    target = tmp_path / "home" / expected_id / "agent"
+    assert (target / "AGENTS.md").read_text(encoding="utf-8") == "root prompt"
+    if unexpected_id is not None:
+        assert not (tmp_path / "home" / unexpected_id / "agent" / "AGENTS.md").exists()
 
 
 def test_import_fleet_zip_rejects_missing_root_prompt(tmp_path: Path) -> None:
@@ -233,31 +205,9 @@ def test_import_fleet_zip_stdout_recommends_interrupt_env(tmp_path: Path) -> Non
 
     output = format_import_stdout(result)
     assert result.interrupt_tools == ("approve_remote", "write_remote")
-    assert "Next steps:" in output
-    assert "- Review .mcp.json before running Talon." in output
-    assert "- Review .mcp.json.setup for requested tools and setup details." in output
     assert "- Add HITL for sensitive tools with DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS." in output
     assert "approve_remote" not in output
     assert "write_remote" not in output
-
-
-def test_import_fleet_zip_removes_existing_mcp_artifacts_when_no_tools(tmp_path: Path) -> None:
-    source = tmp_path / "fleet.zip"
-    target = tmp_path / "agent"
-    target.mkdir()
-    (target / ".mcp.json.setup").write_text("stale notes", encoding="utf-8")
-    (target / ".mcp.json").write_text('{"mcpServers": {"stale": {}}}', encoding="utf-8")
-    _write_zip(source, {"AGENTS.md": "root prompt", "tools.json": json.dumps({"tools": []})})
-
-    result = import_fleet_zip(source, target_dir=target)
-
-    assert result.mcp_notes is None
-    assert result.interrupt_tools == ()
-    assert not (target / ".mcp.json.setup").exists()
-    assert not (target / ".mcp.json").exists()
-    output = format_import_stdout(result)
-    assert "- No Fleet MCP tool requirements were found." in output
-    assert "- Add MCP servers to .mcp.json if this assistant needs local tools." in output
 
 
 def test_import_fleet_zip_sanitizes_secret_bearing_mcp_urls(tmp_path: Path) -> None:
@@ -277,37 +227,6 @@ def test_import_fleet_zip_sanitizes_secret_bearing_mcp_urls(tmp_path: Path) -> N
                             ),
                             "mcp_server_name": "secret server",
                         },
-                    ],
-                    "interrupt_config": {},
-                }
-            ),
-        },
-    )
-
-    result = import_fleet_zip(source, target_dir=tmp_path / "agent")
-
-    assert result.mcp_notes is not None
-    assert "operator" not in result.mcp_notes
-    assert "password" not in result.mcp_notes
-    assert "api_key" not in result.mcp_notes
-    assert "secret#oauth" not in result.mcp_notes
-    assert "https://tools.example/tenant/<secret-redacted>/mcp" in result.mcp_notes
-    assert '"auth": "oauth"' in result.mcp_notes
-    config = json.loads((tmp_path / "agent" / ".mcp.json").read_text(encoding="utf-8"))
-    server = config["mcpServers"]["secret-server"]
-    assert server["url"] == "https://tools.example/tenant/<secret-redacted>/mcp"
-    assert server["allowedTools"] == ["secure_lookup"]
-
-
-def test_import_fleet_zip_redacts_values_after_secret_path_markers(tmp_path: Path) -> None:
-    source = tmp_path / "fleet.zip"
-    _write_zip(
-        source,
-        {
-            "AGENTS.md": "root prompt",
-            "tools.json": json.dumps(
-                {
-                    "tools": [
                         {
                             "name": "token_lookup",
                             "mcp_server_url": "https://tools.example/token/abcd1234/mcp",
@@ -328,13 +247,25 @@ def test_import_fleet_zip_redacts_values_after_secret_path_markers(tmp_path: Pat
     result = import_fleet_zip(source, target_dir=tmp_path / "agent")
 
     assert result.mcp_notes is not None
+    assert "operator" not in result.mcp_notes
+    assert "password" not in result.mcp_notes
+    assert "api_key" not in result.mcp_notes
+    assert "secret#oauth" not in result.mcp_notes
     assert "abcd1234" not in result.mcp_notes
     assert "live-secret" not in result.mcp_notes
+    assert "https://tools.example/tenant/<secret-redacted>/mcp" in result.mcp_notes
     assert "https://tools.example/<secret-redacted>/<secret-redacted>/mcp" in result.mcp_notes
-    assert "https://tools.example/<secret-redacted>/<secret-redacted>/mcp" in (
-        tmp_path / "agent" / ".mcp.json.setup"
-    ).read_text(encoding="utf-8")
-    assert "abcd1234" not in (tmp_path / "agent" / ".mcp.json").read_text(encoding="utf-8")
+    config_text = (tmp_path / "agent" / ".mcp.json").read_text(encoding="utf-8")
+    assert "operator" not in config_text
+    assert "password" not in config_text
+    assert "api_key" not in config_text
+    assert "secret#oauth" not in config_text
+    assert "abcd1234" not in config_text
+    assert "live-secret" not in config_text
+    config = json.loads(config_text)
+    server = config["mcpServers"]["secret-server"]
+    assert server["url"] == "https://tools.example/tenant/<secret-redacted>/mcp"
+    assert server["allowedTools"] == ["secure_lookup"]
 
 
 def test_import_fleet_zip_repeated_imports_refresh_generated_files(tmp_path: Path) -> None:

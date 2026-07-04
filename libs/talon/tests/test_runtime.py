@@ -247,52 +247,17 @@ async def test_runtime_loads_local_subagents_from_assistant_dir(
     ]
 
 
-async def test_runtime_skips_local_subagent_dirs_without_prompt(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, Any] = {}
-    assistant_dir = tmp_path / "assistant"
-    missing_dir = assistant_dir / "subagents" / "missing"
-    valid_dir = assistant_dir / "subagents" / "valid"
-    missing_dir.mkdir(parents=True)
-    valid_dir.mkdir(parents=True)
-    (valid_dir / "AGENTS.md").write_text("Valid prompt.", encoding="utf-8")
-
-    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
-        captured.update(kwargs)
-        return RecordingGraph()
-
-    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
-
-    runtime = DeepAgentRuntime(
-        model="test:model",
-        assistant_dir=assistant_dir,
-        include_web_tools=False,
-        skills=(),
-        memory=(),
-    )
-
-    await runtime.start()
-
-    assert captured["subagents"] == [
-        {
-            "name": "valid",
-            "description": "Use the valid subagent.",
-            "system_prompt": "Valid prompt.",
-        }
-    ]
-
-
-async def test_runtime_skips_invalid_local_subagent_names(
+async def test_runtime_skips_unloadable_local_subagent_dirs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     captured: dict[str, Any] = {}
     assistant_dir = tmp_path / "assistant"
+    missing_dir = assistant_dir / "subagents" / "missing"
     bad_dir = assistant_dir / "subagents" / "bad name"
     good_dir = assistant_dir / "subagents" / "good-name"
+    missing_dir.mkdir(parents=True)
     bad_dir.mkdir(parents=True)
     good_dir.mkdir(parents=True)
     (bad_dir / "AGENTS.md").write_text("Bad prompt.", encoding="utf-8")

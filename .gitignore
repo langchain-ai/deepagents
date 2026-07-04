@@ -143,6 +143,7 @@ celerybeat.pid
 env.local
 *.env.local
 .venv
+.venv/
 env/
 venv/
 ENV/

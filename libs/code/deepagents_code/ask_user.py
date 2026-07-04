@@ -28,11 +28,21 @@ logger = logging.getLogger(__name__)
 
 ASK_USER_TOOL_DESCRIPTION = """Ask the user one or more questions when you need clarification or input before proceeding.
 
-Each question can be either:
+Each question in `questions` MUST include a `type` field. Supported types:
 - "text": Free-form text response from the user
-- "multiple_choice": User selects from predefined options (an "Other" option is always available)
+- "multiple_choice": User selects from predefined options (an "Other" free-form option is always appended automatically)
 
-For multiple choice questions, provide a list of choices. The user can pick one or type a custom answer via the "Other" option.
+Question schema (each entry in `questions`):
+```
+{
+  "type": "text" | "multiple_choice",                          // REQUIRED
+  "question": "the question text",                              // REQUIRED
+  "choices": [{"value": "Option A"}, {"value": "Option B"}],   // multiple_choice only; one dict per option
+  "required": true                                              // optional; defaults to true
+}
+```
+
+IMPORTANT: `choices` is a LIST of dicts, each with a single `value` key — one dict per option. Do NOT pack multiple options as `value_2`, `value_3`, ... on a single dict; the widget only reads `value` and silently drops the rest, so the user sees only ONE option.
 
 By default all questions are required. Set "required" to false for optional questions that the user can skip. Do not include "(required)", "(optional)", "- optional", or similar annotations in the question text — the UI renders that separately based on the "required" field.
 

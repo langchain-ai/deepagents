@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from langchain_core.messages import SystemMessage, ToolMessage
 
+from deepagents_code import ask_user as ask_user_module
 from deepagents_code.ask_user import (
     AskUserMiddleware,
     _parse_answers,
@@ -219,3 +220,61 @@ class TestWrapModelCall:
         assert system_message.content_blocks[-1]["text"] == "\n\nASK_USER_PROMPT"
         handler.assert_awaited_once_with(overridden_request)
         assert result == "ok"
+
+
+class TestAskUserInterruptPayload:
+    """Interrupt payload preserves every Choice for multi-choice questions.
+
+    Regression guard for the packed `value_2`/`value_3` shape the LLM sometimes
+    produces when the tool description doesn't spell out the schema — a single
+    choice dict with extra keys drops silently because only `value` is read.
+    """
+
+    def test_multiple_choice_forwards_all_three_choices(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, object] = {}
+
+        def _fake_interrupt(payload: object) -> dict[str, object]:
+            captured["payload"] = payload
+            return {"answers": ["red"]}
+
+        monkeypatch.setattr(ask_user_module, "interrupt", _fake_interrupt)
+
+        middleware = AskUserMiddleware()
+        tool = middleware.tools[0]
+        questions = [
+            {
+                "question": "Pick a color",
+                "type": "multiple_choice",
+                "choices": [
+                    {"value": "red"},
+                    {"value": "green"},
+                    {"value": "blue"},
+                ],
+            }
+        ]
+
+        tool.invoke(
+            {
+                "type": "tool_call",
+                "name": "ask_user",
+                "id": "tc-multi-1",
+                "args": {"questions": questions},
+            }
+        )
+
+        raw_payload = captured["payload"]
+        assert isinstance(raw_payload, dict)
+        payload = cast("dict[str, Any]", raw_payload)
+        assert payload["type"] == "ask_user"
+        assert payload["tool_call_id"] == "tc-multi-1"
+        forwarded_questions = payload["questions"]
+        assert isinstance(forwarded_questions, list)
+        assert len(forwarded_questions) == 1
+        choices = forwarded_questions[0]["choices"]
+        assert choices == [
+            {"value": "red"},
+            {"value": "green"},
+            {"value": "blue"},
+        ]

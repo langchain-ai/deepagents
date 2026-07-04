@@ -1,0 +1,21 @@
+libs/code/deepagents_code/widgets/status.py
+  s_4205c1c83dadab::t_69819fe7c5e814 273-274,601-632,634-638,650-653,686,688-689,691-692,694,697-699,701-703,712-713
+libs/code/tests/unit_tests/test_status.py
+  s_4205c1c83dadab::t_22fdae4c025ffb 53,55,58,61-64,66,71,74,77,82-98
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.9",
+  "base_commit_sha": "cba3ce96555cb2e098298995be0202e11ebcbd45",
+  "prompts": {},
+  "sessions": {
+    "s_4205c1c83dadab": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fe6250ea-6c14-432c-a9cb-587586b50999",
+        "model": "unknown"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

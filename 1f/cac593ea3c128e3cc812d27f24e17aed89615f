@@ -1,0 +1,20 @@
+libs/code/deepagents_code/widgets/chat_input.py
+  s_03937cc60a59bb::t_496f7001debef2 2380-2381,2385
+  s_03937cc60a59bb::t_48534f6e2373be 1656
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1fcac593ea3c128e3cc812d27f24e17aed89615f",
+  "prompts": {},
+  "sessions": {
+    "s_03937cc60a59bb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3b9d0dcf-357a-40f5-9d8f-cbc819d7e7f7",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

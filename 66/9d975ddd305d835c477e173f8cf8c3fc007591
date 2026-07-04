@@ -1,0 +1,45 @@
+libs/code/deepagents_code/_session_stats.py
+  s_b3f488e896a04c::t_86d0518b410e18 45-47,75-82,100,115-116,121,131,144,154,171-187
+libs/code/deepagents_code/agent.py
+  s_b3f488e896a04c::t_cd5beb0f6f9d6b 1568,1572-1574
+libs/code/deepagents_code/app.py
+  s_b3f488e896a04c::t_df88ce1c9a23e4 57,1399-1402,2618-2625,3191,5601-5649,8142-8148,8167,9305,9496-9498,10902-10907
+libs/code/deepagents_code/command_registry.py
+  s_b3f488e896a04c::t_d1465913705c64 180-186
+libs/code/deepagents_code/cost_tracking.py
+  s_b3f488e896a04c::t_e5087f79a966b9 1-169
+libs/code/deepagents_code/non_interactive.py
+  s_b3f488e896a04c::t_3a922e2d79f9bb 389-392,395,398-400
+libs/code/deepagents_code/textual_adapter.py
+  s_b3f488e896a04c::t_085af199d3e956 57,140,150,158,168,369-371,986-993,1001,1009-1013,1606,1648,1808,1838-1852
+libs/code/deepagents_code/widgets/status.py
+  s_b3f488e896a04c::t_f33829a5cc9b99 18,227-232,257,296,671-702
+libs/code/pyproject.toml
+  s_b3f488e896a04c::t_685c0d5f2d3349 63-65
+libs/code/tests/unit_tests/test_session_stats.py
+  s_b3f488e896a04c::t_4f0681b511c846 10,15-34,151-171,191-202
+libs/code/tests/unit_tests/test_status.py
+  s_b3f488e896a04c::t_a0c440e2bcc9e5 290-322
+libs/code/uv.lock
+  s_b3f488e896a04c::t_1e865119a5bc68 1120,1294,1690-1702,2197-2209,2290-2305,2341-2343,2352-2355,2364,2373-2379,2381-2383,3481,4430,4432-4434,4490-4492,5775-5776,6568-6572
+libs/code/COMMANDS.md
+  s_b3f488e896a04c::t_63017923b572ae 11,21
+libs/code/tests/unit_tests/test_cost_tracking.py
+  s_b3f488e896a04c::t_5db3ee958accc2 1-172
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.9",
+  "base_commit_sha": "669d975ddd305d835c477e173f8cf8c3fc007591",
+  "prompts": {},
+  "sessions": {
+    "s_b3f488e896a04c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "97ce33dc-10ae-4bf3-a80a-ad6927de4f5e",
+        "model": "unknown"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

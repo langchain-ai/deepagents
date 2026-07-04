@@ -1292,6 +1292,7 @@ class TestNemotronUltraProfile:
         assert profile is not None
         names = [type(m).__name__ for m in profile.materialize_extra_middleware()]
         assert names == [
+            "_RubricFromTaskMiddleware",
             "ReadFileContinuationNoticeMiddleware",
             "LargeFileReadNudgeMiddleware",
             "ToolRetryMiddleware",
@@ -1301,6 +1302,7 @@ class TestNemotronUltraProfile:
             "CompletionPressureMiddleware",
             "RambleMiddleware",
             "StallBreakerMiddleware",
+            "RubricMiddleware",
         ]
 
     def test_nemotron_ultra_excludes_todo_list_middleware(self) -> None:
@@ -1308,6 +1310,40 @@ class TestNemotronUltraProfile:
         profile = _get_harness_profile("NVIDIA:nvidia/nemotron-3-ultra-550b-a55b")
         assert profile is not None
         assert "TodoListMiddleware" in profile.excluded_middleware
+
+    def test_rubric_from_task_seeds_rubric_from_first_human(self) -> None:
+        """Seeds RubricMiddleware's rubric from the task (first HumanMessage)."""
+        from langchain_core.messages import AIMessage, HumanMessage  # noqa: PLC0415
+
+        from deepagents.profiles.harness import _nvidia_nemotron_3_ultra as mod  # noqa: PLC0415
+
+        mw = mod._RubricFromTaskMiddleware()
+        state = {"messages": [HumanMessage("Build a widget that does X."), AIMessage("ok")]}
+        out = mw.before_agent(state, None)  # type: ignore[arg-type]
+        assert out is not None
+        assert "Build a widget that does X." in out["rubric"]
+        # Untrusted task text is delimited so the grader keeps the trust boundary.
+        assert "<task>" in out["rubric"] and "</task>" in out["rubric"]
+
+    def test_rubric_from_task_noop_when_rubric_already_set(self) -> None:
+        """Respects a caller-supplied rubric: no overwrite."""
+        from langchain_core.messages import HumanMessage  # noqa: PLC0415
+
+        from deepagents.profiles.harness import _nvidia_nemotron_3_ultra as mod  # noqa: PLC0415
+
+        mw = mod._RubricFromTaskMiddleware()
+        out = mw.before_agent(
+            {"rubric": "caller rubric", "messages": [HumanMessage("t")]},  # type: ignore[arg-type]
+            None,  # type: ignore[arg-type]
+        )
+        assert out is None
+
+    def test_rubric_from_task_noop_when_no_human_message(self) -> None:
+        """No human message -> nothing to seed from, no-op (safe on subagent stacks)."""
+        from deepagents.profiles.harness import _nvidia_nemotron_3_ultra as mod  # noqa: PLC0415
+
+        mw = mod._RubricFromTaskMiddleware()
+        assert mw.before_agent({"messages": []}, None) is None  # type: ignore[arg-type]
 
     def test_plan_first_injects_once_at_start(self) -> None:
         """Injects the plan-first reminder on turn 1, then no-ops once the flag is set."""

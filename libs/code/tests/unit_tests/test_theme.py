@@ -21,6 +21,7 @@ from deepagents_code.theme import (
     DARK_COLORS,
     DEFAULT_THEME,
     LIGHT_COLORS,
+    WARM_CHARCOAL_COLORS,
     ThemeColors,
     ThemeEntry,
     _build_registry,
@@ -130,6 +131,7 @@ class TestThemeEntryRegistry:
         [
             ("langchain", True, True),
             ("langchain-light", False, True),
+            ("warm-charcoal", True, True),
             ("textual-dark", True, False),
             ("textual-light", False, False),
             ("ansi-dark", True, False),
@@ -299,6 +301,12 @@ class TestGetThemeColors:
             theme = "langchain-light"
 
         assert get_theme_colors(FakeApp()) is LIGHT_COLORS
+
+    def test_warm_charcoal_theme_returns_stored_colors(self) -> None:
+        class FakeApp:
+            theme = "warm-charcoal"
+
+        assert get_theme_colors(FakeApp()) is WARM_CHARCOAL_COLORS
 
     def test_builtin_theme_resolves_dynamically(self) -> None:
         """Built-in Textual themes derive colors from current_theme."""

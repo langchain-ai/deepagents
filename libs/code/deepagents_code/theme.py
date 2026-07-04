@@ -162,6 +162,53 @@ LC_LIGHT_INCOGNITO = "#0F766E"
 
 
 # ---------------------------------------------------------------------------
+# Warm Charcoal palette — dark
+#
+# Inspired by the look shared by contemporary agentic CLIs (Codex, Cursor CLI,
+# Devin CLI): a warm graphite background with cream body text, sage green as
+# the dominant accent, amber for tool activity, and soft red for errors.
+# ---------------------------------------------------------------------------
+WC_BG = "#282622"
+"""Background — warm charcoal graphite, no blue tint."""
+
+WC_SURFACE = "#312E28"
+"""Surface / card — slightly lifted above the background."""
+
+WC_PANEL = "#3C382F"
+"""Panel — differentiated section background (above surface)."""
+
+WC_FG = "#E3DCC5"
+"""Body text — warm cream, high contrast on the charcoal background."""
+
+WC_MUTED = "#8F8877"
+"""Muted / secondary text — warm gray."""
+
+WC_GREEN = "#A9B665"
+"""Sage green — primary accent, success, paths and links."""
+
+WC_AMBER = "#D8A657"
+"""Amber — warnings and tool call accents."""
+
+WC_AMBER_HOVER = "#EDCA8B"
+"""Amber hover — lighter variant for interactive feedback."""
+
+WC_RED = "#EA6962"
+"""Soft red — errors and destructive actions."""
+
+WC_ROSE = "#D3869B"
+"""Muted rose — secondary accent, badges and command mode."""
+
+WC_TEAL = "#7DAEA3"
+"""Muted teal — contrast accent and incognito shell indicator."""
+
+WC_PERIWINKLE = "#A9A4DE"
+"""Soft periwinkle — skill invocation accent."""
+
+WC_PERIWINKLE_HOVER = "#C7C3EE"
+"""Periwinkle hover — lighter variant for interactive feedback."""
+
+
+# ---------------------------------------------------------------------------
 # Semantic constants  (ANSI color names for Rich console output)
 #
 # These are ANSI color names resolved by the user's terminal palette, so they
@@ -402,6 +449,28 @@ LIGHT_COLORS = ThemeColors(
 )
 """Color set for the light LangChain theme."""
 
+WARM_CHARCOAL_COLORS = ThemeColors(
+    primary=WC_GREEN,
+    secondary=WC_ROSE,
+    accent=WC_TEAL,
+    panel=WC_PANEL,
+    success=WC_GREEN,
+    warning=WC_AMBER,
+    error=WC_RED,
+    muted=WC_MUTED,
+    mode_bash=WC_RED,
+    mode_command=WC_ROSE,
+    mode_incognito=WC_TEAL,
+    skill=WC_PERIWINKLE,
+    skill_hover=WC_PERIWINKLE_HOVER,
+    tool=WC_AMBER,
+    tool_hover=WC_AMBER_HOVER,
+    foreground=WC_FG,
+    background=WC_BG,
+    surface=WC_SURFACE,
+)
+"""Color set for the Warm Charcoal dark theme."""
+
 
 # ---------------------------------------------------------------------------
 # Available themes  (name → display label, dark flag, colors)
@@ -483,6 +552,11 @@ def _builtin_themes() -> dict[str, ThemeEntry]:
         label="LangChain Light",
         dark=False,
         colors=LIGHT_COLORS,
+    )
+    r["warm-charcoal"] = ThemeEntry(
+        label="Warm Charcoal",
+        dark=True,
+        colors=WARM_CHARCOAL_COLORS,
     )
 
     from textual.theme import BUILTIN_THEMES

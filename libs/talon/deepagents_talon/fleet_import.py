@@ -477,7 +477,7 @@ def _unique_server_id(server_id: str, servers: Mapping[str, object]) -> str:
 
 def _server_id(summary: _ServerSummary) -> str:
     raw = summary.server_name or urlsplit(summary.server_url).hostname or "server"
-    normalized = re.sub(r"[^A-Za-z0-9_.-]+", "-", raw.strip().lower()).strip("-")
+    normalized = re.sub(r"[^A-Za-z0-9_-]+", "-", raw.strip().lower()).strip("-")
     return normalized or "server"
 
 

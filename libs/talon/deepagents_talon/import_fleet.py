@@ -8,15 +8,19 @@ from __future__ import annotations
 import json
 import os
 import shutil
-from collections.abc import Mapping, Sequence
+import tempfile
+import zipfile
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
-from typing import TYPE_CHECKING, Literal, cast
+from pathlib import Path, PurePosixPath
+from typing import cast
 from urllib.parse import urlsplit, urlunsplit
 
 from deepagents_talon.config import TalonConfig
 
-if TYPE_CHECKING:
-    from pathlib import Path
+_ZIP_FILE_TYPE_MASK = 0o170000
+_ZIP_SYMLINK_TYPE = 0o120000
 
 
 class FleetImportError(ValueError):
@@ -24,71 +28,59 @@ class FleetImportError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
-class FleetReplacementTool:
-    """Local MCP replacement needed for a Fleet-requested tool.
+class FleetMCPServerNote:
+    """Fleet MCP server notes written for local MCP follow-up.
 
     Args:
-        name: Fleet tool name.
+        scope: Root agent or subagent scope that requested the tools.
+        server_name: Fleet MCP server name, or a sanitized fallback.
         endpoint: Sanitized Fleet MCP server endpoint.
         auth_path: Fleet authentication path, when known.
-        scope: Root agent or subagent scope that requested the tool.
+        tool_names: Fleet tools requested from this server in this scope.
+        interrupt_tools: Tools Fleet configured with interrupt approval.
     """
 
-    name: str
-    endpoint: str
-    auth_path: str
     scope: str
-
-
-@dataclass(frozen=True, slots=True)
-class FleetSetupTask:
-    """Operator task needed before local Talon runtime can replace Fleet MCP.
-
-    Args:
-        endpoint: Sanitized Fleet MCP server endpoint.
-        auth_path: Fleet authentication path, when known.
-        target: Local MCP config path the operator should edit.
-        tool_names: Fleet tools requested from this endpoint.
-    """
-
+    server_name: str
     endpoint: str
     auth_path: str
-    target: str
     tool_names: tuple[str, ...]
+    interrupt_tools: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
 class FleetImportSummary:
-    """Result of importing a Fleet export into an assistant manifest.
+    """Result of importing a Fleet export into an assistant directory.
 
     Args:
-        fleet_dir: Validated Fleet export directory.
+        fleet_source: Fleet export zip file or directory imported by the command.
         assistant_id: Assistant id used to namespace Talon state.
-        replacement_tool_count: Number of Fleet-requested tools requiring local replacement.
-        setup_task_count: Number of local MCP replacement tasks.
-        mcp_config_target: Assistant-scoped MCP config path written by the import.
-        manifest_path: Manifest file written by the import.
-        model_source: Whether the runtime model comes from Fleet or local env override.
+        agent_dir: Materialized Talon agent directory.
+        mcp_config_path: Root `.mcp.json` path written by the import.
+        tool_count: Number of Fleet-requested MCP tools summarized.
+        server_count: Number of Fleet MCP server notes written.
+        interrupt_tool_count: Number of Fleet tools with interrupt approval enabled.
+        mcp_server_notes: Local MCP follow-up notes grouped by scope and server.
     """
 
-    fleet_dir: Path
+    fleet_source: Path
     assistant_id: str
-    replacement_tool_count: int
-    setup_task_count: int
-    mcp_config_target: Path
-    manifest_path: Path
-    model_source: Literal["fleet_config", "local_override"]
+    agent_dir: Path
+    mcp_config_path: Path
+    tool_count: int
+    server_count: int
+    interrupt_tool_count: int
+    mcp_server_notes: tuple[FleetMCPServerNote, ...]
 
 
 @dataclass(frozen=True, slots=True)
-class _FleetManifestContext:
-    """Values shared by one assistant materialization."""
-
-    target: Path
-    fleet_dir: Path
-    assistant_id: str
-    model: str
-    model_source: Literal["fleet_config", "local_override"]
+class _FleetToolEntry:
+    scope: str
+    name: str
+    endpoint: str
+    server_name: str
+    auth_path: str
+    interrupt: bool
 
 
 def import_fleet_manifest(
@@ -100,9 +92,9 @@ def import_fleet_manifest(
     """Materialize a Fleet export into a Talon assistant directory.
 
     Args:
-        fleet_dir: Operator-unzipped Fleet export directory.
-        assistant_id: Talon assistant id whose home receives the manifest.
-        env: Environment mapping used to match runtime configuration.
+        fleet_dir: Fleet export zip file or directory.
+        assistant_id: Talon assistant id whose home receives the materialized agent.
+        env: Environment mapping used to resolve Talon state locations.
 
     Returns:
         Summary of the import result.
@@ -112,66 +104,139 @@ def import_fleet_manifest(
     """
     values = dict(os.environ if env is None else env)
     values["DEEPAGENTS_TALON_ASSISTANT_ID"] = assistant_id
-    values["DEEPAGENTS_TALON_FLEET_DIR"] = str(fleet_dir)
     config = TalonConfig.from_env(values)
 
-    source = _validate_fleet_dir(fleet_dir)
-    fleet_config = _read_json_object(source / "config.json", label="Fleet config.json")
-    fleet_model = _fleet_model(fleet_config)
-    model_source: Literal["fleet_config", "local_override"] = (
-        "local_override" if config.model else "fleet_config"
-    )
-    model = config.model or fleet_model
-
     config.ensure_home()
-    target = config.manifest_dir / "tools.json"
-    replacements = _replacement_tools(source, env=config.env)
-    tasks = _setup_tasks(replacements, target=target)
-    _materialize_agent_directory(
-        source,
-        config.manifest_dir,
-        manifest=_manifest_payload(
-            _FleetManifestContext(
-                target=target,
-                fleet_dir=source,
-                assistant_id=config.assistant_id,
-                model=model,
-                model_source=model_source,
-            ),
-            replacements=replacements,
-            tasks=tasks,
-        ),
-        model=model,
-        model_source=model_source,
-    )
+    target = config.manifest_dir
+    mcp_config_path = target / ".mcp.json"
+    source_path = _resolve_source_path(fleet_dir)
+
+    with _fleet_source(source_path) as source:
+        entries = _fleet_tool_entries(source)
+        notes = _mcp_server_notes(entries)
+        _materialize_agent_directory(source, target)
+        _write_mcp_config_notes(
+            mcp_config_path,
+            fleet_source=source_path,
+            assistant_id=config.assistant_id,
+            agent_dir=target,
+            notes=notes,
+        )
 
     return FleetImportSummary(
-        fleet_dir=source,
+        fleet_source=source_path,
         assistant_id=config.assistant_id,
-        replacement_tool_count=len(replacements),
-        setup_task_count=len(tasks),
-        mcp_config_target=target,
-        manifest_path=target,
-        model_source=model_source,
+        agent_dir=target,
+        mcp_config_path=mcp_config_path,
+        tool_count=len(entries),
+        server_count=len(notes),
+        interrupt_tool_count=sum(len(note.interrupt_tools) for note in notes),
+        mcp_server_notes=notes,
     )
 
 
-def _materialize_agent_directory(
-    source: Path,
-    target: Path,
-    *,
-    manifest: Mapping[str, object],
-    model: str,
-    model_source: Literal["fleet_config", "local_override"],
-) -> None:
-    """Copy Fleet files into Talon's assistant directory.
+def _resolve_source_path(path: Path) -> Path:
+    source = path.expanduser()
+    try:
+        return source.resolve(strict=True)
+    except OSError as exc:
+        msg = f"Fleet export does not exist: {path}"
+        raise FleetImportError(msg) from exc
+
+
+@contextmanager
+def _fleet_source(path: Path) -> Iterator[Path]:
+    if path.is_dir():
+        _validate_fleet_root(path)
+        yield path
+        return
+
+    if not path.is_file() or not zipfile.is_zipfile(path):
+        msg = f"Fleet export must be a .zip file or directory: {path}"
+        raise FleetImportError(msg)
+
+    with tempfile.TemporaryDirectory(prefix="deepagents-talon-fleet-") as tmp:
+        root = Path(tmp) / "export"
+        root.mkdir(mode=0o700)
+        _extract_zip(path, root)
+        source = _zip_export_root(root)
+        _validate_fleet_root(source)
+        yield source
+
+
+def _extract_zip(path: Path, target: Path) -> None:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            for info in archive.infolist():
+                if _is_zip_symlink(info):
+                    msg = f"Fleet export zip contains unsupported symlink: {info.filename}"
+                    raise FleetImportError(msg)
+                destination = _safe_zip_destination(target, info.filename)
+                if info.is_dir():
+                    destination.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    continue
+                destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                with archive.open(info) as source, destination.open("wb") as output:
+                    shutil.copyfileobj(source, output)
+                destination.chmod(0o600)
+    except zipfile.BadZipFile as exc:
+        msg = f"Fleet export is not a valid zip file: {path}"
+        raise FleetImportError(msg) from exc
+    except OSError as exc:
+        msg = f"Could not extract Fleet export zip: {path}"
+        raise FleetImportError(msg) from exc
+
+
+def _safe_zip_destination(root: Path, name: str) -> Path:
+    path = PurePosixPath(name)
+    if path.is_absolute() or not path.parts:
+        msg = f"Fleet export zip contains unsafe path: {name}"
+        raise FleetImportError(msg)
+    if any(part in {"", ".", ".."} for part in path.parts):
+        msg = f"Fleet export zip contains unsafe path: {name}"
+        raise FleetImportError(msg)
+    return root.joinpath(*path.parts)
+
+
+def _is_zip_symlink(info: zipfile.ZipInfo) -> bool:
+    return ((info.external_attr >> 16) & _ZIP_FILE_TYPE_MASK) == _ZIP_SYMLINK_TYPE
+
+
+def _zip_export_root(root: Path) -> Path:
+    if (root / "AGENTS.md").is_file():
+        return root
+
+    try:
+        children = [
+            path
+            for path in root.iterdir()
+            if path.is_dir() and path.name not in {"__MACOSX", ".DS_Store"}
+        ]
+    except OSError as exc:
+        msg = "Could not inspect extracted Fleet export"
+        raise FleetImportError(msg) from exc
+
+    if len(children) == 1 and (children[0] / "AGENTS.md").is_file():
+        return children[0]
+    return root
+
+
+def _validate_fleet_root(source: Path) -> None:
+    if not source.is_dir():
+        msg = f"Fleet export root is not a directory: {source}"
+        raise FleetImportError(msg)
+    agents_md = source / "AGENTS.md"
+    if not agents_md.is_file():
+        msg = "Fleet export is missing required AGENTS.md"
+        raise FleetImportError(msg)
+
+
+def _materialize_agent_directory(source: Path, target: Path) -> None:
+    """Copy Fleet prompts and skills into Talon's assistant directory.
 
     Args:
-        source: Validated Fleet export directory.
+        source: Validated Fleet export root.
         target: Talon assistant `agent` directory.
-        manifest: Sanitized MCP/setup manifest to write as `tools.json`.
-        model: Model id resolved during import.
-        model_source: Whether `model` came from Fleet config or local env.
     """
     target.mkdir(mode=0o700, parents=True, exist_ok=True)
     target.chmod(0o700)
@@ -180,22 +245,6 @@ def _materialize_agent_directory(
     _copy_tree(source / "skills", target / "skills")
     _copy_subagents(source / "subagents", target / "subagents")
 
-    config = {
-        "model": model,
-        "model_source": model_source,
-        "source": "fleet",
-    }
-    (target / "config.json").write_text(
-        json.dumps(config, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    (target / "config.json").chmod(0o600)
-    (target / "tools.json").write_text(
-        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    (target / "tools.json").chmod(0o600)
-
 
 def _copy_subagents(source: Path, target: Path) -> None:
     if not source.is_dir():
@@ -203,13 +252,13 @@ def _copy_subagents(source: Path, target: Path) -> None:
     target.mkdir(mode=0o700, parents=True, exist_ok=True)
     target.chmod(0o700)
     for child in sorted(path for path in source.iterdir() if path.is_dir()):
+        prompt = child / "AGENTS.md"
+        if not prompt.is_file():
+            continue
         destination = target / child.name
         destination.mkdir(mode=0o700, parents=True, exist_ok=True)
         destination.chmod(0o700)
-        for name in ("AGENTS.md", "config.json"):
-            path = child / name
-            if path.is_file():
-                shutil.copy2(path, destination / name)
+        shutil.copy2(prompt, destination / "AGENTS.md")
         _copy_tree(child / "skills", destination / "skills")
 
 
@@ -218,59 +267,135 @@ def _copy_tree(source: Path, target: Path) -> None:
         shutil.copytree(source, target, dirs_exist_ok=True)
 
 
-def _manifest_payload(
-    context: _FleetManifestContext,
+def _write_mcp_config_notes(
+    path: Path,
     *,
-    replacements: Sequence[FleetReplacementTool],
-    tasks: Sequence[FleetSetupTask],
-) -> dict[str, object]:
-    existing = _read_existing_manifest(context.target)
-    return {
+    fleet_source: Path,
+    assistant_id: str,
+    agent_dir: Path,
+    notes: Sequence[FleetMCPServerNote],
+) -> None:
+    existing = _read_existing_mcp_config(path)
+    payload = {
         "mcpServers": existing.get("mcpServers", {}),
-        "manifest": {
+        "_fleet_import": {
             "source": "fleet",
-            "fleet_dir": str(context.fleet_dir),
-            "assistant_id": context.assistant_id,
-            "model": context.model,
-            "model_source": context.model_source,
-            "replacement_tools": [asdict(tool) for tool in replacements],
-            "setup_tasks": [asdict(task) for task in tasks],
+            "fleet_export": str(fleet_source),
+            "assistant_id": assistant_id,
+            "agent_dir": str(agent_dir),
+            "notes": [
+                "Configure MCP servers under mcpServers before relying on Fleet tools.",
+                (
+                    "Tools listed in interrupt_tools had Fleet interrupt approval enabled "
+                    "and should be considered for human-in-the-loop configuration."
+                ),
+            ],
+            "servers": [asdict(note) for note in notes],
         },
     }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.chmod(0o600)
 
 
-def _read_existing_manifest(path: Path) -> Mapping[str, object]:
+def _read_existing_mcp_config(path: Path) -> Mapping[str, object]:
     if not path.is_file():
         return {}
-    data = _read_json_object(path, label="existing Talon manifest")
+    data = _read_json_object(path, label="existing Talon MCP config")
     servers = data.get("mcpServers")
     if servers is None:
         return {}
     if not isinstance(servers, Mapping):
-        msg = "Malformed existing Talon manifest: mcpServers must be an object"
+        msg = "Malformed existing Talon MCP config: mcpServers must be an object"
         raise FleetImportError(msg)
     return {"mcpServers": dict(cast("Mapping[str, object]", servers))}
 
 
-def _validate_fleet_dir(fleet_dir: Path) -> Path:
-    source = fleet_dir.expanduser()
-    try:
-        source = source.resolve(strict=True)
-    except OSError as exc:
-        msg = f"Fleet directory does not exist: {fleet_dir}"
-        raise FleetImportError(msg) from exc
-    if not source.is_dir():
-        msg = f"Fleet path is not a directory: {fleet_dir}"
+def _fleet_tool_entries(fleet_dir: Path) -> tuple[_FleetToolEntry, ...]:
+    entries: list[_FleetToolEntry] = []
+    _extend_tool_entries(entries, fleet_dir / "tools.json", scope="root")
+
+    subagents = fleet_dir / "subagents"
+    if not subagents.is_dir():
+        return tuple(entries)
+    for child in sorted(path for path in subagents.iterdir() if path.is_dir()):
+        _extend_tool_entries(
+            entries,
+            child / "tools.json",
+            scope=f"subagent:{child.name}",
+        )
+    return tuple(sorted(entries, key=lambda entry: (entry.scope, entry.server_name, entry.name)))
+
+
+def _extend_tool_entries(
+    entries: list[_FleetToolEntry],
+    path: Path,
+    *,
+    scope: str,
+) -> None:
+    if not path.is_file():
+        return
+    data = _read_json_object(path, label=f"Fleet {path.name}")
+    raw = data.get("tools")
+    if raw is None:
+        return
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)):
+        msg = f"Malformed Fleet {path.name}: tools must be an array"
         raise FleetImportError(msg)
-    agents_md = source / "AGENTS.md"
-    if not agents_md.is_file():
-        msg = "Fleet export is missing required AGENTS.md"
-        raise FleetImportError(msg)
-    config_json = source / "config.json"
-    if not config_json.is_file():
-        msg = "Fleet export is missing required config.json"
-        raise FleetImportError(msg)
-    return source
+
+    interrupts = _interrupt_config(data, path=path)
+    for index, entry in enumerate(raw):
+        if not isinstance(entry, Mapping):
+            msg = f"Malformed Fleet {path.name}: tools[{index}] must be an object"
+            raise FleetImportError(msg)
+        tool = cast("Mapping[str, object]", entry)
+        name = _required_tool_str(tool, "name", path=path, index=index)
+        raw_endpoint = _required_tool_str(tool, "mcp_server_url", path=path, index=index)
+        endpoint = _safe_endpoint(raw_endpoint)
+        server_name = _server_name(tool, endpoint=endpoint)
+        entries.append(
+            _FleetToolEntry(
+                scope=scope,
+                name=name,
+                endpoint=endpoint,
+                server_name=server_name,
+                auth_path=_fleet_auth_path(tool),
+                interrupt=_tool_interrupt_enabled(
+                    tool,
+                    interrupts=interrupts,
+                    interrupt_keys=_interrupt_keys(
+                        raw_endpoint,
+                        endpoint,
+                        name,
+                        server_name,
+                    ),
+                ),
+            )
+        )
+
+
+def _mcp_server_notes(entries: Sequence[_FleetToolEntry]) -> tuple[FleetMCPServerNote, ...]:
+    grouped: dict[tuple[str, str, str, str], list[_FleetToolEntry]] = {}
+    for entry in entries:
+        grouped.setdefault(
+            (entry.scope, entry.server_name, entry.endpoint, entry.auth_path),
+            [],
+        ).append(entry)
+
+    notes: list[FleetMCPServerNote] = []
+    for (scope, server_name, endpoint, auth_path), tools in sorted(grouped.items()):
+        tool_names = tuple(sorted({tool.name for tool in tools}))
+        interrupt_tools = tuple(sorted({tool.name for tool in tools if tool.interrupt}))
+        notes.append(
+            FleetMCPServerNote(
+                scope=scope,
+                server_name=server_name,
+                endpoint=endpoint,
+                auth_path=auth_path,
+                tool_names=tool_names,
+                interrupt_tools=interrupt_tools,
+            )
+        )
+    return tuple(notes)
 
 
 def _read_json_object(path: Path, *, label: str) -> Mapping[str, object]:
@@ -288,136 +413,95 @@ def _read_json_object(path: Path, *, label: str) -> Mapping[str, object]:
     return cast("Mapping[str, object]", data)
 
 
-def _fleet_model(config: Mapping[str, object]) -> str:
-    raw = config.get("model")
-    if isinstance(raw, str) and raw:
-        return raw
-    agent = config.get("agent")
-    if isinstance(agent, Mapping):
-        nested = cast("Mapping[str, object]", agent).get("model")
-        if isinstance(nested, str) and nested:
-            return nested
-    runtime = config.get("config")
-    if isinstance(runtime, Mapping):
-        configurable = cast("Mapping[str, object]", runtime).get("configurable")
-        if isinstance(configurable, Mapping):
-            model_config = cast("Mapping[str, object]", configurable).get("llm_model_config")
-            if isinstance(model_config, Mapping):
-                model_id = cast("Mapping[str, object]", model_config).get("modelId")
-                if isinstance(model_id, str) and model_id:
-                    return model_id
-    msg = "Malformed Fleet config.json: missing model"
+def _required_tool_str(
+    tool: Mapping[str, object],
+    key: str,
+    *,
+    path: Path,
+    index: int,
+) -> str:
+    value = tool.get(key)
+    if isinstance(value, str) and value:
+        return value
+    msg = f"Malformed Fleet {path.name}: tools[{index}].{key} is required"
     raise FleetImportError(msg)
 
 
-def _replacement_tools(
-    fleet_dir: Path,
-    *,
-    env: Mapping[str, str],
-) -> tuple[FleetReplacementTool, ...]:
-    tools: list[FleetReplacementTool] = []
-    tools.extend(_replacement_tools_from_file(fleet_dir / "tools.json", scope="root", env=env))
-
-    subagents = fleet_dir / "subagents"
-    if not subagents.is_dir():
-        return tuple(tools)
-    for child in sorted(path for path in subagents.iterdir() if path.is_dir()):
-        tools.extend(
-            _replacement_tools_from_file(
-                child / "tools.json",
-                scope=f"subagent:{child.name}",
-                env=env,
-            )
-        )
-    return tuple(sorted(tools, key=lambda tool: (tool.endpoint, tool.scope, tool.name)))
-
-
-def _replacement_tools_from_file(
-    path: Path,
-    *,
-    scope: str,
-    env: Mapping[str, str],
-) -> list[FleetReplacementTool]:
-    if not path.is_file():
-        return []
-    data = _read_json_object(path, label=f"Fleet {path.name}")
-    raw = data.get("tools")
-    if raw is None:
-        return []
-    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)):
-        msg = f"Malformed Fleet {path.name}: tools must be an array"
+def _interrupt_config(data: Mapping[str, object], *, path: Path) -> Mapping[str, object]:
+    value = data.get("interrupt_config")
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        msg = f"Malformed Fleet {path.name}: interrupt_config must be an object"
         raise FleetImportError(msg)
-
-    tools: list[FleetReplacementTool] = []
-    for index, entry in enumerate(raw):
-        if not isinstance(entry, Mapping):
-            msg = f"Malformed Fleet {path.name}: tools[{index}] must be an object"
-            raise FleetImportError(msg)
-        tool = cast("Mapping[str, object]", entry)
-        name = tool.get("name")
-        endpoint = tool.get("mcp_server_url")
-        if not isinstance(name, str) or not name:
-            msg = f"Malformed Fleet {path.name}: tools[{index}].name is required"
-            raise FleetImportError(msg)
-        if not isinstance(endpoint, str) or not endpoint:
-            continue
-        auth_path = _fleet_auth_path(tool, endpoint, env=env)
-        if auth_path == "builtin" and env.get("BUILTIN_MCP_URL"):
-            continue
-        tools.append(
-            FleetReplacementTool(
-                name=name,
-                endpoint=_safe_endpoint(endpoint),
-                auth_path=auth_path,
-                scope=scope,
-            )
-        )
-    return tools
+    return cast("Mapping[str, object]", value)
 
 
-def _fleet_auth_path(
-    tool: Mapping[str, object],
-    endpoint: str,
-    *,
-    env: Mapping[str, str],
-) -> str:
+def _server_name(tool: Mapping[str, object], *, endpoint: str) -> str:
+    for key in (
+        "mcp_server_name",
+        "server_name",
+        "server_registry_name",
+        "mcp_server_registry_name",
+        "registry_name",
+        "server_display_name",
+        "mcp_server_display_name",
+    ):
+        value = tool.get(key)
+        if isinstance(value, str) and value:
+            return value
+    parsed = urlsplit(endpoint)
+    return parsed.hostname or endpoint
+
+
+def _fleet_auth_path(tool: Mapping[str, object]) -> str:
     raw = tool.get("auth_type") or tool.get("auth")
     if isinstance(raw, str) and raw in {"builtin", "headers", "oauth"}:
         return raw
-    if _same_host(endpoint, env.get("BUILTIN_MCP_URL")):
-        return "builtin"
     if "headers" in tool:
         return "headers"
     return "unknown"
 
 
-def _setup_tasks(
-    replacements: Sequence[FleetReplacementTool],
+def _tool_interrupt_enabled(
+    tool: Mapping[str, object],
     *,
-    target: Path,
-) -> tuple[FleetSetupTask, ...]:
-    grouped: dict[tuple[str, str], set[str]] = {}
-    for tool in replacements:
-        grouped.setdefault((tool.endpoint, tool.auth_path), set()).add(tool.name)
-    return tuple(
-        FleetSetupTask(
-            endpoint=endpoint,
-            auth_path=auth_path,
-            target=str(target),
-            tool_names=tuple(sorted(names)),
-        )
-        for (endpoint, auth_path), names in sorted(grouped.items())
-    )
+    interrupts: Mapping[str, object],
+    interrupt_keys: Sequence[str],
+) -> bool:
+    direct = tool.get("interrupt_on")
+    if isinstance(direct, bool):
+        return direct
+    direct = tool.get("interrupt")
+    if isinstance(direct, bool):
+        return direct
+
+    for key in interrupt_keys:
+        value = interrupts.get(key)
+        if isinstance(value, bool):
+            return value
+    return False
+
+
+def _interrupt_keys(
+    raw_endpoint: str,
+    endpoint: str,
+    name: str,
+    server_name: str,
+) -> tuple[str, ...]:
+    values = {
+        f"{raw_endpoint}::{name}::{server_name}",
+        f"{endpoint}::{name}::{server_name}",
+        name,
+    }
+    return tuple(sorted(values))
 
 
 def _safe_endpoint(value: str) -> str:
-    parsed = urlsplit(value)
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return value.partition("?")[0].partition("#")[0]
     if parsed.scheme and parsed.netloc:
         return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
-    return value.split("?", maxsplit=1)[0].split("#", maxsplit=1)[0]
-
-
-def _same_host(left: str, right: str | None) -> bool:
-    if not right:
-        return False
-    return urlsplit(left).hostname == urlsplit(right).hostname
+    return value.partition("?")[0].partition("#")[0]

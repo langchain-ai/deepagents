@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import zipfile
 from argparse import Namespace
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -14,14 +16,12 @@ from deepagents_talon.import_fleet import (
     import_fleet_manifest,
 )
 
-if TYPE_CHECKING:
-    from pathlib import Path
 
-
-def test_import_fleet_manifest_writes_and_refreshes_assistant_manifest(tmp_path: Path) -> None:
+def test_import_fleet_manifest_materializes_zip_and_writes_mcp_notes(tmp_path: Path) -> None:
     fleet = _fleet_export(tmp_path)
+    export = _fleet_zip(tmp_path, fleet)
     home = tmp_path / "home"
-    target = home / "agent-1" / "agent" / "tools.json"
+    target = home / "agent-1" / "agent" / ".mcp.json"
     target.parent.mkdir(parents=True)
     target.write_text(
         json.dumps(
@@ -32,124 +32,165 @@ def test_import_fleet_manifest_writes_and_refreshes_assistant_manifest(tmp_path:
                         "command": "local-server",
                     },
                 },
-                "manifest": {"stale": True},
+                "_fleet_import": {"stale": True},
             }
         ),
         encoding="utf-8",
     )
 
     summary = import_fleet_manifest(
-        fleet,
+        export,
         assistant_id="agent-1",
-        env={"DEEPAGENTS_TALON_HOME": str(home), "AGENT_MODEL": "override:model"},
+        env={"DEEPAGENTS_TALON_HOME": str(home), "AGENT_MODEL": "unused:model"},
     )
     import_fleet_manifest(
-        fleet,
+        export,
         assistant_id="agent-1",
-        env={"DEEPAGENTS_TALON_HOME": str(home), "AGENT_MODEL": "override:model"},
+        env={"DEEPAGENTS_TALON_HOME": str(home), "AGENT_MODEL": "unused:model"},
     )
 
-    manifest = json.loads(target.read_text(encoding="utf-8"))
-    payload = manifest["manifest"]
-    assert summary.manifest_path == target
-    assert summary.model_source == "local_override"
-    assert summary.replacement_tool_count == 4
-    assert summary.setup_task_count == 3
-    assert manifest["mcpServers"] == {
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    notes = cast("dict[str, object]", payload["_fleet_import"])
+    servers = cast("list[dict[str, object]]", notes["servers"])
+    agent_dir = target.parent
+    assert summary.fleet_source == export.resolve()
+    assert summary.agent_dir == agent_dir
+    assert summary.mcp_config_path == target
+    assert summary.tool_count == 4
+    assert summary.server_count == 3
+    assert summary.interrupt_tool_count == 2
+    assert payload["mcpServers"] == {
         "local": {
             "type": "stdio",
             "command": "local-server",
         },
     }
-    assert payload["assistant_id"] == "agent-1"
-    assert payload["fleet_dir"] == str(fleet.resolve())
-    assert payload["model"] == "override:model"
-    assert payload["model_source"] == "local_override"
-    assert len(payload["replacement_tools"]) == 4
-    assert len(payload["setup_tasks"]) == 3
-    agent_dir = target.parent
+    assert notes["assistant_id"] == "agent-1"
+    assert notes["fleet_export"] == str(export.resolve())
+    assert notes["agent_dir"] == str(agent_dir)
+    assert servers == [
+        {
+            "auth_path": "builtin",
+            "endpoint": "https://builtin.example/mcp",
+            "interrupt_tools": [],
+            "scope": "root",
+            "server_name": "builtin",
+            "tool_names": ["builtin_search"],
+        },
+        {
+            "auth_path": "headers",
+            "endpoint": "https://missing.example/mcp",
+            "interrupt_tools": ["search"],
+            "scope": "root",
+            "server_name": "missing",
+            "tool_names": ["lookup", "search"],
+        },
+        {
+            "auth_path": "oauth",
+            "endpoint": "https://calendar.example/mcp",
+            "interrupt_tools": ["calendar"],
+            "scope": "subagent:researcher",
+            "server_name": "calendar",
+            "tool_names": ["calendar"],
+        },
+    ]
     assert (agent_dir / "AGENTS.md").read_text(encoding="utf-8") == "system prompt"
-    assert json.loads((agent_dir / "config.json").read_text(encoding="utf-8")) == {
-        "model": "override:model",
-        "model_source": "local_override",
-        "source": "fleet",
-    }
+    assert (agent_dir / "skills" / "triage" / "SKILL.md").read_text(encoding="utf-8") == (
+        "skill prompt"
+    )
+    assert not (agent_dir / "config.json").exists()
+    assert not (agent_dir / "tools.json").exists()
     assert (agent_dir / "subagents" / "researcher" / "AGENTS.md").read_text(
         encoding="utf-8"
     ) == "research prompt"
+    assert not (agent_dir / "subagents" / "researcher" / "config.json").exists()
+    assert not (agent_dir / "subagents" / "researcher" / "tools.json").exists()
     assert target.stat().st_mode & 0o777 == 0o600
     assert "raw-secret" not in target.read_text(encoding="utf-8")
+    assert "header-secret" not in target.read_text(encoding="utf-8")
 
 
-def test_import_fleet_manifest_records_builtin_mcp_as_resolved(tmp_path: Path) -> None:
+def test_import_fleet_manifest_accepts_unzipped_export_directory(tmp_path: Path) -> None:
     fleet = _fleet_export(tmp_path)
-    summary = import_fleet_manifest(
-        fleet,
-        assistant_id="agent-1",
-        env={
-            "DEEPAGENTS_TALON_HOME": str(tmp_path / "home"),
-            "BUILTIN_MCP_URL": "https://builtin.example/mcp?api_key=local-secret",
-        },
-    )
-
-    assert summary.model_source == "fleet_config"
-    assert summary.replacement_tool_count == 3
-    assert summary.setup_task_count == 2
-
-
-def test_import_fleet_manifest_reads_nested_fleet_model_config(tmp_path: Path) -> None:
-    fleet = _fleet_export(tmp_path)
-    (fleet / "config.json").write_text(
-        json.dumps(
-            {
-                "config": {
-                    "configurable": {
-                        "llm_model_config": {
-                            "modelId": "openai:gpt-5.5",
-                        },
-                    },
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-
     summary = import_fleet_manifest(
         fleet,
         assistant_id="agent-1",
         env={"DEEPAGENTS_TALON_HOME": str(tmp_path / "home")},
     )
 
-    manifest = json.loads(summary.manifest_path.read_text(encoding="utf-8"))
-    assert summary.model_source == "fleet_config"
-    assert manifest["manifest"]["model"] == "openai:gpt-5.5"
+    assert summary.fleet_source == fleet.resolve()
+    assert summary.tool_count == 4
+    assert (summary.agent_dir / "AGENTS.md").read_text(encoding="utf-8") == "system prompt"
 
 
-def test_import_fleet_manifest_fails_on_malformed_required_config(tmp_path: Path) -> None:
-    fleet = tmp_path / "fleet"
-    fleet.mkdir()
-    (fleet / "AGENTS.md").write_text("system prompt", encoding="utf-8")
-    (fleet / "config.json").write_text("[]", encoding="utf-8")
+def test_import_fleet_manifest_accepts_single_root_directory_zip(tmp_path: Path) -> None:
+    fleet = _fleet_export(tmp_path)
+    export = tmp_path / "nested.zip"
+    with zipfile.ZipFile(export, "w") as archive:
+        for path in sorted(fleet.rglob("*")):
+            archive.write(path, Path("fleet-export") / path.relative_to(fleet))
 
-    with pytest.raises(FleetImportError, match=r"Fleet config\.json"):
+    summary = import_fleet_manifest(
+        export,
+        assistant_id="agent-1",
+        env={"DEEPAGENTS_TALON_HOME": str(tmp_path / "home")},
+    )
+
+    assert summary.tool_count == 4
+    assert (summary.agent_dir / "subagents" / "researcher" / "AGENTS.md").is_file()
+
+
+def test_import_fleet_manifest_fails_on_missing_prompt(tmp_path: Path) -> None:
+    export = tmp_path / "fleet.zip"
+    with zipfile.ZipFile(export, "w") as archive:
+        archive.writestr("tools.json", json.dumps({"tools": []}))
+
+    with pytest.raises(FleetImportError, match=r"AGENTS\.md"):
         import_fleet_manifest(
-            fleet,
+            export,
             assistant_id="agent-1",
             env={"DEEPAGENTS_TALON_HOME": str(tmp_path / "home")},
         )
 
 
-def test_import_fleet_command_prints_secret_free_summary(
+def test_import_fleet_manifest_fails_on_unsafe_zip_path(tmp_path: Path) -> None:
+    export = tmp_path / "fleet.zip"
+    with zipfile.ZipFile(export, "w") as archive:
+        archive.writestr("../AGENTS.md", "system prompt")
+
+    with pytest.raises(FleetImportError, match="unsafe path"):
+        import_fleet_manifest(
+            export,
+            assistant_id="agent-1",
+            env={"DEEPAGENTS_TALON_HOME": str(tmp_path / "home")},
+        )
+
+
+def test_import_fleet_manifest_fails_on_malformed_tools_json(tmp_path: Path) -> None:
+    fleet = _fleet_export(tmp_path)
+    (fleet / "tools.json").write_text(json.dumps({"tools": [{}]}), encoding="utf-8")
+    export = _fleet_zip(tmp_path, fleet)
+
+    with pytest.raises(FleetImportError, match=r"tools\[0\]\.name"):
+        import_fleet_manifest(
+            export,
+            assistant_id="agent-1",
+            env={"DEEPAGENTS_TALON_HOME": str(tmp_path / "home")},
+        )
+
+
+def test_import_fleet_command_prints_secret_free_mcp_notes(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fleet = _fleet_export(tmp_path)
+    export = _fleet_zip(tmp_path, fleet)
     monkeypatch.setenv("DEEPAGENTS_TALON_HOME", str(tmp_path / "home"))
 
     code = _run_import_fleet_command(
         Namespace(
-            fleet_dir=fleet,
+            fleet_dir=export,
             assistant_id="agent-1",
             channel="telegram",
             non_interactive=True,
@@ -159,9 +200,15 @@ def test_import_fleet_command_prints_secret_free_summary(
     output = capsys.readouterr().out
     assert code == 0
     assert "assistant_id: agent-1" in output
-    assert "replacement_tools: 4" in output
-    assert "setup_tasks: 3" in output
-    assert "local_mcp_config:" in output
+    assert "tools_summarized: 4" in output
+    assert "mcp_servers: 3" in output
+    assert "interrupt_tools: 2" in output
+    assert "root_mcp_config:" in output
+    assert "root: missing (https://missing.example/mcp)" in output
+    assert "interrupt_on: search" in output
+    assert "subagent:researcher: calendar (https://calendar.example/mcp)" in output
+    assert "interrupt_on: calendar" in output
+    assert "Recommended human-in-the-loop tools: calendar, search" in output
     assert "raw-secret" not in output
     assert "header-secret" not in output
 
@@ -170,10 +217,9 @@ def _fleet_export(tmp_path: Path) -> Path:
     fleet = tmp_path / "fleet"
     fleet.mkdir()
     (fleet / "AGENTS.md").write_text("system prompt", encoding="utf-8")
-    (fleet / "config.json").write_text(
-        json.dumps({"model": "fleet:model"}),
-        encoding="utf-8",
-    )
+    skill = fleet / "skills" / "triage"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("skill prompt", encoding="utf-8")
     (fleet / "tools.json").write_text(
         json.dumps(
             {
@@ -181,20 +227,28 @@ def _fleet_export(tmp_path: Path) -> Path:
                     {
                         "name": "search",
                         "mcp_server_url": "https://missing.example/mcp?token=raw-secret",
+                        "mcp_server_name": "missing",
                         "auth_type": "headers",
                         "headers": {"Authorization": "Bearer header-secret"},
                     },
                     {
                         "name": "lookup",
                         "mcp_server_url": "https://missing.example/mcp?token=raw-secret",
+                        "mcp_server_name": "missing",
                         "auth_type": "headers",
                     },
                     {
                         "name": "builtin_search",
                         "mcp_server_url": "https://builtin.example/mcp?token=builtin-secret",
+                        "mcp_server_name": "builtin",
                         "auth_type": "builtin",
                     },
                 ],
+                "interrupt_config": {
+                    "https://missing.example/mcp::search::missing": True,
+                    "https://missing.example/mcp::lookup::missing": False,
+                    "https://builtin.example/mcp::builtin_search::builtin": False,
+                },
             }
         ),
         encoding="utf-8",
@@ -202,6 +256,7 @@ def _fleet_export(tmp_path: Path) -> Path:
     subagent = fleet / "subagents" / "researcher"
     subagent.mkdir(parents=True)
     (subagent / "AGENTS.md").write_text("research prompt", encoding="utf-8")
+    (subagent / "config.json").write_text(json.dumps({"description": "unused"}), encoding="utf-8")
     (subagent / "tools.json").write_text(
         json.dumps(
             {
@@ -209,7 +264,9 @@ def _fleet_export(tmp_path: Path) -> Path:
                     {
                         "name": "calendar",
                         "mcp_server_url": "https://calendar.example/mcp?token=raw-secret",
+                        "mcp_server_name": "calendar",
                         "auth_type": "oauth",
+                        "interrupt_on": True,
                     },
                 ],
             }
@@ -217,3 +274,11 @@ def _fleet_export(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return fleet
+
+
+def _fleet_zip(tmp_path: Path, fleet: Path) -> Path:
+    export = tmp_path / "fleet.zip"
+    with zipfile.ZipFile(export, "w") as archive:
+        for path in sorted(fleet.rglob("*")):
+            archive.write(path, path.relative_to(fleet))
+    return export

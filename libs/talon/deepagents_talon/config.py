@@ -32,7 +32,7 @@ class TalonConfig:
         assistant_id: Stable identifier used to namespace all local assistant state.
         home: Per-assistant home directory for state, manifests, sessions, and jobs.
         model: Chat model identifier supplied by the operator environment.
-        fleet_dir: Optional operator-unzipped Fleet export directory to load with
+        fleet_dir: Optional Fleet export directory to load with
             `fleet-deepagents-export`.
         env: Environment values visible to channels, providers, and future adapters.
     """

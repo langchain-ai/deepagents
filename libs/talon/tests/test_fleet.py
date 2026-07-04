@@ -370,7 +370,8 @@ async def test_agent_runtime_keeps_non_fleet_local_mcp_path(
         msg = "Fleet loader should not run without a Fleet source"
         raise AssertionError(msg)
 
-    async def fake_load_mcp(_config) -> MCPTools:
+    async def fake_load_mcp(_config, *, allow_empty: bool = False) -> MCPTools:
+        assert allow_empty is True
         return MCPTools(tools=(cast("Any", local_tool),), servers=())
 
     monkeypatch.setattr("deepagents_talon.__main__.load_fleet_agent_components", fail_load_fleet)

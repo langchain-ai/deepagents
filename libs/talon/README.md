@@ -31,20 +31,17 @@ Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host
 
 ## Fleet Exports
 
-Talon can host an operator-unzipped LangSmith Fleet export through the `fleet-deepagents-export` library:
-
-```bash
-unzip path/to/fleet-export.zip -d ./fleet
-```
+Talon can materialize a LangSmith Fleet zip export into a local assistant directory:
 
 Import the export once per Talon assistant id. The import validates `AGENTS.md` and
-`config.json`, materializes the Fleet prompt, skills, and subagents into the
-assistant directory, and writes Fleet MCP replacement follow-up tasks to the
-assistant-scoped manifest:
+materializes the Fleet root prompt and subagent prompts into the assistant
+directory. Fleet `config.json` is not used. The import summarizes each Fleet
+`tools.json` file, including MCP server names and interrupt-enabled tools, and
+writes those follow-up notes to the root MCP config:
 
 ```bash
 AGENT_ASSISTANT_ID=fleet-local \
-uv run deepagents-talon import-fleet ./fleet \
+uv run deepagents-talon import-fleet path/to/fleet-export.zip \
   --assistant-id fleet-local \
   --non-interactive
 ```
@@ -52,13 +49,12 @@ uv run deepagents-talon import-fleet ./fleet \
 The deprecated `--channel` flag is accepted for compatibility but ignored.
 Channels are selected by the normal Talon runtime flags and environment.
 
-The manifest is written to `<assistant-home>/agent/tools.json`, where
+The root MCP config is written to `<assistant-home>/agent/.mcp.json`, where
 `<assistant-home>` is `~/.deepagents/<assistant-id>` by default or
 `$DEEPAGENTS_TALON_HOME/<assistant-id>` when `DEEPAGENTS_TALON_HOME` is set. Local
-MCP replacement setup is best-effort: unresolved Fleet MCP tools are recorded as
-setup tasks, but missing local replacements do not block import. The default
-follow-up target for local MCP replacement configuration is the same manifest file,
-`<assistant-home>/agent/tools.json`.
+MCP setup is best-effort: missing local MCP servers do not block import. Add
+server entries under `mcpServers`; tools listed under `interrupt_tools` are
+recommended candidates for human-in-the-loop approval.
 
 Run the imported Fleet export through the normal Talon runtime by assistant id:
 
@@ -201,7 +197,11 @@ When enabled, Talon wraps each agent run in a LangSmith tracing context with ass
 
 ## MCP Tools
 
-Talon loads MCP servers from one config file. It checks `DEEPAGENTS_TALON_MCP_CONFIG`, then `MCP_CONFIG`, then `~/.deepagents/<assistant_id>/agent/tools.json`, then `~/.deepagents/.mcp.json`. Add Talon-local servers by editing `tools.json` directly:
+Talon loads MCP servers from one config file. `DEEPAGENTS_TALON_MCP_CONFIG` and
+`MCP_CONFIG` override discovery. Without an override, Talon uses the
+highest-precedence existing path: `~/.deepagents/.mcp.json`, then
+`~/.deepagents/<assistant_id>/agent/.mcp.json`. Add Talon-local servers by editing
+`.mcp.json` directly:
 
 ```json
 {

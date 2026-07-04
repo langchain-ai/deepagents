@@ -140,9 +140,9 @@ def _add_import_fleet_parser(
 ) -> None:
     parser = subparsers.add_parser(
         "import-fleet",
-        help="Write or refresh an assistant-scoped manifest for a Fleet export",
+        help="Materialize a Talon assistant directory from a Fleet export",
     )
-    parser.add_argument("fleet_dir", type=Path, help="Unzipped Fleet export directory")
+    parser.add_argument("fleet_dir", type=Path, help="Fleet export zip file or directory")
     parser.add_argument("--assistant-id", required=True, help="Assistant id for Talon local state")
     parser.add_argument(
         "--channel",
@@ -201,7 +201,7 @@ async def _agent_runtime(
     if config.model is None:
         return EchoAgentRuntime()
 
-    mcp = await load_mcp_tools(config)
+    mcp = await load_mcp_tools(config, allow_empty=True)
     _log_mcp_servers(mcp)
     return DeepAgentRuntime(
         model=config.model,
@@ -304,12 +304,33 @@ async def _run_mcp_login(args: argparse.Namespace) -> int:
 
 def _print_import_summary(summary: FleetImportSummary) -> None:
     print("Imported Fleet export for Talon.")  # noqa: T201
-    print(f"  fleet_dir: {summary.fleet_dir}")  # noqa: T201
+    print(f"  fleet_source: {summary.fleet_source}")  # noqa: T201
     print(f"  assistant_id: {summary.assistant_id}")  # noqa: T201
-    print(f"  replacement_tools: {summary.replacement_tool_count}")  # noqa: T201
-    print(f"  setup_tasks: {summary.setup_task_count}")  # noqa: T201
-    print(f"  local_mcp_config: {summary.mcp_config_target}")  # noqa: T201
-    print(f"  model_source: {summary.model_source}")  # noqa: T201
+    print(f"  agent_dir: {summary.agent_dir}")  # noqa: T201
+    print(f"  root_mcp_config: {summary.mcp_config_path}")  # noqa: T201
+    print(f"  tools_summarized: {summary.tool_count}")  # noqa: T201
+    print(f"  mcp_servers: {summary.server_count}")  # noqa: T201
+    print(f"  interrupt_tools: {summary.interrupt_tool_count}")  # noqa: T201
+    if not summary.mcp_server_notes:
+        print("MCP configuration notes: none")  # noqa: T201
+        return
+
+    print("MCP configuration notes:")  # noqa: T201
+    for note in summary.mcp_server_notes:
+        print(f"  - {note.scope}: {note.server_name} ({note.endpoint})")  # noqa: T201
+        print(f"    tools: {_join_names(note.tool_names)}")  # noqa: T201
+        print(f"    interrupt_on: {_join_names(note.interrupt_tools)}")  # noqa: T201
+    interrupt_tools = sorted(
+        {tool for note in summary.mcp_server_notes for tool in note.interrupt_tools}
+    )
+    if interrupt_tools:
+        print(  # noqa: T201
+            f"Recommended human-in-the-loop tools: {_join_names(tuple(interrupt_tools))}",
+        )
+
+
+def _join_names(values: Sequence[str]) -> str:
+    return ", ".join(values) if values else "none"
 
 
 async def _run_once(host: TalonHost) -> None:

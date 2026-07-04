@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+import zipfile
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, cast
 
@@ -14,7 +15,6 @@ from tests.conftest import RecordingChannel
 
 if TYPE_CHECKING:
     from pathlib import Path
-
 
 Channel = Literal["telegram", "whatsapp"]
 
@@ -29,7 +29,7 @@ class ImportContext:
     channel: Channel
     fleet: Path
     assistant_id: str
-    manifest_path: Path
+    mcp_config_path: Path
 
 
 @pytest.mark.parametrize("channel", ["telegram", "whatsapp"])
@@ -40,15 +40,16 @@ def test_fleet_direct_run_import_and_once_startup_path(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fleet = _fleet_export(tmp_path)
+    fleet_dir = _fleet_export(tmp_path)
+    fleet = _fleet_zip(tmp_path, fleet_dir)
     home = tmp_path / "home"
     assistant_id = f"fleet-{channel}"
-    manifest_path = home / assistant_id / "agent" / "tools.json"
+    mcp_config_path = home / assistant_id / "agent" / ".mcp.json"
     context = ImportContext(
         channel=channel,
         fleet=fleet,
         assistant_id=assistant_id,
-        manifest_path=manifest_path,
+        mcp_config_path=mcp_config_path,
     )
 
     monkeypatch.setenv("DEEPAGENTS_TALON_HOME", str(home))
@@ -97,9 +98,9 @@ def _import_fleet_through_cli(
 
     assert exc.value.code == 0
     summary = capsys.readouterr().out
-    manifest_text = context.manifest_path.read_text(encoding="utf-8")
+    manifest_text = context.mcp_config_path.read_text(encoding="utf-8")
     manifest = cast("dict[str, object]", json.loads(manifest_text))
-    payload = cast("dict[str, object]", manifest["manifest"])
+    payload = cast("dict[str, object]", manifest["_fleet_import"])
     return summary, manifest_text, payload
 
 
@@ -113,42 +114,45 @@ def _assert_import_result(
     del manifest_text
     assert summary.startswith("Imported Fleet export for Talon.")
     assert f"assistant_id: {context.assistant_id}" in summary
-    assert "replacement_tools: 4" in summary
-    assert "setup_tasks: 3" in summary
+    assert "tools_summarized: 4" in summary
+    assert "mcp_servers: 3" in summary
+    assert "interrupt_tools: 1" in summary
+    assert "root_mcp_config:" in summary
     assert payload["source"] == "fleet"
     assert payload["assistant_id"] == context.assistant_id
-    assert payload["fleet_dir"] == str(context.fleet.resolve())
-    assert payload["model"] == "fleet:model"
-    assert payload["model_source"] == "fleet_config"
-    assert payload["replacement_tools"] == [
+    assert payload["fleet_export"] == str(context.fleet.resolve())
+    assert context.mcp_config_path.parent.joinpath("AGENTS.md").read_text(encoding="utf-8") == (
+        "system prompt"
+    )
+    assert (context.mcp_config_path.parent / "subagents" / "researcher" / "AGENTS.md").read_text(
+        encoding="utf-8"
+    ) == "research prompt"
+    assert payload["servers"] == [
         {
             "auth_path": "builtin",
             "endpoint": "https://builtin.example/mcp",
-            "name": "builtin_search",
+            "interrupt_tools": [],
             "scope": "root",
+            "server_name": "builtin",
+            "tool_names": ["builtin_search"],
+        },
+        {
+            "auth_path": "headers",
+            "endpoint": "https://missing.example/mcp",
+            "interrupt_tools": ["search"],
+            "scope": "root",
+            "server_name": "missing",
+            "tool_names": ["lookup", "search"],
         },
         {
             "auth_path": "oauth",
             "endpoint": "https://calendar.example/mcp",
-            "name": "calendar",
+            "interrupt_tools": [],
             "scope": "subagent:researcher",
-        },
-        {
-            "auth_path": "headers",
-            "endpoint": "https://missing.example/mcp",
-            "name": "lookup",
-            "scope": "root",
-        },
-        {
-            "auth_path": "headers",
-            "endpoint": "https://missing.example/mcp",
-            "name": "search",
-            "scope": "root",
+            "server_name": "calendar",
+            "tool_names": ["calendar"],
         },
     ]
-    assert {task["target"] for task in cast("list[dict[str, object]]", payload["setup_tasks"])} == {
-        str(context.manifest_path)
-    }
 
 
 def _run_once_startup_path(
@@ -161,7 +165,8 @@ def _run_once_startup_path(
     runtimes: list[RecordingRuntime] = []
     mcp_configs: list[object] = []
 
-    async def fake_load_mcp(config: object) -> MCPTools:
+    async def fake_load_mcp(config: object, *, allow_empty: bool = False) -> MCPTools:
+        assert allow_empty is True
         mcp_configs.append(config)
         return MCPTools(tools=(), servers=())
 
@@ -220,7 +225,7 @@ def _run_once_startup_path(
     assert [adapter.provider for adapter in channels] == [context.channel]
     assert len(runtimes) == 1
     assert runtimes[0].model == "runtime:model"
-    assert runtimes[0].kwargs["assistant_dir"] == context.manifest_path.parent
+    assert runtimes[0].kwargs["assistant_dir"] == context.mcp_config_path.parent
     assert runtimes[0].started is True
     assert runtimes[0].stopped is True
     assert runtimes[0].env["LANGSMITH_API_KEY"] == OAUTH_TOKEN
@@ -245,7 +250,6 @@ def _fleet_export(tmp_path: Path) -> Path:
     fleet = tmp_path / "fleet"
     fleet.mkdir()
     (fleet / "AGENTS.md").write_text("system prompt", encoding="utf-8")
-    (fleet / "config.json").write_text(json.dumps({"model": "fleet:model"}), encoding="utf-8")
     (fleet / "tools.json").write_text(
         json.dumps(
             {
@@ -253,26 +257,35 @@ def _fleet_export(tmp_path: Path) -> Path:
                     {
                         "name": "search",
                         "mcp_server_url": f"https://missing.example/mcp?token={QUERY_TOKEN}",
+                        "mcp_server_name": "missing",
                         "auth_type": "headers",
                         "headers": {"Authorization": BEARER_HEADER},
                     },
                     {
                         "name": "lookup",
                         "mcp_server_url": f"https://missing.example/mcp?api_key={QUERY_TOKEN}",
+                        "mcp_server_name": "missing",
                         "auth_type": "headers",
                     },
                     {
                         "name": "builtin_search",
                         "mcp_server_url": f"https://builtin.example/mcp?token={QUERY_TOKEN}",
+                        "mcp_server_name": "builtin",
                         "auth_type": "builtin",
                     },
                 ],
+                "interrupt_config": {
+                    "https://missing.example/mcp::search::missing": True,
+                    "https://missing.example/mcp::lookup::missing": False,
+                    "https://builtin.example/mcp::builtin_search::builtin": False,
+                },
             }
         ),
         encoding="utf-8",
     )
     subagent = fleet / "subagents" / "researcher"
     subagent.mkdir(parents=True)
+    (subagent / "AGENTS.md").write_text("research prompt", encoding="utf-8")
     (subagent / "tools.json").write_text(
         json.dumps(
             {
@@ -280,6 +293,7 @@ def _fleet_export(tmp_path: Path) -> Path:
                     {
                         "name": "calendar",
                         "mcp_server_url": f"https://calendar.example/mcp?oauth={OAUTH_TOKEN}",
+                        "mcp_server_name": "calendar",
                         "auth_type": "oauth",
                         "oauth_access_token": OAUTH_TOKEN,
                     },
@@ -289,6 +303,14 @@ def _fleet_export(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return fleet
+
+
+def _fleet_zip(tmp_path: Path, fleet: Path) -> Path:
+    export = tmp_path / f"{fleet.name}.zip"
+    with zipfile.ZipFile(export, "w") as archive:
+        for path in sorted(fleet.rglob("*")):
+            archive.write(path, path.relative_to(fleet))
+    return export
 
 
 def _assert_secret_free(*values: str) -> None:

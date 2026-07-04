@@ -31,6 +31,13 @@ def test_validate_fleet_export_rejects_missing_required_files(tmp_path: Path) ->
     with pytest.raises(FleetExportValidationError, match=r"config\.json"):
         validate_fleet_export(fleet_dir)
 
+    (fleet_dir / "config.json").write_text(
+        json.dumps({"model": "openai:gpt-5-mini"}), encoding="utf-8"
+    )
+
+    with pytest.raises(FleetExportValidationError, match=r"tools\.json"):
+        validate_fleet_export(fleet_dir)
+
 
 def test_validate_fleet_export_rejects_malformed_tools_json(tmp_path: Path) -> None:
     fleet_dir = _fleet_export(tmp_path)
@@ -125,18 +132,15 @@ def test_manifest_summarizes_tool_and_approval_requirements(tmp_path: Path) -> N
     }
     assert manifest.approval_tool_names == ("crawl", "send_email")
     assert len(manifest.setup_tasks) == 3
-    assert {task.target_path for task in manifest.setup_tasks} == {
-        str(config.home / ".mcp.json")
-    }
+    assert {task.target_path for task in manifest.setup_tasks} == {str(config.home / ".mcp.json")}
 
 
-def test_validate_fleet_export_allows_missing_optional_content(tmp_path: Path) -> None:
+def test_validate_fleet_export_allows_missing_subagent_tool_content(tmp_path: Path) -> None:
     fleet_dir = _fleet_export(tmp_path)
+    (fleet_dir / "subagents" / "researcher").mkdir(parents=True)
 
     validate_fleet_export(fleet_dir)
 
-    _write_tools(fleet_dir / "tools.json", [])
-    validate_fleet_export(fleet_dir)
     assert fleet_tool_entries(fleet_dir) == []
 
 
@@ -148,6 +152,7 @@ def _fleet_export(tmp_path: Path) -> Path:
         json.dumps({"model": "openai:gpt-5-mini"}),
         encoding="utf-8",
     )
+    _write_tools(fleet_dir / "tools.json", [])
     return fleet_dir
 
 

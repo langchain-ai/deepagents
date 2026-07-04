@@ -431,10 +431,7 @@ def _manifest_from_dict(data: Mapping[str, object], *, path: Path) -> FleetRunMa
             _tool_requirement_from_dict(item, path=path)
             for item in _required_list(data, "tool_requirements", path=path)
         ),
-        approval_tool_names=tuple(
-            _string_value(item, path=path)
-            for item in _required_list(data, "approval_tool_names", path=path)
-        ),
+        approval_tool_names=_optional_string_tuple(data, "approval_tool_names", path=path),
         setup_tasks=tuple(
             _setup_task_from_dict(item, path=path)
             for item in _required_list(data, "setup_tasks", path=path)
@@ -480,6 +477,21 @@ def _setup_task_from_dict(value: object, *, path: Path) -> SetupTask:
             for item in _required_list(data, "tool_requirement_ids", path=path)
         ),
     )
+
+
+def _optional_string_tuple(
+    data: Mapping[str, object],
+    key: str,
+    *,
+    path: Path,
+) -> tuple[str, ...]:
+    value = data.get(key)
+    if value is None:
+        return ()
+    if isinstance(value, list):
+        return tuple(_string_value(item, path=path) for item in value)
+    msg = f"Fleet run manifest {path} field {key!r} must be a list"
+    raise FleetRunManifestValidationError(msg)
 
 
 def _required_str(data: Mapping[str, object], key: str, *, path: Path) -> str:

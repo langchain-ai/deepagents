@@ -161,6 +161,31 @@ def test_manifest_refresh_records_root_and_subagent_tool_requirements(tmp_path: 
     assert "secret" not in manifest_path(config.home).read_text(encoding="utf-8")
 
 
+def test_manifest_load_defaults_missing_approval_tool_names(tmp_path: Path) -> None:
+    path = tmp_path / "fleet-run-manifest.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "assistant_id": "assistant",
+                "fleet_dir": str(tmp_path / "fleet"),
+                "selected_channel": None,
+                "model_source": "fleet",
+                "model": "openai:gpt-5-mini",
+                "created_at": "2026-01-02T03:04:05Z",
+                "local_mcp_config_path": str(tmp_path / "assistant" / ".mcp.json"),
+                "tool_requirements": [],
+                "setup_tasks": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = load_fleet_run_manifest(path)
+
+    assert manifest.approval_tool_names == ()
+
+
 def test_manifest_load_rejects_invalid_schema(tmp_path: Path) -> None:
     path = tmp_path / "fleet-run-manifest.json"
     path.write_text(

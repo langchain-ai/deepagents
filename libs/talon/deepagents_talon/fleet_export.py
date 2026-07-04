@@ -14,7 +14,7 @@ from urllib.parse import urlsplit, urlunsplit
 if TYPE_CHECKING:
     from pathlib import Path
 
-_REQUIRED_EXPORT_FILES = ("AGENTS.md", "config.json")
+_REQUIRED_EXPORT_FILES = ("AGENTS.md", "config.json", "tools.json")
 _KNOWN_FLEET_AUTH_PATHS = frozenset({"builtin", "headers", "oauth"})
 
 
@@ -41,7 +41,7 @@ class FleetExportToolEntry:
 
 
 def validate_fleet_export(fleet_dir: Path) -> None:
-    """Validate required Fleet export files and optional `tools.json` content.
+    """Validate required Fleet export files and optional subagent tool content.
 
     Args:
         fleet_dir: Operator-unzipped Fleet export directory.

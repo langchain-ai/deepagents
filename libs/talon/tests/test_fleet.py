@@ -50,6 +50,7 @@ def _write_required_fleet_files(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     (path / "AGENTS.md").write_text("Fleet prompt", encoding="utf-8")
     (path / "config.json").write_text(json.dumps({"model": "fleet:model"}), encoding="utf-8")
+    (path / "tools.json").write_text(json.dumps({"tools": []}), encoding="utf-8")
 
 
 async def test_load_fleet_agent_components_coerces_public_loader_payload(

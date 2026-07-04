@@ -209,7 +209,7 @@ async def test_runtime_loads_local_subagents_from_assistant_dir(
     researcher_dir.mkdir(parents=True)
     reviewer_dir.mkdir(parents=True)
     (researcher_dir / "AGENTS.md").write_text(
-        "---\ndescription: Research tasks\n---\nResearch carefully.",
+        "---\ndescription: Research tasks\nmodel_id: openai:model\n---\nResearch carefully.",
         encoding="utf-8",
     )
     (reviewer_dir / "AGENTS.md").write_text("Review changes.", encoding="utf-8")
@@ -226,6 +226,7 @@ async def test_runtime_loads_local_subagents_from_assistant_dir(
         include_web_tools=False,
         skills=(),
         memory=(),
+        env={},
     )
 
     await runtime.start()
@@ -235,6 +236,7 @@ async def test_runtime_loads_local_subagents_from_assistant_dir(
             "name": "researcher",
             "description": "Research tasks",
             "system_prompt": "Research carefully.",
+            "model": "openai:model",
         },
         {
             "name": "reviewer",

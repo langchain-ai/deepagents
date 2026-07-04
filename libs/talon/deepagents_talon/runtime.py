@@ -884,29 +884,33 @@ def _load_local_subagents(assistant_dir: Path) -> list[SubAgent]:
         except OSError:
             logger.warning("Could not read Talon subagent prompt from %s", path, exc_info=True)
             continue
-        description, system_prompt = _parse_local_subagent_prompt(text, child.name)
-        subagents.append(
-            {
-                "name": child.name,
-                "description": description,
-                "system_prompt": system_prompt,
-            }
-        )
+        description, system_prompt, model = _parse_local_subagent_prompt(text, child.name)
+        subagent: SubAgent = {
+            "name": child.name,
+            "description": description,
+            "system_prompt": system_prompt,
+        }
+        if model is not None:
+            subagent["model"] = model
+        subagents.append(subagent)
     return subagents
 
 
-def _parse_local_subagent_prompt(text: str, name: str) -> tuple[str, str]:
+def _parse_local_subagent_prompt(text: str, name: str) -> tuple[str, str, str | None]:
     match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", text, re.DOTALL)
     if match is None:
-        return _default_subagent_description(name), text
-    description = _frontmatter_description(match.group(1)) or _default_subagent_description(name)
-    return description, match.group(2).lstrip()
+        return _default_subagent_description(name), text, None
+    frontmatter = match.group(1)
+    description = _frontmatter_value(frontmatter, "description") or _default_subagent_description(
+        name
+    )
+    return description, match.group(2).lstrip(), _frontmatter_value(frontmatter, "model_id")
 
 
-def _frontmatter_description(frontmatter: str) -> str | None:
+def _frontmatter_value(frontmatter: str, field: str) -> str | None:
     for line in frontmatter.splitlines():
         key, separator, value = line.partition(":")
-        if separator and key.strip() == "description":
+        if separator and key.strip() == field:
             parsed = value.strip().strip("\"'")
             return parsed or None
     return None

@@ -10,7 +10,13 @@ from typing import Any
 
 from langchain_core.tools import BaseTool, tool
 
-from deepagents_talon.cron.jobs import CronJob, CronJobStore, CronOrigin, CronSchedule
+from deepagents_talon.cron.jobs import (
+    CronJob,
+    CronJobError,
+    CronJobStore,
+    CronOrigin,
+    CronSchedule,
+)
 
 OriginFactory = Callable[[], CronOrigin]
 _PAIRED_QUOTE_LENGTH = 2
@@ -29,13 +35,16 @@ class CronTools:
         self.store = store
         self.origin = origin
 
-    def create_job(
+    def create_job(  # noqa: PLR0913  # agent tool exposes optional schedule context
         self,
         *,
         prompt: str,
         schedule: str,
         name: str = "",
         repeat_times: int | None = None,
+        timezone: str | None = None,
+        active_start: str | None = None,
+        active_end: str | None = None,
     ) -> dict[str, Any]:
         """Create a scheduled job in the current conversation.
 
@@ -44,13 +53,21 @@ class CronTools:
             schedule: Schedule text such as `in 30m` or `every 15m`.
             name: Optional human-readable label.
             repeat_times: Optional cap for recurring schedules.
+            timezone: Optional IANA time zone for local-time schedules.
+            active_start: Optional inclusive active-hour start time.
+            active_end: Optional exclusive active-hour end time.
 
         Returns:
             Created job as a JSON-compatible dictionary.
         """
         job = self.store.create_job(
             prompt=prompt,
-            schedule=CronSchedule.parse(schedule),
+            schedule=CronSchedule.parse(
+                schedule,
+                timezone=timezone,
+                active_start=active_start,
+                active_end=active_end,
+            ),
             origin=self.origin(),
             name=name,
             repeat_times=repeat_times,
@@ -74,6 +91,9 @@ class CronTools:
         schedule: str | None = None,
         enabled: bool | None = None,
         repeat_times: int | None = None,
+        timezone: str | None = None,
+        active_start: str | None = None,
+        active_end: str | None = None,
     ) -> dict[str, Any]:
         """Edit a scheduled job in the current conversation.
 
@@ -84,15 +104,43 @@ class CronTools:
             schedule: Optional replacement schedule text.
             enabled: Optional enabled flag.
             repeat_times: Optional replacement repeat cap for recurring jobs.
+            timezone: Optional IANA time zone for local-time schedules.
+            active_start: Optional inclusive active-hour start time.
+            active_end: Optional exclusive active-hour end time.
 
         Returns:
             Updated job as a JSON-compatible dictionary.
         """
-        parsed = None if schedule is None else CronSchedule.parse(schedule)
+        origin = self.origin()
+        if schedule is None and _has_schedule_options(
+            timezone=timezone,
+            active_start=active_start,
+            active_end=active_end,
+        ):
+            job = self.store.get_job(job_id, origin=origin)
+            if job is None:
+                msg = f"cron job not found in current conversation: {job_id}"
+                raise CronJobError(msg)
+            parsed = job.schedule.with_options(
+                timezone=timezone,
+                active_start=active_start,
+                active_end=active_end,
+            )
+        else:
+            parsed = (
+                None
+                if schedule is None
+                else CronSchedule.parse(
+                    schedule,
+                    timezone=timezone,
+                    active_start=active_start,
+                    active_end=active_end,
+                )
+            )
         return _tool_job(
             self.store.edit_job(
                 job_id,
-                origin=self.origin(),
+                origin=origin,
                 name=name,
                 prompt=prompt,
                 schedule=parsed,
@@ -132,11 +180,15 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
     """
 
     @tool
-    def create_job(
+    def create_job(  # noqa: PLR0913  # agent tool exposes optional schedule context
         prompt: str,
         schedule: str,
         name: str = "",
         repeat_times: int | None = None,
+        *,
+        timezone: str | None = None,
+        active_start: str | None = None,
+        active_end: str | None = None,
     ) -> dict[str, Any]:
         """Schedule a background task that will later deliver to this conversation.
 
@@ -145,6 +197,9 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
             schedule: Schedule text such as `in 30m` or `every 15m`.
             name: Optional human-readable label for the job.
             repeat_times: Optional cap for recurring schedules.
+            timezone: Optional IANA time zone for local-time schedules.
+            active_start: Optional inclusive active-hour start time.
+            active_end: Optional exclusive active-hour end time.
 
         Returns:
             Created job details, or an error dictionary for invalid input.
@@ -155,6 +210,9 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
                 schedule=schedule,
                 name=name,
                 repeat_times=repeat_times,
+                timezone=timezone,
+                active_start=active_start,
+                active_end=active_end,
             )
         except Exception as exc:  # noqa: BLE001
             return _tool_error(exc)
@@ -180,6 +238,9 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
         *,
         enabled: bool | None = None,
         repeat_times: int | None = None,
+        timezone: str | None = None,
+        active_start: str | None = None,
+        active_end: str | None = None,
     ) -> dict[str, Any]:
         """Update one or more settings on a scheduled job from this conversation.
 
@@ -190,6 +251,9 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
             schedule: Optional replacement schedule text.
             enabled: Optional enabled flag. Use `False` to pause, `True` to resume.
             repeat_times: Optional replacement repeat cap for recurring schedules.
+            timezone: Optional IANA time zone for local-time schedules.
+            active_start: Optional inclusive active-hour start time.
+            active_end: Optional exclusive active-hour end time.
 
         Returns:
             Updated job details, or an error dictionary for invalid input.
@@ -202,6 +266,9 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
                 schedule=_strip_optional_quotes(schedule),
                 enabled=enabled,
                 repeat_times=repeat_times,
+                timezone=_strip_optional_quotes(timezone),
+                active_start=_strip_optional_quotes(active_start),
+                active_end=_strip_optional_quotes(active_end),
             )
         except Exception as exc:  # noqa: BLE001
             return _tool_error(exc)
@@ -226,6 +293,9 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
 
 def _tool_job(job: CronJob) -> dict[str, Any]:
     data = job.to_dict()
+    next_run_local = (
+        None if job.next_run_at is None else job.schedule.next_run_local(job.next_run_at)
+    )
     return {
         "id": data["id"],
         "name": data["name"],
@@ -234,6 +304,8 @@ def _tool_job(job: CronJob) -> dict[str, Any]:
         "repeat": data["repeat"],
         "enabled": data["enabled"],
         "next_run_at": data["next_run_at"],
+        "next_run_local": next_run_local,
+        "scheduler_host_clock": data["scheduler_host_clock"],
         "last_run_at": data["last_run_at"],
         "last_status": data["last_status"],
         "last_error": data["last_error"],
@@ -242,6 +314,15 @@ def _tool_job(job: CronJob) -> dict[str, Any]:
 
 def _tool_error(exc: Exception) -> dict[str, str]:
     return {"error": str(exc)}
+
+
+def _has_schedule_options(
+    *,
+    timezone: str | None,
+    active_start: str | None,
+    active_end: str | None,
+) -> bool:
+    return timezone is not None or active_start is not None or active_end is not None
 
 
 def _strip_optional_quotes(value: str | None) -> str | None:

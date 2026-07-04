@@ -65,6 +65,101 @@ def test_recurring_job_advances_before_run_and_honors_repeat_cap(tmp_path) -> No
     assert second.repeat.completed == 2
 
 
+def test_wall_clock_job_persists_timezone_and_local_output(tmp_path) -> None:
+    now = datetime(2026, 7, 2, 1, tzinfo=UTC)
+    store = _store(tmp_path)
+
+    job = store.create_job(
+        prompt="send reminder",
+        schedule=CronSchedule.parse("at 8:00pm", timezone="America/Los_Angeles"),
+        origin=CronOrigin(conversation_id="chat"),
+        now=now,
+    )
+
+    assert job.next_run_at == datetime(2026, 7, 2, 3, tzinfo=UTC)
+    assert job.schedule.to_dict()["timezone"] == "America/Los_Angeles"
+    assert job.schedule.to_dict()["wall_time"] == "20:00"
+    assert job.scheduler_host_clock is not None
+    assert (
+        CronTools(store=store, origin=lambda: CronOrigin(conversation_id="chat")).list_jobs()[0][
+            "next_run_local"
+        ]
+        == "2026-07-01 20:00 America/Los_Angeles"
+    )
+
+
+def test_active_window_moves_initial_run_to_next_allowed_time(tmp_path) -> None:
+    now = datetime(2026, 7, 2, 0, 20, tzinfo=UTC)
+    store = _store(tmp_path)
+
+    job = store.create_job(
+        prompt="heartbeat",
+        schedule=CronSchedule.parse(
+            "every 15m",
+            timezone="America/Los_Angeles",
+            active_start="08:30",
+            active_end="17:27",
+        ),
+        origin=CronOrigin(conversation_id="chat"),
+        now=now,
+    )
+
+    assert job.next_run_at == datetime(2026, 7, 2, 15, 30, tzinfo=UTC)
+
+
+def test_active_window_skip_does_not_consume_repeat_cap(tmp_path) -> None:
+    now = datetime(2026, 7, 2, 23, 44, tzinfo=UTC)
+    store = _store(tmp_path)
+    job = store.create_job(
+        prompt="heartbeat",
+        schedule=CronSchedule.parse(
+            "every 15m",
+            timezone="America/Los_Angeles",
+            active_start="08:00",
+            active_end="17:00",
+        ),
+        origin=CronOrigin(conversation_id="chat"),
+        repeat_times=2,
+        now=now,
+    )
+
+    claimed = store.advance_next_run(job.id, now=datetime(2026, 7, 3, 0, 1, tzinfo=UTC))
+
+    updated = store.get_job(job.id)
+    assert claimed is None
+    assert updated is not None
+    assert updated.repeat.completed == 0
+    assert updated.next_run_at == datetime(2026, 7, 3, 15, tzinfo=UTC)
+
+
+def test_tools_edit_active_hours_without_replacing_schedule(tmp_path) -> None:
+    store = _store(tmp_path)
+    current = CronOrigin(conversation_id="chat")
+    tools = CronTools(store=store, origin=lambda: current)
+    job = store.create_job(
+        prompt="heartbeat",
+        schedule=CronSchedule.parse("every 15m"),
+        origin=current,
+        now=datetime(2026, 7, 2, 15, tzinfo=UTC),
+    )
+
+    updated = tools.edit_job(
+        job.id,
+        timezone="America/Los_Angeles",
+        active_start="08:00",
+        active_end="17:00",
+    )
+    cleared = tools.edit_job(job.id, active_start="", active_end="")
+
+    assert updated["schedule"]["active_window"] == {
+        "timezone": "America/Los_Angeles",
+        "start": "08:00",
+        "end": "17:00",
+    }
+    assert updated["schedule"]["display"] == "every 15m"
+    assert cleared["schedule"]["active_window"] is None
+
+
 def test_store_prunes_only_expired_completed_jobs(tmp_path) -> None:
     now = datetime(2026, 1, 31, 12, tzinfo=UTC)
     store = _store(tmp_path)

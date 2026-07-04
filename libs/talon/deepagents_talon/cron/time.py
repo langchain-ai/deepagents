@@ -9,12 +9,13 @@ Talon is an experimental runtime and is subject to change or removal at any time
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from enum import IntEnum
 from functools import total_ordering
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NotRequired, TypedDict
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 if TYPE_CHECKING:
@@ -22,21 +23,48 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ActiveWindow",
+    "ActiveWindowDict",
     "CronTimeError",
     "DaysOfWeek",
     "LocalTimeOfDay",
+    "SchedulerHostClock",
+    "SchedulerHostClockDict",
     "Weekday",
+    "active_window_contains",
+    "capture_scheduler_host_clock",
+    "format_local_run",
+    "next_daily_wall_clock_run",
     "next_interval_run",
     "next_wall_clock_run",
+    "parse_active_window",
     "parse_days_of_week",
     "parse_local_time",
     "parse_weekday",
+    "resolve_schedule_timezone",
 ]
 
 _MAX_HOUR = 23
 _MAX_MINUTE = 59
 _AMPM_HOUR_BOUND = 12  # 12-hour clock upper bound before wrapping to 0
 _DAYS_IN_WEEK = 7
+TIMEZONE_ENV = "DEEPAGENTS_TALON_TIMEZONE"
+
+
+class ActiveWindowDict(TypedDict):
+    """Serialized local active-hour window."""
+
+    timezone: str
+    start: str
+    end: str
+
+
+class SchedulerHostClockDict(TypedDict):
+    """Serialized scheduler host clock context."""
+
+    timezone: str
+    utc_offset: str
+    computed_at: str
+    local_now: NotRequired[str]
 
 
 class CronTimeError(ValueError):
@@ -274,13 +302,27 @@ class LocalTimeOfDay:
         """Compare ordering by minutes since midnight."""
         return self.total_minutes < other.total_minutes
 
+    @property
+    def minutes_after_midnight(self) -> int:
+        """Minutes since midnight."""
+        return self.total_minutes
+
+    def to_display(self) -> str:
+        """Return a `HH:MM` string."""
+        return f"{self.hour:02d}:{self.minute:02d}"
+
+    @classmethod
+    def from_display(cls, value: str) -> LocalTimeOfDay:
+        """Parse a persisted `HH:MM` time value."""
+        return parse_local_time(value)
+
     def __str__(self) -> str:
         """Return a `HH:MM` string.
 
         Returns:
             Zero-padded `HH:MM` representation.
         """
-        return f"{self.hour:02d}:{self.minute:02d}"
+        return self.to_display()
 
 
 @dataclass(frozen=True, slots=True)
@@ -324,6 +366,23 @@ class ActiveWindow:
             return local >= self.start or local < self.end
         return self.start <= local < self.end
 
+    def to_dict(self) -> ActiveWindowDict:
+        """Serialize this active window for disk storage."""
+        return {
+            "timezone": self.timezone,
+            "start": self.start.to_display(),
+            "end": self.end.to_display(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: ActiveWindowDict) -> ActiveWindow:
+        """Deserialize an active window from disk."""
+        return cls(
+            timezone=data["timezone"],
+            start=LocalTimeOfDay.from_display(data["start"]),
+            end=LocalTimeOfDay.from_display(data["end"]),
+        )
+
     def zone(self) -> ZoneInfo:
         """Return the zoneinfo for this window.
 
@@ -334,6 +393,46 @@ class ActiveWindow:
             CronTimeError: If the time zone is unknown.
         """
         return _resolve_zone(self.timezone)
+
+
+@dataclass(frozen=True, slots=True)
+class SchedulerHostClock:
+    """Scheduler host clock context used to compute a UTC run time.
+
+    Args:
+        timezone: Time zone name reported by the host clock.
+        utc_offset: UTC offset reported by the host clock.
+        computed_at: UTC timestamp used as the computation basis.
+        local_now: Host-local timestamp for diagnostics.
+    """
+
+    timezone: str
+    utc_offset: str
+    computed_at: datetime
+    local_now: datetime
+
+    def to_dict(self) -> SchedulerHostClockDict:
+        """Serialize this host clock context for disk storage."""
+        return {
+            "timezone": self.timezone,
+            "utc_offset": self.utc_offset,
+            "computed_at": _format_time(self.computed_at),
+            "local_now": self.local_now.isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: SchedulerHostClockDict) -> SchedulerHostClock:
+        """Deserialize scheduler host clock context."""
+        computed_at = _parse_time(data["computed_at"])
+        local_now = datetime.fromisoformat(data.get("local_now", data["computed_at"]))
+        if local_now.tzinfo is None or local_now.utcoffset() is None:
+            local_now = local_now.replace(tzinfo=UTC)
+        return cls(
+            timezone=data["timezone"],
+            utc_offset=data["utc_offset"],
+            computed_at=computed_at,
+            local_now=local_now,
+        )
 
 
 # --- Parsing -----------------------------------------------------------------
@@ -453,6 +552,38 @@ def parse_local_time(value: str) -> LocalTimeOfDay:
     raise CronTimeError(msg)
 
 
+def parse_active_window(
+    *,
+    timezone: str | None,
+    active_start: str | None,
+    active_end: str | None,
+) -> ActiveWindow | None:
+    """Parse optional active-hour inputs."""
+    if active_start == "" and active_end == "":
+        return None
+    if active_start is None and active_end is None:
+        return None
+    if active_start is None or active_end is None:
+        msg = "active hours require both active_start and active_end"
+        raise CronTimeError(msg)
+    return ActiveWindow(
+        timezone=resolve_schedule_timezone(timezone),
+        start=parse_local_time(active_start),
+        end=parse_local_time(active_end),
+    )
+
+
+def resolve_schedule_timezone(value: str | None) -> str:
+    """Resolve the IANA time zone for a wall-clock schedule."""
+    candidate = value or os.environ.get(TIMEZONE_ENV)
+    if candidate is None or not candidate.strip():
+        msg = f"timezone is required for local-time schedules; set {TIMEZONE_ENV}"
+        raise CronTimeError(msg)
+    zone = _resolve_zone(candidate.strip())
+    key = getattr(zone, "key", None)
+    return key if isinstance(key, str) and key else candidate.strip()
+
+
 # --- Zone resolution ---------------------------------------------------------
 
 
@@ -529,8 +660,40 @@ def next_wall_clock_run(
             )
     else:
         candidate = _build_local(zone, date, time, fold=0)
+        if candidate <= now_utc:
+            msg = "dated wall-clock schedule is in the past"
+            raise CronTimeError(msg)
 
     return _as_utc(candidate)
+
+
+def next_daily_wall_clock_run(
+    *,
+    previous: datetime | None,
+    now: datetime,
+    timezone: str,
+    time: LocalTimeOfDay,
+    active_window: ActiveWindow | None = None,
+) -> datetime:
+    """Return the next UTC run for a recurring daily wall-clock schedule."""
+    now_utc = _as_utc(now)
+    zone = _resolve_zone(timezone)
+    if previous is None:
+        candidate = next_wall_clock_run(now=now_utc, timezone=timezone, time=time)
+    else:
+        previous_local = _as_utc(previous).astimezone(zone)
+        candidate = _as_utc(
+            _build_local(zone, previous_local.date() + timedelta(days=1), time, fold=0)
+        )
+        while candidate <= now_utc:
+            candidate_local = candidate.astimezone(zone)
+            candidate = _as_utc(
+                _build_local(zone, candidate_local.date() + timedelta(days=1), time, fold=0)
+            )
+    if active_window is not None and not active_window_contains(candidate, active_window):
+        msg = "daily wall-clock schedule time falls outside active hours"
+        raise CronTimeError(msg)
+    return candidate
 
 
 def _build_local(zone: ZoneInfo, target_date: date, time: LocalTimeOfDay, *, fold: int) -> datetime:
@@ -622,3 +785,55 @@ def _advance_into_window(
     if start_today_utc >= candidate:
         return start_today_utc
     return _as_utc(_build_local(zone, local.date() + timedelta(days=1), window.start, fold=0))
+
+
+def active_window_contains(value: datetime, active_window: ActiveWindow) -> bool:
+    """Return whether a UTC timestamp falls inside an active window."""
+    local = _as_utc(value).astimezone(active_window.zone())
+    return active_window.contains(LocalTimeOfDay(local.hour, local.minute))
+
+
+def capture_scheduler_host_clock(now: datetime | None = None) -> SchedulerHostClock:
+    """Capture the scheduler host clock context."""
+    computed_at = datetime.now(UTC) if now is None else _as_utc(now)
+    local_now = computed_at.astimezone()
+    return SchedulerHostClock(
+        timezone=_timezone_name(local_now),
+        utc_offset=_format_offset(local_now),
+        computed_at=computed_at,
+        local_now=local_now,
+    )
+
+
+def format_local_run(value: datetime, timezone: str) -> str:
+    """Format a UTC run timestamp in a schedule time zone."""
+    local = _as_utc(value).astimezone(_resolve_zone(timezone))
+    return f"{local:%Y-%m-%d %H:%M} {timezone}"
+
+
+def _timezone_name(value: datetime) -> str:
+    tzinfo = value.tzinfo
+    key = getattr(tzinfo, "key", None)
+    if isinstance(key, str) and key:
+        return key
+    name = value.tzname()
+    return name or "local"
+
+
+def _format_offset(value: datetime) -> str:
+    offset = value.utcoffset()
+    if offset is None:
+        return "+00:00"
+    total_minutes = int(offset.total_seconds() // 60)
+    sign = "+" if total_minutes >= 0 else "-"
+    total_minutes = abs(total_minutes)
+    hours, minutes = divmod(total_minutes, 60)
+    return f"{sign}{hours:02d}:{minutes:02d}"
+
+
+def _format_time(value: datetime) -> str:
+    return _as_utc(value).isoformat()
+
+
+def _parse_time(value: str) -> datetime:
+    return _as_utc(datetime.fromisoformat(value))

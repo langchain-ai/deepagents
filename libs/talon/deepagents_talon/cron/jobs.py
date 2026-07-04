@@ -7,17 +7,40 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import uuid
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Literal, TypedDict, cast
+from typing import Literal, NotRequired, TypedDict, cast
+
+from deepagents_talon.cron.time import (
+    ActiveWindow,
+    ActiveWindowDict,
+    CronTimeError,
+    SchedulerHostClock,
+    SchedulerHostClockDict,
+    active_window_contains,
+    capture_scheduler_host_clock,
+    format_local_run,
+    next_daily_wall_clock_run,
+    next_interval_run,
+    next_wall_clock_run,
+    parse_active_window,
+    parse_local_time,
+    resolve_schedule_timezone,
+)
 
 MIN_GRANULARITY_MINUTES = 1
 
 JobStatus = Literal["ok", "error"]
-ScheduleKind = Literal["one_shot", "recurring"]
+ScheduleKind = Literal["one_shot", "recurring", "wall_clock_once", "wall_clock_daily"]
+
+_WALL_CLOCK_ONCE_RE = re.compile(
+    r"^at (?P<time>.+?)(?: on (?P<date>\d{4}-\d{2}-\d{2}))?$",
+)
+_WALL_CLOCK_DAILY_PREFIX = "every day at "
 
 
 class CronJobError(ValueError):
@@ -36,8 +59,12 @@ class CronScheduleDict(TypedDict):
     """Serialized schedule definition for a job."""
 
     kind: ScheduleKind
-    minutes: int
+    minutes: int | None
     display: str
+    timezone: NotRequired[str | None]
+    wall_time: NotRequired[str | None]
+    wall_date: NotRequired[str | None]
+    active_window: NotRequired[ActiveWindowDict | None]
 
 
 class CronRepeatDict(TypedDict):
@@ -63,6 +90,7 @@ class CronJobDict(TypedDict):
     last_status: JobStatus | None
     last_error: str | None
     origin: CronOriginDict
+    scheduler_host_clock: NotRequired[SchedulerHostClockDict | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,30 +138,59 @@ class CronOrigin:
 
 @dataclass(frozen=True, slots=True)
 class CronSchedule:
-    """Minute-granularity schedule for a cron job.
+    """Minute or wall-clock schedule for a cron job.
 
     Args:
-        kind: Whether the schedule is one-shot or recurring.
-        minutes: Delay or interval in minutes.
+        kind: Schedule type.
+        minutes: Delay or interval in minutes for relative schedules.
         display: Human-readable schedule text supplied by the agent.
+        timezone: IANA time zone used for wall-clock interpretation.
+        wall_time: Local wall-clock time for wall-clock schedules.
+        wall_date: Optional local date for dated one-shot wall-clock schedules.
+        active_window: Optional local active-hour gate.
     """
 
     kind: ScheduleKind
-    minutes: int
+    minutes: int | None
     display: str
+    timezone: str | None = None
+    wall_time: str | None = None
+    wall_date: date | None = None
+    active_window: ActiveWindow | None = None
 
     def __post_init__(self) -> None:
-        """Validate schedule granularity."""
-        if self.minutes < MIN_GRANULARITY_MINUTES:
-            msg = "cron schedules must be at least 1 minute"
+        """Validate schedule granularity and wall-clock fields."""
+        if self.kind in {"one_shot", "recurring"}:
+            if self.minutes is None or self.minutes < MIN_GRANULARITY_MINUTES:
+                msg = "cron schedules must be at least 1 minute"
+                raise CronJobError(msg)
+            return
+        if self.timezone is None or self.wall_time is None:
+            msg = "wall-clock schedules require timezone and wall_time"
             raise CronJobError(msg)
+        if self.kind == "wall_clock_once":
+            return
+        if self.kind == "wall_clock_daily":
+            return
+        msg = f"unsupported schedule kind: {self.kind}"
+        raise CronJobError(msg)
 
     @classmethod
-    def parse(cls, value: str) -> CronSchedule:
+    def parse(
+        cls,
+        value: str,
+        *,
+        timezone: str | None = None,
+        active_start: str | None = None,
+        active_end: str | None = None,
+    ) -> CronSchedule:
         """Parse a supported schedule string.
 
         Args:
-            value: Schedule text such as `in 30m` or `every 15m`.
+            value: Schedule text such as `in 30m`, `at 8pm`, or `every day at 8pm`.
+            timezone: Optional IANA time zone for wall-clock interpretation.
+            active_start: Optional inclusive active-hour start time.
+            active_end: Optional exclusive active-hour end time.
 
         Returns:
             Parsed schedule.
@@ -141,24 +198,162 @@ class CronSchedule:
         Raises:
             CronJobError: If the schedule string is unsupported.
         """
+        try:
+            return cls._parse(
+                value,
+                timezone=timezone,
+                active_start=active_start,
+                active_end=active_end,
+            )
+        except CronTimeError as exc:
+            raise CronJobError(str(exc)) from exc
+
+    @classmethod
+    def _parse(
+        cls,
+        value: str,
+        *,
+        timezone: str | None,
+        active_start: str | None,
+        active_end: str | None,
+    ) -> CronSchedule:
         text = " ".join(value.strip().lower().split())
+        active_window = parse_active_window(
+            timezone=timezone,
+            active_start=active_start,
+            active_end=active_end,
+        )
         if text.startswith("in "):
-            return cls(kind="one_shot", minutes=_parse_duration_minutes(text[3:]), display=value)
-        if text.startswith("every "):
-            return cls(kind="recurring", minutes=_parse_duration_minutes(text[6:]), display=value)
-        msg = "schedule must look like 'in 30m' or 'every 15m'"
+            return cls(
+                kind="one_shot",
+                minutes=_parse_duration_minutes(text[3:]),
+                display=value,
+                timezone=None if active_window is None else active_window.timezone,
+                active_window=active_window,
+            )
+        if text.startswith("every ") and not text.startswith(_WALL_CLOCK_DAILY_PREFIX):
+            return cls(
+                kind="recurring",
+                minutes=_parse_duration_minutes(text[6:]),
+                display=value,
+                timezone=None if active_window is None else active_window.timezone,
+                active_window=active_window,
+            )
+        if text.startswith(_WALL_CLOCK_DAILY_PREFIX):
+            resolved = resolve_schedule_timezone(timezone)
+            wall_time = parse_local_time(text.removeprefix(_WALL_CLOCK_DAILY_PREFIX))
+            return cls(
+                kind="wall_clock_daily",
+                minutes=None,
+                display=value,
+                timezone=resolved,
+                wall_time=wall_time.to_display(),
+                active_window=active_window,
+            )
+        match = _WALL_CLOCK_ONCE_RE.match(text)
+        if match is not None:
+            resolved = resolve_schedule_timezone(timezone)
+            wall_date = _parse_wall_date(match.group("date"))
+            wall_time = parse_local_time(match.group("time"))
+            return cls(
+                kind="wall_clock_once",
+                minutes=None,
+                display=value,
+                timezone=resolved,
+                wall_time=wall_time.to_display(),
+                wall_date=wall_date,
+                active_window=active_window,
+            )
+        msg = "schedule must look like 'in 30m', 'every 15m', 'at 8:00pm', or 'every day at 8:00pm'"
         raise CronJobError(msg)
 
-    def next_after(self, now: datetime) -> datetime:
+    def next_after(self, now: datetime, previous: datetime | None = None) -> datetime:
         """Return the next scheduled run after `now`.
 
         Args:
             now: Current timestamp.
+            previous: Optional previous run candidate for recurring schedules.
 
         Returns:
             Next run timestamp.
         """
-        return now + timedelta(minutes=self.minutes)
+        try:
+            if self.kind == "one_shot":
+                candidate = now + timedelta(minutes=cast("int", self.minutes))
+                return self._validate_one_shot_active_window(candidate)
+            if self.kind == "recurring":
+                return next_interval_run(
+                    previous=now if previous is None else previous,
+                    now=now,
+                    minutes=cast("int", self.minutes),
+                    active_window=self.active_window,
+                )
+            if self.kind == "wall_clock_once":
+                candidate = next_wall_clock_run(
+                    now=now,
+                    timezone=cast("str", self.timezone),
+                    time=parse_local_time(cast("str", self.wall_time)),
+                    date=self.wall_date,
+                )
+                return self._validate_one_shot_active_window(candidate)
+            return next_daily_wall_clock_run(
+                previous=previous,
+                now=now,
+                timezone=cast("str", self.timezone),
+                time=parse_local_time(cast("str", self.wall_time)),
+                active_window=self.active_window,
+            )
+        except CronTimeError as exc:
+            raise CronJobError(str(exc)) from exc
+
+    def next_run_local(self, value: datetime) -> str | None:
+        """Return a local explanation for a run timestamp.
+
+        Args:
+            value: UTC run timestamp.
+
+        Returns:
+            Local display text when a schedule time zone is known.
+        """
+        timezone = self.timezone or (
+            None if self.active_window is None else self.active_window.timezone
+        )
+        if timezone is None:
+            return None
+        return format_local_run(value, timezone)
+
+    def with_options(
+        self,
+        *,
+        timezone: str | None = None,
+        active_start: str | None = None,
+        active_end: str | None = None,
+    ) -> CronSchedule:
+        """Return this schedule with replacement time-zone options.
+
+        Args:
+            timezone: Optional replacement IANA time zone.
+            active_start: Optional replacement active-hour start time.
+            active_end: Optional replacement active-hour end time.
+
+        Returns:
+            Re-parsed schedule with the requested options applied.
+        """
+        existing_window = self.active_window
+        resolved_timezone = (
+            timezone
+            or self.timezone
+            or (None if existing_window is None else existing_window.timezone)
+        )
+        if active_start is None and active_end is None and existing_window is not None:
+            active_start = existing_window.start.to_display()
+            active_end = existing_window.end.to_display()
+        return self.parse(
+            self.display,
+            timezone=resolved_timezone,
+            active_start=active_start,
+            active_end=active_end,
+        )
 
     def to_dict(self) -> CronScheduleDict:
         """Serialize this schedule for disk storage.
@@ -166,7 +361,15 @@ class CronSchedule:
         Returns:
             JSON-compatible schedule dictionary.
         """
-        return {"kind": self.kind, "minutes": self.minutes, "display": self.display}
+        return {
+            "kind": self.kind,
+            "minutes": self.minutes,
+            "display": self.display,
+            "timezone": self.timezone,
+            "wall_time": self.wall_time,
+            "wall_date": None if self.wall_date is None else self.wall_date.isoformat(),
+            "active_window": (None if self.active_window is None else self.active_window.to_dict()),
+        }
 
     @classmethod
     def from_dict(cls, data: CronScheduleDict) -> CronSchedule:
@@ -178,7 +381,24 @@ class CronSchedule:
         Returns:
             Parsed cron schedule.
         """
-        return cls(kind=data["kind"], minutes=data["minutes"], display=data["display"])
+        return cls(
+            kind=data["kind"],
+            minutes=data.get("minutes"),
+            display=data["display"],
+            timezone=data.get("timezone"),
+            wall_time=data.get("wall_time"),
+            wall_date=_parse_wall_date(data.get("wall_date")),
+            active_window=_parse_active_window_dict(data.get("active_window")),
+        )
+
+    def _validate_one_shot_active_window(self, candidate: datetime) -> datetime:
+        if self.active_window is not None and not active_window_contains(
+            candidate,
+            self.active_window,
+        ):
+            msg = "one-shot schedule falls outside active hours"
+            raise CronJobError(msg)
+        return candidate
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,6 +474,7 @@ class CronJob:
         last_status: Last run outcome.
         last_error: Last run error text.
         origin: Conversation that receives results.
+        scheduler_host_clock: Host clock context used to compute `next_run_at`.
     """
 
     id: str
@@ -269,6 +490,7 @@ class CronJob:
     last_status: JobStatus | None
     last_error: str | None
     origin: CronOrigin
+    scheduler_host_clock: SchedulerHostClock | None = None
 
     def to_dict(self) -> CronJobDict:
         """Serialize this job for disk storage.
@@ -290,6 +512,9 @@ class CronJob:
             "last_status": self.last_status,
             "last_error": self.last_error,
             "origin": self.origin.to_dict(),
+            "scheduler_host_clock": (
+                None if self.scheduler_host_clock is None else self.scheduler_host_clock.to_dict()
+            ),
         }
 
     @classmethod
@@ -316,6 +541,7 @@ class CronJob:
             last_status=data["last_status"],
             last_error=data["last_error"],
             origin=CronOrigin.from_dict(data["origin"]),
+            scheduler_host_clock=_parse_scheduler_host_clock(data.get("scheduler_host_clock")),
         )
 
 
@@ -358,9 +584,10 @@ class CronJobStore:
         """
         current = _coerce_utc(now)
         repeat = CronRepeat(times=repeat_times)
-        if schedule.kind == "one_shot" and repeat_times is not None:
+        if schedule.kind in {"one_shot", "wall_clock_once"} and repeat_times is not None:
             msg = "repeat cap is only valid for recurring jobs"
             raise CronJobError(msg)
+        next_run_at = schedule.next_after(current)
         job = CronJob(
             id=uuid.uuid4().hex[:12],
             assistant_id=self.assistant_id,
@@ -370,11 +597,12 @@ class CronJobStore:
             repeat=repeat,
             enabled=True,
             created_at=current,
-            next_run_at=schedule.next_after(current),
+            next_run_at=next_run_at,
             last_run_at=None,
             last_status=None,
             last_error=None,
             origin=origin,
+            scheduler_host_clock=capture_scheduler_host_clock(current),
         )
         jobs = [*self.list_jobs(), job]
         self._write_jobs(jobs)
@@ -467,10 +695,15 @@ class CronJobStore:
             new_schedule = schedule or job.schedule
             new_repeat = job.repeat
             if repeat_times is not None:
-                if new_schedule.kind != "recurring":
+                if new_schedule.kind not in {"recurring", "wall_clock_daily"}:
                     msg = "repeat cap is only valid for recurring jobs"
                     raise CronJobError(msg)
                 new_repeat = CronRepeat(times=repeat_times)
+            scheduler_host_clock = (
+                capture_scheduler_host_clock(current)
+                if schedule is not None
+                else job.scheduler_host_clock
+            )
             updated = replace(
                 job,
                 name=job.name if name is None else name,
@@ -479,6 +712,7 @@ class CronJobStore:
                 repeat=new_repeat,
                 enabled=job.enabled if enabled is None else enabled,
                 next_run_at=next_run_at,
+                scheduler_host_clock=scheduler_host_clock,
             )
             result.append(updated)
         if updated is None:
@@ -527,6 +761,7 @@ class CronJobStore:
         current = _coerce_utc(now)
         jobs = self.list_jobs()
         claimed: CronJob | None = None
+        changed = False
         result: list[CronJob] = []
         for job in jobs:
             if job.id != job_id:
@@ -535,9 +770,12 @@ class CronJobStore:
             if not job.enabled or job.next_run_at is None or job.next_run_at > current:
                 result.append(job)
                 continue
-            claimed = _advance_claimed_job(job, current)
-            result.append(claimed)
-        if claimed is not None:
+            advanced, should_run = _advance_claimed_job(job, current)
+            changed = True
+            if should_run:
+                claimed = advanced
+            result.append(advanced)
+        if changed:
             self._write_jobs(result)
         return claimed
 
@@ -658,19 +896,42 @@ class CronJobStore:
             self.path.chmod(0o600)
 
 
-def _advance_claimed_job(job: CronJob, now: datetime) -> CronJob:
-    if job.schedule.kind == "one_shot":
-        return replace(job, enabled=False, next_run_at=None)
+def _advance_claimed_job(job: CronJob, now: datetime) -> tuple[CronJob, bool]:
+    if job.schedule.kind in {"one_shot", "wall_clock_once"}:
+        return replace(job, enabled=False, next_run_at=None), True
+
+    if _outside_active_window(job, now):
+        return _advance_skipped_job(job, now), False
 
     repeat = job.repeat.claim()
     if repeat.exhausted:
-        return replace(job, repeat=repeat, enabled=False, next_run_at=None)
+        return replace(job, repeat=repeat, enabled=False, next_run_at=None), True
 
-    next_run_at = cast("datetime", job.next_run_at)
-    interval = timedelta(minutes=job.schedule.minutes)
-    while next_run_at <= now:
-        next_run_at += interval
-    return replace(job, repeat=repeat, next_run_at=next_run_at)
+    return (
+        replace(
+            job,
+            repeat=repeat,
+            next_run_at=job.schedule.next_after(now, previous=job.next_run_at),
+            scheduler_host_clock=capture_scheduler_host_clock(now),
+        ),
+        True,
+    )
+
+
+def _advance_skipped_job(job: CronJob, now: datetime) -> CronJob:
+    return replace(
+        job,
+        next_run_at=job.schedule.next_after(now, previous=job.next_run_at),
+        scheduler_host_clock=capture_scheduler_host_clock(now),
+    )
+
+
+def _outside_active_window(job: CronJob, now: datetime) -> bool:
+    return (
+        job.schedule.kind in {"recurring", "wall_clock_daily"}
+        and job.schedule.active_window is not None
+        and not active_window_contains(now, job.schedule.active_window)
+    )
 
 
 def _parse_duration_minutes(value: str) -> int:
@@ -685,6 +946,33 @@ def _parse_duration_minutes(value: str) -> int:
         return _positive_int(text[:-1]) * 60
     msg = "schedule duration must use 'm' for minutes or 'h' for hours"
     raise CronJobError(msg)
+
+
+def _parse_wall_date(value: str | None) -> date | None:
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        msg = "wall-clock date must use YYYY-MM-DD"
+        raise CronJobError(msg) from exc
+
+
+def _parse_active_window_dict(value: ActiveWindowDict | None) -> ActiveWindow | None:
+    if value is None:
+        return None
+    try:
+        return ActiveWindow.from_dict(value)
+    except CronTimeError as exc:
+        raise CronJobError(str(exc)) from exc
+
+
+def _parse_scheduler_host_clock(
+    value: SchedulerHostClockDict | None,
+) -> SchedulerHostClock | None:
+    if value is None:
+        return None
+    return SchedulerHostClock.from_dict(value)
 
 
 def _positive_int(value: str) -> int:

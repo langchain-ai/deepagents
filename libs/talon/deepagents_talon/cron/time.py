@@ -517,6 +517,8 @@ def next_wall_clock_run(
     if date is None:
         now_local = now_utc.astimezone(zone)
         candidate_date = now_local.date()
+        if _local_time_of(now_local) >= time:
+            candidate_date += timedelta(days=1)
         candidate = _build_local(zone, candidate_date, time, fold=0)
         if candidate <= now_utc:
             candidate = _build_local(

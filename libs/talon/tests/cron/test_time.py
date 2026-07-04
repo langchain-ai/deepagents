@@ -234,6 +234,16 @@ def test_dst_spring_forward_nonexistent_raises() -> None:
         )
 
 
+def test_next_wall_clock_run_after_spring_forward_gap_rolls_to_tomorrow() -> None:
+    # At 03:30 local, today's nonexistent 02:30 has already passed.
+    result = next_wall_clock_run(
+        now=_utc(2026, 3, 8, 10, 30),
+        timezone=LA,
+        time=LocalTimeOfDay(2, 30),
+    )
+    assert result == _utc(2026, 3, 9, 9, 30)
+
+
 def test_skipped_local_date_raises() -> None:
     # Pacific/Apia skipped 2011-12-30 entirely when it moved west of the date line.
     with pytest.raises(CronTimeError, match="does not exist"):

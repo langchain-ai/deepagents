@@ -22,6 +22,34 @@ _SETUP_FILENAME = ".mcp.json.setup"
 _ZIP_FILE_TYPE_MASK = 0o170000
 _ZIP_SYMLINK_TYPE = 0o120000
 _SUBAGENT_FILE_PARTS = 3
+_SECRET_PATH_PATTERN = re.compile(
+    r"(?:"
+    r"bearer[-_a-z0-9]*|"
+    r"token[-_a-z0-9]*|"
+    r"key[-_a-z0-9]*|"
+    r"secret[-_a-z0-9]*|"
+    r"cookie[-_a-z0-9]*|"
+    r"oauth[-_a-z0-9]*|"
+    r"sk-[A-Za-z0-9]{20,}|"
+    r"gh[opu]_[A-Za-z0-9]{20,}|"
+    r"lsv2_pt_[A-Za-z0-9]+"
+    r")",
+    re.IGNORECASE,
+)
+_SECRET_PATH_MARKER_PATTERN = re.compile(
+    r"(?:"
+    r"bearer|"
+    r"token|"
+    r"access[-_]?token|"
+    r"refresh[-_]?token|"
+    r"api[-_]?key|"
+    r"key|"
+    r"secret|"
+    r"cookie|"
+    r"oauth"
+    r")",
+    re.IGNORECASE,
+)
 
 
 class FleetImportError(ValueError):
@@ -106,7 +134,7 @@ def import_fleet_zip(zip_path: Path, *, target_dir: Path) -> FleetImportResult:
             with tempfile.TemporaryDirectory(prefix="deepagents-talon-import-") as raw:
                 staging = Path(raw)
                 _materialize_staging(archive, entries, staging)
-                summaries = _mcp_summaries(staging)
+                summaries = _mcp_summaries(staging, source)
                 notes = _format_setup_notes(source.name, summaries)
                 config_ignored = (staging / "config.json").is_file()
                 _refresh_target(staging, target, notes)
@@ -247,10 +275,10 @@ def _is_subagent_tools_path(name: str) -> bool:
     )
 
 
-def _mcp_summaries(staging: Path) -> list[_ServerSummary]:
+def _mcp_summaries(staging: Path, source: Path) -> list[_ServerSummary]:
     grouped: dict[tuple[str, str], _ServerSummary] = {}
     for path, scope in _tools_json_paths(staging):
-        for tool in _load_tool_requests(path, scope):
+        for tool in _load_tool_requests(path, scope, source):
             key = (tool.server_url, tool.server_name)
             summary = grouped.get(key)
             if summary is None:
@@ -274,22 +302,22 @@ def _tools_json_paths(staging: Path) -> list[tuple[Path, str]]:
     return paths
 
 
-def _load_tool_requests(path: Path, scope: str) -> list[_ToolRequest]:
+def _load_tool_requests(path: Path, scope: str, source: Path) -> list[_ToolRequest]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        msg = f"{_display_path(path)}: malformed tools.json: {exc.msg}"
+        msg = f"{source}: {_display_path(path)}: malformed tools.json: {exc.msg}"
         raise FleetImportError(msg) from exc
     except OSError as exc:
-        msg = f"{_display_path(path)}: {exc}"
+        msg = f"{source}: {_display_path(path)}: {exc}"
         raise FleetImportError(msg) from exc
     if not isinstance(data, dict):
-        msg = f"{_display_path(path)}: malformed tools.json: expected object"
+        msg = f"{source}: {_display_path(path)}: malformed tools.json: expected object"
         raise FleetImportError(msg)
 
     raw_tools = data.get("tools")
     if not isinstance(raw_tools, list):
-        msg = f"{_display_path(path)}: malformed tools.json: expected tools list"
+        msg = f"{source}: {_display_path(path)}: malformed tools.json: expected tools list"
         raise FleetImportError(msg)
     interrupt_config = data.get("interrupt_config")
     interrupts = interrupt_config if isinstance(interrupt_config, dict) else {}
@@ -297,12 +325,14 @@ def _load_tool_requests(path: Path, scope: str) -> list[_ToolRequest]:
     requests: list[_ToolRequest] = []
     for index, item in enumerate(raw_tools):
         if not isinstance(item, dict):
-            msg = f"{_display_path(path)}: tools[{index}] must be an object"
+            msg = f"{source}: {_display_path(path)}: tools[{index}] must be an object"
             raise FleetImportError(msg)
         tool = cast("Mapping[str, object]", item)
-        name = _required_str(tool, "name", path, index)
-        server_url = _sanitize_server_url(_required_str(tool, "mcp_server_url", path, index))
-        server_name = _required_str(tool, "mcp_server_name", path, index)
+        name = _required_str(tool, "name", path, index, source)
+        server_url = _sanitize_server_url(
+            _required_str(tool, "mcp_server_url", path, index, source)
+        )
+        server_name = _required_str(tool, "mcp_server_name", path, index, source)
         requests.append(
             _ToolRequest(
                 name=name,
@@ -315,10 +345,16 @@ def _load_tool_requests(path: Path, scope: str) -> list[_ToolRequest]:
     return requests
 
 
-def _required_str(item: Mapping[str, object], key: str, path: Path, index: int) -> str:
+def _required_str(
+    item: Mapping[str, object],
+    key: str,
+    path: Path,
+    index: int,
+    source: Path,
+) -> str:
     value = item.get(key)
     if not isinstance(value, str) or not value:
-        msg = f"{_display_path(path)}: tools[{index}].{key} must be a non-empty string"
+        msg = f"{source}: {_display_path(path)}: tools[{index}].{key} must be a non-empty string"
         raise FleetImportError(msg)
     return value
 
@@ -347,7 +383,29 @@ def _unsanitized_url(item: Mapping[str, object]) -> str:
 
 def _sanitize_server_url(raw: str) -> str:
     parts = urlsplit(raw)
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+    hostname = parts.hostname or ""
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+    port = f":{parts.port}" if parts.port is not None else ""
+    path = _sanitize_url_path(parts.path)
+    return urlunsplit((parts.scheme, f"{hostname}{port}", path, "", ""))
+
+
+def _sanitize_url_path(path: str) -> str:
+    parts = [part for part in path.split("/") if part]
+    if not parts:
+        return ""
+    sanitized: list[str] = []
+    redact_next = False
+    for part in parts:
+        marker = _SECRET_PATH_MARKER_PATTERN.fullmatch(part) is not None
+        secret = _SECRET_PATH_PATTERN.search(part) is not None
+        if redact_next or marker or secret:
+            sanitized.append("<secret-redacted>")
+        else:
+            sanitized.append(part)
+        redact_next = marker
+    return "/" + "/".join(sanitized)
 
 
 def _format_setup_notes(source_name: str, summaries: Sequence[_ServerSummary]) -> str | None:
@@ -371,6 +429,7 @@ def _format_server_summary(summary: _ServerSummary) -> list[str]:
         "",
         f"Server: {summary.server_name}",
         f"URL: {summary.server_url}",
+        f"Tool count: {len(tools)}",
         f"Scopes: {', '.join(sorted(summary.scopes))}",
         "Requested tools:",
         *[f"- {tool}" for tool in tools],

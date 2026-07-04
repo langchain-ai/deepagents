@@ -595,8 +595,9 @@ def next_interval_run(
     step = timedelta(minutes=minutes)
     candidate = _as_utc(previous) + step
     now_utc = _as_utc(now)
-    while candidate <= now_utc:
-        candidate += step
+    if candidate <= now_utc:
+        missed = (now_utc - candidate) // step + 1
+        candidate += missed * step
 
     if active_window is None:
         return candidate

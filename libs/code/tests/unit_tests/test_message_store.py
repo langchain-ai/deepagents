@@ -216,6 +216,41 @@ class TestMessageData:
         assert data.is_streaming is False
         assert data.height_hint is None
 
+    def test_default_ids_use_full_uuid_hex(self):
+        """Auto-generated IDs use the full 128-bit hex, not a truncated prefix.
+
+        A wider ID keeps widget IDs unique across large histories and long
+        sessions; a collision raises `DuplicateIds` when the widget mounts.
+        """
+        ids = {
+            MessageData(type=MessageType.USER, content="test").id for _ in range(1000)
+        }
+        # 1000 distinct IDs, each a full uuid4 hex suffix.
+        assert len(ids) == 1000
+        for message_id in ids:
+            assert message_id.startswith("msg-")
+            suffix = message_id.removeprefix("msg-")
+            assert len(suffix) == 32
+            # A full uuid4 hex suffix is valid hexadecimal.
+            int(suffix, 16)
+
+    def test_from_widget_fallback_id_uses_full_uuid_hex(self):
+        """`from_widget` synthesizes a full-hex ID when the widget has none.
+
+        A widget mounted without an explicit ID must still get a collision-safe
+        128-bit identifier, matching the `MessageData` default.
+        """
+        # Constructed without an `id` kwarg, so `widget.id` is None and the
+        # fallback in `from_widget` must synthesize one.
+        widget = UserMessage("no id")
+
+        data = MessageData.from_widget(widget)
+
+        assert data.id.startswith("msg-")
+        suffix = data.id.removeprefix("msg-")
+        assert len(suffix) == 32
+        int(suffix, 16)
+
     def test_tool_message_requires_tool_name(self):
         """Test that TOOL messages must have a tool_name."""
         with pytest.raises(ValueError, match="TOOL messages must have a tool_name"):

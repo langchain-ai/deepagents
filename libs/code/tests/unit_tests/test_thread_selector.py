@@ -440,7 +440,7 @@ class TestThreadSelectorTabSort:
                 updated_cell = header.query_one(".thread-cell-updated_at", Static)
                 created_cell = header.query_one(".thread-cell-created_at", Static)
                 sort_select = screen.query_one("#thread-sort-select", Select)
-                assert str(updated_cell._Static__content) == "Updated"
+                assert str(updated_cell.content) == "Updated"
                 assert updated_cell.has_class("thread-cell-sorted")
                 assert not created_cell.has_class("thread-cell-sorted")
                 assert sort_select.value == "updated_at"
@@ -451,7 +451,7 @@ class TestThreadSelectorTabSort:
                 assert screen._columns == original_columns
                 created_cell = header.query_one(".thread-cell-created_at", Static)
                 updated_cell = header.query_one(".thread-cell-updated_at", Static)
-                assert str(created_cell._Static__content) == "Created"
+                assert str(created_cell.content) == "Created"
                 assert created_cell.has_class("thread-cell-sorted")
                 assert not updated_cell.has_class("thread-cell-sorted")
                 assert sort_select.value == "created_at"
@@ -1567,9 +1567,122 @@ class TestFetchThreadUrl:
                 screen = app.screen
                 assert isinstance(screen, ThreadSelectorScreen)
                 title_widget = screen.query_one("#thread-title", Static)
-                content = title_widget._Static__content
+                content = title_widget.content
                 assert isinstance(content, Content)
                 assert "abc12345" in content.plain
+
+    async def test_url_resolves_before_thread_load_completes(self) -> None:
+        """Header link should appear without waiting for the DB load to finish."""
+        from textual.content import Content
+        from textual.style import Style as TStyle
+
+        load_gate = asyncio.Event()
+
+        async def _blocking_list_threads(*_args: Any, **_kwargs: Any) -> list[Any]:
+            await load_gate.wait()
+            return list(MOCK_THREADS)
+
+        with (
+            patch(
+                "deepagents_code.sessions.list_threads",
+                new=_blocking_list_threads,
+            ),
+            patch(
+                "deepagents_code.widgets.thread_selector.build_langsmith_thread_url",
+                return_value="https://smith.langchain.com/p/t/abc12345",
+            ),
+        ):
+            app = ThreadSelectorTestApp(current_thread="abc12345")
+            async with app.run_test() as pilot:
+                app.show_selector()
+                # Pump a few cycles; the thread load is still blocked on the gate.
+                await pilot.pause()
+                await pilot.pause()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                assert not screen._disk_load_complete
+                title_widget = screen.query_one("#thread-title", Static)
+                content = title_widget.content
+                assert isinstance(content, Content)
+                assert "abc12345" in content.plain
+                # The thread id must be an actual hyperlink, not just present as
+                # text: assert a link-bearing span exists.
+                link_spans = [
+                    s
+                    for s in content._spans
+                    if isinstance(s.style, TStyle) and s.style.link
+                ]
+                assert len(link_spans) > 0
+
+                # Release the gated load and let the worker finish so it drains
+                # deterministically instead of racing test teardown.
+                load_gate.set()
+                await pilot.pause()
+
+    async def test_url_resolves_on_mount_with_cached_rows(self) -> None:
+        """Cached-rows path should also resolve the header link at mount time.
+
+        The fix unified both branches to resolve the URL on mount; this locks in
+        that the cached path (`_has_initial_threads` is `True`) keeps that
+        behavior alongside the no-cache path.
+        """
+        from textual.content import Content
+        from textual.style import Style as TStyle
+
+        with (
+            _patch_list_threads(),
+            patch(
+                "deepagents_code.widgets.thread_selector.build_langsmith_thread_url",
+                return_value="https://smith.langchain.com/p/t/abc12345",
+            ),
+        ):
+            app = ThreadSelectorTestApp(current_thread="abc12345")
+            async with app.run_test() as pilot:
+                screen = ThreadSelectorScreen(
+                    current_thread="abc12345",
+                    initial_threads=list(MOCK_THREADS),
+                    filter_cwd=None,
+                )
+                app.push_screen(screen)
+                await pilot.pause()
+                await pilot.pause()
+                await pilot.pause()
+
+                assert screen._has_initial_threads
+                title_widget = screen.query_one("#thread-title", Static)
+                content = title_widget.content
+                assert isinstance(content, Content)
+                link_spans = [
+                    s
+                    for s in content._spans
+                    if isinstance(s.style, TStyle) and s.style.link
+                ]
+                assert len(link_spans) > 0
+
+    async def test_no_url_worker_when_no_current_thread(self) -> None:
+        """With no current thread, the title stays plain and no URL is resolved."""
+        with (
+            _patch_list_threads(),
+            patch(
+                "deepagents_code.widgets.thread_selector.build_langsmith_thread_url",
+            ) as mock_build_url,
+        ):
+            app = ThreadSelectorTestApp(current_thread=None)
+            async with app.run_test() as pilot:
+                app.show_selector()
+                await pilot.pause()
+                await pilot.pause()
+                await pilot.pause()
+
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                title_widget = screen.query_one("#thread-title", Static)
+                # With no current thread the title stays a plain string (no
+                # hyperlink), and the URL builder is never invoked.
+                assert title_widget.content == "Select Thread"
+                mock_build_url.assert_not_called()
 
     async def test_timeout_leaves_title_unchanged(self) -> None:
         """Timeout during URL resolution should not crash or change the title."""
@@ -1600,7 +1713,7 @@ class TestFetchThreadUrl:
                 screen = app.screen
                 assert isinstance(screen, ThreadSelectorScreen)
                 title_widget = screen.query_one("#thread-title", Static)
-                assert isinstance(title_widget._Static__content, str)
+                assert isinstance(title_widget.content, str)
 
     async def test_oserror_leaves_title_unchanged(self) -> None:
         """OSError during URL resolution should not crash or change the title."""
@@ -1621,7 +1734,7 @@ class TestFetchThreadUrl:
                 screen = app.screen
                 assert isinstance(screen, ThreadSelectorScreen)
                 title_widget = screen.query_one("#thread-title", Static)
-                assert isinstance(title_widget._Static__content, str)
+                assert isinstance(title_widget.content, str)
 
     async def test_unexpected_exception_leaves_title_unchanged(self) -> None:
         """Unexpected exception should not crash the thread selector."""
@@ -1642,7 +1755,7 @@ class TestFetchThreadUrl:
                 screen = app.screen
                 assert isinstance(screen, ThreadSelectorScreen)
                 title_widget = screen.query_one("#thread-title", Static)
-                assert isinstance(title_widget._Static__content, str)
+                assert isinstance(title_widget.content, str)
 
     async def test_none_url_leaves_title_unchanged(self) -> None:
         """When build returns None the title should remain a plain string."""
@@ -1663,7 +1776,7 @@ class TestFetchThreadUrl:
                 screen = app.screen
                 assert isinstance(screen, ThreadSelectorScreen)
                 title_widget = screen.query_one("#thread-title", Static)
-                content = title_widget._Static__content
+                content = title_widget.content
                 assert isinstance(content, str)
                 assert "abc12345" in content
 
@@ -3099,9 +3212,17 @@ class TestResumeThread:
         _app_test_double(app)._load_thread_history = AsyncMock()
         _app_test_double(app)._mount_message = AsyncMock()
         _app_test_double(app).query_one = MagicMock(side_effect=_NoMatches())
+        offer_cwd_switch = AsyncMock(return_value="continue")
+        _app_test_double(app)._offer_thread_cwd_switch = offer_cwd_switch
 
         await app._resume_thread("new-thread")
 
+        # In-session switches never offer abort — that is launch-time only.
+        # Exact-args match fails if `allow_abort=True` ever leaks in here.
+        offer_cwd_switch.assert_awaited_once_with(
+            "new-thread",
+            restart_server=True,
+        )
         assert app._lc_thread_id == "new-thread"
         assert app._session_state.thread_id == "new-thread"
         app._pending_messages.clear.assert_called_once()

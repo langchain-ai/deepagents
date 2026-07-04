@@ -14,7 +14,10 @@ from textual.widgets import Markdown
 from deepagents_code import theme
 from deepagents_code.formatting import format_duration
 from deepagents_code.input import INPUT_HIGHLIGHT_PATTERN
-from deepagents_code.tool_display import JS_EVAL_HEADER_MAX_LENGTH
+from deepagents_code.tool_display import (
+    EXECUTE_HEADER_MAX_LENGTH,
+    JS_EVAL_HEADER_MAX_LENGTH,
+)
 from deepagents_code.widgets.messages import (
     AppMessage,
     AssistantMessage,
@@ -1912,6 +1915,215 @@ class TestToolCallMessageExpandableArgs:
             assert msg._args_expanded is False
 
 
+class TestToolCallMessageExecuteCommandExpand:
+    """Tests for the collapsible full-command block on `execute` tool calls."""
+
+    def test_long_command_is_expandable(self) -> None:
+        """A command too long for the header offers a collapsible block."""
+        long_cmd = "echo " + "x" * EXECUTE_HEADER_MAX_LENGTH
+        msg = ToolCallMessage("execute", {"command": long_cmd})
+        assert msg.has_expandable_args is True
+
+    def test_short_command_not_expandable(self) -> None:
+        """A command that fits in the header has nothing to expand."""
+        short_cmd = "x" * (EXECUTE_HEADER_MAX_LENGTH - 1)
+        msg = ToolCallMessage("execute", {"command": short_cmd})
+        assert msg.has_expandable_args is False
+
+    def test_missing_command_not_expandable(self) -> None:
+        """An execute call without a command string is not expandable."""
+        assert ToolCallMessage("execute", {}).has_expandable_args is False
+
+    def test_command_detail_is_plain_and_left_aligned(self) -> None:
+        """The command is plain `Content`, left-aligned, with blank padding."""
+        command = "cd /tmp && \\\n  make build\nmake test"
+        msg = ToolCallMessage("execute", {"command": command})
+        detail = msg._format_command_detail()
+
+        assert isinstance(detail, Content)
+        assert not detail.spans
+        assert detail.plain.split("\n") == [
+            "",
+            "cd /tmp && \\",
+            "  make build",
+            "make test",
+            "",
+        ]
+
+    def test_command_detail_marks_hidden_unicode(self) -> None:
+        """Hidden controls in the expanded command render as visible markers."""
+        msg = ToolCallMessage("execute", {"command": "echo safe\n#\u202e hidden"})
+        detail = msg._format_command_detail()
+
+        assert "\u202e" not in detail.plain
+        assert "<U+202E RIGHT-TO-LEFT OVERRIDE>" in detail.plain
+
+    async def test_click_on_header_toggles_command(self) -> None:
+        """Clicking the command header expands the collapsible command block."""
+        long_cmd = "echo " + "x" * EXECUTE_HEADER_MAX_LENGTH
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("execute", {"command": long_cmd})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            # Long stdout makes the output expandable too, so a generic click
+            # would prefer output; a header click must still reach the command.
+            msg.set_success("\n".join(str(i) for i in range(50)))
+            await pilot.pause()
+            assert msg.has_expandable_output is True
+
+            event = MagicMock()
+            event.widget = msg._header_widget
+            msg.on_click(event)
+            await pilot.pause()
+            event.stop.assert_called_once()
+            assert msg._args_expanded is True
+            assert msg._expanded is False
+
+    async def test_generic_click_still_prefers_output(self) -> None:
+        """A click outside the header region toggles output, not the command."""
+        long_cmd = "echo " + "x" * EXECUTE_HEADER_MAX_LENGTH
+
+        class _Harness(App[None]):
+            def __init__(self) -> None:
+                super().__init__()
+                self.msg = ToolCallMessage("execute", {"command": long_cmd})
+
+            def compose(self) -> ComposeResult:
+                yield self.msg
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg = app.msg
+            msg.set_success("\n".join(str(i) for i in range(50)))
+            await pilot.pause()
+            assert msg.has_expandable_output is True
+
+            event = MagicMock()  # mock widget is outside the args region
+            msg.on_click(event)
+            await pilot.pause()
+            assert msg._expanded is True
+            assert msg._args_expanded is False
+
+    @staticmethod
+    def _harness(msg: ToolCallMessage) -> App[None]:
+        """Build a minimal single-widget app hosting `msg`."""
+
+        class _Harness(App[None]):
+            def compose(self) -> ComposeResult:
+                yield msg
+
+        return _Harness()
+
+    async def test_click_targets_args_region_walks_parents(self) -> None:
+        """A click on a descendant of the header still routes to the command.
+
+        A real Textual click reports the rendered-text node *inside* the
+        `Static`, not the `Static` itself, so the region check must walk up the
+        `.parent` chain rather than compare identities directly.
+        """
+        msg = ToolCallMessage("execute", {"command": "echo hi"})
+        app = self._harness(msg)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Direct hit, one hop, and two hops all resolve to the header.
+            one_hop = SimpleNamespace(parent=msg._header_widget)
+            two_hops = SimpleNamespace(parent=one_hop)
+            assert msg._click_targets_args_region(msg._header_widget) is True
+            assert msg._click_targets_args_region(one_hop) is True
+            assert msg._click_targets_args_region(two_hops) is True
+            # A detached node and `self` never match.
+            assert msg._click_targets_args_region(SimpleNamespace(parent=None)) is False
+            assert msg._click_targets_args_region(msg) is False
+
+    async def test_click_on_args_hint_toggles_command(self) -> None:
+        """Clicking the args-hint line expands the command, not the output."""
+        long_cmd = "echo " + "x" * EXECUTE_HEADER_MAX_LENGTH
+        msg = ToolCallMessage("execute", {"command": long_cmd})
+        app = self._harness(msg)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg.set_success("\n".join(str(i) for i in range(50)))
+            await pilot.pause()
+            assert msg.has_expandable_output is True
+
+            event = MagicMock()
+            event.widget = msg._args_hint_widget
+            msg.on_click(event)
+            await pilot.pause()
+            assert msg._args_expanded is True
+            assert msg._expanded is False
+
+    async def test_click_on_expanded_command_collapses(self) -> None:
+        """Clicking the expanded command block collapses it again."""
+        long_cmd = "echo " + "x" * EXECUTE_HEADER_MAX_LENGTH
+        msg = ToolCallMessage("execute", {"command": long_cmd})
+        app = self._harness(msg)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg.toggle_args()
+            await pilot.pause()
+            assert msg._args_expanded is True
+
+            event = MagicMock()
+            event.widget = msg._args_widget
+            msg.on_click(event)
+            await pilot.pause()
+            assert msg._args_expanded is False
+
+    async def test_expanded_command_uses_command_noun_and_detail(self) -> None:
+        """Expanding wires the `command` noun and `_format_command_detail`."""
+        long_cmd = "echo " + "x" * EXECUTE_HEADER_MAX_LENGTH
+        msg = ToolCallMessage("execute", {"command": long_cmd})
+        app = self._harness(msg)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg.toggle_args()
+            await pilot.pause()
+
+            hint = msg._args_hint_widget._Static__content  # ty: ignore
+            body = msg._args_widget._Static__content  # ty: ignore
+            assert "hide command" in hint.plain
+            assert body.plain == msg._format_command_detail().plain
+
+    async def test_output_hint_omits_ctrl_o_when_command_expandable(self) -> None:
+        """With an expandable command, Ctrl+O owns it, so the output hint drops it."""
+        long_cmd = "echo " + "x" * EXECUTE_HEADER_MAX_LENGTH
+        msg = ToolCallMessage("execute", {"command": long_cmd})
+        app = self._harness(msg)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg.set_success("\n".join(str(i) for i in range(50)))
+            await pilot.pause()
+            assert msg.has_expandable_args is True
+
+            hint = msg._hint_widget._Static__content  # ty: ignore
+            assert "click to expand" in hint.plain
+            assert "Ctrl+O" not in hint.plain
+
+    async def test_output_hint_keeps_ctrl_o_without_expandable_command(self) -> None:
+        """A short command leaves Ctrl+O on the output, so the hint keeps it."""
+        msg = ToolCallMessage("execute", {"command": "echo hi"})
+        app = self._harness(msg)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg.set_success("\n".join(str(i) for i in range(50)))
+            await pilot.pause()
+            assert msg.has_expandable_args is False
+
+            hint = msg._hint_widget._Static__content  # ty: ignore
+            assert "Ctrl+O" in hint.plain
+
+
 class TestToolCallMessageShellCommand:
     """Test ToolCallMessage shows full shell command for errors.
 
@@ -3700,3 +3912,139 @@ class TestLiveToolGroupSummary:
             assert not pilot.app.query(ToolGroupSummary)
             assert t1.display is True
             assert t2.display is True
+
+
+class TestUserMessageTruncation:
+    """Test head+tail truncation of very long user messages at render time."""
+
+    def test_short_message_not_truncated(self) -> None:
+        """Messages under the threshold should render in full."""
+        from deepagents_code.widgets.messages import _truncate_for_display
+
+        text = "short message"
+        assert _truncate_for_display(text) == text
+
+    def test_long_message_truncated_with_elision(self) -> None:
+        """Messages over 10k chars should get head+tail+elision marker."""
+        from deepagents_code.widgets.messages import _truncate_for_display
+
+        text = "A" * 12_000
+        result = _truncate_for_display(text)
+        assert "… +" in result
+        assert " lines …" in result
+        # Head and tail are preserved
+        assert result.startswith("A" * 2500)
+        assert result.endswith("A" * 2500)
+
+    def test_truncation_counts_hidden_lines(self) -> None:
+        """The elision marker should report the correct hidden line count."""
+        from deepagents_code.widgets.messages import _truncate_for_display
+
+        lines = [f"line {i:04d} " + "x" * 20 for i in range(600)]
+        text = "\n".join(lines)
+        assert len(text) > 10_000
+        result = _truncate_for_display(text)
+        assert "… +" in result
+        assert " lines …" in result
+
+    def test_full_content_preserved_in_widget(self) -> None:
+        """The widget should store full content even when display is truncated."""
+        big = "B" * 12_000
+        msg = UserMessage(big)
+        assert msg._content == big
+        assert len(msg._content) == 12_000
+
+    def test_message_at_boundary_not_truncated(self) -> None:
+        """Messages exactly at the threshold should not be truncated."""
+        from deepagents_code.widgets.messages import _truncate_for_display
+
+        text = "C" * 10_000
+        assert _truncate_for_display(text) == text
+
+    async def test_selection_returns_full_content_not_truncated(self) -> None:
+        """Selecting a truncated message should return the full original text."""
+        from textual.geometry import Offset
+        from textual.selection import Selection
+
+        big = "X" * 12_000
+        msg = UserMessage(big)
+
+        class _TestApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield msg
+
+        app = _TestApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Select the entire message body (skip prefix glyph)
+            selection = Selection(Offset(2, 0), None)
+            result = msg.get_selection(selection)
+            assert result is not None
+            text, _ending = result
+            assert text == big
+            assert "…" not in text
+
+    def test_truncation_reports_exact_hidden_newline_count(self) -> None:
+        """The elision marker reports the exact number of hidden newlines."""
+        from deepagents_code.widgets.messages import _truncate_for_display
+
+        text = "H" * 6000 + "\n" * 50 + "T" * 6000
+        result = _truncate_for_display(text)
+        assert "… +50 lines …" in result
+
+    async def test_partial_selection_uses_visible_render(self) -> None:
+        """A partial selection defers to the on-screen (truncated) render.
+
+        Select-all extracts from the full content, but a partial selection must
+        stay aligned with what is visible, so it delegates to the base widget.
+        """
+        from textual.geometry import Offset
+        from textual.selection import Selection
+        from textual.widgets import Static
+
+        big = "X" * 12_000
+        msg = UserMessage(big)
+
+        class _TestApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield msg
+
+        app = _TestApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            partial = Selection(Offset(2, 0), Offset(6, 0))
+            expected = _strip_prompt_prefix(Static.get_selection(msg, partial), partial)
+            result = msg.get_selection(partial)
+            # Delegates to the base (truncated) extraction, so it must not
+            # return the full 12k body the way full-content extraction would.
+            assert result == expected
+            assert result is not None
+            assert result[0] != big
+
+    def test_queued_message_render_truncates(self) -> None:
+        """QueuedUserMessage render truncates long content with an elision marker."""
+        content = _render_content(QueuedUserMessage("Q" * 12_000))
+        assert content.plain.startswith("> ")
+        assert "… +" in content.plain
+        assert len(content.plain) < 12_000
+
+    async def test_queued_selection_returns_full_content(self) -> None:
+        """Select-all on a truncated QueuedUserMessage returns the full text."""
+        from textual.geometry import Offset
+        from textual.selection import Selection
+
+        big = "Y" * 12_000
+        msg = QueuedUserMessage(big)
+
+        class _TestApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield msg
+
+        app = _TestApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            result = msg.get_selection(Selection(Offset(2, 0), None))
+            assert result is not None
+            text, _ending = result
+            assert text == big
+            assert "…" not in text

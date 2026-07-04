@@ -32,6 +32,7 @@ from deepagents_code.config import (
 from deepagents_code.formatting import format_duration
 from deepagents_code.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
 from deepagents_code.tool_display import (
+    EXECUTE_HEADER_MAX_LENGTH,
     JS_EVAL_HEADER_MAX_LENGTH,
     format_tool_display,
 )
@@ -109,6 +110,13 @@ _MAX_TODO_CONTENT_LEN = 70
 _DEFAULT_TODO_WRAP_WIDTH = 80
 _TODO_WRAP_GUARD_COLUMNS = 4
 _MAX_WEB_CONTENT_LEN = 100
+
+# User message display truncation — when content exceeds this many characters,
+# only the head and tail are rendered with an elision marker in between.
+# This keeps very large pastes from flooding the conversation scrollback.
+_USER_MSG_MAX_DISPLAY_CHARS = 10_000
+_USER_MSG_TRUNCATE_HEAD_CHARS = 2_500
+_USER_MSG_TRUNCATE_TAIL_CHARS = 2_500
 
 # Tools that have their key info already in the header (no need for args line)
 _TOOLS_WITH_HEADER_INFO: set[str] = {
@@ -205,6 +213,30 @@ def _select_prompt_body(widget: Static) -> None:
     }
 
 
+def _truncate_for_display(text: str) -> str:
+    """Truncate very long user message text for display in the conversation.
+
+    Keeps the first and last portions and replaces the middle with an elision
+    marker showing the number of newlines in the hidden region.  This mirrors
+    Claude Code's `UserPromptMessage` head+tail truncation for rendering
+    performance.
+
+    Args:
+        text: Full message content.
+
+    Returns:
+        Truncated text with an elision marker, or the original text when
+        it does not exceed the display threshold.
+    """
+    if len(text) <= _USER_MSG_MAX_DISPLAY_CHARS:
+        return text
+    head = text[:_USER_MSG_TRUNCATE_HEAD_CHARS]
+    tail = text[-_USER_MSG_TRUNCATE_TAIL_CHARS:]
+    hidden_text = text[_USER_MSG_TRUNCATE_HEAD_CHARS:-_USER_MSG_TRUNCATE_TAIL_CHARS]
+    hidden_lines = hidden_text.count("\n")
+    return f"{head}\n… +{hidden_lines} lines …\n{tail}"
+
+
 class UserMessage(Static):
     """Widget displaying a user message."""
 
@@ -239,7 +271,13 @@ class UserMessage(Static):
         self.add_class("-cancelled")
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
-        """Exclude the prompt prefix glyph from copied text.
+        """Return selected text, preferring the full content over the render.
+
+        `render()` truncates long messages, so for a full-message selection
+        (select-all / select-to-end, where `selection.end` is `None`) the text
+        is extracted from the untruncated content so copy yields the complete
+        original.  A partial selection is extracted from the base (on-screen)
+        render so its offsets stay aligned with what the user highlighted.
 
         Args:
             selection: The active selection geometry.
@@ -247,7 +285,38 @@ class UserMessage(Static):
         Returns:
             The `(text, ending)` selection with the prefix removed, or `None`.
         """
-        return _strip_prompt_prefix(super().get_selection(selection), selection)
+        if selection.end is not None:
+            return _strip_prompt_prefix(super().get_selection(selection), selection)
+        text = str(self._build_full_render())
+        return _strip_prompt_prefix((selection.extract(text), "\n"), selection)
+
+    def _prefix_and_body(self) -> tuple[tuple[str, str], str]:
+        """Compute the styled mode prefix and the body with its trigger stripped.
+
+        Returns:
+            A `(prefix, body)` pair where `prefix` is a `(text, style)` tuple and
+            `body` is the content with any mode-trigger prefix removed.
+        """
+        colors = theme.get_theme_colors(self)
+        content = self._content
+        mode_match = detect_mode_prefix(content)
+        if mode_match:
+            prefix_text, mode = mode_match
+            glyph = MODE_DISPLAY_GLYPHS.get(mode, prefix_text[0])
+            return (
+                (f"{glyph} ", f"bold {_mode_color(mode, self)}"),
+                content[len(prefix_text) :],
+            )
+        return ("> ", f"bold {colors.primary}"), content
+
+    def _build_full_render(self) -> Content:
+        """Build a Content from the full content without display truncation.
+
+        Returns:
+            Content with the mode prefix glyph and the full message body.
+        """
+        prefix, body = self._prefix_and_body()
+        return Content.assemble(prefix, body)
 
     def text_select_all(self) -> None:
         """Select the message body without the prompt prefix glyph."""
@@ -269,20 +338,16 @@ class UserMessage(Static):
             Styled Content with mode prefix and highlighted mentions.
         """
         colors = theme.get_theme_colors(self)
-        parts: list[str | tuple[str, str]] = []
-        content = self._content
 
         # Use mode-specific prefix indicator when content starts with a
         # mode trigger character (e.g. "!" for shell, "/" for commands).
         # The display glyph may differ from the trigger (e.g. "$" for shell).
-        mode_match = detect_mode_prefix(content)
-        if mode_match:
-            prefix_text, mode = mode_match
-            glyph = MODE_DISPLAY_GLYPHS.get(mode, prefix_text[0])
-            parts.append((f"{glyph} ", f"bold {_mode_color(mode, self)}"))
-            content = content[len(prefix_text) :]
-        else:
-            parts.append(("> ", f"bold {colors.primary}"))
+        prefix, content = self._prefix_and_body()
+        parts: list[str | tuple[str, str]] = [prefix]
+
+        # Truncate very long content for display so large pastes don't flood
+        # the conversation.  The full text is still available for copy/select.
+        content = _truncate_for_display(content)
 
         # Highlight @mentions and /commands in the content
         last_end = 0
@@ -351,7 +416,11 @@ class QueuedUserMessage(Static):
             self.add_class("-ascii")
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
-        """Exclude the prompt prefix glyph from copied text.
+        """Return selected text, preferring the full content over the render.
+
+        See `UserMessage.get_selection`: full-message selections extract from
+        the untruncated content, partial selections defer to the on-screen
+        render so offsets stay aligned.
 
         Args:
             selection: The active selection geometry.
@@ -359,7 +428,34 @@ class QueuedUserMessage(Static):
         Returns:
             The `(text, ending)` selection with the prefix removed, or `None`.
         """
-        return _strip_prompt_prefix(super().get_selection(selection), selection)
+        if selection.end is not None:
+            return _strip_prompt_prefix(super().get_selection(selection), selection)
+        text = str(self._build_full_render())
+        return _strip_prompt_prefix((selection.extract(text), "\n"), selection)
+
+    def _prefix_and_body(self) -> tuple[tuple[str, str], str]:
+        """Compute the muted mode prefix and body with its trigger stripped.
+
+        Returns:
+            A `(prefix, body)` pair where `prefix` is a `(text, style)` tuple.
+        """
+        colors = theme.get_theme_colors(self)
+        content = self._content
+        mode_match = detect_mode_prefix(content)
+        if mode_match:
+            prefix_text, mode = mode_match
+            glyph = MODE_DISPLAY_GLYPHS.get(mode, prefix_text[0])
+            return (f"{glyph} ", f"bold {colors.muted}"), content[len(prefix_text) :]
+        return ("> ", f"bold {colors.muted}"), content
+
+    def _build_full_render(self) -> Content:
+        """Build a Content from the full content without display truncation.
+
+        Returns:
+            Content with the mode prefix glyph and the full message body.
+        """
+        prefix, body = self._prefix_and_body()
+        return Content.assemble(prefix, body)
 
     def text_select_all(self) -> None:
         """Select the message body without the prompt prefix glyph."""
@@ -372,15 +468,8 @@ class QueuedUserMessage(Static):
             Styled Content with dimmed prefix and body.
         """
         colors = theme.get_theme_colors(self)
-        content = self._content
-        mode_match = detect_mode_prefix(content)
-        if mode_match:
-            prefix_text, mode = mode_match
-            glyph = MODE_DISPLAY_GLYPHS.get(mode, prefix_text[0])
-            prefix = (f"{glyph} ", f"bold {colors.muted}")
-            content = content[len(prefix_text) :]
-        else:
-            prefix = ("> ", f"bold {colors.muted}")
+        prefix, content = self._prefix_and_body()
+        content = _truncate_for_display(content)
         return Content.assemble(prefix, (content, colors.muted))
 
 
@@ -1020,6 +1109,7 @@ class ToolCallMessage(Vertical):
         self._reject_reason: str | None = None
         # Widget references (set in on_mount)
         self._status_widget: Static | None = None
+        self._header_widget: Static | None = None
         self._args_widget: Static | None = None
         self._args_hint_widget: Static | None = None
         self._preview_widget: Static | None = None
@@ -1048,7 +1138,7 @@ class ToolCallMessage(Vertical):
             Widgets for header, arguments, status, and output display.
         """
         tool_label = format_tool_display(self._tool_name, self._args)
-        yield Static(tool_label, markup=False, classes="tool-header")
+        yield Static(tool_label, markup=False, classes="tool-header", id="tool-header")
         # Task: dedicated description line (dim, truncated)
         if self._tool_name == "task":
             desc = self._args.get("description", "")
@@ -1105,6 +1195,7 @@ class ToolCallMessage(Vertical):
             self.add_class("-ascii")
 
         self._status_widget = self.query_one("#status", Static)
+        self._header_widget = self.query_one("#tool-header", Static)
         self._args_widget = self.query_one("#args-full", Static)
         self._args_hint_widget = self.query_one("#args-hint", Static)
         self._preview_widget = self.query_one("#output-preview", Static)
@@ -1420,17 +1511,63 @@ class ToolCallMessage(Vertical):
     def on_click(self, event: Click) -> None:
         """Toggle output/argument expansion.
 
-        Prefer toggling output, but only when the output can actually
-        expand/collapse. Otherwise fall through to the collapsible args/code
-        block — `js_eval` commonly has a short, unexpandable result sitting
+        A click on the header/args region (the truncated command or code line
+        and its hint) toggles the collapsible args/code block directly, so an
+        `execute` command or `js_eval` program can be expanded even when the
+        output below it is *also* expandable. Otherwise prefer toggling output,
+        falling through to the args/code block only when the output can't
+        expand — `js_eval` commonly has a short, unexpandable result sitting
         below a multi-line, collapsible code block, and the old
         "output wins whenever it exists" rule left that code block stuck.
         """
         event.stop()  # Prevent click from bubbling up and scrolling
-        if self._output and self.has_expandable_output:
+        if self.has_expandable_args and self._click_targets_args_region(event.widget):
+            self.toggle_args()
+        elif self._output and self.has_expandable_output:
             self.toggle_output()
         elif self.has_expandable_args:
             self.toggle_args()
+
+    def _click_targets_args_region(self, widget: object) -> bool:
+        """Whether a click landed on the header/args block (not the output).
+
+        Walks up from the clicked widget to `self`, matching the cached
+        header, collapsed-args, and args-hint widgets. The walk is bounded so a
+        mock or detached node (which never reaches `self` via `.parent`) returns
+        `False` instead of looping, preserving the generic "prefer output"
+        routing for those cases.
+
+        Returns:
+            `True` if the click landed on the header/args region.
+        """
+        targets = tuple(
+            target
+            for target in (
+                self._header_widget,
+                self._args_widget,
+                self._args_hint_widget,
+            )
+            if target is not None
+        )
+        if not targets:
+            # A click can only arrive post-mount, where these refs are always
+            # cached, so an empty tuple means a regression nulled them out. Log
+            # it rather than silently routing every click to output (mirrors
+            # `_update_args_display`).
+            logger.debug("_click_targets_args_region: header/args refs not cached")
+            return False
+        # The header/args/hint widgets are direct children of `self` (a click on
+        # rendered text reports a descendant, so the real match depth is 0-1).
+        # 8 is generous headroom that also bounds the walk for a detached or mock
+        # node, whose `.parent` chain never reaches `self`.
+        node = widget
+        for _ in range(8):
+            if node is None or node is self:
+                return False
+            if any(node is target for target in targets):
+                return True
+            node = getattr(node, "parent", None)
+        return False
 
     def _format_output(
         self, output: str, *, is_preview: bool = False
@@ -2409,7 +2546,9 @@ class ToolCallMessage(Vertical):
             # "click to collapse" there is misleading.
             if self._has_expandable_output():
                 self._hint_widget.update(
-                    Content.styled("click or Ctrl+O to collapse", "dim italic")
+                    Content.styled(
+                        f"{self._output_hint_keys()} to collapse", "dim italic"
+                    )
                 )
                 self._hint_widget.display = True
             else:
@@ -2432,7 +2571,9 @@ class ToolCallMessage(Vertical):
                 self._preview_row.display = False
                 ellipsis = get_glyphs().ellipsis
                 self._hint_widget.update(
-                    Content.styled(f"{ellipsis} click or Ctrl+O to expand", "dim")
+                    Content.styled(
+                        f"{ellipsis} {self._output_hint_keys()} to expand", "dim"
+                    )
                 )
                 self._hint_widget.display = True
                 return
@@ -2456,13 +2597,29 @@ class ToolCallMessage(Vertical):
                 ellipsis = get_glyphs().ellipsis
                 self._hint_widget.update(
                     Content.styled(
-                        f"{ellipsis} {result.truncation} — click or Ctrl+O to expand",
+                        f"{ellipsis} {result.truncation} — "
+                        f"{self._output_hint_keys()} to expand",
                         "dim",
                     )
                 )
                 self._hint_widget.display = True
             else:
                 self._hint_widget.display = False
+
+    def _output_hint_keys(self) -> str:
+        """Affordances to advertise in the output expand/collapse hint.
+
+        Ctrl+O routes to the collapsible command/code block whenever this row
+        has one (see `action_toggle_tool_output`), so the output hint only
+        advertises Ctrl+O when Ctrl+O would actually toggle the *output*. When a
+        command/code block is present the output is reachable by clicking its
+        own region instead.
+
+        Returns:
+            `"click"` when an expandable command/code block owns Ctrl+O,
+                otherwise `"click or Ctrl+O"`.
+        """
+        return "click" if self.has_expandable_args else "click or Ctrl+O"
 
     @property
     def has_output(self) -> bool:
@@ -2508,6 +2665,10 @@ class ToolCallMessage(Vertical):
             `JS_EVAL_HEADER_MAX_LENGTH`), so the full program is offered as a
             collapsible block whenever it spans more than one non-blank line *or*
             a single line is long enough to be truncated in the header.
+        - `execute`: the header truncates the shell command at
+            `EXECUTE_HEADER_MAX_LENGTH`, so the full command is offered as a
+            collapsible block when the command, after stripping surrounding
+            whitespace, is longer than `EXECUTE_HEADER_MAX_LENGTH`.
         """
         if self._tool_name == "ask_user":
             return bool(self._args)
@@ -2516,6 +2677,10 @@ class ToolCallMessage(Vertical):
             if isinstance(code, str) and code.strip():
                 non_blank = sum(1 for line in code.splitlines() if line.strip())
                 return non_blank > 1 or len(code.strip()) > JS_EVAL_HEADER_MAX_LENGTH
+        if self._tool_name == "execute":
+            command = self._args.get("command")
+            if isinstance(command, str) and command.strip():
+                return len(command.strip()) > EXECUTE_HEADER_MAX_LENGTH
         return False
 
     def _format_code_detail(self) -> Content:
@@ -2537,6 +2702,22 @@ class ToolCallMessage(Vertical):
         # Blank lines of top/bottom padding separate the block from the header
         # line above and the "show/hide code" hint below.
         return Content("\n").join((Content(""), Content(code_str), Content("")))
+
+    def _format_command_detail(self) -> Content:
+        """Render the full `execute` command for the collapsible block.
+
+        The command is shown verbatim and left-aligned, as plain uncolored
+        `Content`, mirroring `_format_code_detail`. Hidden/deceptive Unicode is
+        rendered as visible markers so a truncated header can't conceal it.
+
+        Returns:
+            A plain `Content` renderable with a blank line of padding on
+                top and bottom.
+        """
+        command = self._args.get("command")
+        command_str = command.strip("\n") if isinstance(command, str) else str(command)
+        command_str = render_with_unicode_markers(command_str)
+        return Content("\n").join((Content(""), Content(command_str), Content("")))
 
     def _format_args_detail(self) -> Content:
         """Render tool arguments as an indented `Content` block.
@@ -2574,13 +2755,14 @@ class ToolCallMessage(Vertical):
             self._args_hint_widget.display = False
             return
 
-        is_code = self._tool_name == "js_eval"
-        noun = "code" if is_code else "arguments"
+        if self._tool_name == "js_eval":
+            noun, detail_fn = "code", self._format_code_detail
+        elif self._tool_name == "execute":
+            noun, detail_fn = "command", self._format_command_detail
+        else:
+            noun, detail_fn = "arguments", self._format_args_detail
         if self._args_expanded:
-            detail = (
-                self._format_code_detail() if is_code else self._format_args_detail()
-            )
-            self._args_widget.update(detail)
+            self._args_widget.update(detail_fn())
             self._args_widget.display = True
             self._args_hint_widget.update(
                 Content.styled(f"click or Ctrl+O to hide {noun}", "dim italic")

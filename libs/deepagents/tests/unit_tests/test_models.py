@@ -1386,6 +1386,27 @@ class TestNemotronUltraProfile:
         graded = mod._NemotronRubricMiddleware._parse_verdict(AIMessage("sorry, I got confused"))
         assert graded.result == "satisfied"
 
+    def test_grader_parse_verdict_from_agent_result(self) -> None:
+        """Parses the VERDICT from a create_agent result dict (last message with a verdict)."""
+        from langchain_core.messages import AIMessage, HumanMessage  # noqa: PLC0415
+
+        from deepagents.profiles.harness import _nvidia_nemotron_3_ultra as mod  # noqa: PLC0415
+
+        result = {"messages": [HumanMessage("grade this"), AIMessage("let me check..."),
+                               AIMessage("VERDICT: needs_revision\nFEEDBACK: output was reformatted.")]}
+        graded = mod._NemotronRubricMiddleware._parse_verdict(result)
+        assert graded.result == "needs_revision"
+        assert "reformatted" in graded.explanation
+
+    def test_grader_shell_tool_runs_and_bounds_output(self) -> None:
+        """The grader's shell tool executes and truncates large output."""
+        from deepagents.profiles.harness import _nvidia_nemotron_3_ultra as mod  # noqa: PLC0415
+
+        assert "hello" in mod.shell.invoke({"command": "echo hello"})
+        big = mod.shell.invoke({"command": "printf 'x%.0s' $(seq 1 9000)"})
+        assert "truncated" in big
+        assert len(big) < 6200
+
     def test_plan_first_injects_once_at_start(self) -> None:
         """Injects the plan-first reminder on turn 1, then no-ops once the flag is set."""
         from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (  # noqa: PLC0415

@@ -55,6 +55,7 @@ def discover_mcp_config_paths(config: TalonConfig) -> list[Path]:
     paths = [
         Path.home() / ".deepagents" / ".mcp.json",
         config.manifest_dir / "tools.json",
+        config.home / ".mcp.json",
     ]
     return [path for path in paths if _is_file(path)]
 
@@ -93,6 +94,7 @@ def print_mcp_config_paths(config: TalonConfig) -> None:
     rows = [
         ("~/.deepagents/.mcp.json", Path.home() / ".deepagents" / ".mcp.json"),
         ("<assistant-home>/agent/tools.json", config.manifest_dir / "tools.json"),
+        ("<assistant-home>/.mcp.json", config.home / ".mcp.json"),
     ]
     width = max(len(label) for label, _ in rows)
     print("MCP config discovery paths (lowest to highest precedence):")  # noqa: T201
@@ -103,7 +105,7 @@ def print_mcp_config_paths(config: TalonConfig) -> None:
         "Override with DEEPAGENTS_TALON_MCP_CONFIG or MCP_CONFIG as a config file path.",
     )
     print("The highest-precedence existing path is loaded; configs are not merged.")  # noqa: T201
-    print("Edit <assistant-home>/agent/tools.json directly to add Talon MCP servers.")  # noqa: T201
+    print("Edit <assistant-home>/.mcp.json directly to add Talon MCP servers.")  # noqa: T201
 
 
 def _select_mcp_config_path(config: TalonConfig) -> Path | None:

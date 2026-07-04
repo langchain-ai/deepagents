@@ -58,9 +58,8 @@ def test_manifest_serializes_empty_tool_requirements(tmp_path: Path) -> None:
     assert loaded.selected_channel == ChannelSelection(provider="telegram", source="cli")
     assert loaded.model_source == "fleet"
     assert loaded.model == "openai:gpt-5-mini"
-    assert loaded.local_mcp_config_path == str(tmp_path / "assistant" / "agent" / "tools.json")
+    assert loaded.local_mcp_config_path == str(tmp_path / "assistant" / ".mcp.json")
     assert loaded.tool_requirements == ()
-    assert loaded.setup_tasks == ()
 
 
 def test_manifest_refresh_records_root_and_subagent_tool_requirements(tmp_path: Path) -> None:
@@ -137,26 +136,20 @@ def test_manifest_refresh_records_root_and_subagent_tool_requirements(tmp_path: 
     requirements = {requirement.tool_name: requirement for requirement in second.tool_requirements}
     assert set(requirements) == {"calendar", "missing", "search"}
     assert requirements["search"].scope == "root"
-    assert requirements["search"].mcp_server_url == "https://builtin.example/mcp"
-    assert requirements["search"].auth_path == "builtin"
     assert requirements["search"].loaded is True
-    assert requirements["missing"].mcp_server_url == "https://missing.example/mcp"
+    assert requirements["missing"].scope == "root"
     assert requirements["missing"].loaded is False
     assert requirements["calendar"].scope == "subagent:researcher"
-    assert requirements["calendar"].mcp_server_url == "https://calendar.example/mcp"
     assert requirements["calendar"].loaded is True
+    assert first.tool_requirements == second.tool_requirements
+    assert second.local_mcp_config_path == str(tmp_path / "assistant" / ".mcp.json")
 
-    first_ids = [requirement.id for requirement in first.tool_requirements]
-    second_ids = [requirement.id for requirement in second.tool_requirements]
-    assert second_ids == first_ids
-    assert {task.target_path for task in second.setup_tasks} == {
-        str(tmp_path / "assistant" / "agent" / "tools.json")
-    }
-    assert {task.tool_requirement_ids[0] for task in second.setup_tasks} == {
-        requirements["calendar"].id,
-        requirements["missing"].id,
-    }
-    assert "secret" not in manifest_path(config.home).read_text(encoding="utf-8")
+    payload = json.loads(manifest_path(config.home).read_text(encoding="utf-8"))
+    assert "setup_tasks" not in payload
+    assert "secret" not in json.dumps(payload)
+    assert "example" not in json.dumps(payload)
+    for requirement in payload["tool_requirements"]:
+        assert set(requirement) == {"loaded", "scope", "tool_name"}
 
 
 def test_manifest_load_rejects_invalid_schema(tmp_path: Path) -> None:

@@ -74,6 +74,32 @@ async def test_load_mcp_tools_reads_manifest_config(
     assert seen == [tools_path]
 
 
+async def test_load_mcp_tools_prefers_assistant_home_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[Path] = []
+
+    async def fake_loader(path: str) -> FakeCodeLoaderResult:
+        seen.append(Path(path))
+        return _fake_code_loader(path)
+
+    monkeypatch.setattr("deepagents_talon.mcp.get_mcp_tools", fake_loader)
+    config = TalonConfig.from_env({"AGENT_ASSISTANT_ID": "test"}, base_home=tmp_path)
+    config.ensure_home()
+    (config.manifest_dir / "tools.json").write_text(
+        json.dumps({"mcpServers": {"manifest": {"type": "stdio", "command": "server"}}}),
+    )
+    assistant_path = config.home / ".mcp.json"
+    assistant_path.write_text(
+        json.dumps({"mcpServers": {"assistant": {"type": "stdio", "command": "server"}}}),
+    )
+
+    await load_mcp_tools(config)
+
+    assert seen == [assistant_path]
+
+
 async def test_load_mcp_tools_prefers_env_config_path(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

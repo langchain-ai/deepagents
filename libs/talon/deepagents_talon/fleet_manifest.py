@@ -5,7 +5,6 @@ Talon is an experimental runtime and is subject to change or removal at any time
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from collections.abc import Mapping, Sequence
@@ -14,7 +13,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import TYPE_CHECKING, Literal, cast
-from urllib.parse import urlsplit, urlunsplit
 
 if TYPE_CHECKING:
     from deepagents_talon.config import TalonConfig
@@ -52,38 +50,15 @@ class FleetToolRequirement:
     """MCP tool requirement declared by a Fleet export.
 
     Args:
-        id: Stable requirement id derived from the requirement content.
         scope: Fleet scope declaring the requirement, such as `root` or
             `subagent:<name>`.
         tool_name: Requested MCP tool name.
-        mcp_server_url: MCP server URL with query string and fragment removed.
-        auth_path: Fleet authentication path for the server.
         loaded: Whether the loaded Fleet components currently expose this tool.
     """
 
-    id: str
     scope: str
     tool_name: str
-    mcp_server_url: str
-    auth_path: str
     loaded: bool
-
-
-@dataclass(frozen=True, slots=True)
-class SetupTask:
-    """Follow-up local setup task for a Fleet MCP tool requirement.
-
-    Args:
-        id: Stable task id derived from the requirement id and target path.
-        kind: Setup task kind.
-        target_path: Assistant-local config file follow-up agents should edit.
-        tool_requirement_ids: Fleet tool requirements covered by this task.
-    """
-
-    id: str
-    kind: str
-    target_path: str
-    tool_requirement_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,9 +73,8 @@ class FleetRunManifest:
         model_source: Whether the runtime model came from Fleet or the environment.
         model: Resolved model id used by the runtime.
         created_at: Creation time in UTC ISO 8601 form.
-        local_mcp_config_path: Assistant-local MCP config target for setup tasks.
+        local_mcp_config_path: Assistant-local MCP config target for follow-up setup.
         tool_requirements: Fleet MCP tool requirements.
-        setup_tasks: Follow-up setup tasks.
     """
 
     schema_version: int
@@ -112,7 +86,6 @@ class FleetRunManifest:
     created_at: str
     local_mcp_config_path: str
     tool_requirements: tuple[FleetToolRequirement, ...]
-    setup_tasks: tuple[SetupTask, ...]
 
 
 def manifest_path(assistant_home: Path) -> Path:
@@ -152,12 +125,8 @@ def build_fleet_run_manifest(
         msg = "Fleet run manifests require a configured Fleet directory"
         raise ValueError(msg)
 
-    target_path = str(config.manifest_dir / "tools.json")
-    tool_requirements = _fleet_tool_requirements(
-        config.fleet_dir,
-        components,
-        env=config.env,
-    )
+    target_path = str(config.home / ".mcp.json")
+    tool_requirements = _fleet_tool_requirements(config.fleet_dir, components)
     return FleetRunManifest(
         schema_version=MANIFEST_SCHEMA_VERSION,
         assistant_id=config.assistant_id,
@@ -168,7 +137,6 @@ def build_fleet_run_manifest(
         created_at=_created_at(created_at),
         local_mcp_config_path=target_path,
         tool_requirements=tuple(tool_requirements),
-        setup_tasks=tuple(_setup_tasks(tool_requirements, target_path=target_path)),
     )
 
 
@@ -262,58 +230,34 @@ def load_fleet_run_manifest(path: Path) -> FleetRunManifest:
 def _fleet_tool_requirements(
     fleet_dir: Path,
     components: FleetAgentComponents,
-    *,
-    env: Mapping[str, str],
 ) -> list[FleetToolRequirement]:
     loaded_tool_names = _component_tool_names(components)
     requirements: list[FleetToolRequirement] = []
-    seen: set[str] = set()
-    for entry in _fleet_tool_entries(fleet_dir, env=env):
-        requirement_id = _stable_id("tool", entry.scope, entry.tool_name, entry.mcp_server_url)
-        if requirement_id in seen:
+    seen: set[tuple[str, str]] = set()
+    for entry in _fleet_tool_entries(fleet_dir):
+        key = (entry.scope, entry.tool_name)
+        if key in seen:
             continue
-        seen.add(requirement_id)
+        seen.add(key)
         requirements.append(
             FleetToolRequirement(
-                id=requirement_id,
                 scope=entry.scope,
                 tool_name=entry.tool_name,
-                mcp_server_url=entry.mcp_server_url,
-                auth_path=entry.auth_path,
                 loaded=entry.tool_name in loaded_tool_names,
             )
         )
-    return sorted(requirements, key=lambda requirement: requirement.id)
-
-
-def _setup_tasks(
-    tool_requirements: Sequence[FleetToolRequirement],
-    *,
-    target_path: str,
-) -> list[SetupTask]:
-    return [
-        SetupTask(
-            id=_stable_id("setup", requirement.id, target_path),
-            kind="local_mcp_config",
-            target_path=target_path,
-            tool_requirement_ids=(requirement.id,),
-        )
-        for requirement in tool_requirements
-        if requirement.auth_path != "builtin"
-    ]
+    return sorted(requirements, key=lambda requirement: (requirement.scope, requirement.tool_name))
 
 
 @dataclass(frozen=True, slots=True)
 class _ToolEntry:
     scope: str
     tool_name: str
-    mcp_server_url: str
-    auth_path: str
 
 
-def _fleet_tool_entries(fleet_dir: Path, *, env: Mapping[str, str]) -> list[_ToolEntry]:
+def _fleet_tool_entries(fleet_dir: Path) -> list[_ToolEntry]:
     entries: list[_ToolEntry] = []
-    _extend_tool_entries(entries, fleet_dir / "tools.json", scope="root", env=env)
+    _extend_tool_entries(entries, fleet_dir / "tools.json", scope="root")
 
     subagents_dir = fleet_dir / "subagents"
     try:
@@ -326,7 +270,6 @@ def _fleet_tool_entries(fleet_dir: Path, *, env: Mapping[str, str]) -> list[_Too
             entries,
             subagent_dir / "tools.json",
             scope=f"subagent:{subagent_dir.name}",
-            env=env,
         )
     return entries
 
@@ -336,7 +279,6 @@ def _extend_tool_entries(
     path: Path,
     *,
     scope: str,
-    env: Mapping[str, str],
 ) -> None:
     if not path.is_file():
         return
@@ -362,64 +304,7 @@ def _extend_tool_entries(
             continue
         if not isinstance(server_url, str) or not server_url:
             continue
-        auth_path = _fleet_auth_path(tool, server_url, env=env)
-        entries.append(
-            _ToolEntry(
-                scope=scope,
-                tool_name=name,
-                mcp_server_url=_sanitized_server_url(server_url, auth_path=auth_path, env=env),
-                auth_path=auth_path,
-            )
-        )
-
-
-def _fleet_auth_path(
-    tool: Mapping[str, object],
-    server_url: str,
-    *,
-    env: Mapping[str, str],
-) -> str:
-    raw_auth = tool.get("auth_type") or tool.get("auth")
-    if isinstance(raw_auth, str) and raw_auth in {"builtin", "headers", "oauth"}:
-        return raw_auth
-    if _is_builtin_fleet_server(server_url, env=env):
-        return "builtin"
-    if "headers" in tool:
-        return "headers"
-    return "unknown"
-
-
-def _sanitized_server_url(
-    server_url: str,
-    *,
-    auth_path: str,
-    env: Mapping[str, str],
-) -> str:
-    if auth_path == "builtin":
-        server_url = env.get("BUILTIN_MCP_URL") or server_url
-    return _strip_url_query_and_fragment(server_url)
-
-
-def _is_builtin_fleet_server(server_url: str, *, env: Mapping[str, str]) -> bool:
-    builtin = env.get("BUILTIN_MCP_URL")
-    if not builtin:
-        return False
-    return _url_host(server_url) == _url_host(builtin)
-
-
-def _url_host(value: str) -> str | None:
-    try:
-        return urlsplit(value).hostname
-    except ValueError:
-        return None
-
-
-def _strip_url_query_and_fragment(value: str) -> str:
-    try:
-        parts = urlsplit(value)
-    except ValueError:
-        return value.split("?", maxsplit=1)[0].split("#", maxsplit=1)[0]
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+        entries.append(_ToolEntry(scope=scope, tool_name=name))
 
 
 def _component_tool_names(components: FleetAgentComponents) -> set[str]:
@@ -451,17 +336,6 @@ def _tool_names(tools: Sequence[object]) -> set[str]:
     return names
 
 
-def _stable_id(*parts: str) -> str:
-    raw = "::".join(parts)
-    digest = hashlib.sha256(raw.encode()).hexdigest()[:12]
-    slug = "-".join(_slug(part) for part in parts if part)
-    return f"{slug[:120]}-{digest}"
-
-
-def _slug(value: str) -> str:
-    return "-".join("".join(char.lower() if char.isalnum() else "-" for char in value).split("-"))
-
-
 def _created_at(value: datetime | str | None) -> str:
     if isinstance(value, str):
         return value
@@ -481,7 +355,6 @@ def _manifest_to_dict(manifest: FleetRunManifest) -> dict[str, object]:
         "model_source": manifest.model_source,
         "schema_version": manifest.schema_version,
         "selected_channel": _channel_to_dict(manifest.selected_channel),
-        "setup_tasks": [_setup_task_to_dict(task) for task in manifest.setup_tasks],
         "tool_requirements": [
             _tool_requirement_to_dict(requirement) for requirement in manifest.tool_requirements
         ],
@@ -500,21 +373,9 @@ def _channel_to_dict(channel: ChannelSelection | None) -> dict[str, object] | No
 
 def _tool_requirement_to_dict(requirement: FleetToolRequirement) -> dict[str, object]:
     return {
-        "auth_path": requirement.auth_path,
-        "id": requirement.id,
         "loaded": requirement.loaded,
-        "mcp_server_url": requirement.mcp_server_url,
         "scope": requirement.scope,
         "tool_name": requirement.tool_name,
-    }
-
-
-def _setup_task_to_dict(task: SetupTask) -> dict[str, object]:
-    return {
-        "id": task.id,
-        "kind": task.kind,
-        "target_path": task.target_path,
-        "tool_requirement_ids": list(task.tool_requirement_ids),
     }
 
 
@@ -542,10 +403,6 @@ def _manifest_from_dict(data: Mapping[str, object], *, path: Path) -> FleetRunMa
             _tool_requirement_from_dict(item, path=path)
             for item in _required_list(data, "tool_requirements", path=path)
         ),
-        setup_tasks=tuple(
-            _setup_task_from_dict(item, path=path)
-            for item in _required_list(data, "setup_tasks", path=path)
-        ),
     )
 
 
@@ -567,25 +424,9 @@ def _optional_channel(value: object, *, path: Path) -> ChannelSelection | None:
 def _tool_requirement_from_dict(value: object, *, path: Path) -> FleetToolRequirement:
     data = _require_mapping(value, "tool_requirements[]", path=path)
     return FleetToolRequirement(
-        id=_required_str(data, "id", path=path),
         scope=_required_str(data, "scope", path=path),
         tool_name=_required_str(data, "tool_name", path=path),
-        mcp_server_url=_required_str(data, "mcp_server_url", path=path),
-        auth_path=_required_str(data, "auth_path", path=path),
         loaded=_required_bool(data, "loaded", path=path),
-    )
-
-
-def _setup_task_from_dict(value: object, *, path: Path) -> SetupTask:
-    data = _require_mapping(value, "setup_tasks[]", path=path)
-    return SetupTask(
-        id=_required_str(data, "id", path=path),
-        kind=_required_str(data, "kind", path=path),
-        target_path=_required_str(data, "target_path", path=path),
-        tool_requirement_ids=tuple(
-            _string_value(item, path=path)
-            for item in _required_list(data, "tool_requirement_ids", path=path)
-        ),
     )
 
 

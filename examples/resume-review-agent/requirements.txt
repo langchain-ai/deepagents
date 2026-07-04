@@ -1,0 +1,5 @@
+deepagents
+langchain-google-genai
+langchain_community
+ddgs
+pypdf

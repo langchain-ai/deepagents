@@ -157,10 +157,10 @@ directory. Fleet `config.json` is ignored. Talon does not support the old Fleet
 direct-run startup path or its environment variables; import the zip first, then
 run Talon against the materialized local assistant.
 
-When Fleet MCP tools are present, the importer writes `.mcp.json.setup`. This is
-a human-readable setup handoff for the operator, not a runtime config file. Use
-the suggested fragments and your own credentials to create or edit `.mcp.json`,
-which remains the runtime MCP config loaded by Talon:
+When Fleet MCP tools are present, the importer writes `.mcp.json` in the target
+agent directory. This is the runtime MCP config loaded by Talon and contains the
+sanitized OAuth server entries from the Fleet export. The importer also writes
+`.mcp.json.setup` as a human-readable setup handoff for the operator:
 
 ```json
 {
@@ -175,8 +175,8 @@ which remains the runtime MCP config loaded by Talon:
 }
 ```
 
-For non-OAuth servers, keep credentials in environment variables or another
-local secret source rather than in committed files:
+For non-OAuth servers or local edits, keep credentials in environment variables
+or another local secret source rather than in committed files:
 
 ```json
 {

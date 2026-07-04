@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
 _AGENT_ID_PATTERN = re.compile(r"[A-Za-z0-9_.-]{1,128}")
+_MCP_CONFIG_FILENAME = ".mcp.json"
 _SETUP_FILENAME = ".mcp.json.setup"
 _ZIP_FILE_TYPE_MASK = 0o170000
 _ZIP_SYMLINK_TYPE = 0o120000
@@ -117,7 +118,7 @@ def import_fleet_zip(zip_path: Path, *, target_dir: Path) -> FleetImportResult:
         target_dir: Talon assistant directory to refresh with materialized files.
 
     Returns:
-        Summary of the materialized files and generated MCP setup notes.
+        Summary of the materialized files and generated MCP configuration.
 
     Raises:
         FleetImportError: If the zip is structurally unsafe, missing required
@@ -136,8 +137,9 @@ def import_fleet_zip(zip_path: Path, *, target_dir: Path) -> FleetImportResult:
                 _materialize_staging(archive, entries, staging)
                 summaries = _mcp_summaries(staging, source)
                 notes = _format_setup_notes(source.name, summaries)
+                mcp_config = _format_mcp_config(summaries)
                 config_ignored = (staging / "config.json").is_file()
-                _refresh_target(staging, target, notes)
+                _refresh_target(staging, target, notes, mcp_config)
     except zipfile.BadZipFile as exc:
         msg = f"{source}: invalid zip file"
         raise FleetImportError(msg) from exc
@@ -414,7 +416,7 @@ def _format_setup_notes(source_name: str, summaries: Sequence[_ServerSummary]) -
     lines = [
         f"Fleet MCP setup notes for {source_name}",
         "",
-        "Create or edit .mcp.json after configuring credentials.",
+        "Generated .mcp.json contains the suggested server configuration.",
     ]
     for summary in summaries:
         lines.extend(_format_server_summary(summary))
@@ -440,16 +442,37 @@ def _format_server_summary(summary: _ServerSummary) -> list[str]:
     ]
 
 
+def _format_mcp_config(summaries: Sequence[_ServerSummary]) -> str | None:
+    if not summaries:
+        return None
+    servers: dict[str, dict[str, Any]] = {}
+    for summary in summaries:
+        server_id = _unique_server_id(_server_id(summary), servers)
+        servers[server_id] = _server_config(summary, sorted(summary.tools))
+    return json.dumps({"mcpServers": servers}, indent=2, sort_keys=True) + "\n"
+
+
 def _suggested_config_fragment(summary: _ServerSummary, tools: Sequence[str]) -> dict[str, Any]:
     server_id = _server_id(summary)
+    return {server_id: _server_config(summary, tools)}
+
+
+def _server_config(summary: _ServerSummary, tools: Sequence[str]) -> dict[str, Any]:
     return {
-        server_id: {
-            "type": "http",
-            "url": summary.server_url,
-            "auth": "oauth",
-            "allowedTools": list(tools),
-        }
+        "type": "http",
+        "url": summary.server_url,
+        "auth": "oauth",
+        "allowedTools": list(tools),
     }
+
+
+def _unique_server_id(server_id: str, servers: Mapping[str, object]) -> str:
+    if server_id not in servers:
+        return server_id
+    suffix = 2
+    while f"{server_id}-{suffix}" in servers:
+        suffix += 1
+    return f"{server_id}-{suffix}"
 
 
 def _server_id(summary: _ServerSummary) -> str:
@@ -458,7 +481,12 @@ def _server_id(summary: _ServerSummary) -> str:
     return normalized or "server"
 
 
-def _refresh_target(staging: Path, target: Path, notes: str | None) -> None:
+def _refresh_target(
+    staging: Path,
+    target: Path,
+    notes: str | None,
+    mcp_config: str | None,
+) -> None:
     target.mkdir(mode=0o700, parents=True, exist_ok=True)
     target.chmod(0o700)
     _replace_file(staging / "AGENTS.md", target / "AGENTS.md")
@@ -473,6 +501,14 @@ def _refresh_target(staging: Path, target: Path, notes: str | None) -> None:
     else:
         setup_path.write_text(notes, encoding="utf-8")
         setup_path.chmod(0o600)
+
+    config_path = target / _MCP_CONFIG_FILENAME
+    if mcp_config is None:
+        if config_path.exists():
+            config_path.unlink()
+    else:
+        config_path.write_text(mcp_config, encoding="utf-8")
+        config_path.chmod(0o600)
 
 
 def _replace_file(source: Path, target: Path) -> None:

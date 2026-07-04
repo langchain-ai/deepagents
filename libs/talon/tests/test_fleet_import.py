@@ -223,6 +223,43 @@ def test_import_fleet_zip_sanitizes_secret_bearing_mcp_urls(tmp_path: Path) -> N
     assert '"auth": "oauth"' in result.mcp_notes
 
 
+def test_import_fleet_zip_redacts_values_after_secret_path_markers(tmp_path: Path) -> None:
+    source = tmp_path / "fleet.zip"
+    _write_zip(
+        source,
+        {
+            "AGENTS.md": "root prompt",
+            "tools.json": json.dumps(
+                {
+                    "tools": [
+                        {
+                            "name": "token_lookup",
+                            "mcp_server_url": "https://tools.example/token/abcd1234/mcp",
+                            "mcp_server_name": "token server",
+                        },
+                        {
+                            "name": "key_lookup",
+                            "mcp_server_url": "https://tools.example/api_key/live-secret/mcp",
+                            "mcp_server_name": "key server",
+                        },
+                    ],
+                    "interrupt_config": {},
+                }
+            ),
+        },
+    )
+
+    result = import_fleet_zip(source, target_dir=tmp_path / "agent")
+
+    assert result.mcp_notes is not None
+    assert "abcd1234" not in result.mcp_notes
+    assert "live-secret" not in result.mcp_notes
+    assert "https://tools.example/<secret-redacted>/<secret-redacted>/mcp" in result.mcp_notes
+    assert "https://tools.example/<secret-redacted>/<secret-redacted>/mcp" in (
+        tmp_path / "agent" / ".mcp.json.setup"
+    ).read_text(encoding="utf-8")
+
+
 def test_import_fleet_zip_repeated_imports_refresh_generated_files(tmp_path: Path) -> None:
     first = tmp_path / "first.zip"
     second = tmp_path / "second.zip"

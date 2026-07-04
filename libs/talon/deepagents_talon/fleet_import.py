@@ -36,6 +36,20 @@ _SECRET_PATH_PATTERN = re.compile(
     r")",
     re.IGNORECASE,
 )
+_SECRET_PATH_MARKER_PATTERN = re.compile(
+    r"(?:"
+    r"bearer|"
+    r"token|"
+    r"access[-_]?token|"
+    r"refresh[-_]?token|"
+    r"api[-_]?key|"
+    r"key|"
+    r"secret|"
+    r"cookie|"
+    r"oauth"
+    r")",
+    re.IGNORECASE,
+)
 
 
 class FleetImportError(ValueError):
@@ -381,9 +395,16 @@ def _sanitize_url_path(path: str) -> str:
     parts = [part for part in path.split("/") if part]
     if not parts:
         return ""
-    sanitized = [
-        "<secret-redacted>" if _SECRET_PATH_PATTERN.search(part) else part for part in parts
-    ]
+    sanitized: list[str] = []
+    redact_next = False
+    for part in parts:
+        marker = _SECRET_PATH_MARKER_PATTERN.fullmatch(part) is not None
+        secret = _SECRET_PATH_PATTERN.search(part) is not None
+        if redact_next or marker or secret:
+            sanitized.append("<secret-redacted>")
+        else:
+            sanitized.append(part)
+        redact_next = marker
     return "/" + "/".join(sanitized)
 
 

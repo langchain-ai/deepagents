@@ -47,7 +47,7 @@ def test_parse_weekday_accepts_common_names(text: str, expected: Weekday) -> Non
     assert parse_weekday(text) is expected
 
 
-@pytest.mark.parametrize("text", ["", "  ", "s", "tueth", "funday"])
+@pytest.mark.parametrize("text", ["", "  ", "s", "t", "tueth", "funday"])
 def test_parse_weekday_rejects_unknown_or_ambiguous_names(text: str) -> None:
     with pytest.raises(CronTimeError):
         parse_weekday(text)
@@ -234,6 +234,17 @@ def test_dst_spring_forward_nonexistent_raises() -> None:
         )
 
 
+def test_skipped_local_date_raises() -> None:
+    # Pacific/Apia skipped 2011-12-30 entirely when it moved west of the date line.
+    with pytest.raises(CronTimeError, match="does not exist"):
+        next_wall_clock_run(
+            now=_utc(2011, 12, 29, 0, 0),
+            timezone="Pacific/Apia",
+            time=LocalTimeOfDay(12, 0),
+            date=date(2011, 12, 30),
+        )
+
+
 # --- next_interval_run -------------------------------------------------------
 
 
@@ -244,11 +255,11 @@ def test_next_interval_run_without_window_advances_by_minutes() -> None:
     assert result == previous + timedelta(minutes=15)
 
 
-def test_next_interval_run_without_window_jumps_after_lag() -> None:
+def test_next_interval_run_without_window_preserves_cadence_after_lag() -> None:
     previous = _utc(2026, 7, 2, 12, 0)
-    now = _utc(2026, 7, 2, 12, 30)  # more than 15m after previous
+    now = _utc(2026, 7, 2, 12, 16)  # more than 15m after previous
     result = next_interval_run(previous=previous, now=now, minutes=15, active_window=None)
-    assert result == now + timedelta(minutes=15)
+    assert result == previous + timedelta(minutes=30)
 
 
 def test_next_interval_run_rejects_non_positive_minutes() -> None:

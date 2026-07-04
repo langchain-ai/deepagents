@@ -110,7 +110,6 @@ _WEEKDAY_ALIASES: dict[str, Weekday] = {
     "m": Weekday.MONDAY,
     "mon": Weekday.MONDAY,
     "monday": Weekday.MONDAY,
-    "t": Weekday.TUESDAY,
     "tue": Weekday.TUESDAY,
     "tues": Weekday.TUESDAY,
     "tuesday": Weekday.TUESDAY,
@@ -547,8 +546,8 @@ def _build_local(zone: ZoneInfo, target_date: date, time: LocalTimeOfDay, *, fol
         fold=fold,
     )
     aware = naive.replace(tzinfo=zone)
-    roundtrip = _local_time_of(aware.astimezone(UTC).astimezone(zone))
-    if roundtrip != time:
+    roundtrip = aware.astimezone(UTC).astimezone(zone)
+    if roundtrip.date() != target_date or _local_time_of(roundtrip) != time:
         msg = (
             f"local time {time} does not exist on {target_date.isoformat()} "
             f"in {zone!s} (spring-forward gap)"
@@ -595,8 +594,9 @@ def next_interval_run(
 
     step = timedelta(minutes=minutes)
     candidate = _as_utc(previous) + step
-    if candidate <= _as_utc(now):
-        candidate = _as_utc(now) + step
+    now_utc = _as_utc(now)
+    while candidate <= now_utc:
+        candidate += step
 
     if active_window is None:
         return candidate

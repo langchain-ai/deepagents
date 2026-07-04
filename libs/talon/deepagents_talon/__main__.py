@@ -12,7 +12,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from deepagents_talon.channels.telegram import TelegramChannel, TelegramChannelConfig
 from deepagents_talon.channels.whatsapp import WhatsAppChannel, WhatsAppChannelConfig
@@ -22,7 +22,6 @@ from deepagents_talon.data_lifecycle import cleanup_sensitive_state
 from deepagents_talon.fleet import FleetAgentComponents, load_fleet_agent_components
 from deepagents_talon.host import TalonHost
 from deepagents_talon.import_fleet import (
-    ChannelName,
     FleetImportError,
     FleetImportSummary,
     FleetRunManifest,
@@ -90,7 +89,6 @@ def main() -> None:
         once=args.once,
         whatsapp=args.whatsapp,
         telegram=args.telegram,
-        selected_channel=None,
     )
 
 
@@ -100,19 +98,13 @@ def _run_host(
     once: bool,
     whatsapp: bool,
     telegram: bool,
-    selected_channel: ChannelName | None,
 ) -> None:
     cron_factory = CronJobStore
     cron_store = cron_factory(assistant_id=config.assistant_id, cron_dir=config.cron_dir)
     config.ensure_home()
     cleanup_sensitive_state(config=config, cron_store=cron_store)
 
-    channels = _channels(
-        config,
-        whatsapp=whatsapp,
-        telegram=telegram,
-        selected_channel=selected_channel,
-    )
+    channels = _channels(config, whatsapp=whatsapp, telegram=telegram)
     host = TalonHost(
         config=config,
         agent=asyncio.run(_agent_runtime(config, cron_store)),
@@ -156,15 +148,9 @@ def _add_import_fleet_parser(
     parser.add_argument("fleet_dir", type=Path, help="Unzipped Fleet export directory")
     parser.add_argument("--assistant-id", required=True, help="Assistant id for Talon local state")
     parser.add_argument(
-        "--channel",
-        choices=("telegram", "whatsapp"),
-        default=None,
-        help="Channel provider Talon will run for this Fleet export",
-    )
-    parser.add_argument(
         "--non-interactive",
         action="store_true",
-        help="Accepted for compatibility; import-fleet requires --channel.",
+        help=argparse.SUPPRESS,
     )
 
 
@@ -316,14 +302,9 @@ async def _run_mcp_command(args: argparse.Namespace, config: TalonConfig) -> int
 
 def _run_import_fleet_command(args: argparse.Namespace) -> int:
     try:
-        channel = _resolve_import_channel(
-            args.channel,
-            non_interactive=args.non_interactive,
-        )
         summary = import_fleet_manifest(
             args.fleet_dir,
             assistant_id=args.assistant_id,
-            channel=channel,
         )
     except (FleetImportError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)  # noqa: T201
@@ -344,7 +325,6 @@ def _run_fleet_command(args: argparse.Namespace) -> int:
         logger,
         "fleet.run_startup",
         assistant_id=manifest.assistant_id,
-        channel=manifest.channel,
         fleet_dir=str(manifest.fleet_dir),
         replacement_tool_count=manifest.replacement_tool_count,
     )
@@ -353,7 +333,6 @@ def _run_fleet_command(args: argparse.Namespace) -> int:
         once=args.once,
         whatsapp=args.whatsapp,
         telegram=args.telegram,
-        selected_channel=manifest.channel,
     )
     return 0
 
@@ -382,22 +361,8 @@ async def _run_mcp_login(args: argparse.Namespace) -> int:
     return await run_mcp_login(server=args.server, config_path=args.config_path)
 
 
-def _resolve_import_channel(
-    channel: str | None,
-    *,
-    non_interactive: bool,
-) -> ChannelName:
-    del non_interactive
-    if channel in {"telegram", "whatsapp"}:
-        return cast("ChannelName", channel)
-
-    msg = "--channel is required for Fleet imports"
-    raise FleetImportError(msg)
-
-
 def _print_import_summary(summary: FleetImportSummary) -> None:
     print("Imported Fleet export for Talon.")  # noqa: T201
-    print(f"  channel: {summary.channel}")  # noqa: T201
     print(f"  fleet_dir: {summary.fleet_dir}")  # noqa: T201
     print(f"  assistant_id: {summary.assistant_id}")  # noqa: T201
     print(f"  replacement_tools: {summary.replacement_tool_count}")  # noqa: T201
@@ -416,14 +381,10 @@ def _channels(
     *,
     whatsapp: bool = False,
     telegram: bool = False,
-    selected_channel: ChannelName | None = None,
 ) -> tuple[ChannelAdapter, ...]:
     channels: list[ChannelAdapter] = []
     whatsapp_selected = whatsapp or _env_enabled(config.env, "DEEPAGENTS_TALON_WHATSAPP_ENABLED")
     telegram_selected = telegram or _env_enabled(config.env, "DEEPAGENTS_TALON_TELEGRAM_ENABLED")
-    if not whatsapp_selected and not telegram_selected:
-        whatsapp_selected = selected_channel == "whatsapp"
-        telegram_selected = selected_channel == "telegram"
 
     if whatsapp_selected:
         channels.append(WhatsAppChannel(WhatsAppChannelConfig.from_talon_config(config)))

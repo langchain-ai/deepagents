@@ -8,7 +8,6 @@ import pytest
 
 from deepagents_talon.__main__ import (
     _config_from_fleet_run_manifest,
-    _resolve_import_channel,
     _run_fleet_command,
     _run_import_fleet_command,
 )
@@ -45,13 +44,11 @@ def test_import_fleet_manifest_writes_and_refreshes_assistant_manifest(tmp_path:
     summary = import_fleet_manifest(
         fleet,
         assistant_id="agent-1",
-        channel="telegram",
         env={"DEEPAGENTS_TALON_HOME": str(home), "AGENT_MODEL": "override:model"},
     )
     import_fleet_manifest(
         fleet,
         assistant_id="agent-1",
-        channel="telegram",
         env={"DEEPAGENTS_TALON_HOME": str(home), "AGENT_MODEL": "override:model"},
     )
 
@@ -68,7 +65,7 @@ def test_import_fleet_manifest_writes_and_refreshes_assistant_manifest(tmp_path:
         },
     }
     assert payload["assistant_id"] == "agent-1"
-    assert payload["channel"] == "telegram"
+    assert "channel" not in payload
     assert payload["fleet_dir"] == str(fleet.resolve())
     assert payload["model"] == "override:model"
     assert payload["model_source"] == "local_override"
@@ -83,7 +80,6 @@ def test_import_fleet_manifest_records_builtin_mcp_as_resolved(tmp_path: Path) -
     summary = import_fleet_manifest(
         fleet,
         assistant_id="agent-1",
-        channel="telegram",
         env={
             "DEEPAGENTS_TALON_HOME": str(tmp_path / "home"),
             "BUILTIN_MCP_URL": "https://builtin.example/mcp?api_key=local-secret",
@@ -115,7 +111,6 @@ def test_import_fleet_manifest_reads_nested_fleet_model_config(tmp_path: Path) -
     summary = import_fleet_manifest(
         fleet,
         assistant_id="agent-1",
-        channel="whatsapp",
         env={"DEEPAGENTS_TALON_HOME": str(tmp_path / "home")},
     )
 
@@ -134,36 +129,8 @@ def test_import_fleet_manifest_fails_on_malformed_required_config(tmp_path: Path
         import_fleet_manifest(
             fleet,
             assistant_id="agent-1",
-            channel="telegram",
             env={"DEEPAGENTS_TALON_HOME": str(tmp_path / "home")},
         )
-
-
-def test_import_fleet_command_fails_without_channel(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    fleet = _fleet_export(tmp_path)
-    monkeypatch.setenv("DEEPAGENTS_TALON_TELEGRAM_ENABLED", "true")
-    monkeypatch.delenv("DEEPAGENTS_TALON_WHATSAPP_ENABLED", raising=False)
-
-    code = _run_import_fleet_command(
-        Namespace(
-            fleet_dir=fleet,
-            assistant_id="agent-1",
-            channel=None,
-            non_interactive=True,
-        )
-    )
-
-    assert code == 2
-    assert "--channel is required" in capsys.readouterr().err
-
-
-def test_resolve_import_channel_requires_explicit_channel() -> None:
-    with pytest.raises(FleetImportError, match="--channel is required"):
-        _resolve_import_channel(None, non_interactive=False)
 
 
 def test_import_fleet_command_prints_secret_free_summary(
@@ -178,14 +145,12 @@ def test_import_fleet_command_prints_secret_free_summary(
         Namespace(
             fleet_dir=fleet,
             assistant_id="agent-1",
-            channel="telegram",
             non_interactive=True,
         )
     )
 
     output = capsys.readouterr().out
     assert code == 0
-    assert "channel: telegram" in output
     assert "assistant_id: agent-1" in output
     assert "replacement_tools: 4" in output
     assert "setup_tasks: 3" in output
@@ -212,7 +177,6 @@ def test_load_fleet_run_manifest_fails_when_fleet_dir_is_stale(tmp_path: Path) -
                 "manifest": {
                     "source": "fleet",
                     "assistant_id": "agent-1",
-                    "channel": "telegram",
                     "fleet_dir": str(tmp_path / "missing-fleet"),
                     "replacement_tools": [],
                 }
@@ -238,7 +202,6 @@ def test_run_fleet_command_starts_selected_telegram_manifest(
     import_fleet_manifest(
         fleet,
         assistant_id="agent-1",
-        channel="telegram",
         env={"DEEPAGENTS_TALON_HOME": str(home)},
     )
     monkeypatch.setenv("DEEPAGENTS_TALON_HOME", str(home))
@@ -255,20 +218,18 @@ def test_run_fleet_command_starts_selected_telegram_manifest(
 
     config = captured["config"]
     assert code == 0
-    assert captured["selected_channel"] == "telegram"
     assert captured["whatsapp"] is False
     assert captured["telegram"] is False
     assert config.assistant_id == "agent-1"
     assert config.fleet_dir == fleet.resolve()
     event = _talon_events(caplog, event="fleet.run_startup")[0]
     assert event["assistant_id"] == "agent-1"
-    assert event["channel"] == "telegram"
     assert event["fleet_dir"] == str(fleet.resolve())
     assert event["replacement_tool_count"] == 4
     assert "raw-secret" not in caplog.text
 
 
-def test_run_fleet_command_starts_selected_whatsapp_manifest(
+def test_run_fleet_command_passes_runtime_channel_flags(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -277,7 +238,6 @@ def test_run_fleet_command_starts_selected_whatsapp_manifest(
     import_fleet_manifest(
         fleet,
         assistant_id="agent-1",
-        channel="whatsapp",
         env={"DEEPAGENTS_TALON_HOME": str(home)},
     )
     monkeypatch.setenv("DEEPAGENTS_TALON_HOME", str(home))
@@ -292,7 +252,6 @@ def test_run_fleet_command_starts_selected_whatsapp_manifest(
     code = _run_fleet_command(_run_fleet_args("agent-1", telegram=True))
 
     assert code == 0
-    assert captured["selected_channel"] == "whatsapp"
     assert captured["telegram"] is True
 
 
@@ -305,7 +264,6 @@ def test_run_fleet_config_keeps_environment_model_override(
     import_fleet_manifest(
         fleet,
         assistant_id="agent-1",
-        channel="telegram",
         env={"DEEPAGENTS_TALON_HOME": str(home)},
     )
     manifest = load_fleet_run_manifest(
@@ -332,7 +290,6 @@ def test_run_fleet_command_passes_once_to_host(
     import_fleet_manifest(
         fleet,
         assistant_id="agent-1",
-        channel="telegram",
         env={"DEEPAGENTS_TALON_HOME": str(home)},
     )
     monkeypatch.setenv("DEEPAGENTS_TALON_HOME", str(home))

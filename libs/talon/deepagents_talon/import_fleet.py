@@ -15,8 +15,6 @@ from urllib.parse import urlsplit, urlunsplit
 
 from deepagents_talon.config import TalonConfig
 
-ChannelName = Literal["telegram", "whatsapp"]
-
 
 class FleetImportError(ValueError):
     """Raised when a Fleet export cannot be imported."""
@@ -61,7 +59,6 @@ class FleetImportSummary:
     """Result of importing a Fleet export into an assistant manifest.
 
     Args:
-        channel: Selected channel provider.
         fleet_dir: Validated Fleet export directory.
         assistant_id: Assistant id used to namespace Talon state.
         replacement_tool_count: Number of Fleet-requested tools requiring local replacement.
@@ -71,7 +68,6 @@ class FleetImportSummary:
         model_source: Whether the runtime model comes from Fleet or local env override.
     """
 
-    channel: ChannelName
     fleet_dir: Path
     assistant_id: str
     replacement_tool_count: int
@@ -86,14 +82,12 @@ class FleetRunManifest:
     """Assistant-scoped Fleet run intent persisted by `import-fleet`.
 
     Args:
-        channel: Selected channel provider to activate when running the manifest.
         fleet_dir: Validated Fleet export directory.
         assistant_id: Assistant id used to namespace Talon state.
         manifest_path: Manifest file that supplied the run intent.
         replacement_tool_count: Number of Fleet-requested tools requiring local replacement.
     """
 
-    channel: ChannelName
     fleet_dir: Path
     assistant_id: str
     manifest_path: Path
@@ -107,7 +101,6 @@ class _FleetManifestContext:
     target: Path
     fleet_dir: Path
     assistant_id: str
-    channel: ChannelName
     model: str
     model_source: Literal["fleet_config", "local_override"]
 
@@ -116,7 +109,6 @@ def import_fleet_manifest(
     fleet_dir: Path,
     *,
     assistant_id: str,
-    channel: ChannelName,
     env: Mapping[str, str] | None = None,
 ) -> FleetImportSummary:
     """Write or refresh an assistant-scoped Fleet run manifest.
@@ -124,7 +116,6 @@ def import_fleet_manifest(
     Args:
         fleet_dir: Operator-unzipped Fleet export directory.
         assistant_id: Talon assistant id whose home receives the manifest.
-        channel: Selected channel provider.
         env: Environment mapping used to match runtime configuration.
 
     Returns:
@@ -155,7 +146,6 @@ def import_fleet_manifest(
             target=target,
             fleet_dir=source,
             assistant_id=config.assistant_id,
-            channel=channel,
             model=model,
             model_source=model_source,
         ),
@@ -166,7 +156,6 @@ def import_fleet_manifest(
     target.chmod(0o600)
 
     return FleetImportSummary(
-        channel=channel,
         fleet_dir=source,
         assistant_id=config.assistant_id,
         replacement_tool_count=len(replacements),
@@ -224,11 +213,6 @@ def load_fleet_run_manifest(
         )
         raise FleetImportError(msg)
 
-    channel = manifest.get("channel")
-    if channel not in {"telegram", "whatsapp"}:
-        msg = "Malformed Fleet run manifest: channel must be telegram or whatsapp"
-        raise FleetImportError(msg)
-
     fleet_dir = manifest.get("fleet_dir")
     if not isinstance(fleet_dir, str) or not fleet_dir:
         msg = "Malformed Fleet run manifest: fleet_dir is required"
@@ -240,7 +224,6 @@ def load_fleet_run_manifest(
         raise FleetImportError(msg)
 
     return FleetRunManifest(
-        channel=cast("ChannelName", channel),
         fleet_dir=_validate_fleet_dir(Path(fleet_dir)),
         assistant_id=config.assistant_id,
         manifest_path=path,
@@ -419,7 +402,6 @@ def _manifest_payload(
             "source": "fleet",
             "fleet_dir": str(context.fleet_dir),
             "assistant_id": context.assistant_id,
-            "channel": context.channel,
             "model": context.model,
             "model_source": context.model_source,
             "replacement_tools": [asdict(tool) for tool in replacements],

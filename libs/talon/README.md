@@ -38,21 +38,14 @@ unzip path/to/fleet-export.zip -d ./fleet
 ```
 
 Import the export once per Talon assistant id. The import validates `AGENTS.md` and
-`config.json`, records the Fleet directory, stores the selected channel, and writes
-Fleet MCP replacement follow-up tasks to the assistant-scoped manifest:
+`config.json`, records the Fleet directory, and writes Fleet MCP replacement
+follow-up tasks to the assistant-scoped manifest:
 
 ```bash
 AGENT_ASSISTANT_ID=fleet-local \
 uv run deepagents-talon import-fleet ./fleet \
-  --assistant-id fleet-local \
-  --channel telegram \
-  --non-interactive
+  --assistant-id fleet-local
 ```
-
-If `--channel` is omitted, `import-fleet` infers the channel only when exactly one
-of `DEEPAGENTS_TALON_TELEGRAM_ENABLED=true` or
-`DEEPAGENTS_TALON_WHATSAPP_ENABLED=true` is set. In non-interactive shells,
-provide `--channel telegram` or `--channel whatsapp` explicitly.
 
 The manifest is written to `<assistant-home>/agent/tools.json`, where
 `<assistant-home>` is `~/.deepagents/<assistant-id>` by default or
@@ -62,17 +55,18 @@ setup tasks, but missing local replacements do not block import. The default
 follow-up target for local MCP replacement configuration is the same manifest file,
 `<assistant-home>/agent/tools.json`.
 
-Run the imported Fleet export through the selected channel by assistant id:
+Run the imported Fleet export by assistant id:
 
 ```bash
 uv run deepagents-talon run-fleet --assistant-id fleet-local
 ```
 
 Use `uv run deepagents-talon run-fleet --assistant-id fleet-local --once` as a
-local startup check before leaving the host running. `run-fleet` activates the
-imported channel without requiring `DEEPAGENTS_TALON_<CHANNEL>_ENABLED`. Existing
-channel flags such as `--whatsapp` and `--telegram` can still be passed to attach
-additional adapters for the same run.
+local startup check before leaving the host running. `run-fleet` uses the same
+channel configuration as normal Talon startup: set
+`DEEPAGENTS_TALON_TELEGRAM_ENABLED=true`, set
+`DEEPAGENTS_TALON_WHATSAPP_ENABLED=true`, or pass `--telegram` / `--whatsapp` to
+attach those adapters for the run.
 
 For Telegram, provide the Bot API token and an exposure policy:
 

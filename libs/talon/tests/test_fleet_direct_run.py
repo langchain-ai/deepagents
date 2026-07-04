@@ -87,8 +87,6 @@ def _import_fleet_through_cli(
             str(context.fleet),
             "--assistant-id",
             context.assistant_id,
-            "--channel",
-            context.channel,
             "--non-interactive",
         ],
     )
@@ -113,12 +111,11 @@ def _assert_import_result(
 ) -> None:
     del manifest_text
     assert summary.startswith("Imported Fleet export for Talon.")
-    assert f"channel: {context.channel}" in summary
     assert f"assistant_id: {context.assistant_id}" in summary
     assert "replacement_tools: 4" in summary
     assert "setup_tasks: 3" in summary
     assert payload["source"] == "fleet"
-    assert payload["channel"] == context.channel
+    assert "channel" not in payload
     assert payload["assistant_id"] == context.assistant_id
     assert payload["fleet_dir"] == str(context.fleet.resolve())
     assert payload["model"] == "fleet:model"
@@ -211,8 +208,6 @@ def _run_once_startup_path(
     monkeypatch.setattr(talon_main, "DeepAgentRuntime", RecordingRuntime)
     monkeypatch.setattr(talon_main, "TelegramChannel", RecordingTelegramChannel)
     monkeypatch.setattr(talon_main, "WhatsAppChannel", RecordingWhatsAppChannel)
-    monkeypatch.delenv("DEEPAGENTS_TALON_TELEGRAM_ENABLED", raising=False)
-    monkeypatch.delenv("DEEPAGENTS_TALON_WHATSAPP_ENABLED", raising=False)
     monkeypatch.setattr(
         sys,
         "argv",

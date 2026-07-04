@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import stat
 import sys
 import zipfile
 from typing import TYPE_CHECKING
@@ -40,7 +41,9 @@ def test_import_fleet_zip_materializes_agent_files_and_mcp_notes(tmp_path: Path)
     assert result.config_ignored is True
     assert result.interrupt_tools == ("write_remote",)
     assert (target / "AGENTS.md").read_text(encoding="utf-8") == "root prompt"
-    assert (target / "skills" / "review" / "SKILL.md").is_file()
+    assert (target / "skills" / "review" / "SKILL.md").read_text(encoding="utf-8") == (
+        "---\nname: review\n---\nReview things."
+    )
     assert (target / "subagents" / "researcher" / "AGENTS.md").is_file()
     assert not (target / "tools.json").exists()
     assert not (target / "config.json").exists()
@@ -129,12 +132,33 @@ def test_import_fleet_zip_rejects_malformed_tools_json(tmp_path: Path) -> None:
         import_fleet_zip(source, target_dir=tmp_path / "agent")
 
 
-def test_import_fleet_zip_rejects_unsafe_paths(tmp_path: Path) -> None:
+@pytest.mark.parametrize("path", ["../escape", "/escape", "C:/escape"])
+def test_import_fleet_zip_rejects_unsafe_paths(tmp_path: Path, path: str) -> None:
     source = tmp_path / "fleet.zip"
-    _write_zip(source, {"AGENTS.md": "root prompt", "../escape": "bad"})
+    _write_zip(source, {"AGENTS.md": "root prompt", path: "bad"})
 
-    with pytest.raises(FleetImportError, match=r"\.\./escape: unsafe zip path"):
+    with pytest.raises(FleetImportError, match="unsafe zip path"):
         import_fleet_zip(source, target_dir=tmp_path / "agent")
+
+
+def test_import_fleet_zip_rejects_symlink_entries_before_writing_target(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "fleet.zip"
+    target = tmp_path / "agent"
+    target.mkdir()
+    (target / "AGENTS.md").write_text("existing prompt", encoding="utf-8")
+    symlink = zipfile.ZipInfo("skills/review/SKILL.md")
+    symlink.external_attr = (stat.S_IFLNK | 0o777) << 16
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("AGENTS.md", "new prompt")
+        archive.writestr(symlink, "../secret")
+
+    with pytest.raises(FleetImportError, match=r"skills/review/SKILL\.md: symlink"):
+        import_fleet_zip(source, target_dir=target)
+
+    assert (target / "AGENTS.md").read_text(encoding="utf-8") == "existing prompt"
+    assert not (target / "skills").exists()
 
 
 def test_import_fleet_zip_rejects_unsafe_subagent_names(tmp_path: Path) -> None:
@@ -153,6 +177,43 @@ def test_import_fleet_zip_stdout_recommends_interrupt_env(tmp_path: Path) -> Non
 
     output = format_import_stdout(result)
     assert f"{INTERRUPT_ON_TOOLS_ENV_KEY}=write_remote" in output
+
+
+def test_import_fleet_zip_repeated_imports_refresh_generated_files(tmp_path: Path) -> None:
+    first = tmp_path / "first.zip"
+    second = tmp_path / "second.zip"
+    target = tmp_path / "agent"
+    _write_zip(
+        first,
+        {
+            "AGENTS.md": "first root",
+            "tools.json": json.dumps(_tools_json("root")),
+            "skills/review/SKILL.md": "first skill",
+            "subagents/researcher/AGENTS.md": "first subagent",
+        },
+    )
+    _write_zip(
+        second,
+        {
+            "AGENTS.md": "second root",
+            "skills/write/SKILL.md": "second skill",
+            "subagents/writer/AGENTS.md": "second subagent",
+        },
+    )
+
+    import_fleet_zip(first, target_dir=target)
+    import_fleet_zip(second, target_dir=target)
+
+    assert (target / "AGENTS.md").read_text(encoding="utf-8") == "second root"
+    assert not (target / ".mcp.json.setup").exists()
+    assert not (target / "skills" / "review").exists()
+    assert (target / "skills" / "write" / "SKILL.md").read_text(encoding="utf-8") == (
+        "second skill"
+    )
+    assert not (target / "subagents" / "researcher").exists()
+    assert (target / "subagents" / "writer" / "AGENTS.md").read_text(
+        encoding="utf-8"
+    ) == "second subagent"
 
 
 def _write_zip(path: Path, files: dict[str, str]) -> None:

@@ -11,6 +11,7 @@ import importlib
 import logging
 import os
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from deepagents_talon.channels.telegram import TelegramChannel, TelegramChannelConfig
@@ -18,6 +19,11 @@ from deepagents_talon.channels.whatsapp import WhatsAppChannel, WhatsAppChannelC
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.cron import CronJobStore, PersistentCronScheduler
 from deepagents_talon.data_lifecycle import cleanup_sensitive_state
+from deepagents_talon.fleet_import import (
+    FleetImportError,
+    format_import_stdout,
+    import_fleet_zip,
+)
 from deepagents_talon.host import TalonHost
 from deepagents_talon.mcp import load_mcp_tools, print_mcp_config_paths
 from deepagents_talon.runtime import (
@@ -55,12 +61,15 @@ def main() -> None:
         help="Attach the Telegram channel adapter.",
     )
     subparsers = parser.add_subparsers(dest="command")
+    _add_import_fleet_parser(subparsers)
     _add_mcp_parsers(subparsers)
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 
     config = TalonConfig.from_env()
+    if args.command == "import-fleet":
+        sys.exit(_run_import_fleet_command(args, config))
     if args.command == "mcp":
         sys.exit(asyncio.run(_run_mcp_command(args, config)))
 
@@ -90,6 +99,25 @@ def main() -> None:
     asyncio.run(host.run_until_stopped())
 
 
+def _add_import_fleet_parser(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    importer = subparsers.add_parser(
+        "import-fleet",
+        help="Import a Fleet zip export into a Talon local agent directory",
+    )
+    importer.add_argument("fleet_export", type=Path, help="Fleet zip export to import")
+    importer.add_argument(
+        "--assistant-id",
+        help="Assistant id used for default target directory resolution",
+    )
+    importer.add_argument(
+        "--target-dir",
+        type=Path,
+        help="Directory to receive materialized Talon agent files",
+    )
+
+
 def _add_mcp_parsers(
     subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
 ) -> None:
@@ -101,6 +129,29 @@ def _add_mcp_parsers(
     login = mcp_sub.add_parser("login", help="Run OAuth login for an MCP server")
     login.add_argument("server", help="Server name from mcpServers")
     login.add_argument("--mcp-config", dest="config_path", default=None)
+
+
+def _run_import_fleet_command(args: argparse.Namespace, config: TalonConfig) -> int:
+    target_dir = args.target_dir
+    if target_dir is None:
+        target_config = config
+        if args.assistant_id:
+            target_config = TalonConfig.from_env(
+                {
+                    **config.env,
+                    "DEEPAGENTS_TALON_ASSISTANT_ID": args.assistant_id,
+                },
+                base_home=config.home.parent,
+            )
+        target_dir = target_config.manifest_dir
+
+    try:
+        result = import_fleet_zip(args.fleet_export, target_dir=target_dir)
+    except FleetImportError as exc:
+        print(f"import-fleet: {exc}", file=sys.stderr)  # noqa: T201
+        return 1
+    print(format_import_stdout(result), end="")  # noqa: T201
+    return 0
 
 
 async def _agent_runtime(

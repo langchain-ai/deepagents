@@ -152,6 +152,7 @@ _CRON_AUTO_DENY_MESSAGE = (
 _CHANNEL_AUTO_DENY_MESSAGE = (
     "Tool approval is unavailable on this channel; skipped the gated tool call."
 )
+_LOCAL_SUBAGENT_NAME_PATTERN = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 
 _CRON_ORIGIN: contextvars.ContextVar[CronOrigin | None] = contextvars.ContextVar(
     "talon_cron_origin",
@@ -879,6 +880,13 @@ def _load_local_subagents(assistant_dir: Path) -> list[SubAgent]:
         path = child / "AGENTS.md"
         if not path.is_file():
             continue
+        if not _valid_local_subagent_name(child.name):
+            logger.warning(
+                "Skipping Talon subagent prompt from %s: unsafe subagent name %r",
+                path,
+                child.name,
+            )
+            continue
         try:
             text = path.read_text(encoding="utf-8")
         except OSError:
@@ -894,6 +902,10 @@ def _load_local_subagents(assistant_dir: Path) -> list[SubAgent]:
             subagent["model"] = model
         subagents.append(subagent)
     return subagents
+
+
+def _valid_local_subagent_name(name: str) -> bool:
+    return _LOCAL_SUBAGENT_NAME_PATTERN.fullmatch(name) is not None and name not in {".", ".."}
 
 
 def _parse_local_subagent_prompt(text: str, name: str) -> tuple[str, str, str | None]:

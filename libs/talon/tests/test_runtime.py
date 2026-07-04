@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -244,6 +245,84 @@ async def test_runtime_loads_local_subagents_from_assistant_dir(
             "system_prompt": "Review changes.",
         },
     ]
+
+
+async def test_runtime_skips_local_subagent_dirs_without_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    assistant_dir = tmp_path / "assistant"
+    missing_dir = assistant_dir / "subagents" / "missing"
+    valid_dir = assistant_dir / "subagents" / "valid"
+    missing_dir.mkdir(parents=True)
+    valid_dir.mkdir(parents=True)
+    (valid_dir / "AGENTS.md").write_text("Valid prompt.", encoding="utf-8")
+
+    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
+        captured.update(kwargs)
+        return RecordingGraph()
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        assistant_dir=assistant_dir,
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+
+    await runtime.start()
+
+    assert captured["subagents"] == [
+        {
+            "name": "valid",
+            "description": "Use the valid subagent.",
+            "system_prompt": "Valid prompt.",
+        }
+    ]
+
+
+async def test_runtime_skips_invalid_local_subagent_names(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    captured: dict[str, Any] = {}
+    assistant_dir = tmp_path / "assistant"
+    bad_dir = assistant_dir / "subagents" / "bad name"
+    good_dir = assistant_dir / "subagents" / "good-name"
+    bad_dir.mkdir(parents=True)
+    good_dir.mkdir(parents=True)
+    (bad_dir / "AGENTS.md").write_text("Bad prompt.", encoding="utf-8")
+    (good_dir / "AGENTS.md").write_text("Good prompt.", encoding="utf-8")
+
+    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
+        captured.update(kwargs)
+        return RecordingGraph()
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+    caplog.set_level(logging.WARNING, logger="deepagents_talon.runtime")
+
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        assistant_dir=assistant_dir,
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+
+    await runtime.start()
+
+    assert captured["subagents"] == [
+        {
+            "name": "good-name",
+            "description": "Use the good-name subagent.",
+            "system_prompt": "Good prompt.",
+        }
+    ]
+    assert "unsafe subagent name 'bad name'" in caplog.text
 
 
 async def test_runtime_passes_middleware_to_create_deep_agent(

@@ -20,9 +20,7 @@ from deepagents_talon.cron import CronJobStore, PersistentCronScheduler
 from deepagents_talon.data_lifecycle import cleanup_sensitive_state
 from deepagents_talon.fleet import FleetAgentComponents, load_fleet_agent_components
 from deepagents_talon.fleet_channel_selection import (
-    ChannelCandidate,
     ChannelSelectionResolution,
-    ChannelSelectionStatus,
     resolve_fleet_channel_selection,
 )
 from deepagents_talon.fleet_manifest import ChannelSelection, refresh_fleet_run_manifest
@@ -259,14 +257,11 @@ def _channel_selection(
     whatsapp: bool = False,
     telegram: bool = False,
 ) -> ChannelSelectionResolution:
+    del whatsapp, telegram
     if config.fleet_dir is None and channel is None:
         return ChannelSelectionResolution(selected_channel=None, status="ready")
     return resolve_fleet_channel_selection(
-        config.env,
         explicit_channel=channel,
-        channel_flags={"telegram": telegram, "whatsapp": whatsapp},
-        interactive=sys.stdin.isatty(),
-        prompt=_prompt_channel,
     )
 
 
@@ -281,23 +276,6 @@ def _env_enabled(env: Mapping[str, str], key: str) -> bool:
         `True` when the value is one of ``1``, ``true``, or ``yes``.
     """
     return env.get(key, "").lower() in {"1", "true", "yes"}
-
-
-def _prompt_channel(
-    status: ChannelSelectionStatus,
-    candidates: Sequence[ChannelCandidate],
-) -> str:
-    options = ("telegram", "whatsapp")
-    if status == "ambiguous":
-        configured = ", ".join(candidate.provider for candidate in candidates)
-        print(f"Multiple Talon channels are configured ({configured}).", file=sys.stderr)  # noqa: T201
-    else:
-        print("No Talon channel is configured for this Fleet run.", file=sys.stderr)  # noqa: T201
-    while True:
-        value = input("Select channel [telegram/whatsapp]: ").strip().lower()
-        if value in options:
-            return value
-        print("Enter telegram or whatsapp.", file=sys.stderr)  # noqa: T201
 
 
 def _runtime_env(config: TalonConfig) -> dict[str, str]:

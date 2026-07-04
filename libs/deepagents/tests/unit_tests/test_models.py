@@ -1311,18 +1311,6 @@ class TestNemotronUltraProfile:
         assert profile is not None
         assert "TodoListMiddleware" in profile.excluded_middleware
 
-    def test_nemotron_ultra_excludes_default_rubric_middleware(self) -> None:
-        """Exclude the create_cli_agent-appended base RubricMiddleware (grader 400s on this
-        deployment); only the profile's own _NemotronRubricMiddleware should grade."""
-        profile = _get_harness_profile("NVIDIA:nvidia/nemotron-3-ultra-550b-a55b")
-        assert profile is not None
-        # Exclusion matches by exact name, so the base "RubricMiddleware" is dropped
-        # while the "_NemotronRubricMiddleware" subclass is kept.
-        assert "RubricMiddleware" in profile.excluded_middleware
-        names = [type(m).__name__ for m in profile.materialize_extra_middleware()]
-        assert "_NemotronRubricMiddleware" in names
-        assert "RubricMiddleware" not in names
-
     def test_rubric_from_task_seeds_rubric_from_first_human(self) -> None:
         """Seeds RubricMiddleware's rubric from the task (first HumanMessage)."""
         from langchain_core.messages import AIMessage, HumanMessage  # noqa: PLC0415
@@ -1333,19 +1321,21 @@ class TestNemotronUltraProfile:
         state = {"messages": [HumanMessage("Build a widget that does X."), AIMessage("ok")]}
         out = mw.before_agent(state, None)  # type: ignore[arg-type]
         assert out is not None
-        assert "Build a widget that does X." in out["rubric"]
+        # Seeds the PRIVATE key (not `rubric`) so the base RubricMiddleware stays dormant.
+        assert "rubric" not in out
+        assert "Build a widget that does X." in out["_nemo_rubric"]
         # Untrusted task text is delimited so the grader keeps the trust boundary.
-        assert "<task>" in out["rubric"] and "</task>" in out["rubric"]
+        assert "<task>" in out["_nemo_rubric"] and "</task>" in out["_nemo_rubric"]
 
-    def test_rubric_from_task_noop_when_rubric_already_set(self) -> None:
-        """Respects a caller-supplied rubric: no overwrite."""
+    def test_rubric_from_task_noop_when_already_seeded(self) -> None:
+        """No overwrite once the private rubric key is set."""
         from langchain_core.messages import HumanMessage  # noqa: PLC0415
 
         from deepagents.profiles.harness import _nvidia_nemotron_3_ultra as mod  # noqa: PLC0415
 
         mw = mod._RubricFromTaskMiddleware()
         out = mw.before_agent(
-            {"rubric": "caller rubric", "messages": [HumanMessage("t")]},  # type: ignore[arg-type]
+            {"_nemo_rubric": "already", "messages": [HumanMessage("t")]},  # type: ignore[arg-type]
             None,  # type: ignore[arg-type]
         )
         assert out is None

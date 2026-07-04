@@ -57,6 +57,7 @@ from langgraph.config import get_config
 from deepagents.middleware.rubric import (
     GraderResponse,
     RubricMiddleware,
+    RubricState,
     _build_grader_transcript,
 )
 from deepagents.profiles.harness._fireworks_glm_5p2_middleware import (
@@ -1200,25 +1201,39 @@ def _first_human_text(messages: list) -> str | None:
     return None
 
 
-class _RubricFromTaskMiddleware(AgentMiddleware):
-    """Seed `RubricMiddleware`'s rubric from the task (first user message).
+class _NemoGraderState(RubricState):
+    """Adds a PRIVATE rubric key read only by `_NemotronRubricMiddleware`.
 
-    `RubricMiddleware` is a no-op without a `rubric` on state. In this harness the
-    task arrives as the first `HumanMessage`, so we wrap it as the rubric; the
-    independent grader then derives "done" from the task's own wording and can send
-    the agent back when it verified its own convention rather than the task's
-    contract. No-op when a rubric is already present or no user message exists
-    (keeps the general-purpose / declarative-subagent stacks safe).
+    We deliberately do NOT use `RubricState.rubric`: `create_cli_agent` appends its
+    own base `RubricMiddleware` that also reads `rubric`, so seeding `rubric` would
+    activate that base grader too (its structured-output call 400s on this
+    deployment — wasted round-trips on the finalize path). Seeding this private key
+    instead leaves the base middleware dormant; only our grader reacts to it.
     """
+
+    _nemo_rubric: NotRequired[Annotated[str, PrivateStateAttr]]
+
+
+class _RubricFromTaskMiddleware(AgentMiddleware):
+    """Seed our grader's private rubric key from the task (first user message).
+
+    The task arrives as the first `HumanMessage`; we wrap it as the rubric so the
+    grader derives "done" from the task's own wording. We write the PRIVATE
+    `_nemo_rubric` key (not `rubric`) so the base `RubricMiddleware` that
+    `create_cli_agent` installs stays a no-op and never fires its broken grader.
+    No-op when already seeded or no user message exists (keeps subagent stacks safe).
+    """
+
+    state_schema = _NemoGraderState
 
     @staticmethod
     def _seed(state: AgentState) -> dict[str, Any] | None:
-        if state.get("rubric"):
+        if state.get("_nemo_rubric"):
             return None
         task = _first_human_text(state.get("messages", []))
         if not task or not task.strip():
             return None
-        return {"rubric": _RUBRIC_TEMPLATE.format(task=task)}
+        return {"_nemo_rubric": _RUBRIC_TEMPLATE.format(task=task)}
 
     def before_agent(self, state: AgentState, runtime: Runtime) -> dict[str, Any] | None:  # noqa: ARG002
         return self._seed(state)
@@ -1265,7 +1280,22 @@ class _NemotronRubricMiddleware(RubricMiddleware):
     execute. The final message is a two-line VERDICT/FEEDBACK parsed into a
     `GraderResponse`. Fail-open: an unparseable verdict is treated as "satisfied" so a
     grader hiccup never blocks a finished run (logged at debug).
+
+    Reads the PRIVATE `_nemo_rubric` key (not `rubric`) so the base `RubricMiddleware`
+    that `create_cli_agent` installs stays dormant and never fires its broken grader.
     """
+
+    state_schema = _NemoGraderState
+
+    def _prepare_evaluation(self, state: AgentState, runtime: Any) -> tuple[str, int] | None:
+        # Same as the base, but gated on our private `_nemo_rubric` key so the base
+        # RubricMiddleware (which gates on `rubric`) never activates.
+        if not state.get("_nemo_rubric"):
+            return None
+        iteration = state.get("_rubric_iterations", 0) or 0
+        grading_run_id = state.get("_current_grading_run_id") or str(uuid.uuid4())
+        self._emit(runtime, "rubric_evaluation_start", grading_run_id, iteration)
+        return grading_run_id, iteration
 
     def _ensure_grader(self) -> Any:
         if self._grader is not None:
@@ -1281,7 +1311,7 @@ class _NemotronRubricMiddleware(RubricMiddleware):
         return self._grader
 
     def _grader_messages(self, state: AgentState) -> list:
-        rubric = state.get("rubric", "")
+        rubric = state.get("_nemo_rubric", "")
         transcript = _build_grader_transcript(state.get("messages", []))
         payload = f"<rubric>\n{rubric}\n</rubric>\n\n<transcript>\n{transcript}\n</transcript>"
         return [HumanMessage(payload)]
@@ -1404,13 +1434,14 @@ def register() -> None:
         # which serves as the task list. Nemotron under-used write_todos anyway, so the
         # extra tool was dilution rather than help.
         #
-        # Drop the default RubricMiddleware that create_cli_agent appends: our
-        # _RubricFromTaskMiddleware seeds a rubric, which would otherwise activate BOTH
-        # that default (whose create_agent grader sends tool_choice="any" — rejected 400
-        # by the Fireworks nemotron deployment) AND our _NemotronRubricMiddleware. Exclude
-        # the default so only our plain-text grader runs. Matches by exact name, so the
-        # "_NemotronRubricMiddleware" subclass is unaffected.
-        excluded_middleware=frozenset({"TodoListMiddleware", "RubricMiddleware"}),
+        # NOTE: create_cli_agent also appends its own base RubricMiddleware, which our
+        # seeded rubric activates. We do NOT exclude it here — that middleware is added by
+        # create_cli_agent (not the profile), so it isn't in the stacks the profile's
+        # exclusion is verified against, and excluding it raises a coverage error. It's
+        # harmless: its structured-output grader 400s on this deployment and is caught as
+        # grader_error (injects no revision), while our _NemotronRubricMiddleware does the
+        # real (tool-equipped) grading.
+        excluded_middleware=frozenset({"TodoListMiddleware"}),
         extra_middleware=_build_extra_middleware,
     )
     for spec in _NEMOTRON_ULTRA_MODEL_SPECS:

@@ -11,7 +11,7 @@ Talon currently includes:
 - A host process with graceful shutdown, per-conversation serialization, and `/stop` cancellation.
 - A generic channel protocol plus a WhatsApp adapter backed by a loopback Node bridge.
 - A persistent cron scheduler with agent-facing cron tool helpers.
-- MCP tool loading from the assistant manifest directory.
+- MCP tool loading from assistant-local MCP config.
 - Optional LangSmith tracing for each channel or cron-triggered run.
 
 ## Quickstart
@@ -31,17 +31,40 @@ Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host
 
 ## Fleet Exports
 
-Talon can host an operator-unzipped LangSmith Fleet export through the `fleet-deepagents-export` library:
+Talon can materialize a LangSmith Fleet zip export into a local assistant directory:
+
+Import the export once per Talon assistant id. The import validates `AGENTS.md` and
+materializes the Fleet root prompt and subagent prompts into the assistant
+directory. Fleet `config.json` is not used. The import summarizes each Fleet
+`tools.json` file, including MCP server names and interrupt-enabled tools, and
+writes those follow-up notes to the root MCP config:
 
 ```bash
-unzip path/to/fleet-export.zip -d ./fleet
-
-DEEPAGENTS_TALON_FLEET_DIR=./fleet \
 AGENT_ASSISTANT_ID=fleet-local \
+uv run deepagents-talon import-fleet path/to/fleet-export.zip \
+  --assistant-id fleet-local \
+  --non-interactive
+```
+
+The deprecated `--channel` flag is accepted for compatibility but ignored.
+Channels are selected by the normal Talon runtime flags and environment.
+
+The root MCP config is written to `<assistant-home>/.mcp.json`, where
+`<assistant-home>` is `~/.deepagents/<assistant-id>` by default or
+`$DEEPAGENTS_TALON_HOME/<assistant-id>` when `DEEPAGENTS_TALON_HOME` is set. Local
+MCP setup is best-effort: missing local MCP servers do not block import. Add
+server entries under `mcpServers`; tools listed under `interrupt_tools` are
+recommended candidates for human-in-the-loop approval.
+
+Run the imported Fleet export through the normal Talon runtime by assistant id:
+
+```bash
+AGENT_ASSISTANT_ID=fleet-local \
+AGENT_MODEL=<provider>:<model-id> \
 uv run deepagents-talon --once
 ```
 
-In Fleet mode, Talon uses the model from `fleet/config.json` unless `DEEPAGENTS_TALON_MODEL` or `AGENT_MODEL` is set. The Fleet loader resolves MCP registry references through LangSmith, so provide the required `LANGSMITH_API_KEY`, `LANGSMITH_TENANT_ID`, `LANGSMITH_ORGANIZATION_ID`, and when needed `LANGSMITH_USER_ID`, `BUILTIN_MCP_URL`, `LANGSMITH_HOST_URL`, and `HOST_LANGCHAIN_API_URL`. Locally-authored agents without `DEEPAGENTS_TALON_FLEET_DIR` continue to load from the assistant manifest directory and Talon's plain MCP config discovery.
+When loading a Fleet export directly with `DEEPAGENTS_TALON_FLEET_DIR`, the Fleet loader resolves MCP registry references through LangSmith, so provide the required `LANGSMITH_API_KEY`, `LANGSMITH_TENANT_ID`, `LANGSMITH_ORGANIZATION_ID`, and when needed `LANGSMITH_USER_ID`, `BUILTIN_MCP_URL`, `LANGSMITH_HOST_URL`, and `HOST_LANGCHAIN_API_URL`. Imported agents without `DEEPAGENTS_TALON_FLEET_DIR` load from the assistant agent directory and Talon's MCP config discovery.
 
 OAuth-backed Fleet MCP tools must be authorized once from an interactive shell before starting a headless host. Run the host in `--once` mode with the same Fleet directory and LangSmith environment you will use in production, complete the browser authorization if prompted, then start the long-running host:
 
@@ -140,7 +163,11 @@ When enabled, Talon wraps each agent run in a LangSmith tracing context with ass
 
 ## MCP Tools
 
-Talon loads MCP servers from one config file. It checks `DEEPAGENTS_TALON_MCP_CONFIG`, then `MCP_CONFIG`, then `~/.deepagents/<assistant_id>/agent/tools.json`, then `~/.deepagents/.mcp.json`. Add Talon-local servers by editing `tools.json` directly:
+Talon loads MCP servers from one config file. `DEEPAGENTS_TALON_MCP_CONFIG` and
+`MCP_CONFIG` override discovery. Without an override, Talon uses the
+highest-precedence existing path: `~/.deepagents/.mcp.json`, then
+`~/.deepagents/<assistant_id>/.mcp.json`. Add Talon-local servers by editing
+`.mcp.json` directly:
 
 ```json
 {

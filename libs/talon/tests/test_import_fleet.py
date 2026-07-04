@@ -22,11 +22,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-class InteractiveStdin:
-    def isatty(self) -> bool:
-        return True
-
-
 def test_import_fleet_manifest_writes_and_refreshes_assistant_manifest(tmp_path: Path) -> None:
     fleet = _fleet_export(tmp_path)
     home = tmp_path / "home"
@@ -144,13 +139,13 @@ def test_import_fleet_manifest_fails_on_malformed_required_config(tmp_path: Path
         )
 
 
-def test_import_fleet_command_fails_without_channel_in_non_interactive_mode(
+def test_import_fleet_command_fails_without_channel(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fleet = _fleet_export(tmp_path)
-    monkeypatch.delenv("DEEPAGENTS_TALON_TELEGRAM_ENABLED", raising=False)
+    monkeypatch.setenv("DEEPAGENTS_TALON_TELEGRAM_ENABLED", "true")
     monkeypatch.delenv("DEEPAGENTS_TALON_WHATSAPP_ENABLED", raising=False)
 
     code = _run_import_fleet_command(
@@ -166,16 +161,9 @@ def test_import_fleet_command_fails_without_channel_in_non_interactive_mode(
     assert "--channel is required" in capsys.readouterr().err
 
 
-def test_resolve_import_channel_prompts_when_interactive(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("DEEPAGENTS_TALON_TELEGRAM_ENABLED", raising=False)
-    monkeypatch.delenv("DEEPAGENTS_TALON_WHATSAPP_ENABLED", raising=False)
-    monkeypatch.setattr("sys.stdin", InteractiveStdin())
-    answers = iter(["bad", "whatsapp"])
-    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
-
-    assert _resolve_import_channel(None, non_interactive=False) == "whatsapp"
+def test_resolve_import_channel_requires_explicit_channel() -> None:
+    with pytest.raises(FleetImportError, match="--channel is required"):
+        _resolve_import_channel(None, non_interactive=False)
 
 
 def test_import_fleet_command_prints_secret_free_summary(

@@ -72,6 +72,28 @@ def test_channels_factory_selects_configured_channels(tmp_path: Path) -> None:
         ({}, False, False, None, ()),
         (
             {
+                "DEEPAGENTS_TALON_TELEGRAM_ENABLED": "1",
+                "DEEPAGENTS_TALON_TELEGRAM_BOT_TOKEN": "test-token",
+                "DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID": "999",
+            },
+            False,
+            False,
+            "whatsapp",
+            (TelegramChannel,),
+        ),
+        (
+            {
+                "DEEPAGENTS_TALON_WHATSAPP_ENABLED": "1",
+                "DEEPAGENTS_TALON_TELEGRAM_BOT_TOKEN": "test-token",
+                "DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID": "999",
+            },
+            False,
+            True,
+            "whatsapp",
+            (WhatsAppChannel, TelegramChannel),
+        ),
+        (
+            {
                 "DEEPAGENTS_TALON_TELEGRAM_BOT_TOKEN": "test-token",
                 "DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID": "999",
             },

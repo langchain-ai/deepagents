@@ -164,7 +164,7 @@ def _add_import_fleet_parser(
     parser.add_argument(
         "--non-interactive",
         action="store_true",
-        help="Fail instead of prompting when channel selection is missing",
+        help="Accepted for compatibility; import-fleet requires --channel.",
     )
 
 
@@ -387,36 +387,12 @@ def _resolve_import_channel(
     *,
     non_interactive: bool,
 ) -> ChannelName:
+    del non_interactive
     if channel in {"telegram", "whatsapp"}:
         return cast("ChannelName", channel)
 
-    env_channel = _import_channel_from_env(os.environ)
-    if env_channel is not None:
-        return env_channel
-
-    if non_interactive:
-        msg = "--channel is required when channel cannot be inferred in non-interactive mode"
-        raise FleetImportError(msg)
-    if not sys.stdin.isatty():
-        msg = "--channel is required when stdin is not interactive"
-        raise FleetImportError(msg)
-
-    while True:
-        value = input("Channel [telegram/whatsapp]: ").strip().lower()
-        if value in {"telegram", "whatsapp"}:
-            return cast("ChannelName", value)
-        print("Enter 'telegram' or 'whatsapp'.", file=sys.stderr)  # noqa: T201
-
-
-def _import_channel_from_env(env: Mapping[str, str]) -> ChannelName | None:
-    enabled: list[ChannelName] = []
-    if _env_enabled(env, "DEEPAGENTS_TALON_TELEGRAM_ENABLED"):
-        enabled.append("telegram")
-    if _env_enabled(env, "DEEPAGENTS_TALON_WHATSAPP_ENABLED"):
-        enabled.append("whatsapp")
-    if len(enabled) == 1:
-        return enabled[0]
-    return None
+    msg = "--channel is required for Fleet imports"
+    raise FleetImportError(msg)
 
 
 def _print_import_summary(summary: FleetImportSummary) -> None:
@@ -443,17 +419,15 @@ def _channels(
     selected_channel: ChannelName | None = None,
 ) -> tuple[ChannelAdapter, ...]:
     channels: list[ChannelAdapter] = []
-    if (
-        whatsapp
-        or selected_channel == "whatsapp"
-        or _env_enabled(config.env, "DEEPAGENTS_TALON_WHATSAPP_ENABLED")
-    ):
+    whatsapp_selected = whatsapp or _env_enabled(config.env, "DEEPAGENTS_TALON_WHATSAPP_ENABLED")
+    telegram_selected = telegram or _env_enabled(config.env, "DEEPAGENTS_TALON_TELEGRAM_ENABLED")
+    if not whatsapp_selected and not telegram_selected:
+        whatsapp_selected = selected_channel == "whatsapp"
+        telegram_selected = selected_channel == "telegram"
+
+    if whatsapp_selected:
         channels.append(WhatsAppChannel(WhatsAppChannelConfig.from_talon_config(config)))
-    if (
-        telegram
-        or selected_channel == "telegram"
-        or _env_enabled(config.env, "DEEPAGENTS_TALON_TELEGRAM_ENABLED")
-    ):
+    if telegram_selected:
         channels.append(TelegramChannel(TelegramChannelConfig.from_talon_config(config)))
     return tuple(channels)
 

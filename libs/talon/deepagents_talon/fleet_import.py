@@ -236,18 +236,14 @@ def _validate_agent_name(name: str, path: str) -> None:
 def _is_subagent_prompt_path(name: str) -> bool:
     parts = PurePosixPath(name).parts
     return (
-        len(parts) == _SUBAGENT_FILE_PARTS
-        and parts[0] == "subagents"
-        and parts[2] == "AGENTS.md"
+        len(parts) == _SUBAGENT_FILE_PARTS and parts[0] == "subagents" and parts[2] == "AGENTS.md"
     )
 
 
 def _is_subagent_tools_path(name: str) -> bool:
     parts = PurePosixPath(name).parts
     return (
-        len(parts) == _SUBAGENT_FILE_PARTS
-        and parts[0] == "subagents"
-        and parts[2] == "tools.json"
+        len(parts) == _SUBAGENT_FILE_PARTS and parts[0] == "subagents" and parts[2] == "tools.json"
     )
 
 

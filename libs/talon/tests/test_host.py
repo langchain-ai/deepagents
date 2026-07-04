@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
 from deepagents_talon.config import TalonConfig
@@ -133,6 +134,39 @@ async def test_host_starts_and_stops_components(tmp_path: Path) -> None:
     assert channel.started is True
     assert channel.stopped is True
     assert channel.handler is not None
+
+
+async def test_run_scheduled_job_adds_cron_clock_metadata_and_preface(tmp_path: Path) -> None:
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "cron")
+    job = store.create_job(
+        prompt="check status",
+        schedule=CronSchedule.parse(
+            "every 15m",
+            timezone="America/Los_Angeles",
+            active_start="08:00",
+            active_end="17:00",
+        ),
+        origin=CronOrigin(conversation_id="chat", channel="whatsapp", message_id="message-1"),
+        name="status",
+        now=datetime(2026, 7, 2, 15, 30, tzinfo=UTC),
+    )
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent)
+
+    text = await host.run_scheduled_job(job)
+
+    request = agent.requests[0]
+    assert text == f"reply:{request.text}"
+    assert request.metadata["schedule_timezone"] == "America/Los_Angeles"
+    assert request.metadata["schedule_local_now"] == "2026-07-02 08:30 America/Los_Angeles"
+    assert request.metadata["scheduler_host_timezone"] == "UTC"
+    assert request.metadata["scheduler_host_local_now"] == "2026-07-02 15:30 UTC"
+    assert request.text == (
+        "This scheduled run is evaluated against America/Los_Angeles active hours. "
+        "The current schedule-local time is 2026-07-02 08:30 America/Los_Angeles. "
+        "The scheduler host reports local time as 2026-07-02 15:30 UTC.\n\n"
+        "check status"
+    )
 
 
 async def test_host_serializes_messages_per_conversation(tmp_path: Path) -> None:
@@ -785,6 +819,7 @@ async def test_host_runs_scheduled_job_and_delivers_result(tmp_path: Path) -> No
         prompt="scheduled prompt",
         schedule=CronSchedule.parse("in 5m"),
         origin=CronOrigin(conversation_id="chat"),
+        now=datetime(2026, 7, 2, 15, 30, tzinfo=UTC),
     )
     await host.start()
 
@@ -792,9 +827,12 @@ async def test_host_runs_scheduled_job_and_delivers_result(tmp_path: Path) -> No
     await host.deliver_scheduled_result(channel, job, text)
     await host.stop()
 
-    assert [request.text for request in agent.requests] == ["scheduled prompt"]
+    expected_text = (
+        "The scheduler host reports local time as 2026-07-02 15:30 UTC.\n\nscheduled prompt"
+    )
+    assert [request.text for request in agent.requests] == [expected_text]
     assert agent.requests[0].metadata["trigger"] == "cron"
-    assert channel.sent == [("chat", "reply:scheduled prompt")]
+    assert channel.sent == [("chat", f"reply:{expected_text}")]
 
 
 async def test_host_transcribes_voice_before_agent(tmp_path: Path) -> None:

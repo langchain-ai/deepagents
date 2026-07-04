@@ -264,10 +264,7 @@ class CronSchedule:
                 wall_date=wall_date,
                 active_window=active_window,
             )
-        msg = (
-            "schedule must look like 'in 30m', 'every 15m', "
-            "'at 8:00pm', or 'every day at 8:00pm'"
-        )
+        msg = "schedule must look like 'in 30m', 'every 15m', 'at 8:00pm', or 'every day at 8:00pm'"
         raise CronJobError(msg)
 
     def next_after(self, now: datetime, previous: datetime | None = None) -> datetime:
@@ -344,8 +341,10 @@ class CronSchedule:
             Re-parsed schedule with the requested options applied.
         """
         existing_window = self.active_window
-        resolved_timezone = timezone or self.timezone or (
-            None if existing_window is None else existing_window.timezone
+        resolved_timezone = (
+            timezone
+            or self.timezone
+            or (None if existing_window is None else existing_window.timezone)
         )
         if active_start is None and active_end is None and existing_window is not None:
             active_start = existing_window.start.to_display()
@@ -370,9 +369,7 @@ class CronSchedule:
             "timezone": self.timezone,
             "wall_time": self.wall_time,
             "wall_date": None if self.wall_date is None else self.wall_date.isoformat(),
-            "active_window": (
-                None if self.active_window is None else self.active_window.to_dict()
-            ),
+            "active_window": (None if self.active_window is None else self.active_window.to_dict()),
         }
 
     @classmethod
@@ -606,7 +603,7 @@ class CronJobStore:
             last_status=None,
             last_error=None,
             origin=origin,
-            scheduler_host_clock=capture_scheduler_host_clock(current),
+            scheduler_host_clock=capture_scheduler_host_clock(now),
         )
         jobs = [*self.list_jobs(), job]
         self._write_jobs(jobs)
@@ -704,7 +701,7 @@ class CronJobStore:
                     raise CronJobError(msg)
                 new_repeat = CronRepeat(times=repeat_times)
             scheduler_host_clock = (
-                capture_scheduler_host_clock(current)
+                capture_scheduler_host_clock(now)
                 if schedule is not None
                 else job.scheduler_host_clock
             )
@@ -774,7 +771,7 @@ class CronJobStore:
             if not job.enabled or job.next_run_at is None or job.next_run_at > current:
                 result.append(job)
                 continue
-            advanced, should_run = _advance_claimed_job(job, current)
+            advanced, should_run = _advance_claimed_job(job, current, host_now=now)
             changed = True
             if should_run:
                 claimed = advanced
@@ -900,12 +897,17 @@ class CronJobStore:
             self.path.chmod(0o600)
 
 
-def _advance_claimed_job(job: CronJob, now: datetime) -> tuple[CronJob, bool]:
+def _advance_claimed_job(
+    job: CronJob,
+    now: datetime,
+    *,
+    host_now: datetime | None,
+) -> tuple[CronJob, bool]:
     if job.schedule.kind in {"one_shot", "wall_clock_once"}:
         return replace(job, enabled=False, next_run_at=None), True
 
     if _outside_active_window(job, now):
-        return _advance_skipped_job(job, now), False
+        return _advance_skipped_job(job, now, host_now=host_now), False
 
     repeat = job.repeat.claim()
     if repeat.exhausted:
@@ -916,17 +918,22 @@ def _advance_claimed_job(job: CronJob, now: datetime) -> tuple[CronJob, bool]:
             job,
             repeat=repeat,
             next_run_at=job.schedule.next_after(now, previous=job.next_run_at),
-            scheduler_host_clock=capture_scheduler_host_clock(now),
+            scheduler_host_clock=capture_scheduler_host_clock(host_now),
         ),
         True,
     )
 
 
-def _advance_skipped_job(job: CronJob, now: datetime) -> CronJob:
+def _advance_skipped_job(
+    job: CronJob,
+    now: datetime,
+    *,
+    host_now: datetime | None,
+) -> CronJob:
     return replace(
         job,
         next_run_at=job.schedule.next_after(now, previous=job.next_run_at),
-        scheduler_host_clock=capture_scheduler_host_clock(now),
+        scheduler_host_clock=capture_scheduler_host_clock(host_now),
     )
 
 

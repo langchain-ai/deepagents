@@ -44,10 +44,12 @@ class ActiveWindowDict(TypedDict):
 class SchedulerHostClockDict(TypedDict):
     """Serialized scheduler host clock context."""
 
-    timezone: str
-    utc_offset: str
+    scheduler_timezone: str
+    scheduler_utc_offset: str
     computed_at: str
     local_now: NotRequired[str]
+    timezone: NotRequired[str]
+    utc_offset: NotRequired[str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,8 +172,8 @@ class SchedulerHostClock:
             JSON-compatible host clock dictionary.
         """
         return {
-            "timezone": self.timezone,
-            "utc_offset": self.utc_offset,
+            "scheduler_timezone": self.timezone,
+            "scheduler_utc_offset": self.utc_offset,
             "computed_at": _format_time(self.computed_at),
             "local_now": self.local_now.isoformat(),
         }
@@ -191,8 +193,8 @@ class SchedulerHostClock:
         if local_now.tzinfo is None:
             local_now = local_now.replace(tzinfo=UTC)
         return cls(
-            timezone=data["timezone"],
-            utc_offset=data["utc_offset"],
+            timezone=data.get("scheduler_timezone", data.get("timezone", "local")),
+            utc_offset=data.get("scheduler_utc_offset", data.get("utc_offset", "+00:00")),
             computed_at=computed_at,
             local_now=local_now,
         )
@@ -451,17 +453,16 @@ def capture_scheduler_host_clock(now: datetime | None = None) -> SchedulerHostCl
     """Capture the scheduler host clock context.
 
     Args:
-        now: UTC computation basis, or `None` for the current time.
+        now: Host-local computation basis, or `None` for the current host time.
 
     Returns:
         Host clock context for diagnostics.
     """
-    computed_at = _coerce_utc(now)
-    local_now = computed_at.astimezone()
+    local_now = datetime.now().astimezone() if now is None else _coerce_local(now)
     return SchedulerHostClock(
         timezone=_timezone_name(local_now),
         utc_offset=_format_offset(local_now),
-        computed_at=computed_at,
+        computed_at=local_now.astimezone(UTC),
         local_now=local_now,
     )
 
@@ -539,6 +540,12 @@ def _format_time(value: datetime) -> str:
 
 def _parse_time(value: str) -> datetime:
     return _coerce_utc(datetime.fromisoformat(value))
+
+
+def _coerce_local(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value
 
 
 def _coerce_utc(value: datetime | None = None) -> datetime:

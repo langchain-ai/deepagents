@@ -17,6 +17,7 @@ from types import FrameType
 from typing import TYPE_CHECKING, cast
 
 from deepagents_talon.channels.base import outbound_media_root_from_env, send_with_retry
+from deepagents_talon.cron.time import format_local_run
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
@@ -311,17 +312,19 @@ class TalonHost:
             job.origin.conversation_id,
         )
         conversation_id = self._agent_conversation_id(conversation_root)
+        metadata: dict[str, object] = {
+            "channel": job.origin.channel,
+            "cron_job_id": job.id,
+            "cron_job_name": job.name,
+            "origin_conversation_id": job.origin.conversation_id,
+            "cron_origin_message_id": job.origin.message_id,
+            "trigger": "cron",
+            **_cron_schedule_metadata(job),
+        }
         result = await self._invoke_agent(
             conversation_id=conversation_id,
-            text=job.prompt,
-            metadata={
-                "channel": job.origin.channel,
-                "cron_job_id": job.id,
-                "cron_job_name": job.name,
-                "origin_conversation_id": job.origin.conversation_id,
-                "cron_origin_message_id": job.origin.message_id,
-                "trigger": "cron",
-            },
+            text=_with_cron_preface(job, metadata),
+            metadata=metadata,
         )
         return result.text
 
@@ -697,6 +700,66 @@ def _outbound_media_from_refs(
             path = getattr(ref, "path", None)
             failed.append(getattr(ref, "alt", "") or getattr(path, "name", "attachment"))
     return media, failed
+
+
+def _cron_schedule_metadata(job: CronJob) -> dict[str, str | None]:
+    clock = job.scheduler_host_clock
+    schedule_timezone = _schedule_timezone(job)
+    schedule_local_now = (
+        None
+        if clock is None or schedule_timezone is None
+        else format_local_run(clock.computed_at, schedule_timezone)
+    )
+    return {
+        "schedule_timezone": schedule_timezone,
+        "schedule_local_now": schedule_local_now,
+        "scheduler_host_timezone": None if clock is None else clock.timezone,
+        "scheduler_host_local_now": None
+        if clock is None
+        else _format_scheduler_host_local_now(job),
+    }
+
+
+def _schedule_timezone(job: CronJob) -> str | None:
+    active_window = job.schedule.active_window
+    return job.schedule.timezone or (None if active_window is None else active_window.timezone)
+
+
+def _format_scheduler_host_local_now(job: CronJob) -> str | None:
+    clock = job.scheduler_host_clock
+    if clock is None:
+        return None
+    return f"{clock.local_now:%Y-%m-%d %H:%M} {clock.timezone}"
+
+
+def _with_cron_preface(job: CronJob, metadata: Mapping[str, object]) -> str:
+    preface = _cron_preface(job, metadata)
+    if not preface:
+        return job.prompt
+    return f"{preface}\n\n{job.prompt}"
+
+
+def _cron_preface(job: CronJob, metadata: Mapping[str, object]) -> str:
+    sentences: list[str] = []
+    schedule_timezone = _metadata_text(metadata, "schedule_timezone")
+    schedule_local_now = _metadata_text(metadata, "schedule_local_now")
+    scheduler_host_timezone = _metadata_text(metadata, "scheduler_host_timezone")
+    scheduler_host_local_now = _metadata_text(metadata, "scheduler_host_local_now")
+    if schedule_timezone is not None:
+        context = "active hours" if job.schedule.active_window is not None else "schedule time"
+        sentences.append(f"This scheduled run is evaluated against {schedule_timezone} {context}.")
+    if schedule_local_now is not None:
+        sentences.append(f"The current schedule-local time is {schedule_local_now}.")
+    if scheduler_host_local_now is not None:
+        sentences.append(f"The scheduler host reports local time as {scheduler_host_local_now}.")
+    elif scheduler_host_timezone is not None:
+        sentences.append(f"The scheduler host reports time zone {scheduler_host_timezone}.")
+    return " ".join(sentences)
+
+
+def _metadata_text(metadata: Mapping[str, object], key: str) -> str | None:
+    value = metadata.get(key)
+    return value if isinstance(value, str) and value else None
 
 
 def _conversation_key(provider: str, conversation_id: str) -> str:

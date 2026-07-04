@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -80,9 +81,69 @@ def test_wall_clock_job_persists_timezone_and_local_output(tmp_path) -> None:
     assert job.schedule.to_dict()["timezone"] == "America/Los_Angeles"
     assert job.schedule.to_dict()["wall_time"] == "20:00"
     assert job.scheduler_host_clock is not None
-    assert CronTools(store=store, origin=lambda: CronOrigin(conversation_id="chat")).list_jobs()[0][
-        "next_run_local"
-    ] == "2026-07-01 20:00 America/Los_Angeles"
+    assert (
+        CronTools(store=store, origin=lambda: CronOrigin(conversation_id="chat")).list_jobs()[0][
+            "next_run_local"
+        ]
+        == "2026-07-01 20:00 America/Los_Angeles"
+    )
+
+
+def test_scheduler_host_clock_records_injected_utc_context(tmp_path) -> None:
+    now = datetime(2026, 7, 2, 15, 30, tzinfo=UTC)
+    store = _store(tmp_path)
+
+    job = store.create_job(
+        prompt="heartbeat",
+        schedule=CronSchedule.parse("every 15m"),
+        origin=CronOrigin(conversation_id="chat"),
+        now=now,
+    )
+
+    assert job.to_dict()["scheduler_host_clock"] == {
+        "scheduler_timezone": "UTC",
+        "scheduler_utc_offset": "+00:00",
+        "computed_at": "2026-07-02T15:30:00+00:00",
+        "local_now": "2026-07-02T15:30:00+00:00",
+    }
+
+
+def test_scheduler_host_clock_records_injected_named_timezone(tmp_path) -> None:
+    now = datetime(2026, 7, 2, 8, 30, tzinfo=ZoneInfo("America/Los_Angeles"))
+    store = _store(tmp_path)
+
+    job = store.create_job(
+        prompt="heartbeat",
+        schedule=CronSchedule.parse("every 15m"),
+        origin=CronOrigin(conversation_id="chat"),
+        now=now,
+    )
+
+    assert job.to_dict()["scheduler_host_clock"] == {
+        "scheduler_timezone": "America/Los_Angeles",
+        "scheduler_utc_offset": "-07:00",
+        "computed_at": "2026-07-02T15:30:00+00:00",
+        "local_now": "2026-07-02T08:30:00-07:00",
+    }
+
+
+def test_scheduler_host_clock_records_injected_offset_timezone(tmp_path) -> None:
+    now = datetime(2026, 7, 2, 21, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+    store = _store(tmp_path)
+
+    job = store.create_job(
+        prompt="heartbeat",
+        schedule=CronSchedule.parse("every 15m"),
+        origin=CronOrigin(conversation_id="chat"),
+        now=now,
+    )
+
+    assert job.to_dict()["scheduler_host_clock"] == {
+        "scheduler_timezone": "UTC+05:30",
+        "scheduler_utc_offset": "+05:30",
+        "computed_at": "2026-07-02T15:30:00+00:00",
+        "local_now": "2026-07-02T21:00:00+05:30",
+    }
 
 
 def test_active_window_moves_initial_run_to_next_allowed_time(tmp_path) -> None:

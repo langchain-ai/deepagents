@@ -1,0 +1,14 @@
+libs/code/deepagents_code/_tool_stream.py
+  h_9f69767fa5fabf 16-77
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4756d82cb17eb2da98a279090193ab95fa6fa3a4",
+  "prompts": {},
+  "humans": {
+    "h_9f69767fa5fabf": {
+      "author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

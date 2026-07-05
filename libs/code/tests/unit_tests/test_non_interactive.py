@@ -2092,11 +2092,18 @@ class TestProcessAIMessageHooks:
         good.content_blocks = [
             {
                 "type": "tool_call_chunk",
-                "name": "write_file",
+                "name": None,
                 "id": "call-b",
                 "index": 0,
                 "args": '{"path": "x.py"}',
-            }
+            },
+            {
+                "type": "tool_call_chunk",
+                "name": "write_file",
+                "id": None,
+                "index": 0,
+                "args": "",
+            },
         ]
         state = StreamState(quiet=True)
         console = Console(quiet=True)

@@ -96,20 +96,24 @@ class TestToolCallBufferIngest:
         buffer.ingest(name=None, tool_id=None, args="")
         assert buffer.parse_args() == {"a": 1}
 
-    def test_new_tool_id_resets_stale_fragments(self) -> None:
-        """A differing id (reused streaming index) discards the old call's args.
+    def test_new_tool_id_resets_stale_call_state(self) -> None:
+        """A differing id (reused streaming index) discards old call state.
 
         Indices restart per message, so a buffer retained from an earlier call
         (e.g. one whose args never parsed) can be handed to a new call via the
-        same key. The new id must reset the accumulated fragments so they never
-        fuse into an unparseable blob that silently drops the new `tool.use`.
+        same key. The new id must reset the old call's arguments and metadata so
+        they cannot leak into chunks for the new call.
         """
         buffer = ToolCallBuffer(
-            name="read_file", tool_id="toolu_a", args_parts=["{bad"]
+            name="read_file",
+            tool_id="toolu_a",
+            args_parts=["{bad"],
+            displayed=True,
         )
-        buffer.ingest(name="write_file", tool_id="toolu_b", args='{"x": 1}')
+        buffer.ingest(name=None, tool_id="toolu_b", args='{"x": 1}')
         assert buffer.tool_id == "toolu_b"
-        assert buffer.name == "write_file"
+        assert buffer.name is None
+        assert buffer.displayed is False
         assert buffer.parse_args() == {"x": 1}
 
     def test_new_tool_id_resets_warned_latch(self) -> None:

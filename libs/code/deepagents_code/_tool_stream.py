@@ -186,11 +186,13 @@ class ToolCallBuffer:
         # parsed) can collide here. Reset the accumulated arg state so the new
         # call's fragments never append onto the old call's leftover — which would
         # otherwise leave both unparseable and silently drop the new call's
-        # `tool.use`. `warned` is reset too so a fresh malformed payload is still
-        # surfaced once.
+        # `tool.use`. Per-call metadata is reset too, so stale name/display state
+        # cannot bleed into the new call if its first chunk only carries the id.
         if tool_id and self.tool_id and tool_id != self.tool_id:
+            self.name = None
             self.args = None
             self.args_parts = []
+            self.displayed = False
             self.warned = False
 
         if name:

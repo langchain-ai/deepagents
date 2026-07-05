@@ -45,7 +45,8 @@ Unifying these into a single function would require either a common
 widget-or-dict abstraction (indirection with no behavioral gain) or pushing
 widget-aware logic into this shared module (coupling headless mode to TUI
 concepts it does not use). The split is deliberate: share everything that *can*
-drift (payload shapes, arg parsing, status normalization, output truncation)
+drift (payload shapes, arg parsing, status normalization, output truncation, and
+the end-of-stream classification of tool calls that never emitted a `tool.use`)
 here, and keep everything that *must* differ (when to dispatch, where args come
 from, HITL handling) in each surface.
 
@@ -103,9 +104,12 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypedDict, cast
 
 from deepagents_code.hooks import HOOK_TOOL_OUTPUT_LIMIT
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -494,6 +498,50 @@ class ToolCallBuffer:
         if not isinstance(parsed, dict):
             return {"value": parsed}
         return parsed
+
+
+class UnemittedToolCalls(NamedTuple):
+    """Counts of buffered tool calls that never emitted a `tool.use`.
+
+    A `NamedTuple` so callers can still unpack positionally while the field names
+    keep the two same-typed slots from being load-bearing at every call site (a
+    bare `(int, int)` invites a silent transposition). Both surfaces log the two
+    counts as separate diagnostics.
+    """
+
+    unparsed: int
+    """Named buffers whose args never parsed."""
+
+    idless_parsed: int
+    """Named buffers whose args parsed but whose `tool_id` stayed `None`."""
+
+
+def count_unemitted_tool_calls(buffers: Iterable[ToolCallBuffer]) -> UnemittedToolCalls:
+    """Classify buffered tool calls that never emitted a `tool.use`.
+
+    Both surfaces log the same end-of-stream diagnostic for tool calls still in
+    their buffer map when the stream ends: those whose args never parsed, and
+    those whose args parsed but whose `tool_id` stayed `None` (so `tool.use` was
+    gated out). Sharing the classification here keeps the two diagnostics from
+    drifting; each surface still emits its own log lines. `parse_args` is safe to
+    re-run (idempotent bar its one-shot `warned` latch).
+
+    Args:
+        buffers: The in-progress tool-call buffers remaining at stream end.
+
+    Returns:
+        The `unparsed` and `idless_parsed` counts (see `UnemittedToolCalls`).
+    """
+    unparsed = 0
+    idless_parsed = 0
+    for buffer in buffers:
+        if buffer.name is None:
+            continue
+        if buffer.parse_args() is None:
+            unparsed += 1
+        elif buffer.tool_id is None:
+            idless_parsed += 1
+    return UnemittedToolCalls(unparsed, idless_parsed)
 
 
 def build_tool_use_payload(

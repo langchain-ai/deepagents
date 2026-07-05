@@ -47,6 +47,7 @@ from deepagents_code._tool_stream import (
     build_tool_error_payload,
     build_tool_result_payload,
     build_tool_use_payload,
+    count_unemitted_tool_calls,
     normalize_tool_status,
     tool_call_buffer_key,
 )
@@ -490,18 +491,15 @@ def _process_ai_message(
 
             # Gate tool.use on a resolved tool id so this surface matches the
             # interactive one, which dispatches at widget-mount time in
-            # `textual_adapter.execute_task_textual` (see the
-            # `_dispatch_tool_use_hook` call near `ToolCallMessage` mount). Both
-            # gate on a resolved tool-call id and fire at most once per id — the
-            # parity contract is documented in `_tool_stream`. `buffer_id not in
+            # `textual_adapter.execute_task_textual`. Both gate on a resolved
+            # tool-call id and fire at most once per id. `buffer_id not in
             # in_flight_tool_calls` makes tool.use fire at most once per in-flight
             # *window*: the id is recorded below and cleared when its result
-            # arrives. This is slightly weaker than the TUI's monotonic
-            # `displayed_tool_ids` (never discarded within a turn) — a redelivery
-            # of the same id's arg chunks *after* its result would re-fire here.
-            # Standard `stream_mode="messages"` streaming never reorders a call's
-            # chunks after its result, so the in-flight window is sufficient in
-            # practice.
+            # arrives. That window is weaker than the TUI's monotonic
+            # `displayed_tool_ids`; see the "fire-once-per-in-flight-window"
+            # clause of the parity contract in `_tool_stream` for why it is
+            # nonetheless sufficient under standard `stream_mode="messages"`
+            # streaming.
             parsed_args = buffer.parse_args()
             if (
                 isinstance(buffer_name, str)
@@ -577,10 +575,12 @@ def _process_message_chunk(
             correlated_tool_name = in_flight.name if in_flight is not None else ""
             state.displayed_tool_call_ids.discard(tool_id)
             if tool_args is None:
-                # Info, not debug: a real-id result with no matching tool.use is
-                # a gap a hook consumer may want to notice (its args never
-                # parsed), so keep it greppable at default log levels.
-                logger.info(
+                # Warning, not info/debug: a real-id result with no matching
+                # tool.use means a hook consumer sees a `tool.result` with empty
+                # args for a tool that actually executed (its args never parsed) —
+                # degraded audit fidelity worth surfacing at default log levels,
+                # consistent with the rest of this feature's severity philosophy.
+                logger.warning(
                     "tool.result for %s has no correlated tool.use args; "
                     "sending empty tool_args",
                     tool_id,
@@ -1093,16 +1093,24 @@ async def _run_agent_loop(
         # only asserts the args never parsed. Guarded so a logging failure can
         # never mask an exception propagating from the stream.
         try:
-            unparsed_calls = sum(
-                1
-                for buffer in state.tool_call_buffers.values()
-                if buffer.name is not None and buffer.parse_args() is None
+            # Two distinct reasons a buffered call never fired tool.use — args
+            # that never parsed, and args that parsed but carried no id (so
+            # tool.use was gated out). The classification is shared with the TUI
+            # via `count_unemitted_tool_calls`; each surface logs its own lines.
+            unparsed_calls, idless_parsed_calls = count_unemitted_tool_calls(
+                state.tool_call_buffers.values()
             )
             if unparsed_calls:
                 logger.info(
                     "Stream ended with %d tool call(s) whose arguments never "
                     "parsed; no tool.use was emitted for them",
                     unparsed_calls,
+                )
+            if idless_parsed_calls:
+                logger.info(
+                    "Stream ended with %d tool call(s) whose arguments parsed but "
+                    "carried no tool-call id; no tool.use was emitted for them",
+                    idless_parsed_calls,
                 )
         except Exception:
             logger.warning(

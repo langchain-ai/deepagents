@@ -21,6 +21,7 @@ from rich.text import Text
 from deepagents_code._tool_stream import (
     TOOL_OUTPUT_TRUNCATION_MARKER,
     UNRENDERABLE_TOOL_OUTPUT,
+    ToolCallBuffer,
 )
 from deepagents_code.config import SHELL_ALLOW_ALL, ModelResult
 from deepagents_code.file_ops import FileOpTracker
@@ -2462,13 +2463,18 @@ class TestProcessMessageChunkHooks:
             patch(
                 "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
             ) as mock_dispatch,
-            caplog.at_level("DEBUG", logger="deepagents_code.non_interactive"),
+            caplog.at_level("WARNING", logger="deepagents_code.non_interactive"),
         ):
             _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
 
         payload = mock_dispatch.call_args[0][1]
         assert payload["tool_args"] == {}
-        assert any("no correlated tool.use args" in r.message for r in caplog.records)
+        # Warning level: an executed tool reported with empty args is degraded
+        # audit fidelity worth surfacing at default log levels.
+        assert any(
+            "no correlated tool.use args" in r.message and r.levelname == "WARNING"
+            for r in caplog.records
+        )
 
     def test_tool_result_not_dispatched_for_ai_message(self) -> None:
         """tool.result must not fire when the message is an AIMessage."""
@@ -2735,6 +2741,55 @@ class TestOrphanedToolResultHooks:
                 "tool_output": "Stream ended before tool result",
             }
         ]
+
+    async def test_run_agent_loop_logs_unemitted_buffers_at_stream_end(
+        self, caplog
+    ) -> None:
+        """Both end-of-stream diagnostics fire for buffers that never emitted.
+
+        Drives the real `_run_agent_loop` finally block: a buffer whose args never
+        parse and one whose args parse but carry no id are left in
+        `state.tool_call_buffers` at a clean stream end. Pins that the shared
+        `count_unemitted_tool_calls` counts are wired to the correct log lines —
+        a swap of the two counts, a deleted branch, or a garbled message fails
+        here, none of which the helper-level unit test can catch.
+        """
+
+        async def seed(  # noqa: RUF029  # replaces the async _stream_agent seam
+            _agent: object,
+            _stream_input: object,
+            _config: object,
+            state: StreamState,
+            _console: object,
+            _file_op_tracker: object,
+            _context: object,
+        ) -> None:
+            unparsed = ToolCallBuffer()
+            unparsed.ingest(name="f", tool_id="t1", args='{"a": ')  # never closes
+            idless_parsed = ToolCallBuffer()
+            idless_parsed.ingest(name="g", tool_id=None, args='{"b": 2}')
+            state.tool_call_buffers["k1"] = unparsed
+            state.tool_call_buffers["k2"] = idless_parsed
+
+        with (
+            patch("deepagents_code.non_interactive._stream_agent", new=seed),
+            patch(
+                "deepagents_code.non_interactive.dispatch_hook", new_callable=AsyncMock
+            ),
+            patch("deepagents_code.non_interactive.dispatch_hook_fire_and_forget"),
+            caplog.at_level("INFO", logger="deepagents_code.non_interactive"),
+        ):
+            await _run_agent_loop(
+                MagicMock(),
+                "hi",
+                {"configurable": {"thread_id": "t"}},
+                Console(quiet=True),
+                MagicMock(),
+                quiet=True,
+            )
+
+        assert any("arguments never parsed" in r.message for r in caplog.records)
+        assert any("carried no tool-call id" in r.message for r in caplog.records)
 
 
 class TestRunAgentLoopHITLReject:

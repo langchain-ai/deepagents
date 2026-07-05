@@ -16,6 +16,7 @@ from deepagents_code._tool_stream import (
     build_tool_error_payload,
     build_tool_result_payload,
     build_tool_use_payload,
+    count_unemitted_tool_calls,
     normalize_tool_status,
     tool_call_buffer_key,
 )
@@ -422,6 +423,19 @@ class TestPayloadBuilders:
         assert payload["tool_output"] == exact
         assert not payload["tool_output"].endswith(TOOL_OUTPUT_TRUNCATION_MARKER)
 
+    def test_tool_output_one_over_limit_is_marked(self) -> None:
+        """The first length that trips the cap (`LIMIT + 1`) is truncated + marked.
+
+        Pins the exact `>` boundary: `LIMIT` is passed through (test above) and
+        `LIMIT + 1` must be the first value that truncates, guarding against a
+        `>=`/`>` off-by-one in the builder.
+        """
+        payload = build_tool_result_payload(
+            "read_file", "toolu_1", {}, "success", "x" * (HOOK_TOOL_OUTPUT_LIMIT + 1)
+        )
+        assert len(payload["tool_output"]) == HOOK_TOOL_OUTPUT_LIMIT
+        assert payload["tool_output"].endswith(TOOL_OUTPUT_TRUNCATION_MARKER)
+
     def test_tool_args_not_truncated(self) -> None:
         """`tool_args` is passed through in full; only output is capped."""
         big_content = "y" * (HOOK_TOOL_OUTPUT_LIMIT + 500)
@@ -429,3 +443,61 @@ class TestPayloadBuilders:
             "write_file", "toolu_1", {"content": big_content}, "success", ""
         )
         assert payload["tool_args"]["content"] == big_content
+
+
+class TestCountUnemittedToolCalls:
+    """Classification of buffered tool calls that never fired a `tool.use`."""
+
+    def test_empty_iterable_counts_zero(self) -> None:
+        """No buffers means nothing unemitted."""
+        assert count_unemitted_tool_calls([]) == (0, 0)
+
+    def test_unnamed_buffer_ignored(self) -> None:
+        """A buffer that never even got a name is not counted either way.
+
+        Without a name no tool call was ever recognizable, so it is neither an
+        unparsed nor an id-less unemitted call.
+        """
+        unnamed = ToolCallBuffer()
+        unnamed.ingest(name=None, tool_id="t", args='{"a": ')
+        assert count_unemitted_tool_calls([unnamed]) == (0, 0)
+
+    def test_classifies_unparsed_and_idless_parsed(self) -> None:
+        """Named buffers split into unparsed vs parsed-but-id-less; others skip.
+
+        A named buffer whose args parsed *and* carries an id would have emitted a
+        `tool.use`, so it is counted in neither bucket.
+        """
+        unparsed = ToolCallBuffer()
+        unparsed.ingest(name="f", tool_id="t1", args='{"a": ')  # never closes
+
+        parsed_with_id = ToolCallBuffer()
+        parsed_with_id.ingest(name="g", tool_id="t2", args='{"a": 1}')
+
+        idless_parsed = ToolCallBuffer()
+        idless_parsed.ingest(name="h", tool_id=None, args='{"b": 2}')
+
+        assert count_unemitted_tool_calls(
+            [unparsed, parsed_with_id, idless_parsed]
+        ) == (1, 1)
+
+    def test_asymmetric_counts_pin_slot_order(self) -> None:
+        """Distinct per-bucket counts catch a swapped-counter transposition.
+
+        The other cases all assert symmetric tuples (`(0, 0)`, `(1, 1)`), which a
+        swap of the two return values would pass unchanged. Two unparsed buffers
+        against one id-less-parsed buffer pins which count is which — both via the
+        positional tuple and the named fields.
+        """
+        unparsed_a = ToolCallBuffer()
+        unparsed_a.ingest(name="a", tool_id="t1", args='{"x": ')  # never closes
+        unparsed_b = ToolCallBuffer()
+        unparsed_b.ingest(name="b", tool_id="t2", args='{"y": ')  # never closes
+
+        idless_parsed = ToolCallBuffer()
+        idless_parsed.ingest(name="c", tool_id=None, args='{"z": 3}')
+
+        result = count_unemitted_tool_calls([unparsed_a, unparsed_b, idless_parsed])
+        assert result == (2, 1)
+        assert result.unparsed == 2
+        assert result.idless_parsed == 1

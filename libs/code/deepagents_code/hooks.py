@@ -91,6 +91,17 @@ that act on the arguments (e.g. a linter reading a `write_file` `content`) see
 the exact value the tool received.
 """
 
+HOOK_SUBPROCESS_TIMEOUT = 5
+"""Seconds a single hook subprocess may run before it is killed.
+
+Bounds how long one misbehaving hook can block the dispatch thread. Consumed in
+code by the `subprocess.run` timeout and its timeout log message here, so those
+two never drift. `app.py`'s graceful-exit comment names this symbol (rather than
+a bare literal) so its prose can't go stale; note the drain itself is bounded
+separately by `_GRACEFUL_EXIT_WAIT_SECONDS`, not by this value — a hook can run
+up to this long while the aggregate drain gives up sooner.
+"""
+
 _hooks_config: list[dict[str, Any]] | None = None
 """Cached config — loaded lazily on first dispatch."""
 
@@ -147,8 +158,12 @@ def _load_hooks() -> list[dict[str, Any]]:
 def _run_single_hook(command: list[str], event: str, payload_bytes: bytes) -> None:
     """Execute a single hook command, writing the JSON payload to its stdin.
 
-    Uses `subprocess.run` which automatically kills the child process on
-    timeout, preventing zombie/orphan process leaks.
+    On timeout `subprocess.run` kills and reaps only the direct hook process
+    (its `Popen.kill()` targets that one PID, never the process group), so any
+    grandchildren it spawned are left as orphans regardless — the timeout bounds
+    the hook process, not its whole descendant tree. `start_new_session=True`
+    does not change that; it only isolates the hook (and its descendants) into
+    their own session so a signal to our group doesn't reach them.
 
     Args:
         command: The command and arguments to run.
@@ -162,11 +177,16 @@ def _run_single_hook(command: list[str], event: str, payload_bytes: bytes) -> No
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
-            timeout=5,
+            timeout=HOOK_SUBPROCESS_TIMEOUT,
             check=False,
         )
     except subprocess.TimeoutExpired:
-        logger.warning("Hook command timed out (>5s) for event %s: %s", event, command)
+        logger.warning(
+            "Hook command timed out (>%ss) for event %s: %s",
+            HOOK_SUBPROCESS_TIMEOUT,
+            event,
+            command,
+        )
     except (FileNotFoundError, PermissionError) as exc:
         logger.warning("Hook command failed for event %s: %s — %s", event, command, exc)
     except Exception:
@@ -190,8 +210,8 @@ def _dispatch_hook_sync(
 
     Iterates over all configured hooks, skipping those whose event filter
     does not match or whose `command` is missing/invalid. Matching hooks are
-    executed concurrently with a 5-second timeout per command. Errors are caught
-    per-hook and logged without propagating.
+    executed concurrently, each bounded by `HOOK_SUBPROCESS_TIMEOUT` per command.
+    Errors are caught per-hook and logged without propagating.
 
     Args:
         event: Dotted event name (e.g. `'session.start'`).
@@ -242,8 +262,8 @@ async def dispatch_hook(event: str, payload: Mapping[str, Any]) -> None:
     `"event"` key so callers don't need to duplicate it.
 
     The blocking subprocess work is offloaded to a thread so the caller's
-    event loop is never stalled. Matching hooks run concurrently, each with
-    a 5-second timeout. Errors are logged and never propagated.
+    event loop is never stalled. Matching hooks run concurrently, each bounded
+    by `HOOK_SUBPROCESS_TIMEOUT`. Errors are logged and never propagated.
 
     Args:
         event: Dotted event name (e.g. `'session.start'`).

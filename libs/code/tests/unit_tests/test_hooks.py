@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import subprocess
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
@@ -191,32 +192,46 @@ class TestDispatchHook:
 
         mock_run.assert_called_once()
 
-    async def test_hook_without_command_skipped(self):
-        """Hook entry missing 'command' is silently skipped."""
+    async def test_hook_without_command_skipped(self, caplog):
+        """Hook entry missing 'command' is skipped and the misconfig is warned."""
         hooks_mod._hooks_config = [{"events": ["session.start"]}]
 
-        with patch("deepagents_code.hooks.subprocess.run") as mock_run:
+        with (
+            patch("deepagents_code.hooks.subprocess.run") as mock_run,
+            caplog.at_level(logging.WARNING, logger="deepagents_code.hooks"),
+        ):
             await hooks_mod.dispatch_hook("session.start", {})
 
         mock_run.assert_not_called()
+        # The config mistake must be greppable, not look like a hook that simply
+        # never matched.
+        assert "invalid `command`" in caplog.text
 
-    async def test_hook_with_string_command_skipped(self):
-        """Hook with string command (not list) is skipped."""
+    async def test_hook_with_string_command_skipped(self, caplog):
+        """Hook with string command (not list) is skipped and warned."""
         hooks_mod._hooks_config = [{"command": "echo hello"}]
 
-        with patch("deepagents_code.hooks.subprocess.run") as mock_run:
+        with (
+            patch("deepagents_code.hooks.subprocess.run") as mock_run,
+            caplog.at_level(logging.WARNING, logger="deepagents_code.hooks"),
+        ):
             await hooks_mod.dispatch_hook("session.start", {})
 
         mock_run.assert_not_called()
+        assert "invalid `command`" in caplog.text
 
-    async def test_hook_with_empty_command_list_skipped(self):
-        """Hook with empty command list is skipped."""
+    async def test_hook_with_empty_command_list_skipped(self, caplog):
+        """Hook with empty command list is skipped and warned."""
         hooks_mod._hooks_config = [{"command": []}]
 
-        with patch("deepagents_code.hooks.subprocess.run") as mock_run:
+        with (
+            patch("deepagents_code.hooks.subprocess.run") as mock_run,
+            caplog.at_level(logging.WARNING, logger="deepagents_code.hooks"),
+        ):
             await hooks_mod.dispatch_hook("session.start", {})
 
         mock_run.assert_not_called()
+        assert "invalid `command`" in caplog.text
 
     async def test_timeout_does_not_propagate(self):
         """TimeoutExpired is caught and logged, not raised."""
@@ -362,6 +377,36 @@ class TestDispatchHook:
         stdin_bytes = mock_run.call_args[1]["input"]
         assert b"STRINGIFIED_WIDGET" in stdin_bytes
 
+    async def test_dispatch_hook_drops_event_when_default_str_raises(self, caplog):
+        """If `default=str` itself raises, the event is dropped (documented gap).
+
+        `json.dumps(default=str)` degrades a non-serializable value to its string
+        form, but if that value's own `__str__` raises, serialization fails and
+        the outer guard drops the whole event rather than delivering a partial
+        payload. This is a known non-guarantee — only `tool_output` is
+        sentinel-protected upstream, not `tool_args` — so pin it here so any
+        future change to the guard is a conscious one.
+        """
+        hooks_mod._hooks_config = [{"command": ["cat"]}]
+
+        class _Exploding:
+            def __str__(self) -> str:
+                msg = "cannot stringify"
+                raise RuntimeError(msg)
+
+            __repr__ = __str__
+
+        with (
+            patch("deepagents_code.hooks.subprocess.run") as mock_run,
+            caplog.at_level(logging.WARNING, logger="deepagents_code.hooks"),
+        ):
+            await hooks_mod.dispatch_hook("tool.use", {"tool_args": _Exploding()})
+
+        # Serialization failed, so the subprocess never ran — the whole event is
+        # dropped rather than partially delivered.
+        mock_run.assert_not_called()
+        assert "Unexpected error in dispatch_hook" in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # dispatch_hook_fire_and_forget
@@ -447,6 +492,46 @@ class TestDrainPendingHooks:
         await hooks_mod.drain_pending_hooks()
 
         assert hooks_mod._background_tasks == set()
+
+    async def test_drain_snapshots_once_and_ignores_later_scheduled_hooks(self):
+        """A hook scheduled *during* the drain await is not awaited by that drain.
+
+        `drain_pending_hooks` snapshots the in-flight set once; its documented
+        precondition is that no further dispatches happen during the await. Pin
+        that snapshot-once behavior: a task that schedules another task while the
+        drain is in flight leaves the second one un-awaited by the same drain
+        call, so a change to loop-until-empty semantics fails here.
+        """
+        loop = asyncio.get_running_loop()
+        second_done = False
+
+        async def _second() -> None:
+            nonlocal second_done
+            await asyncio.sleep(0.05)
+            second_done = True
+
+        async def _first() -> None:
+            # Yield first so this runs inside the drain's gather, then schedule a
+            # new hook task *after* the drain has already snapshotted the set.
+            await asyncio.sleep(0)
+            second = loop.create_task(_second())
+            hooks_mod._background_tasks.add(second)
+            second.add_done_callback(hooks_mod._background_tasks.discard)
+
+        first = loop.create_task(_first())
+        hooks_mod._background_tasks.add(first)
+        first.add_done_callback(hooks_mod._background_tasks.discard)
+
+        await hooks_mod.drain_pending_hooks()
+
+        # The drain awaited `first` (now done) but not the task it spawned.
+        assert first.done()
+        assert not second_done
+        assert hooks_mod._background_tasks  # the second task is still tracked
+
+        # Clean up the straggler so it does not leak into other tests.
+        await asyncio.gather(*hooks_mod._background_tasks, return_exceptions=True)
+        assert second_done
 
 
 # ---------------------------------------------------------------------------

@@ -25,6 +25,11 @@ from deepagents_code._tool_stream import (
 )
 from deepagents_code.approval_mode import APPROVAL_MODE_NAMESPACE, approval_mode_key
 from deepagents_code.config import ASCII_GLYPHS, UNICODE_GLYPHS, build_stream_config
+from deepagents_code.non_interactive import (
+    StreamState,
+    _process_ai_message,
+    _process_message_chunk,
+)
 from deepagents_code.textual_adapter import (
     ModelStats,
     SessionStats,
@@ -325,6 +330,65 @@ class TestInterruptCleanup:
         ]
         tool_widget.set_rejected.assert_called_once_with()
         assert adapter._current_tool_messages == {}
+
+    async def test_terminal_hooks_dispatched_before_state_writes(self) -> None:
+        """Terminal hooks are scheduled before the (possibly slow) state writes.
+
+        On an interactive quit the graceful-exit drain in `app.py` snapshots the
+        in-flight hook tasks right after cancelling the worker. If the terminal
+        hooks fired only *after* `aupdate_state`'s awaited remote writes, a slow
+        checkpointer could push them past that snapshot and they would be
+        cancelled at loop teardown — a silent audit gap. Pin that every hook
+        dispatch precedes the first state write.
+        """
+        order: list[str] = []
+
+        async def _record_update(*_: Any, **__: Any) -> None:
+            # A real remote state write awaits; the yield also mirrors how a slow
+            # checkpointer would interleave with the scheduled hook tasks.
+            await asyncio.sleep(0)
+            order.append("aupdate_state")
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_active_message=MagicMock(),
+        )
+        tool_widget = MagicMock()
+        tool_widget.tool_name = "execute"
+        tool_widget.args = {"command": "sleep 100"}
+        tool_widget._tool_name = "execute"
+        tool_widget._args = {"command": "sleep 100"}
+        adapter._current_tool_messages = {"call-1": tool_widget}
+        agent = SimpleNamespace(aupdate_state=_record_update)
+
+        def _record_dispatch(event: str, _payload: dict[str, Any]) -> None:
+            order.append(f"dispatch:{event}")
+
+        with patch(
+            "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget",
+            side_effect=_record_dispatch,
+        ):
+            await _handle_interrupt_cleanup(
+                adapter=adapter,
+                agent=agent,
+                config={"configurable": {"thread_id": "t-1"}},  # ty: ignore
+                pending_text_by_namespace={},
+                captured_input_tokens=0,
+                captured_output_tokens=0,
+                turn_stats=SessionStats(),
+                start_time=0.0,
+            )
+
+        assert "dispatch:tool.result" in order
+        assert "aupdate_state" in order
+        first_state_write = order.index("aupdate_state")
+        assert all(
+            order.index(item) < first_state_write
+            for item in order
+            if item.startswith("dispatch:")
+        )
 
     async def test_interrupt_stops_active_assistant_streams(self) -> None:
         """Interrupted streaming messages should not leave flush timers running."""
@@ -4469,8 +4533,8 @@ class TestToolHooksTextual:
         """A ToolMessage with no mounted widget emits tool.result with {} args.
 
         Mirrors the headless twin: an uncorrelated real-id result is logged at
-        info (greppable) and still dispatched so audit hooks observe every
-        executed tool.
+        warning (degraded audit fidelity, greppable at default levels) and still
+        dispatched so audit hooks observe every executed tool.
         """
         chunks = [
             (
@@ -4491,7 +4555,7 @@ class TestToolHooksTextual:
         )
 
         with (
-            caplog.at_level("INFO", logger="deepagents_code.textual_adapter"),
+            caplog.at_level("WARNING", logger="deepagents_code.textual_adapter"),
             patch(
                 "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
             ) as mock_dispatch,
@@ -4512,7 +4576,9 @@ class TestToolHooksTextual:
         assert result_payloads[0]["tool_name"] == "read_file"
         assert result_payloads[0]["tool_args"] == {}
         assert any(
-            "ghost-1" in record.message and "no correlated" in record.message
+            "ghost-1" in record.message
+            and "no correlated" in record.message
+            and record.levelname == "WARNING"
             for record in caplog.records
         )
 
@@ -6045,6 +6111,364 @@ class TestToolHooksTextual:
             c for c in mock_dispatch.call_args_list if c[0][0] == "tool.use"
         ]
         assert not tool_use_calls
+
+
+# ---------------------------------------------------------------------------
+# Cross-surface hook parity
+# ---------------------------------------------------------------------------
+
+
+def _normalize_hook_calls(
+    calls: list[tuple[str, dict[str, Any]]],
+) -> list[tuple[str, tuple[tuple[str, Any], ...]]]:
+    """Turn captured (event, payload) calls into an order-independent form.
+
+    Tool hooks are dispatched fire-and-forget and may be observed in any order
+    (the parity contract only guarantees the *set* of events is identical across
+    surfaces, not their arrival order), so sort by event + tool id/name and
+    freeze each payload into a hashable, comparable tuple.
+    """
+    # Dict keys are unique, so tuples sort by key alone and the (possibly
+    # non-comparable) values are never compared.
+    frozen = [(event, tuple(sorted(payload.items()))) for event, payload in calls]
+    return sorted(frozen, key=repr)
+
+
+def _run_headless_surface(
+    tool_call_blocks: list[dict[str, Any]],
+    tool_message: ToolMessage | None,
+) -> list[tuple[str, dict[str, Any]]]:
+    """Drive the headless surface and capture its fire-and-forget hook calls.
+
+    Feeds the tool-call blocks through `_process_ai_message` (as one streamed
+    `AIMessage`) then the terminal `ToolMessage` through `_process_message_chunk`
+    — the same functions the real `-p` runner uses.
+    """
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def _capture(event: str, payload: Any) -> None:  # noqa: ANN401
+        calls.append((event, dict(payload)))
+
+    state = StreamState(quiet=True)
+    console = Console(quiet=True)
+    file_op_tracker = MagicMock()
+    file_op_tracker.complete_with_message.return_value = None
+
+    ai_msg = MagicMock(spec=AIMessage)
+    ai_msg.content_blocks = tool_call_blocks
+
+    with patch(
+        "deepagents_code.non_interactive.dispatch_hook_fire_and_forget",
+        side_effect=_capture,
+    ):
+        _process_ai_message(ai_msg, state, console)
+        if tool_message is not None:
+            _process_message_chunk((tool_message, {}), state, console, file_op_tracker)
+    return calls
+
+
+async def _run_textual_surface(
+    stream_chunks: list[tuple[Any, ...]],
+) -> list[tuple[str, dict[str, Any]]]:
+    """Drive the TUI surface and capture its fire-and-forget hook calls.
+
+    Runs the equivalent `messages` stream through `execute_task_textual` — the
+    same entrypoint the interactive REPL uses.
+    """
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def _capture(event: str, payload: Any) -> None:  # noqa: ANN401
+        calls.append((event, dict(payload)))
+
+    adapter = TextualUIAdapter(
+        mount_message=_mock_mount,
+        update_status=_noop_status,
+        request_approval=_mock_approval,
+    )
+    with patch(
+        "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget",
+        side_effect=_capture,
+    ):
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(stream_chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+    return calls
+
+
+class TestCrossSurfaceHookParity:
+    """The headless and TUI surfaces emit identical hook payload *sets*.
+
+    The dispatch/gating/correlation layers are implemented separately in each
+    surface and kept in sync by hand (see the parity contract in `_tool_stream`).
+    These tests feed one scenario through both real surfaces and assert the
+    emitted `tool.use`/`tool.result`/`tool.error` payloads match, so a future
+    edit to one surface's gating that is not mirrored in the other fails loudly
+    rather than shipping green.
+    """
+
+    async def test_successful_tool_call_parity(self) -> None:
+        """A parsed tool call + success result: tool.use then tool.result, both."""
+        headless = _run_headless_surface(
+            [
+                {
+                    "type": "tool_call",
+                    "name": "read_file",
+                    "id": "call-1",
+                    "index": 0,
+                    "args": {"path": "foo.py"},
+                }
+            ],
+            ToolMessage(
+                content="ok",
+                tool_call_id="call-1",
+                name="read_file",
+                status="success",
+            ),
+        )
+        textual = await _run_textual_surface(
+            [
+                (
+                    (),
+                    "messages",
+                    (_tool_call_message("read_file", {"path": "foo.py"}, "call-1"), {}),
+                ),
+                (
+                    (),
+                    "messages",
+                    (
+                        ToolMessage(
+                            content="ok",
+                            tool_call_id="call-1",
+                            name="read_file",
+                            status="success",
+                        ),
+                        {},
+                    ),
+                ),
+            ]
+        )
+        assert _normalize_hook_calls(headless) == _normalize_hook_calls(textual)
+        # Sanity-check the shared expectation rather than only that they agree.
+        assert _normalize_hook_calls(headless) == _normalize_hook_calls(
+            [
+                (
+                    "tool.use",
+                    {
+                        "tool_name": "read_file",
+                        "tool_id": "call-1",
+                        "tool_args": {"path": "foo.py"},
+                    },
+                ),
+                (
+                    "tool.result",
+                    {
+                        "tool_name": "read_file",
+                        "tool_id": "call-1",
+                        "tool_args": {"path": "foo.py"},
+                        "tool_status": "success",
+                        "tool_output": "ok",
+                    },
+                ),
+            ]
+        )
+
+    async def test_errored_tool_call_parity(self) -> None:
+        """An error result co-fires tool.error alongside tool.result on both."""
+        blocks = [
+            {
+                "type": "tool_call",
+                "name": "run_shell",
+                "id": "call-9",
+                "index": 0,
+                "args": {"command": "false"},
+            }
+        ]
+        headless = _run_headless_surface(
+            blocks,
+            ToolMessage(
+                content="boom",
+                tool_call_id="call-9",
+                name="run_shell",
+                status="error",
+            ),
+        )
+        textual = await _run_textual_surface(
+            [
+                (
+                    (),
+                    "messages",
+                    (
+                        _tool_call_message("run_shell", {"command": "false"}, "call-9"),
+                        {},
+                    ),
+                ),
+                (
+                    (),
+                    "messages",
+                    (
+                        ToolMessage(
+                            content="boom",
+                            tool_call_id="call-9",
+                            name="run_shell",
+                            status="error",
+                        ),
+                        {},
+                    ),
+                ),
+            ]
+        )
+        assert _normalize_hook_calls(headless) == _normalize_hook_calls(textual)
+        events = sorted(event for event, _ in headless)
+        assert events == ["tool.error", "tool.result", "tool.use"]
+
+    async def test_unparsed_args_result_parity(self) -> None:
+        """Args that never parse: no tool.use, tool.result with empty args, both."""
+        headless = _run_headless_surface(
+            [
+                {
+                    "type": "tool_call_chunk",
+                    "name": "read_file",
+                    "id": "call-2",
+                    "index": 0,
+                    # Never closes, so the args never parse and no tool.use fires.
+                    "args": '{"path": ',
+                }
+            ],
+            ToolMessage(
+                content="ok",
+                tool_call_id="call-2",
+                name="read_file",
+                status="success",
+            ),
+        )
+        textual = await _run_textual_surface(
+            [
+                _tool_chunk(name="read_file", args='{"path": ', chunk_id="call-2"),
+                (
+                    (),
+                    "messages",
+                    (
+                        ToolMessage(
+                            content="ok",
+                            tool_call_id="call-2",
+                            name="read_file",
+                            status="success",
+                        ),
+                        {},
+                    ),
+                ),
+            ]
+        )
+        assert _normalize_hook_calls(headless) == _normalize_hook_calls(textual)
+        assert _normalize_hook_calls(headless) == _normalize_hook_calls(
+            [
+                (
+                    "tool.result",
+                    {
+                        "tool_name": "read_file",
+                        "tool_id": "call-2",
+                        "tool_args": {},
+                        "tool_status": "success",
+                        "tool_output": "ok",
+                    },
+                ),
+            ]
+        )
+
+    async def test_idless_tool_call_parity(self) -> None:
+        """An empty (uncorrelatable) tool-call id: no tool.use, bare tool.result.
+
+        A real `ToolMessage.tool_call_id` is always a string, so the "no usable
+        id" case is exercised with an empty string — falsy on both surfaces, so
+        neither correlates it and neither fires a `tool.use`.
+        """
+        headless = _run_headless_surface(
+            [
+                {
+                    "type": "tool_call",
+                    "name": "noop",
+                    "id": "",
+                    "index": 0,
+                    "args": {"x": 1},
+                }
+            ],
+            ToolMessage(content="done", tool_call_id="", name="noop"),
+        )
+        textual = await _run_textual_surface(
+            [
+                (
+                    (),
+                    "messages",
+                    (_tool_call_message("noop", {"x": 1}, ""), {}),
+                ),
+                (
+                    (),
+                    "messages",
+                    (ToolMessage(content="done", tool_call_id="", name="noop"), {}),
+                ),
+            ]
+        )
+        assert _normalize_hook_calls(headless) == _normalize_hook_calls(textual)
+        assert _normalize_hook_calls(headless) == _normalize_hook_calls(
+            [
+                (
+                    "tool.result",
+                    {
+                        "tool_name": "noop",
+                        "tool_id": "",
+                        "tool_args": {},
+                        "tool_status": "success",
+                        "tool_output": "done",
+                    },
+                ),
+            ]
+        )
+
+
+class TestTextualEndOfStreamDiagnostics:
+    """The TUI logs both end-of-stream diagnostics for unemitted buffers."""
+
+    async def test_logs_unparsed_and_idless_buffers_at_stream_end(self, caplog) -> None:
+        """Buffers that never mounted are classified into the two log lines.
+
+        Drives the real `execute_task_textual` to a clean stream end with two
+        buffers left behind: one whose args never parse (with an id) and one
+        whose args parse but carry no id. Both never mount a widget or fire a
+        `tool.use`, so they survive to the diagnostic block. Pins that the shared
+        `count_unemitted_tool_calls` counts are wired to the correct TUI log
+        lines — a swapped count, deleted branch, or garbled message fails here,
+        which the helper-level unit test cannot catch. Distinct chunk indices
+        keep the two fragments in separate buffers.
+        """
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        chunks = [
+            # Args never close -> unparsed, no tool.use, buffer retained.
+            _tool_chunk(name="f", args='{"a": ', chunk_id="t1", index=0),
+            # Args parse but no id -> tool.use gated out, buffer retained.
+            _tool_chunk(name="g", args='{"b": 2}', chunk_id=None, index=1),
+        ]
+        with (
+            patch("deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"),
+            caplog.at_level("INFO", logger="deepagents_code.textual_adapter"),
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        assert any("arguments never parsed" in r.message for r in caplog.records)
+        assert any("carried no tool-call id" in r.message for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------

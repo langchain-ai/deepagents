@@ -62,6 +62,7 @@ from deepagents_code._tool_stream import (
     build_tool_error_payload,
     build_tool_result_payload,
     build_tool_use_payload,
+    count_unemitted_tool_calls,
     normalize_tool_status,
     tool_call_buffer_key,
 )
@@ -1102,12 +1103,14 @@ async def execute_task_textual(
                             # widget concept; see `non_interactive.py`. The
                             # parity contract is documented in `_tool_stream`.
                             if tool_id:
-                                # Info, not debug: a real-id result with no
-                                # mounted widget (its args never parsed, so no
-                                # tool.use fired) is a gap a hook consumer may
-                                # want to notice — keep it greppable at default
-                                # log levels, matching the headless path.
-                                logger.info(
+                                # Warning, not info/debug: a real-id result with
+                                # no mounted widget (its args never parsed, so no
+                                # tool.use fired) means a hook consumer sees a
+                                # `tool.result` with empty args for a tool that
+                                # actually executed — degraded audit fidelity worth
+                                # surfacing at default log levels, matching the
+                                # headless path.
+                                logger.warning(
                                     "ToolMessage tool_call_id=%s not in "
                                     "_current_tool_messages; no correlated "
                                     "tool.use, sending empty tool_args",
@@ -1864,23 +1867,28 @@ async def execute_task_textual(
                         "Stream ended before tool result",
                     )
                     adapter._current_tool_messages.clear()
-                # Surface any buffered tool call whose args never parsed: it was
-                # never mounted and never fired a `tool.use`, so it would vanish
-                # with `tool_call_buffers` at turn end with no trace. Info, not
-                # warning — the precondition (a clean end mid-tool-call) is
-                # unusual and nothing executed for these; it only needs to be
-                # greppable. `parse_args` is safe to re-run (idempotent bar the
-                # one-shot `warned` latch).
-                unparsed_calls = sum(
-                    1
-                    for buffer in tool_call_buffers.values()
-                    if buffer.name is not None and buffer.parse_args() is None
+                # Surface any buffered tool call that never mounted and never
+                # fired a `tool.use`, so it would vanish with `tool_call_buffers`
+                # at turn end with no trace. Two distinct cases (args that never
+                # parsed, and args that parsed but carried no tool-call id) are
+                # classified by the shared `count_unemitted_tool_calls`. Info, not
+                # warning — the precondition (a clean end mid-tool-call) is unusual
+                # and nothing executed for these; it only needs to be greppable.
+                unparsed_calls, idless_parsed_calls = count_unemitted_tool_calls(
+                    tool_call_buffers.values()
                 )
                 if unparsed_calls:
                     logger.info(
                         "Stream ended with %d tool call(s) whose arguments never "
                         "parsed; no tool.use was emitted for them",
                         unparsed_calls,
+                    )
+                if idless_parsed_calls:
+                    logger.info(
+                        "Stream ended with %d tool call(s) whose arguments parsed "
+                        "but carried no tool-call id; no tool.use was emitted for "
+                        "them",
+                        idless_parsed_calls,
                     )
                 await dispatch_hook("task.complete", {"thread_id": thread_id})
                 break
@@ -2018,6 +2026,35 @@ async def _handle_interrupt_cleanup(
         adapter._current_tool_messages,
     )
 
+    # Close out any tool whose `tool.use` fired but whose `ToolMessage` never
+    # arrived because the turn was cancelled: emit terminal hooks before the
+    # widgets are dropped, so a cancel path leaves no unterminated `tool.use`
+    # (mirroring the HITL-reject branches). The turn does not resume from here,
+    # so the returned ids need not be tracked for dedup.
+    #
+    # Dispatched *before* the `aupdate_state` writes below (not alongside the
+    # `set_rejected` loop after them): those writes await a possibly-slow remote
+    # checkpointer, and on an interactive quit the graceful-exit drain in
+    # `app.py` snapshots the in-flight hook tasks right after cancelling this
+    # worker. Scheduling the fire-and-forget hooks here — synchronously, as soon
+    # as cancellation is observed — guarantees they are in that snapshot and get
+    # drained, rather than being scheduled after a slow write and cancelled at
+    # loop teardown (a silent audit gap). It reads `tool_msg.args`/`tool_name`,
+    # both available regardless of the widget's rejected state.
+    #
+    # Guarded because this now sits *before* the recovery-state write below: the
+    # dispatch never raises by construction today (pure payload builders, and
+    # `dispatch_hook_fire_and_forget` swallows serialization inside its task), but
+    # this function's whole contract is best-effort-must-not-propagate, so a
+    # future change here must never skip the `aupdate_state` save or escape the
+    # cancel handler.
+    try:
+        _dispatch_terminal_tool_result_hooks(
+            adapter._current_tool_messages, "Turn cancelled"
+        )
+    except Exception:
+        logger.warning("Terminal tool.result dispatch failed on cancel", exc_info=True)
+
     # Save accumulated state before marking tools as rejected (best-effort).
     # State update failures shouldn't prevent cleanup.
     from langsmith import tracing_context
@@ -2062,15 +2099,8 @@ async def _handle_interrupt_cleanup(
                 )
             )
 
-    # Close out any tool whose `tool.use` fired but whose `ToolMessage` never
-    # arrived because the turn was cancelled: emit terminal hooks before the
-    # widgets are dropped, so a cancel path leaves no unterminated `tool.use`
-    # (mirroring the HITL-reject branches). The turn does not resume from here,
-    # so the returned ids need not be tracked for dedup.
-    _dispatch_terminal_tool_result_hooks(
-        adapter._current_tool_messages, "Turn cancelled"
-    )
-    # Mark tools as rejected AFTER saving state
+    # Mark tools as rejected AFTER saving state. Terminal hooks for these were
+    # already dispatched before the state writes above (see the comment there).
     for tool_msg in list(adapter._current_tool_messages.values()):
         tool_msg.set_rejected()
     adapter._current_tool_messages.clear()

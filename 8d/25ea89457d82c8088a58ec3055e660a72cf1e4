@@ -1,0 +1,21 @@
+libs/code/tests/unit_tests/test_install_script.py
+  s_dedfa464d7fc64::t_5504a0b4998d70 1078-1080,1084-1095,1099-1127,1133-1138,1145,1202-1247,1752-1827
+libs/code/scripts/install.sh
+  s_dedfa464d7fc64::t_c2490e3f21df1c 13-16,52,87-160,574-576,583-599,601,603,605,610,614-639,643
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8d25ea89457d82c8088a58ec3055e660a72cf1e4",
+  "prompts": {},
+  "sessions": {
+    "s_dedfa464d7fc64": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b5fdc918-4fd6-47a1-9620-bbe3076735ae",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

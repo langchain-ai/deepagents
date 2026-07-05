@@ -1,0 +1,72 @@
+libs/code/tests/unit_tests/test_textual_adapter.py
+  s_14368d0dc4dbd4::t_5c45bb03a6ad5d 4334-4424
+  s_d16b2995668179::t_14d18a8b7fa718 4518-4700
+libs/code/tests/unit_tests/test_hooks.py
+  s_d16b2995668179::t_b62148372ff567 429-463
+libs/code/tests/unit_tests/test_non_interactive.py
+  s_14368d0dc4dbd4::t_e91933cf4f716f 2260-2267
+libs/code/deepagents_code/_tool_stream.py
+  s_d16b2995668179::t_6a3417db40bb80 101-103,107-108,110-111,113-115,117-120,122-124,126-128
+  s_14368d0dc4dbd4::t_4ab536fa71a034 140-141,158
+  s_d16b2995668179::t_4f7546f18337a0 172-173
+  s_d16b2995668179::t_4026fe302e741c 221,224-228,239,242-243
+  s_d16b2995668179::t_510ad281c2589e 125
+  s_d16b2995668179::t_708fab798b10f7 22,28-35,38,41,43-48,50-55,58,61,64,67
+  s_d16b2995668179::t_8216ff4151c1b7 255,257,262-269
+  s_d16b2995668179::t_49190cb4fe318e 36-37,39-40,42,49,56-57,59-60,62-63,65-66,68
+  s_d16b2995668179::t_5231ed1372806c 199-208
+  s_d16b2995668179::t_e108584eb4f3de 69
+  s_d16b2995668179::t_37babc69e1a0ae 244
+libs/code/tests/unit_tests/test__tool_stream.py
+  s_d16b2995668179::t_6f57fce6b65b2a 133-135
+  s_d16b2995668179::t_d947a832c29e8e 1-10,12-19,21,25-132,136-178
+  s_d16b2995668179::t_3c10d8d501ccf4 20
+  s_d16b2995668179::t_0ae23a2ff980f2 22-24
+  s_d16b2995668179::t_67a98f0fc37f09 11
+libs/code/deepagents_code/textual_adapter.py
+  s_d16b2995668179::t_81e46d573c1807 110
+  s_d16b2995668179::t_35ca75d797267f 1618-1622
+  s_d16b2995668179::t_9bb1da45adccf7 697-701
+  s_d16b2995668179::t_4fa5161540116e 60
+  s_14368d0dc4dbd4::t_536119d42d62a6 1624
+  s_d16b2995668179::t_ff7f81a724699e 985-991,1006,1008,1010,1014-1022
+  s_d16b2995668179::t_782af5d4af3351 1659-1663
+  s_d16b2995668179::t_2f3af433d98936 1639-1643
+  s_d16b2995668179::t_0aa01a43b1cf7e 129-141,147,151-152
+libs/code/deepagents_code/hooks.py
+  s_d16b2995668179::t_379a720e32ecb9 239
+  s_d16b2995668179::t_e6b21f0cb0b31c 210
+  s_d16b2995668179::t_f7948c0c14070e 19-23,32-33,38-47
+  s_d16b2995668179::t_b2624c07f78f10 70-72
+  s_d16b2995668179::t_4e98e0297ae58a 57-60
+libs/code/deepagents_code/widgets/messages.py
+  s_d16b2995668179::t_b39232dcaa738f 2639-2643
+libs/code/deepagents_code/non_interactive.py
+  s_d16b2995668179::t_e1143b7de82319 454-457,463
+  s_d16b2995668179::t_5c3a4b9c24883f 538-541
+  s_d16b2995668179::t_4efb9c8fe4c477 45
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8f4403ad8a849b3331f6a419662fad0685078315",
+  "prompts": {},
+  "sessions": {
+    "s_14368d0dc4dbd4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f2f84-a01e-7e92-9c1c-b469d1dc4337",
+        "model": "gpt-5.5"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    },
+    "s_d16b2995668179": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cb8910bf-e418-4939-9bfe-3534be1b4226",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Mason Daugherty <github@mdrxy.com>"
+    }
+  }
+}

@@ -3642,6 +3642,30 @@ class TestAskUserLifecycle:
         tool.toggle_args.assert_called_once_with()
         tool.toggle_output.assert_not_called()
 
+    def test_ctrl_o_prefers_command_when_both_expandable(self) -> None:
+        """Ctrl+O toggles the command/code block even when output can also expand.
+
+        Matches the region-aware click routing and the "click or Ctrl+O to show
+        command/code" hint: the output stays reachable by clicking its own row.
+        """
+        from deepagents_code.widgets.messages import ToolCallMessage
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        tool = MagicMock(spec=ToolCallMessage)
+        tool.has_class.return_value = False
+        tool.has_output = True
+        tool.has_expandable_output = True  # long stdout, expandable
+        tool.has_expandable_args = True  # long command, expandable
+        container = MagicMock()
+        container.children = [tool]
+
+        with patch.object(app, "query_one", return_value=container):
+            app.action_toggle_tool_output()
+
+        tool.toggle_args.assert_called_once_with()
+        tool.toggle_output.assert_not_called()
+
     def test_ctrl_o_prefers_more_recent_tool_in_dom_order(self) -> None:
         """The newest tool row in DOM order wins over an older one."""
         from deepagents_code.widgets.messages import ToolCallMessage
@@ -8028,6 +8052,211 @@ class TestMessageTimestampFooters:
             with pytest.raises(NoMatches):
                 app.query_one("#hist-app-timestamp-footer", Static)
 
+    async def test_load_thread_history_skips_duplicate_ids(self) -> None:
+        """History reusing an already-mounted widget ID is skipped, not fatal.
+
+        Regression: mounting a widget whose ID already exists raises
+        `DuplicateIds`, which previously aborted the whole load and surfaced a
+        "Could not load history" note instead of the conversation.
+        """
+        from deepagents_code.app import _ThreadHistoryPayload
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Pre-mount a widget occupying the ID the history will reuse.
+            await app._mount_message(AppMessage("stale", id="dup-id"))
+            await pilot.pause()
+
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(type=MessageType.USER, content="dup", id="dup-id"),
+                    MessageData(type=MessageType.USER, content="fresh", id="fresh-id"),
+                ],
+                0,
+                "",
+            )
+            await app._load_thread_history(thread_id="t-dup", preloaded_payload=payload)
+            await pilot.pause()
+
+            # The load completed without the fatal "Could not load history" note.
+            notes = [str(widget._content) for widget in app.query(AppMessage)]
+            assert not any("Could not load history" in note for note in notes)
+            # The colliding message was skipped; the original widget survives
+            # (exactly one, no duplicate mounted) and keeps its own content --
+            # the history entry did not overwrite or replace it.
+            survivors = app.query("#dup-id")
+            assert len(survivors) == 1
+            survivor = survivors.first()
+            assert isinstance(survivor, AppMessage)
+            assert "stale" in str(survivor._content)
+            # The non-colliding message mounted normally.
+            assert app.query_one("#fresh-id", UserMessage)
+            # The load ran to completion (past the mount block to step 9).
+            assert any("Resumed thread: t-dup" in note for note in notes)
+
+    async def test_load_thread_history_preserves_assistant_content_after_skip(
+        self,
+    ) -> None:
+        """A skipped duplicate keeps the surviving assistant content aligned.
+
+        Regression guard for the `mounted` pairing: `set_content` must render
+        each surviving `AssistantMessage`'s own content, never a neighbor's.
+        Only exercised when a skip removes an entry, shifting the survivors.
+        """
+        from deepagents_code.app import _ThreadHistoryPayload
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # Occupy the first assistant message's ID so it is skipped.
+            await app._mount_message(AssistantMessage("stale", id="asst-dup"))
+            await pilot.pause()
+
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(type=MessageType.ASSISTANT, content="A", id="asst-dup"),
+                    MessageData(
+                        type=MessageType.ASSISTANT, content="B", id="asst-fresh"
+                    ),
+                ],
+                0,
+                "",
+            )
+            await app._load_thread_history(
+                thread_id="t-asst", preloaded_payload=payload
+            )
+            await pilot.pause()
+
+            # The surviving fresh assistant renders its own content ("B"),
+            # not the skipped duplicate's ("A").
+            fresh = app.query_one("#asst-fresh", AssistantMessage)
+            assert "B" in str(fresh._content)
+            assert "A" not in str(fresh._content)
+
+    async def test_load_thread_history_dedupes_within_payload(self) -> None:
+        """Two payload entries sharing an ID mount exactly one widget.
+
+        The intra-batch `seen` guard prevents a same-payload collision from
+        raising `DuplicateIds` on the bulk mount.
+        """
+        from deepagents_code.app import _ThreadHistoryPayload
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(type=MessageType.USER, content="first", id="same-id"),
+                    MessageData(type=MessageType.USER, content="second", id="same-id"),
+                    MessageData(type=MessageType.USER, content="other", id="other-id"),
+                ],
+                0,
+                "",
+            )
+            await app._load_thread_history(
+                thread_id="t-intra", preloaded_payload=payload
+            )
+            await pilot.pause()
+
+            notes = [str(widget._content) for widget in app.query(AppMessage)]
+            assert not any("Could not load history" in note for note in notes)
+            # Exactly one widget for the repeated ID; the first entry wins.
+            assert len(app.query("#same-id")) == 1
+            same = app.query_one("#same-id", UserMessage)
+            assert "first" in str(same._content)
+            assert app.query_one("#other-id", UserMessage)
+
+    async def test_load_thread_history_keeps_store_window_in_sync_after_skip(
+        self,
+    ) -> None:
+        """A re-entrant load must not create duplicate store entries.
+
+        Regression: `bulk_load` blindly appends, so re-loading a message whose
+        ID is already in the store used to add a second `_messages` entry for
+        the same ID -- desyncing the visible window from the DOM and tripping
+        up later pruning/hydration. Deduplicating against the store before
+        `bulk_load` keeps every ID represented exactly once.
+        """
+        from deepagents_code.app import _ThreadHistoryPayload
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # `_mount_message` records the widget in the store, so `dup-id` is
+            # present in both the store and the DOM before the load.
+            await app._mount_message(AppMessage("stale", id="dup-id"))
+            await pilot.pause()
+
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(type=MessageType.USER, content="dup", id="dup-id"),
+                    MessageData(type=MessageType.USER, content="fresh", id="fresh-id"),
+                ],
+                0,
+                "",
+            )
+            await app._load_thread_history(
+                thread_id="t-sync", preloaded_payload=payload
+            )
+            await pilot.pause()
+
+            store = app._message_store
+            # Every stored ID is represented exactly once (no phantom double
+            # entry for the re-loaded `dup-id`).
+            all_ids = [msg.id for msg in store.get_all_messages()]
+            assert len(all_ids) == len(set(all_ids))
+            assert store.get_message("dup-id") is not None
+            assert store.get_message("fresh-id") is not None
+            # The visible window is internally consistent with its range.
+            start, end = store.get_visible_range()
+            assert store.visible_count == end - start
+
+    async def test_load_thread_history_all_duplicates_completes_cleanly(self) -> None:
+        """A payload whose every ID is already mounted still finishes the load.
+
+        With nothing left to mount after dedup, the load must skip the mount
+        block and still reach completion without an error note -- the benign
+        re-entrant reload case (same payload over surviving widgets).
+        """
+        from deepagents_code.app import _ThreadHistoryPayload
+        from deepagents_code.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._mount_message(UserMessage("kept", id="a-id"))
+            await app._mount_message(UserMessage("kept", id="b-id"))
+            await pilot.pause()
+
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(type=MessageType.USER, content="a", id="a-id"),
+                    MessageData(type=MessageType.USER, content="b", id="b-id"),
+                ],
+                0,
+                "",
+            )
+            await app._load_thread_history(thread_id="t-all", preloaded_payload=payload)
+            await pilot.pause()
+
+            notes = [str(widget._content) for widget in app.query(AppMessage)]
+            assert not any("Could not load history" in note for note in notes)
+            assert any("Resumed thread: t-all" in note for note in notes)
+            # No duplicates were mounted; the originals survive.
+            assert len(app.query("#a-id")) == 1
+            assert len(app.query("#b-id")) == 1
+
     async def test_footers_render_for_hydrated_messages_above(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -10612,6 +10841,20 @@ class TestTerminalBackgroundSync:
 class TestExitGracefulWorkerHandoff:
     """Verify `exit()` defers teardown for an in-flight agent worker."""
 
+    @pytest.fixture(autouse=True)
+    def _reset_background_hooks(self) -> Iterator[None]:
+        """Isolate the module-global hook task set across tests.
+
+        These tests read the real `has_pending_hooks()`; a stray undone task
+        left in `_background_tasks` by an earlier test would otherwise push
+        `test_synchronous_when_worker_finished` onto the graceful path and flake.
+        """
+        import deepagents_code.hooks as hooks_mod
+
+        hooks_mod._background_tasks.clear()
+        yield
+        hooks_mod._background_tasks.clear()
+
     async def test_defers_when_agent_worker_unfinished(self) -> None:
         """A running, unfinished worker arms a deferred graceful exit."""
         app = DeepAgentsApp()
@@ -10769,6 +11012,131 @@ class TestExitGracefulWorkerHandoff:
                 super_exit.assert_called_once()
             assert app._graceful_exit_task is None
             worker.wait.assert_not_awaited()
+
+    async def test_drains_pending_hooks_before_exit_without_worker(self) -> None:
+        """Pending fire-and-forget hooks defer teardown until they drain."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=True),
+                patch(
+                    "deepagents_code.hooks.drain_pending_hooks",
+                    new_callable=AsyncMock,
+                ) as drain_hooks,
+                patch.object(App, "exit") as super_exit,
+            ):
+                app.exit()
+                super_exit.assert_not_called()
+                assert app._graceful_exit_task is not None
+
+                await app._graceful_exit_task
+
+            drain_hooks.assert_awaited_once()
+            super_exit.assert_called_once()
+
+    async def test_drains_pending_hooks_after_waiting_for_agent(self) -> None:
+        """Both the agent-worker wait and the hook drain run before teardown.
+
+        Covers the combined path: an in-flight agent worker AND pending hooks
+        must each be awaited inside the single graceful-exit task before the
+        event loop tears down.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            worker = MagicMock()
+            worker.is_finished = False
+            worker.wait = AsyncMock()
+            app._agent_worker = worker
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=True),
+                patch(
+                    "deepagents_code.hooks.drain_pending_hooks",
+                    new_callable=AsyncMock,
+                ) as drain_hooks,
+                patch.object(App, "exit") as super_exit,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await app._graceful_exit_task
+
+            worker.wait.assert_awaited_once()
+            drain_hooks.assert_awaited_once()
+            super_exit.assert_called_once()
+
+    async def test_drains_pending_hooks_when_worker_wait_fails(self) -> None:
+        """The hook drain still runs when the agent-worker wait errors.
+
+        The drain sits in its own try/except after the worker-wait block, so a
+        worker that fails to persist must not skip draining pending hooks — the
+        final tool.result would otherwise be dropped whenever shutdown coincides
+        with a worker error.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            worker = MagicMock()
+            worker.is_finished = False
+            worker.wait = AsyncMock(side_effect=RuntimeError("boom"))
+            app._agent_worker = worker
+
+            with (
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=True),
+                patch(
+                    "deepagents_code.hooks.drain_pending_hooks",
+                    new_callable=AsyncMock,
+                ) as drain_hooks,
+                patch.object(App, "exit") as super_exit,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await app._graceful_exit_task
+
+            worker.wait.assert_awaited_once()
+            drain_hooks.assert_awaited_once()
+            super_exit.assert_called_once()
+
+    async def test_hook_drain_timeout_is_bounded_and_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A hung hook drain is bounded by the graceful-exit budget and logged.
+
+        A slow/hanging hook subprocess must not stall an interactive quit; the
+        drain is wrapped in `asyncio.wait_for`, so teardown proceeds after the
+        timeout and the possibly-dropped final tool.result is announced rather
+        than the UI silently hanging.
+        """
+
+        async def hang() -> None:
+            await asyncio.Event().wait()
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                caplog.at_level(logging.WARNING, logger="deepagents_code.app"),
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=True),
+                patch("deepagents_code.hooks.drain_pending_hooks", new=hang),
+                patch("deepagents_code.app._GRACEFUL_EXIT_WAIT_SECONDS", 0.01),
+                patch.object(App, "exit") as super_exit,
+            ):
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await app._graceful_exit_task
+
+            super_exit.assert_called_once()
+
+        assert any(
+            "Hook drain did not finish" in record.message
+            and record.levelno == logging.WARNING
+            for record in caplog.records
+        )
 
     async def test_second_exit_force_quits_pending_graceful_exit(self) -> None:
         """A second exit() during a pending graceful exit force-quits.
@@ -16844,6 +17212,121 @@ class TestSandboxSubTitle:
         """An unrecognized provider falls back to `.title()` casing."""
         app = DeepAgentsApp(server_kwargs={"sandbox_type": "kubernetes"})
         assert app.sub_title == "Sandbox: Kubernetes"
+
+
+class TestStaleInstallBanner:
+    """The persistent header banner surfaces stale installations."""
+
+    _MESSAGE_21 = (
+        "Update available \u2014 installed version is 21 days old (run /update)"
+    )
+
+    async def test_header_mounted_when_stale_without_env_var(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stale install shows the header even without the env var."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_SHOW_HEADER", raising=False)
+        from textual.widgets import Header
+
+        with (
+            patch(
+                "deepagents_code.update_check.is_installation_stale",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.installed_days_old",
+                return_value=21,
+            ),
+        ):
+            app = DeepAgentsApp()
+            assert app._installation_stale is True
+            assert app.sub_title == self._MESSAGE_21
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                assert len(app.query(Header)) == 1
+
+    async def test_header_absent_when_not_stale(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A fresh install keeps the header hidden without the env var."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_SHOW_HEADER", raising=False)
+        from textual.widgets import Header
+
+        with patch(
+            "deepagents_code.update_check.is_installation_stale",
+            return_value=False,
+        ):
+            app = DeepAgentsApp()
+            assert app._installation_stale is False
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                assert not app.query(Header)
+
+    async def test_stale_overrides_sandbox_sub_title(self) -> None:
+        """The stale-install advisory takes precedence over the sandbox label."""
+        with (
+            patch(
+                "deepagents_code.update_check.is_installation_stale",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.installed_days_old",
+                return_value=21,
+            ),
+        ):
+            app = DeepAgentsApp(server_kwargs={"sandbox_type": "modal"})
+            assert app.sub_title == self._MESSAGE_21
+
+    async def test_explicit_sub_title_suppresses_stale_banner(self) -> None:
+        """An explicitly passed sub_title is never overwritten by the advisory."""
+        with patch(
+            "deepagents_code.update_check.is_installation_stale",
+            return_value=True,
+        ):
+            app = DeepAgentsApp(sub_title="custom")
+            assert app._installation_stale is False
+            assert app.sub_title == "custom"
+
+    async def test_singular_day_wording(self) -> None:
+        """The day count is pluralized correctly."""
+        with (
+            patch(
+                "deepagents_code.update_check.is_installation_stale",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.installed_days_old",
+                return_value=1,
+            ),
+        ):
+            app = DeepAgentsApp()
+            assert app.sub_title == (
+                "Update available \u2014 installed version is 1 day old (run /update)"
+            )
+
+    async def test_none_days_drops_banner(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `None` age (cache race) drops the banner, never `"None days old"`."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_SHOW_HEADER", raising=False)
+        from textual.widgets import Header
+
+        with (
+            patch(
+                "deepagents_code.update_check.is_installation_stale",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.installed_days_old",
+                return_value=None,
+            ),
+        ):
+            app = DeepAgentsApp()
+            assert app._installation_stale is False
+            assert "None" not in (app.sub_title or "")
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                assert not app.query(Header)
 
 
 class TestHandleExternalSignal:

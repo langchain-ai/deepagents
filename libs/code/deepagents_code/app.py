@@ -2044,7 +2044,8 @@ class DeepAgentsApp(App):
             defer_server_start: Whether to keep app-owned server startup paused
                 until the user configures credentials or explicitly picks a model.
             title: Override the Textual `App.title` shown in the optional
-                header bar.
+                header bar (shown when `DEEPAGENTS_CODE_SHOW_HEADER` is set or
+                the installation is stale).
 
                 When `None`, the class-level `TITLE` is used.
 
@@ -2052,7 +2053,8 @@ class DeepAgentsApp(App):
             sub_title: Override the Textual `App.sub_title` shown in the
                 optional header bar.
 
-                When `None`, the parent default is used.
+                When `None`, a sandbox label or a stale-install advisory may be
+                substituted; otherwise the parent default is used.
 
                 Reassigning `app.sub_title` at runtime updates the header live.
             **kwargs: Additional arguments passed to parent
@@ -2321,6 +2323,34 @@ class DeepAgentsApp(App):
                 self._sandbox_type.title(),
             )
             self.sub_title = f"Sandbox: {display}"
+
+        from deepagents_code.update_check import (
+            installed_days_old,
+            is_installation_stale,
+        )
+
+        self._installation_stale: bool = sub_title is None and is_installation_stale()
+        """Whether the installed version is old enough to force the header banner.
+
+        Set once at construction from the cache-only install-age check. When
+        `True`, `compose` renders the header even without `DEEPAGENTS_CODE_SHOW_HEADER`
+        and the subtitle carries the advisory below — overriding the sandbox
+        subtitle by design.
+        """
+
+        if self._installation_stale:
+            days = installed_days_old()
+            if days is None:
+                # The cache changed between the staleness gate and this read
+                # (e.g. a concurrent `dcode` process). Drop the banner rather
+                # than render "installed version is None days old".
+                self._installation_stale = False
+            else:
+                unit = "day" if days == 1 else "days"
+                self.sub_title = (
+                    f"Update available \u2014 installed version is "
+                    f"{days} {unit} old (run /update)"
+                )
 
         # Per-turn model overrides
         self._model_override: str | None = None
@@ -2830,7 +2860,7 @@ class DeepAgentsApp(App):
         from deepagents_code._env_vars import SHOW_HEADER, is_env_truthy
         from deepagents_code.config import settings
 
-        if is_env_truthy(SHOW_HEADER):
+        if is_env_truthy(SHOW_HEADER) or self._installation_stale:
             yield _StaticHeader(id="app-header")
         # Main chat area with scrollable messages
         # VerticalScroll tracks user scroll intent for better auto-scroll behavior.
@@ -10867,32 +10897,86 @@ class DeepAgentsApp(App):
             if payload.context_tokens > 0:
                 self._on_tokens_update(payload.context_tokens)
 
-            # 3. Bulk load into store (sets visible window)
-            _archived, visible = self._message_store.bulk_load(payload.messages)
-
-            # 5. Cache container ref (single query)
+            # 5. Cache container ref (single query). Queried before the store
+            # load so history can be reconciled against widgets already in the
+            # DOM (see below).
             try:
                 messages_container = self.query_one("#messages", Container)
             except NoMatches:
                 return
 
-            # 6-7. Create and mount only visible widgets (max WINDOW_SIZE)
-            widgets = [msg_data.to_widget() for msg_data in visible]
-            if widgets:
-                nodes: list[Widget] = []
-                for widget, msg_data in zip(widgets, visible, strict=False):
-                    nodes.append(widget)
-                    footer = self._build_message_timestamp_footer(
-                        msg_data, visible=self._message_timestamps_visible
+            # 3. Reconcile against existing state before loading the store.
+            # Mounting a widget whose ID already exists raises `DuplicateIds`,
+            # which would abort the entire history load. Widened message IDs
+            # make natural collisions vanishingly unlikely, but a re-entrant
+            # load (e.g. a server respawn that re-runs the startup sequence
+            # over a non-cleared store and its surviving widgets) can still
+            # reintroduce an already-present ID. Two guards keep this safe:
+            #
+            #   a) Drop payload messages whose ID is already in the store (or
+            #      repeated within the payload) before `bulk_load`. Otherwise
+            #      `bulk_load` would append duplicate entries to `_messages`,
+            #      desyncing the visible window from the DOM and tripping up
+            #      later pruning/hydration.
+            #   b) Skip mounting any visible message whose ID is already in the
+            #      DOM. `bulk_load` returns a window over the *whole* store, so
+            #      a surviving pre-existing entry can still surface as a mount
+            #      candidate even after (a); its widget already exists.
+            seen: set[str] = set()
+            deduped: list[MessageData] = []
+            for msg_data in payload.messages:
+                if (
+                    msg_data.id in seen
+                    or self._message_store.get_message(msg_data.id) is not None
+                ):
+                    continue
+                seen.add(msg_data.id)
+                deduped.append(msg_data)
+            dropped = len(payload.messages) - len(deduped)
+            if dropped:
+                logger.warning(
+                    "Dropped %d duplicate history message(s) for thread %s: "
+                    "IDs were already in the store or repeated in the payload",
+                    dropped,
+                    history_thread_id,
+                )
+
+            # Bulk load into store (sets visible window over the deduped set).
+            _archived, visible = self._message_store.bulk_load(deduped)
+
+            # 6-7. Create and mount the visible widgets (max WINDOW_SIZE),
+            # skipping any whose ID is already mounted (guard (b) above).
+            # `existing_ids` includes footer node IDs, which never collide with
+            # the `msg-`/`asst-` message IDs checked here.
+            existing_ids = {
+                node.id for node in messages_container.children if node.id is not None
+            }
+            mounted: list[tuple[Widget, MessageData]] = []
+            nodes: list[Widget] = []
+            for msg_data in visible:
+                if msg_data.id in existing_ids:
+                    logger.debug(
+                        "Skipping already-mounted history widget %s in thread %s",
+                        msg_data.id,
+                        history_thread_id,
                     )
-                    if footer is not None:
-                        nodes.append(footer)
+                    continue
+                existing_ids.add(msg_data.id)
+                widget = msg_data.to_widget()
+                mounted.append((widget, msg_data))
+                nodes.append(widget)
+                footer = self._build_message_timestamp_footer(
+                    msg_data, visible=self._message_timestamps_visible
+                )
+                if footer is not None:
+                    nodes.append(footer)
+            if nodes:
                 await messages_container.mount(*nodes)
 
             # 8. Render content for AssistantMessage after mount
             assistant_updates = [
                 widget.set_content(msg_data.content)
-                for widget, msg_data in zip(widgets, visible, strict=False)
+                for widget, msg_data in mounted
                 if isinstance(widget, AssistantMessage) and msg_data.content
             ]
             if assistant_updates:
@@ -11918,7 +12002,12 @@ class DeepAgentsApp(App):
 
         # Dispatch synchronously — the event loop is about to be torn down by
         # super().exit(), so an async task would never complete.
-        from deepagents_code.hooks import _dispatch_hook_sync, _load_hooks
+        from deepagents_code.hooks import (
+            _dispatch_hook_sync,
+            _load_hooks,
+            drain_pending_hooks,
+            has_pending_hooks,
+        )
 
         hooks = _load_hooks()
         if hooks:
@@ -11949,38 +12038,71 @@ class DeepAgentsApp(App):
         # finish persisting the in-flight run's trace instead of being
         # SIGTERM'd mid-request.
         agent_worker = self._agent_worker if self._agent_running else None
+        should_wait_for_agent = (
+            agent_worker is not None and not agent_worker.is_finished
+        )
+        should_drain_hooks = has_pending_hooks()
 
-        if agent_worker is not None and not agent_worker.is_finished:
+        if should_wait_for_agent or should_drain_hooks:
 
             async def _graceful_exit() -> None:
                 from textual.worker import WorkerCancelled, WorkerFailed
 
                 try:
-                    await asyncio.wait_for(
-                        asyncio.shield(agent_worker.wait()),
-                        timeout=_GRACEFUL_EXIT_WAIT_SECONDS,
-                    )
-                except (asyncio.CancelledError, WorkerCancelled):
-                    # Expected: exit() cancelled the worker above, so its
-                    # cancellation handler ran to completion. Nothing to flag.
-                    logger.debug(
-                        "Agent worker cancelled cleanly before app exit",
-                        exc_info=True,
-                    )
-                except (TimeoutError, WorkerFailed):
-                    # The worker did not finish within the window, so the
-                    # in-flight run's server-side trace may be incomplete.
-                    # Surface above debug so the loss isn't silent.
-                    logger.warning(
-                        "Agent worker did not finish persisting before app "
-                        "exit; the in-flight run's trace may be incomplete",
-                        exc_info=True,
-                    )
-                except Exception:
-                    logger.warning(
-                        "Agent worker wait raised unexpectedly before app exit",
-                        exc_info=True,
-                    )
+                    worker = agent_worker
+                    if should_wait_for_agent and worker is not None:
+                        try:
+                            await asyncio.wait_for(
+                                asyncio.shield(worker.wait()),
+                                timeout=_GRACEFUL_EXIT_WAIT_SECONDS,
+                            )
+                        except (asyncio.CancelledError, WorkerCancelled):
+                            # Expected: exit() cancelled the worker above, so
+                            # its cancellation handler ran to completion.
+                            logger.debug(
+                                "Agent worker cancelled cleanly before app exit",
+                                exc_info=True,
+                            )
+                        except (TimeoutError, WorkerFailed):
+                            # The worker did not finish within the window, so
+                            # the in-flight run's server-side trace may be
+                            # incomplete. Surface above debug so the loss isn't
+                            # silent.
+                            logger.warning(
+                                "Agent worker did not finish persisting before app "
+                                "exit; the in-flight run's trace may be incomplete",
+                                exc_info=True,
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Agent worker wait raised unexpectedly before app exit",
+                                exc_info=True,
+                            )
+                    try:
+                        # Bound the drain so a hung hook subprocess can't stall
+                        # an interactive quit indefinitely. Each hook is already
+                        # capped by `hooks.HOOK_SUBPROCESS_TIMEOUT` in its own
+                        # thread, but a slow/many-hook config could still exceed
+                        # the graceful-exit budget; a dropped final tool.result is
+                        # announced rather than letting the UI feel frozen. The
+                        # headless surface leaves its drain unbounded on purpose —
+                        # a script exit favors a complete audit trail over shutdown
+                        # latency.
+                        await asyncio.wait_for(
+                            drain_pending_hooks(),
+                            timeout=_GRACEFUL_EXIT_WAIT_SECONDS,
+                        )
+                    except TimeoutError:
+                        logger.warning(
+                            "Hook drain did not finish within %ss before app "
+                            "exit; a final tool.result hook may be dropped",
+                            _GRACEFUL_EXIT_WAIT_SECONDS,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Hook drain raised unexpectedly before app exit",
+                            exc_info=True,
+                        )
                 finally:
                     # This is the only call that stops the event loop, so it
                     # must run on every path the try/except can take, including
@@ -12143,11 +12265,16 @@ class DeepAgentsApp(App):
                 child.toggle_body()
                 return
             if isinstance(child, ToolCallMessage) and not child.has_class("-grouped"):
-                if child.has_output and child.has_expandable_output:
-                    child.toggle_output()
-                    return
+                # Prefer the collapsible command/code block when the row has one,
+                # so Ctrl+O matches the "click or Ctrl+O to show command/code"
+                # hint rendered beside it. The output stays reachable by clicking
+                # its own region (see `ToolCallMessage.on_click`); rows without an
+                # expandable command/code block fall through to the output.
                 if child.has_expandable_args:
                     child.toggle_args()
+                    return
+                if child.has_output and child.has_expandable_output:
+                    child.toggle_output()
                     return
                 if child.has_output:
                     child.toggle_output()
@@ -16358,8 +16485,9 @@ async def run_textual_app(
         defer_server_start: Whether to keep app-owned server startup paused
             until credentials or a model are configured from inside the TUI.
         title: Override the Textual `App.title` shown in the optional header
-            bar (gated on `DEEPAGENTS_CODE_SHOW_HEADER`). When `None`, the
-            default `"Deep Agents"` is used.
+            bar (gated on `DEEPAGENTS_CODE_SHOW_HEADER`, or shown automatically
+            when the installation is stale). When `None`, the default
+            `"Deep Agents"` is used.
         sub_title: Override the Textual `App.sub_title` shown in the optional
             header bar.
 

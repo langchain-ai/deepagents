@@ -1,9 +1,10 @@
 """CLI commands for the `config` group: inspect the configuration surface.
 
-`config list` prints the static manifest (every tunable option, its type,
-default, and where it can be set). `config show` resolves each option against
-the app credential store (for credentials), the live environment, and
-`config.toml`, reporting the effective value and which source provided it.
+`config show` (aliased as `config list`/`ls`) resolves each option against the
+app credential store (for credentials), the live environment, and `config.toml`,
+reporting the effective value and which source provided it, matching what
+`git config --list` / `aws configure list` users expect. Adding `--verbose`/`--all`
+folds in each option's description and where it can be set (the static catalog).
 `config get <key>` does the same for a single option. `config path` prints the
 on-disk config locations.
 
@@ -25,13 +26,13 @@ import logging
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from deepagents_code.output import write_json
 
 if TYPE_CHECKING:
     import argparse
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from deepagents_code.config_manifest import ConfigOption
     from deepagents_code.output import OutputFormat
@@ -79,8 +80,19 @@ def setup_config_parser(
     add_output_args(config_parser)
     config_sub = config_parser.add_subparsers(dest="config_command")
 
+    def _add_verbose_arg(parser: argparse.ArgumentParser) -> None:
+        parser.add_argument(
+            "-v",
+            "--verbose",
+            "--all",
+            dest="verbose",
+            action="store_true",
+            help="Also show each option's description and where to set it",
+        )
+
     show_parser = config_sub.add_parser(
         "show",
+        aliases=["list", "ls"],
         help="Show effective config values and their source",
         add_help=False,
     )
@@ -89,20 +101,8 @@ def setup_config_parser(
         "--help",
         action=make_help_action(_lazy_ui_help("show_config_help")),
     )
+    _add_verbose_arg(show_parser)
     add_output_args(show_parser)
-
-    list_parser = config_sub.add_parser(
-        "list",
-        aliases=["ls"],
-        help="List all available config options",
-        add_help=False,
-    )
-    list_parser.add_argument(
-        "-h",
-        "--help",
-        action=make_help_action(_lazy_ui_help("show_config_help")),
-    )
-    add_output_args(list_parser)
 
     get_parser = config_sub.add_parser(
         "get",
@@ -199,7 +199,7 @@ def _resolve(
     toml_data: dict[str, Any],
     *,
     stored: _StoredCredentialView | None = None,
-) -> tuple[bool, str, Any]:
+) -> tuple[bool, str, object]:
     """Resolve an option for display, reporting what the runtime actually reads.
 
     Credential options follow runtime precedence: a present `DEEPAGENTS_CODE_`
@@ -323,6 +323,30 @@ def _missing_extra_hint(option: ConfigOption) -> bool:
     return importlib.util.find_spec(option.dependency_module) is None
 
 
+class ResolvedOption(NamedTuple):
+    """An option paired with its resolved effective value, for display.
+
+    Bundles the four values that always travel together through the render
+    helpers as one named record, so they can't be reordered or misaligned at a
+    call site the way a bare positional tuple can.
+    """
+
+    option: ConfigOption
+    """The option being described."""
+
+    is_set: bool
+    """`False` when `value` came from the option's typed default."""
+
+    source: str
+    """Where the effective value came from (e.g. `env (...)`, `stored`, `default`)."""
+
+    value: object
+    """The effective value; `None` when unset.
+
+    Redacted for secrets before display.
+    """
+
+
 # --- Commands ---------------------------------------------------------------
 
 
@@ -333,14 +357,18 @@ def _show_json_row(
     source: str,
     value: object,
     store_error: str | None,
+    include_catalog: bool,
 ) -> dict[str, Any]:
-    """Build one `config show --json` row, redacting secrets and flagging store errors.
+    """Build one show/list --json row, redacting secrets and flagging store errors.
 
     Returns:
         A JSON-serializable row. Redacted options report presence only (`value`
             is `None`); a `store_error` key is added to credential rows when
             the `/auth` store was unreadable, so a corrupt store is
-            distinguishable from an empty one in the bug-report artifact.
+            distinguishable from an empty one in the bug-report artifact. When
+            `include_catalog` is set the static catalog fields (summary, type,
+            default, ...) are folded in so `config list --json` consumers stay
+            unbroken.
     """
     row: dict[str, Any] = {
         "key": option.key,
@@ -351,13 +379,36 @@ def _show_json_row(
         # Redact secret values: report presence only.
         "value": None if option.redacted else value,
     }
+    if include_catalog:
+        row.update(
+            {
+                "summary": option.summary,
+                "type": option.type,
+                "default": option.default,
+                "env_var": option.env_var,
+                "toml_path": option.toml_path,
+                "cli_flag": option.cli_flag,
+            }
+        )
     if store_error and option.group == "Credentials":
         row["store_error"] = store_error
     return row
 
 
-def _run_show(output_format: OutputFormat) -> int:
+def _run_show(output_format: OutputFormat, *, verbose: bool, list_mode: bool) -> int:
     """Resolve every option and print its effective value and source.
+
+    With `verbose`, each option also lists its description and where it can be
+    set (the catalog detail formerly served by `config list`).
+
+    Args:
+        output_format: `text` for the rendered view, `json` for a machine-
+            readable payload.
+        verbose: Fold each option's description and how-to-set into the output.
+        list_mode: `True` when invoked as `config list`/`ls` rather than
+            `config show`. It selects the `config list` JSON envelope label and,
+            for backward compatibility, includes the static catalog fields in
+            `config list --json` even without `verbose`.
 
     Returns:
         Process exit code (`0` on success).
@@ -373,98 +424,117 @@ def _run_show(output_format: OutputFormat) -> int:
     # re-parsing `auth.json` per credential option.
     stored = _load_stored_credentials()
 
-    options = get_config_options()
-    resolved = [(opt, *_resolve(opt, toml_data, stored=stored)) for opt in options]
+    resolved = [
+        ResolvedOption(opt, *_resolve(opt, toml_data, stored=stored))
+        for opt in get_config_options()
+    ]
 
     if output_format == "json":
+        label = "config list" if list_mode else "config show"
+        # `config list --json` was the catalog endpoint; keep its catalog fields
+        # so existing consumers stay unbroken (now additive alongside effective
+        # values). `config show --json` stays effective-only unless `--verbose`.
+        include_catalog = verbose or list_mode
         write_json(
-            "config show",
+            label,
             [
                 _show_json_row(
-                    opt,
-                    is_set=is_set,
-                    source=source,
-                    value=value,
+                    row.option,
+                    is_set=row.is_set,
+                    source=row.source,
+                    value=row.value,
                     store_error=stored.error,
+                    include_catalog=include_catalog,
                 )
-                for opt, is_set, source, value in resolved
+                for row in resolved
             ],
         )
         return 0
 
+    if verbose:
+        _print_show_verbose(resolved, store_error=stored.error)
+    else:
+        _print_show_table(resolved, store_error=stored.error)
+    return 0
+
+
+def _print_store_warning(store_error: str | None) -> None:
+    """Print a warning when the `/auth` credential store was unreadable."""
+    if not store_error:
+        return
+    from rich.markup import escape
+
+    from deepagents_code.config import console
+
+    console.print(f"[yellow]Warning:[/yellow] {escape(store_error)}", highlight=False)
+    console.print()
+
+
+def _print_show_table(
+    resolved: Sequence[ResolvedOption],
+    *,
+    store_error: str | None = None,
+) -> None:
+    """Render the compact effective-value table, grouped by section."""
+    from rich.table import Table
+    from rich.text import Text
+
+    from deepagents_code.config import console
+    from deepagents_code.config_manifest import iter_groups
+
+    console.print()
+    _print_store_warning(store_error)
+    for group in iter_groups(row.option for row in resolved):
+        console.print(f"[bold]{group}[/bold]")
+        table = Table.grid(padding=(0, 2))
+        table.add_column()
+        table.add_column()
+        table.add_column(style="dim")
+        for row in resolved:
+            if row.option.group != group:
+                continue
+            display = _display_value(row.option, is_set=row.is_set, value=row.value)
+            # `display`/`source` may contain markup from env/TOML; `Text` cells
+            # render literally, so values can't break the table.
+            table.add_row(
+                Text(f"  {row.option.key}"),
+                Text(display),
+                Text(_source_label(row.source, option=row.option)),
+            )
+        console.print(table, highlight=False)
+        console.print()
+
+
+def _print_show_verbose(
+    resolved: Sequence[ResolvedOption],
+    *,
+    store_error: str | None = None,
+) -> None:
+    """Render the effective value plus description and how-to-set per option."""
     from rich.markup import escape
 
     from deepagents_code.config import console
     from deepagents_code.config_manifest import iter_groups
 
     console.print()
-    if stored.error:
-        console.print(
-            f"[yellow]Warning:[/yellow] {escape(stored.error)}", highlight=False
-        )
-        console.print()
-    for group in iter_groups(options):
+    _print_store_warning(store_error)
+    for group in iter_groups(row.option for row in resolved):
         console.print(f"[bold]{group}[/bold]")
-        for opt, is_set, source, value in resolved:
-            if opt.group != group:
+        for row in resolved:
+            if row.option.group != group:
                 continue
-            display = _display_value(opt, is_set=is_set, value=value)
-            source_label = _source_label(source, option=opt)
-            # `display` and `source_label` may contain Rich markup from env/TOML
-            # or terminal metadata; escape them so values can't break rendering.
-            display_text = escape(display)
-            source_text = escape(source_label)
+            display = _display_value(row.option, is_set=row.is_set, value=row.value)
+            # `display`/`source` may carry markup from env/TOML; escape them.
             console.print(
-                f"  {opt.key:<34} {display_text:<22} [dim]{source_text}[/dim]",
+                f"  [cyan]{row.option.key}[/cyan]  {escape(display)}  "
+                f"[dim]{escape(_source_label(row.source, option=row.option))}[/dim]",
                 highlight=False,
             )
+            console.print(f"    {row.option.summary}", highlight=False, style="dim")
+            console.print(
+                f"    {_sources_line(row.option)}", highlight=False, style="dim"
+            )
         console.print()
-    return 0
-
-
-def _run_list(output_format: OutputFormat) -> int:
-    """Print the static catalog of available options (no resolution).
-
-    Returns:
-        Process exit code (`0` on success).
-    """
-    from deepagents_code.config_manifest import get_config_options
-
-    options = get_config_options()
-    if output_format == "json":
-        write_json(
-            "config list",
-            [
-                {
-                    "key": opt.key,
-                    "group": opt.group,
-                    "summary": opt.summary,
-                    "type": opt.type,
-                    "default": opt.default,
-                    "redacted": opt.redacted,
-                    "env_var": opt.env_var,
-                    "toml_path": opt.toml_path,
-                    "cli_flag": opt.cli_flag,
-                }
-                for opt in options
-            ],
-        )
-        return 0
-
-    from deepagents_code.config import console
-    from deepagents_code.config_manifest import iter_groups
-
-    console.print()
-    for group in iter_groups(options):
-        console.print(f"[bold]{group}[/bold]")
-        for opt in options:
-            if opt.group != group:
-                continue
-            console.print(f"  [cyan]{opt.key}[/cyan]  [dim]({opt.type})[/dim]")
-            console.print(f"    {opt.summary}", highlight=False)
-            console.print(f"    {_sources_line(opt)}", highlight=False, style="dim")
-        console.print()
-    return 0
 
 
 def _run_get(key: str, output_format: OutputFormat) -> int:
@@ -565,11 +635,12 @@ def run_config_command(args: argparse.Namespace) -> int:
     """
     output_format: OutputFormat = getattr(args, "output_format", "text")
     command = getattr(args, "config_command", None)
+    verbose: bool = getattr(args, "verbose", False)
 
-    if command == "show":
-        return _run_show(output_format)
-    if command in {"list", "ls"}:
-        return _run_list(output_format)
+    if command in {"show", "list", "ls"}:
+        return _run_show(
+            output_format, verbose=verbose, list_mode=command in {"list", "ls"}
+        )
     if command == "get":
         return _run_get(args.key, output_format)
     if command == "path":
@@ -585,7 +656,7 @@ def run_config_command(args: argparse.Namespace) -> int:
 
 
 def _sources_line(option: ConfigOption) -> str:
-    """Render a compact 'set via' line for `config list`.
+    """Render a compact 'set via' line for the verbose (`--verbose`) view.
 
     Returns:
         A human-readable description of where the option can be set.

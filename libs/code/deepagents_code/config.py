@@ -58,6 +58,20 @@ class _BootstrapState:
     original_tracing_env: dict[str, str | None] = dataclass_field(default_factory=dict)
     """Caller's tracing-enable env before Deep Agents Code mutates flags."""
 
+    original_tracing_api_keys: dict[str, str | None] = dataclass_field(
+        default_factory=dict
+    )
+    """Caller's tracing API keys before Deep Agents Code overwrites them.
+
+    Two bootstrap steps can overwrite the canonical `LANGSMITH_API_KEY` (and
+    its `LANGCHAIN_API_KEY` alias): the `DEEPAGENTS_CODE_`-prefixed override and
+    the `/auth`-stored key bridged on by `apply_stored_langsmith_auth`. Both run
+    after this snapshot is captured. Without saving the originals, shell
+    subprocesses inherit the agent's session key and the caller's own value is
+    irrecoverable in-process. This mirrors the save/restore pattern used for
+    tracing flags (`original_tracing_env`).
+    """
+
 
 _bootstrap_state = _BootstrapState()
 """State captured and mutated by lazy bootstrap."""
@@ -518,6 +532,25 @@ def restore_user_tracing_env(env: dict[str, str]) -> None:
             env[var] = value
 
 
+def restore_user_tracing_api_keys(env: dict[str, str]) -> None:
+    """Restore caller tracing API keys in an environment passed to user code.
+
+    Reverts both bootstrap overwrites of the canonical LangSmith key — the
+    `DEEPAGENTS_CODE_`-prefixed override and the `/auth`-stored key — so shell
+    subprocesses receive the caller's own key rather than the agent's session
+    key. See `original_tracing_api_keys` for the rationale; this mirrors
+    `restore_user_tracing_env`, which does the same for tracing flags.
+
+    Args:
+        env: Environment mapping prepared for a child/user subprocess.
+    """
+    for var, value in _bootstrap_state.original_tracing_api_keys.items():
+        if value is None:
+            env.pop(var, None)
+        else:
+            env[var] = value
+
+
 def _disable_orphaned_tracing() -> None:
     """Disable LangSmith tracing when enabled without a usable API key.
 
@@ -729,6 +762,9 @@ def _ensure_bootstrap() -> None:
             _bootstrap_state.original_tracing_env = {
                 var: os.environ.get(var) for var in _TRACING_ENABLE_ENV_VARS
             }
+            _bootstrap_state.original_tracing_api_keys = {
+                var: os.environ.get(var) for var in _TRACING_API_KEY_ENV_VARS
+            }
 
             # CRITICAL: Override LANGSMITH_PROJECT to route agent traces to a
             # separate project. LangSmith reads LANGSMITH_PROJECT at invocation
@@ -745,7 +781,10 @@ def _ensure_bootstrap() -> None:
             # LangSmith SDK reads os.environ directly and has no knowledge
             # of the DEEPAGENTS_CODE_ prefix. Setting canonical vars here
             # bridges that gap.
+            from deepagents_code._env_vars import SUPPRESS_ENV_OVERRIDE_WARNING
             from deepagents_code.model_config import _ENV_PREFIX
+
+            suppress_override_warning = is_env_truthy(SUPPRESS_ENV_OVERRIDE_WARNING)
 
             for canonical in (
                 "LANGSMITH_API_KEY",
@@ -762,14 +801,22 @@ def _ensure_bootstrap() -> None:
                     os.environ[canonical] = prefixed_val
                 elif os.environ[canonical] != prefixed_val:
                     os.environ[canonical] = prefixed_val
-                    logger.warning(
-                        "Both %s and %s are set with different values; "
-                        "using %s. Unset %s to silence this warning.",
-                        canonical,
-                        prefixed,
-                        prefixed,
-                        canonical,
-                    )
+                    if not suppress_override_warning:
+                        logger.warning(
+                            "%s and %s are both set to different values. Deep "
+                            "Agents Code uses %s for this session (the "
+                            "%s-prefixed value takes precedence). The %s you "
+                            "exported in your own shell is unaffected. This is "
+                            "expected. To silence this warning, unset %s or set "
+                            "%s=1.",
+                            canonical,
+                            prefixed,
+                            prefixed,
+                            _ENV_PREFIX,
+                            canonical,
+                            canonical,
+                            SUPPRESS_ENV_OVERRIDE_WARNING,
+                        )
 
             # Bridge stored service keys, apply stored LangSmith tracing defaults,
             # disable orphaned tracing, and route active tracing to the displayed

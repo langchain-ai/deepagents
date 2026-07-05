@@ -1470,18 +1470,24 @@ async def execute_task_textual(
                                 tool_msg = adapter._current_tool_messages.pop(
                                     tool_id, None
                                 )
+                                _dispatch_tool_result_hook(
+                                    "ask_user", tool_id, tool_args, "success", output
+                                )
+                                completed_tool_result_ids.add(tool_id)
                                 if tool_msg is not None:
-                                    tool_msg.set_success(output)
+                                    try:
+                                        tool_msg.set_success(output)
+                                    except Exception:
+                                        logger.exception(
+                                            "Failed to update ask_user row for %s",
+                                            tool_id,
+                                        )
                                 else:
                                     logger.warning(
                                         "ask_user tool_id %s missing from "
                                         "_current_tool_messages on answered",
                                         tool_id,
                                     )
-                                _dispatch_tool_result_hook(
-                                    "ask_user", tool_id, tool_args, "success", output
-                                )
-                                completed_tool_result_ids.add(tool_id)
                             else:
                                 logger.error(
                                     "ask_user answered payload had non-list "
@@ -1498,13 +1504,19 @@ async def execute_task_textual(
                                 tool_msg = adapter._current_tool_messages.pop(
                                     tool_id, None
                                 )
-                                if tool_msg is not None:
-                                    tool_msg.set_error(output)
                                 _dispatch_tool_error_hook("ask_user")
                                 _dispatch_tool_result_hook(
                                     "ask_user", tool_id, tool_args, "error", output
                                 )
                                 completed_tool_result_ids.add(tool_id)
+                                if tool_msg is not None:
+                                    try:
+                                        tool_msg.set_error(output)
+                                    except Exception:
+                                        logger.exception(
+                                            "Failed to update ask_user row for %s",
+                                            tool_id,
+                                        )
                         elif result_type == "cancelled":
                             resume_payload[interrupt_id] = {
                                 "status": "cancelled",
@@ -1515,20 +1527,26 @@ async def execute_task_textual(
                             # resume so the agent can react to the failure.
                             ask_user_cancelled = True
                             tool_msg = adapter._current_tool_messages.pop(tool_id, None)
-                            if tool_msg is not None:
-                                tool_msg.set_rejected()
-                            else:
-                                logger.warning(
-                                    "ask_user tool_id %s missing from "
-                                    "_current_tool_messages on cancelled",
-                                    tool_id,
-                                )
                             output = "Question cancelled"
                             _dispatch_tool_error_hook("ask_user")
                             _dispatch_tool_result_hook(
                                 "ask_user", tool_id, tool_args, "error", output
                             )
                             completed_tool_result_ids.add(tool_id)
+                            if tool_msg is not None:
+                                try:
+                                    tool_msg.set_rejected()
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to update ask_user row for %s",
+                                        tool_id,
+                                    )
+                            else:
+                                logger.warning(
+                                    "ask_user tool_id %s missing from "
+                                    "_current_tool_messages on cancelled",
+                                    tool_id,
+                                )
                         else:
                             error_text = result.get("error")
                             if not isinstance(error_text, str) or not error_text:
@@ -1540,13 +1558,19 @@ async def execute_task_textual(
                             }
                             any_rejected = True
                             tool_msg = adapter._current_tool_messages.pop(tool_id, None)
-                            if tool_msg is not None:
-                                tool_msg.set_error(error_text)
                             _dispatch_tool_error_hook("ask_user")
                             _dispatch_tool_result_hook(
                                 "ask_user", tool_id, tool_args, "error", error_text
                             )
                             completed_tool_result_ids.add(tool_id)
+                            if tool_msg is not None:
+                                try:
+                                    tool_msg.set_error(error_text)
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to update ask_user row for %s",
+                                        tool_id,
+                                    )
                     else:
                         logger.warning(
                             "ask_user interrupt received but no UI callback is "
@@ -1559,8 +1583,6 @@ async def execute_task_textual(
                         }
                         tool_id = ask_req["tool_call_id"]
                         tool_msg = adapter._current_tool_messages.pop(tool_id, None)
-                        if tool_msg is not None:
-                            tool_msg.set_error(_ASK_USER_UNSUPPORTED_ERROR)
                         _dispatch_tool_error_hook("ask_user")
                         _dispatch_tool_result_hook(
                             "ask_user",
@@ -1570,6 +1592,13 @@ async def execute_task_textual(
                             _ASK_USER_UNSUPPORTED_ERROR,
                         )
                         completed_tool_result_ids.add(tool_id)
+                        if tool_msg is not None:
+                            try:
+                                tool_msg.set_error(_ASK_USER_UNSUPPORTED_ERROR)
+                            except Exception:
+                                logger.exception(
+                                    "Failed to update ask_user row for %s", tool_id
+                                )
 
                 for interrupt_id, hitl_request in list(pending_interrupts.items()):
                     action_requests = hitl_request["action_requests"]
@@ -1793,6 +1822,27 @@ async def execute_task_textual(
 
                 stream_input = Command(resume=resume_payload)
             else:
+                # Clean stream end. Any tool still in `_current_tool_messages`
+                # had its `tool.use` dispatched at mount but never received a
+                # `ToolMessage` (e.g. a custom/remote graph that ends the turn
+                # after emitting an unexecuted tool call). Close each one with a
+                # terminal hook so the "every `tool.use` is terminated" guarantee
+                # does not depend on the graph raising. This mirrors the headless
+                # `_dispatch_orphaned_tool_result_hooks`, which likewise closes
+                # orphans hooks-only (no widget mutation) on every loop exit —
+                # the widget keeps its rendered state; only the audit stream and
+                # the cross-turn `_current_tool_messages` tracking are settled.
+                if adapter._current_tool_messages:
+                    logger.info(
+                        "Stream ended with %d un-resulted tool call(s); "
+                        "closing with terminal hooks",
+                        len(adapter._current_tool_messages),
+                    )
+                    _dispatch_terminal_tool_result_hooks(
+                        adapter._current_tool_messages,
+                        "Stream ended before tool result",
+                    )
+                    adapter._current_tool_messages.clear()
                 await dispatch_hook("task.complete", {"thread_id": thread_id})
                 break
 

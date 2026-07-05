@@ -12007,7 +12007,24 @@ class DeepAgentsApp(App):
                                 exc_info=True,
                             )
                     try:
-                        await drain_pending_hooks()
+                        # Bound the drain so a hung hook subprocess can't stall
+                        # an interactive quit indefinitely. Each hook is already
+                        # capped at 5s in its own thread, but a slow/many-hook
+                        # config could still exceed the graceful-exit budget; a
+                        # dropped final tool.result is announced rather than
+                        # letting the UI feel frozen. The headless surface leaves
+                        # its drain unbounded on purpose — a script exit favors a
+                        # complete audit trail over shutdown latency.
+                        await asyncio.wait_for(
+                            drain_pending_hooks(),
+                            timeout=_GRACEFUL_EXIT_WAIT_SECONDS,
+                        )
+                    except TimeoutError:
+                        logger.warning(
+                            "Hook drain did not finish within %ss before app "
+                            "exit; a final tool.result hook may be dropped",
+                            _GRACEFUL_EXIT_WAIT_SECONDS,
+                        )
                     except Exception:
                         logger.warning(
                             "Hook drain raised unexpectedly before app exit",

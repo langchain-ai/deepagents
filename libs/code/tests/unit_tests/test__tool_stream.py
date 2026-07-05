@@ -246,6 +246,26 @@ class TestToolCallBufferParseArgs:
         assert len(warnings) == 1
         assert buffer.warned is True
 
+    def test_pathologically_nested_json_is_skipped_not_raised(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Deeply nested model output is one skipped call, not an escaped error.
+
+        `json.loads` raises `RecursionError` (not `JSONDecodeError`) on input
+        nested past the interpreter limit. That must be caught like any other
+        malformed-but-complete payload — returning `None` and logging once —
+        rather than escaping `parse_args` and aborting the whole turn.
+        """
+        depth = 100_000
+        nested = "[" * depth + "]" * depth
+        buffer = ToolCallBuffer(args_parts=[nested])
+        with caplog.at_level("WARNING", logger="deepagents_code._tool_stream"):
+            assert buffer.parse_args() is None
+        assert buffer.warned is True
+        assert any(
+            "look complete but failed to parse" in r.message for r in caplog.records
+        )
+
 
 class TestPayloadBuilders:
     """Fixed-shape hook payloads and the output truncation invariant."""

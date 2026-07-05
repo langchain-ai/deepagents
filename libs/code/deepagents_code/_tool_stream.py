@@ -324,7 +324,9 @@ class ToolCallBuffer:
         Returns:
             Parsed tool-call arguments, or `None` when the args are not yet
                 complete (still streaming), empty, or structurally complete but
-                malformed (the malformed case is logged once via `warned`).
+                unparseable — malformed or too deeply nested (the
+                structurally-complete malformed case is logged once via
+                `warned`).
         """
         if isinstance(self.args, dict):
             # A whole-value dict delivered by the provider; its keys are
@@ -350,13 +352,17 @@ class ToolCallBuffer:
             return None
         try:
             parsed = json.loads(joined)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             # Args that look structurally complete (bracketed and closed) but
             # still fail to parse are malformed, not mid-stream — surface them
-            # rather than silently dropping the tool.use hook. `%r` escapes any
-            # control characters in the model-generated fragment. The `warned`
-            # latch keeps this to one line per call, since the buffer is retained
-            # and parse_args re-runs on every later chunk for the same call.
+            # rather than silently dropping the tool.use hook. `RecursionError`
+            # is caught alongside the decode error: pathologically nested model
+            # output makes `json.loads` exceed the interpreter recursion limit,
+            # and that is one malformed call to skip, not a reason to let the
+            # exception escape and abort the whole turn. `%r` escapes any control
+            # characters in the model-generated fragment. The `warned` latch
+            # keeps this to one line per call, since the buffer is retained and
+            # parse_args re-runs on every later chunk for the same call.
             if (
                 stripped[0] in "{["
                 and stripped.endswith(("}", "]"))

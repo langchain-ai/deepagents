@@ -2303,8 +2303,18 @@ class TestExecuteTaskTextualParallelToolSpinner:
             ),
         ]
 
+        # Capture the widget at mount: the clean-completion orphan close clears
+        # `_current_tool_messages` (hooks-only, so the widget keeps its state),
+        # so read the mounted row directly rather than the post-turn tracking.
+        mounted_tools: list[ToolCallMessage] = []
+
+        async def capture_mount(widget: object) -> None:
+            await asyncio.sleep(0)
+            if isinstance(widget, ToolCallMessage):
+                mounted_tools.append(widget)
+
         adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
+            mount_message=capture_mount,
             update_status=_noop_status,
             request_approval=_mock_approval,
         )
@@ -2317,8 +2327,8 @@ class TestExecuteTaskTextualParallelToolSpinner:
             adapter=adapter,
         )
 
-        tool_msg = adapter._current_tool_messages["tool-1"]
-        assert tool_msg._status == "running"
+        assert len(mounted_tools) == 1
+        assert mounted_tools[0]._status == "running"
 
     async def test_edit_file_marks_running_at_mount(self) -> None:
         """All tool rows are marked running at mount, including `edit_file`.
@@ -2346,8 +2356,18 @@ class TestExecuteTaskTextualParallelToolSpinner:
             ),
         ]
 
+        # Capture the widget at mount: the clean-completion orphan close clears
+        # `_current_tool_messages` (hooks-only, so the widget keeps its state),
+        # so read the mounted row directly rather than the post-turn tracking.
+        mounted_tools: list[ToolCallMessage] = []
+
+        async def capture_mount(widget: object) -> None:
+            await asyncio.sleep(0)
+            if isinstance(widget, ToolCallMessage):
+                mounted_tools.append(widget)
+
         adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
+            mount_message=capture_mount,
             update_status=_noop_status,
             request_approval=_mock_approval,
         )
@@ -2360,8 +2380,8 @@ class TestExecuteTaskTextualParallelToolSpinner:
             adapter=adapter,
         )
 
-        tool_msg = adapter._current_tool_messages["tool-1"]
-        assert tool_msg._status == "running"
+        assert len(mounted_tools) == 1
+        assert mounted_tools[0]._status == "running"
 
     async def test_spinner_with_three_parallel_tools_out_of_order(self) -> None:
         """Three parallel tools complete out of order; spinner stays up throughout."""
@@ -4122,9 +4142,13 @@ class TestToolHooksTextual:
                 adapter=adapter,
             )
 
-        mock_dispatch.assert_called_once()
-        assert mock_dispatch.call_args[0][0] == "tool.use"
-        payload = mock_dispatch.call_args[0][1]
+        # tool.use is the first dispatch. This fixture streams no ToolMessage, so
+        # the clean-completion orphan close then emits terminal tool.error/
+        # tool.result for the same call (covered by
+        # test_clean_completion_closes_unresulted_tool_use); assert on the first
+        # call rather than call count.
+        assert mock_dispatch.call_args_list[0][0][0] == "tool.use"
+        payload = mock_dispatch.call_args_list[0][0][1]
         assert payload["tool_name"] == "read_file"
         assert payload["tool_id"] == "call-1"
         assert payload["tool_args"] == {"path": "foo.py"}
@@ -4325,6 +4349,120 @@ class TestToolHooksTextual:
             }
         ]
 
+    async def test_set_success_failure_does_not_drop_later_tool_hooks(self) -> None:
+        """A widget `set_success` failure must not abort the turn or drop hooks.
+
+        The widget update is guarded and runs *after* the terminal dispatch, so
+        even when the first tool's `set_success` raises, the stream loop keeps
+        going and the second tool still emits its own tool.result. Without the
+        guard the first exception would propagate and the second tool's hook
+        would never fire.
+        """
+        chunks = [
+            (
+                (),
+                "messages",
+                (_tool_call_message("read_file", {"path": "a.py"}, "call-1"), {}),
+            ),
+            ((), "messages", (ToolMessage(content="a", tool_call_id="call-1"), {})),
+            (
+                (),
+                "messages",
+                (_tool_call_message("read_file", {"path": "b.py"}, "call-2"), {}),
+            ),
+            ((), "messages", (ToolMessage(content="b", tool_call_id="call-2"), {})),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        calls = {"n": 0}
+
+        def flaky_set_success(_self: ToolCallMessage, _result: str = "") -> None:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                msg = "set_success boom"
+                raise RuntimeError(msg)
+
+        with (
+            patch.object(ToolCallMessage, "set_success", flaky_set_success),
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch,
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        result_payloads = [
+            c[0][1] for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
+        ]
+        # Both tools emit a success tool.result even though the first widget
+        # update raised — the guard swallows it and the loop proceeds.
+        assert [p["tool_id"] for p in result_payloads] == ["call-1", "call-2"]
+        assert all(p["tool_status"] == "success" for p in result_payloads)
+
+    async def test_clean_completion_closes_unresulted_tool_use(self) -> None:
+        """A tool.use with no ToolMessage is closed on a clean stream end.
+
+        Parity with the headless orphan drain (`_dispatch_orphaned_tool_result_
+        hooks`): a graph that ends the turn after emitting a tool call whose
+        result never streams must still terminate the tool.use rather than
+        leaving it dangling and the widget stuck "Running" across turns.
+        """
+        chunks = [
+            (
+                (),
+                "messages",
+                (_tool_call_message("read_file", {"path": "foo.py"}, "call-1"), {}),
+            ),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        with patch(
+            "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        events = [(c[0][0], c[0][1]) for c in mock_dispatch.call_args_list]
+        assert (
+            "tool.use",
+            {
+                "tool_name": "read_file",
+                "tool_id": "call-1",
+                "tool_args": {"path": "foo.py"},
+            },
+        ) in events
+        assert ("tool.error", {"tool_names": ["read_file"]}) in events
+        result_payloads = [p for e, p in events if e == "tool.result"]
+        assert result_payloads == [
+            {
+                "tool_name": "read_file",
+                "tool_id": "call-1",
+                "tool_args": {"path": "foo.py"},
+                "tool_status": "error",
+                "tool_output": "Stream ended before tool result",
+            }
+        ]
+        # Tracking is cleared so the orphan can't leak into the next turn.
+        assert adapter._current_tool_messages == {}
+
     async def test_uncorrelated_tool_result_logs_and_sends_empty_args(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -4448,6 +4586,94 @@ class TestToolHooksTextual:
                 "tool_args": {"questions": questions},
             },
         )
+
+        tool_result_calls = [
+            c
+            for c in mock_dispatch_background.call_args_list
+            if c[0][0] == "tool.result"
+        ]
+        assert len(tool_result_calls) == 1
+        assert tool_result_calls[0][0][1] == {
+            "tool_name": "ask_user",
+            "tool_id": "ask-1",
+            "tool_args": {"questions": questions},
+            "tool_status": "success",
+            "tool_output": "User answered",
+        }
+
+    async def test_ask_user_result_hook_survives_widget_success_failure(
+        self,
+    ) -> None:
+        """ask_user result hooks dispatch even if the row update fails."""
+        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
+        future.set_result({"type": "answered", "answers": ["Alice"]})
+
+        async def request_ask_user(
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
+            await asyncio.sleep(0)
+            return future
+
+        async def mount_message(widget: object) -> None:
+            if isinstance(widget, ToolCallMessage) and widget.tool_name == "ask_user":
+
+                def fail_success(_output: str) -> None:
+                    msg = "row was unmounted"
+                    raise RuntimeError(msg)
+
+                widget.set_success = fail_success  # ty: ignore
+            await asyncio.sleep(0)
+
+        questions: list[Question] = [{"question": "Name?", "type": "text"}]
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": questions,
+                            "tool_call_id": "ask-1",
+                        }
+                    )
+                ],
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            ToolMessage(
+                                content="answered via middleware",
+                                tool_call_id="ask-1",
+                                name="ask_user",
+                            ),
+                            {},
+                        ),
+                    ),
+                ],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        with (
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+            ),
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch_background,
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
 
         tool_result_calls = [
             c

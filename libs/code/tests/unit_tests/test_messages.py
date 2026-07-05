@@ -783,6 +783,51 @@ class TestToolCallMessageTerminalStateGuards:
             await pilot.pause()
             assert app.msg._status == "rejected"
 
+    async def test_set_success_noop_on_skipped_row(self) -> None:
+        """A skipped row (sibling rejection) stays skipped, not flipped to success.
+
+        The guard names both `rejected` and `skipped`; a tool skipped because a
+        sibling was rejected can still receive a synthetic success ToolMessage on
+        the resumed turn, which must be ignored.
+        """
+        app = _tool_msg_app("execute", {"command": "ls"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_skipped()
+            assert app.msg._status == "skipped"
+            app.msg.set_success("done")
+            await pilot.pause()
+            assert app.msg._status == "skipped"
+            assert app.msg.is_success is False
+
+    async def test_set_error_noop_on_skipped_row(self) -> None:
+        """A skipped row keeps its terminal state instead of flipping to error."""
+        app = _tool_msg_app("execute", {"command": "ls"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_skipped()
+            app.msg.set_error("boom")
+            await pilot.pause()
+            assert app.msg._status == "skipped"
+
+
+class TestToolCallMessageArgs:
+    """The public `args` accessor must not expose internal widget state."""
+
+    def test_args_returns_defensive_copy(self) -> None:
+        """Mutating the returned dict must not affect the widget's `_args`.
+
+        Hook payloads are built directly from `tool_msg.args`, so the copy is a
+        load-bearing safety contract: a consumer that mutates its payload must
+        not corrupt the widget's stored arguments by reference.
+        """
+        msg = ToolCallMessage("write_file", {"file_path": "a.py", "content": "x"})
+        returned = msg.args
+        returned["file_path"] = "hacked.py"
+        returned["injected"] = True
+        assert msg.args == {"file_path": "a.py", "content": "x"}
+        assert msg._args == {"file_path": "a.py", "content": "x"}
+
 
 class TestToolCallMessageTodos:
     """Tests for `write_todos` output formatting."""

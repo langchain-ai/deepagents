@@ -2584,6 +2584,34 @@ class TestOrphanedToolResultHooks:
         ]
         assert state.in_flight_tool_calls == {}
 
+    def test_dispatches_terminal_hooks_for_every_orphan(self) -> None:
+        """Multiple in-flight ids are each closed, not just the first.
+
+        Guards the `for ... in list(...)` loop: an aborted stream can leave more
+        than one dangling `tool.use`, and every one must get a terminal
+        error/result so no invocation is left unterminated.
+        """
+        state = StreamState()
+        state.in_flight_tool_calls = {
+            "tool-1": InFlightToolCall("read_file", {"path": "a.py"}),
+            "tool-2": InFlightToolCall("execute", {"command": "ls"}),
+        }
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _dispatch_orphaned_tool_result_hooks(
+                state, "Stream ended before tool result"
+            )
+
+        events = [(c[0][0], c[0][1]) for c in mock_dispatch.call_args_list]
+        error_names = [p["tool_names"][0] for e, p in events if e == "tool.error"]
+        assert error_names == ["read_file", "execute"]
+        result_ids = [p["tool_id"] for e, p in events if e == "tool.result"]
+        assert result_ids == ["tool-1", "tool-2"]
+        assert all(p["tool_status"] == "error" for e, p in events if e == "tool.result")
+        assert state.in_flight_tool_calls == {}
+
     def test_noop_when_no_orphans(self) -> None:
         """A clean run (every id already drained) dispatches nothing."""
         state = StreamState()

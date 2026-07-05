@@ -49,13 +49,16 @@ alongside it, so existing `tool.error` hooks are unaffected.
 because no `tool.use` fired for it (e.g. its args never parsed), in which case
 `tool_id` may still be the real string id.
 
-Ordering: each event is dispatched fire-and-forget (see
-`dispatch_hook_fire_and_forget`) and every matching hook command runs in its own
-subprocess. A `tool.use` is *dispatched* before its `tool.result`, but the two
-run concurrently, so a hook subscribed to both may observe them out of order, and
-events from parallel tool calls interleave freely. Correlate by `tool_id` rather
-than relying on arrival order — there is no cross-event delivery-ordering
-guarantee.
+Ordering: the tool events (`tool.use`, `tool.result`, `tool.error`) are
+dispatched fire-and-forget (see `dispatch_hook_fire_and_forget`) and every
+matching hook command runs in its own subprocess. A `tool.use` is *dispatched*
+before its `tool.result`, but the two run concurrently, so a hook subscribed to
+both may observe them out of order, and events from parallel tool calls
+interleave freely. Correlate by `tool_id` rather than relying on arrival order —
+there is no cross-event delivery-ordering guarantee for the tool events. The
+non-tool events (`session.start`, `task.complete`, `session.end`, `user.prompt`,
+`context.offload`, `context.compact`, `input.required`, `user.name.set`) are
+dispatched with an awaited `dispatch_hook` and so fire in program order.
 """
 
 from __future__ import annotations
@@ -76,9 +79,10 @@ HOOK_TOOL_OUTPUT_LIMIT = 2000
 """Max characters of `tool_output` included in `tool.result` hook payloads.
 
 Bounds payload size (data-amplification guard) while keeping enough of the
-tool's output to be useful to audit/notification hooks. Shared by both the
-interactive and headless dispatch paths so the cap never drifts between them.
-Only `tool_output` is capped; `tool_args` is passed through in full so hooks
+tool's output to be useful to audit/notification hooks. Applied in the single
+shared builder `_tool_stream.build_tool_result_payload`, which both the
+interactive and headless dispatch paths call, so the cap never drifts between
+them. Only `tool_output` is capped; `tool_args` is passed through in full so hooks
 that act on the arguments (e.g. a linter reading a `write_file` `content`) see
 the exact value the tool received.
 """

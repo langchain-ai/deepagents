@@ -950,6 +950,11 @@ _PLAN_FIRST_NUDGE = (
     "touch — even inside a file you are legitimately editing. When only a value or a line needs "
     "to change, change exactly that and leave the surrounding content byte-for-byte as it was; "
     "unnecessary or \"improving\" edits are a common way otherwise-correct work gets marked wrong.\n"
+    "- Capture a baseline BEFORE you edit anything, so you can prove you changed only what the "
+    "task requires: if the working directory is already a git repo, you'll review with `git diff` "
+    "(and recover originals with `git show HEAD:<path>`); if it is NOT a git repo, initialize one "
+    "first — `git init -q && git add -A && git commit -qm baseline`. Then before finishing, run "
+    "`git diff` to see every change you made and undo anything the task did not ask for.\n"
     "- Work that must OUTLIVE your shell: a session's state — exported variables (PATH "
     "included), an activated virtualenv, your working directory, anything held only in "
     "memory — disappears the moment your shell does. Anything the task says to \"make "
@@ -1279,10 +1284,11 @@ def shell(command: str) -> str:
 _GRADER_VERDICT_RE = re.compile(r"VERDICT:\s*(satisfied|needs_revision)", re.IGNORECASE)
 _GRADER_FEEDBACK_RE = re.compile(r"FEEDBACK:\s*(.+)", re.IGNORECASE | re.DOTALL)
 # Bound the grader's own tool-use loop so a runaway grader can't burn the run budget.
-# 14 was too tight — real shell-verification exceeded it and errored out before the
-# grader could emit a verdict (observed GraphRecursionError on ~1/5 grades). 60 leaves
-# room (~30 tool calls) to actually verify and conclude.
-_GRADER_RECURSION_LIMIT = 60
+# 14 was too tight (GraphRecursionError before a verdict); 60 was too loose — the grader
+# looped up to ~30 tool calls on the agent's finalize path and its latency caused mass
+# AgentTimeouts (~11/30). 25 is the middle: enough to verify (esp. with a git baseline, so
+# scope is one `git diff` rather than many exploratory calls) without eating the budget.
+_GRADER_RECURSION_LIMIT = 25
 
 
 class _NemotronRubricMiddleware(RubricMiddleware):

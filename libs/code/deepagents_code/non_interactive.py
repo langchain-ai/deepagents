@@ -46,6 +46,7 @@ from deepagents_code._tool_stream import (
     build_tool_error_payload,
     build_tool_result_payload,
     build_tool_use_payload,
+    normalize_tool_status,
     tool_call_buffer_key,
 )
 from deepagents_code._version import __version__
@@ -269,6 +270,9 @@ class StreamState:
     tool_call_args_by_id: dict[str, dict[str, Any]] = field(default_factory=dict)
     """Maps completed tool-call IDs to their parsed arguments for result hooks."""
 
+    displayed_tool_call_ids: set[str] = field(default_factory=set)
+    """Tool-call IDs whose non-interactive call line has already been printed."""
+
     pending_interrupts: dict[str, HITLRequest] = field(default_factory=dict)
     """Maps interrupt IDs to their validated HITL requests that are awaiting
     decisions."""
@@ -436,7 +440,15 @@ def _process_ai_message(
 
             buffer_name = buffer.name
             buffer_id = buffer.tool_id
-            if isinstance(buffer_name, str) and not buffer.displayed:
+            already_displayed = (
+                isinstance(buffer_id, str)
+                and buffer_id in state.displayed_tool_call_ids
+            )
+            if (
+                isinstance(buffer_name, str)
+                and not buffer.displayed
+                and not already_displayed
+            ):
                 if state.spinner:
                     state.spinner.stop()
                 if not state.quiet:
@@ -447,6 +459,10 @@ def _process_ai_message(
                         highlight=False,
                     )
                 buffer.displayed = True
+                if isinstance(buffer_id, str):
+                    state.displayed_tool_call_ids.add(buffer_id)
+            elif isinstance(buffer_id, str) and buffer.displayed:
+                state.displayed_tool_call_ids.add(buffer_id)
 
             # Gate tool.use on a resolved tool id so this surface matches the
             # interactive one, which only dispatches once the id is known — a
@@ -467,9 +483,16 @@ def _process_ai_message(
                     build_tool_use_payload(buffer_name, buffer_id, parsed_args),
                 )
                 state.tool_call_args_by_id[buffer_id] = parsed_args
+            if (
+                isinstance(buffer_id, str)
+                and parsed_args is not None
+                and buffer_id in state.tool_call_args_by_id
+            ):
                 # Drop the buffer so a later turn that reuses this streaming
                 # index (indices restart per message, per LangChain streaming
                 # semantics) starts fresh rather than reusing this call's state.
+                # This also clears redelivered completed chunks whose hook
+                # dispatch was deduped by `tool_call_args_by_id`.
                 state.tool_call_buffers.pop(buffer_key, None)
 
 
@@ -516,8 +539,12 @@ def _process_message_chunk(
         # completely silent.
         if isinstance(tool_id, str):
             tool_args = state.tool_call_args_by_id.pop(tool_id, None)
+            state.displayed_tool_call_ids.discard(tool_id)
             if tool_args is None:
-                logger.debug(
+                # Info, not debug: a real-id result with no matching tool.use is
+                # a gap a hook consumer may want to notice (its args never
+                # parsed), so keep it greppable at default log levels.
+                logger.info(
                     "tool.result for %s has no correlated tool.use args; "
                     "sending empty tool_args",
                     tool_id,
@@ -535,10 +562,12 @@ def _process_message_chunk(
                     highlight=False,
                 )
         tool_name = getattr(message_obj, "name", "")
-        raw_status = getattr(message_obj, "status", "success")
-        # Normalize to the two-value hook domain so an unexpected provider status
-        # can't leak into a payload as a third, undocumented value.
-        tool_status: ToolStatus = "error" if raw_status == "error" else "success"
+        # Normalize to the two-value hook domain, fail-closed: an unexpected
+        # provider status is logged and treated as an error (see
+        # `normalize_tool_status`) rather than silently reported as success.
+        tool_status: ToolStatus = normalize_tool_status(
+            getattr(message_obj, "status", "success"), tool_name
+        )
         # Format the content the same way the interactive surface does so
         # `tool_output` is identical across surfaces for list/structured content
         # (e.g. multimodal or MCP tools returning content blocks) rather than a

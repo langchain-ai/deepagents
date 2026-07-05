@@ -18,7 +18,6 @@ if TYPE_CHECKING:
 from rich.style import Style
 from rich.text import Text
 
-from deepagents_code._tool_stream import ToolCallBuffer
 from deepagents_code.config import SHELL_ALLOW_ALL, ModelResult
 from deepagents_code.non_interactive import (
     _MAX_HITL_ITERATIONS,
@@ -2027,6 +2026,101 @@ class TestProcessAIMessageHooks:
         ]
         assert state.tool_call_buffers == {}
 
+    def test_redelivered_completed_tool_call_displays_once(self) -> None:
+        """A redelivered completed call must not print another call line."""
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [
+            {
+                "type": "tool_call_chunk",
+                "name": "read_file",
+                "id": "call-1",
+                "index": 0,
+                "args": {"path": "foo.py"},
+            }
+        ]
+        state = StreamState()
+        stream = io.StringIO()
+        console = Console(file=stream, force_terminal=False, color_system=None)
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_ai_message(ai_msg, state, console)
+            _process_ai_message(ai_msg, state, console)
+
+        assert stream.getvalue().count("Calling tool: read_file") == 1
+        tool_use_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.use"
+        ]
+        assert len(tool_use_calls) == 1
+        assert state.tool_call_buffers == {}
+        assert state.displayed_tool_call_ids == {"call-1"}
+
+        tool_msg = ToolMessage(
+            content="ok",
+            tool_call_id="call-1",
+            name="read_file",
+            status="success",
+        )
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
+
+        assert state.displayed_tool_call_ids == set()
+
+    def test_reused_index_after_malformed_dispatches_new_tool_use(self) -> None:
+        """A reused streaming index after a malformed call still fires tool.use.
+
+        Regression for the silent-drop bug: a malformed-complete call retained at
+        index 0 (its args never parse, so its own tool.use is correctly skipped)
+        must not poison a later well-formed call that reuses index 0 in a new
+        message. The differing tool id resets the buffer so the second call's
+        args parse and dispatch.
+        """
+        malformed = MagicMock(spec=AIMessage)
+        malformed.content_blocks = [
+            {
+                "type": "tool_call_chunk",
+                "name": "read_file",
+                "id": "call-a",
+                "index": 0,
+                "args": "{bad json}",
+            }
+        ]
+        good = MagicMock(spec=AIMessage)
+        good.content_blocks = [
+            {
+                "type": "tool_call_chunk",
+                "name": "write_file",
+                "id": "call-b",
+                "index": 0,
+                "args": '{"path": "x.py"}',
+            }
+        ]
+        state = StreamState(quiet=True)
+        console = Console(quiet=True)
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_ai_message(malformed, state, console)
+            _process_ai_message(good, state, console)
+
+        tool_use_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.use"
+        ]
+        assert tool_use_calls == [
+            call(
+                "tool.use",
+                {
+                    "tool_name": "write_file",
+                    "tool_id": "call-b",
+                    "tool_args": {"path": "x.py"},
+                },
+            )
+        ]
+
 
 class TestProcessMessageChunkHooks:
     """Tests for tool.result hook dispatch in _process_message_chunk."""
@@ -2238,66 +2332,128 @@ class TestProcessMessageChunkHooks:
         ]
         assert not tool_result_calls
 
+    def test_tool_result_none_id_sends_empty_args(self) -> None:
+        """An id-less ToolMessage still emits tool.result with `{}` args, id None.
 
-class TestParseToolCallArgs:
-    """Tests for `ToolCallBuffer.parse_args` argument reassembly."""
+        Mirrors the interactive surface so audit hooks observe every executed
+        tool even when the call carried no id to correlate on.
+        """
+        tool_msg = MagicMock(spec=ToolMessage)
+        tool_msg.tool_call_id = None
+        tool_msg.name = "read_file"
+        tool_msg.status = "success"
+        tool_msg.content = "ok"
+        state = StreamState()
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
 
-    def test_direct_dict_args_returned_as_is(self) -> None:
-        """A materialized dict is returned unchanged."""
-        buffer = ToolCallBuffer(args={"path": "foo.py"})
-        assert buffer.parse_args() == {"path": "foo.py"}
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
 
-    def test_direct_scalar_args_wrapped(self) -> None:
-        """A materialized non-dict value is wrapped as `{"value": ...}`."""
-        buffer = ToolCallBuffer(args=42)
-        assert buffer.parse_args() == {"value": 42}
+        mock_dispatch.assert_called_once_with(
+            "tool.result",
+            {
+                "tool_name": "read_file",
+                "tool_id": None,
+                "tool_args": {},
+                "tool_status": "success",
+                "tool_output": "ok",
+            },
+        )
 
-    def test_complete_json_fragments_parsed(self) -> None:
-        """Fragments that join into a complete object parse to that object."""
-        buffer = ToolCallBuffer(args_parts=['{"command": "uv run', ' pytest"}'])
-        assert buffer.parse_args() == {"command": "uv run pytest"}
-
-    def test_adjacent_identical_fragments_are_preserved(self) -> None:
-        """Identical neighboring fragments can be real streamed content."""
-        buffer = ToolCallBuffer()
-        for fragment in ('{"content": "', "hi", "hi", '"}'):
-            buffer.ingest(name=None, tool_id=None, args=fragment)
-
-        assert buffer.parse_args() == {"content": "hihi"}
-
-    def test_incomplete_json_returns_none(self) -> None:
-        """An unclosed object is treated as still streaming, not dispatched."""
-        buffer = ToolCallBuffer(args_parts=['{"command": "uv run'])
-        assert buffer.parse_args() is None
-
-    def test_json_parsing_to_list_wrapped(self) -> None:
-        """A complete JSON array (non-object) is wrapped as `{"value": ...}`."""
-        buffer = ToolCallBuffer(args_parts=["[1, 2, 3]"])
-        assert buffer.parse_args() == {"value": [1, 2, 3]}
-
-    def test_empty_parts_returns_none(self) -> None:
-        """No accumulated fragments means nothing to parse yet."""
-        assert ToolCallBuffer().parse_args() is None
-
-    def test_whitespace_only_parts_returns_none(self) -> None:
-        """Whitespace-only fragments carry no parseable payload."""
-        buffer = ToolCallBuffer(args_parts=["   "])
-        assert buffer.parse_args() is None
-
-    def test_malformed_complete_json_returns_none_and_warns(
+    def test_unexpected_status_fails_closed_to_error(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Complete-looking but invalid JSON returns None and logs a warning.
+        """An unexpected `ToolMessage.status` is logged and treated as error.
 
-        This distinguishes genuinely malformed args (surfaced) from mid-stream
-        fragments (silent), so a dropped `tool.use` is never invisible.
+        Fail-closed so an audit hook is never told a non-successful tool
+        succeeded; `tool.error` fires alongside the error `tool.result`.
         """
-        buffer = ToolCallBuffer(args_parts=["{bad json}"])
-        with caplog.at_level("WARNING", logger="deepagents_code._tool_stream"):
-            assert buffer.parse_args() is None
-        assert any(
-            "look complete but failed to parse" in r.message for r in caplog.records
+        tool_msg = MagicMock(spec=ToolMessage)
+        tool_msg.tool_call_id = "call-9"
+        tool_msg.name = "execute"
+        tool_msg.status = "cancelled"
+        tool_msg.content = "stopped"
+        state = StreamState()
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        with (
+            patch(
+                "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch,
+            caplog.at_level("WARNING", logger="deepagents_code._tool_stream"),
+        ):
+            _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
+
+        assert mock_dispatch.call_args_list == [
+            call("tool.error", {"tool_names": ["execute"]}),
+            call(
+                "tool.result",
+                {
+                    "tool_name": "execute",
+                    "tool_id": "call-9",
+                    "tool_args": {},
+                    "tool_status": "error",
+                    "tool_output": "stopped",
+                },
+            ),
+        ]
+        assert any("Unexpected ToolMessage.status" in r.message for r in caplog.records)
+
+    def test_malformed_args_emit_result_without_use(self) -> None:
+        """A malformed-complete call emits tool.result but never tool.use.
+
+        End-to-end guard: when streamed args are complete-looking but
+        unparseable, no tool.use fires (the args can't be trusted), yet the
+        executed tool's tool.result still fires — with `{}` args, since none
+        were correlated.
+        """
+        malformed = MagicMock(spec=AIMessage)
+        malformed.content_blocks = [
+            {
+                "type": "tool_call_chunk",
+                "name": "read_file",
+                "id": "call-1",
+                "index": 0,
+                "args": "{bad json}",
+            }
+        ]
+        tool_msg = ToolMessage(
+            content="ok", tool_call_id="call-1", name="read_file", status="success"
         )
+        state = StreamState(quiet=True)
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_ai_message(malformed, state, console)
+            _process_message_chunk((tool_msg, {}), state, console, file_op_tracker)
+
+        events = [c[0][0] for c in mock_dispatch.call_args_list]
+        assert "tool.use" not in events
+        result_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
+        ]
+        assert result_calls == [
+            call(
+                "tool.result",
+                {
+                    "tool_name": "read_file",
+                    "tool_id": "call-1",
+                    "tool_args": {},
+                    "tool_status": "success",
+                    "tool_output": "ok",
+                },
+            )
+        ]
 
 
 class TestDrainWiring:

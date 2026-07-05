@@ -6,10 +6,12 @@ the same `tool.use` / `tool.result` hook payloads:
 - the interactive Textual TUI (`deepagents_code.textual_adapter`), and
 - the headless runner (`deepagents_code.non_interactive`).
 
-This module holds the single implementation of that logic so the two surfaces
-cannot drift. Each surface still calls `dispatch_hook_fire_and_forget` from its
-own namespace (the dispatch seam tests patch); only the buffering, argument
-parsing, and payload shapes live here.
+This module holds the single implementation of the buffering, argument parsing,
+and payload-shape logic, so the two surfaces cannot drift *in those layers*. The
+dispatch, gating, result-correlation, and buffer-lifecycle layers are still
+implemented separately in each surface (each calls
+`dispatch_hook_fire_and_forget` from its own namespace — the dispatch seam tests
+patch) and must be kept in sync by hand.
 
 The payload schema is documented in `deepagents_code.hooks`.
 """
@@ -29,6 +31,35 @@ ToolStatus = Literal["success", "error"]
 """Terminal status of a tool call, mirroring `ToolMessage.status`."""
 
 
+def normalize_tool_status(raw_status: object, tool_name: str) -> ToolStatus:
+    """Map a raw `ToolMessage.status` to the two-value hook domain, fail-closed.
+
+    `"error"` and `"success"` pass through. Any other *present* value — a future
+    provider status, an explicit `None`, or a typo — is unexpected and treated as
+    `"error"` (and logged), so an audit or notification hook is never told a
+    non-successful tool succeeded. Callers pass
+    `getattr(message, "status", "success")`, so a missing status arrives as
+    `"success"` and is not warned about.
+
+    Args:
+        raw_status: The raw `status` value read off the `ToolMessage`.
+        tool_name: The tool name, included in the warning for context.
+
+    Returns:
+        `"success"` or `"error"`.
+    """
+    if raw_status == "error":
+        return "error"
+    if raw_status == "success":
+        return "success"
+    logger.warning(
+        "Unexpected ToolMessage.status %r for tool %s; treating as error",
+        raw_status,
+        tool_name,
+    )
+    return "error"
+
+
 class ToolUsePayload(TypedDict):
     """`tool.use` hook payload (schema documented in `hooks`)."""
 
@@ -36,7 +67,10 @@ class ToolUsePayload(TypedDict):
     """The tool being invoked."""
 
     tool_id: str | None
-    """The tool-call id, or `None` when the call carried no id."""
+    """The tool-call id. Always a real id for an emitted `tool.use` — a call
+    with no id never produces one (see `hooks`); the field is `str | None` only
+    to share the builder's signature with `tool.result`, whose id can be
+    `None`."""
 
     tool_args: dict[str, Any]
     """The parsed tool-call arguments."""
@@ -146,19 +180,39 @@ class ToolCallBuffer:
             args: The `args` field from this chunk (dict, string fragment, or
                 other scalar).
         """
+        # A differing id on the same buffer key means a *new* call has reused
+        # this streaming index. Indices restart per message, so a buffer retained
+        # from an earlier message or HITL-resume round (e.g. one whose args never
+        # parsed) can collide here. Reset the accumulated arg state so the new
+        # call's fragments never append onto the old call's leftover — which would
+        # otherwise leave both unparseable and silently drop the new call's
+        # `tool.use`. `warned` is reset too so a fresh malformed payload is still
+        # surfaced once.
+        if tool_id and self.tool_id and tool_id != self.tool_id:
+            self.args = None
+            self.args_parts = []
+            self.warned = False
+
         if name:
             self.name = name
         if tool_id:
             self.tool_id = tool_id
 
+        # `args` (a whole value) and `args_parts` (JSON fragments) are mutually
+        # exclusive; each branch clears the counterpart so the buffer can never
+        # hold both — the invariant `parse_args` relies on rather than merely
+        # masking via read order. A provider streams a single call as either
+        # whole values or fragments, never a mix, so no real sequence loses data.
         if isinstance(args, dict):
             self.args = args
             self.args_parts = []
         elif isinstance(args, str):
             if args:
+                self.args = None
                 self.args_parts.append(args)
         elif args is not None:
             self.args = args
+            self.args_parts = []
 
     def parse_args(self) -> dict[str, Any] | None:
         """Return the tool-call args once enough data has arrived, else `None`.
@@ -223,7 +277,8 @@ def build_tool_use_payload(
 
     Args:
         tool_name: The tool being invoked.
-        tool_id: The tool-call id, or `None` when the call carried no id.
+        tool_id: The tool-call id. Always set for an emitted `tool.use`; typed
+            optional only to share the shape with `tool.result`.
         tool_args: The parsed tool-call arguments.
 
     Returns:

@@ -45,6 +45,14 @@ alongside it, so existing `tool.error` hooks are unaffected.
 `tool.use` — either because the call carried no id (then `tool_id` is `null`) or
 because no `tool.use` fired for it (e.g. its args never parsed), in which case
 `tool_id` may still be the real string id.
+
+Ordering: each event is dispatched fire-and-forget (see
+`dispatch_hook_fire_and_forget`) and every matching hook command runs in its own
+subprocess. A `tool.use` is *dispatched* before its `tool.result`, but the two
+run concurrently, so a hook subscribed to both may observe them out of order, and
+events from parallel tool calls interleave freely. Correlate by `tool_id` rather
+than relying on arrival order — there is no cross-event delivery-ordering
+guarantee.
 """
 
 from __future__ import annotations
@@ -272,6 +280,11 @@ async def drain_pending_hooks() -> None:
     Each task's exceptions are already swallowed inside `dispatch_hook`, and any
     stragglers are collected with `return_exceptions=True`, so this never
     raises.
+
+    Precondition: this snapshots the in-flight set once and awaits it, so any
+    hook scheduled *after* the snapshot (during the await) is not drained. Call
+    it only once no further dispatches are possible — i.e. after streaming has
+    ended — as both current callers do.
     """
     # Snapshot: tasks remove themselves from the set via their done-callback as
     # they finish, so iterating the live set while gathering would mutate it.

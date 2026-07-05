@@ -15,6 +15,7 @@ from deepagents_code._tool_stream import (
     build_tool_error_payload,
     build_tool_result_payload,
     build_tool_use_payload,
+    normalize_tool_status,
     tool_call_buffer_key,
 )
 from deepagents_code.hooks import HOOK_TOOL_OUTPUT_LIMIT
@@ -86,6 +87,90 @@ class TestToolCallBufferIngest:
         buffer = ToolCallBuffer()
         buffer.ingest(name=None, tool_id=None, args=7)
         assert buffer.args == 7
+
+    def test_same_tool_id_keeps_accumulating(self) -> None:
+        """Repeated chunks of one call (same id, then id-less) keep appending."""
+        buffer = ToolCallBuffer()
+        buffer.ingest(name="write_file", tool_id="toolu_1", args='{"a":')
+        buffer.ingest(name=None, tool_id="toolu_1", args=" 1}")
+        buffer.ingest(name=None, tool_id=None, args="")
+        assert buffer.parse_args() == {"a": 1}
+
+    def test_new_tool_id_resets_stale_fragments(self) -> None:
+        """A differing id (reused streaming index) discards the old call's args.
+
+        Indices restart per message, so a buffer retained from an earlier call
+        (e.g. one whose args never parsed) can be handed to a new call via the
+        same key. The new id must reset the accumulated fragments so they never
+        fuse into an unparseable blob that silently drops the new `tool.use`.
+        """
+        buffer = ToolCallBuffer(
+            name="read_file", tool_id="toolu_a", args_parts=["{bad"]
+        )
+        buffer.ingest(name="write_file", tool_id="toolu_b", args='{"x": 1}')
+        assert buffer.tool_id == "toolu_b"
+        assert buffer.name == "write_file"
+        assert buffer.parse_args() == {"x": 1}
+
+    def test_new_tool_id_resets_warned_latch(self) -> None:
+        """A reused index resets the `warned` latch.
+
+        The new call's own malformed payload is still surfaced once, rather than
+        being suppressed by the previous call's latch.
+        """
+        buffer = ToolCallBuffer(tool_id="toolu_a", args_parts=["{bad json}"])
+        assert buffer.parse_args() is None  # sets warned for call a
+        assert buffer.warned is True
+        buffer.ingest(name="write_file", tool_id="toolu_b", args="{also bad}")
+        assert buffer.warned is False
+
+    def test_string_fragment_clears_prior_whole_value(self) -> None:
+        """A fragment supersedes a prior whole value.
+
+        Enforces the `args` XOR `args_parts` invariant at write time rather than
+        leaving both populated for `parse_args` read-order to disambiguate.
+        """
+        buffer = ToolCallBuffer(args={"stale": True})
+        buffer.ingest(name=None, tool_id=None, args='{"real":')
+        assert buffer.args is None
+        assert buffer.args_parts == ['{"real":']
+
+    def test_scalar_clears_prior_fragments(self) -> None:
+        """A whole scalar value discards accumulated fragments (XOR invariant)."""
+        buffer = ToolCallBuffer(args_parts=['{"partial":'])
+        buffer.ingest(name=None, tool_id=None, args=7)
+        assert buffer.args == 7
+        assert buffer.args_parts == []
+
+
+class TestNormalizeToolStatus:
+    """Fail-closed mapping of a raw `ToolMessage.status` to the hook domain."""
+
+    def test_success_passthrough(self) -> None:
+        assert normalize_tool_status("success", "read_file") == "success"
+
+    def test_error_passthrough(self) -> None:
+        assert normalize_tool_status("error", "read_file") == "error"
+
+    def test_unexpected_status_treated_as_error_and_warns(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An unknown present status fails closed to error and is logged."""
+        with caplog.at_level("WARNING", logger="deepagents_code._tool_stream"):
+            assert normalize_tool_status("cancelled", "execute") == "error"
+        assert any("Unexpected ToolMessage.status" in r.message for r in caplog.records)
+
+    def test_none_status_treated_as_error(self) -> None:
+        """An explicit `None` status is unexpected, not a silent success."""
+        assert normalize_tool_status(None, "execute") == "error"
+
+    def test_success_default_not_warned(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The missing-status caller default (`"success"`) must not warn."""
+        with caplog.at_level("WARNING", logger="deepagents_code._tool_stream"):
+            normalize_tool_status("success", "read_file")
+        assert not any(
+            "Unexpected ToolMessage.status" in r.message for r in caplog.records
+        )
 
 
 class TestToolCallBufferParseArgs:

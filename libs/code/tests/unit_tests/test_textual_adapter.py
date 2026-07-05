@@ -4078,7 +4078,20 @@ class TestToolHooksTextual:
                         }
                     )
                 ],
-                [],
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            ToolMessage(
+                                content="answered via middleware",
+                                tool_call_id="ask-1",
+                                name="ask_user",
+                            ),
+                            {},
+                        ),
+                    ),
+                ],
             ]
         )
         adapter = TextualUIAdapter(
@@ -4828,6 +4841,69 @@ class TestToolHooksTextual:
         assert payload["tool_name"] == "ask_user"
         assert payload["tool_status"] == "error"
         assert payload["tool_output"] == "invalid ask_user answers payload"
+
+    async def test_tool_use_not_dispatched_without_id(self) -> None:
+        """tool.use waits for a tool id even when name and args are complete.
+
+        Guards the interactive id gate: a call whose args parse and whose name is
+        known must still not fire tool.use until an id arrives, so a later
+        tool.result can always be correlated back to it. Mirrors the headless
+        `test_tool_use_not_dispatched_without_id`.
+        """
+        chunks = [
+            _tool_chunk(name="read_file", args='{"path": "foo.py"}', chunk_id=None)
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        with patch(
+            "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        tool_use_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.use"
+        ]
+        assert not tool_use_calls
+
+    async def test_tool_use_not_dispatched_without_name(self) -> None:
+        """tool.use must not fire while a streamed call has args + id but no name.
+
+        Mirrors the headless `test_tool_use_not_dispatched_when_no_name`.
+        """
+        chunks = [_tool_chunk(name=None, args='{"path": "foo.py"}', chunk_id="call-1")]
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        with patch(
+            "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        tool_use_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.use"
+        ]
+        assert not tool_use_calls
 
 
 # ---------------------------------------------------------------------------

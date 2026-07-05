@@ -61,6 +61,7 @@ from deepagents_code._tool_stream import (
     build_tool_error_payload,
     build_tool_result_payload,
     build_tool_use_payload,
+    normalize_tool_status,
     tool_call_buffer_key,
 )
 from deepagents_code.config import build_stream_config, get_glyphs
@@ -694,11 +695,11 @@ async def execute_task_textual(
     file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=backend)
     displayed_tool_ids: set[str] = set()
     tool_call_buffers: dict[str | int, ToolCallBuffer] = {}
-    # Tool-call ids that already received terminal hooks at bare-reject time.
-    # When the turn still resumes (a bare reject alongside an answered
-    # `ask_user`), the middleware's synthetic reject `ToolMessage` would
-    # otherwise re-dispatch `tool.result`; this set suppresses that duplicate.
-    rejected_tool_ids: set[str] = set()
+    # Tool-call ids that already received terminal hooks before a resumed
+    # `ToolMessage` can stream. When the turn still resumes, middleware
+    # synthetic messages would otherwise re-dispatch `tool.result`; this set
+    # suppresses those duplicates.
+    completed_tool_result_ids: set[str] = set()
 
     # Track pending text and assistant messages PER NAMESPACE to avoid interleaving
     # when multiple subagents stream in parallel
@@ -982,12 +983,12 @@ async def execute_task_textual(
 
                     if isinstance(message, ToolMessage):
                         tool_name = getattr(message, "name", "")
-                        raw_status = getattr(message, "status", "success")
-                        # Normalize to the two-value hook domain so an unexpected
-                        # provider status can't leak into a payload as a third,
-                        # undocumented value.
-                        tool_status: ToolStatus = (
-                            "error" if raw_status == "error" else "success"
+                        # Normalize to the two-value hook domain, fail-closed: an
+                        # unexpected provider status is logged and treated as an
+                        # error (see `normalize_tool_status`) rather than silently
+                        # reported as success.
+                        tool_status: ToolStatus = normalize_tool_status(
+                            getattr(message, "status", "success"), tool_name
                         )
                         tool_content = format_tool_message_content(message.content)
                         output_str = str(tool_content) if tool_content else ""
@@ -1011,15 +1012,14 @@ async def execute_task_textual(
                                 tool_status,
                                 output_str,
                             )
-                        elif tool_id and tool_id in rejected_tool_ids:
-                            # This is the middleware's synthetic reject
-                            # ToolMessage for a tool whose terminal hooks already
-                            # fired at bare-reject time (the turn still resumed
-                            # because an answered `ask_user` was pending). Its
-                            # widget was cleared, so it lands here — consume the
-                            # id and skip re-dispatch to avoid a duplicate
-                            # tool.result (with mismatched `{}` args).
-                            rejected_tool_ids.discard(tool_id)
+                        elif tool_id and tool_id in completed_tool_result_ids:
+                            # This is a middleware synthetic ToolMessage for a
+                            # tool whose terminal hooks already fired while the
+                            # turn was resolving interrupts. Its widget was
+                            # cleared, so it lands here — consume the id and skip
+                            # re-dispatch to avoid a duplicate tool.result (with
+                            # mismatched `{}` args).
+                            completed_tool_result_ids.discard(tool_id)
                         else:
                             # The tool call was never mounted — either it has no
                             # tool_call_id, or its streamed args never parsed so
@@ -1029,10 +1029,15 @@ async def execute_task_textual(
                             # every executed tool, matching the headless path.
                             # tool_id may be None here, mirroring headless.
                             if tool_id:
-                                logger.debug(
+                                # Info, not debug: a real-id result with no
+                                # mounted widget (its args never parsed, so no
+                                # tool.use fired) is a gap a hook consumer may
+                                # want to notice — keep it greppable at default
+                                # log levels, matching the headless path.
+                                logger.info(
                                     "ToolMessage tool_call_id=%s not in "
-                                    "_current_tool_messages; spinner gating "
-                                    "may be stale",
+                                    "_current_tool_messages; no correlated "
+                                    "tool.use, sending empty tool_args",
                                     tool_id,
                                 )
                             if tool_status == "error":
@@ -1388,6 +1393,7 @@ async def execute_task_textual(
                                 _dispatch_tool_result_hook(
                                     "ask_user", tool_id, tool_args, "success", output
                                 )
+                                completed_tool_result_ids.add(tool_id)
                             else:
                                 logger.error(
                                     "ask_user answered payload had non-list "
@@ -1410,6 +1416,7 @@ async def execute_task_textual(
                                 _dispatch_tool_result_hook(
                                     "ask_user", tool_id, tool_args, "error", output
                                 )
+                                completed_tool_result_ids.add(tool_id)
                         elif result_type == "cancelled":
                             resume_payload[interrupt_id] = {
                                 "status": "cancelled",
@@ -1433,6 +1440,7 @@ async def execute_task_textual(
                             _dispatch_tool_result_hook(
                                 "ask_user", tool_id, tool_args, "error", output
                             )
+                            completed_tool_result_ids.add(tool_id)
                         else:
                             error_text = result.get("error")
                             if not isinstance(error_text, str) or not error_text:
@@ -1450,6 +1458,7 @@ async def execute_task_textual(
                             _dispatch_tool_result_hook(
                                 "ask_user", tool_id, tool_args, "error", error_text
                             )
+                            completed_tool_result_ids.add(tool_id)
                     else:
                         logger.warning(
                             "ask_user interrupt received but no UI callback is "
@@ -1472,6 +1481,7 @@ async def execute_task_textual(
                             "error",
                             _ASK_USER_UNSUPPORTED_ERROR,
                         )
+                        completed_tool_result_ids.add(tool_id)
 
                 for interrupt_id, hitl_request in list(pending_interrupts.items()):
                     action_requests = hitl_request["action_requests"]
@@ -1615,7 +1625,7 @@ async def execute_task_textual(
                                 # agent: keep `any_rejected=False` so the
                                 # stream resumes and the banner is suppressed.
                                 if reject_message is None:
-                                    rejected_tool_ids.update(
+                                    completed_tool_result_ids.update(
                                         _dispatch_rejected_tool_result_hooks(
                                             adapter._current_tool_messages,
                                             "Tool approval rejected",
@@ -1636,7 +1646,7 @@ async def execute_task_textual(
                                     adapter._current_tool_messages.values()
                                 ):
                                     tool_msg.set_rejected()
-                                rejected_tool_ids.update(
+                                completed_tool_result_ids.update(
                                     _dispatch_rejected_tool_result_hooks(
                                         adapter._current_tool_messages,
                                         "Tool approval rejected",
@@ -1656,7 +1666,7 @@ async def execute_task_textual(
                                 adapter._current_tool_messages.values()
                             ):
                                 tool_msg.set_rejected()
-                            rejected_tool_ids.update(
+                            completed_tool_result_ids.update(
                                 _dispatch_rejected_tool_result_hooks(
                                     adapter._current_tool_messages,
                                     "Tool approval rejected",

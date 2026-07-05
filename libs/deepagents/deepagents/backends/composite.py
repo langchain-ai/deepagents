@@ -418,7 +418,7 @@ class CompositeBackend(BackendProtocol):
         # Path specified but doesn't match a route - search only default
         return self._coerce_grep_result(await self.default.agrep(pattern, path, glob))
 
-    def glob(self, pattern: str, path: str | None = None) -> GlobResult:
+    def glob(self, pattern: str, path: str | None = None) -> GlobResult:  # noqa: PLR0911  # one return per routing disposition (routed / non-route / merge)
         """Find files matching a glob pattern, routing by path prefix."""
         results: list[FileInfo] = []
 
@@ -438,7 +438,16 @@ class CompositeBackend(BackendProtocol):
                     truncated=_glob_truncated(glob_result),
                 )
 
-        # Path doesn't match any specific route - search default backend AND all routed backends
+            # Path specified but matches no route (and isn't root): search only
+            # the default backend, mirroring grep(). Merging routed backends here
+            # would leak results from unrelated routes into a path-scoped search.
+            if path != "/":
+                default_only = self.default.glob(pattern, path)
+                if isinstance(default_only, GlobResult):
+                    return default_only
+                return GlobResult(matches=default_only or [])
+
+        # Path is None or root - search default backend AND all routed backends
         truncated = False
         default_result = self.default.glob(pattern, path)
         # A backend error must not be swallowed as a partial success (mirrors the
@@ -462,7 +471,7 @@ class CompositeBackend(BackendProtocol):
         results.sort(key=lambda x: x.get("path", ""))
         return GlobResult(matches=results, truncated=truncated)
 
-    async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:
+    async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:  # noqa: PLR0911  # one return per routing disposition (routed / non-route / merge)
         """Async version of glob."""
         results: list[FileInfo] = []
 
@@ -482,7 +491,17 @@ class CompositeBackend(BackendProtocol):
                     truncated=_glob_truncated(glob_result),
                 )
 
-        # Path doesn't match any specific route - search default backend AND all routed backends
+            # Path specified but matches no route (and isn't root): search only
+            # the default backend, mirroring agrep(). Merging routed backends
+            # here would leak results from unrelated routes into a path-scoped
+            # search.
+            if path != "/":
+                default_only = await self.default.aglob(pattern, path)
+                if isinstance(default_only, GlobResult):
+                    return default_only
+                return GlobResult(matches=default_only or [])
+
+        # Path is None or root - search default backend AND all routed backends
         truncated = False
         default_result = await self.default.aglob(pattern, path)
         # A backend error must not be swallowed as a partial success (mirrors the

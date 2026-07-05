@@ -75,6 +75,23 @@ async def test_composite_state_backend_routes_and_search_async(tmp_path: Path): 
     assert any(i["path"] == "/memories/readme.md" for i in g)
 
 
+async def test_composite_backend_aglob_path_isolation():
+    """Non-route aglob path must stay within the default backend and not leak routes (mirrors agrep)."""
+    mem_store = InMemoryStore()
+    comp = CompositeBackend(
+        default=StoreBackend(store=mem_store, namespace=lambda _rt: ("default",)),
+        routes={"/memories/": StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))},
+    )
+
+    await comp.awrite("/tools/hammer.md", "content")
+    await comp.awrite("/memories/secret.md", "content")
+
+    match_paths = [fi["path"] for fi in ((await comp.aglob("*.md", path="/tools")).matches or [])]
+
+    assert any("/tools/hammer.md" in p for p in match_paths)
+    assert not any("/memories/" in p for p in match_paths), f"aglob path=/tools should not return /memories results, but got: {match_paths}"
+
+
 async def test_composite_backend_filesystem_plus_store_async(tmp_path: Path):
     """Test async operations with filesystem and store backends."""
     root = tmp_path

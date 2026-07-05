@@ -262,6 +262,30 @@ def test_composite_backend_grep_path_isolation():
     assert not any("/memories/" in p for p in match_paths), f"grep path=/tools should not return /memories results, but got: {match_paths}"
 
 
+def test_composite_backend_glob_path_isolation():
+    """Non-route glob path must stay within the default backend and not leak routes (mirrors grep)."""
+    mem_store = InMemoryStore()
+
+    default = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    store_be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+
+    comp = CompositeBackend(default=default, routes={"/memories/": store_be})
+
+    # Write matching files to both the default backend and the /memories route.
+    comp.write("/tools/hammer.md", "content")
+    comp.write("/tools/saw.md", "content")
+    comp.write("/memories/secret.md", "content")
+
+    # Glob scoped to /tools (a non-route path) must stay within the default backend.
+    result = comp.glob("*.md", path="/tools")
+    match_paths = [fi["path"] for fi in (result.matches or [])]
+
+    assert any("/tools/hammer.md" in p for p in match_paths)
+    assert any("/tools/saw.md" in p for p in match_paths)
+    # Must NOT leak /memories results into a /tools-scoped search.
+    assert not any("/memories/" in p for p in match_paths), f"glob path=/tools should not return /memories results, but got: {match_paths}"
+
+
 def test_composite_grep_and_glob_propagate_truncated(monkeypatch: pytest.MonkeyPatch):
     """A truncated result from a routed/default backend must surface through the composite."""
     mem_store = InMemoryStore()

@@ -104,7 +104,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypedDict
 
 from deepagents_code.hooks import HOOK_TOOL_OUTPUT_LIMIT
 
@@ -115,6 +115,15 @@ logger = logging.getLogger(__name__)
 
 ToolStatus = Literal["success", "error"]
 """Terminal status of a tool call, mirroring `ToolMessage.status`."""
+
+ProviderToolArgs = dict[str, Any] | list[Any] | str | int | float | bool | None
+"""A whole tool-call arguments value delivered by a provider in one chunk.
+
+Usually a `dict`; rarely a bare scalar or list. `None` means no whole value has
+arrived yet (the args may instead be streaming as fragments in `args_parts`).
+An `isinstance` check narrows it to the declared `dict[str, Any]` arg type at the
+single `parse_args` return site.
+"""
 
 TOOL_OUTPUT_TRUNCATION_MARKER = "…[output truncated]"
 """Suffix appended to a `tool.result` `tool_output` that hit
@@ -291,7 +300,7 @@ class ToolCallBuffer:
     tool_id: str | None = None
     """The tool-call id, once a chunk has supplied it."""
 
-    args: object = None  # provider-shaped: dict, scalar, or None
+    args: ProviderToolArgs = None
     """A fully materialized arguments value delivered by a single chunk (dict or,
     rarely, a scalar). Mutually exclusive with `args_parts` (see `__post_init__`
     and `ingest`)."""
@@ -440,10 +449,10 @@ class ToolCallBuffer:
             msg = "ToolCallBuffer cannot hold both args and args_parts"
             raise ValueError(msg)
         if isinstance(self.args, dict):
-            # A whole-value dict delivered by the provider; its keys are
-            # provider-shaped, so narrow the `object` field to the declared arg
-            # type at this single return site.
-            return cast("dict[str, Any]", self.args)
+            # A whole-value dict delivered by the provider. The `isinstance`
+            # narrows `ProviderToolArgs` to the declared `dict[str, Any]` arg
+            # type, so this returns without a cast.
+            return self.args
         if self.args is not None:
             return {"value": self.args}
 
@@ -459,6 +468,14 @@ class ToolCallBuffer:
         # above is unavoidable per fragment, but deferring `json.loads` until
         # the value looks complete is what avoids re-parsing the whole prefix
         # on every fragment.
+        #
+        # A bracketed value with trailing junk after its close (e.g.
+        # `{"a": 1} x`) also returns here and is treated as still-streaming, so
+        # it never reaches the malformed warning below — the same deliberate
+        # trade as the non-bracketed-scalar exclusion documented at the end of
+        # this method. Real provider arg streams are pure JSON, so this shape
+        # does not occur in practice; if such a call still executes, its
+        # `tool.result` logs the correlation miss.
         if stripped[0] in "{[" and not stripped.endswith(("}", "]")):
             return None
         try:

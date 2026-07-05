@@ -95,14 +95,14 @@ _ASK_USER_UNSUPPORTED_ERROR = "ask_user not supported by this UI"
 def _dispatch_tool_use_hook(
     tool_name: str, tool_id: str, tool_args: dict[str, Any]
 ) -> None:
-    """Dispatch a `tool.use` hook with the payload documented in `hooks.py`."""
+    """Dispatch a `tool.use` hook with the payload documented in `hooks`."""
     dispatch_hook_fire_and_forget(
         "tool.use", build_tool_use_payload(tool_name, tool_id, tool_args)
     )
 
 
 def _dispatch_tool_error_hook(tool_name: str) -> None:
-    """Dispatch a `tool.error` hook with the payload documented in `hooks.py`."""
+    """Dispatch a `tool.error` hook with the payload documented in `hooks`."""
     dispatch_hook_fire_and_forget("tool.error", build_tool_error_payload(tool_name))
 
 
@@ -113,7 +113,7 @@ def _dispatch_tool_result_hook(
     tool_status: ToolStatus,
     tool_output: str,
 ) -> None:
-    """Dispatch a `tool.result` hook with the payload documented in `hooks.py`.
+    """Dispatch a `tool.result` hook with the payload documented in `hooks`.
 
     `tool_output` is truncated to `HOOK_TOOL_OUTPUT_LIMIT` inside the shared
     payload builder.
@@ -1327,10 +1327,10 @@ async def execute_task_textual(
                                     buffer_name,
                                     repr(parsed_args)[:200],
                                 )
-                                # Dispatch tool.use at widget-mount time. The
-                                # headless surface dispatches from the stream
-                                # loop instead (it has no widget to mount); see
-                                # the "Gate tool.use" comment in
+                                # Dispatch tool.use once the streamed call has a
+                                # resolved id and parsed args. The headless
+                                # surface dispatches from the stream loop
+                                # instead; see the "Gate tool.use" comment in
                                 # `non_interactive._process_ai_message`. Both
                                 # gate on a resolved tool-call id and fire at
                                 # most once per id — the parity contract is
@@ -1344,35 +1344,23 @@ async def execute_task_textual(
                                 except Exception:
                                     # tool.use already fired. If the mount raises
                                     # (e.g. mounting into a torn-down DOM during
-                                    # shutdown), the widget is never registered in
-                                    # `_current_tool_messages`, so the reject/
-                                    # cancel drains — which only iterate that dict
-                                    # — would leave this tool.use unterminated.
-                                    # Close it here so the "every tool.use is
-                                    # closed" guarantee holds, and record the id
-                                    # so a later real ToolMessage doesn't
-                                    # double-dispatch. Mirrors the guarded
-                                    # ask_user mount path above.
+                                    # shutdown), still track the pending call so
+                                    # the later real ToolMessage remains
+                                    # authoritative for tool.result status/output.
+                                    # If the stream ends first, the terminal
+                                    # drains close this tool.use from the same
+                                    # pending map.
                                     logger.exception(
                                         "Failed to mount tool widget for %s",
                                         buffer_id,
                                     )
-                                    _dispatch_tool_error_hook(buffer_name)
-                                    _dispatch_tool_result_hook(
-                                        buffer_name,
-                                        buffer_id,
-                                        parsed_args,
-                                        "error",
-                                        "Tool row mount failed",
-                                    )
-                                    completed_tool_result_ids.add(buffer_id)
                                 else:
-                                    adapter._current_tool_messages[buffer_id] = tool_msg
                                     # Mark running so the group row reflects live
                                     # progress; the row itself is hidden inside
                                     # the group, so this drives state, not a
                                     # visible per-tool spinner.
                                     tool_msg.set_running()
+                                adapter._current_tool_messages[buffer_id] = tool_msg
 
                             if buffer_id is not None:
                                 tool_call_buffers.pop(buffer_key, None)
@@ -1867,29 +1855,11 @@ async def execute_task_textual(
                         "Stream ended before tool result",
                     )
                     adapter._current_tool_messages.clear()
-                # Surface any buffered tool call that never mounted and never
-                # fired a `tool.use`, so it would vanish with `tool_call_buffers`
-                # at turn end with no trace. Two distinct cases (args that never
-                # parsed, and args that parsed but carried no tool-call id) are
-                # classified by the shared `count_unemitted_tool_calls`. Info, not
-                # warning — the precondition (a clean end mid-tool-call) is unusual
-                # and nothing executed for these; it only needs to be greppable.
-                unparsed_calls, idless_parsed_calls = count_unemitted_tool_calls(
-                    tool_call_buffers.values()
-                )
-                if unparsed_calls:
-                    logger.info(
-                        "Stream ended with %d tool call(s) whose arguments never "
-                        "parsed; no tool.use was emitted for them",
-                        unparsed_calls,
-                    )
-                if idless_parsed_calls:
-                    logger.info(
-                        "Stream ended with %d tool call(s) whose arguments parsed "
-                        "but carried no tool-call id; no tool.use was emitted for "
-                        "them",
-                        idless_parsed_calls,
-                    )
+                # The end-of-stream diagnostic for buffered tool calls that never
+                # fired a `tool.use` runs in the `finally` below, not here, so it
+                # fires on cancel and mid-stream error too (not only this clean
+                # end) — mirroring the headless surface, whose identical
+                # diagnostic lives in `_run_agent_loop`'s `finally`.
                 await dispatch_hook("task.complete", {"thread_id": thread_id})
                 break
 
@@ -1918,6 +1888,67 @@ async def execute_task_textual(
             await _stop_assistant_streams(adapter, assistant_message_by_namespace)
         except Exception:  # drain must not mask the original error
             logger.exception("Failed to drain assistant streams on exit")
+
+        # Self-contained backstop for the "every `tool.use` is terminated" hook
+        # guarantee. The clean-end branch, HITL-reject branches, and interrupt
+        # cleanup each already drained `_current_tool_messages` and cleared it, so
+        # this is a no-op on those paths. The one path it covers is a non-cancel
+        # mid-stream error propagating to the caller: without it, the tools that
+        # fired `tool.use` would be terminated only by the caller's
+        # `finalize_pending_tools_with_error`, leaving the hook guarantee dependent
+        # on the caller rather than owned here (a future second caller, or a
+        # missing adapter, would leak an unterminated `tool.use`). Runs before the
+        # exception reaches the caller, whose `finalize_pending_tools_with_error`
+        # then finds an empty dict and no-ops, so no `tool.result` is dispatched
+        # twice. Fail-loud and guarded so a dispatch problem can never mask the
+        # error propagating from the stream.
+        if adapter._current_tool_messages:
+            logger.warning(
+                "Turn exited with %d un-terminated tool call(s); closing with "
+                "terminal hooks as a backstop",
+                len(adapter._current_tool_messages),
+            )
+            try:
+                adapter.finalize_pending_tools_with_error(
+                    "Agent error before tool result"
+                )
+            except Exception:
+                logger.warning(
+                    "Backstop terminal tool close failed unexpectedly",
+                    exc_info=True,
+                )
+
+        # Surface any buffered tool call that never mounted and never fired a
+        # `tool.use`, so it would otherwise vanish with `tool_call_buffers` at turn
+        # end with no trace. Two distinct cases (args that never parsed, and args
+        # that parsed but carried no tool-call id) are classified by the shared
+        # `count_unemitted_tool_calls`. In the `finally` so it fires on every exit
+        # path — clean end, cancel, and mid-stream error — matching the headless
+        # surface. Info, not warning: nothing executed for these and the
+        # precondition (exiting mid-tool-call) is unusual; it only needs to be
+        # greppable. Guarded so a logging failure can never mask a propagating
+        # exception (`parse_args`, re-run inside the count, can raise on the
+        # invariant-violating both-fields-set buffer).
+        try:
+            unemitted = count_unemitted_tool_calls(tool_call_buffers.values())
+            if unemitted.unparsed:
+                logger.info(
+                    "Stream ended with %d tool call(s) whose arguments never "
+                    "parsed; no tool.use was emitted for them",
+                    unemitted.unparsed,
+                )
+            if unemitted.idless_parsed:
+                logger.info(
+                    "Stream ended with %d tool call(s) whose arguments parsed "
+                    "but carried no tool-call id; no tool.use was emitted for "
+                    "them",
+                    unemitted.idless_parsed,
+                )
+        except Exception:
+            logger.warning(
+                "Unparsed tool-call buffer check failed unexpectedly",
+                exc_info=True,
+            )
 
     # Update token count and return stats. Persistence is handled inside the
     # graph by `ResumeStateMiddleware.after_model`, so this only refreshes UI.

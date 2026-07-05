@@ -7,7 +7,7 @@ import json
 import logging
 import subprocess
 from typing import TYPE_CHECKING, Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -473,6 +473,37 @@ class TestDrainPendingHooks:
     async def test_no_pending_tasks_is_noop(self):
         """Draining with nothing pending returns immediately."""
         await hooks_mod.drain_pending_hooks()
+        assert hooks_mod._background_tasks == set()
+
+    async def test_real_dispatch_then_real_drain_completes_inflight_task(self):
+        """End-to-end: the real drain runs a real, still-in-flight dispatch to done.
+
+        Composes the real `dispatch_hook_fire_and_forget` with the real
+        `drain_pending_hooks` (only `subprocess.run` is patched, to record). A
+        freshly scheduled task has not run yet — no `await` has ceded control — so
+        the hook subprocess has not been invoked at dispatch time; the drain is
+        what carries it to completion. This is the composed seam that the
+        per-surface tests (which patch the dispatch capture point) and the
+        instant-return drain test do not exercise together: it pins that the drain
+        is load-bearing for an in-flight hook rather than one already finished.
+        """
+        hooks_mod._hooks_config = [{"command": ["echo"]}]
+        ran = {"count": 0}
+
+        def record_run(*_args: object, **_kwargs: object) -> MagicMock:
+            ran["count"] += 1
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("deepagents_code.hooks.subprocess.run", side_effect=record_run):
+            hooks_mod.dispatch_hook_fire_and_forget("tool.result", {"tool_name": "x"})
+            # Real task scheduled but not yet executed (no await has occurred), so
+            # the hook subprocess has not been called.
+            assert ran["count"] == 0
+            assert len(hooks_mod._background_tasks) == 1
+
+            await hooks_mod.drain_pending_hooks()
+
+        assert ran["count"] == 1
         assert hooks_mod._background_tasks == set()
 
     async def test_drain_swallows_task_exceptions(self):

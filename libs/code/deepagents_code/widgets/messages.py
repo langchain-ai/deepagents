@@ -2654,7 +2654,9 @@ class ToolCallMessage(Vertical):
         """Public read-only accessor for the parsed tool-call arguments.
 
         Returns a shallow copy so a consumer (e.g. a hook payload built from
-        `args`) cannot mutate the widget's internal state by reference.
+        `args`) cannot rebind the widget's top-level keys by reference. Nested
+        mutable values are shared, not deep-copied; the only consumer serializes
+        the result (never deep-mutates it), so a shallow copy is sufficient.
         """
         return dict(self._args)
 

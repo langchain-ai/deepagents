@@ -1351,6 +1351,25 @@ class _FakeAgent:
             yield chunk
 
 
+class _RaisingAgent:
+    """Async stream agent that yields chunks then raises mid-stream.
+
+    Models a provider/transport failure (or a cancellation) partway through a
+    turn, exercising the non-clean-exit paths of `execute_task_textual` where the
+    `else`-branch (clean end) code never runs.
+    """
+
+    def __init__(self, chunks: list[tuple], error: BaseException) -> None:
+        self._chunks = chunks
+        self._error = error
+
+    async def astream(self, *_: Any, **__: Any) -> AsyncIterator[tuple[Any, ...]]:
+        """Yield the preconfigured chunks, then raise the configured error."""
+        for chunk in self._chunks:
+            yield chunk
+        raise self._error
+
+
 class _SequencedAgent:
     """Agent test double that returns a different stream per call."""
 
@@ -4341,14 +4360,13 @@ class TestToolHooksTextual:
         assert len(result_payloads) == 1
         assert result_payloads[0]["tool_output"] == UNRENDERABLE_TOOL_OUTPUT
 
-    async def test_mount_failure_closes_tool_use_with_terminal_hooks(self) -> None:
-        """A widget mount failure still closes the tool.use with terminal hooks.
+    async def test_mount_failure_does_not_suppress_real_tool_result(self) -> None:
+        """A widget mount failure still lets the real tool.result dispatch.
 
-        tool.use fires at mount time, so if `_mount_message` raises the widget is
-        never tracked and the reject/cancel drains cannot close it. The guarded
-        mount path must emit tool.error + an error tool.result itself and record
-        the id so the later real ToolMessage for the same call does not
-        double-dispatch.
+        tool.use fires when the tool call is parsed. If `_mount_message` raises,
+        the pending call must stay tracked for correlation so the later real
+        ToolMessage reports the actual status/output instead of being suppressed
+        by a synthetic UI-mount error.
         """
 
         async def failing_mount(widget: object) -> None:
@@ -4366,7 +4384,7 @@ class TestToolHooksTextual:
                 (_tool_call_message("read_file", {"path": "foo.py"}, "call-1"), {}),
             ),
             # The real result still arrives after the mount failed; it must be
-            # suppressed rather than emitting a second tool.result.
+            # the authoritative terminal tool.result.
             (
                 (),
                 "messages",
@@ -4399,17 +4417,15 @@ class TestToolHooksTextual:
                 "tool_args": {"path": "foo.py"},
             },
         ) in events
-        assert ("tool.error", {"tool_names": ["read_file"]}) in events
+        assert ("tool.error", {"tool_names": ["read_file"]}) not in events
         result_payloads = [p for e, p in events if e == "tool.result"]
-        # Exactly one — the mount-failure guard's; the later real ToolMessage for
-        # the same id is deduped via completed_tool_result_ids.
         assert result_payloads == [
             {
                 "tool_name": "read_file",
                 "tool_id": "call-1",
                 "tool_args": {"path": "foo.py"},
-                "tool_status": "error",
-                "tool_output": "Tool row mount failed",
+                "tool_status": "success",
+                "tool_output": "ok",
             }
         ]
 
@@ -6469,6 +6485,126 @@ class TestTextualEndOfStreamDiagnostics:
 
         assert any("arguments never parsed" in r.message for r in caplog.records)
         assert any("carried no tool-call id" in r.message for r in caplog.records)
+
+    async def test_logs_unemitted_buffer_on_midstream_error(self, caplog) -> None:
+        """The diagnostic fires when the stream errors, not only on a clean end.
+
+        The diagnostic lives in `execute_task_textual`'s `finally`, so a
+        non-cancel mid-stream error (which skips the clean-end `else` branch)
+        must still surface a buffered call whose args never parsed. Regression
+        guard for the parity gap where this diagnostic previously ran only on the
+        clean-end path and vanished on cancel/error.
+        """
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        # Args never close -> unparsed, no tool.use, buffer retained to the exit.
+        chunks = [_tool_chunk(name="f", args='{"a": ', chunk_id="t1", index=0)]
+        with (
+            patch("deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"),
+            caplog.at_level("INFO", logger="deepagents_code.textual_adapter"),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=_RaisingAgent(chunks, RuntimeError("boom")),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        assert any("arguments never parsed" in r.message for r in caplog.records)
+
+    async def test_logs_unemitted_buffer_on_cancel(self, caplog) -> None:
+        """The diagnostic fires on a cancelled turn too (the other non-clean exit).
+
+        Interrupt cleanup is patched out to isolate the assertion to the
+        `finally` block: a `CancelledError` must still route through the diagnostic
+        that was moved out of the clean-end branch.
+        """
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        chunks = [_tool_chunk(name="f", args='{"a": ', chunk_id="t1", index=0)]
+        with (
+            patch("deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"),
+            patch(
+                "deepagents_code.textual_adapter._handle_interrupt_cleanup",
+                new_callable=AsyncMock,
+            ),
+            caplog.at_level("INFO", logger="deepagents_code.textual_adapter"),
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=_RaisingAgent(chunks, asyncio.CancelledError()),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        assert any("arguments never parsed" in r.message for r in caplog.records)
+
+
+class TestTextualNonCleanExitTerminalHooks:
+    """A non-cancel mid-stream error terminates pending `tool.use` hooks itself.
+
+    The "every `tool.use` is closed by a terminal event" guarantee must be owned
+    by `execute_task_textual` rather than depending on the caller's
+    `finalize_pending_tools_with_error`. These drive `execute_task_textual`
+    directly (no `app.py` caller), so a terminal `tool.result`/`tool.error` for a
+    pending tool can only come from the surface's own `finally` backstop.
+    """
+
+    async def test_midstream_error_closes_pending_tool_use(self) -> None:
+        """A stream error emits terminal hooks for a tool whose `tool.use` fired."""
+        dispatched: list[tuple[str, dict[str, Any]]] = []
+
+        def record_dispatch(event: str, payload: dict[str, Any]) -> None:
+            dispatched.append((event, payload))
+
+        chunks = [
+            (
+                (),
+                "messages",
+                (_tool_call_message("read_file", {"path": "f.py"}, "call-1"), {}),
+            ),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        with (
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget",
+                side_effect=record_dispatch,
+            ),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=_RaisingAgent(chunks, RuntimeError("boom")),
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        events = [event for event, _ in dispatched]
+        assert "tool.use" in events
+        result_payloads = [p for event, p in dispatched if event == "tool.result"]
+        assert any(
+            p["tool_id"] == "call-1" and p["tool_status"] == "error"
+            for p in result_payloads
+        )
+        error_payloads = [p for event, p in dispatched if event == "tool.error"]
+        assert any("read_file" in p["tool_names"] for p in error_payloads)
+        # The backstop terminated and cleared the pending widget, so a later
+        # caller's finalize would find nothing to dispatch (no double tool.result).
+        assert adapter._current_tool_messages == {}
 
 
 # ---------------------------------------------------------------------------

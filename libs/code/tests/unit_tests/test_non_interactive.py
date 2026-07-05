@@ -2986,3 +2986,98 @@ class TestDrainWiring:
 
         assert result == 1
         mock_drain.assert_awaited_once()
+
+    async def test_drains_pending_hooks_on_keyboard_interrupt_130(self) -> None:
+        """A Ctrl-C (exit 130) still awaits the drain, exit code intact.
+
+        The unconditional `finally` drain must run on the KeyboardInterrupt path,
+        not only success/OSError, so the final `tool.result` is not dropped when a
+        user interrupts a headless run.
+        """
+        mock_agent = MagicMock()
+        mock_server_proc = MagicMock()
+
+        with (
+            patch(
+                "deepagents_code.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(), model_name="test-model", provider="test"
+                ),
+            ),
+            patch(
+                "deepagents_code.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch("deepagents_code.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
+            ),
+            patch(
+                "deepagents_code.non_interactive._run_agent_loop",
+                new_callable=AsyncMock,
+                side_effect=KeyboardInterrupt,
+            ),
+            patch(
+                "deepagents_code.non_interactive.drain_pending_hooks",
+                new_callable=AsyncMock,
+            ) as mock_drain,
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            result = await run_non_interactive(message="test", quiet=True)
+
+        assert result == 130
+        mock_drain.assert_awaited_once()
+
+    async def test_drains_pending_hooks_on_iteration_limit_124(self) -> None:
+        """A turn-budget hit (exit 124) still awaits the drain, exit code intact."""
+        mock_agent = MagicMock()
+        mock_server_proc = MagicMock()
+
+        with (
+            patch(
+                "deepagents_code.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(), model_name="test-model", provider="test"
+                ),
+            ),
+            patch(
+                "deepagents_code.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch("deepagents_code.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_code.non_interactive.build_langsmith_thread_url",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
+            ),
+            patch(
+                "deepagents_code.non_interactive._run_agent_loop",
+                new_callable=AsyncMock,
+                side_effect=HITLIterationLimitError("Exceeded 1 agentic turns."),
+            ),
+            patch(
+                "deepagents_code.non_interactive.drain_pending_hooks",
+                new_callable=AsyncMock,
+            ) as mock_drain,
+        ):
+            mock_settings.shell_allow_list = None
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            result = await run_non_interactive(message="test", quiet=True)
+
+        assert result == 124
+        mock_drain.assert_awaited_once()

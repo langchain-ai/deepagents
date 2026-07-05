@@ -1097,20 +1097,18 @@ async def _run_agent_loop(
             # that never parsed, and args that parsed but carried no id (so
             # tool.use was gated out). The classification is shared with the TUI
             # via `count_unemitted_tool_calls`; each surface logs its own lines.
-            unparsed_calls, idless_parsed_calls = count_unemitted_tool_calls(
-                state.tool_call_buffers.values()
-            )
-            if unparsed_calls:
+            unemitted = count_unemitted_tool_calls(state.tool_call_buffers.values())
+            if unemitted.unparsed:
                 logger.info(
                     "Stream ended with %d tool call(s) whose arguments never "
                     "parsed; no tool.use was emitted for them",
-                    unparsed_calls,
+                    unemitted.unparsed,
                 )
-            if idless_parsed_calls:
+            if unemitted.idless_parsed:
                 logger.info(
                     "Stream ended with %d tool call(s) whose arguments parsed but "
                     "carried no tool-call id; no tool.use was emitted for them",
-                    idless_parsed_calls,
+                    unemitted.idless_parsed,
                 )
         except Exception:
             logger.warning(

@@ -814,12 +814,15 @@ class TestToolCallMessageTerminalStateGuards:
 class TestToolCallMessageArgs:
     """The public `args` accessor must not expose internal widget state."""
 
-    def test_args_returns_defensive_copy(self) -> None:
-        """Mutating the returned dict must not affect the widget's `_args`.
+    def test_args_returns_shallow_copy(self) -> None:
+        """Rebinding top-level keys of the returned dict must not affect `_args`.
 
         Hook payloads are built directly from `tool_msg.args`, so the copy is a
-        load-bearing safety contract: a consumer that mutates its payload must
-        not corrupt the widget's stored arguments by reference.
+        load-bearing safety contract: a consumer that reassigns its payload's
+        top-level keys must not corrupt the widget's stored arguments by
+        reference. The copy is shallow — nested mutable values are shared (see
+        `test_args_nested_values_are_shared`) — which is sufficient because the
+        only consumer serializes the payload rather than deep-mutating it.
         """
         msg = ToolCallMessage("write_file", {"file_path": "a.py", "content": "x"})
         returned = msg.args
@@ -827,6 +830,17 @@ class TestToolCallMessageArgs:
         returned["injected"] = True
         assert msg.args == {"file_path": "a.py", "content": "x"}
         assert msg._args == {"file_path": "a.py", "content": "x"}
+
+    def test_args_nested_values_are_shared(self) -> None:
+        """The copy is shallow: nested mutables are shared, not deep-copied.
+
+        Pins the documented boundary of the `args` accessor so a future reader
+        does not mistake the shallow copy for a deep one.
+        """
+        msg = ToolCallMessage("edit_file", {"edits": [{"old": "a"}]})
+        returned = msg.args
+        returned["edits"][0]["old"] = "mutated"
+        assert msg._args["edits"][0]["old"] == "mutated"
 
 
 class TestToolCallMessageTodos:

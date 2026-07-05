@@ -57,12 +57,14 @@ both may observe them out of order, and events from parallel tool calls
 interleave freely. Correlate by `tool_id` rather than relying on arrival order —
 there is no cross-event delivery-ordering guarantee for the tool events. Most
 non-tool events (`session.start`, `task.complete`, `session.end`, `user.prompt`,
-`context.offload`, `context.compact`, `permission.request`) are dispatched with
-an awaited `dispatch_hook` and so fire in program order. `input.required` and
-`user.name.set` are the exceptions: `user.name.set` is always dispatched
-fire-and-forget, and `input.required` is fire-and-forget on the headless surface
-(awaited only in the interactive TUI), so neither carries a program-order
-guarantee.
+`context.offload`, `context.compact`, `permission.request`) fire in program order.
+They are dispatched with an awaited `dispatch_hook`, except `session.end` on the
+interactive TUI, which is dispatched synchronously via `_dispatch_hook_sync` at
+shutdown (the event loop is already tearing down); that path is still blocking and
+in-order, so the program-order guarantee holds. `input.required` and
+`user.name.set` are the exceptions with no program-order guarantee:
+`user.name.set` is always dispatched fire-and-forget, and `input.required` is
+fire-and-forget on the headless surface (awaited only in the interactive TUI).
 """
 
 from __future__ import annotations

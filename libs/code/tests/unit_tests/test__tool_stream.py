@@ -136,6 +136,43 @@ class TestToolCallBufferIngest:
         assert buffer.displayed is False
         assert buffer.parse_args() == {"x": 1}
 
+    def test_idless_named_chunk_resets_stale_tool_id(self) -> None:
+        """A delayed-id new call must not parse under the prior call's id.
+
+        A retained malformed buffer can be reused by the next call's stream index
+        before the provider emits the new id. The new name is the first boundary
+        signal available, so it must clear the old id before args are parsed.
+        """
+        buffer = ToolCallBuffer(
+            name="read_file",
+            tool_id="toolu_a",
+            args_parts=["{bad"],
+            displayed=True,
+        )
+
+        buffer.ingest(name="write_file", tool_id=None, args='{"x": 1}')
+
+        assert buffer.tool_id is None
+        assert buffer.name == "write_file"
+        assert buffer.displayed is False
+        assert buffer.parse_args() == {"x": 1}
+
+    def test_delayed_tool_id_attaches_to_idless_new_call_args(self) -> None:
+        """The real id attaches without discarding args collected before it."""
+        buffer = ToolCallBuffer(
+            name="read_file",
+            tool_id="toolu_a",
+            args_parts=["{bad"],
+            displayed=True,
+        )
+
+        buffer.ingest(name="write_file", tool_id=None, args='{"x": 1}')
+        buffer.ingest(name=None, tool_id="toolu_b", args="")
+
+        assert buffer.tool_id == "toolu_b"
+        assert buffer.name == "write_file"
+        assert buffer.parse_args() == {"x": 1}
+
     def test_new_tool_id_resets_warned_latch(self) -> None:
         """A reused index resets the `warned` latch.
 
@@ -245,6 +282,48 @@ class TestToolCallBufferParseArgs:
         ]
         assert len(warnings) == 1
         assert buffer.warned is True
+
+    def test_midstream_nested_json_does_not_warn(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A partial nested payload that happens to end in `}` is not warned.
+
+        A chunk boundary landing right after an inner object closes leaves the
+        outer container open (`{"edits": [{"a": 1}`). The old "starts with {/[
+        and ends with }/]" heuristic mistook this for a complete-but-malformed
+        value and logged a WARNING on a perfectly healthy stream. The
+        string-aware balance check treats it as still-incomplete: no warning,
+        `warned` stays unset, and the next fragment can still complete it.
+        """
+        buffer = ToolCallBuffer(args_parts=['{"edits": [{"a": 1}'])
+        with caplog.at_level("WARNING", logger="deepagents_code._tool_stream"):
+            assert buffer.parse_args() is None
+        assert buffer.warned is False
+        assert not any(
+            "look complete but failed to parse" in r.message for r in caplog.records
+        )
+        # The completing fragments still parse once they arrive.
+        buffer.ingest(name=None, tool_id=None, args=', {"b": 2}]}')
+        assert buffer.parse_args() == {"edits": [{"a": 1}, {"b": 2}]}
+
+    def test_trailing_brace_inside_open_string_not_warned(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A `}` that lives inside an unterminated string is not "complete".
+
+        The payload ends in `}` (so it clears the cheap pre-check and reaches
+        `json.loads`), but that brace is inside an open string literal, so the
+        outer object is still unbalanced. The string-aware balance check must
+        report it incomplete — no warning — rather than treating the trailing
+        brace as a real close.
+        """
+        buffer = ToolCallBuffer(args_parts=['{"content": "a } b}'])
+        with caplog.at_level("WARNING", logger="deepagents_code._tool_stream"):
+            assert buffer.parse_args() is None
+        assert buffer.warned is False
+        assert not any(
+            "look complete but failed to parse" in r.message for r in caplog.records
+        )
 
     def test_pathologically_nested_json_is_skipped_not_raised(
         self, caplog: pytest.LogCaptureFixture

@@ -30,11 +30,15 @@ a single shared dispatch function:
     fires in the stream loop once args parse and the tool-call id is known.
     Result correlation pops the record from that dict.
 
-Additionally, only the TUI has interactive HITL approval widgets that can be
-rejected, so only it needs `_dispatch_terminal_tool_result_hooks` and the
-`completed_tool_result_ids` duplicate-suppression set for synthetic middleware
-`ToolMessage` re-arrivals after a resumed turn. The headless runner has no
-interrupt/resume flow and therefore no equivalent race.
+Additionally, only the TUI has interactive HITL approval *widgets* that can be
+rejected before any `ToolMessage` streams back, so only it needs
+`_dispatch_terminal_tool_result_hooks` and the `completed_tool_result_ids`
+duplicate-suppression set for synthetic middleware `ToolMessage` re-arrivals
+after a resumed turn. The headless runner *does* have a HITL interrupt/resume
+flow, but it never pre-dispatches terminal hooks before a resume — a rejection
+arrives as a synthetic `ToolMessage` handled by the normal result path — so
+there is no already-emitted terminal hook to suppress and therefore no
+equivalent race.
 
 Unifying these into a single function would require either a common
 widget-or-dict abstraction (indirection with no behavioral gain) or pushing
@@ -72,9 +76,14 @@ What is allowed to differ (and is not part of the contract):
     should not assume `tool.use` fires at an identical point in the surface's
     internal lifecycle — only that it fires before `tool.result` for the same
     `tool_id`.
-- **HITL rejection events**: only the TUI emits terminal `tool.error`/
-    `tool.result` for rejected tools. Headless mode has no interactive approval
-    path.
+- **HITL rejection events**: both surfaces emit `tool.error`/`tool.result` for
+    a rejected tool, but by different routes. Headless (and the TUI on a resumed
+    turn) emits them from the synthetic `ToolMessage` on the normal result path;
+    the TUI *additionally* emits them via the dedicated
+    `_dispatch_terminal_tool_result_hooks` drain for tools rejected or cancelled
+    in the interactive UI *before* any `ToolMessage` streams back. Only that
+    pre-`ToolMessage` terminal drain is TUI-only — headless has no interactive
+    approval path that can reject a call before its result arrives.
 
 When changing the dispatch or gating logic in one surface, verify the parity
 contract still holds against the other surface.
@@ -164,7 +173,9 @@ class ToolResultPayload(TypedDict):
     """`tool.result` hook payload (schema documented in `hooks`)."""
 
     tool_name: str
-    """The tool that produced the result."""
+    """The tool that produced the result. Usually the real tool name; falls back
+    to `""` in the rare uncorrelated case where the `ToolMessage` carries no
+    `name` and no `tool.use` was correlated to supply one."""
 
     tool_id: str | None
     """The tool-call id, or `None` when it could not be correlated."""
@@ -206,6 +217,52 @@ def tool_call_buffer_key(
     if tool_id is not None:
         return tool_id
     return f"unknown-{count}"
+
+
+def _looks_structurally_complete(s: str) -> bool:
+    """Return whether `s` is a balanced JSON container, string-state aware.
+
+    Scans for bracket balance while tracking whether the cursor is inside a
+    string literal (honoring backslash escapes), so a value is "complete" only
+    when every `{`/`[` is matched and the text does not end mid-string. Used
+    solely to decide whether a `json.loads` failure is worth warning about: a
+    balanced-but-unparseable value is malformed, whereas a partial stream — e.g.
+    a chunk boundary landing right after an inner `}` in `{"edits": [{"a": 1}` —
+    leaves an outer container open and returns `False`, so no false warning fires
+    on a healthy mid-stream fragment. A stray closer (`depth < 0`) is unbalanced
+    and can never be completed by more input, so it is reported complete
+    (malformed) too. Iterative, so it never raises `RecursionError` on
+    pathologically nested input.
+
+    Args:
+        s: The accumulated, stripped tool-call argument text.
+
+    Returns:
+        `True` if the brackets are matched (or over-closed) and the text does not
+            end inside a string; `False` while a container is still open.
+    """
+    depth = 0
+    in_string = False
+    escaped = False
+    for ch in s:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "{[":
+            depth += 1
+        elif ch in "}]":
+            depth -= 1
+            if depth < 0:
+                # More closers than openers: unbalanced, not a partial stream.
+                return True
+    return depth == 0 and not in_string
 
 
 @dataclass
@@ -257,6 +314,15 @@ class ToolCallBuffer:
             msg = "ToolCallBuffer cannot hold both args and args_parts"
             raise ValueError(msg)
 
+    def _reset_for_new_call(self) -> None:
+        """Discard retained state before this buffer is reused for another call."""
+        self.name = None
+        self.tool_id = None
+        self.args = None
+        self.args_parts = []
+        self.displayed = False
+        self.warned = False
+
     def ingest(
         self,
         *,
@@ -284,12 +350,24 @@ class ToolCallBuffer:
         # otherwise leave both unparseable and silently drop the new call's
         # `tool.use`. Per-call metadata is reset too, so stale name/display state
         # cannot bleed into the new call if its first chunk only carries the id.
-        if tool_id and self.tool_id and tool_id != self.tool_id:
-            self.name = None
-            self.args = None
-            self.args_parts = []
-            self.displayed = False
-            self.warned = False
+        #
+        # Some providers deliver the new call's name/args before its replacement
+        # id. In that delayed-id shape, a retained `self.tool_id` is already stale
+        # even though this chunk has no id to compare against; clear it before
+        # folding the new name/args so parsed args cannot dispatch under the old
+        # call id. Id-less continuation chunks for the same call normally carry
+        # only args, so they keep accumulating below.
+        new_id_reuses_index = (
+            tool_id is not None and self.tool_id is not None and tool_id != self.tool_id
+        )
+        delayed_id_reuses_index = (
+            tool_id is None
+            and self.tool_id is not None
+            and name is not None
+            and self.name is not None
+        )
+        if new_id_reuses_index or delayed_id_reuses_index:
+            self._reset_for_new_call()
 
         if name:
             self.name = name
@@ -353,19 +431,24 @@ class ToolCallBuffer:
         try:
             parsed = json.loads(joined)
         except (json.JSONDecodeError, RecursionError):
-            # Args that look structurally complete (bracketed and closed) but
-            # still fail to parse are malformed, not mid-stream — surface them
-            # rather than silently dropping the tool.use hook. `RecursionError`
-            # is caught alongside the decode error: pathologically nested model
-            # output makes `json.loads` exceed the interpreter recursion limit,
-            # and that is one malformed call to skip, not a reason to let the
-            # exception escape and abort the whole turn. `%r` escapes any control
+            # Args that are structurally balanced (all brackets matched, not
+            # ending mid-string) but still fail to parse are malformed, not
+            # mid-stream — surface them rather than silently dropping the
+            # tool.use hook. `_looks_structurally_complete` does a string-aware
+            # balance check rather than the cheaper "starts with {/[ and ends
+            # with }/]" heuristic, which false-positives on a normal chunk
+            # boundary inside nested args (e.g. `{"edits": [{"a": 1}`) and would
+            # warn on a perfectly healthy stream. `RecursionError` is caught
+            # alongside the decode error: pathologically nested model output
+            # makes `json.loads` exceed the interpreter recursion limit, and that
+            # is one malformed call to skip, not a reason to let the exception
+            # escape and abort the whole turn. `%r` escapes any control
             # characters in the model-generated fragment. The `warned` latch
             # keeps this to one line per call, since the buffer is retained and
             # parse_args re-runs on every later chunk for the same call.
             if (
                 stripped[0] in "{["
-                and stripped.endswith(("}", "]"))
+                and _looks_structurally_complete(stripped)
                 and not self.warned
             ):
                 self.warned = True

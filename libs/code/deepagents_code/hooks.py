@@ -55,10 +55,14 @@ matching hook command runs in its own subprocess. A `tool.use` is *dispatched*
 before its `tool.result`, but the two run concurrently, so a hook subscribed to
 both may observe them out of order, and events from parallel tool calls
 interleave freely. Correlate by `tool_id` rather than relying on arrival order —
-there is no cross-event delivery-ordering guarantee for the tool events. The
+there is no cross-event delivery-ordering guarantee for the tool events. Most
 non-tool events (`session.start`, `task.complete`, `session.end`, `user.prompt`,
-`context.offload`, `context.compact`, `input.required`, `user.name.set`) are
-dispatched with an awaited `dispatch_hook` and so fire in program order.
+`context.offload`, `context.compact`) are dispatched with an awaited
+`dispatch_hook` and so fire in program order. `input.required` and
+`user.name.set` are the exceptions: `user.name.set` is always dispatched
+fire-and-forget, and `input.required` is fire-and-forget on the headless surface
+(awaited only in the interactive TUI), so neither carries a program-order
+guarantee.
 """
 
 from __future__ import annotations

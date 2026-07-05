@@ -881,17 +881,6 @@ async def execute_task_textual(
                                                     "questions"
                                                 ]
                                             }
-                                            _dispatch_tool_use_hook(
-                                                "ask_user", tool_id, tool_args
-                                            )
-                                            # Latch the id the moment tool.use
-                                            # fires — not on mount success — so a
-                                            # re-observed interrupt cannot
-                                            # double-fire tool.use if the mount
-                                            # below raises (matches the regular
-                                            # tool path, which latches before
-                                            # dispatch).
-                                            displayed_tool_ids.add(tool_id)
                                             tool_msg = ToolCallMessage(
                                                 "ask_user",
                                                 tool_args,
@@ -899,12 +888,44 @@ async def execute_task_textual(
                                             try:
                                                 await adapter._mount_message(tool_msg)
                                             except Exception:
+                                                # Mount failed (e.g. a torn-down
+                                                # DOM during shutdown). tool.use
+                                                # is dispatched only on mount
+                                                # success (below), so a failed
+                                                # mount leaves no unterminated
+                                                # tool.use to orphan if the turn
+                                                # is then cancelled before the
+                                                # ask_user resolution loop runs.
+                                                # The id is left unlatched so a
+                                                # re-observed interrupt can retry
+                                                # the mount; the question is still
+                                                # asked and closed by the
+                                                # resolution loop, which
+                                                # dispatches the terminal
+                                                # tool.result independently of
+                                                # this widget.
                                                 logger.exception(
                                                     "Failed to mount ask_user "
                                                     "tool row for %s",
                                                     tool_id,
                                                 )
                                             else:
+                                                # Fire tool.use and latch the id
+                                                # together, only once the widget
+                                                # is mounted, so the "every
+                                                # tool.use is closed" guarantee
+                                                # holds with no widget-less orphan
+                                                # on the mount-failure path.
+                                                # Gating on mount success also
+                                                # keeps tool.use fire-once: a
+                                                # failed mount never fires it, and
+                                                # a successful mount latches the
+                                                # id so a re-observed interrupt is
+                                                # skipped.
+                                                _dispatch_tool_use_hook(
+                                                    "ask_user", tool_id, tool_args
+                                                )
+                                                displayed_tool_ids.add(tool_id)
                                                 adapter._current_tool_messages[
                                                     tool_id
                                                 ] = tool_msg

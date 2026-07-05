@@ -18,7 +18,10 @@ if TYPE_CHECKING:
 from rich.style import Style
 from rich.text import Text
 
-from deepagents_code._tool_stream import UNRENDERABLE_TOOL_OUTPUT
+from deepagents_code._tool_stream import (
+    TOOL_OUTPUT_TRUNCATION_MARKER,
+    UNRENDERABLE_TOOL_OUTPUT,
+)
 from deepagents_code.config import SHELL_ALLOW_ALL, ModelResult
 from deepagents_code.non_interactive import (
     _MAX_HITL_ITERATIONS,
@@ -2131,6 +2134,63 @@ class TestProcessAIMessageHooks:
             )
         ]
 
+    def test_reused_index_with_delayed_id_dispatches_under_new_id(self) -> None:
+        """A retained stale id must not claim the next call's parsed args.
+
+        Regression for delayed-id providers: the new call's name and args can
+        arrive on a reused index before its id. The stale id from the retained
+        malformed call must be cleared until the replacement id arrives.
+        """
+        malformed = MagicMock(spec=AIMessage)
+        malformed.content_blocks = [
+            {
+                "type": "tool_call_chunk",
+                "name": "read_file",
+                "id": "call-a",
+                "index": 0,
+                "args": "{bad json}",
+            }
+        ]
+        good = MagicMock(spec=AIMessage)
+        good.content_blocks = [
+            {
+                "type": "tool_call_chunk",
+                "name": "write_file",
+                "id": None,
+                "index": 0,
+                "args": '{"path": "x.py"}',
+            },
+            {
+                "type": "tool_call_chunk",
+                "name": None,
+                "id": "call-b",
+                "index": 0,
+                "args": "",
+            },
+        ]
+        state = StreamState(quiet=True)
+        console = Console(quiet=True)
+
+        with patch(
+            "deepagents_code.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_ai_message(malformed, state, console)
+            _process_ai_message(good, state, console)
+
+        tool_use_calls = [
+            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.use"
+        ]
+        assert tool_use_calls == [
+            call(
+                "tool.use",
+                {
+                    "tool_name": "write_file",
+                    "tool_id": "call-b",
+                    "tool_args": {"path": "x.py"},
+                },
+            )
+        ]
+
 
 class TestProcessMessageChunkHooks:
     """Tests for tool.result hook dispatch in _process_message_chunk."""
@@ -2296,6 +2356,9 @@ class TestProcessMessageChunkHooks:
 
         payload = mock_dispatch.call_args[0][1]
         assert len(payload["tool_output"]) == 2000
+        # A capped output ends with the marker so a consumer can tell a
+        # truncated result from a genuinely short one.
+        assert payload["tool_output"].endswith(TOOL_OUTPUT_TRUNCATION_MARKER)
 
     def test_tool_result_sentinel_when_formatter_raises(self) -> None:
         """A formatter error still dispatches tool.result with the sentinel.

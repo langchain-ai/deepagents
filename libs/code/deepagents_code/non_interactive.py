@@ -495,9 +495,13 @@ def _process_ai_message(
             # gate on a resolved tool-call id and fire at most once per id — the
             # parity contract is documented in `_tool_stream`. `buffer_id not in
             # in_flight_tool_calls` makes tool.use fire at most once per in-flight
-            # id (the id is recorded below and cleared when its result arrives),
-            # mirroring the interactive `displayed_tool_ids` guard so a provider
-            # re-delivering a completed call can't double-fire.
+            # *window*: the id is recorded below and cleared when its result
+            # arrives. This is slightly weaker than the TUI's monotonic
+            # `displayed_tool_ids` (never discarded within a turn) — a redelivery
+            # of the same id's arg chunks *after* its result would re-fire here.
+            # Standard `stream_mode="messages"` streaming never reorders a call's
+            # chunks after its result, so the in-flight window is sufficient in
+            # practice.
             parsed_args = buffer.parse_args()
             if (
                 isinstance(buffer_name, str)

@@ -4601,6 +4601,80 @@ class TestToolHooksTextual:
             "tool_output": "User answered",
         }
 
+    async def test_ask_user_mount_failure_skips_tool_use_hook(self) -> None:
+        """A failed ask_user mount fires no tool.use, so nothing is orphaned.
+
+        tool.use is gated on a successful mount, so a mount failure (e.g. a
+        torn-down DOM) never emits a tool.use that a later cancel could leave
+        unterminated. The question still resolves via the resolution loop, which
+        dispatches the terminal tool.result independently of the widget.
+        """
+
+        async def mount_message(_widget: object) -> None:
+            await asyncio.sleep(0)
+            msg = "mount failed"
+            raise RuntimeError(msg)
+
+        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
+        future.set_result({"type": "answered", "answers": ["Alice"]})
+
+        async def request_ask_user(
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
+            await asyncio.sleep(0)
+            return future
+
+        questions: list[Question] = [{"question": "Name?", "type": "text"}]
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": questions,
+                            "tool_call_id": "ask-1",
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        with (
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook", new_callable=AsyncMock
+            ),
+            patch(
+                "deepagents_code.textual_adapter.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch_background,
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        events = [c[0][0] for c in mock_dispatch_background.call_args_list]
+        # No tool.use for the failed mount → nothing left dangling on a cancel.
+        assert "tool.use" not in events
+        # The question still resolved, so its terminal tool.result still fired.
+        tool_result_calls = [
+            c
+            for c in mock_dispatch_background.call_args_list
+            if c[0][0] == "tool.result"
+        ]
+        assert len(tool_result_calls) == 1
+        assert tool_result_calls[0][0][1]["tool_id"] == "ask-1"
+        assert tool_result_calls[0][0][1]["tool_status"] == "success"
+
     async def test_ask_user_result_hook_survives_widget_success_failure(
         self,
     ) -> None:

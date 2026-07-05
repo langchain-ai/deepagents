@@ -341,6 +341,27 @@ class TestDispatchHook:
         # Should not raise despite non-serializable payload.
         await hooks_mod.dispatch_hook("session.start", {"bad": object()})
 
+    async def test_dispatch_hook_stringifies_non_serializable_value(self):
+        """A non-JSON-serializable value is stringified and still delivered.
+
+        Locks in the `default=str` behavior: the subprocess must still run with
+        the value coerced to its string form, rather than the whole event being
+        dropped (which is what happens if `default=str` is removed and the
+        serialization error is swallowed by the outer guard).
+        """
+        hooks_mod._hooks_config = [{"command": ["cat"]}]
+
+        class _Widget:
+            def __str__(self) -> str:
+                return "STRINGIFIED_WIDGET"
+
+        with patch("deepagents_code.hooks.subprocess.run") as mock_run:
+            await hooks_mod.dispatch_hook("tool.use", {"tool_args": _Widget()})
+
+        mock_run.assert_called_once()
+        stdin_bytes = mock_run.call_args[1]["input"]
+        assert b"STRINGIFIED_WIDGET" in stdin_bytes
+
 
 # ---------------------------------------------------------------------------
 # dispatch_hook_fire_and_forget

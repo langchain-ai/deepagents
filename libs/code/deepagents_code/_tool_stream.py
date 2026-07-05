@@ -13,6 +13,68 @@ implemented separately in each surface (each calls
 `dispatch_hook_fire_and_forget` from its own namespace — the dispatch seam tests
 patch) and must be kept in sync by hand.
 
+Why the split exists
+--------------------
+
+The two surfaces have fundamentally different object lifecycles, which prevents
+a single shared dispatch function:
+
+- **TUI**: tool calls are backed by `ToolCallMessage` widgets that persist
+    parsed args as instance state and render success/error visually. `tool.use`
+    fires at widget-mount time because that is when the parsed args are available
+    from the widget constructor (or from a validated HITL interrupt). Result
+    correlation reads args from `tool_msg.args` (a widget property).
+
+- **Headless**: there are no widgets. Tool-call state lives in plain dicts on
+    `StreamState` (`tool_call_args_by_id`). `tool.use` fires in the stream loop
+    once args parse and the tool-call id is known. Result correlation pops args
+    from that dict.
+
+Additionally, only the TUI has interactive HITL approval widgets that can be
+rejected, so only it needs `_dispatch_rejected_tool_result_hooks` and the
+`completed_tool_result_ids` duplicate-suppression set for synthetic middleware
+`ToolMessage` re-arrivals after a resumed turn. The headless runner has no
+interrupt/resume flow and therefore no equivalent race.
+
+Unifying these into a single function would require either a common
+widget-or-dict abstraction (indirection with no behavioral gain) or pushing
+widget-aware logic into this shared module (coupling headless mode to TUI
+concepts it does not use). The split is deliberate: share everything that *can*
+drift (payload shapes, arg parsing, status normalization, output truncation)
+here, and keep everything that *must* differ (when to dispatch, where args come
+from, HITL handling) in each surface.
+
+Parity contract for hook consumers
+----------------------------------
+
+A hook consumer can rely on these guarantees being identical across surfaces:
+
+- **Payload shape**: every `tool.use`, `tool.result`, and `tool.error` payload
+    is built by the shared builders in this module, so field names and
+    truncation are the same.
+- **Event completeness**: every executed tool emits `tool.result`, including
+    tools whose args never parsed or that carried no tool-call id (both surfaces
+    emit with `{}` args in that case).
+- **Fire-once-per-tool**: `tool.use` fires at most once per in-flight
+    tool-call id on both surfaces (TUI via `displayed_tool_ids`, headless via
+    `tool_call_args_by_id`).
+- **`tool.error` co-firing**: whenever `tool_status` is `"error"`, both
+    surfaces emit `tool.error` alongside `tool.result`.
+
+What is allowed to differ (and is not part of the contract):
+
+- **Dispatch timing**: the TUI dispatches `tool.use` at widget mount;
+    headless dispatches it in the stream loop once args parse. A hook subscriber
+    should not assume `tool.use` fires at an identical point in the surface's
+    internal lifecycle — only that it fires before `tool.result` for the same
+    `tool_id`.
+- **HITL rejection events**: only the TUI emits terminal `tool.error`/
+    `tool.result` for rejected tools. Headless mode has no interactive approval
+    path.
+
+When changing the dispatch or gating logic in one surface, verify the parity
+contract still holds against the other surface.
+
 The payload schema is documented in `deepagents_code.hooks`.
 """
 

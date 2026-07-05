@@ -130,6 +130,14 @@ def _dispatch_rejected_tool_result_hooks(
 ) -> list[str]:
     """Dispatch terminal hook events for HITL tools that will not resume.
 
+    TUI-only: the headless surface has no interactive approval widgets and
+    therefore no rejection path. This function and the
+    `completed_tool_result_ids` duplicate-suppression set it feeds are the
+    TUI-specific parts of the parity contract (see `_tool_stream` docstring);
+    the headless surface satisfies the same "every `tool.use` is closed by a
+    terminal event" guarantee structurally because it has no interrupt/resume
+    flow.
+
     Args:
         tool_messages: Map of tool-call id to its widget for the rejected tools.
         tool_output: Terminal output string recorded on each `tool.result`.
@@ -1051,6 +1059,10 @@ async def execute_task_textual(
                             # we lack the parsed args) so audit hooks observe
                             # every executed tool, matching the headless path.
                             # tool_id may be None here, mirroring headless.
+                            # Reciprocal: headless always dispatches tool.result
+                            # from `_process_message_chunk` since it has no
+                            # widget concept; see `non_interactive.py`. The
+                            # parity contract is documented in `_tool_stream`.
                             if tool_id:
                                 # Info, not debug: a real-id result with no
                                 # mounted widget (its args never parsed, so no
@@ -1274,6 +1286,14 @@ async def execute_task_textual(
                                     buffer_name,
                                     repr(parsed_args)[:200],
                                 )
+                                # Dispatch tool.use at widget-mount time. The
+                                # headless surface dispatches from the stream
+                                # loop instead (it has no widget to mount); see
+                                # the "Gate tool.use" comment in
+                                # `non_interactive._process_ai_message`. Both
+                                # gate on a resolved tool-call id and fire at
+                                # most once per id — the parity contract is
+                                # documented in `_tool_stream`.
                                 _dispatch_tool_use_hook(
                                     buffer_name, buffer_id, parsed_args
                                 )

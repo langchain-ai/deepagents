@@ -465,12 +465,15 @@ def _process_ai_message(
                 state.displayed_tool_call_ids.add(buffer_id)
 
             # Gate tool.use on a resolved tool id so this surface matches the
-            # interactive one, which only dispatches once the id is known — a
-            # tool.result can then always be correlated back to its tool.use.
-            # `buffer_id not in tool_call_args_by_id` makes tool.use fire at most
-            # once per in-flight id (the id is recorded below and cleared when
-            # its result arrives), mirroring the interactive `displayed_tool_ids`
-            # guard so a provider re-delivering a completed call can't double-fire.
+            # interactive one, which dispatches at widget-mount time in
+            # `textual_adapter.execute_task_textual` (see the
+            # `_dispatch_tool_use_hook` call near `ToolCallMessage` mount). Both
+            # gate on a resolved tool-call id and fire at most once per id — the
+            # parity contract is documented in `_tool_stream`. `buffer_id not in
+            # tool_call_args_by_id` makes tool.use fire at most once per in-flight
+            # id (the id is recorded below and cleared when its result arrives),
+            # mirroring the interactive `displayed_tool_ids` guard so a provider
+            # re-delivering a completed call can't double-fire.
             parsed_args = buffer.parse_args()
             if (
                 isinstance(buffer_name, str)
@@ -582,6 +585,12 @@ def _process_message_chunk(
             logger.exception("Failed to format tool output; using raw content")
             tool_content = message_obj.content
         tool_output = str(tool_content) if tool_content else ""
+        # Headless always dispatches tool.result for every ToolMessage — there
+        # are no widgets to skip. The TUI dispatches from three branches in
+        # `textual_adapter.execute_task_textual`: the widget-backed path, the
+        # `completed_tool_result_ids` duplicate-suppression path, and an `else`
+        # for unmounted tools that mirrors this always-dispatch behavior. See
+        # the parity contract in `_tool_stream` for the full guarantee.
         if tool_status == "error":
             dispatch_hook_fire_and_forget(
                 "tool.error",
